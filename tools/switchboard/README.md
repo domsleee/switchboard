@@ -31,6 +31,18 @@ Logs are in `~/Library/Logs/zellij-switchboard.log`. Quitting the menu bar app
 leaves the relay and terminal sessions running. Swift's compiler, `uv`, and
 `zellij` must be installed.
 
+To update a Mac's native executable while keeping open terminals running
+(requires `jq`):
+
+```sh
+bash tools/switchboard/update_local.sh target/release/zellij
+```
+
+Existing sessions keep their original engine; new sessions use the update.
+Running services and browser connections remain untouched. The updater retains
+the previous executable and checks live sessions before and after the switch.
+See [updating Switchboard](../../docs/SWITCHBOARD_UPDATES.md).
+
 On Windows, install `uv` and `zellij`, then put your local authenticated host
 configuration in `~/.config/switchboard/hosts.json` using the format below. Set
 `escape_transport` to `local` and keep the token file on Windows. Run once in

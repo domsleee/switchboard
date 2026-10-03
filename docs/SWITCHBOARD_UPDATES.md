@@ -1,6 +1,7 @@
 # Updating Switchboard without stopping terminals
 
-Status: proposed design. Automatic updates are not implemented yet.
+Status: a manual macOS binary updater is available. Automatic updates and
+Windows updates are not implemented yet.
 
 Updating Switchboard must preserve running shells, Codex, Claude, builds, and
 other terminal processes. A short browser reconnect is acceptable. Automatically
@@ -9,6 +10,41 @@ closing or recreating sessions is not.
 Switchboard is intended for long-term use across multiple machines. Sessions
 may live through many releases, and machines may return after weeks offline.
 Updates must support both without losing processes or requiring a fresh install.
+
+## Update this Mac now
+
+After building or downloading a trusted macOS executable, install `jq` if needed
+(`brew install jq`), then run:
+
+```sh
+bash tools/switchboard/update_local.sh target/release/zellij
+```
+
+Running services, browser connections, and terminal processes stay running.
+The updater checks that the candidate can query every live
+session, retains both binaries under `~/.local/share/switchboard/releases`,
+and replaces `~/.cargo/bin/zellij` with an atomic rename. It verifies session
+server IDs and pane identities afterward and restores the previous executable
+if a check fails. Staging and rollback verify the executable checksum before
+renaming. If rollback cannot copy the retained executable, it leaves the complete
+installed executable in place and reports the retained path for manual recovery.
+Each read-only CLI probe has a 15-second timeout. Pane JSON is validated and
+compared by stable identity; changing a tab's position does not fail verification.
+
+The optional second argument selects a different installed binary. This is a
+local executable updater, not a complete bundle updater. It does not download
+releases, restart web services, update relay or tray files, or migrate settings.
+The probes establish CLI query compatibility, not browser protocol compatibility.
+Keep both retained releases until older sessions finish; no cleanup is automatic.
+An engine update takes effect in new sessions. Panes added to an existing
+session continue using that session's original engine.
+
+The isolated `node tools/switchboard/update_local.test.cjs OLD_BINARY NEW_BINARY` test
+checks rejection of incompatible, malformed, and stalled candidates; installation
+and rollback (including a failed rollback copy); surviving server and PTY child
+IDs; continuing terminal output; and creation of new native sessions. It does
+not test terminal input or browser reconnection. Tests use a private socket and
+release directory (`SWITCHBOARD_RELEASES_DIR`).
 
 ## Long-term priorities
 
@@ -23,7 +59,7 @@ Updates must support both without losing processes or requiring a fresh install.
   objective. The first updater's use of older session engines is a practical
   starting point, with a clearly stated limitation.
 
-## First implementation
+## Complete bundle updater design
 
 Install each release into its own version directory. Keep settings, credentials,
 and notification history outside those directories.
