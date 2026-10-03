@@ -3,15 +3,16 @@ const hosts = new Map(), sessions = new Map();
 const tabButtons=new Map();
 const mobileSidebar=matchMedia("(max-width:700px)");
 let sidebarCollapsed=localStorage.getItem("switchboard-sidebar-collapsed")==="true",sidebarOpen=false;
-let filter = 'all', selected = null, loading = false, dragging = false;
+let filter = 'all', selected = requestedTab(), restoringTab=!!selected, loading = false, dragging = false;
 const dragType='application/x-zellij-switchboard-tab';
 let dragState=null, dragScrollFrame=0, suppressTabClickUntil=0;
 function load(key) { try { return JSON.parse(localStorage.getItem(key)) || {}; } catch (_) { return {}; } }
 const groups = load('switchboard-groups');
 const ready = load('switchboard-ready');
 const archived = load('switchboard-archived');
+if(restoringTab&&archived[selected]){delete archived[selected];localStorage.setItem('switchboard-archived',JSON.stringify(archived));}
 const seenAttention = load('switchboard-attention-seen');
-let paneAttention=new Map(),attentionErrors=[],attentionLoading=false;
+let paneAttention=new Map(),tabCatalog=[],attentionErrors=[],attentionLoading=false;
 let contextItem = null, archiveSignature = null;
 let tabOrder=load('switchboard-tab-order');
 if(!Array.isArray(tabOrder))tabOrder=[];
@@ -25,6 +26,24 @@ function saveReady() { localStorage.setItem('switchboard-ready', JSON.stringify(
 function setStatus(message,isError=false) {
   $('status').textContent=message;$('status').classList.toggle('has-error',isError);
   $('notifications').title=`${$('notifications').textContent}\n${message}`;
+}
+function requestedTab(){
+  const query=new URLSearchParams(location.search),host=query.get('host'),session=query.get('session'),id=query.get('tab');
+  return host&&session&&/^\d+$/.test(id||'')&&Number(id)<=0xffffffff?JSON.stringify([host,session,'tab',Number(id)]):null;
+}
+function waitingForRequestedTab(){
+  if(!restoringTab)return false;
+  const [host,name]=JSON.parse(selected),machine=hosts.get(host),entry=sessions.get(sessionKey(host,name));
+  if(!machine)return hosts.size===0&&loading;
+  if(machine.error)return false;
+  return machine.connecting||!!entry&&(!entry.state||!entry.catalog?.length);
+}
+function updateTabUrl(item){
+  if(!item&&restoringTab)return;
+  const url=new URL(location.href);
+  for(const key of ['host','session','tab'])url.searchParams.delete(key);
+  if(item){url.searchParams.set('host',item.entry.host);url.searchParams.set('session',item.entry.name);url.searchParams.set('tab',item.tab.id);}
+  if(url.href!==location.href)history.replaceState(null,'',url);
 }
 function sessionKey(host, name) { return JSON.stringify([host, name]); }
 function tabKey(entry, tab) { return JSON.stringify([entry.host, entry.name, 'tab', tab.id]); }
@@ -107,8 +126,9 @@ function render() {
   // Live metadata arrives while dragging; keep the source element mounted.
   if(dragging)return;
   const tabs = allTabs();
-  const previous = selected;
-  if (!tabs.some(t => t.key === selected)) selected = tabs[0]?.key || null;
+  const previous = selected,wasRestoring=restoringTab;
+  if(tabs.some(t=>t.key===selected))restoringTab=false;
+  else if(!waitingForRequestedTab()){restoringTab=false;selected=tabs[0]?.key||null;}
   const liveKeys=new Set(tabs.map(item=>item.key));
   for(const [key,button] of tabButtons)if(!liveKeys.has(key)){button.remove();tabButtons.delete(key);}
   const shown=tabs.filter(matchesSearch), nodes=[],shownKeys=new Set(shown.map(item=>item.key));
@@ -151,6 +171,7 @@ function render() {
   $('tab-no-results').hidden=shown.length>0;
 
   const current=tabs.find(t=>t.key===selected);
+  updateTabUrl(current);
   const notifications=allTabs(true,true).filter(isReady).length;
   $('notifications').textContent=`${notifications} notification${notifications===1?'':'s'}`;
   $('notifications').classList.toggle('has-notifications',notifications>0);
@@ -166,11 +187,11 @@ function render() {
   if($('archive-dialog').open)renderArchive();
   if(!current){$('artifact-preview').hidden=true;$('artifact-frame').src='about:blank';}
   $('empty').hidden=!!current;
-  if (!current) $('empty').textContent=filter==='all'?(archiveCount?'All tabs are archived. Open Archive to restore one.':'No connected tabs. Check Machines or refresh.'):`No ${filter} tabs. Assign machines to this group using Machines.`;
+  if (!current) $('empty').textContent=restoringTab?'Connecting to the requested terminal…':filter==='all'?(archiveCount?'All tabs are archived. Open Archive to restore one.':'No connected tabs. Check Machines or refresh.'):`No ${filter} tabs. Assign machines to this group using Machines.`;
   const errors=[...hosts.values()].filter(h=>h.error).map(h=>`${h.name}: ${h.error}`);
   for(const error of attentionErrors)errors.push(`${hosts.get(error.host)?.name||error.host}: attention status unavailable`);
   setStatus(errors.length?errors.join(' · '):`${hosts.size} machines · ${tabs.length} tabs${current?' · '+hosts.get(current.entry.host)?.name:''}`,errors.length>0);
-  if (selected !== previous && current) focus(current);
+  if ((selected !== previous || wasRestoring&&!restoringTab) && current) focus(current);
   if(selected!==previous) $('tabs').querySelector('.selected')?.scrollIntoView({block:'nearest',inline:'nearest'});
 }
 function updateDragTarget() {
@@ -235,7 +256,7 @@ function focus(item) {
   item.entry.frame.contentWindow.postMessage({type:'zellij-focus',pane_id:pane.pane_id,is_plugin:pane.is_plugin,focus_id:focusId},location.origin);
 }
 function activate(item, clear=true) {
-  selected=item.key;item.entry.followActiveTab=false;
+  selected=item.key;restoringTab=false;item.entry.followActiveTab=false;
   if(mobileSidebar.matches){sidebarOpen=false;updateSidebar();}
   if(clear){delete ready[item.key];saveReady();}
   item.entry.acknowledgeTab=item.key;
@@ -299,24 +320,28 @@ function renderMachines() {
 async function refresh() {
   if(loading)return;loading=true;
   try {
-    const response=await fetch('/api/hosts');if(!response.ok)throw Error('Cannot reach local relay');
+    const response=await fetch('/api/hosts?summary=1');if(!response.ok)throw Error('Cannot reach local relay');
     const data=await response.json();
-    for(const host of data) {
-      hosts.set(host.id,host);
-      for(const session of host.sessions||[]) {
-        if(!session.web_clients_allowed)continue;
-        const key=sessionKey(host.id,session.name);
-        if(sessions.has(key))continue;
-        const frame=document.createElement('iframe');frame.title=`${host.name}: ${session.name}`;
-        frame.src=`/hosts/${encodeURIComponent(host.id)}/${encodeURIComponent(session.name)}`;
-        frame.allow='clipboard-read; clipboard-write';
-        const entry={host:host.id,name:session.name,frame,state:null};sessions.set(key,entry);$('terminals').append(frame);
-      }
-      if(!host.error) for(const [key,entry] of sessions) {
-        if(entry.host===host.id&&!host.sessions.some(s=>s.name===entry.name)) {entry.frame.remove();sessions.delete(key);}
-      }
-    }
-    renderMachines();render();
+    for(const host of data)hosts.set(host.id,{...hosts.get(host.id),...host,connecting:true});
+    await Promise.all(data.map(async summary=>{
+      try{
+        const response=await fetch(`/api/hosts/${encodeURIComponent(summary.id)}`);if(!response.ok)throw Error('Cannot list sessions');
+        const host=await response.json();hosts.set(host.id,host);
+        for(const session of host.sessions||[]) {
+          if(!session.web_clients_allowed)continue;
+          const key=sessionKey(host.id,session.name);
+          if(sessions.has(key))continue;
+          const frame=document.createElement('iframe');frame.title=`${host.name}: ${session.name}`;
+          frame.src=`/hosts/${encodeURIComponent(host.id)}/${encodeURIComponent(session.name)}`;
+          frame.allow='clipboard-read; clipboard-write';
+          const entry={host:host.id,name:session.name,frame,state:null};sessions.set(key,entry);setCatalog(entry,tabCatalog.filter(tab=>tab.host===entry.host&&tab.session===entry.name));$('terminals').append(frame);
+        }
+        if(!host.error) for(const [key,entry] of sessions) {
+          if(entry.host===host.id&&!host.sessions.some(s=>s.name===entry.name)) {entry.frame.remove();sessions.delete(key);}
+        }
+      }catch(error){hosts.set(summary.id,{...hosts.get(summary.id),connecting:false,error:error.message});}
+      renderMachines();render();
+    }));
   }catch(error){setStatus(error.message,true);}finally{loading=false;}
 }
 window.addEventListener('message',event=>{
@@ -337,7 +362,7 @@ window.addEventListener('message',event=>{
     // A client can switch sessions using native Zellij controls; follow its metadata.
     if(entry.name!==entry.state.session_name){
       sessions.delete(sessionKey(entry.host,entry.name));
-      entry.name=entry.state.session_name;entry.catalog=null;entry.followActiveTab=entry.frame.classList.contains('active');
+      entry.name=entry.state.session_name;setCatalog(entry,tabCatalog.filter(tab=>tab.host===entry.host&&tab.session===entry.name));entry.followActiveTab=entry.frame.classList.contains('active');
       const key=sessionKey(entry.host,entry.name), duplicate=sessions.get(key);
       if(duplicate&&duplicate!==entry)duplicate.frame.remove();
       sessions.set(key,entry);
@@ -523,8 +548,8 @@ async function refreshAttention(){
     const response=await fetch('/api/attention');if(!response.ok)throw Error('Attention monitor unavailable');
     const data=await response.json();
     paneAttention=new Map((data.panes||[]).map(state=>{const key=attentionKey(state.host,state.session,state.pane_id);return [key,{...state,key}];}));
-    attentionErrors=data.errors||[];
-    for(const entry of sessions.values())if(!attentionErrors.some(error=>error.host===entry.host))setCatalog(entry,(data.tabs||[]).filter(tab=>tab.host===entry.host&&tab.session===entry.name));
+    tabCatalog=data.tabs||[];attentionErrors=data.errors||[];
+    for(const entry of sessions.values())if(!attentionErrors.some(error=>error.host===entry.host))setCatalog(entry,tabCatalog.filter(tab=>tab.host===entry.host&&tab.session===entry.name));
     const current=allTabs().find(item=>item.key===selected);
     if(current && document.hasFocus() && !document.hidden && $('artifact-preview').hidden && !document.querySelector('dialog[open]') && !current.entry.requestedPane && !current.entry.focusPending && activeTab(current.entry)?.id===current.tab.id)acknowledgeAttention(current);
     render();

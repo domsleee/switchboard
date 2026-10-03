@@ -87,4 +87,30 @@ class ProxyPathTests(unittest.IsolatedAsyncioTestCase):
       self.assertEqual((message.type,message.data),(WSMsgType.BINARY,b'roundtrip'))
    finally:await host.client.close()
 
+class HostListTests(unittest.IsolatedAsyncioTestCase):
+ async def test_summary_and_fast_host_do_not_wait_for_unavailable_machine(self):
+  from aiohttp import ClientSession,ClientTimeout
+  from aiohttp.test_utils import TestServer
+  from server import hosts
+  from types import SimpleNamespace
+  calls=[]
+  class Response:
+   status=200
+   async def __aenter__(self):return self
+   async def __aexit__(self,*_):pass
+   async def json(self):return {'sessions':[{'name':'main','web_clients_allowed':True}]}
+  async def request(method,path):calls.append(path);return Response()
+  async def unavailable(*args):raise AssertionError('Other host must not be contacted')
+  app=web.Application();app['hosts']={'mac':SimpleNamespace(config={'id':'mac','name':'Mac'},request=request),
+                                     'slow':SimpleNamespace(config={'id':'slow','name':'Slow'},request=unavailable)}
+  app.router.add_get('/api/hosts',hosts);app.router.add_get('/api/hosts/{host}',hosts)
+  async with TestServer(app) as server,ClientSession(timeout=ClientTimeout(total=1)) as client:
+   async with client.get(server.make_url('/api/hosts?summary=1')) as response:
+    self.assertEqual(await response.json(),[{'id':'mac','name':'Mac'},{'id':'slow','name':'Slow'}])
+   self.assertEqual(calls,[])
+   async with client.get(server.make_url('/api/hosts/mac')) as response:
+    self.assertEqual((await response.json())['sessions'][0]['name'],'main')
+   async with client.get(server.make_url('/api/hosts/missing')) as response:self.assertEqual(response.status,404)
+   self.assertEqual(calls,['/session-list'])
+
 if __name__=='__main__':unittest.main()

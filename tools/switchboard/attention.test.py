@@ -83,4 +83,39 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(app['attention']['errors'][0]['host'],'mac')
    finally:
     with self.assertRaises(StopAsyncIteration):await anext(context)
+ async def test_ready_identity_survives_restart_and_rearms_after_new_work(self):
+  from attention import lifecycle
+  from tempfile import TemporaryDirectory
+  from pathlib import Path
+  with TemporaryDirectory() as directory:
+   state_file=Path(directory)/'hosts.attention.json'
+   async def run(states):
+    count=len(states)
+    app={'hosts':{'mac':SimpleNamespace(config={'id':'mac'})},'attention_state_file':state_file}
+    sleeps=asyncio.Queue();states=iter(states)
+    async def pause(_):
+     resume=asyncio.get_running_loop().create_future();await sleeps.put(resume);await resume
+    async def scan(_):
+     state=next(states)
+     row={'session':'main','pane_id':7,'tab_id':42,'state':state}
+     if state=='ready':row['token']='same-result'
+     return {'panes':[row],'tabs':[]}
+    with patch('attention.scan_host',scan),patch('attention.asyncio.sleep',pause):
+     context=lifecycle(app);await anext(context);results=[]
+     try:
+      for index in range(count):
+       resume=await asyncio.wait_for(sleeps.get(),1)
+       results.append(app['attention']['panes'][0].get('token'))
+       if index<count-1:resume.set_result(None)
+     finally:
+      with self.assertRaises(StopAsyncIteration):await anext(context)
+     return results
+   self.assertEqual(await run(['working','ready']),[None,'same-result:1'])
+   self.assertEqual(await run(['ready']),['same-result:1'])
+   self.assertEqual(await run(['working','ready']),[None,'same-result:2'])
+   self.assertEqual(await run(['ready']),['same-result:2'])
+   # Persistence contains identity/status only, and malformed old files cannot prevent startup.
+   stored=json.loads(state_file.read_text());self.assertEqual(next(iter(stored.values())),{'state':'ready','generation':2,'token':'same-result'})
+   state_file.write_text('[]');self.assertEqual(await run(['ready']),['same-result:0'])
+
 if __name__=='__main__':unittest.main()

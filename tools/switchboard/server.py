@@ -112,6 +112,14 @@ async def hosts(request):
         except Exception as error:
             result["error"] = error.text if isinstance(error, web.HTTPException) else f"Unavailable ({type(error).__name__})"
         return result
+    if 'host' in request.match_info:
+        host = request.app['hosts'].get(request.match_info['host'])
+        if host is None:
+            raise web.HTTPNotFound()
+        return web.json_response(await describe(host))
+    if request.query.get('summary') == '1':
+        return web.json_response([{'id': h.config['id'], 'name': h.config['name']}
+                                  for h in request.app['hosts'].values()])
     return web.json_response(await asyncio.gather(*(describe(h) for h in request.app["hosts"].values())))
 
 
@@ -233,14 +241,16 @@ async def lifecycle(app):
                 await host.client.close()
 
 
-def create_app(config, port=8090):
+def create_app(config, port=8090, attention_state_file=None):
     app = web.Application(middlewares=[guard])
     app["port"] = port
+    app["attention_state_file"] = attention_state_file
     app["hosts"] = {h["id"]: Host(h) for h in config["hosts"]}
     app["artifact_proxy"] = config.get("artifact_proxy")
     app.cleanup_ctx.append(lifecycle)
     app.cleanup_ctx.append(attention_lifecycle)
     app.router.add_get("/api/hosts", hosts)
+    app.router.add_get("/api/hosts/{host}", hosts)
     app.router.add_get("/api/attention", attention)
     app.router.add_post("/api/hosts/{host}/close-tab", close_tab)
     app.router.add_post("/api/hosts/{host}/escape", escape)
@@ -256,4 +266,4 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=Path, default=Path.home()/".config/zellij/switchboard-hosts.json")
     parser.add_argument("--port", type=int, default=8090)
     args = parser.parse_args()
-    web.run_app(create_app(json.loads(args.config.read_text()), args.port), host="127.0.0.1", port=args.port, shutdown_timeout=3)
+    web.run_app(create_app(json.loads(args.config.read_text()), args.port, args.config.with_suffix('.attention.json')), host="127.0.0.1", port=args.port, shutdown_timeout=3)

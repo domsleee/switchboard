@@ -126,3 +126,37 @@ test('New tab cannot snapshot an unscanned or empty catalog',()=>{
   elements.get('new-tab-form').onsubmit({preventDefault(){}});assert.equal(sent,0);assert.equal(entry.pendingNewTab,undefined);
   entry.catalog=null;elements.get('new-tab-form').onsubmit({preventDefault(){}});assert.equal(sent,0);
 });
+
+
+test('early catalog data is applied immediately and one delayed host does not block other terminals',async()=>{
+  let releaseSlow;const delayed=new Promise(resolve=>releaseSlow=resolve),mounted=[];
+  const catalog=[{host:'mac',session:'main',id:42,position:0,name:'A',panes:[]}];
+  const context={loading:false,hosts:new Map(),sessions:new Map(),tabCatalog:catalog,ready:{},archived:{},tabOrder:[],selected:null,saveReady(){},localStorage:{setItem(){}},
+    document:{createElement:()=>({remove(){}})},$:()=>({append:frame=>mounted.push(frame)}),renderMachines(){},render(){},setStatus(){},
+    fetch:async url=>{if(url==='/api/hosts?summary=1')return {ok:true,json:async()=>[{id:'mac',name:'Mac'},{id:'slow',name:'Slow'}]};
+      if(url==='/api/hosts/slow')return delayed;
+      return {ok:true,json:async()=>({id:'mac',name:'Mac',sessions:[{name:'main',web_clients_allowed:true}]})};}};
+  vm.createContext(context);vm.runInContext(source.slice(source.indexOf('function sessionKey('),source.indexOf('function attentionKey(')),context);
+  vm.runInContext(source.slice(source.indexOf('async function refresh()'),source.indexOf("window.addEventListener('message'")),context);
+  const refresh=context.refresh();await new Promise(resolve=>setImmediate(resolve));
+  const entry=context.sessions.get(JSON.stringify(['mac','main']));assert.equal(entry.catalog[0].id,42);assert.equal(mounted.length,1);assert.equal(context.loading,true);
+  releaseSlow({ok:true,json:async()=>({id:'slow',name:'Slow',error:'Offline'})});await refresh;assert.equal(context.loading,false);
+});
+
+
+test('terminal URLs round-trip names and wait for the requested machine and tab',()=>{
+  const location={href:'https://switchboard.localhost/?host=windows&session=work+%3F%23&tab=42',search:'?host=windows&session=work+%3F%23&tab=42'};
+  const saved=[];const context={location,URL,URLSearchParams,history:{replaceState:(_,title,url)=>saved.push(String(url))},hosts:new Map(),sessions:new Map(),loading:true,restoringTab:true};
+  vm.createContext(context);vm.runInContext(source.slice(source.indexOf('function requestedTab('),source.indexOf('function tabKey(')),context);
+  context.selected=context.requestedTab();assert.equal(context.selected,JSON.stringify(['windows','work ?#','tab',42]));assert.equal(context.waitingForRequestedTab(),true);
+  context.hosts.set('mac',{name:'Mac'});context.hosts.set('windows',{name:'Windows',connecting:true});assert.equal(context.waitingForRequestedTab(),true);
+  context.updateTabUrl(null);assert.deepEqual(saved,[]);
+  const entry={host:'windows',name:'work ?#',state:null,catalog:[]};context.sessions.set(JSON.stringify(['windows','work ?#']),entry);context.hosts.set('windows',{name:'Windows'});context.loading=false;
+  assert.equal(context.waitingForRequestedTab(),true);entry.state={panes:[]};assert.equal(context.waitingForRequestedTab(),true);
+  entry.catalog=[{id:42}];assert.equal(context.waitingForRequestedTab(),false);
+  context.updateTabUrl({entry,tab:{id:42}});assert.deepEqual(saved,[]);
+  context.updateTabUrl({entry,tab:{id:90}});assert.equal(new URL(saved[0]).searchParams.get('tab'),'90');assert.equal(new URL(saved[0]).searchParams.get('session'),'work ?#');
+  context.hosts.set('windows',{error:'Offline'});assert.equal(context.waitingForRequestedTab(),false);
+  location.search='?host=windows&session=main&tab=-1';assert.equal(context.requestedTab(),null);
+  location.search='?host=windows&session=main&tab=4294967296';assert.equal(context.requestedTab(),null);
+});

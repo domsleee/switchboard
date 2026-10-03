@@ -54,16 +54,19 @@ tab and stops its processes. It targets the tab by its native stable ID, even
 when another tab is focused.
 Use **Archive** to search archived tabs across machines and restore one. Archive
 state is saved in this browser; archived ready tabs still count as notifications.
-Tabs appear in one stable, resizable left sidebar. An amber dot marks tabs that
+Tabs and controls live in one stable, resizable left sidebar, leaving the full
+terminal height available. An amber dot marks tabs that
 need attention; viewing a result clears the dot without moving the tab. Machine
 names stay beneath each tab, and work/home remain optional filters. Search names and
 machines with **Cmd/Ctrl+K**, including from inside the terminal; Enter opens the
 first result. Searching does not change the current terminal until you choose a
-result. **Tabs** collapses the sidebar; on mobile it opens a drawer that closes
+result. The **☰** button collapses the sidebar; on mobile it opens a drawer that closes
 when you select a tab. Width and desktop collapse state persist in this browser.
 Drag tabs across machines to rearrange them, or use **Alt+Shift+Left / Alt+Shift+Right** (also H/L) to move the
 selected tab left/right. The order is saved in this browser, including across
-work/home filters. Attention changes never reorder tabs.
+work/home filters. Attention changes never reorder tabs. The URL follows the selected machine, session,
+and native tab ID; refreshing reconnects to that terminal. Opening a link to an
+archived tab restores it in this browser.
 Tab labels and the browser window title follow live Codex/Claude pane titles,
 including `/rename` updates. Agent spinner prefixes are stripped from labels.
 Use **+ New tab** or **Ctrl+Alt+T** (Windows) / **Cmd+Alt+T** (Mac) to open a shell in a chosen machine/session. The new tab is
@@ -108,7 +111,9 @@ loopback and rejects cross-site requests. Each relay serves its own desktop; it 
 The relay automatically checks Codex/Claude panes on each host, including
 background tabs, using native `list-panes` and `dump-screen`. It recognizes live
 input and approval prompts and running status. Ready results get an attention badge until you view the tab; pending
-approvals/questions retain their badge until resolved. A new observed working-to-ready transition raises a new notification.
+approvals/questions retain their badge until resolved. A new observed working-to-ready transition raises a new notification. Notification
+identities are saved beside the relay configuration as `.attention.json`, so a
+relay restart preserves viewed results.
 Archive preserves processes and does not erase attention state.
 
 This works with already-running agents, without notification hooks or replacing

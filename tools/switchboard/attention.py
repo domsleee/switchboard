@@ -57,12 +57,32 @@ async def scan_host(host):
 async def lifecycle(app):
     app['attention'] = {'panes': [], 'tabs': [], 'errors': []}
     cache,observed = {},{}
+    state_file = app.get('attention_state_file')
+    if state_file:
+        state_file = Path(state_file).expanduser()
+        try:
+            stored = json.loads(state_file.read_text())
+            for key, row in (stored.items() if isinstance(stored, dict) else []):
+                identity = tuple(json.loads(key))
+                if len(identity) == 3 and isinstance(row, dict) and type(row.get('generation')) is int:
+                    observed[identity] = row
+        except (OSError, ValueError, TypeError):
+            pass
+    def remember():
+        if not state_file:
+            return
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        temporary = state_file.with_suffix(state_file.suffix + '.tmp')
+        temporary.write_text(json.dumps({json.dumps(key): {field: row[field] for field in ('state', 'generation', 'token') if field in row}
+                                         for key, row in observed.items()}))
+        temporary.replace(state_file)
     async def poll(host):
         host_id = host.config['id']
         while True:
             try:
                 snapshot = await scan_host(host)
                 rows = snapshot['panes']
+                changed = False
                 for row in rows:
                     key=(host_id,row['session'],row['pane_id'])
                     previous=observed.get(key,{})
@@ -71,9 +91,16 @@ async def lifecycle(app):
                     else:row['scanned_at']=time.monotonic()
                     generation=previous.get('generation',0)
                     if row['state']=='ready' and previous.get('state')=='working':generation+=1
-                    if row['state']!='unknown':observed[key]={**row,'generation':generation,'scanned_at':row.get('scanned_at',previous.get('scanned_at',0))}
+                    if row['state']!='unknown':
+                        changed |= any(previous.get(field) != row.get(field) for field in ('state', 'token')) or previous.get('generation') != generation
+                        observed[key]={**row,'generation':generation,'scanned_at':row.get('scanned_at',previous.get('scanned_at',0))}
                     row.pop('scanned_at',None)
                     if row['state']=='ready':row['token']=f"{row['token']}:{generation}"
+                if changed:
+                    try:
+                        remember()
+                    except OSError:
+                        pass
                 cache[host_id] = {'panes': [dict(row, host=host_id) for row in rows],
                                   'tabs': [dict(tab, host=host_id) for tab in snapshot['tabs']], 'errors': []}
             except asyncio.CancelledError:
