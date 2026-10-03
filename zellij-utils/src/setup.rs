@@ -1,5 +1,3 @@
-#[cfg(not(target_family = "wasm"))]
-use crate::consts::ASSET_MAP;
 use crate::input::theme::Themes;
 #[allow(unused_imports)]
 use crate::{
@@ -207,33 +205,8 @@ pub fn dump_specified_swap_layout(swap_layout: &str) -> std::io::Result<()> {
 }
 
 #[cfg(not(target_family = "wasm"))]
-pub fn dump_builtin_plugins(path: &PathBuf) -> Result<()> {
-    for (asset_path, bytes) in ASSET_MAP.iter() {
-        let plugin_path = path.join(asset_path);
-        plugin_path
-            .parent()
-            .with_context(|| {
-                format!(
-                    "failed to acquire parent path of '{}'",
-                    plugin_path.display()
-                )
-            })
-            .and_then(|parent_path| {
-                std::fs::create_dir_all(parent_path).context("failed to create parent path")
-            })
-            .with_context(|| {
-                format!(
-                    "failed to create folder '{}' to dump plugin '{}' to",
-                    path.display(),
-                    plugin_path.display()
-                )
-            })?;
-
-        std::fs::write(plugin_path, bytes)
-            .with_context(|| format!("failed to dump builtin plugin '{}'", asset_path.display()))?;
-    }
-
-    Ok(())
+pub fn dump_builtin_plugins(_path: &PathBuf) -> Result<()> {
+    Err(anyhow!("Switchboard does not support WebAssembly plugins."))
 }
 
 #[cfg(target_family = "wasm")]
@@ -401,25 +374,8 @@ impl Setup {
             std::process::exit(0);
         }
 
-        if let Some(maybe_path) = &self.dump_plugins {
-            if cfg!(feature = "disable_automatic_asset_installation") {
-                return Err(anyhow!(
-                    "This zellij was built without bundled plugins (feature \
-                     'disable_automatic_asset_installation'). Builtin plugins are provided by the \
-                     distributor of this build and must be placed in the plugin directory, \
-                     visible in the output of `zellij setup --check`."
-                ))
-                .context("failed to dump plugins");
-            }
-            let data_dir = &opts.data_dir.clone().unwrap_or_else(get_default_data_dir);
-            let dir = match maybe_path {
-                Some(path) => path,
-                None => data_dir,
-            };
-
-            println!("Dumping plugins to '{}'", dir.display());
-            dump_builtin_plugins(&dir)?;
-            std::process::exit(0);
+        if self.dump_plugins.is_some() {
+            return Err(anyhow!("Switchboard does not support WebAssembly plugins."));
         }
 
         Ok(())
@@ -428,7 +384,6 @@ impl Setup {
     pub fn check_defaults_config(opts: &CliArgs, config_options: &Options) -> std::io::Result<()> {
         let data_dir = opts.data_dir.clone().unwrap_or_else(get_default_data_dir);
         let config_dir = opts.config_dir.clone().or_else(find_default_config_dir);
-        let plugin_dir = data_dir.join("plugins");
         let layout_dir = config_options
             .layout_dir
             .clone()
@@ -491,31 +446,8 @@ impl Setup {
         }
         writeln!(&mut message, "[CACHE DIR]: {}", ZELLIJ_CACHE_DIR.display()).unwrap();
         writeln!(&mut message, "[DATA DIR]: \"{}\"", data_dir.display()).unwrap();
-        writeln!(&mut message, "[PLUGIN DIR]: \"{}\"", plugin_dir.display()).unwrap();
-        if !cfg!(feature = "disable_automatic_asset_installation") {
-            writeln!(
-                &mut message,
-                " Builtin, default plugins will not be loaded from disk."
-            )
-            .unwrap();
-            writeln!(
-                &mut message,
-                " Create a custom layout if you require this behavior."
-            )
-            .unwrap();
-        } else {
-            writeln!(
-                &mut message,
-                " This zellij was built without bundled plugins."
-            )
-            .unwrap();
-            writeln!(
-                &mut message,
-                " Builtin plugins are loaded from the 'PLUGIN DIR' above, or from '{}'.",
-                system_data_dir.join("plugins").display()
-            )
-            .unwrap();
-        }
+        writeln!(&mut message, "[PLUGINS]: unsupported in Switchboard").unwrap();
+
         if let Some(layout_dir) = layout_dir {
             writeln!(&mut message, "[LAYOUT DIR]: \"{}\"", layout_dir.display()).unwrap();
         } else {

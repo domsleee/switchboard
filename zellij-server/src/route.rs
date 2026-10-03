@@ -228,6 +228,38 @@ pub(crate) fn route_action(
     default_mode: InputMode,
     os_input: Option<Box<dyn ServerOsApi>>,
 ) -> Result<(bool, Option<ActionCompletionResult>)> {
+    if matches!(
+        &action,
+        Action::LaunchOrFocusPlugin { .. }
+            | Action::LaunchPlugin { .. }
+            | Action::NewTiledPluginPane { .. }
+            | Action::NewFloatingPluginPane { .. }
+            | Action::NewInPlacePluginPane { .. }
+            | Action::StartOrReloadPlugin { .. }
+            | Action::ClosePluginPane { .. }
+            | Action::FocusPluginPaneWithId { .. }
+            | Action::RenamePluginPane { .. }
+            | Action::CliPipe { .. }
+            | Action::KeybindPipe { .. }
+    ) || matches!(
+        &action,
+        Action::NewTab { initial_panes: Some(panes), .. }
+            if panes.iter().any(|pane| matches!(pane, zellij_utils::data::CommandOrPlugin::Plugin(_)))
+    ) {
+        let message = "Switchboard does not support WebAssembly plugins.".to_owned();
+        let (completion_tx, completion_rx) = oneshot::channel();
+        let mut completion = NotificationEnd::new(completion_tx);
+        completion.set_exit_status(2);
+        completion.set_error_message(message.clone());
+        senders.send_to_server(ServerInstruction::LogError(
+            vec![message],
+            cli_client_id.unwrap_or(client_id),
+            Some(completion),
+        ))?;
+        let result = wait_for_action_completion(completion_rx, "unsupported plugin", false);
+        return Ok((false, Some(result)));
+    }
+
     let mut should_break = false;
     let err_context = || format!("failed to route action for client {client_id}");
     let action_name = action.to_string();
@@ -3404,6 +3436,42 @@ fn send_output_to_client(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unsupported_plugin_actions_report_failure_before_input_unblocks() {
+        use zellij_utils::channels::{self, ChannelWithContext, SenderWithContext};
+        let (tx, rx): ChannelWithContext<ServerInstruction> = channels::unbounded();
+        let senders = ThreadSenders {
+            to_server: Some(SenderWithContext::new(tx)),
+            ..Default::default()
+        };
+        let server = std::thread::spawn(move || match rx.recv().unwrap().0 {
+            ServerInstruction::LogError(lines, recipient, completion) => {
+                assert_eq!(recipient, 99);
+                assert!(lines[0].contains("does not support"));
+                assert!(completion.is_some());
+                drop(completion);
+            },
+            other => panic!("Unexpected instruction: {other:?}"),
+        });
+        let (should_break, result) = route_action(
+            Action::ClosePluginPane { pane_id: 1 },
+            2,
+            Some(99),
+            None,
+            senders,
+            None,
+            None,
+            InputMode::Normal,
+            None,
+        )
+        .unwrap();
+        assert!(!should_break);
+        let result = result.unwrap();
+        assert_eq!(result.exit_status, Some(2));
+        assert!(result.error_message.unwrap().contains("does not support"));
+        server.join().unwrap();
+    }
+
     use super::*;
 
     #[test]

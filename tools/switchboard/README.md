@@ -4,6 +4,13 @@ One searchable sidebar across existing Zellij web servers. Reuses each host's st
 terminal client, including its input handling and mobile controls. No remote
 Zellij changes are required.
 
+This fork runs terminals and web connections in Rust without the WASM plugin
+runtime. Existing layouts keep their terminal panes and lose plugin bars;
+background plugins are ignored and explicit plugin commands return an error.
+Native tab creation, layout changes, saved sessions and web sharing remain available.
+The sidebar relay is still Python. Updating the executable changes new sessions;
+running sessions keep their existing engine until they end naturally.
+
 Run on the Mac:
 
 ```sh
@@ -194,3 +201,9 @@ python3 tools/switchboard/install_service.test.py
 Run browser checks with headless Playwright against isolated testing sessions.
 Keep automation clients out of live sessions: their viewport can shrink the
 shared terminal, including when the iframe is hidden.
+
+Run native terminal integration checks with `cargo xtask integration-test`.
+Tests now check terminal output, input, geometry and CLI errors without plugin
+bars. Older UI suites that require those bars are retained in
+`zellij-integration-tests/tests/legacy_plugin_ui` as migration fixtures and are
+not run. The server's terminal unit tests remain active.

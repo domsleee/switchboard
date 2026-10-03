@@ -15,11 +15,7 @@ pub fn claim_first_terminal_and_wait_for_prompt(zellij: &TestSession) -> FakePty
     terminal.output(PROMPT);
     zellij.wait_until(
         "first terminal prompt rendered in loaded app",
-        |grid_snapshot| {
-            grid_snapshot.tab_bar_appears()
-                && grid_snapshot.status_bar_appears()
-                && grid_snapshot.cursor_is_at(col(2).row(1))
-        },
+        |grid_snapshot| grid_snapshot.cursor_is_at(col(2).row(0)),
     );
     terminal
 }
@@ -30,7 +26,7 @@ pub fn split_right_and_wait_for_prompt(zellij: &TestSession) -> FakePtyHandle {
     let terminal = zellij.expect_pty_spawn();
     terminal.output(PROMPT);
     zellij.wait_until("right terminal prompt rendered", |grid_snapshot| {
-        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(62).row(2))
+        grid_snapshot.cursor_is_at(col(62).row(1))
     });
     terminal
 }
@@ -41,7 +37,7 @@ pub fn split_down_and_wait_for_prompt(zellij: &TestSession) -> FakePtyHandle {
     let terminal = zellij.expect_pty_spawn();
     terminal.output(PROMPT);
     zellij.wait_until("lower terminal prompt rendered", |grid_snapshot| {
-        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(13))
+        grid_snapshot.cursor_is_at(col(2).row(13))
     });
     terminal
 }

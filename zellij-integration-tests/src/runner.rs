@@ -551,11 +551,28 @@ impl TestSession {
         self.main_client.received_server_messages()
     }
 
+    pub fn send_stdin_and_wait_for_input_ack(&self, bytes: &[u8]) {
+        let acknowledged = || {
+            self.received_server_messages()
+                .iter()
+                .filter(|message| message.as_str() == "UnblockInputThread")
+                .count()
+        };
+        let before = acknowledged();
+        self.send_stdin(bytes);
+        let deadline = std::time::Instant::now() + crate::default_timeout();
+        while acknowledged() == before {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "input was not acknowledged"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
     pub fn wait_for_app_load(&self) -> GridSnapshot {
         self.main_client.wait_until("app to load", |grid_snapshot| {
-            (grid_snapshot.status_bar_appears() || grid_snapshot.contains("Descend:"))
-                && grid_snapshot.tab_bar_appears()
-                && (grid_snapshot.cursor.is_some() || grid_snapshot.contains(GUEST_MODAL_TITLE))
+            grid_snapshot.cursor.is_some() || grid_snapshot.contains(GUEST_MODAL_TITLE)
         })
     }
 

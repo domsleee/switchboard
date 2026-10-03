@@ -14,17 +14,11 @@ const PASTE_FRAGMENT_SIZE: usize = 4_000;
 const PASTE_SEGMENTS: u32 = 15_000;
 
 fn lock_interface(zellij: &TestSession) {
-    zellij.send_stdin(&keys::ctrl('g'));
-    zellij.wait_until("interface locked", |grid_snapshot| {
-        grid_snapshot.contains("LOCK") && !grid_snapshot.contains("PANE")
-    });
+    zellij.send_stdin_and_wait_for_input_ack(&zellij_integration_tests::keys::ctrl('g'));
 }
 
 fn unlock_interface(zellij: &TestSession) {
-    zellij.send_stdin(&keys::ctrl('g'));
-    zellij.wait_until("interface unlocked", |grid_snapshot| {
-        grid_snapshot.contains("PANE")
-    });
+    zellij.send_stdin_and_wait_for_input_ack(&zellij_integration_tests::keys::ctrl('g'));
 }
 
 fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {

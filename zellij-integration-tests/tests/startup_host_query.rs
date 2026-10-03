@@ -4,23 +4,17 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use zellij_integration_tests::{
-    claim_first_terminal_and_wait_for_prompt, keys, start_zellij, TestSession,
+    claim_first_terminal_and_wait_for_prompt, start_zellij, TestSession,
 };
 
 const IDLE_BEYOND_SHORT_FLUSH: Duration = Duration::from_millis(150);
 
 fn lock_interface(zellij: &TestSession) {
-    zellij.send_stdin(&keys::ctrl('g'));
-    zellij.wait_until("interface locked", |grid_snapshot| {
-        grid_snapshot.contains("LOCK") && !grid_snapshot.contains("PANE")
-    });
+    zellij.send_stdin_and_wait_for_input_ack(&zellij_integration_tests::keys::ctrl('g'));
 }
 
 fn unlock_interface(zellij: &TestSession) {
-    zellij.send_stdin(&keys::ctrl('g'));
-    zellij.wait_until("interface unlocked", |grid_snapshot| {
-        grid_snapshot.contains("PANE")
-    });
+    zellij.send_stdin_and_wait_for_input_ack(&zellij_integration_tests::keys::ctrl('g'));
 }
 
 #[test]

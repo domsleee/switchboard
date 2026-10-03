@@ -31,9 +31,7 @@ fn runs_initial_command(terminal: &FakePtyHandle) -> bool {
 }
 
 fn wait_for_loaded_app(zellij: &TestSession) {
-    zellij.wait_until("app loaded", |grid_snapshot| {
-        grid_snapshot.tab_bar_appears() && grid_snapshot.status_bar_appears()
-    });
+    zellij.wait_until("app loaded", |grid_snapshot| grid_snapshot.cursor.is_some());
 }
 
 #[test]
@@ -51,7 +49,7 @@ fn a_session_started_with_an_initial_command_runs_it_in_its_first_pane() {
 
     initial_terminal.output(b"initial-command output\r\n");
     let grid_snapshot = zellij.wait_until("initial command output rendered", |grid_snapshot| {
-        grid_snapshot.status_bar_appears() && grid_snapshot.contains("initial-command output")
+        grid_snapshot.contains("initial-command output")
     });
     assert_snapshot!(normalized(&grid_snapshot));
     zellij.quit();
@@ -60,10 +58,12 @@ fn a_session_started_with_an_initial_command_runs_it_in_its_first_pane() {
 #[test]
 fn an_initial_command_pane_is_held_open_when_the_command_exits() {
     let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config("pane_frame_style \"full\"")
         .with_initial_command(&["initial-command"])
         .start();
 
     let initial_terminal = zellij.expect_pty_spawn();
+    initial_terminal.output(PROMPT);
     wait_for_loaded_app(&zellij);
 
     initial_terminal.exit(Some(42));
@@ -125,9 +125,7 @@ fn attaching_to_a_background_session_shows_its_initial_command() {
     let mut zellij = background_session.attach(TERMINAL_SIZE);
     let grid_snapshot = zellij.wait_until(
         "attached client renders the initial command output",
-        |grid_snapshot| {
-            grid_snapshot.status_bar_appears() && grid_snapshot.contains("output while detached")
-        },
+        |grid_snapshot| grid_snapshot.contains("output while detached"),
     );
     assert_snapshot!(normalized(&grid_snapshot));
 
@@ -151,7 +149,7 @@ fn a_session_started_without_an_initial_command_runs_the_default_shell() {
 
     first_terminal.output(PROMPT);
     zellij.wait_until("default shell prompt rendered", |grid_snapshot| {
-        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(1))
+        grid_snapshot.cursor_is_at(col(2).row(0))
     });
     zellij.quit();
 }

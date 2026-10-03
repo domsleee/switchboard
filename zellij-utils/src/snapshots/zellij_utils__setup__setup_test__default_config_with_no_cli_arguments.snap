@@ -4270,38 +4270,6 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
-                    'a',
-                ),
-                key_modifiers: {},
-            }: [
-                LaunchOrFocusPlugin {
-                    plugin: RunPlugin(
-                        RunPlugin {
-                            _allow_exec_host_cmd: false,
-                            location: Zellij(
-                                PluginTag(
-                                    "about",
-                                ),
-                            ),
-                            configuration: PluginUserConfiguration(
-                                {},
-                            ),
-                            initial_cwd: None,
-                        },
-                    ),
-                    should_float: true,
-                    move_to_focused_tab: true,
-                    should_open_in_place: false,
-                    close_replaced_pane: false,
-                    skip_cache: false,
-                    tab_id: None,
-                },
-                SwitchToMode {
-                    input_mode: Normal,
-                },
-            ],
-            KeyWithModifier {
-                bare_key: Char(
                     'b',
                 ),
                 key_modifiers: {
@@ -4310,36 +4278,6 @@ Config {
             }: [
                 SwitchToMode {
                     input_mode: Tmux,
-                },
-            ],
-            KeyWithModifier {
-                bare_key: Char(
-                    'c',
-                ),
-                key_modifiers: {},
-            }: [
-                LaunchOrFocusPlugin {
-                    plugin: Alias(
-                        PluginAlias {
-                            name: "configuration",
-                            configuration: Some(
-                                PluginUserConfiguration(
-                                    {},
-                                ),
-                            ),
-                            initial_cwd: None,
-                            run_plugin: None,
-                        },
-                    ),
-                    should_float: true,
-                    move_to_focused_tab: true,
-                    should_open_in_place: false,
-                    close_replaced_pane: false,
-                    skip_cache: false,
-                    tab_id: None,
-                },
-                SwitchToMode {
-                    input_mode: Normal,
                 },
             ],
             KeyWithModifier {
@@ -4447,38 +4385,6 @@ Config {
                 bare_key: Char(
                     'l',
                 ),
-                key_modifiers: {},
-            }: [
-                LaunchOrFocusPlugin {
-                    plugin: RunPlugin(
-                        RunPlugin {
-                            _allow_exec_host_cmd: false,
-                            location: Zellij(
-                                PluginTag(
-                                    "layout-manager",
-                                ),
-                            ),
-                            configuration: PluginUserConfiguration(
-                                {},
-                            ),
-                            initial_cwd: None,
-                        },
-                    ),
-                    should_float: true,
-                    move_to_focused_tab: true,
-                    should_open_in_place: false,
-                    close_replaced_pane: false,
-                    skip_cache: false,
-                    tab_id: None,
-                },
-                SwitchToMode {
-                    input_mode: Normal,
-                },
-            ],
-            KeyWithModifier {
-                bare_key: Char(
-                    'l',
-                ),
                 key_modifiers: {
                     Alt,
                 },
@@ -4541,36 +4447,6 @@ Config {
                 bare_key: Char(
                     'p',
                 ),
-                key_modifiers: {},
-            }: [
-                LaunchOrFocusPlugin {
-                    plugin: Alias(
-                        PluginAlias {
-                            name: "plugin-manager",
-                            configuration: Some(
-                                PluginUserConfiguration(
-                                    {},
-                                ),
-                            ),
-                            initial_cwd: None,
-                            run_plugin: None,
-                        },
-                    ),
-                    should_float: true,
-                    move_to_focused_tab: true,
-                    should_open_in_place: false,
-                    close_replaced_pane: false,
-                    skip_cache: false,
-                    tab_id: None,
-                },
-                SwitchToMode {
-                    input_mode: Normal,
-                },
-            ],
-            KeyWithModifier {
-                bare_key: Char(
-                    'p',
-                ),
                 key_modifiers: {
                     Ctrl,
                 },
@@ -4614,38 +4490,6 @@ Config {
                 bare_key: Char(
                     's',
                 ),
-                key_modifiers: {},
-            }: [
-                LaunchOrFocusPlugin {
-                    plugin: RunPlugin(
-                        RunPlugin {
-                            _allow_exec_host_cmd: false,
-                            location: Zellij(
-                                PluginTag(
-                                    "share",
-                                ),
-                            ),
-                            configuration: PluginUserConfiguration(
-                                {},
-                            ),
-                            initial_cwd: None,
-                        },
-                    ),
-                    should_float: true,
-                    move_to_focused_tab: true,
-                    should_open_in_place: false,
-                    close_replaced_pane: false,
-                    skip_cache: false,
-                    tab_id: None,
-                },
-                SwitchToMode {
-                    input_mode: Normal,
-                },
-            ],
-            KeyWithModifier {
-                bare_key: Char(
-                    's',
-                ),
                 key_modifiers: {
                     Ctrl,
                 },
@@ -4664,36 +4508,6 @@ Config {
             }: [
                 SwitchToMode {
                     input_mode: Tab,
-                },
-            ],
-            KeyWithModifier {
-                bare_key: Char(
-                    'w',
-                ),
-                key_modifiers: {},
-            }: [
-                LaunchOrFocusPlugin {
-                    plugin: Alias(
-                        PluginAlias {
-                            name: "session-manager",
-                            configuration: Some(
-                                PluginUserConfiguration(
-                                    {},
-                                ),
-                            ),
-                            initial_cwd: None,
-                            run_plugin: None,
-                        },
-                    ),
-                    should_float: true,
-                    move_to_focused_tab: true,
-                    should_open_in_place: false,
-                    close_replaced_pane: false,
-                    skip_cache: false,
-                    tab_id: None,
-                },
-                SwitchToMode {
-                    input_mode: Normal,
                 },
             ],
             KeyWithModifier {
@@ -6157,132 +5971,7 @@ Config {
     },
     themes: {},
     plugins: PluginAliases {
-        aliases: {
-            "about": RunPlugin {
-                _allow_exec_host_cmd: false,
-                location: Zellij(
-                    PluginTag(
-                        "about",
-                    ),
-                ),
-                configuration: PluginUserConfiguration(
-                    {},
-                ),
-                initial_cwd: None,
-            },
-            "compact-bar": RunPlugin {
-                _allow_exec_host_cmd: false,
-                location: Zellij(
-                    PluginTag(
-                        "compact-bar",
-                    ),
-                ),
-                configuration: PluginUserConfiguration(
-                    {},
-                ),
-                initial_cwd: None,
-            },
-            "configuration": RunPlugin {
-                _allow_exec_host_cmd: false,
-                location: Zellij(
-                    PluginTag(
-                        "configuration",
-                    ),
-                ),
-                configuration: PluginUserConfiguration(
-                    {},
-                ),
-                initial_cwd: None,
-            },
-            "filepicker": RunPlugin {
-                _allow_exec_host_cmd: false,
-                location: Zellij(
-                    PluginTag(
-                        "strider",
-                    ),
-                ),
-                configuration: PluginUserConfiguration(
-                    {},
-                ),
-                initial_cwd: Some(
-                    "/",
-                ),
-            },
-            "plugin-manager": RunPlugin {
-                _allow_exec_host_cmd: false,
-                location: Zellij(
-                    PluginTag(
-                        "plugin-manager",
-                    ),
-                ),
-                configuration: PluginUserConfiguration(
-                    {},
-                ),
-                initial_cwd: None,
-            },
-            "session-manager": RunPlugin {
-                _allow_exec_host_cmd: false,
-                location: Zellij(
-                    PluginTag(
-                        "session-manager",
-                    ),
-                ),
-                configuration: PluginUserConfiguration(
-                    {},
-                ),
-                initial_cwd: None,
-            },
-            "status-bar": RunPlugin {
-                _allow_exec_host_cmd: false,
-                location: Zellij(
-                    PluginTag(
-                        "status-bar",
-                    ),
-                ),
-                configuration: PluginUserConfiguration(
-                    {},
-                ),
-                initial_cwd: None,
-            },
-            "strider": RunPlugin {
-                _allow_exec_host_cmd: false,
-                location: Zellij(
-                    PluginTag(
-                        "strider",
-                    ),
-                ),
-                configuration: PluginUserConfiguration(
-                    {},
-                ),
-                initial_cwd: None,
-            },
-            "tab-bar": RunPlugin {
-                _allow_exec_host_cmd: false,
-                location: Zellij(
-                    PluginTag(
-                        "tab-bar",
-                    ),
-                ),
-                configuration: PluginUserConfiguration(
-                    {},
-                ),
-                initial_cwd: None,
-            },
-            "welcome-screen": RunPlugin {
-                _allow_exec_host_cmd: false,
-                location: Zellij(
-                    PluginTag(
-                        "session-manager",
-                    ),
-                ),
-                configuration: PluginUserConfiguration(
-                    {
-                        "welcome_screen": "true",
-                    },
-                ),
-                initial_cwd: None,
-            },
-        },
+        aliases: {},
     },
     ui: UiConfig {
         pane_frames: FrameConfig {
@@ -6291,22 +5980,7 @@ Config {
         },
     },
     env: {},
-    background_plugins: {
-        RunPlugin(
-            RunPlugin {
-                _allow_exec_host_cmd: false,
-                location: Zellij(
-                    PluginTag(
-                        "link",
-                    ),
-                ),
-                configuration: PluginUserConfiguration(
-                    {},
-                ),
-                initial_cwd: None,
-            },
-        ),
-    },
+    background_plugins: {},
     web_client: WebClientConfig {
         font: "monospace",
         theme: None,
