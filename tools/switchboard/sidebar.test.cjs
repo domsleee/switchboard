@@ -1,0 +1,126 @@
+const test=require('node:test');
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const vm=require('node:vm');
+const source=fs.readFileSync(__dirname+'/static/app.js','utf8');
+// Exercise stable order and attention acknowledgment without connecting terminals.
+test('attention acknowledgment never moves tabs; search, filters, archive and cross-machine reorder preserve order',()=>{
+  const hosts=new Map([['mac',{name:'Mac'}],['win',{name:'Windows'}]]);
+  function session(host,names){return {host,name:'main',state:{panes:[]},catalog:names.map((name,position)=>({id:position+40,name,position,panes:[]}))};}
+  const sessions=new Map([['mac',session('mac',['home-a','home-b'])],['win',session('win',['work-a','work-b','*ready'])]]);
+  const search={value:''},stored={};
+  const context={hosts,sessions,groups:{mac:'home',win:'work'},ready:{},archived:{},paneAttention:new Map(),seenAttention:{},filter:'all',tabOrder:[],
+    selected:null,saveReady(){},SwitchboardTitles:{tabTitle:(_,tab)=>tab.name},
+    $:()=>search,localStorage:{setItem:(key,value)=>stored[key]=value},render(){},tabButtons:new Map()};
+  vm.createContext(context);
+  vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function moveSelected(')),context);
+  const keys=()=>Array.from(context.allTabs(),item=>item.entry.host+':'+item.tab.position);
+  const key=(host,position)=>context.tabKey(sessions.get(host),sessions.get(host).catalog[position]);
+  assert.deepEqual(keys(),['mac:0','mac:1','win:0','win:1','win:2']);
+  context.moveTab(key('win',1),key('win',0));
+  assert.deepEqual(keys(),['mac:0','mac:1','win:1','win:0','win:2']);
+  context.moveTab(key('win',1),key('mac',0));
+  assert.deepEqual(keys(),['win:1','mac:0','mac:1','win:0','win:2']);
+  context.filter='home';assert.deepEqual(keys(),['mac:0','mac:1']);
+  search.value='mac';assert.equal(context.matchesSearch(context.allTabs()[0]),true);
+  search.value='work-a';assert.equal(context.matchesSearch(context.allTabs()[0]),false);
+  context.archived[key('mac',0)]=123;assert.deepEqual(keys(),['mac:1']);
+  assert.equal(context.allTabs(true,true).length,5);
+  context.filter='all';context.ready[key('mac',1)]=123;
+  assert.deepEqual(keys(),['win:1','mac:1','win:0','win:2']);
+  delete context.ready[key('mac',1)];
+  const entry=sessions.get('mac');entry.catalog[1].panes=[{pane_id:7,tab_position:1,is_plugin:false}];
+  const attentionKey=context.attentionKey('mac','main',7),item=context.allTabs().find(t=>t.key===key('mac',1));
+  context.paneAttention.set(attentionKey,{key:attentionKey,state:'ready',token:'result:1'});
+  const before=keys();
+  assert.equal(context.isReady(item),true);
+  context.acknowledgeAttention(item);assert.equal(context.isReady(item),false);
+  assert.deepEqual(keys(),before);
+  context.paneAttention.set(attentionKey,{key:attentionKey,state:'ready',token:'result:2'});assert.equal(context.isReady(item),true);
+  context.paneAttention.set(attentionKey,{key:attentionKey,state:'approval'});context.acknowledgeAttention(item);assert.equal(context.isReady(item),true);
+
+});
+
+test('Mark ready adds a badge without changing the saved tab order or selection',()=>{
+  const button={},stored={};
+  const originalOrder=['win:1','mac:0','mac:1'];
+  let renders=0;
+  const context={selected:'mac:1',ready:{},tabOrder:[...originalOrder],
+    $:()=>button,allTabs:()=>originalOrder.map(key=>({key})),
+    localStorage:{setItem:(key,value)=>stored[key]=value},
+    render(){renders++;},saveReady(){stored['switchboard-ready']=JSON.stringify(context.ready);}};
+  vm.createContext(context);
+  vm.runInContext(source.slice(source.indexOf("$('ready').onclick="),source.indexOf("$('settings').onclick=")),context);
+  button.onclick();
+  assert.ok(context.ready['mac:1']);
+  assert.equal(context.selected,'mac:1');
+  assert.deepEqual(context.tabOrder,originalOrder);
+  assert.equal(stored['switchboard-tab-order'],undefined);
+  assert.equal(renders,1);
+});
+
+
+test('native tab identity preserves selection, archive and order through pane removal, floating and reordered positions',()=>{
+  const entry={host:'win',name:'main',state:{panes:[]}},stored={};
+  const context={ready:{},archived:{},selected:null,tabOrder:[],saveReady(){},localStorage:{setItem:(key,val)=>stored[key]=val},SwitchboardTitles:{tabTitle:(_,tab)=>tab.name}};
+  vm.createContext(context);
+  vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function attentionKey(')),context);
+  const pane=(pane_id,position,is_floating=false)=>({pane_id,is_plugin:false,tab_position:position,is_floating});
+  context.setCatalog(entry,[{id:42,position:0,name:'A',panes:[pane(7,0),pane(8,0)]},{id:90,position:1,name:'B',panes:[pane(9,1)]}]);
+  const key=context.tabKey(entry,entry.catalog[0]);context.selected=key;context.archived[key]=123;context.tabOrder=[key];
+  context.setCatalog(entry,[{id:90,position:0,name:'B',panes:[pane(9,0)]},{id:42,position:1,name:'A',panes:[pane(8,1,true)]}]);
+  assert.equal(context.tabKey(entry,entry.catalog[1]),key);assert.equal(context.selected,key);assert.equal(context.archived[key],123);assert.equal(context.tabOrder[0],key);
+  // A pane moved to another tab must never be used for focus while the catalog is stale.
+  entry.state.panes=[pane(8,0,true)];assert.equal(context.tabPanes(entry,entry.catalog[1]).length,0);
+  entry.state.panes=[pane(8,1,true)];assert.equal(context.tabPanes(entry,entry.catalog[1]).length,1);
+});
+
+test('existing pane-key preferences migrate once to native tab IDs',()=>{
+  const entry={host:'mac',name:'main',state:{panes:[]}},old=JSON.stringify(['mac','main',7,false]);
+  const context={ready:{[old]:321},archived:{[old]:123},selected:old,tabOrder:[old],saveReady(){},localStorage:{setItem(){}}};
+  vm.createContext(context);vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function attentionKey(')),context);
+  const tabs=[{id:42,position:0,name:'A',panes:[{pane_id:7,is_plugin:false}]}];context.setCatalog(entry,tabs);
+  const key=JSON.stringify(['mac','main','tab',42]);
+  assert.equal(context.selected,key);assert.equal(context.ready[key],321);assert.equal(context.archived[key],123);assert.equal(context.archived[old],undefined);assert.equal(context.tabOrder[0],key);
+  context.setCatalog(entry,[{...tabs[0],panes:[{pane_id:8,is_plugin:false}]}]);assert.equal(context.archived[key],123);
+});
+
+test('Ctrl+Alt+N opens the New tab dialog once outside inputs and open dialogs',()=>{
+  let handler,clicks=0,modal=false;
+  const context={window:{addEventListener:(_,fn)=>handler=fn},document:{querySelector:()=>modal?{}:null},$:()=>({click(){clicks++;}})};
+  vm.createContext(context);const start=source.indexOf("window.addEventListener('keydown'");
+  vm.runInContext(source.slice(start,source.indexOf('function renderMachines()',start)),context);
+  const key=extra=>{const event={code:'KeyN',ctrlKey:true,altKey:true,metaKey:false,shiftKey:false,target:{closest:()=>null},preventDefault(){this.prevented=true;},stopImmediatePropagation(){},...extra};handler(event);return event;};
+  assert.equal(key().prevented,true);assert.equal(clicks,1);key({repeat:true});assert.equal(clicks,1);
+  for(const extra of [{ctrlKey:false},{altKey:false},{metaKey:true},{shiftKey:true},{isComposing:true},{target:{closest:()=>({})}}])assert.equal(key(extra).prevented,undefined);
+  modal=true;assert.equal(key().prevented,undefined);assert.equal(clicks,1);
+});
+
+
+test('a native new tab arriving before its catalog follows its active pane after the next scan',()=>{
+  const pane={pane_id:9,is_plugin:false,tab_position:1};
+  const entry={host:'win',name:'main',state:{panes:[pane],active_pane:pane},followActiveTab:true,frame:{classList:{contains:()=>true}}};
+  const key=id=>JSON.stringify(['win','main','tab',id]);
+  const context={ready:{},archived:{},selected:key(42),tabOrder:[],saveReady(){},localStorage:{setItem(){}}};
+  vm.createContext(context);vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function attentionKey(')),context);
+  context.setCatalog(entry,[{id:42,position:0,name:'A',panes:[]}]);assert.equal(context.selected,key(42));
+  const tabs=[{id:42,position:0,name:'A',panes:[]},{id:90,position:1,name:'B',panes:[pane]}];
+  context.setCatalog(entry,tabs);assert.equal(context.selected,key(90));assert.equal(entry.followActiveTab,false);
+  context.selected=key(42);entry.followActiveTab=true;entry.requestedPane={pane_id:7,is_plugin:false};
+  context.setCatalog(entry,tabs);assert.equal(context.selected,key(42));
+  entry.requestedPane=null;entry.frame.classList.contains=()=>false;context.selected='other-host';context.setCatalog(entry,tabs);assert.equal(context.selected,'other-host');
+});
+
+
+test('New tab cannot snapshot an unscanned or empty catalog',()=>{
+  const elements=new Map(),$=id=>elements.get(id);
+  const entry={host:'mac',name:'main',state:{tabs:[{position:0}]},catalog:[]};let sent=0;
+  entry.frame={contentWindow:{postMessage(){sent++;}}};
+  elements.set('new-tab-form',{});elements.set('new-tab-target',{value:'main'});
+  elements.set('new-tab-dialog',{close(){}});
+  const context={$,sessions:new Map([['main',entry]]),location:{origin:'https://switchboard.localhost'},hosts:new Map([['mac',{name:'Mac'}]]),setStatus(){},setTimeout(){}};
+  vm.createContext(context);const start=source.indexOf("$('new-tab-form').onsubmit=");
+  vm.runInContext(source.slice(start,source.indexOf("$('ready').onclick=",start)),context);
+  elements.get('new-tab-form').onsubmit({preventDefault(){}});assert.equal(sent,0);assert.equal(entry.pendingNewTab,undefined);
+  entry.catalog=null;elements.get('new-tab-form').onsubmit({preventDefault(){}});assert.equal(sent,0);
+});
