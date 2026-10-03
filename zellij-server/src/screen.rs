@@ -905,6 +905,7 @@ pub enum ScreenInstruction {
     TogglePaneInGroup(ClientId, Option<NotificationEnd>),
     ToggleGroupMarking(ClientId, Option<NotificationEnd>),
     SessionSharingStatusChange(bool),
+    SetWebSharing(bool, Option<NotificationEnd>),
     SetMouseSelectionSupport(PaneId, bool),
     InterceptKeyPresses(PluginId, ClientId),
     ClearKeyPressesIntercepts(ClientId),
@@ -1273,7 +1274,8 @@ impl From<&ScreenInstruction> for ScreenContext {
             ScreenInstruction::EmbedMultiplePanes(..) => ScreenContext::EmbedMultiplePanes,
             ScreenInstruction::TogglePaneInGroup(..) => ScreenContext::TogglePaneInGroup,
             ScreenInstruction::ToggleGroupMarking(..) => ScreenContext::ToggleGroupMarking,
-            ScreenInstruction::SessionSharingStatusChange(..) => {
+            ScreenInstruction::SetWebSharing(..)
+            | ScreenInstruction::SessionSharingStatusChange(..) => {
                 ScreenContext::SessionSharingStatusChange
             },
             ScreenInstruction::SetMouseSelectionSupport(..) => {
@@ -12179,6 +12181,23 @@ pub(crate) fn screen_thread_main(
                                 // waiting for it
             ) => {
                 screen.toggle_group_marking(client_id).non_fatal();
+            },
+            ScreenInstruction::SetWebSharing(web_sharing, mut completion) => {
+                screen.web_sharing = if web_sharing {
+                    WebSharing::On
+                } else {
+                    WebSharing::Off
+                };
+                for tab in screen.tabs.values_mut() {
+                    tab.update_web_sharing(screen.web_sharing);
+                }
+                if let Err(error) = screen.log_and_report_session_state() {
+                    if let Some(completion) = completion.as_mut() {
+                        completion.set_exit_status(1);
+                        completion.set_error_message(error.to_string());
+                    }
+                }
+                let _ = screen.render(None);
             },
             ScreenInstruction::SessionSharingStatusChange(web_sharing) => {
                 if web_sharing {

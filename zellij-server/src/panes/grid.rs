@@ -4323,6 +4323,15 @@ impl Grid {
     pub fn has_selection(&self) -> bool {
         !self.selection.is_empty()
     }
+    fn scrollback_rows(&self, max_lines: Option<usize>) -> impl ExactSizeIterator<Item = &Row> {
+        // None and Some(0) both request all scrollback.
+        let start = max_lines
+            .filter(|max| *max > 0)
+            .map(|max| self.lines_above.len().saturating_sub(max))
+            .unwrap_or(0);
+        self.lines_above.range(start..)
+    }
+
     pub fn pane_contents(
         &self,
         get_full_scrollback: bool,
@@ -4334,18 +4343,10 @@ impl Grid {
             viewport.push(s);
         }
         let mut contents = if get_full_scrollback {
-            let mut lines_above_viewport: Vec<String> = Vec::with_capacity(self.lines_above.len());
-            for row in &self.lines_above {
-                let s: String = (&row.columns).into_iter().map(|x| x.character).collect();
-                lines_above_viewport.push(s);
-            }
-            // Truncate to last N lines if max specified (Some(0) means "all" — no truncation)
-            if let Some(max) = max_scrollback_lines {
-                if max > 0 && lines_above_viewport.len() > max {
-                    let start = lines_above_viewport.len() - max;
-                    lines_above_viewport = lines_above_viewport.split_off(start);
-                }
-            }
+            let lines_above_viewport = self
+                .scrollback_rows(max_scrollback_lines)
+                .map(|row| row.columns.iter().map(|x| x.character).collect())
+                .collect();
             let mut lines_below_viewport: Vec<String> = Vec::with_capacity(self.lines_below.len());
             for row in &self.lines_below {
                 let s: String = (&row.columns).into_iter().map(|x| x.character).collect();
@@ -4405,16 +4406,10 @@ impl Grid {
         }
 
         let mut contents = if get_full_scrollback {
-            let mut lines_above_viewport: Vec<String> = Vec::with_capacity(self.lines_above.len());
-            for row in &self.lines_above {
-                lines_above_viewport.push(extract_row_with_ansi(row));
-            }
-            if let Some(max) = max_scrollback_lines {
-                if max > 0 && lines_above_viewport.len() > max {
-                    let start = lines_above_viewport.len() - max;
-                    lines_above_viewport = lines_above_viewport.split_off(start);
-                }
-            }
+            let lines_above_viewport = self
+                .scrollback_rows(max_scrollback_lines)
+                .map(extract_row_with_ansi)
+                .collect();
             let mut lines_below_viewport: Vec<String> = Vec::with_capacity(self.lines_below.len());
             for row in &self.lines_below {
                 lines_below_viewport.push(extract_row_with_ansi(row));

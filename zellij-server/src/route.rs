@@ -537,6 +537,15 @@ pub(crate) fn route_action(
                 ))
                 .with_context(err_context)?;
         },
+        Action::SetWebSharing { enabled } => {
+            senders
+                .send_to_server(ServerInstruction::SetWebSharing {
+                    enabled,
+                    client_id: cli_client_id.unwrap_or(client_id),
+                    completion: Some(NotificationEnd::new(completion_tx)),
+                })
+                .with_context(err_context)?;
+        },
         Action::SaveSession => {
             senders
                 .send_to_screen(ScreenInstruction::SaveSession(

@@ -9,6 +9,34 @@ fn verify_cli() {
 }
 
 #[test]
+fn existing_only_attach_requires_a_named_existing_target_without_creation_options() {
+    assert!(CliArgs::try_parse_from(["zellij", "attach", "--existing-only", "main"]).is_ok());
+    for args in [
+        vec!["zellij", "attach", "--existing-only"],
+        vec!["zellij", "attach", "--existing-only", "--create", "main"],
+        vec!["zellij", "attach", "--existing-only", "--create-background", "main"],
+        vec!["zellij", "attach", "--existing-only", "--force-run-commands", "main"],
+    ] {
+        assert!(CliArgs::try_parse_from(args).is_err());
+    }
+}
+
+#[test]
+fn existing_session_web_sharing_can_be_enabled_or_disabled_without_plugins() {
+    for (value, enabled) in [("on", true), ("off", false)] {
+        let args =
+            CliArgs::try_parse_from(["zellij", "-s", "main", "action", "set-web-sharing", value])
+                .unwrap();
+        assert!(matches!(
+            args.command,
+            Some(Command::Action(action))
+                if matches!(*action, zellij_utils::cli::CliAction::SetWebSharing { enabled: actual } if actual == enabled)
+        ));
+    }
+    assert!(CliArgs::try_parse_from(["zellij", "action", "set-web-sharing", "disabled"]).is_err());
+}
+
+#[test]
 fn web_cli_status_alone_works() {
     let args = CliArgs::try_parse_from(["zellij", "web", "--status"]);
     assert!(args.is_ok());

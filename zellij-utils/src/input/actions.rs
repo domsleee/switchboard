@@ -716,6 +716,9 @@ pub enum Action {
         id: u64,
         direction: Direction,
     },
+    SetWebSharing {
+        enabled: bool,
+    },
 }
 
 impl Default for Action {
@@ -754,6 +757,7 @@ impl Action {
         config: Option<Config>,
     ) -> Result<Vec<Action>, String> {
         match cli_action {
+            CliAction::SetWebSharing { enabled } => Ok(vec![Action::SetWebSharing { enabled }]),
             CliAction::Write { bytes, pane_id } => match pane_id {
                 Some(pane_id_str) => {
                     let parsed_pane_id = PaneId::from_str(&pane_id_str);

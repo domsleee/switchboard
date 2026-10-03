@@ -5339,6 +5339,36 @@ fn pane_contents_with_ansi_scrollback_truncation() {
 }
 
 #[test]
+fn pane_contents_scrollback_limits_preserve_plain_and_ansi_snapshots() {
+    let mut grid = create_grid_with_colored_scrollback();
+    grid.scroll_up_one_line();
+    grid.scroll_up_one_line();
+    grid.selection
+        .set_start_and_end_positions(Position::new(0, 0), Position::new(1, 4));
+
+    for ansi in [false, true] {
+        let snapshot = |limit| {
+            if ansi {
+                grid.pane_contents_with_ansi(true, limit)
+            } else {
+                grid.pane_contents(true, limit)
+            }
+        };
+        let full = snapshot(None);
+        assert_eq!(full.lines_above_viewport.len(), 19);
+        assert!(!full.lines_below_viewport.is_empty());
+        assert!(full.selected_text.is_some());
+        for (limit, count) in [(None, 19), (Some(0), 19), (Some(3), 3), (Some(100), 19)] {
+            let mut expected = full.clone();
+            expected.lines_above_viewport = full.lines_above_viewport[19 - count..].to_vec();
+            // Compare the entire snapshot, including ANSI bytes, viewport, rows below,
+            // selection and cursor, so only the requested scrollback tail may differ.
+            assert_eq!(snapshot(limit), expected, "ansi={ansi}, limit={limit:?}");
+        }
+    }
+}
+
+#[test]
 fn pane_contents_with_ansi_no_scrollback_when_flag_false() {
     let grid = create_grid_with_colored_scrollback();
     let result = grid.pane_contents_with_ansi(false, Some(5));

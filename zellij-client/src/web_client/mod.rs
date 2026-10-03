@@ -8,6 +8,7 @@ mod ipc_listener;
 mod message_handlers;
 mod server_listener;
 mod session_management;
+mod sharing_recovery;
 mod types;
 mod utils;
 mod websocket_handlers;
@@ -192,6 +193,26 @@ pub async fn serve_web_client(
         log::error!("Failed to find default config file path");
         return;
     };
+    if std::env::var_os("SWITCHBOARD_RECOVER_UNSHARED_SESSION").is_some()
+        && !listener
+            .local_addr()
+            .map(|address| address.ip().is_loopback())
+            .unwrap_or(false)
+    {
+        log::error!("Refusing sharing recovery on a non-loopback listener");
+        return;
+    }
+    let sharing_recovery = match sharing_recovery::SharingRecovery::from_environment(
+        web_server_ip,
+        &config,
+        &config_options,
+    ) {
+        Ok(recovery) => recovery,
+        Err(error) => {
+            log::error!("Refusing sharing recovery: {error}");
+            return;
+        },
+    };
     let connection_table = Arc::new(Mutex::new(ConnectionTable::default()));
     let server_handle = Handle::new();
     let session_manager = session_manager.unwrap_or_else(|| Arc::new(RealSessionManager));
@@ -218,6 +239,7 @@ pub async fn serve_web_client(
         client_os_api_factory,
         is_https,
         pending_welcome_sessions: Arc::new(Mutex::new(std::collections::VecDeque::new())),
+        sharing_recovery,
     };
 
     tokio::spawn({

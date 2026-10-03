@@ -93,10 +93,17 @@ elif [[ $(cat "$work/list-error") == 'No active zellij sessions found.' ]]; then
 else
     cat "$work/list-error" >&2; exit 1
 fi
-ps -U "$(id -u)" -o pid=,lstart=,command= | awk '/(^|\/| )zellij .*--server / {print $1}' > "$work/server-pids"
+ps -U "$(id -u)" -o pid=,lstart=,command= | awk '/(^|\/| )(zellij|switchboard) .*--server / {print $1}' > "$work/server-pids"
+# The direct PTY children are persistent shells/agents. Do not include their
+# transient descendants (for example, a short-lived command completing normally).
+ps -U "$(id -u)" -o pid=,ppid= > "$work/process-tree"
+cp "$work/server-pids" "$work/protected-pids"
 while IFS= read -r pid; do
-    ps -p "$pid" -o lstart= > "$work/server-$pid"
+    awk -v parent="$pid" '$2 == parent {print $1}' "$work/process-tree" >> "$work/protected-pids"
 done < "$work/server-pids"
+while IFS= read -r pid; do
+    ps -p "$pid" -o lstart= > "$work/process-$pid"
+done < "$work/protected-pids"
 
 panes() {
     probe "$1" -s "$2" action list-panes --json --all > "$work/panes.json" || return 1
@@ -125,14 +132,15 @@ atomic_install "$new_release" "$new_hash"
 
 while IFS= read -r pid; do
     ps -p "$pid" -o lstart= > "$work/current-start"
-    cmp -s "$work/server-$pid" "$work/current-start" || { echo "Session server changed: $pid" >&2; exit 1; }
-done < "$work/server-pids"
+    cmp -s "$work/process-$pid" "$work/current-start" || { echo "Session or terminal process changed: $pid" >&2; exit 1; }
+done < "$work/protected-pids"
 index=0
 while IFS= read -r session; do
     panes "$installed" "$session" > "$work/probe"
     cmp -s "$work/panes-$index" "$work/probe" || { echo "Session panes changed: $session" >&2; exit 1; }
     index=$((index+1))
 done < "$work/sessions"
-echo "Installed $new_hash. Existing session servers and pane identities are intact."
+echo "Installed $new_hash. Existing session servers, terminal processes and pane identities are intact."
+echo 'This is a binary-only install, not a browser recovery check or live engine upgrade.'
 echo "Previous binary retained at $old_release"
 echo 'Running services and browser connections remain untouched; new sessions use the update.'

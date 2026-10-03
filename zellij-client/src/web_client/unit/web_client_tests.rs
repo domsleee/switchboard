@@ -3039,6 +3039,7 @@ mod web_client_tests {
             WebSessionInfo {
                 name: "zebra".to_owned(),
                 web_clients_allowed: false,
+                sharing_recovery: false,
                 tab_count: 1,
                 pane_count: 2,
                 connected_clients: 0,
@@ -3047,6 +3048,7 @@ mod web_client_tests {
             WebSessionInfo {
                 name: "alpha".to_owned(),
                 web_clients_allowed: true,
+                sharing_recovery: false,
                 tab_count: 3,
                 pane_count: 7,
                 connected_clients: 1,

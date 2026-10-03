@@ -37,6 +37,7 @@ pub fn zellij_server_listener(
     client_size: Option<Size>,
     client_pixel_dims: Option<SizeInPixels>,
     pending_welcome_sessions: PendingWelcomeSessions,
+    sharing_recovery: Option<crate::web_client::sharing_recovery::SharingRecovery>,
 ) {
     let _server_listener_thread = std::thread::Builder::new()
         .name("server_listener".to_string())
@@ -122,17 +123,60 @@ pub fn zellij_server_listener(
                         return;
                     }
 
-                    let should_create_new_session = !session_exists;
-                    let first_message = create_first_message(is_read_only, config_file_path.clone(), client_attributes.clone(), config_options.clone(), should_create_new_session, &session_name, initial_layout);
-                    let zellij_ipc_pipe = create_ipc_pipe(&session_name);
+                    // The configured recovery name is permanently pinned to an existing
+                    // session. Missing/replaced targets must not fall through to creation.
+                    let recovery_target = sharing_recovery.as_ref().filter(|recovery| recovery.is_target(&session_name));
+                    let recovery_socket = zellij_utils::consts::ZELLIJ_SOCK_DIR.join(&session_name);
+                    if recovery_target.map(|recovery| !session_exists || !recovery.allows(&session_name, &recovery_socket, false)).unwrap_or(false) {
+                        client_connection_bus.close_connection();
+                        return;
+                    }
 
-                    session_manager.spawn_session_if_needed(
-                        &session_name,
-                        os_input.clone(),
-                        session_exists,
-                        &zellij_ipc_pipe,
-                        first_message,
-                    );
+                    let should_create_new_session = !session_exists;
+                    let mut first_message = create_first_message(is_read_only, config_file_path.clone(), client_attributes.clone(), config_options.clone(), should_create_new_session, &session_name, initial_layout);
+                    let zellij_ipc_pipe = create_ipc_pipe(&session_name);
+                    let mut recovered_attachment = false;
+                    if let Some(recovery) = sharing_recovery.as_ref() {
+                        let native_sharing_enabled = session_manager.list_sessions().iter().any(|session| session.name == session_name && session.web_clients_allowed);
+                        if config_options.web_sharing != Some(zellij_utils::data::WebSharing::Disabled) && config.options.web_sharing != Some(zellij_utils::data::WebSharing::Disabled) && session_exists && !native_sharing_enabled {
+                            recovered_attachment = recovery.adapt(&session_name, &zellij_ipc_pipe, is_read_only, &mut first_message);
+                        }
+                    }
+
+                    if let Some(recovery) = recovery_target {
+                        // Protect this target even if native sharing is already enabled,
+                        // or a read-only watcher uses the ordinary authenticated path.
+                        match recovery.connect_existing(&session_name, &zellij_ipc_pipe, false,
+                            || os_input.try_connect_to_server(&zellij_ipc_pipe),
+                            || os_input.send_to_server(first_message.clone())) {
+                            Ok(true) => {},
+                            Ok(false) => {
+                                // No connection exists when the initial check failed. The
+                                // target was checked immediately above; close without any
+                                // further IPC send to avoid assuming a connected channel.
+                                client_connection_bus.close_connection();
+                                return;
+                            },
+                            Err(error) => {
+                                log::warn!("Recovery IPC connection failed: {error}");
+                                client_connection_bus.close_connection();
+                                return;
+                            },
+                        }
+                    } else {
+                        session_manager.spawn_session_if_needed(
+                            &session_name,
+                            os_input.clone(),
+                            session_exists,
+                            &zellij_ipc_pipe,
+                            first_message,
+                        );
+                    }
+
+                    let _recovery_poll = if recovered_attachment {
+                        sharing_recovery.as_ref().map(|recovery| recovery.poll_metadata(session_name.clone(), zellij_ipc_pipe.clone(), os_input.clone()))
+                    } else { None };
+                    let mut recovery_metadata = crate::web_client::sharing_recovery::RecoveryMetadata::with_pending(_recovery_poll.as_ref().map(|poll| poll.pending()));
 
                     if let Some(pixel_dims) = client_pixel_dims {
                         os_input.send_to_server(ClientToServerMsg::TerminalPixelDimensions {
@@ -219,6 +263,12 @@ pub fn zellij_server_listener(
                                 );
                             },
                             Some(ServerToClientMsg::Log{lines}) => {
+                                if recovered_attachment && recovery_metadata.consume(&lines) {
+                                    if let Some(payload) = recovery_metadata.payload(&session_name, session_manager.list_sessions()) {
+                                        client_connection_bus.send_control(WebServerToWebClientControlMessage::MobileState { payload });
+                                    }
+                                    continue;
+                                }
                                 client_connection_bus.send_control(
                                     WebServerToWebClientControlMessage::Log { lines },
                                 );

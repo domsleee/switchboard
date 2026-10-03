@@ -124,6 +124,11 @@ pub enum ServerInstruction {
     },
     StartWebServer(ClientId),
     ShareCurrentSession(ClientId),
+    SetWebSharing {
+        enabled: bool,
+        client_id: ClientId,
+        completion: Option<NotificationEnd>,
+    },
     StopSharingCurrentSession(ClientId),
     SendWebClientsForbidden(ClientId),
     WebServerStarted(String), // String -> base_url
@@ -173,6 +178,7 @@ impl From<&ServerInstruction> for ServerContext {
             ServerInstruction::RebindKeys { .. } => ServerContext::RebindKeys,
             ServerInstruction::StartWebServer(..) => ServerContext::StartWebServer,
             ServerInstruction::ShareCurrentSession(..) => ServerContext::ShareCurrentSession,
+            ServerInstruction::SetWebSharing { .. } => ServerContext::ShareCurrentSession,
             ServerInstruction::StopSharingCurrentSession(..) => {
                 ServerContext::StopSharingCurrentSession
             },
@@ -1157,6 +1163,19 @@ pub fn start_server_impl(
                 client_id,
             ) => {
                 let mut rlock = session_data.write().unwrap();
+                // The route thread's check can become stale while this instruction waits.
+                // Authorize again where sharing changes and attachment are serialized.
+                if is_web_client && !rlock.as_ref().unwrap().web_sharing.web_clients_allowed() {
+                    drop(rlock);
+                    let _ = os_input.send_to_client(
+                        client_id,
+                        ServerToClientMsg::Exit {
+                            exit_reason: ExitReason::WebClientsForbidden,
+                        },
+                    );
+                    remove_client!(client_id, os_input, session_state, session_data);
+                    continue;
+                }
                 let session_data = rlock.as_mut().unwrap();
                 let config = session_data.session_configuration.saved_config.clone();
                 let host_terminal_env = cli_assets.host_terminal_env.clone();
@@ -1228,6 +1247,24 @@ pub fn start_server_impl(
                     .unwrap();
             },
             ServerInstruction::AttachWatcherClient(client_id, terminal_size, is_web_client) => {
+                if is_web_client
+                    && !session_data
+                        .read()
+                        .unwrap()
+                        .as_ref()
+                        .unwrap()
+                        .web_sharing
+                        .web_clients_allowed()
+                {
+                    let _ = os_input.send_to_client(
+                        client_id,
+                        ServerToClientMsg::Exit {
+                            exit_reason: ExitReason::WebClientsForbidden,
+                        },
+                    );
+                    remove_client!(client_id, os_input, session_state, session_data);
+                    continue;
+                }
                 // the client_id was inserted into clients upon ipc tunnel initialization
                 // now that it identified itself as a watcher, we need to convert it
 
@@ -1786,6 +1823,95 @@ pub fn start_server_impl(
                 } else {
                     // TODO: test this
                     log::error!("Cannot start web server: this instance of Zellij was compiled without web_server_capability");
+                }
+            },
+            ServerInstruction::SetWebSharing {
+                enabled,
+                client_id,
+                mut completion,
+            } => {
+                let sharing_result = if cfg!(feature = "web_server_capability") {
+                    session_data
+                        .write()
+                        .ok()
+                        .and_then(|mut session| {
+                            session.as_mut().map(|session| {
+                                if enabled {
+                                    session.web_sharing.set_sharing()
+                                } else {
+                                    session.web_sharing.set_not_sharing()
+                                }
+                            })
+                        })
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
+                if !sharing_result {
+                    let message = "Web sharing is disabled for this session.".to_owned();
+                    if let Some(completion) = completion.as_mut() {
+                        completion.set_exit_status(2);
+                        completion.set_error_message(message.clone());
+                    }
+                    send_to_client!(
+                        client_id,
+                        os_input,
+                        ServerToClientMsg::LogError {
+                            lines: vec![message]
+                        },
+                        session_state,
+                        session_data
+                    );
+                } else {
+                    if !enabled {
+                        let (web_clients, web_watchers) = {
+                            let state = session_state.read().unwrap();
+                            (
+                                state.web_client_ids().iter().copied().collect::<Vec<_>>(),
+                                state
+                                    .web_watcher_client_ids()
+                                    .iter()
+                                    .copied()
+                                    .collect::<Vec<_>>(),
+                            )
+                        };
+                        for web_client in web_clients {
+                            let _ = os_input.send_to_client(
+                                web_client,
+                                ServerToClientMsg::Exit {
+                                    exit_reason: ExitReason::WebClientsForbidden,
+                                },
+                            );
+                            remove_client!(web_client, os_input, session_state, session_data);
+                        }
+                        for watcher in web_watchers {
+                            let _ = os_input.send_to_client(
+                                watcher,
+                                ServerToClientMsg::Exit {
+                                    exit_reason: ExitReason::WebClientsForbidden,
+                                },
+                            );
+                            let _ = session_data
+                                .read()
+                                .unwrap()
+                                .as_ref()
+                                .unwrap()
+                                .senders
+                                .send_to_screen(ScreenInstruction::RemoveWatcherClient(watcher));
+                            remove_watcher!(watcher, os_input, session_state);
+                        }
+                    }
+                    if let Some(completion) = completion.as_mut() {
+                        completion.set_exit_status(0);
+                    }
+                    session_data
+                        .read()
+                        .unwrap()
+                        .as_ref()
+                        .unwrap()
+                        .senders
+                        .send_to_screen(ScreenInstruction::SetWebSharing(enabled, completion))
+                        .unwrap();
                 }
             },
             ServerInstruction::ShareCurrentSession(_client_id) => {
