@@ -421,11 +421,8 @@ window.addEventListener('message',event=>{
     if(!entry.frame.classList.contains('active'))return;
     try{
       const url=new URL(event.data.uri);
-      if(!['http:','https:'].includes(url.protocol))return;
-      if(url.origin===location.origin){setStatus('Artifact links must use a separate server port.',true);return;}
-      $('artifact-url').textContent=url.href;$('artifact-url').title='If embedding is blocked, use Open in browser tab.';
-      $('artifact-external').href=url.href;$('artifact-frame').src=url.href;
-      $('artifact-preview').hidden=false;$('artifact-back').focus();
+      if(!['http:','https:','mailto:'].includes(url.protocol))return;
+      window.open(url.href,'_blank','noopener,noreferrer');
     }catch(_){setStatus('Invalid artifact link.',true);}
   }else if(event.data?.type==='zellij-clipboard'){
     setStatus(event.data.ok?'Copied to this browser.':event.data.error||'Copy failed; use the terminal’s clipboard panel.',!event.data.ok);

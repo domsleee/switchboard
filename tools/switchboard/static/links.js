@@ -25,8 +25,7 @@
     event.preventDefault();event.stopImmediatePropagation();
     try {
       const target=resolve(uri);
-      if(parent!==window)parent.postMessage({type:'zellij-open-link',uri:target},location.origin);
-      else location.assign(target);
+      window.open(target,'_blank','noopener,noreferrer');
     } catch(error) { console.warn('Switchboard link:',error.message); }
   }
   function atPointer(event,term) {

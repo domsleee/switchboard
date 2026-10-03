@@ -157,9 +157,8 @@ attached so their tab metadata can be collected. Background frames keep their
 viewport size; attaching clients can still affect Zellij's layout sizing.
 Disconnected clients reconnect using Zellij's own behavior.
 
-Shift-click opens terminal links as a preview within Switchboard. **Back to
-terminal** restores the terminal, and **Open in browser tab** handles sites that
-block embedding. Loopback links on remote hosts use that machine’s LAN address
+Shift-click opens terminal links in a new browser tab. Loopback links on remote
+hosts use that machine’s LAN address
 or its configured `artifact_urls` mapping. This requires a reachable artifact
 server or tunnel; rewriting a URL cannot reach a remote loopback-only server.
 
