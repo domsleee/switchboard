@@ -69,6 +69,8 @@ function setCatalog(entry,tabs){
   if(tabOrder.some(key=>migrations.has(key))){tabOrder=[...new Set(tabOrder.map(key=>migrations.get(key)||key))];changed=true;}
   if(changed){saveReady();localStorage.setItem('switchboard-archived',JSON.stringify(archived));localStorage.setItem('switchboard-tab-order',JSON.stringify(tabOrder));}
   entry.catalog=tabs;
+  // Keep confirmed closes hidden through snapshots taken before the close finished.
+  for(const [id,closing] of entry.closingTabs||[])if(closing.session!==entry.name||!closing.pending&&!tabs.some(tab=>tab.id===id))entry.closingTabs.delete(id);
   if(entry.followActiveTab&&entry.frame.classList.contains('active')&&!entry.requestedPane&&!entry.focusPending){const tab=activeTab(entry);if(tab){selected=tabKey(entry,tab);entry.followActiveTab=false;}}
   if(entry.pendingNewTab){
     const added=tabs.find(tab=>!entry.pendingNewTab.has(tabKey(entry,tab))&&tab.panes.some(pane=>pane.pane_id===entry.state?.active_pane?.pane_id&&pane.is_plugin===entry.state.active_pane.is_plugin));
@@ -104,7 +106,7 @@ function matchesSearch(item){
 function allTabs(ignoreFilter=false, includeArchived=false) {
   const ranks=new Map(tabOrder.map((key,index)=>[key,index]));
   return [...sessions.values()].flatMap(entry => (entry.state ? entry.catalog || [] : []).map(tab => ({entry,tab,key:tabKey(entry,tab)})))
-    .filter(({entry,key}) => (includeArchived || !archived[key]) && (ignoreFilter || filter === 'all' || groups[entry.host] === filter))
+    .filter(({entry,tab,key}) => !entry.closingTabs?.has(tab.id) && (includeArchived || !archived[key]) && (ignoreFilter || filter === 'all' || groups[entry.host] === filter))
     .sort((a,b) => (ranks.get(a.key)??Infinity)-(ranks.get(b.key)??Infinity));
 }
 function moveTab(key,targetKey,after=false) {
@@ -198,6 +200,7 @@ function render() {
   $('empty').hidden=!!current;
   if (!current) $('empty').textContent=restoringTab?'Connecting to the requested terminal…':filter==='all'?(archiveCount?'All tabs are archived. Open Archive to restore one.':'No connected tabs. Open Settings to check your machines or refresh.'):`No ${filter} tabs. Assign machines to this group in Settings.`;
   const errors=[...hosts.values()].filter(h=>h.error).map(h=>`${h.name}: ${h.error}`);
+  for(const entry of sessions.values())if(entry.closeError)errors.push(entry.closeError);
   for(const error of attentionErrors)errors.push(`${hosts.get(error.host)?.name||error.host}: attention status unavailable`);
   setStatus(errors.length?errors.join(' · '):`${hosts.size} machines · ${tabs.length} tabs${current?' · '+hosts.get(current.entry.host)?.name:''}`,errors.length>0);
   if ((selected !== previous || wasRestoring&&!restoringTab) && current) focus(current);
