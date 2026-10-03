@@ -150,8 +150,10 @@ artifacts or multiple artifact servers need a proper host tunnel when required.
 Portless aliases `switchboard -> 8090` and `zellij-gallery -> 8091` persist; exact
 `.local` would require changing the existing proxy/DNS setup. Each relay remains local to its own machine.
 
-**Copy**, Cmd+C, and Ctrl+Shift+C copy a local terminal selection to the viewing
-browser. Hold Option while dragging on Mac or Shift on Windows/Linux to select.
+Click **Select text**, drag over terminal text, then use **Copy**, Cmd+C on Mac,
+or Ctrl+Shift+C on Windows/Linux. You can also hold Option while dragging on Mac
+or Shift on Windows/Linux without enabling selection mode. The selected text is
+retained through agent redraws and cleared when switching panes.
 Ctrl+C without a local selection still interrupts the terminal process. Remote
 OSC52 copies use this browser’s clipboard; denied permissions show a manual
 copy panel instead of silently failing.

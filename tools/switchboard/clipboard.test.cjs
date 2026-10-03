@@ -5,9 +5,9 @@ const vm = require('node:vm');
 const source = fs.readFileSync(__dirname + '/static/clipboard.js', 'utf8');
 const stockAddon = fs.readFileSync(__dirname + '/../../zellij-client/assets/addon-clipboard.js', 'utf8');
 
-function harness({write = async () => {}, legacy = false} = {}) {
+function harness({write = async () => {}, legacy = false, lateSelectionService = false} = {}) {
   const handlers = {}, messages = [], writes = [], inputs = [], nodes = [];
-  let selection = '', osc, disposed = false;
+  let selection = '', osc, disposed = false, selectionChanged;
   const document = {activeElement: null};
   function element(tag) {
     const node = {tag, children: [], style: {}, value: '', hidden: false, attributes: {},
@@ -25,12 +25,16 @@ function harness({write = async () => {}, legacy = false} = {}) {
   const terminalElement = element('div');
   terminalElement.contains = target => target === textarea;
   const term = {options: {}, textarea, element: terminalElement, getSelection: () => selection,
+    clearSelection: () => { selection=''; },
+    _core: {_selectionService: {shouldForceSelection: event => !!event.shiftKey}},
+    onSelectionChange: callback => { selectionChanged=callback; return {dispose(){}}; },
     input: (...args) => inputs.push(args),
     parser: {registerOscHandler(id, callback) {
       assert.equal(id, 52); osc = callback;
       return {dispose() { disposed = true; }};
     }}};
   document.activeElement = textarea;
+  if(lateSelectionService)delete term._core._selectionService;
   const parent = {postMessage: (message, origin) => messages.push({message, origin})};
   const window = {term, addEventListener(type, callback) { (handlers[type] ||= []).push(callback); }};
   const context = {window, self: window, document, parent,
@@ -51,7 +55,7 @@ function harness({write = async () => {}, legacy = false} = {}) {
     return e;
   }
   return {window, context, document, nodes, term, addon, messages, writes, inputs, event,
-    setSelection(text) { selection = text; }, osc: text => osc(text),
+    setSelection(text) { selection = text; selectionChanged?.(); }, osc: text => osc(text),
     get disposed() { return disposed; }, api: window.SwitchboardClipboard};
 }
 const settle = () => new Promise(resolve => setImmediate(resolve));
@@ -167,8 +171,41 @@ test('unavailable API uses successful browser copy; false execCommand stays an h
 test('no selection reports failure and never writes empty text', async () => {
   const h = harness();
   assert.equal((await h.api.copySelection()).ok, false);
-  assert.match(h.messages.at(-1).message.error, /No terminal text selected/);
+  assert.match(h.messages.at(-1).message.error, /Select text first/);
   assert.deepEqual(h.writes, []);
+});
+
+test('selection mode enables plain dragging; copy retains selected text through a TUI redraw and clears on pane switch', async () => {
+  const h=harness();
+  const force=h.term._core._selectionService;
+  assert.equal(force.shouldForceSelection({shiftKey:false}),false);
+  h.api.setSelectionMode(true);
+  assert.equal(force.shouldForceSelection({shiftKey:false}),true);
+  h.event('mousedown',{button:0});h.setSelection('chosen answer');h.event('mouseup');
+  h.setSelection('different output at the same cells');
+  await h.api.copySelection();assert.deepEqual(h.writes,['chosen answer']);
+  h.event('keydown',{metaKey:true});
+  const values=[];h.event('copy',{clipboardData:{setData:(_,text)=>values.push(text)}});
+  assert.deepEqual(values,['chosen answer']);
+  h.api.clearSelection();assert.equal((await h.api.copySelection()).ok,false);
+  h.api.setSelectionMode(false);assert.equal(force.shouldForceSelection({shiftKey:false}),false);
+});
+
+test('Cmd+C without a selection gives guidance while Ctrl+C still interrupts',async()=>{
+  const h=harness();
+  const command=h.event('keydown',{metaKey:true});await settle();
+  assert.equal(command.prevented,true);
+  assert.match(h.messages.at(-1).message.error,/Select text first/);
+  assert.equal(h.event('keydown',{ctrlKey:true}).prevented,undefined);
+});
+
+test('selection mode attaches after xterm creates its service during open',()=>{
+  const h=harness({lateSelectionService:true});
+  h.term._core._selectionService={shouldForceSelection:event=>!!event.shiftKey};
+  h.api.setSelectionMode(true);
+  assert.equal(h.term._core._selectionService.shouldForceSelection({shiftKey:false}),true);
+  h.api.setSelectionMode(false);
+  assert.equal(h.term._core._selectionService.shouldForceSelection({shiftKey:false}),false);
 });
 
 test('only the same-origin parent can request app copying', async () => {

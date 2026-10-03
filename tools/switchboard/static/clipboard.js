@@ -3,6 +3,40 @@
   if (window.SwitchboardClipboard) return;
   const host = location.pathname.split('/')[2];
   let terminal, pending = null, surface, manualText, notice, revision = 0;
+  let selectionMode = false, selecting = false, selectedText = '';
+
+  function selectionText() {
+    return selectedText || (terminal || window.term)?.getSelection() || '';
+  }
+  function clearSelection() {
+    selectedText = ''; selecting = false;
+    (terminal || window.term)?.clearSelection?.();
+  }
+  function setSelectionMode(enabled) {
+    selectionMode = !!enabled;
+    installSelectionMode(terminal || window.term);
+    (terminal || window.term)?.element?.classList?.toggle('switchboard-selecting', selectionMode);
+    return selectionMode;
+  }
+  function installSelectionMode(term) {
+    // xterm creates its selection service in open(), after addon activation.
+    const service = term?._core?._selectionService;
+    if (!service?.shouldForceSelection || service.__switchboardSelection) return;
+    const nativeForce = service.shouldForceSelection;
+    service.shouldForceSelection = function(event) {
+      return selectionMode || nativeForce.call(this, event);
+    };
+    service.__switchboardSelection = true;
+  }
+  window.addEventListener('mousedown', event => {
+    const term = terminal || window.term;
+    if (event.button !== 0 || !term?.element?.contains(event.target)) return;
+    selectedText = ''; selecting = true;
+  }, true);
+  window.addEventListener('mouseup', () => {
+    if (selecting) selectedText = (terminal || window.term)?.getSelection() || '';
+    selecting = false;
+  }, true);
 
   function report(result) {
     if (parent !== window) parent.postMessage({type: 'zellij-clipboard', host, ...result}, location.origin);
@@ -95,10 +129,10 @@
   }
 
   function copySelection() {
-    const text = (terminal || window.term)?.getSelection() || '';
+    const text = selectionText();
     if (text) return copyText(text, 'selection');
     if (pending) return retryPending();
-    return Promise.resolve(report({ok: false, source: 'selection', error: 'No terminal text selected. Hold Option on Mac or Shift on Windows/Linux while dragging to select.'}));
+    return Promise.resolve(report({ok: false, source: 'selection', error: 'Select text first: click Select text and drag, then press Cmd+C on Mac or Ctrl+Shift+C on Windows.'}));
   }
 
   function retryPending() {
@@ -113,15 +147,24 @@
   }
 
   window.addEventListener('keydown', event => {
+    if (isTerminalTarget(event) && !event.isComposing && !['Meta','Control','Alt','Shift'].includes(event.key)
+        && !((event.metaKey || event.ctrlKey) && (event.code === 'KeyC' || event.key?.toLowerCase() === 'c'))) {
+      selectedText = '';
+    }
     if (!isTerminalTarget(event) || event.altKey || event.isComposing ||
       !(event.code === 'KeyC' || event.key?.toLowerCase() === 'c')) return;
     const commandCopy = event.metaKey && !event.ctrlKey && !event.shiftKey;
     const controlCopy = event.ctrlKey && !event.metaKey;
     if (!commandCopy && !controlCopy) return;
-    const selected = (terminal || window.term)?.getSelection();
+    const selected = selectionText();
     // Preserve Ctrl+C as interrupt when there is no local terminal selection.
     if (controlCopy && !event.shiftKey && !selected) return;
     event.stopImmediatePropagation();
+    if (commandCopy && !selected) {
+      event.preventDefault();
+      void copySelection();
+      return;
+    }
     if (controlCopy) {
       event.preventDefault();
       void copySelection();
@@ -131,7 +174,7 @@
 
   window.addEventListener('copy', event => {
     if (!isTerminalTarget(event)) return;
-    const text = (terminal || window.term)?.getSelection();
+    const text = selectionText();
     if (!text) return;
     if (!event.clipboardData) {
       event.preventDefault();
@@ -161,6 +204,12 @@
     prototype.activate = function(term) {
       terminal = term;
       term.options.macOptionClickForcesSelection = true;
+      // Stock 0.45.1 uses this same predicate for selection and mouse reporting.
+      installSelectionMode(term);
+      const selectionDisposable = term.onSelectionChange?.(() => {
+        // Preserve what the user selected even when a TUI redraws those cells.
+        if (selecting) selectedText = term.getSelection() || '';
+      });
       this._terminal = term;
       this._disposable = term.parser.registerOscHandler(52, data => {
         const separator = data.indexOf(';');
@@ -186,6 +235,8 @@
         // Never hold up terminal parsing while waiting for browser permissions.
         return true;
       });
+      const oscDisposable = this._disposable;
+      this._disposable = {dispose() { oscDisposable.dispose(); selectionDisposable?.dispose(); }};
     };
   }
 
@@ -197,7 +248,8 @@
     get: () => clipboardAddon,
     set: value => { clipboardAddon = value; installAddon(value); }
   });
-  window.SwitchboardClipboard = {copySelection, retryPending, get hasPending() { return !!pending; }};
+  window.SwitchboardClipboard = {copySelection, retryPending, clearSelection, setSelectionMode, getSelectionText: selectionText,
+    get selectionMode() { return selectionMode; }, get hasPending() { return !!pending; }};
   window.addEventListener('message', event => {
     if (event.origin !== location.origin || event.source !== parent || event.data?.type !== 'zellij-copy') return;
     void copySelection();

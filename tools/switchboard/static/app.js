@@ -132,6 +132,10 @@ function render() {
   $('notifications').classList.toggle('has-notifications',notifications>0);
   document.title=`${notifications?'('+notifications+') ':''}`+(current?`${SwitchboardTitles.tabTitle(current.entry.state,current.tab)} — ${hosts.get(current.entry.host)?.name} · Switchboard`:'Switchboard');
   for (const entry of sessions.values()) entry.frame.classList.toggle('active',entry===current?.entry);
+  const selecting=!!current?.entry.frame.contentWindow.SwitchboardClipboard?.selectionMode;
+  $('select-text').setAttribute('aria-pressed',String(selecting));
+  $('select-text').classList.toggle('selected',selecting);
+  $('select-text').disabled=!current;
   $('ready').disabled=!current;
   const archiveCount=allTabs(true,true).filter(item=>archived[item.key]).length;
   $('archive').textContent=`Archive${archiveCount?' ('+archiveCount+')':''}`;
@@ -201,6 +205,7 @@ function focus(item) {
   const pane=item.entry.state.panes.find(p=>p.tab_position===item.tab.position && p.pane_id===active?.pane_id && p.is_plugin===active?.is_plugin)
     || item.entry.state.panes.find(p=>p.tab_position===item.tab.position);
   if(pane){
+    if(active?.pane_id!==pane.pane_id||active?.is_plugin!==pane.is_plugin)item.entry.frame.contentWindow.SwitchboardClipboard?.clearSelection();
     const focusId=item.entry.focusId=(item.entry.focusId||0)+1;
     if(item.entry.requestedPane || active?.pane_id!==pane.pane_id||active?.is_plugin!==pane.is_plugin)item.entry.requestedPane={pane_id:pane.pane_id,is_plugin:pane.is_plugin,focus_id:focusId};
     item.entry.frame.contentWindow.postMessage({type:'zellij-focus',pane_id:pane.pane_id,is_plugin:pane.is_plugin,focus_id:focusId},location.origin);
@@ -284,7 +289,9 @@ window.addEventListener('message',event=>{
   if(!entry)return;
   if(event.data?.type==='zellij-state') {
     const previousPosition=entry.state?.active_pane?.tab_position;
+    const previousPane=entry.state?.active_pane;
     entry.state=event.data.payload;
+    if(previousPane && (previousPane.pane_id!==entry.state.active_pane?.pane_id || previousPane.is_plugin!==entry.state.active_pane?.is_plugin))entry.frame.contentWindow.SwitchboardClipboard?.clearSelection();
     entry.focusPending=!!event.data.focus_pending;
     if(entry.requestedPane){
       const active=entry.state.active_pane,requested=entry.requestedPane;
@@ -347,6 +354,15 @@ window.addEventListener('message',event=>{
   }else if(event.data?.type==='zellij-disconnected'){entry.needsFocus=true;setStatus(`${hosts.get(entry.host)?.name}: reconnecting…`,true);}
 });
 $('artifact-back').onclick=()=>{const current=allTabs().find(item=>item.key===selected);if(current)focus(current);else $('artifact-preview').hidden=true;};
+$('select-text').onclick=()=>{
+  const current=allTabs().find(item=>item.key===selected),api=current?.entry.frame.contentWindow.SwitchboardClipboard;
+  if(!api)return;
+  const selecting=api.setSelectionMode(!api.selectionMode);
+  $('select-text').setAttribute('aria-pressed',String(selecting));
+  $('select-text').classList.toggle('selected',selecting);
+  if(selecting)setStatus('Drag over terminal text, then Copy or Cmd+C / Ctrl+Shift+C.');
+  current.entry.frame.focus();
+};
 $('copy').onclick=async()=>{
   const current=allTabs().find(item=>item.key===selected);
   const api=current?.entry.frame.contentWindow.SwitchboardClipboard;
