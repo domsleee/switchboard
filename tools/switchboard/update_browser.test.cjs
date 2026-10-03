@@ -93,6 +93,9 @@ let recoveryPanes;
             assert.ok(!sessions.find(s=>s.name===otherName)?.web_clients_allowed,'Recovery excludes other Off sessions');
         }
         const beforeIdentities=identities();
+        const names=()=>JSON.parse(cli('-s',name,'action','list-tabs','--json'))
+            .map(tab=>[tab.tab_id,tab.name]).sort((a,b)=>a[0]-b[0]);
+        const beforeNames=names();
         const server=processes().find(p=>p.command.includes('--server ')&&p.command.endsWith('/'+name));
         assert.ok(server,'Private session server exists');
         const children=processes().filter(p=>p.ppid===server.pid);
@@ -152,6 +155,17 @@ let recoveryPanes;
                 w.__acceptanceSockets.some(s=>s.url.includes('/ws/'+type)&&s.readyState===1));
         },name);
         await connected();
+        const sidebarNames=()=>page.evaluate(session=>[...document.querySelectorAll('#tabs button')]
+            .filter(button=>button._item?.entry.name===session)
+            .map(button=>[button._item.tab.id,button.children[1].textContent])
+            .sort((a,b)=>a[0]-b[0]),name);
+        let beforeSidebarNames;
+        if(recoveryMode){
+            await page.waitForFunction(expected=>expected.every(([id,title])=>[...document.querySelectorAll('#tabs button')]
+                .some(button=>button._item?.tab.id===id&&button.children[1].textContent===title)),beforeNames);
+            beforeSidebarNames=await sidebarNames();
+            assert.deepEqual(beforeSidebarNames,beforeNames,'Recovery preserves the original displayed tab names');
+        }
         async function command(text,expected,target=page) {
             const frame=target.locator('#terminals>iframe.active').contentFrame();
             await frame.locator('.xterm-helper-textarea').focus();
@@ -228,6 +242,8 @@ let recoveryPanes;
         await command(`printf '%s%s\\n' "RECONNECTED_" "$SB_STATE"`,'RECONNECTED_'+marker);
         assert.equal(await page.evaluate(()=>location.href),selected,'Selected terminal URL survives');
         assert.deepEqual(identities(),beforeIdentities,'Tab and pane identities survive');
+        assert.deepEqual(names(),beforeNames,'Native tab names survive updates and reconnection');
+        if(recoveryMode)assert.deepEqual(await sidebarNames(),beforeSidebarNames,'Displayed sidebar names survive refresh and reconnection');
         const after=processes();
         for(const original of [server,...children])assert.ok(after.some(p=>p.pid===original.pid&&p.started===original.started),'Session server and terminal processes survive');
         const host=await (await fetch(url+'/api/hosts/test')).json();

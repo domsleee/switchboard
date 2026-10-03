@@ -189,6 +189,15 @@ alone do not confirm that Switchboard can connect. Check `/api/hosts/mac` for
 start. Restore the terminal client before checking optional browser services, so
 a temporary HTTP failure cannot skip terminal recovery.
 
+Names are also part of recovery. The sidebar often displays Codex/Claude pane
+titles while native tabs still have generic names such as `Tab #2`. A layout
+dump saves those generic native names, so it cannot recover the displayed labels
+after those agent processes stop. Before any explicitly authorized engine
+restart, save native pane metadata with `action list-panes --json --all` as well
+as the layout, and carry the displayed agent titles into the replacement tab
+names. Verify those labels in the actual browser. Browser/HTTP health, stable
+IDs and a matching tab count alone do not establish a complete recovery.
+
 The Zellij session server owns the terminals and their child processes.
 Its [PTY cleanup](../zellij-server/src/pty.rs) closes panes when the server exits.
 On Windows, it also owns the ConPTY handles. Replacing files on disk does not
