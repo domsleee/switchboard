@@ -393,8 +393,7 @@ $('new-tab-form').onsubmit=event=>{
 $('ready').onclick=()=>{
   if(!selected)return;
   ready[selected]=Date.now();saveReady();
-  tabOrder=[selected,...allTabs(true,true).map(t=>t.key).filter(key=>key!==selected)];
-  localStorage.setItem('switchboard-tab-order',JSON.stringify(tabOrder));render();
+  render();
 };
 $('settings').onclick=()=>{$('machines').hidden=!$('machines').hidden;$('settings').setAttribute('aria-expanded',String(!$('machines').hidden));};
 $('refresh').onclick=refresh;

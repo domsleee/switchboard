@@ -39,3 +39,21 @@ test('attention acknowledgment never moves tabs; search, filters, archive and cr
   context.paneAttention.set(key,{key,state:'approval'});context.acknowledgeAttention(item);assert.equal(context.isReady(item),true);
 
 });
+
+test('Mark ready adds a badge without changing the saved tab order or selection',()=>{
+  const button={},stored={};
+  const originalOrder=['win:1','mac:0','mac:1'];
+  let renders=0;
+  const context={selected:'mac:1',ready:{},tabOrder:[...originalOrder],
+    $:()=>button,allTabs:()=>originalOrder.map(key=>({key})),
+    localStorage:{setItem:(key,value)=>stored[key]=value},
+    render(){renders++;},saveReady(){stored['switchboard-ready']=JSON.stringify(context.ready);}};
+  vm.createContext(context);
+  vm.runInContext(source.slice(source.indexOf("$('ready').onclick="),source.indexOf("$('settings').onclick=")),context);
+  button.onclick();
+  assert.ok(context.ready['mac:1']);
+  assert.equal(context.selected,'mac:1');
+  assert.deepEqual(context.tabOrder,originalOrder);
+  assert.equal(stored['switchboard-tab-order'],undefined);
+  assert.equal(renders,1);
+});
