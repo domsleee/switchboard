@@ -9,3 +9,5 @@ Tabs stay where you put them.
 Switchboard runs in the background, with a menu bar icon on Mac and a tray icon on Windows.
 
 [Setup and usage](tools/switchboard/README.md) · [Zellij documentation](https://zellij.dev/documentation/) · [License](LICENSE.md)
+
+[Update plan](docs/SWITCHBOARD_UPDATES.md): automatic updates that keep running terminals alive.
