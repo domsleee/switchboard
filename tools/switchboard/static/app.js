@@ -1,12 +1,18 @@
 const $ = id => document.getElementById(id);
 const hosts = new Map(), sessions = new Map();
 const tabButtons=new Map();
+const mobileSidebar=matchMedia("(max-width:700px)");
+let sidebarCollapsed=localStorage.getItem("switchboard-sidebar-collapsed")==="true",sidebarOpen=false;
 let filter = 'all', selected = null, loading = false, dragging = false;
 const dragType='application/x-zellij-switchboard-tab';
 let dragState=null, dragScrollFrame=0, suppressTabClickUntil=0;
 function load(key) { try { return JSON.parse(localStorage.getItem(key)) || {}; } catch (_) { return {}; } }
 const groups = load('switchboard-groups');
 const ready = load('switchboard-ready');
+const archived = load('switchboard-archived');
+const seenAttention = load('switchboard-attention-seen');
+let paneAttention=new Map(),attentionErrors=[],attentionLoading=false;
+let contextItem = null, archiveSignature = null;
 let tabOrder=load('switchboard-tab-order');
 if(!Array.isArray(tabOrder))tabOrder=[];
 let nativeTabs = localStorage.getItem('switchboard-native-tabs') === 'true';
@@ -26,23 +32,50 @@ function tabKey(entry, tab) {
   const pane = entry.state.panes.find(p => p.tab_position === tab.position);
   return JSON.stringify([entry.host, entry.name, pane?.pane_id ?? tab.position, !!pane?.is_plugin]);
 }
-function allTabs(ignoreFilter=false) {
+function attentionKey(host,session,pane){return JSON.stringify([host,session,pane]);}
+function statesForTab(item){
+  return item.entry.state.panes.filter(p=>!p.is_plugin&&p.tab_position===item.tab.position)
+    .map(p=>paneAttention.get(attentionKey(item.entry.host,item.entry.name,p.pane_id))).filter(Boolean);
+}
+function needsAttention(state){
+  return ['approval','input'].includes(state.state) || (state.state==='ready'&&seenAttention[state.key]!==state.token);
+}
+function autoLabel(item){
+  const states=statesForTab(item);
+  if(states.some(s=>s.state==='approval'))return 'Approval needed';
+  if(states.some(s=>s.state==='input'))return 'Input needed';
+  if(states.some(s=>s.state==='working'))return 'Working';
+  if(states.some(s=>s.state==='ready'))return states.some(needsAttention)?'Ready to review':'Ready';
+  return '';
+}
+function acknowledgeAttention(item){
+  let changed=false;
+  for(const state of statesForTab(item))if(state.state==='ready'&&seenAttention[state.key]!==state.token){seenAttention[state.key]=state.token;changed=true;}
+  if(changed)localStorage.setItem('switchboard-attention-seen',JSON.stringify(seenAttention));
+}
+function isReady(item){return !!(ready[item.key] || item.tab.name.startsWith('*') || statesForTab(item).some(needsAttention));}
+function matchesSearch(item){
+  const query=$('tab-search').value.trim().toLowerCase();
+  return !query || `${SwitchboardTitles.tabTitle(item.entry.state,item.tab)} ${hosts.get(item.entry.host)?.name || item.entry.host} ${groups[item.entry.host]||''} ${item.entry.name} ${autoLabel(item)}`.toLowerCase().includes(query);
+}
+function allTabs(ignoreFilter=false, includeArchived=false) {
   const ranks=new Map(tabOrder.map((key,index)=>[key,index]));
   return [...sessions.values()].flatMap(entry => (entry.state?.tabs || []).map(tab => ({entry,tab,key:tabKey(entry,tab)})))
-    .filter(({entry}) => ignoreFilter || filter === 'all' || groups[entry.host] === filter)
-    .sort((a,b) => Number(!!(ready[b.key] || b.tab.name.startsWith('*'))) - Number(!!(ready[a.key] || a.tab.name.startsWith('*'))) || (ranks.get(a.key)??Infinity)-(ranks.get(b.key)??Infinity) || (ready[b.key] || 0)-(ready[a.key] || 0));
+    .filter(({entry,key}) => (includeArchived || !archived[key]) && (ignoreFilter || filter === 'all' || groups[entry.host] === filter))
+    .sort((a,b) => (ranks.get(a.key)??Infinity)-(ranks.get(b.key)??Infinity));
 }
 function moveTab(key,targetKey,after=false) {
   if(key===targetKey)return;
-  const order=allTabs(true).map(t=>t.key);
-  if(!order.includes(key)||!order.includes(targetKey))return;
+  const tabs=allTabs(true,true),source=tabs.find(t=>t.key===key),target=tabs.find(t=>t.key===targetKey);
+  if(!source||!target)return;
+  const order=tabs.map(t=>t.key);
   order.splice(order.indexOf(key),1);
   order.splice(order.indexOf(targetKey)+(after?1:0),0,key);
   tabOrder=order;localStorage.setItem('switchboard-tab-order',JSON.stringify(tabOrder));render();
   tabButtons.get(key)?.scrollIntoView({block:'nearest',inline:'nearest'});
 }
 function moveSelected(direction) {
-  const tabs=allTabs(),index=tabs.findIndex(t=>t.key===selected),target=tabs[index+direction];
+  const tabs=allTabs().filter(matchesSearch),index=tabs.findIndex(t=>t.key===selected),target=tabs[index+direction];
   if(index<0||!target)return;
   moveTab(selected,target.key,direction>0);
 }
@@ -54,45 +87,60 @@ function render() {
   if (!tabs.some(t => t.key === selected)) selected = tabs[0]?.key || null;
   const liveKeys=new Set(tabs.map(item=>item.key));
   for(const [key,button] of tabButtons)if(!liveKeys.has(key)){button.remove();tabButtons.delete(key);}
-  for (const [index,item] of tabs.entries()) {
+  const shown=tabs.filter(matchesSearch), nodes=[],shownKeys=new Set(shown.map(item=>item.key));
+  for (const item of shown) {
     let button=tabButtons.get(item.key);
     if(!button){
       button=document.createElement('button');button.draggable=true;
-      const star=document.createElement('span');star.className='star';star.textContent='* ';
+      const star=document.createElement('span');star.className='star';star.textContent='●';star.title='Needs attention';star.setAttribute('aria-label','Needs attention');
       const name=document.createElement('span');name.className='tab-name';
       const label=document.createElement('small');button.append(star,name,label);
       button.ondragstart=event=>{
         dragging=true;
-        dragState={key:button._item.key,ready:!!(ready[button._item.key]||button._item.tab.name.startsWith('*')),clientX:event.clientX,target:null};
+        dragState={key:button._item.key,clientY:event.clientY,target:null};
         event.dataTransfer.setData(dragType,dragState.key);event.dataTransfer.effectAllowed='move';
         button.classList.add('dragging');$('tabs').classList.add('reordering');
       };
       button.ondragend=finishDrag;
+      button.oncontextmenu=event=>{event.preventDefault();openTabMenu(button._item,event.clientX,event.clientY);};
       button.onclick=()=>{if(dragging||Date.now()<suppressTabClickUntil)return;activate(button._item);};
       tabButtons.set(item.key,button);
     }
     button._item=item;
     const title=SwitchboardTitles.tabTitle(item.entry.state,item.tab);
-    button.title=`${title}\nDrag to reorder · Alt+Shift+Left/Right or H/L moves this tab · Ready tabs stay first`;
-    const starred = ready[item.key] || item.tab.name.startsWith('*');
-    button.className = item.key === selected ? 'selected' : '';
+    button.title=`${title}\nDrag to reorder · Alt+Shift+Left/Right or H/L moves this tab · Right-click to archive or close`;
+    const starred = isReady(item);
+    button.className = (item.key === selected ? 'selected' : '')+(starred?' needs-attention':'');
     button.setAttribute('aria-pressed',String(item.key===selected));
     button.children[0].hidden=!starred;
     if(button.children[1].textContent!==title)button.children[1].textContent=title;
-    const subtitle=`${hosts.get(item.entry.host)?.name || item.entry.host} · ${item.entry.name}`;
+    const stateLabel=autoLabel(item);
+    const subtitle=`${hosts.get(item.entry.host)?.name || item.entry.host} · ${item.entry.name}${stateLabel?' · '+stateLabel:''}`;
+    button.dataset.agentState=stateLabel;
     if(button.children[2].textContent!==subtitle)button.children[2].textContent=subtitle;
-    if($('tabs').children[index]!==button)$('tabs').insertBefore(button,$('tabs').children[index]||null);
+    nodes.push(button);
   }
+  for(const button of tabButtons.values())if(!shownKeys.has(button._item.key))button.remove();
+  let cursor=$('tabs').firstChild;
+  for(const node of nodes){if(node!==cursor)$('tabs').insertBefore(node,cursor);else cursor=cursor.nextSibling;}
+  $('tab-count').textContent=`${shown.length}${shown.length!==tabs.length?' / '+tabs.length:''} tabs`;
+  $('tab-no-results').hidden=shown.length>0;
+
   const current=tabs.find(t=>t.key===selected);
-  const notifications=allTabs(true).filter(item=>ready[item.key]||item.tab.name.startsWith('*')).length;
+  const notifications=allTabs(true,true).filter(isReady).length;
   $('notifications').textContent=`${notifications} notification${notifications===1?'':'s'}`;
   $('notifications').classList.toggle('has-notifications',notifications>0);
-  document.title=`${notifications?'('+notifications+') ':''}`+(current?`${SwitchboardTitles.tabTitle(current.entry.state,current.tab)} — ${hosts.get(current.entry.host)?.name} · Switchboard`:'Zellij Switchboard');
+  document.title=`${notifications?'('+notifications+') ':''}`+(current?`${SwitchboardTitles.tabTitle(current.entry.state,current.tab)} — ${hosts.get(current.entry.host)?.name} · Switchboard`:'Switchboard');
   for (const entry of sessions.values()) entry.frame.classList.toggle('active',entry===current?.entry);
   $('ready').disabled=!current;
+  const archiveCount=allTabs(true,true).filter(item=>archived[item.key]).length;
+  $('archive').textContent=`Archive${archiveCount?' ('+archiveCount+')':''}`;
+  if($('archive-dialog').open)renderArchive();
+  if(!current){$('artifact-preview').hidden=true;$('artifact-frame').src='about:blank';}
   $('empty').hidden=!!current;
-  if (!current) $('empty').textContent=filter==='all'?'No connected tabs. Check Machines or refresh.':`No ${filter} tabs. Assign machines to this group using Machines.`;
+  if (!current) $('empty').textContent=filter==='all'?(archiveCount?'All tabs are archived. Open Archive to restore one.':'No connected tabs. Check Machines or refresh.'):`No ${filter} tabs. Assign machines to this group using Machines.`;
   const errors=[...hosts.values()].filter(h=>h.error).map(h=>`${h.name}: ${h.error}`);
+  for(const error of attentionErrors)errors.push(`${hosts.get(error.host)?.name||error.host}: attention status unavailable`);
   setStatus(errors.length?errors.join(' · '):`${hosts.size} machines · ${tabs.length} tabs${current?' · '+hosts.get(current.entry.host)?.name:''}`,errors.length>0);
   if (selected !== previous && current) focus(current);
   if(selected!==previous) $('tabs').querySelector('.selected')?.scrollIntoView({block:'nearest',inline:'nearest'});
@@ -100,28 +148,28 @@ function render() {
 function updateDragTarget() {
   if(!dragState)return;
   const strip=$('tabs'),bounds=strip.getBoundingClientRect();
-  const candidates=[...strip.children].filter(button=>button._item&&button._item.key!==dragState.key&&!!(ready[button._item.key]||button._item.tab.name.startsWith('*'))===dragState.ready);
-  const next=candidates.find(button=>{const rect=button.getBoundingClientRect();return dragState.clientX<rect.left+rect.width/2;});
+  const candidates=[...strip.children].filter(button=>button._item&&button._item.key!==dragState.key);
+  const next=candidates.find(button=>{const rect=button.getBoundingClientRect();return dragState.clientY<rect.top+rect.height/2;});
   const target=next||candidates.at(-1);
   if(!target){dragState.target=null;strip.classList.remove('drop-target');return;}
   const after=!next,rect=target.getBoundingClientRect();
   dragState.target={key:target._item.key,after};
-  strip.style.setProperty('--drop-left',`${(after?rect.right+2:rect.left-3)-bounds.left+strip.scrollLeft}px`);
+  strip.style.setProperty('--drop-top',`${(after?rect.bottom+1:rect.top-2)-bounds.top+strip.scrollTop}px`);
   strip.classList.add('drop-target');
 }
 function scrollDuringDrag() {
   dragScrollFrame=0;
   if(!dragState||!$('tabs').classList.contains('drop-target'))return;
   const strip=$('tabs'),bounds=strip.getBoundingClientRect(),edge=36;
-  const left=Math.max(0,edge-(dragState.clientX-bounds.left));
-  const right=Math.max(0,edge-(bounds.right-dragState.clientX));
-  strip.scrollLeft+=Math.max(-14,Math.min(14,(right-left)/3));
+  const top=Math.max(0,edge-(dragState.clientY-bounds.top));
+  const bottom=Math.max(0,edge-(bounds.bottom-dragState.clientY));
+  strip.scrollTop+=Math.max(-14,Math.min(14,(bottom-top)/3));
   updateDragTarget();
   dragScrollFrame=requestAnimationFrame(scrollDuringDrag);
 }
 $('tabs').addEventListener('dragover',event=>{
   if(!dragState||!event.dataTransfer.types.includes(dragType))return;
-  event.preventDefault();event.dataTransfer.dropEffect='move';dragState.clientX=event.clientX;
+  event.preventDefault();event.dataTransfer.dropEffect='move';dragState.clientY=event.clientY;
   updateDragTarget();if(!dragScrollFrame)dragScrollFrame=requestAnimationFrame(scrollDuringDrag);
 });
 $('tabs').addEventListener('dragleave',event=>{
@@ -130,7 +178,7 @@ $('tabs').addEventListener('dragleave',event=>{
 });
 $('tabs').addEventListener('drop',event=>{
   if(!dragState||!event.dataTransfer.types.includes(dragType))return;
-  event.preventDefault();dragState.clientX=event.clientX;updateDragTarget();
+  event.preventDefault();dragState.clientY=event.clientY;updateDragTarget();
   const {key,target}=dragState;
   finishDrag();if(target)moveTab(key,target.key,target.after);
 });
@@ -160,20 +208,31 @@ function focus(item) {
 }
 function activate(item, clear=true) {
   selected=item.key;
+  if(mobileSidebar.matches){sidebarOpen=false;updateSidebar();}
   if(clear){delete ready[item.key];saveReady();}
+  item.entry.acknowledgeTab=item.key;
   render();
   focus(item);
+  tabButtons.get(item.key)?.scrollIntoView({block:'nearest',inline:'nearest'});
 }
 function stepTab(direction) {
-  const tabs=allTabs();
+  const tabs=allTabs().filter(matchesSearch);
   if(!tabs.length)return;
   const index=tabs.findIndex(t=>t.key===selected);
   activate(tabs[(Math.max(index,0)+direction+tabs.length)%tabs.length]);
 }
 window.addEventListener('keydown',event=>{
+  if((event.metaKey||event.ctrlKey)&&!event.altKey&&!event.shiftKey&&event.code==='KeyK'&&!document.querySelector('dialog[open]')){event.preventDefault();showTabSearch();return;}
+  if(event.key==='Escape'&&event.target===$('tab-search')){
+    event.preventDefault();
+    if($('tab-search').value){$('tab-search').value='';render();}else{sidebarOpen=false;updateSidebar();allTabs().find(item=>item.key===selected)?.entry.frame.focus();}
+    return;
+  }
   if(event.target.closest?.('input,textarea,select,[contenteditable="true"]'))return;
-  if($('new-tab-dialog').open)return;
+  if(document.querySelector('dialog[open]'))return;
+  if(!$('tab-menu').hidden && event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();closeTabMenu();return;}
   if(event.key==='Escape'&&!event.altKey&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey){
+    if(mobileSidebar.matches&&sidebarOpen){event.preventDefault();sidebarOpen=false;updateSidebar();return;}
     if(!$('artifact-preview').hidden){event.preventDefault();$('artifact-back').click();return;}
     if(!$('machines').hidden)return;
     const current=allTabs().find(item=>item.key===selected);
@@ -226,6 +285,7 @@ window.addEventListener('message',event=>{
   if(event.data?.type==='zellij-state') {
     const previousPosition=entry.state?.active_pane?.tab_position;
     entry.state=event.data.payload;
+    entry.focusPending=!!event.data.focus_pending;
     if(entry.requestedPane){
       const active=entry.state.active_pane,requested=entry.requestedPane;
       if(!event.data.focus_pending && event.data.focus_id===requested.focus_id && active?.pane_id===requested.pane_id&&active?.is_plugin===requested.is_plugin)entry.requestedPane=null;
@@ -235,6 +295,7 @@ window.addEventListener('message',event=>{
       if(added){
         entry.pendingNewTab=null;
         if(filter!=='all'&&groups[entry.host]!==filter)setFilter('all');
+        $('tab-search').value='';
         selected=tabKey(entry,added);
       }
     }
@@ -251,6 +312,8 @@ window.addEventListener('message',event=>{
       const tab=entry.state.tabs.find(t=>t.position===entry.state.active_pane?.tab_position);
       if(tab){selected=tabKey(entry,tab);delete ready[selected];saveReady();}
     }
+    const current=allTabs().find(item=>item.key===selected);
+    if(current?.entry===entry && entry.acknowledgeTab===selected && !entry.requestedPane && !entry.focusPending && entry.state.active_pane?.tab_position===current.tab.position){acknowledgeAttention(current);entry.acknowledgeTab=null;}
     render();
     if(entry.needsFocus && entry.frame.classList.contains('active')){
       const current=allTabs().find(item=>item.key===selected);if(current)focus(current);
@@ -263,6 +326,8 @@ window.addEventListener('message',event=>{
     const tab=state?.tabs.find(tab=>tab.position===state.active_pane?.tab_position);
     if(tab){entry.state=state;selected=tabKey(entry,tab);render();focus({entry,tab});}
     setStatus('That terminal is unavailable. Choose another tab.',true);
+  }else if(event.data?.type==='zellij-tab-search'){
+    if(entry.frame.classList.contains('active'))showTabSearch();
   }else if(event.data?.type==='zellij-tab-step' && (event.data.direction===-1||event.data.direction===1)){
     if(entry.frame.classList.contains('active'))stepTab(event.data.direction);
   }else if(event.data?.type==='zellij-tab-move' && (event.data.direction===-1||event.data.direction===1)){
@@ -312,7 +377,7 @@ $('new-tab-form').onsubmit=event=>{
 $('ready').onclick=()=>{
   if(!selected)return;
   ready[selected]=Date.now();saveReady();
-  tabOrder=[selected,...allTabs(true).map(t=>t.key).filter(key=>key!==selected)];
+  tabOrder=[selected,...allTabs(true,true).map(t=>t.key).filter(key=>key!==selected)];
   localStorage.setItem('switchboard-tab-order',JSON.stringify(tabOrder));render();
 };
 $('settings').onclick=()=>{$('machines').hidden=!$('machines').hidden;$('settings').setAttribute('aria-expanded',String(!$('machines').hidden));};
@@ -320,3 +385,103 @@ $('refresh').onclick=refresh;
 $('native-tabs').onclick=()=>{nativeTabs=!nativeTabs;localStorage.setItem('switchboard-native-tabs',String(nativeTabs));updateNativeTabs();};
 updateNativeTabs();
 refresh();setInterval(refresh,15000);
+
+function closeTabMenu(){ $('tab-menu').hidden=true;contextItem=null; }
+function openTabMenu(item,x,y){
+  contextItem=item;
+  const menu=$('tab-menu');menu.hidden=false;
+  menu.style.left=`${Math.max(0,Math.min(x,innerWidth-menu.offsetWidth))}px`;
+  menu.style.top=`${Math.max(0,Math.min(y,innerHeight-menu.offsetHeight))}px`;
+  $('archive-tab').focus();
+}
+function archiveTab(item){
+  archived[item.key]=Date.now();
+  localStorage.setItem('switchboard-archived',JSON.stringify(archived));
+  closeTabMenu();render();
+  const current=allTabs().find(t=>t.key===selected);
+  if(current)current.entry.frame.focus();
+}
+$('archive-tab').onclick=()=>{if(contextItem)archiveTab(contextItem);};
+document.addEventListener('pointerdown',event=>{if(!$('tab-menu').contains(event.target))closeTabMenu();},true);
+window.addEventListener('blur',closeTabMenu);
+$('tabs').addEventListener('scroll',closeTabMenu);
+function renderArchive(){
+  const query=$('archive-search').value.trim().toLowerCase();
+  const list=$('archive-list');
+  const tabs=allTabs(true,true).filter(item=>archived[item.key]);
+  const signature=JSON.stringify([query,tabs.map(item=>[item.key,SwitchboardTitles.tabTitle(item.entry.state,item.tab),hosts.get(item.entry.host)?.name,item.entry.name])]);
+  if(signature===archiveSignature)return;
+  archiveSignature=signature;list.replaceChildren();
+  for(const item of tabs){
+    const title=SwitchboardTitles.tabTitle(item.entry.state,item.tab);
+    const machine=`${hosts.get(item.entry.host)?.name || item.entry.host} · ${item.entry.name}`;
+    if(!`${title} ${machine}`.toLowerCase().includes(query))continue;
+    const row=document.createElement('div');row.className='archive-row';
+    const label=document.createElement('span');label.textContent=`${title} — ${machine}`;
+    const restore=document.createElement('button');restore.textContent='Restore';
+    restore.setAttribute('aria-label',`Restore ${title}`);
+    restore.onclick=()=>{
+      delete archived[item.key];localStorage.setItem('switchboard-archived',JSON.stringify(archived));
+      $('archive-dialog').close();$('tab-search').value='';setFilter('all');activate(item);
+      tabButtons.get(item.key)?.scrollIntoView({block:'nearest',inline:'nearest'});
+      item.entry.frame.focus();
+    };
+    row.append(label,restore);list.append(row);
+  }
+  if(!list.children.length){const empty=document.createElement('p');empty.textContent=tabs.length?'No matching archived tabs.':'No archived tabs.';list.append(empty);}
+}
+$('archive').onclick=()=>{$('archive-search').value='';renderArchive();$('archive-dialog').showModal();$('archive-search').focus();};
+$('archive-search').oninput=renderArchive;
+$('close-archive').onclick=()=>$('archive-dialog').close();
+
+function updateSidebar(){
+  document.body.classList.toggle('sidebar-collapsed',sidebarCollapsed);
+  document.body.classList.toggle('sidebar-open',sidebarOpen&&mobileSidebar.matches);
+  const visible=mobileSidebar.matches?sidebarOpen:!sidebarCollapsed;
+  $('sidebar-toggle').setAttribute('aria-expanded',String(visible));
+  $('sidebar-backdrop').hidden=!(mobileSidebar.matches&&sidebarOpen);
+}
+function showTabSearch(){
+  if(mobileSidebar.matches)sidebarOpen=true;else{sidebarCollapsed=false;localStorage.setItem('switchboard-sidebar-collapsed','false');}
+  updateSidebar();$('tab-search').focus();$('tab-search').select();
+}
+$('sidebar-toggle').onclick=()=>{
+  if(mobileSidebar.matches)sidebarOpen=!sidebarOpen;
+  else{sidebarCollapsed=!sidebarCollapsed;localStorage.setItem('switchboard-sidebar-collapsed',String(sidebarCollapsed));}
+  updateSidebar();
+};
+$('sidebar-backdrop').onclick=()=>{sidebarOpen=false;updateSidebar();};
+mobileSidebar.addEventListener('change',()=>{sidebarOpen=false;updateSidebar();});
+$('tab-search').oninput=render;
+$('tab-search').onkeydown=event=>{if(event.key==='Enter'){const item=allTabs().filter(matchesSearch)[0];if(item){event.preventDefault();activate(item);item.entry.frame.focus();}}};
+let sidebarWidth=Number(localStorage.getItem('switchboard-sidebar-width'))||260;
+function setSidebarWidth(width){
+  sidebarWidth=Math.max(200,Math.min(420,width,Math.max(200,innerWidth-320)));
+  document.documentElement.style.setProperty('--sidebar-width',`${sidebarWidth}px`);
+  $('sidebar-resize').setAttribute('aria-valuemin','200');$('sidebar-resize').setAttribute('aria-valuemax',String(Math.min(420,Math.max(200,innerWidth-320))));$('sidebar-resize').setAttribute('aria-valuenow',String(Math.round(sidebarWidth)));
+}
+const resizeHandle=$('sidebar-resize');
+resizeHandle.onpointerdown=event=>{
+  if(event.button!==0)return;
+  event.preventDefault();resizeHandle.setPointerCapture(event.pointerId);document.body.classList.add('resizing');
+};
+resizeHandle.onpointermove=event=>{if(resizeHandle.hasPointerCapture(event.pointerId))setSidebarWidth(event.clientX-$('workspace').getBoundingClientRect().left);};
+resizeHandle.onlostpointercapture=()=>{document.body.classList.remove('resizing');localStorage.setItem('switchboard-sidebar-width',String(sidebarWidth));};
+resizeHandle.onkeydown=event=>{if(['ArrowLeft','ArrowRight'].includes(event.key)){event.preventDefault();setSidebarWidth(sidebarWidth+(event.key==='ArrowLeft'?-20:20));localStorage.setItem('switchboard-sidebar-width',String(sidebarWidth));}};
+window.addEventListener('resize',()=>{if(!mobileSidebar.matches)setSidebarWidth(sidebarWidth);});
+setSidebarWidth(sidebarWidth);updateSidebar();
+
+async function refreshAttention(){
+  if(attentionLoading)return;attentionLoading=true;
+  try{
+    const response=await fetch('/api/attention');if(!response.ok)throw Error('Attention monitor unavailable');
+    const data=await response.json();
+    paneAttention=new Map((data.panes||[]).map(state=>{const key=attentionKey(state.host,state.session,state.pane_id);return [key,{...state,key}];}));
+    attentionErrors=data.errors||[];
+    const current=allTabs().find(item=>item.key===selected);
+    if(current && document.hasFocus() && !document.hidden && $('artifact-preview').hidden && !document.querySelector('dialog[open]') && !current.entry.requestedPane && !current.entry.focusPending && current.entry.state.active_pane?.tab_position===current.tab.position)acknowledgeAttention(current);
+    render();
+  }catch(_){paneAttention.clear();attentionErrors=[{host:'Switchboard'}];render();}
+  finally{attentionLoading=false;}
+}
+refreshAttention();setInterval(refreshAttention,2000);

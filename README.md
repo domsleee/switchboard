@@ -1,3 +1,21 @@
+# Switchboard
+
+A full-source fork of [Zellij v0.45.1](https://github.com/zellij-org/zellij/releases/tag/v0.45.1)
+(commit `efd8fd5a89a20c07a111d248ad7fce53848d2c18`) with a shared browser workspace
+across machines running Codex, Claude, and other terminal tools.
+
+The Switchboard app lives in [tools/switchboard](tools/switchboard/README.md).
+It currently works with stock Zellij 0.45.1 on Mac and Windows. The complete
+Zellij source and upstream licenses are preserved below and throughout this repo.
+
+```sh
+uv run --script tools/switchboard/server.py
+```
+
+See the app README for host configuration, persistent service setup, and checks.
+
+---
+
 <h1 align="center">
   <br>
   <img src="https://raw.githubusercontent.com/zellij-org/zellij/main/assets/logo.png" alt="logo" width="200">

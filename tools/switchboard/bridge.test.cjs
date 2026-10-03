@@ -113,3 +113,13 @@ test('disappearance cannot acknowledge the replacement focus dispatched by that 
   assert.equal(h.messages.at(-1).focus_id,2);assert.equal(h.messages.at(-1).focus_pending,true);
   h.state({...state,panes:[panes[0]]});assert.equal(h.window.term.options.disableStdin,false);assert.equal(h.messages.at(-1).focus_pending,false);
 });
+
+test('Cmd/Ctrl+K opens sidebar search from the terminal and respects dialogs',()=>{
+  const h=harness();
+  for(const modifier of ['metaKey','ctrlKey']){
+    const event=h.key('KeyK',{altKey:false,[modifier]:true});
+    assert.equal(event.prevented,true);assert.equal(event.stopped,true);
+    assert.equal(h.messages.at(-1).type,'zellij-tab-search');
+  }
+  h.setModal(true);assert.equal(h.key('KeyK',{altKey:false,metaKey:true}).prevented,undefined);
+});

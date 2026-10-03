@@ -12,6 +12,8 @@ from urllib.parse import urlparse
 
 from aiohttp import ClientError, ClientSession, ClientTimeout, CookieJar, Fingerprint, WSMsgType, WSServerHandshakeError, web
 from control import CONTROL_SESSION_PREFIX, escape, cleanup_controls
+from close import close_tab
+from attention import attention, lifecycle as attention_lifecycle
 
 STATIC = Path(__file__).parent / "static"
 
@@ -70,9 +72,10 @@ class Host:
 def trusted(request):
     # Prevent another website from using this authenticated local relay.
     allowed_hosts = {f"127.0.0.1:{request.app['port']}", f"localhost:{request.app['port']}",
-                     "zellij.localhost", "zellij.localhost:443"}
+                     "switchboard.localhost", "switchboard.localhost:443", "switchboard.localhost:80"}
     allowed_origins = {f"http://127.0.0.1:{request.app['port']}", f"http://localhost:{request.app['port']}",
-                       "https://zellij.localhost", "https://zellij.localhost:443"}
+                       "https://switchboard.localhost", "https://switchboard.localhost:443",
+                       "http://switchboard.localhost", "http://switchboard.localhost:80"}
     if request.headers.get("Host") not in allowed_hosts:
         raise web.HTTPForbidden(text="Invalid host")
     origin = request.headers.get("Origin")
@@ -133,7 +136,7 @@ async def artifact_proxy(request):
     try:
         async with request.app["client"].request(request.method, target, allow_redirects=False) as upstream:
             headers = {"Content-Type": upstream.headers.get("Content-Type", "application/octet-stream"),
-                       "Content-Security-Policy": "frame-ancestors https://zellij.localhost http://127.0.0.1:8090 http://localhost:8090",
+                       "Content-Security-Policy": "frame-ancestors https://switchboard.localhost http://switchboard.localhost http://127.0.0.1:8090 http://localhost:8090",
                        "X-Content-Type-Options": "nosniff"}
             # Preserve relative redirects within this artifact's own origin.
             if upstream.headers.get("Location"):
@@ -198,7 +201,7 @@ async def proxy(request):
 
 async def static(request):
     name = request.match_info.get("file", "index.html")
-    if name not in {"index.html", "app.js", "style.css", "bridge.js", "titles.js", "chrome.js", "links.js", "clipboard.js"}:
+    if name not in {"index.html", "app.js", "style.css", "bridge.js", "titles.js", "chrome.js", "links.js", "clipboard.js", "close.js"}:
         raise web.HTTPNotFound()
     return web.FileResponse(STATIC / name)
 
@@ -217,13 +220,18 @@ async def lifecycle(app):
         artifact_runner = web.AppRunner(artifact_app)
         await artifact_runner.setup()
         await web.TCPSite(artifact_runner, "127.0.0.1", 8091).start()
-    yield
-    if artifact_runner:
-        await artifact_runner.cleanup()
-        await artifact_client.close()
-    await cleanup_controls(app)
-    for host in app["hosts"].values():
-        await host.client.close()
+    try:
+        yield
+    finally:
+        try:
+            if artifact_runner:
+                await artifact_runner.cleanup()
+            await cleanup_controls(app)
+        finally:
+            if artifact_client:
+                await artifact_client.close()
+            for host in app["hosts"].values():
+                await host.client.close()
 
 
 def create_app(config, port=8090):
@@ -232,7 +240,10 @@ def create_app(config, port=8090):
     app["hosts"] = {h["id"]: Host(h) for h in config["hosts"]}
     app["artifact_proxy"] = config.get("artifact_proxy")
     app.cleanup_ctx.append(lifecycle)
+    app.cleanup_ctx.append(attention_lifecycle)
     app.router.add_get("/api/hosts", hosts)
+    app.router.add_get("/api/attention", attention)
+    app.router.add_post("/api/hosts/{host}/close-tab", close_tab)
     app.router.add_post("/api/hosts/{host}/escape", escape)
     app.router.add_get("/link-config.js", link_config)
     app.router.add_route("*", "/hosts/{host}/{path:.*}", proxy)
@@ -246,4 +257,4 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=Path, default=Path.home()/".config/zellij/switchboard-hosts.json")
     parser.add_argument("--port", type=int, default=8090)
     args = parser.parse_args()
-    web.run_app(create_app(json.loads(args.config.read_text()), args.port), host="127.0.0.1", port=args.port)
+    web.run_app(create_app(json.loads(args.config.read_text()), args.port), host="127.0.0.1", port=args.port, shutdown_timeout=3)

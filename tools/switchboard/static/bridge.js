@@ -70,6 +70,10 @@
   }
   window.addEventListener('keydown',event=>{
     if(hasDialog())return;
+    if((event.metaKey||event.ctrlKey)&&!event.altKey&&!event.shiftKey&&event.code==='KeyK'){
+      event.preventDefault();event.stopImmediatePropagation();
+      parent.postMessage({type:'zellij-tab-search',host},location.origin);return;
+    }
     if(event.code === 'Escape' && !event.altKey && !event.ctrlKey && !event.metaKey &&
         !event.shiftKey && !event.isComposing && terminalFocused()) {
       // Stock web 0.45.1 loses bare ESC during idle finalization. The relay
