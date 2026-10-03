@@ -85,15 +85,17 @@ test('existing pane-key preferences migrate once to native tab IDs',()=>{
   context.setCatalog(entry,[{...tabs[0],panes:[{pane_id:8,is_plugin:false}]}]);assert.equal(context.archived[key],123);
 });
 
-test('Ctrl+Alt+N opens the New tab dialog once outside inputs and open dialogs',()=>{
+test('Cmd/Ctrl+Alt+T opens the New tab dialog once outside inputs and open dialogs',()=>{
   let handler,clicks=0,modal=false;
   const context={window:{addEventListener:(_,fn)=>handler=fn},document:{querySelector:()=>modal?{}:null},$:()=>({click(){clicks++;}})};
   vm.createContext(context);const start=source.indexOf("window.addEventListener('keydown'");
   vm.runInContext(source.slice(start,source.indexOf('function renderMachines()',start)),context);
-  const key=extra=>{const event={code:'KeyN',ctrlKey:true,altKey:true,metaKey:false,shiftKey:false,target:{closest:()=>null},preventDefault(){this.prevented=true;},stopImmediatePropagation(){},...extra};handler(event);return event;};
+  const key=extra=>{const event={code:'KeyT',ctrlKey:true,altKey:true,metaKey:false,shiftKey:false,target:{closest:()=>null},preventDefault(){this.prevented=true;},stopImmediatePropagation(){},...extra};handler(event);return event;};
   assert.equal(key().prevented,true);assert.equal(clicks,1);key({repeat:true});assert.equal(clicks,1);
   for(const extra of [{ctrlKey:false},{altKey:false},{metaKey:true},{shiftKey:true},{isComposing:true},{target:{closest:()=>({})}}])assert.equal(key(extra).prevented,undefined);
-  modal=true;assert.equal(key().prevented,undefined);assert.equal(clicks,1);
+  assert.equal(key({ctrlKey:false,metaKey:true}).prevented,true);assert.equal(clicks,2);
+  assert.equal(key({code:'KeyN'}).prevented,undefined);
+  modal=true;assert.equal(key().prevented,undefined);assert.equal(clicks,2);
 });
 
 

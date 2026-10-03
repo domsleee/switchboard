@@ -160,19 +160,21 @@ test('Ctrl+D requests Close once from the focused terminal, preserving modifiers
   assert.equal(h.messages.length,0);
 });
 
-test('Ctrl+Alt+N opens New tab once only from terminal focus and leaves Ctrl+T reserved',()=>{
+test('Cmd/Ctrl+Alt+T opens New tab once only from terminal focus and leaves Ctrl+T reserved',()=>{
   const h=harness();h.setFocus(true);
-  const key=h.key('KeyN',{ctrlKey:true});
+  const key=h.key('KeyT',{ctrlKey:true});
   assert.equal(key.prevented,true);assert.equal(key.stopped,true);
   assert.equal(h.messages.length,1);assert.equal(h.messages[0].type,'zellij-open-new-tab');assert.equal(h.messages[0].host,'windows');
-  const repeat=h.key('KeyN',{ctrlKey:true,repeat:true});
+  const repeat=h.key('KeyT',{ctrlKey:true,repeat:true});
   assert.equal(repeat.prevented,true);assert.equal(repeat.stopped,true);assert.equal(h.messages.length,1);
   for(const extra of [{ctrlKey:false},{altKey:false},{metaKey:true},{shiftKey:true},{isComposing:true}]){
-    assert.equal(h.key('KeyN',{ctrlKey:true,...extra}).prevented,undefined);
+    assert.equal(h.key('KeyT',{ctrlKey:true,...extra}).prevented,undefined);
   }
   for(const extra of [{ctrlKey:true},{metaKey:true}])assert.equal(h.key('KeyT',{altKey:false,...extra}).prevented,undefined);
-  h.setFocus(false);assert.equal(h.key('KeyN',{ctrlKey:true}).prevented,undefined);
-  h.setFocus(true);h.setModal(true);assert.equal(h.key('KeyN',{ctrlKey:true}).prevented,undefined);
+  const mac=h.key('KeyT',{metaKey:true});assert.equal(mac.prevented,true);assert.equal(mac.stopped,true);assert.equal(h.messages.length,2);
+  assert.equal(h.key('KeyN',{ctrlKey:true}).prevented,undefined);
+  h.setFocus(false);assert.equal(h.key('KeyT',{ctrlKey:true}).prevented,undefined);
+  h.setFocus(true);h.setModal(true);assert.equal(h.key('KeyT',{ctrlKey:true}).prevented,undefined);
   h.setModal(false);h.parent.document={querySelector:()=>({})};
-  assert.equal(h.key('KeyN',{ctrlKey:true}).prevented,undefined);assert.equal(h.messages.length,1);
+  assert.equal(h.key('KeyT',{ctrlKey:true}).prevented,undefined);assert.equal(h.messages.length,2);
 });
