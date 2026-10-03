@@ -10820,6 +10820,114 @@ fn recompute_tab_size_takes_independent_min_across_axes() {
 }
 
 #[test]
+fn tab_viewport_owner_transfer_and_release() {
+    let large = Size {
+        cols: 200,
+        rows: 60,
+    };
+    let small = Size { cols: 80, rows: 24 };
+    let mut screen = create_new_screen(large, true, true);
+    new_tab(&mut screen, 1, 0);
+    screen.connected_clients.borrow_mut().insert(1, true);
+    screen.add_client(2, true).expect("TEST");
+    screen.set_tab_viewport(2, small, 0, None).expect("TEST");
+    screen
+        .set_tab_viewport(1, large, 0, Some(true))
+        .expect("TEST");
+    assert_eq!(screen.tabs[&0].size, large);
+    assert!(screen.tab_viewport_for_client(1).unwrap().is_owner);
+    assert!(!screen.tab_viewport_for_client(2).unwrap().is_owner);
+    // A follower reports its physical viewport, never the larger rendered canvas.
+    screen
+        .set_tab_viewport(2, Size { cols: 40, rows: 10 }, 0, None)
+        .expect("TEST");
+    assert_eq!(screen.tabs[&0].size, large);
+    screen
+        .set_tab_viewport(2, small, 0, Some(true))
+        .expect("TEST");
+    assert_eq!(screen.tabs[&0].size, small);
+    screen
+        .set_tab_viewport(1, large, 0, Some(false))
+        .expect("TEST");
+    assert!(screen.tab_viewport_for_client(2).unwrap().is_owner);
+    screen
+        .set_tab_viewport(2, small, 0, Some(false))
+        .expect("TEST");
+    assert!(!screen.tab_viewport_for_client(1).unwrap().owner_active);
+    assert_eq!(screen.tabs[&0].size, small);
+}
+
+#[test]
+fn tab_viewport_keeps_unsupported_terminals_within_bounds() {
+    let large = Size {
+        cols: 200,
+        rows: 60,
+    };
+    let small = Size { cols: 80, rows: 24 };
+    let mut screen = create_new_screen(large, true, true);
+    new_tab(&mut screen, 1, 0);
+    screen.connected_clients.borrow_mut().insert(1, true);
+    screen.add_client(2, false).expect("TEST");
+    screen.set_client_size(2, small);
+    screen
+        .set_tab_viewport(1, large, 0, Some(true))
+        .expect("TEST");
+    assert_eq!(screen.tabs[&0].size, small);
+    assert!(screen.tab_viewport_for_client(1).unwrap().constrained);
+    // A plain terminal cannot falsely claim browser panning support.
+    screen
+        .set_tab_viewport(2, small, 0, Some(true))
+        .expect("TEST");
+    assert!(screen.tab_viewport_for_client(1).unwrap().is_owner);
+    screen.remove_client(2).expect("TEST");
+    assert_eq!(screen.tabs[&0].size, large);
+    assert!(!screen.tab_viewport_for_client(1).unwrap().constrained);
+}
+
+#[test]
+fn tab_viewport_ignores_stale_tab_requests_and_releases_disconnected_owner() {
+    let large = Size {
+        cols: 200,
+        rows: 60,
+    };
+    let small = Size { cols: 80, rows: 24 };
+    let mut screen = create_new_screen(large, true, true);
+    new_tab(&mut screen, 1, 0);
+    screen.connected_clients.borrow_mut().insert(1, true);
+    screen.add_client(2, true).expect("TEST");
+    screen
+        .set_tab_viewport(1, large, 0, Some(true))
+        .expect("TEST");
+    screen.set_tab_viewport(2, small, 0, None).expect("TEST");
+    screen
+        .set_tab_viewport(2, small, 1, Some(true))
+        .expect("TEST");
+    assert_eq!(screen.tabs[&0].size, large);
+    screen.remove_client(1).expect("TEST");
+    assert_eq!(screen.tabs[&0].size, small);
+    assert!(!screen.tab_viewport_for_client(2).unwrap().owner_active);
+}
+
+#[test]
+fn tab_viewport_ownership_releases_when_owner_changes_tabs() {
+    let large = Size {
+        cols: 200,
+        rows: 60,
+    };
+    let mut screen = create_non_mirrored_screen(large);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    screen.connected_clients.borrow_mut().insert(1, true);
+    screen
+        .set_tab_viewport(1, large, 1, Some(true))
+        .expect("TEST");
+    assert!(screen.tab_viewport_for_client(1).unwrap().is_owner);
+    screen.switch_active_tab(0, None, true, 1).expect("TEST");
+    assert!(screen.tab_size_owners.is_empty());
+    assert!(!screen.tab_viewport_for_client(1).unwrap().owner_active);
+}
+
+#[test]
 fn recompute_tab_size_isolates_tabs_with_different_viewers() {
     let initial_size = Size {
         cols: 200,

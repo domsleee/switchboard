@@ -32,6 +32,11 @@ pub enum WebClientToWebServerControlMessagePayload {
         single_pane: bool,
         fit: bool,
     },
+    SetTabViewport {
+        size: Size,
+        tab_position: usize,
+        ownership: Option<bool>,
+    },
     #[serde(other)]
     Unknown,
 }

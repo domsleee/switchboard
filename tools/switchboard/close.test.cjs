@@ -6,7 +6,7 @@ test('Close confirms the clicked tab, preserves its target, and shows errors wit
   const elements=new Map(),calls=[];
   const $=id=>{
     if(!elements.has(id))elements.set(id,{textContent:'',disabled:false,open:false,
-      focus(){},showModal(){this.open=true;},close(){this.open=false;this.onclose?.();},
+      focus(){this.focused=true;},showModal(){this.open=true;},close(){this.open=false;this.onclose?.();},
       addEventListener(type,handler){this['on'+type]=handler;}});
     return elements.get(id);
   };
@@ -29,6 +29,7 @@ test('Close confirms the clicked tab, preserves its target, and shows errors wit
   entry.focusPending=false;entry.followActiveTab=true;context.closeSelectedTab();assert.equal($('close-tab-dialog').open,false);
   entry.followActiveTab=false;context.closeSelectedTab();
   assert.equal($('close-tab-dialog').open,true);assert.equal(calls.length,0);
+  assert.equal($('confirm-close-tab').focused,true);
   assert.equal($('close-tab-name').textContent,'Clicked tab · Windows');
   $('cancel-close-tab').onclick();await $('confirm-close-tab').onclick();assert.equal(calls.length,0);
   context.contextItem=item;$('close-tab').onclick();entry.name='elsewhere';entry.state.panes=[];item.tab.id=90;

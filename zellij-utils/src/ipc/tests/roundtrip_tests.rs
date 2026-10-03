@@ -329,6 +329,16 @@ fn test_client_messages() {
     demo_modifiers_4.insert(KeyModifier::Super);
 
     test_client_roundtrip!(ClientToServerMsg::DetachSession { client_ids: vec![] });
+    for ownership in [None, Some(false), Some(true)] {
+        test_client_roundtrip!(ClientToServerMsg::SetTabViewport {
+            size: Size {
+                rows: 60,
+                cols: 200
+            },
+            tab_position: 2,
+            ownership,
+        });
+    }
     test_client_roundtrip!(ClientToServerMsg::DetachSession {
         client_ids: vec![1],
     });
@@ -3951,6 +3961,13 @@ fn test_server_messages() {
     test_server_roundtrip!(ServerToClientMsg::SetSoftKeyboard { on: false });
     test_server_roundtrip!(ServerToClientMsg::MobileState {
         payload: MobileStatePayload {
+            tab_viewport: Some(crate::ipc::TabViewportPayload {
+                rows: 60,
+                cols: 200,
+                owner_active: true,
+                is_owner: false,
+                constrained: true,
+            }),
             session_name: String::new(),
             now_secs: 0,
             is_welcome_screen: false,
@@ -3969,6 +3986,7 @@ fn test_server_messages() {
     });
     test_server_roundtrip!(ServerToClientMsg::MobileState {
         payload: MobileStatePayload {
+            tab_viewport: None,
             session_name: "my-session".to_string(),
             now_secs: 1_700_000_000,
             is_welcome_screen: true,

@@ -153,7 +153,7 @@ function render() {
     }
     button._item=item;
     const title=tabTitle(item);
-    button.title=`${title}\nDrag to reorder · Alt+Shift+Left/Right or H/L moves this tab · Right-click to archive or close`;
+    button.title=`${title}\nDrag to reorder · Alt+Shift+H/L moves this tab · Right-click to archive or close`;
     const starred = isReady(item);
     button.className = (item.key === selected ? 'selected' : '')+(starred?' needs-attention':'');
     button.setAttribute('aria-pressed',String(item.key===selected));
@@ -184,6 +184,13 @@ function render() {
   $('select-text').disabled=!current;
   $('copy').disabled=!current;
   $('ready').disabled=!current;
+  const viewport=current?.entry.state?.tab_viewport;
+  const sizeOwner=$('size-owner');
+  const focused=current && activeTab(current.entry)?.id===current.tab.id && !current.entry.requestedPane && !current.entry.focusPending && !current.entry.pendingNewTab;
+  sizeOwner.disabled=!focused || !viewport || !current.entry.frame.contentWindow.__zjSupportsTabViewport;
+  sizeOwner.setAttribute('aria-pressed',String(!!viewport?.is_owner));
+  sizeOwner.textContent=viewport?.is_owner?'Release this window’s size':'Use this window’s size';
+  sizeOwner.title=!viewport?'Available in new sessions after updating Switchboard.':viewport.constrained?'A smaller terminal is keeping this tab within its screen.':viewport.is_owner?'Other browser viewers can scroll. Release to fit all viewers.':'Size this tab to this window. Smaller browser viewers can scroll, starting at the bottom.';
   const archiveCount=allTabs(true,true).filter(item=>archived[item.key]).length;
   $('archive').textContent=`Archive${archiveCount?' ('+archiveCount+')':''}`;
   if($('archive-dialog').open)renderArchive();
@@ -304,7 +311,7 @@ window.addEventListener('keydown',event=>{
     return;
   }
   if(!event.altKey||event.ctrlKey||event.metaKey)return;
-  const direction=['KeyH','ArrowLeft'].includes(event.code)?-1:['KeyL','ArrowRight'].includes(event.code)?1:0;
+  const direction=event.code==='KeyH'?-1:event.code==='KeyL'?1:0;
   if(!direction)return;
   event.preventDefault();event.stopImmediatePropagation();
   if(event.shiftKey)moveSelected(direction);else stepTab(direction);
@@ -478,6 +485,11 @@ $('ready').onclick=()=>{
   render();
 };
 $('settings').onclick=()=>$('settings-dialog').showModal();
+$('size-owner').onclick=()=>{
+  const current=allTabs().find(item=>item.key===selected);
+  if(!current || $('size-owner').disabled)return;
+  current.entry.frame.contentWindow.postMessage({type:'zellij-size-owner',tab_position:current.tab.position,owned:!current.entry.state.tab_viewport.is_owner},location.origin);
+};
 $('close-settings').onclick=()=>$('settings-dialog').close();
 $('refresh').onclick=async()=>{
   const button=$('refresh');button.disabled=true;button.textContent='Refreshing…';

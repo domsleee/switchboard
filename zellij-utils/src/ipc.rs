@@ -140,6 +140,15 @@ pub struct MobileRenderPrefsPayload {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct TabViewportPayload {
+    pub cols: usize,
+    pub rows: usize,
+    pub owner_active: bool,
+    pub is_owner: bool,
+    pub constrained: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct MobileStatePayload {
     pub session_name: String,
     pub now_secs: u64,
@@ -151,6 +160,8 @@ pub struct MobileStatePayload {
     pub panes: Vec<MobilePanePayload>,
     pub sessions: Vec<MobileSessionPayload>,
     pub render_prefs: MobileRenderPrefsPayload,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_viewport: Option<TabViewportPayload>,
 }
 
 // Types of messages sent from the client to the server
@@ -240,6 +251,11 @@ pub enum ClientToServerMsg {
     SetMobileRenderPreferences {
         single_pane: bool,
         fit: bool,
+    },
+    SetTabViewport {
+        size: Size,
+        tab_position: usize,
+        ownership: Option<bool>,
     },
     HostTerminalFocusChanged {
         focused: bool,

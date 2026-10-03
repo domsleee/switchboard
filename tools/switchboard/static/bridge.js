@@ -7,6 +7,83 @@
   let escapeStatus;
   let pendingFocus, desiredFocus, focusInputState, focusId;
   let pendingNewTab;
+  let terminalSocket;
+  let scrollport, lastViewport, viewportTab, bottomButton;
+  let chromeKey, nativeTopBar=false, nativeBottomRows=0;
+  function viewportSupported(){return !!window.__zjSupportsTabViewport && !!latest?.tab_viewport;}
+  function physicalViewport(){
+    if(!viewportSupported())return;
+    const cell=window.term?._core?._renderService?.dimensions?.css?.cell;
+    if(!cell?.width||!cell.height)return;
+    const mobile=document.body.classList.contains('zj-mobile-active');
+    const height=(window.visualViewport?.height||window.innerHeight);
+    const width=(window.visualViewport?.width||window.innerWidth);
+    const top=!mobile&&!showNativeTabs&&nativeTopBar?cell.height:0;
+    const nativeRows=mobile?0:nativeBottomRows;
+    const chrome=mobile?parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--zj-chrome-top'))||0:0;
+    const footer=mobile?parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--zj-chrome-bottom'))||0:0;
+    return {cols:Math.max(2,Math.floor(width/cell.width)),rows:Math.max(1,Math.floor((height-chrome-footer+top)/cell.height)+nativeRows)};
+  }
+  window.__zjViewport={
+    dimensions:physicalViewport,
+    getSizing(){
+      if(!viewportSupported())return;
+      const viewport=latest.tab_viewport;
+      return viewport.owner_active?{pinned:true,cols:viewport.cols,rows:viewport.rows}:{pinned:false};
+    },
+    report(size,ownership){
+      const tab=latest?.active_pane?.tab_position;
+      if(!viewportSupported()||!Number.isInteger(tab)||!window.__zjSendControl)return false;
+      const signature=JSON.stringify([tab,size.cols,size.rows]);
+      if(ownership===undefined && lastViewport===signature)return false;
+      lastViewport=signature;
+      window.__zjSendControl({type:'SetTabViewport',size,tab_position:tab,ownership:ownership??null});
+      return true;
+    },
+  };
+  function updateViewport(){
+    if(!scrollport && !window.__zjViewport.getSizing()?.pinned)return;
+    const terminal=document.getElementById('terminal');
+    if(!terminal)return;
+    const sizing=window.__zjViewport.getSizing();
+    if(!sizing?.pinned){
+      if(scrollport){
+        scrollport.before(terminal);scrollport.remove();scrollport=null;
+        for(const key of ['width','height','marginTop'])terminal.style[key]='';
+        bottomButton?.remove();bottomButton=null;viewportTab=null;
+        document.body.classList.remove('switchboard-owned-viewport');
+      }
+      return;
+    }
+    const cell=window.term?._core?._renderService?.dimensions?.css?.cell;
+    if(!cell?.width||!cell.height)return;
+    if(!scrollport){
+      scrollport=document.createElement('div');scrollport.id='switchboard-viewport';
+      terminal.before(scrollport);scrollport.append(terminal);
+      bottomButton=document.createElement('button');bottomButton.id='switchboard-bottom';bottomButton.textContent='Back to bottom';
+      bottomButton.onclick=()=>{scrollport.scrollTop=scrollport.scrollHeight;window.term?.focus();};
+      document.body.append(bottomButton);
+      scrollport.addEventListener('scroll',()=>{bottomButton.hidden=scrollport.scrollHeight-scrollport.clientHeight-scrollport.scrollTop<cell.height;});
+      // Follower scrolling pans the viewport instead of sending wheel input into the TUI.
+      scrollport.addEventListener('wheel',event=>{
+        if(scrollport.scrollHeight>scrollport.clientHeight||scrollport.scrollWidth>scrollport.clientWidth){
+          event.stopPropagation();event.preventDefault();scrollport.scrollTop+=event.deltaY;scrollport.scrollLeft+=event.deltaX;
+        }
+      },{capture:true,passive:false});
+      document.body.classList.add('switchboard-owned-viewport');
+    }
+    const tab=latest.active_pane?.tab_position;
+    const atBottom=viewportTab!==tab||scrollport.scrollHeight-scrollport.clientHeight-scrollport.scrollTop<cell.height;
+    const top=parseFloat(document.documentElement.style.getPropertyValue('--switchboard-tab-height'))||0;
+    const bottomRows=window.__switchboardBottomRows?.(window.term,latest)||0;
+    terminal.style.width=`${Math.max(sizing.cols*cell.width,scrollport.clientWidth)}px`;
+    terminal.style.height=`${Math.max(1,(sizing.rows-bottomRows)*cell.height)}px`;
+    terminal.style.marginTop=`${-top}px`;
+    if(atBottom)scrollport.scrollTop=scrollport.scrollHeight;
+    if(viewportTab!==tab)scrollport.scrollLeft=0;
+    viewportTab=tab;
+    bottomButton.hidden=scrollport.scrollHeight-scrollport.clientHeight-scrollport.scrollTop<cell.height;
+  }
   function releaseNewTab() {
     if(!pendingNewTab)return;
     clearTimeout(pendingNewTab.timeout);
@@ -107,9 +184,17 @@
       sendEscape();
       return;
     }
-    if(!event.altKey||event.ctrlKey||event.metaKey)return;
+    if(!event.altKey||event.ctrlKey||event.metaKey||event.isComposing)return;
+    if(!event.shiftKey && ['ArrowLeft','ArrowRight'].includes(event.code) && terminalFocused()){
+      event.preventDefault();event.stopImmediatePropagation();
+      if(pendingFocus||pendingNewTab||window.term?.options.disableStdin)return;
+      if(terminalSocket?.readyState!==1)return;
+      // Send standard word movement rather than Zellij's Alt+Arrow pane bindings.
+      terminalSocket.send(event.code==='ArrowLeft'?'\x1b[1;5D':'\x1b[1;5C');
+      return;
+    }
     // Physical key codes also work with macOS Option producing ˙ and ¬.
-    const direction=['KeyH','ArrowLeft'].includes(event.code)?-1:['KeyL','ArrowRight'].includes(event.code)?1:0;
+    const direction=event.code==='KeyH'?-1:event.code==='KeyL'?1:0;
     if(!direction)return;
     event.preventDefault();event.stopImmediatePropagation();
     parent.postMessage({type:event.shiftKey?'zellij-tab-move':'zellij-tab-step',host,direction},location.origin);
@@ -118,6 +203,10 @@
   let hookedTerm;
   const style = document.createElement('style');
   style.textContent = `
+    #switchboard-viewport { position:fixed;inset:0;overflow:auto;scrollbar-width:thin;overscroll-behavior:contain; }
+    body.zj-mobile-active #switchboard-viewport { top:var(--zj-chrome-top,0px);bottom:var(--zj-chrome-bottom,0px); }
+    body.switchboard-owned-viewport #terminal { height:auto;overflow:hidden; }
+    #switchboard-bottom { position:fixed;right:16px;bottom:16px;z-index:10000;padding:6px 10px;border:1px solid #555;border-radius:6px;background:#252525;color:white; }
     body.switchboard-hide-tabs:not(.zj-mobile-active),
     body.switchboard-hide-status:not(.zj-mobile-active) { overflow: hidden; }
     body.switchboard-hide-tabs:not(.zj-mobile-active) #terminal,
@@ -150,15 +239,25 @@
     // Only crop an identified native bar. Fullscreen panes and alternate layouts
     // without the bar keep every terminal row. Mobile owns its own viewport.
     const firstRow = term.buffer.active.getLine(term.buffer.active.viewportY)?.translateToString(true) || '';
-    const hide = !showNativeTabs && /^\s*Zellij\s*\(/.test(firstRow) && !document.body.classList.contains('zj-mobile-active');
+    const identifiedTop = /^\s*Zellij\s*\(/.test(firstRow);
     const cellHeight = term._core?._renderService?.dimensions?.css?.cell?.height;
     const bottomRows = window.__switchboardBottomRows?.(term, latest) || 0;
+    if(viewportSupported()){
+      const position=latest.active_pane?.tab_position;
+      const fullscreen=!!latest.render_prefs?.active_pane_is_fullscreen;
+      const key=JSON.stringify([position,fullscreen,(latest.panes||[]).filter(pane=>pane.is_plugin&&pane.tab_position===position).map(pane=>pane.pane_id).sort((a,b)=>a-b)]);
+      if(key!==chromeKey){chromeKey=key;nativeTopBar=false;nativeBottomRows=0;}
+      // Resizing clears xterm temporarily. Keep known chrome measurements until the layout changes.
+      if(!fullscreen){nativeTopBar ||= identifiedTop;nativeBottomRows=Math.max(nativeBottomRows,bottomRows);}
+    }
+    const hide = !showNativeTabs && (viewportSupported()?nativeTopBar:identifiedTop) && !document.body.classList.contains('zj-mobile-active');
     const hideBottom = bottomRows > 0 && !!cellHeight;
     const oldHeight = document.documentElement.style.getPropertyValue('--switchboard-tab-height');
     const height = hide && cellHeight ? `${cellHeight}px` : '0px';
     const changed = document.body.classList.contains('switchboard-hide-tabs') !== hide ||
       document.body.classList.contains('switchboard-hide-status') !== hideBottom ||
       oldHeight !== height;
+    updateViewport();
     if (!changed) return;
     document.documentElement.style.setProperty('--switchboard-tab-height',height);
     document.body.classList.toggle('switchboard-hide-tabs',hide);
@@ -171,6 +270,7 @@
   }
   function sendState(payload) {
     latest = payload;
+    if(viewportSupported())window.dispatchEvent(new Event('zellij:rendering-resize'));
     const created=pendingNewTab&&latest.active_pane&&!latest.active_pane.is_plugin&&!pendingNewTab.panes.has(latest.active_pane.pane_id);
     if(created){releaseNewTab();window.term?.focus();}
     const missingFocus=pendingFocus && Array.isArray(latest.panes) && !latest.panes.some(pane=>pane.pane_id===pendingFocus.pane_id && pane.is_plugin===pendingFocus.is_plugin);
@@ -185,6 +285,10 @@
   window.WebSocket = class extends NativeSocket {
     constructor(...args) {
       super(...args);
+      if(String(args[0]).includes('/ws/terminal')){
+        terminalSocket=this;
+        this.addEventListener('close',()=>{if(terminalSocket===this)terminalSocket=null;});
+      }
       if (String(args[0]).includes('/ws/control')) {
         this.addEventListener('message', event => {
           try {
@@ -198,6 +302,7 @@
         });
         this.addEventListener('close', () => {
           latest = undefined;
+          lastViewport=null;updateViewport();
           releaseFocus();
           releaseNewTab();
           parent.postMessage({type:'zellij-disconnected',host},location.origin);
@@ -225,6 +330,9 @@
     } else if (message?.type === 'zellij-native-tabs') {
       showNativeTabs = !!message.visible;
       updateChrome();
+    } else if(message?.type==='zellij-size-owner' && viewportSupported() && !pendingFocus && !pendingNewTab && message.tab_position===latest.active_pane?.tab_position){
+      const size=physicalViewport();
+      if(size)window.__zjViewport.report(size,!!message.owned);
     } else if (message?.type === 'zellij-new-tab' && window.__zjSendControl) {
       if(pendingFocus||pendingNewTab||!latest?.active_pane||!window.term)return;
       pendingNewTab={panes:new Set((latest.panes||[]).filter(pane=>!pane.is_plugin).map(pane=>pane.pane_id)),disabled:window.term.options.disableStdin};

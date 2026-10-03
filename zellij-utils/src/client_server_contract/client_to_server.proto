@@ -32,7 +32,14 @@ message ClientToServerMsg {
     RequestSessionListMsg request_session_list = 25;
     SetMobileRenderPreferencesMsg set_mobile_render_preferences = 26;
     HostTerminalFocusChangedMsg host_terminal_focus_changed = 27;
+    SetTabViewportMsg set_tab_viewport = 28;
   }
+}
+
+message SetTabViewportMsg {
+  Size size = 1;
+  uint32 tab_position = 2;
+  optional bool ownership = 3;
 }
 
 message DetachSessionMsg {

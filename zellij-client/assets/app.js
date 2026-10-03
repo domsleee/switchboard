@@ -1874,7 +1874,8 @@ function sendInitialRenderPrefs() {
         return false;
     }
     state.initialPrefsSent = true;
-    state.renderMode = "single-pane";
+    // A follower pans the owner's complete layout. Activation must not fullscreen everyone.
+    state.renderMode = window.__zjViewport?.getSizing()?.pinned ? "full" : "single-pane";
     state.fitEnabled = true;
     sendRenderPrefs();
     return true;
@@ -3065,15 +3066,25 @@ function getCellPixelDimensions(term) {
     return null;
 }
 
+window.__zjSupportsTabViewport = true;
+
 function getMobileRenderSizing() {
+    const viewportSizing = window.__zjViewport?.getSizing();
+    if (viewportSizing) return viewportSizing;
     return window.__zjMobileUi && window.__zjMobileUi.getRenderSizing
         ? window.__zjMobileUi.getRenderSizing()
         : { pinned: false };
 }
 
-function sendSizeUpdate(wsControl, ownWebClientId, term, rows, cols) {
+function sendSizeUpdate(wsControl, ownWebClientId, term, rows, cols, force = false) {
     if (!wsControl || !ownWebClientId) {
         return;
+    }
+    const viewport = window.__zjViewport?.dimensions();
+    if (viewport) {
+        rows = viewport.rows;
+        cols = viewport.cols;
+        if (!window.__zjViewport.report(viewport) && !force) return;
     }
     wsControl.send(
         JSON.stringify({
@@ -3290,15 +3301,16 @@ function startWsControl(wsControl, term, fitAddon, ownWebClientId, userConfig) {
                     ownWebClientId,
                     term,
                     sizing.rows,
-                    sizing.cols
+                    sizing.cols,
+                    true
                 );
             } else {
-                const fitDimensions = fitAddon.proposeDimensions();
+                const fitDimensions = window.__zjViewport?.dimensions() || fitAddon.proposeDimensions();
                 const { rows, cols } = fitDimensions;
                 if (rows !== term.rows || cols !== term.cols) {
                     term.resize(cols, rows);
                 }
-                sendSizeUpdate(wsControl, ownWebClientId, term, rows, cols);
+                sendSizeUpdate(wsControl, ownWebClientId, term, rows, cols, true);
             }
         } else if (msg.type === "Log") {
             const { lines } = msg;
@@ -3367,9 +3379,16 @@ function setupResizeHandler(
 
         const sizing = getMobileRenderSizing();
 
+        if (window.__zjViewport?.dimensions()) {
+            sendSizeUpdate(getWsControl(), ownWebClientId, term, term.rows, term.cols);
+        }
+
         if (sizing.pinned) {
             if (sizing.rows !== term.rows || sizing.cols !== term.cols) {
                 term.resize(sizing.cols, sizing.rows);
+                if (window.__zjViewport?.dimensions()) {
+                    sendSizeUpdate(getWsControl(), ownWebClientId, term, term.rows, term.cols, true);
+                }
             }
             if (window.__zjMobilePan) {
                 window.__zjMobilePan.recompute();
@@ -3377,7 +3396,7 @@ function setupResizeHandler(
             return;
         }
 
-        const fitDimensions = fitAddon.proposeDimensions();
+        const fitDimensions = window.__zjViewport?.dimensions() || fitAddon.proposeDimensions();
         if (fitDimensions === undefined) {
             console.warn("failed to get new fit dimensions");
             return;
@@ -3391,7 +3410,7 @@ function setupResizeHandler(
         const wsControl = getWsControl();
         term.resize(cols, rows);
 
-        sendSizeUpdate(wsControl, ownWebClientId, term, rows, cols);
+        sendSizeUpdate(wsControl, ownWebClientId, term, rows, cols, !!window.__zjViewport?.dimensions());
     };
 
     const handleViewportChange = () => {

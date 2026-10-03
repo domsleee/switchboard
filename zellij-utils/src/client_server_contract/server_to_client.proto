@@ -159,4 +159,13 @@ message MobileStateMsg {
   repeated MobilePaneMsg panes = 8;
   repeated MobileSessionMsg sessions = 9;
   MobileRenderPrefsMsg render_prefs = 10;
+  optional TabViewportMsg tab_viewport = 11;
+}
+
+message TabViewportMsg {
+  uint32 cols = 1;
+  uint32 rows = 2;
+  bool owner_active = 3;
+  bool is_owner = 4;
+  bool constrained = 5;
 }

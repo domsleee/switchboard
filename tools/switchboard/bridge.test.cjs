@@ -6,7 +6,7 @@ const source=fs.readFileSync(__dirname+'/static/bridge.js','utf8');
 function harness(){
   const handlers={},messages=[],properties=new Map(),classes=new Set(),frames=[],resizes=[],timers=new Map();let timerId=0;
   let modal=false,focused=false,bottomRows=2,firstRow='Zellij (main)';
-  class Socket{constructor(){this.handlers={};}addEventListener(type,fn){this.handlers[type]=fn;}}
+  class Socket{constructor(){this.handlers={};this.readyState=1;this.sent=[];}addEventListener(type,fn){this.handlers[type]=fn;}send(data){this.sent.push(data);}}
   const parent={postMessage:data=>messages.push(data)};
   const window={WebSocket:Socket,addEventListener:(type,fn)=>handlers[type]=fn,dispatchEvent:()=>resizes.push(1),
     __switchboardBottomRows:()=>bottomRows,
@@ -15,7 +15,7 @@ function harness(){
     activeElement:{},
     body:{append(){},classList:{contains:c=>classes.has(c),toggle:(c,on)=>on?classes.add(c):classes.delete(c)}},
     documentElement:{style:{getPropertyValue:key=>properties.get(key)||'',setProperty:(key,val)=>properties.set(key,val)}}};
-  vm.runInNewContext(source,{window,document,parent,location:{pathname:'/hosts/windows/main',origin:'http://localhost:8090'},localStorage:{getItem:()=>null},MutationObserver:class{observe(){}},requestAnimationFrame:fn=>frames.push(fn),setTimeout:fn=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id),Event:class{}});
+  vm.runInNewContext(source,{window,document,parent,location:{pathname:'/hosts/windows/main',origin:'http://localhost:8090'},localStorage:{getItem:()=>null},MutationObserver:class{observe(){}},requestAnimationFrame:fn=>frames.push(fn),setTimeout:fn=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id),Event:class{},TextEncoder});
   const key=(code,extra={})=>{const event={code,altKey:true,ctrlKey:false,metaKey:false,shiftKey:false,preventDefault(){this.prevented=true;},stopImmediatePropagation(){this.stopped=true;},...extra};handlers.keydown(event);return event;};
   const state=(payload={})=>{const socket=new window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');socket.handlers.message({data:JSON.stringify({type:'MobileState',payload})});while(frames.length)frames.shift()();};
   const error=(...lines)=>{const socket=new window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');socket.handlers.message({data:JSON.stringify({type:'LogError',lines})});};
@@ -44,14 +44,25 @@ test('failed New tab creation restores input on timeout or disconnect',()=>{
     assert.equal(h.window.term.options.disableStdin,false);assert.equal(h.timers.size,0);
   }
 });
-test('iframe arrows and H/L send one switch/move and stop native/browser navigation',()=>{
+test('iframe H/L send one switch/move and stop native/browser navigation',()=>{
   const h=harness();
-  for(const [code,direction] of [['ArrowLeft',-1],['ArrowRight',1],['KeyH',-1],['KeyL',1]]){
+  for(const [code,direction] of [['KeyH',-1],['KeyL',1]]){
     h.messages.length=0;const event=h.key(code);
     assert.equal(event.prevented,true);assert.equal(event.stopped,true);assert.equal(h.messages.length,1);
     assert.equal(h.messages[0].type,'zellij-tab-step');assert.equal(h.messages[0].direction,direction);
   }
-  h.messages.length=0;h.key('ArrowRight',{shiftKey:true});assert.equal(h.messages[0].type,'zellij-tab-move');
+  h.messages.length=0;h.key('KeyL',{shiftKey:true});assert.equal(h.messages[0].type,'zellij-tab-move');
+});
+test('Alt arrows move by words without switching tabs or panes',()=>{
+  const h=harness();h.setFocus(true);
+  const socket=new h.window.WebSocket('ws://localhost:8090/hosts/windows/ws/terminal/main');
+  for(const code of ['ArrowLeft','ArrowRight'])assert.equal(h.key(code).prevented,true);
+  assert.deepEqual(socket.sent.map(data=>Buffer.from(data).toString()),['\x1b[1;5D','\x1b[1;5C']);
+  assert.equal(h.messages.length,0);
+  h.window.term.options.disableStdin=true;assert.equal(h.key('ArrowLeft').prevented,true);
+  h.window.term.options.disableStdin=false;socket.handlers.close();assert.equal(h.key('ArrowRight').prevented,true);
+  assert.equal(socket.sent.length,2);
+  assert.equal(h.key('ArrowLeft',{shiftKey:true}).prevented,undefined);
 });
 test('iframe modal and unrelated/modified keys keep native behavior',()=>{
   const h=harness();

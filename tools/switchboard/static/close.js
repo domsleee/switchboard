@@ -10,7 +10,7 @@
     target={host:item.entry.host,key:item.key,session:item.entry.name,tab_id:item.tab.id};
     $('close-tab-name').textContent=`${tabTitle(item)} · ${hosts.get(item.entry.host)?.name || item.entry.host}`;
     error.textContent='';confirm.disabled=false;
-    dialog.showModal();$('cancel-close-tab').focus();
+    dialog.showModal();confirm.focus();
   };
   $('cancel-close-tab').onclick=()=>dialog.close();
   dialog.addEventListener('close',()=>{target=null;});

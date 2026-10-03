@@ -36,6 +36,7 @@ body.sidebar-collapsed #sidebar-toggle{left:8px}
 #ready:hover{color:#ffd57a;background:#222732}
 .sidebar-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
 .sidebar-actions button{padding:6px;min-width:0;white-space:normal}
+#size-owner{width:100%;margin-top:6px;padding:6px;font-size:11px;white-space:normal}
 #sidebar-utilities{border-top:1px solid #2b303b;padding-top:8px}
 #sidebar-utilities button{background:transparent;border-color:transparent;color:#b5bfd0}
 #sidebar-utilities button:hover{background:#222732;color:#e5e7eb}

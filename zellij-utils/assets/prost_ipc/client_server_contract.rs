@@ -3068,7 +3068,7 @@ impl ThemeHue {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ClientToServerMsg {
-    #[prost(oneof="client_to_server_msg::Message", tags="1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27")]
+    #[prost(oneof="client_to_server_msg::Message", tags="1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28")]
     pub message: ::core::option::Option<client_to_server_msg::Message>,
 }
 /// Nested message and enum types in `ClientToServerMsg`.
@@ -3130,7 +3130,19 @@ pub mod client_to_server_msg {
         SetMobileRenderPreferences(super::SetMobileRenderPreferencesMsg),
         #[prost(message, tag="27")]
         HostTerminalFocusChanged(super::HostTerminalFocusChangedMsg),
+        #[prost(message, tag="28")]
+        SetTabViewport(super::SetTabViewportMsg),
     }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SetTabViewportMsg {
+    #[prost(message, optional, tag="1")]
+    pub size: ::core::option::Option<Size>,
+    #[prost(uint32, tag="2")]
+    pub tab_position: u32,
+    #[prost(bool, optional, tag="3")]
+    pub ownership: ::core::option::Option<bool>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -3607,4 +3619,20 @@ pub struct MobileStateMsg {
     pub sessions: ::prost::alloc::vec::Vec<MobileSessionMsg>,
     #[prost(message, optional, tag="10")]
     pub render_prefs: ::core::option::Option<MobileRenderPrefsMsg>,
+    #[prost(message, optional, tag="11")]
+    pub tab_viewport: ::core::option::Option<TabViewportMsg>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TabViewportMsg {
+    #[prost(uint32, tag="1")]
+    pub cols: u32,
+    #[prost(uint32, tag="2")]
+    pub rows: u32,
+    #[prost(bool, tag="3")]
+    pub owner_active: bool,
+    #[prost(bool, tag="4")]
+    pub is_owner: bool,
+    #[prost(bool, tag="5")]
+    pub constrained: bool,
 }

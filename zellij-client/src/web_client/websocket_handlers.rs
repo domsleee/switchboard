@@ -394,6 +394,15 @@ fn control_payload_to_server_msg(
             single_pane,
             fit,
         } => ClientToServerMsg::SetMobileRenderPreferences { single_pane, fit },
+        WebClientToWebServerControlMessagePayload::SetTabViewport {
+            size,
+            tab_position,
+            ownership,
+        } => ClientToServerMsg::SetTabViewport {
+            size,
+            tab_position,
+            ownership,
+        },
         WebClientToWebServerControlMessagePayload::Unknown => {
             log::warn!("Ignoring unknown control message type from web client");
             return None;
@@ -573,6 +582,31 @@ mod tests {
                 assert!(fit);
             },
             other => panic!("expected SetMobileRenderPreferences, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tab_viewport_reports_and_ownership_survive_web_control_conversion() {
+        for ownership in [None, Some(false), Some(true)] {
+            let raw = serde_json::json!({
+                "web_client_id": "abc",
+                "payload": {
+                    "type": "SetTabViewport",
+                    "size": { "rows": 24, "cols": 80 },
+                    "tab_position": 2,
+                    "ownership": ownership,
+                }
+            });
+            let parsed: WebClientToWebServerControlMessage =
+                serde_json::from_value(raw).expect("parse");
+            assert_eq!(
+                control_payload_to_server_msg(parsed.payload),
+                Some(ClientToServerMsg::SetTabViewport {
+                    size: Size { rows: 24, cols: 80 },
+                    tab_position: 2,
+                    ownership,
+                })
+            );
         }
     }
 

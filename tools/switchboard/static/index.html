@@ -10,12 +10,13 @@
 <label class="sr-only" for="tab-search">Search tabs and machines</label><input id="tab-search" type="search" placeholder="Search tabs…" autocomplete="off">
 <nav id="filters" aria-label="Machine group"><button data-filter="all" class="selected">All</button><button data-filter="work">Work</button><button data-filter="home">Home</button></nav>
 </div>
-<nav id="tabs" aria-label="Tabs across machines" title="Alt+Left/Right or H/L: switch tabs · Add Shift to reorder"></nav>
+<nav id="tabs" aria-label="Tabs across machines" title="Alt+H/L: switch tabs · Add Shift to reorder"></nav>
 <p id="tab-no-results" hidden>No matching tabs.</p>
 <div id="sidebar-bottom">
 <section id="current-tab-actions" aria-labelledby="current-tab-heading">
 <div class="sidebar-section-heading"><h2 id="current-tab-heading">Current tab</h2><button id="ready" title="Mark selected tab as ready for review">☆ Mark ready</button></div>
 <div class="sidebar-actions"><button id="select-text" aria-pressed="false" title="Enable text selection, then drag over terminal text">Select text</button><button id="copy" title="Copy selected text · Cmd+C on Mac · Ctrl+Shift+C on Windows">Copy</button></div>
+<button id="size-owner" aria-pressed="false" disabled>Use this window’s size</button>
 </section>
 <nav id="sidebar-utilities" class="sidebar-actions" aria-label="Workspace"><button id="archive" title="Find and restore archived tabs">Archive</button><button id="settings" aria-controls="settings-dialog" aria-haspopup="dialog" title="Terminal appearance and machine groups">Settings</button></nav>
 </div>

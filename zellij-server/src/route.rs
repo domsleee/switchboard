@@ -2878,6 +2878,14 @@ pub(crate) fn route_thread_main(
                                 retry_queue
                             );
                         },
+                        ClientToServerMsg::SetTabViewport { size, tab_position, ownership } => {
+                            let _ = send_to_screen_or_retry_queue!(
+                                senders,
+                                ScreenInstruction::SetTabViewport { client_id, size, tab_position, ownership },
+                                instruction,
+                                retry_queue
+                            );
+                        },
                     }
                     Ok(should_break)
                 };

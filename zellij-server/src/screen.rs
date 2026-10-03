@@ -863,6 +863,12 @@ pub enum ScreenInstruction {
         single_pane: bool,
         fit: bool,
     },
+    SetTabViewport {
+        client_id: ClientId,
+        size: Size,
+        tab_position: usize,
+        ownership: Option<bool>,
+    },
     TogglePaneEmbedOrEjectForPaneId(PaneId),
     CloseTabWithIndex(usize),
     BreakPanesToNewTab {
@@ -1238,6 +1244,7 @@ impl From<&ScreenInstruction> for ScreenContext {
             ScreenInstruction::SetMobileRenderPreferences { .. } => {
                 ScreenContext::SetMobileRenderPreferences
             },
+            ScreenInstruction::SetTabViewport { .. } => ScreenContext::SetTabViewport,
             ScreenInstruction::TogglePaneEmbedOrEjectForPaneId(..) => {
                 ScreenContext::TogglePaneEmbedOrEjectForPaneId
             },
@@ -1541,6 +1548,8 @@ pub(crate) struct Screen {
     /// The indices of this [`Screen`]'s active [`Tab`]s.
     active_tab_ids: BTreeMap<ClientId, usize>,
     client_sizes: HashMap<ClientId, Size>,
+    web_viewport_clients: HashSet<ClientId>,
+    tab_size_owners: HashMap<usize, ClientId>,
     global_last_active_tab_id: usize,
     tab_history: BTreeMap<ClientId, Vec<usize>>,
     pane_history: BTreeMap<ClientId, Vec<PaneId>>,
@@ -1751,6 +1760,8 @@ impl Screen {
             connected_clients: Rc::new(RefCell::new(HashMap::new())),
             active_tab_ids: BTreeMap::new(),
             client_sizes: HashMap::new(),
+            web_viewport_clients: HashSet::new(),
+            tab_size_owners: HashMap::new(),
             global_last_active_tab_id: 0,
             tabs: BTreeMap::new(),
             last_single_pane_tab_names: HashMap::new(),
@@ -2351,6 +2362,59 @@ impl Screen {
         self.client_sizes.insert(client_id, size);
     }
 
+    pub fn set_tab_viewport(
+        &mut self,
+        client_id: ClientId,
+        size: Size,
+        tab_position: usize,
+        ownership: Option<bool>,
+    ) -> Result<()> {
+        // Only clients that can pan a virtual canvas may opt out of the minimum-size rule.
+        if self.connected_clients.borrow().get(&client_id) != Some(&true)
+            || size.rows == 0
+            || size.cols == 0
+        {
+            return Ok(());
+        }
+        let Some(tab_id) = self.active_tab_ids.get(&client_id).copied() else {
+            return Ok(());
+        };
+        if self.tabs.get(&tab_id).map(|tab| tab.position) != Some(tab_position) {
+            return Ok(());
+        }
+        self.web_viewport_clients.insert(client_id);
+        self.set_client_size(client_id, size);
+        match ownership {
+            Some(true) => {
+                self.tab_size_owners.insert(tab_id, client_id);
+            },
+            Some(false) if self.tab_size_owners.get(&tab_id) == Some(&client_id) => {
+                self.tab_size_owners.remove(&tab_id);
+            },
+            _ => {},
+        }
+        self.recompute_tab_size(tab_id)
+    }
+
+    fn tab_viewport_for_client(
+        &self,
+        client_id: ClientId,
+    ) -> Option<zellij_utils::ipc::TabViewportPayload> {
+        let tab_id = self.active_tab_ids.get(&client_id)?;
+        let tab = self.tabs.get(tab_id)?;
+        let owner = self.tab_size_owners.get(tab_id).copied();
+        Some(zellij_utils::ipc::TabViewportPayload {
+            cols: tab.size.cols,
+            rows: tab.size.rows,
+            owner_active: owner.is_some(),
+            is_owner: owner == Some(client_id),
+            constrained: owner
+                .and_then(|id| self.client_sizes.get(&id))
+                .map(|size| *size != tab.size)
+                .unwrap_or(false),
+        })
+    }
+
     fn size_for_client(&self, client_id: Option<ClientId>) -> Size {
         client_id
             .and_then(|client_id| self.client_sizes.get(&client_id).copied())
@@ -2386,6 +2450,33 @@ impl Screen {
 
     pub fn recompute_tab_size(&mut self, tab_id: usize) -> Result<()> {
         let err_context = || format!("failed to recompute size for tab {tab_id}");
+
+        self.tab_size_owners
+            .retain(|tab_id, client_id| self.active_tab_ids.get(client_id) == Some(tab_id));
+        if let Some(owner_size) = self
+            .tab_size_owners
+            .get(&tab_id)
+            .and_then(|id| self.client_sizes.get(id))
+            .copied()
+        {
+            let mut new_size = owner_size;
+            // Older browsers and plain terminals cannot pan. Keep their render within bounds.
+            for (client_id, active_tab) in &self.active_tab_ids {
+                if *active_tab == tab_id && !self.web_viewport_clients.contains(client_id) {
+                    if let Some(size) = self.client_sizes.get(client_id) {
+                        new_size.rows = new_size.rows.min(size.rows);
+                        new_size.cols = new_size.cols.min(size.cols);
+                    }
+                }
+            }
+            if let Some(tab) = self.tabs.get_mut(&tab_id) {
+                if tab.size != new_size {
+                    tab.resize_whole_tab(new_size).with_context(err_context)?;
+                    tab.set_force_render();
+                }
+            }
+            return Ok(());
+        }
 
         let mut rows: Vec<usize> = Vec::new();
         let mut cols: Vec<usize> = Vec::new();
@@ -5187,6 +5278,8 @@ impl Screen {
             self.push_sixel_host_support_to_tabs();
         }
         self.client_sizes.remove(&client_id);
+        self.web_viewport_clients.remove(&client_id);
+        self.tab_size_owners.retain(|_, owner| *owner != client_id);
         self.pane_render_subscribers.remove(&client_id);
         self.client_host_focused.remove(&client_id);
         self.client_notification_protocols.remove(&client_id);
@@ -5686,6 +5779,7 @@ impl Screen {
                 panes: panes.clone(),
                 sessions: sessions.clone(),
                 render_prefs,
+                tab_viewport: self.tab_viewport_for_client(client_id),
             };
 
             let mut comparable = payload.clone();
@@ -10039,6 +10133,13 @@ pub(crate) fn screen_thread_main(
                 let active_tab_id = screen.active_tab_ids.get(&client_id).copied();
                 if let Some(tab_id) = active_tab_id {
                     screen.recompute_tab_size(tab_id)?;
+                    // A browser can resize its virtual grid without changing its physical size.
+                    // Repaint after its acknowledgement so the new canvas receives every row.
+                    if screen.web_viewport_clients.contains(&client_id) {
+                        if let Some(tab) = screen.tabs.get_mut(&tab_id) {
+                            tab.set_force_render();
+                        }
+                    }
                 }
                 if !screen.client_is_web(client_id) {
                     screen.recompute_fit_disabled_tabs()?;
@@ -11900,6 +12001,16 @@ pub(crate) fn screen_thread_main(
                 fit,
             } => {
                 screen.set_mobile_render_preferences(client_id, single_pane, fit)?;
+                screen.log_and_report_session_state()?;
+            },
+            ScreenInstruction::SetTabViewport {
+                client_id,
+                size,
+                tab_position,
+                ownership,
+            } => {
+                screen.set_tab_viewport(client_id, size, tab_position, ownership)?;
+                screen.render(None)?;
                 screen.log_and_report_session_state()?;
             },
             ScreenInstruction::TogglePaneEmbedOrEjectForPaneId(pane_id) => {

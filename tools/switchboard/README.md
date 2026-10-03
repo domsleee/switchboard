@@ -45,24 +45,32 @@ is required. Windows sees the hosts in its own configuration; the Mac's
 loopback-only native server is not reachable from Windows.
 Remove the Startup shortcut to disable automatic startup. Other hosts can use
 `zellij web --daemonize` to detach web from their terminal.
-**Alt+Left / Alt+Right**, or **Alt+H / Alt+L**, move to the previous/next visible tab across machines, wrapping
+**Alt+H / Alt+L** move to the previous/next visible tab across machines, wrapping
 at either end. They work from inside the terminal and follow the current group
-filter. These shortcuts are intercepted before reaching native Zellij.
+filter. **Alt+Left / Alt+Right** move between words inside the terminal.
 **Right-click a sidebar tab → Archive** hides it without closing its terminal.
-**Right-click → Close…**, or **Ctrl+D**, asks for confirmation, then closes every pane in that
+**Right-click → Close…**, or **Ctrl+D then Enter**, confirms closing every pane in that
 tab and stops its processes. It targets the tab by its native stable ID, even
 when another tab is focused.
 Use **Archive** to search archived tabs across machines and restore one. Archive
 state is saved in this browser; archived ready tabs still count as notifications.
 Tabs and controls live in one stable, resizable left sidebar, leaving the full
 terminal height available. An amber dot marks tabs that
-need attention; viewing a result clears the dot without moving the tab. Machine
-names stay beneath each tab, and work/home remain optional filters. Search names and
+need attention; viewing a result clears the dot without moving the tab.
+
+Choose **Use this window’s size** to size the current tab to this browser. Smaller browser
+viewers scroll over the same layout and start at the bottom, near the prompt. **Back to bottom**
+returns after scrolling up. **Release this window’s size** restores sizing to fit all viewers.
+Ownership transfers when another browser claims it, and releases when the owner leaves the tab or disconnects.
+Smaller plain terminals and older browsers still constrain the layout because they cannot pan.
+Existing sessions need the updated native server; updating the web server alone does not update a running session.
+
+Machine names stay beneath each tab, and work/home remain optional filters. Search names and
 machines with **Cmd/Ctrl+K**, including from inside the terminal; Enter opens the
 first result. Searching does not change the current terminal until you choose a
 result. The **☰** button collapses the sidebar; on mobile it opens a drawer that closes
 when you select a tab. Width and desktop collapse state persist in this browser.
-Drag tabs across machines to rearrange them, or use **Alt+Shift+Left / Alt+Shift+Right** (also H/L) to move the
+Drag tabs across machines to rearrange them, or use **Alt+Shift+H / Alt+Shift+L** to move the
 selected tab left/right. The order is saved in this browser, including across
 work/home filters. Attention changes never reorder tabs. The URL follows the selected machine, session,
 and native tab ID; refreshing reconnects to that terminal. Opening a link to an

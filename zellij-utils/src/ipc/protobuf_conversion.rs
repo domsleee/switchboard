@@ -17,9 +17,9 @@ use crate::{
         MobileTabMsg, NestedSessionFrameFromHostMsg, PaneMetadata as ProtoPaneMetadata,
         PaneRenderUpdateMsg, QueryTerminalSizeMsg, RenamedSessionMsg, RenderMsg,
         RequestSessionListMsg, ServerToClientMsg as ProtoServerToClientMsg,
-        SetMobileRenderPreferencesMsg, SetSoftKeyboardMsg, SixelSupportMsg,
+        SetMobileRenderPreferencesMsg, SetSoftKeyboardMsg, SetTabViewportMsg, SixelSupportMsg,
         SoftKeyboardVisibilityChangedMsg, StartWebServerMsg, SubscribeToPaneRendersMsg,
-        SubscribedPaneClosedMsg, SwitchSessionMsg, TabMetadata as ProtoTabMetadata,
+        SubscribedPaneClosedMsg, SwitchSessionMsg, TabMetadata as ProtoTabMetadata, TabViewportMsg,
         TerminalPixelDimensionsMsg, TerminalResizeMsg, UnblockCliPipeInputMsg,
         UnblockInputThreadMsg, WebServerStartedMsg,
     },
@@ -28,7 +28,7 @@ use crate::{
     ipc::{
         ClientToServerMsg, ColorRegister, ExitReason, MobileActivePanePayload, MobilePanePayload,
         MobileRenderPrefsPayload, MobileSessionPayload, MobileSizePayload, MobileStatePayload,
-        MobileTabPayload, PaneReference, PixelDimensions, ServerToClientMsg,
+        MobileTabPayload, PaneReference, PixelDimensions, ServerToClientMsg, TabViewportPayload,
     },
 };
 use std::collections::BTreeMap;
@@ -185,6 +185,15 @@ impl From<ClientToServerMsg> for ProtoClientToServerMsg {
                     HostTerminalFocusChangedMsg { focused },
                 )
             },
+            ClientToServerMsg::SetTabViewport {
+                size,
+                tab_position,
+                ownership,
+            } => client_to_server_msg::Message::SetTabViewport(SetTabViewportMsg {
+                size: Some(size.into()),
+                tab_position: tab_position as u32,
+                ownership,
+            }),
         };
 
         ProtoClientToServerMsg {
@@ -362,6 +371,16 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
                 })
             },
             None => Err(anyhow!("Empty ClientToServerMsg message")),
+            Some(client_to_server_msg::Message::SetTabViewport(msg)) => {
+                Ok(ClientToServerMsg::SetTabViewport {
+                    size: msg
+                        .size
+                        .ok_or_else(|| anyhow!("Missing viewport size"))?
+                        .try_into()?,
+                    tab_position: msg.tab_position as usize,
+                    ownership: msg.ownership,
+                })
+            },
         }
     }
 }
@@ -470,6 +489,13 @@ impl From<ServerToClientMsg> for ProtoServerToClientMsg {
 
 fn mobile_state_payload_to_proto(payload: MobileStatePayload) -> MobileStateMsg {
     MobileStateMsg {
+        tab_viewport: payload.tab_viewport.map(|v| TabViewportMsg {
+            cols: v.cols as u32,
+            rows: v.rows as u32,
+            owner_active: v.owner_active,
+            is_owner: v.is_owner,
+            constrained: v.constrained,
+        }),
         session_name: payload.session_name,
         now_secs: payload.now_secs,
         is_welcome_screen: payload.is_welcome_screen,
@@ -526,6 +552,13 @@ fn mobile_state_payload_to_proto(payload: MobileStatePayload) -> MobileStateMsg 
 
 fn mobile_state_payload_from_proto(msg: MobileStateMsg) -> MobileStatePayload {
     MobileStatePayload {
+        tab_viewport: msg.tab_viewport.map(|v| TabViewportPayload {
+            cols: v.cols as usize,
+            rows: v.rows as usize,
+            owner_active: v.owner_active,
+            is_owner: v.is_owner,
+            constrained: v.constrained,
+        }),
         session_name: msg.session_name,
         now_secs: msg.now_secs,
         is_welcome_screen: msg.is_welcome_screen,
