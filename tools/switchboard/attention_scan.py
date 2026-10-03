@@ -54,13 +54,22 @@ def run(binary, session, *action, timeout=5):
 
 
 def scan_sessions(names, binary='zellij', offset=0):
-    records = []
+    records, tabs = [], []
     deadline=time.monotonic()+8
     for name in names:
         try:
             panes=json.loads(run(binary, name, 'list-panes', '--json', '--all'))
         except (RuntimeError, subprocess.TimeoutExpired, ValueError):
             continue
+        by_tab = {}
+        for pane in panes:
+            tab = by_tab.setdefault(pane['tab_id'], {'session': name, 'id': pane['tab_id'],
+                'position': pane['tab_position'], 'name': pane['tab_name'], 'panes': []})
+            if pane.get('is_selectable', True) and not pane.get('is_suppressed'):
+                tab['panes'].append({'pane_id': pane['id'], 'is_plugin': pane['is_plugin'],
+                    'tab_position': pane['tab_position'], 'title': pane.get('title', ''),
+                    'is_floating': pane.get('is_floating', False)})
+        tabs.extend(sorted(by_tab.values(), key=lambda tab: tab['position']))
         ordered=panes[offset%len(panes):]+panes[:offset%len(panes)] if panes else []
         for pane in ordered:
             if pane.get('is_plugin') or not pane.get('is_selectable', True):
@@ -74,7 +83,7 @@ def scan_sessions(names, binary='zellij', offset=0):
                 except (RuntimeError, subprocess.TimeoutExpired):
                     status = {'state':'unknown','error':'Pane snapshot unavailable'}
             records.append({'session': name, 'pane_id': pane['id'], 'tab_id': pane['tab_id'], **status})
-    return records
+    return {'panes': records, 'tabs': tabs}
 
 
 if __name__ == '__main__':

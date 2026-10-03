@@ -66,7 +66,7 @@ selected tab left/right. The order is saved in this browser, including across
 work/home filters. Attention changes never reorder tabs.
 Tab labels and the browser window title follow live Codex/Claude pane titles,
 including `/rename` updates. Agent spinner prefixes are stripped from labels.
-Use **+ New tab** to open a shell in a chosen machine/session. The new tab is
+Use **+ New tab** or **Ctrl+Alt+N** to open a shell in a chosen machine/session. The new tab is
 selected automatically.
 Shell directory titles retain explicitly named Zellij tabs. If an agent disables
 terminal title updates, Switchboard cannot obtain the chat name through this

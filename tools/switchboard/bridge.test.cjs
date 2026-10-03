@@ -38,12 +38,12 @@ test('iframe modal and unrelated/modified keys keep native behavior',()=>{
 });
 test('native top and bottom crop independently and restore zero offsets',()=>{
   const h=harness();h.state();
-  assert.equal(h.properties.get('--switchboard-tab-height'),'18px');assert.equal(h.properties.get('--switchboard-bottom-height'),'36px');
+  assert.equal(h.properties.get('--switchboard-tab-height'),'18px');
   h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-native-tabs',visible:true}});
   assert.equal(h.classes.has('switchboard-hide-tabs'),false);assert.equal(h.classes.has('switchboard-hide-status'),true);
   assert.equal(h.properties.get('--switchboard-tab-height'),'0px');
   h.setBottomRows(0);h.setFirstRow('agent output');h.state();
-  assert.equal(h.classes.has('switchboard-hide-status'),false);assert.equal(h.properties.get('--switchboard-bottom-height'),'0px');
+  assert.equal(h.classes.has('switchboard-hide-status'),false);
 });
 
 test("bottom-bar redraws do not trigger the resize feedback loop",()=>{
@@ -83,15 +83,16 @@ test('rapid A to B to A waits for B then acknowledges the replacement A',()=>{
   assert.equal(h.messages.at(-1).focus_id,2);assert.equal(h.messages.at(-1).focus_pending,false);
 });
 
-test('a rejected focus retires its request and acknowledges the queued replacement',()=>{
+test('a rejected A to B to A focus immediately acknowledges A without a no-op command',()=>{
   const h=harness(),sent=[];h.window.__zjSendControl=message=>sent.push(message);
   h.state({active_pane:{pane_id:1,is_plugin:false}});
   const focus=(pane_id,focus_id)=>h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-focus',pane_id,is_plugin:false,focus_id}});
   focus(2,1);focus(1,2);
   h.error('Unrelated clipboard error');assert.deepEqual(sent.map(x=>x.pane_id),[2]);assert.equal(h.window.term.options.disableStdin,true);
-  h.error('Could not find pane with id: Terminal(2)');assert.deepEqual(sent.map(x=>x.pane_id),[2,1]);assert.equal(h.window.term.options.disableStdin,true);
-  h.state({active_pane:{pane_id:1,is_plugin:false}});
+  h.error('Could not find pane with id: Terminal(2)');assert.deepEqual(sent.map(x=>x.pane_id),[2]);
   assert.equal(h.window.term.options.disableStdin,false);assert.equal(h.messages.at(-1).focus_id,2);assert.equal(h.messages.at(-1).focus_pending,false);
+  assert.equal(h.window.term.element.style.pointerEvents,'');
+  assert.equal(h.messages.some(message=>message.type==='zellij-focus-failed'),false);
 });
 
 test('a disappeared target releases input and reports the exact failed request',()=>{
@@ -104,15 +105,31 @@ test('a disappeared target releases input and reports the exact failed request',
   assert.equal(h.window.term.options.disableStdin,false);assert.equal(h.messages.at(-1).focus_pending,false);
 });
 
-test('disappearance cannot acknowledge the replacement focus dispatched by that same state',()=>{
+test('a disappeared B in A to B to A immediately acknowledges the already active A',()=>{
   const h=harness(),sent=[];h.window.__zjSendControl=message=>sent.push(message);
   const panes=[{pane_id:1,is_plugin:false},{pane_id:2,is_plugin:false}],state={active_pane:panes[0],panes};h.state(state);
   const focus=(pane_id,focus_id)=>h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-focus',pane_id,is_plugin:false,focus_id}});
   focus(2,1);focus(1,2);
   h.state({...state,panes:[panes[0]]});
-  assert.deepEqual(sent.map(command=>command.pane_id),[2,1]);assert.equal(h.window.term.options.disableStdin,true);
-  assert.equal(h.messages.at(-1).focus_id,2);assert.equal(h.messages.at(-1).focus_pending,true);
-  h.state({...state,panes:[panes[0]]});assert.equal(h.window.term.options.disableStdin,false);assert.equal(h.messages.at(-1).focus_pending,false);
+  assert.deepEqual(sent.map(command=>command.pane_id),[2]);assert.equal(h.window.term.options.disableStdin,false);
+  assert.equal(h.messages.at(-1).focus_id,2);assert.equal(h.messages.at(-1).focus_pending,false);
+  assert.equal(h.window.term.element.style.pointerEvents,'');
+  assert.equal(h.messages.some(message=>message.type==='zellij-focus-failed'),false);
+});
+
+test('a rejected focus still waits when its queued replacement is not the active pane',()=>{
+  for(const disappeared of [false,true]){
+    const h=harness(),sent=[];h.window.__zjSendControl=message=>sent.push(message);
+    const panes=[1,2,3].map(pane_id=>({pane_id,is_plugin:false}));
+    h.state({active_pane:panes[0],panes});
+    const focus=(pane_id,focus_id)=>h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-focus',pane_id,is_plugin:false,focus_id}});
+    focus(2,1);focus(3,2);
+    if(disappeared)h.state({active_pane:panes[0],panes:[panes[0],panes[2]]});
+    else h.error('Could not find pane with id: Terminal(2)');
+    assert.deepEqual(sent.map(command=>command.pane_id),[2,3]);assert.equal(h.window.term.options.disableStdin,true);
+    h.state({active_pane:panes[2],panes:[panes[0],panes[2]]});
+    assert.equal(h.window.term.options.disableStdin,false);assert.equal(h.messages.at(-1).focus_id,2);assert.equal(h.messages.at(-1).focus_pending,false);
+  }
 });
 
 test('Cmd/Ctrl+K opens sidebar search from the terminal and respects dialogs',()=>{
@@ -141,4 +158,21 @@ test('Ctrl+D requests Close once from the focused terminal, preserving modifiers
   h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-focus',pane_id:2,is_plugin:false}});
   h.messages.length=0;h.key('KeyD',{altKey:false,ctrlKey:true});
   assert.equal(h.messages.length,0);
+});
+
+test('Ctrl+Alt+N opens New tab once only from terminal focus and leaves Ctrl+T reserved',()=>{
+  const h=harness();h.setFocus(true);
+  const key=h.key('KeyN',{ctrlKey:true});
+  assert.equal(key.prevented,true);assert.equal(key.stopped,true);
+  assert.equal(h.messages.length,1);assert.equal(h.messages[0].type,'zellij-open-new-tab');assert.equal(h.messages[0].host,'windows');
+  const repeat=h.key('KeyN',{ctrlKey:true,repeat:true});
+  assert.equal(repeat.prevented,true);assert.equal(repeat.stopped,true);assert.equal(h.messages.length,1);
+  for(const extra of [{ctrlKey:false},{altKey:false},{metaKey:true},{shiftKey:true},{isComposing:true}]){
+    assert.equal(h.key('KeyN',{ctrlKey:true,...extra}).prevented,undefined);
+  }
+  for(const extra of [{ctrlKey:true},{metaKey:true}])assert.equal(h.key('KeyT',{altKey:false,...extra}).prevented,undefined);
+  h.setFocus(false);assert.equal(h.key('KeyN',{ctrlKey:true}).prevented,undefined);
+  h.setFocus(true);h.setModal(true);assert.equal(h.key('KeyN',{ctrlKey:true}).prevented,undefined);
+  h.setModal(false);h.parent.document={querySelector:()=>({})};
+  assert.equal(h.key('KeyN',{ctrlKey:true}).prevented,undefined);assert.equal(h.messages.length,1);
 });

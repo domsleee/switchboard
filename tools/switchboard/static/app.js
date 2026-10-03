@@ -27,14 +27,38 @@ function setStatus(message,isError=false) {
   $('notifications').title=`${$('notifications').textContent}\n${message}`;
 }
 function sessionKey(host, name) { return JSON.stringify([host, name]); }
-function tabKey(entry, tab) {
-  // 0.45.1 has no stable tab ID in its web payload; prefer a pane ID over position.
-  const pane = entry.state.panes.find(p => p.tab_position === tab.position);
-  return JSON.stringify([entry.host, entry.name, pane?.pane_id ?? tab.position, !!pane?.is_plugin]);
+function tabKey(entry, tab) { return JSON.stringify([entry.host, entry.name, 'tab', tab.id]); }
+function tabPanes(entry,tab){
+  return (entry.state?.panes||[]).filter(p=>p.tab_position===tab.position && tab.panes.some(native=>native.pane_id===p.pane_id&&native.is_plugin===p.is_plugin));
+}
+function tabTitle(item){
+  const live=tabPanes(item.entry,item.tab);
+  const panes=item.tab.panes.map(p=>({...p,...live.find(current=>current.pane_id===p.pane_id&&current.is_plugin===p.is_plugin),tab_position:item.tab.position}));
+  return SwitchboardTitles.tabTitle({panes,active_pane:item.entry.state?.active_pane},item.tab);
+}
+function activeTab(entry){
+  const active=entry.state?.active_pane;
+  return entry.catalog?.find(tab=>tab.position===active?.tab_position&&tab.panes.some(p=>p.pane_id===active.pane_id&&p.is_plugin===active.is_plugin));
+}
+function setCatalog(entry,tabs){
+  // Carry browser preferences from the earlier pane keys to native tab IDs.
+  const migrations=new Map();
+  for(const tab of tabs)for(const pane of tab.panes)migrations.set(JSON.stringify([entry.host,entry.name,pane.pane_id,pane.is_plugin]),tabKey(entry,tab));
+  let changed=false;
+  for(const store of [ready,archived])for(const [old,key] of migrations)if(old in store){store[key]=store[old];delete store[old];changed=true;}
+  if(migrations.has(selected)){selected=migrations.get(selected);changed=true;}
+  if(tabOrder.some(key=>migrations.has(key))){tabOrder=[...new Set(tabOrder.map(key=>migrations.get(key)||key))];changed=true;}
+  if(changed){saveReady();localStorage.setItem('switchboard-archived',JSON.stringify(archived));localStorage.setItem('switchboard-tab-order',JSON.stringify(tabOrder));}
+  entry.catalog=tabs;
+  if(entry.followActiveTab&&entry.frame.classList.contains('active')&&!entry.requestedPane&&!entry.focusPending){const tab=activeTab(entry);if(tab){selected=tabKey(entry,tab);entry.followActiveTab=false;}}
+  if(entry.pendingNewTab){
+    const added=tabs.find(tab=>!entry.pendingNewTab.has(tabKey(entry,tab)));
+    if(added){entry.pendingNewTab=null;if(filter!=='all'&&groups[entry.host]!==filter)setFilter('all');$('tab-search').value='';selected=tabKey(entry,added);entry.needsFocus=true;}
+  }
 }
 function attentionKey(host,session,pane){return JSON.stringify([host,session,pane]);}
 function statesForTab(item){
-  return item.entry.state.panes.filter(p=>!p.is_plugin&&p.tab_position===item.tab.position)
+  return item.tab.panes.filter(p=>!p.is_plugin)
     .map(p=>paneAttention.get(attentionKey(item.entry.host,item.entry.name,p.pane_id))).filter(Boolean);
 }
 function needsAttention(state){
@@ -56,11 +80,11 @@ function acknowledgeAttention(item){
 function isReady(item){return !!(ready[item.key] || item.tab.name.startsWith('*') || statesForTab(item).some(needsAttention));}
 function matchesSearch(item){
   const query=$('tab-search').value.trim().toLowerCase();
-  return !query || `${SwitchboardTitles.tabTitle(item.entry.state,item.tab)} ${hosts.get(item.entry.host)?.name || item.entry.host} ${groups[item.entry.host]||''} ${item.entry.name} ${autoLabel(item)}`.toLowerCase().includes(query);
+  return !query || `${tabTitle(item)} ${hosts.get(item.entry.host)?.name || item.entry.host} ${groups[item.entry.host]||''} ${item.entry.name} ${autoLabel(item)}`.toLowerCase().includes(query);
 }
 function allTabs(ignoreFilter=false, includeArchived=false) {
   const ranks=new Map(tabOrder.map((key,index)=>[key,index]));
-  return [...sessions.values()].flatMap(entry => (entry.state?.tabs || []).map(tab => ({entry,tab,key:tabKey(entry,tab)})))
+  return [...sessions.values()].flatMap(entry => (entry.state ? entry.catalog || [] : []).map(tab => ({entry,tab,key:tabKey(entry,tab)})))
     .filter(({entry,key}) => (includeArchived || !archived[key]) && (ignoreFilter || filter === 'all' || groups[entry.host] === filter))
     .sort((a,b) => (ranks.get(a.key)??Infinity)-(ranks.get(b.key)??Infinity));
 }
@@ -107,7 +131,7 @@ function render() {
       tabButtons.set(item.key,button);
     }
     button._item=item;
-    const title=SwitchboardTitles.tabTitle(item.entry.state,item.tab);
+    const title=tabTitle(item);
     button.title=`${title}\nDrag to reorder · Alt+Shift+Left/Right or H/L moves this tab · Right-click to archive or close`;
     const starred = isReady(item);
     button.className = (item.key === selected ? 'selected' : '')+(starred?' needs-attention':'');
@@ -130,7 +154,7 @@ function render() {
   const notifications=allTabs(true,true).filter(isReady).length;
   $('notifications').textContent=`${notifications} notification${notifications===1?'':'s'}`;
   $('notifications').classList.toggle('has-notifications',notifications>0);
-  document.title=`${notifications?'('+notifications+') ':''}`+(current?`${SwitchboardTitles.tabTitle(current.entry.state,current.tab)} — ${hosts.get(current.entry.host)?.name} · Switchboard`:'Switchboard');
+  document.title=`${notifications?'('+notifications+') ':''}`+(current?`${tabTitle(current)} · ${hosts.get(current.entry.host)?.name} · Switchboard`:'Switchboard');
   for (const entry of sessions.values()) entry.frame.classList.toggle('active',entry===current?.entry);
   const selecting=!!current?.entry.frame.contentWindow.SwitchboardClipboard?.selectionMode;
   $('select-text').setAttribute('aria-pressed',String(selecting));
@@ -202,17 +226,16 @@ function focus(item) {
   $('artifact-preview').hidden=true;
   $('artifact-frame').src='about:blank';
   const active=item.entry.state.active_pane;
-  const pane=item.entry.state.panes.find(p=>p.tab_position===item.tab.position && p.pane_id===active?.pane_id && p.is_plugin===active?.is_plugin)
-    || item.entry.state.panes.find(p=>p.tab_position===item.tab.position);
-  if(pane){
-    if(active?.pane_id!==pane.pane_id||active?.is_plugin!==pane.is_plugin)item.entry.frame.contentWindow.SwitchboardClipboard?.clearSelection();
-    const focusId=item.entry.focusId=(item.entry.focusId||0)+1;
-    if(item.entry.requestedPane || active?.pane_id!==pane.pane_id||active?.is_plugin!==pane.is_plugin)item.entry.requestedPane={pane_id:pane.pane_id,is_plugin:pane.is_plugin,focus_id:focusId};
-    item.entry.frame.contentWindow.postMessage({type:'zellij-focus',pane_id:pane.pane_id,is_plugin:pane.is_plugin,focus_id:focusId},location.origin);
-  }
+  const panes=tabPanes(item.entry,item.tab);
+  const pane=panes.find(p=>p.pane_id===active?.pane_id && p.is_plugin===active?.is_plugin)||panes[0];
+  if(!pane){item.entry.needsFocus=true;setStatus('Waiting for terminal metadata…');return;}
+  if(active?.pane_id!==pane.pane_id||active?.is_plugin!==pane.is_plugin)item.entry.frame.contentWindow.SwitchboardClipboard?.clearSelection();
+  const focusId=item.entry.focusId=(item.entry.focusId||0)+1;
+  if(item.entry.requestedPane || active?.pane_id!==pane.pane_id||active?.is_plugin!==pane.is_plugin)item.entry.requestedPane={pane_id:pane.pane_id,is_plugin:pane.is_plugin,focus_id:focusId};
+  item.entry.frame.contentWindow.postMessage({type:'zellij-focus',pane_id:pane.pane_id,is_plugin:pane.is_plugin,focus_id:focusId},location.origin);
 }
 function activate(item, clear=true) {
-  selected=item.key;
+  selected=item.key;item.entry.followActiveTab=false;
   if(mobileSidebar.matches){sidebarOpen=false;updateSidebar();}
   if(clear){delete ready[item.key];saveReady();}
   item.entry.acknowledgeTab=item.key;
@@ -229,7 +252,7 @@ function stepTab(direction) {
 function closeSelectedTab(){
   const item=allTabs().find(item=>item.key===selected);
   if(!item||document.querySelector('dialog[open]')||!$('artifact-preview').hidden)return;
-  if(item.entry.requestedPane||item.entry.focusPending){setStatus('Wait for the selected terminal to receive focus.',true);return;}
+  if(item.entry.requestedPane||item.entry.focusPending||item.entry.followActiveTab){setStatus('Wait for the selected terminal to receive focus.',true);return;}
   contextItem=item;
   $('close-tab').click();
 }
@@ -242,6 +265,7 @@ window.addEventListener('keydown',event=>{
   }
   if(event.target.closest?.('input,textarea,select,[contenteditable="true"]'))return;
   if(document.querySelector('dialog[open]'))return;
+  if(event.code==='KeyN'&&event.ctrlKey&&event.altKey&&!event.metaKey&&!event.shiftKey&&!event.isComposing){event.preventDefault();event.stopImmediatePropagation();if(!event.repeat)$('new-tab').click();return;}
   if(event.code==='KeyD'&&event.ctrlKey&&!event.metaKey&&!event.altKey&&!event.shiftKey&&!event.isComposing){
     event.preventDefault();event.stopImmediatePropagation();
     if(!event.repeat)closeSelectedTab();
@@ -309,30 +333,21 @@ window.addEventListener('message',event=>{
       const active=entry.state.active_pane,requested=entry.requestedPane;
       if(!event.data.focus_pending && event.data.focus_id===requested.focus_id && active?.pane_id===requested.pane_id&&active?.is_plugin===requested.is_plugin)entry.requestedPane=null;
     }
-    if(entry.pendingNewTab){
-      const added=entry.state.tabs.find(tab=>!entry.pendingNewTab.has(tabKey(entry,tab)));
-      if(added){
-        entry.pendingNewTab=null;
-        if(filter!=='all'&&groups[entry.host]!==filter)setFilter('all');
-        $('tab-search').value='';
-        selected=tabKey(entry,added);
-      }
-    }
     entry.frame.contentWindow.postMessage({type:'zellij-native-tabs',visible:nativeTabs},location.origin);
     // A client can switch sessions using native Zellij controls; follow its metadata.
     if(entry.name!==entry.state.session_name){
       sessions.delete(sessionKey(entry.host,entry.name));
-      entry.name=entry.state.session_name;
+      entry.name=entry.state.session_name;entry.catalog=null;entry.followActiveTab=entry.frame.classList.contains('active');
       const key=sessionKey(entry.host,entry.name), duplicate=sessions.get(key);
       if(duplicate&&duplicate!==entry)duplicate.frame.remove();
       sessions.set(key,entry);
     }
-    if(!entry.requestedPane && entry.frame.classList.contains('active') && previousPosition!==undefined && previousPosition!==entry.state.active_pane?.tab_position){
-      const tab=entry.state.tabs.find(t=>t.position===entry.state.active_pane?.tab_position);
-      if(tab){selected=tabKey(entry,tab);delete ready[selected];saveReady();}
+    if(!entry.requestedPane && !entry.focusPending && entry.frame.classList.contains('active') && previousPane && (previousPosition!==entry.state.active_pane?.tab_position||previousPane.pane_id!==entry.state.active_pane?.pane_id||previousPane.is_plugin!==entry.state.active_pane?.is_plugin)){
+      const tab=activeTab(entry);
+      if(tab){selected=tabKey(entry,tab);delete ready[selected];saveReady();entry.followActiveTab=false;}else entry.followActiveTab=true;
     }
     const current=allTabs().find(item=>item.key===selected);
-    if(current?.entry===entry && entry.acknowledgeTab===selected && !entry.requestedPane && !entry.focusPending && entry.state.active_pane?.tab_position===current.tab.position){acknowledgeAttention(current);entry.acknowledgeTab=null;}
+    if(current?.entry===entry && entry.acknowledgeTab===selected && !entry.requestedPane && !entry.focusPending && activeTab(entry)?.id===current.tab.id){acknowledgeAttention(current);entry.acknowledgeTab=null;}
     render();
     if(entry.needsFocus && entry.frame.classList.contains('active')){
       const current=allTabs().find(item=>item.key===selected);if(current)focus(current);
@@ -342,9 +357,11 @@ window.addEventListener('message',event=>{
     entry.requestedPane=null;
     if(!entry.frame.classList.contains('active'))return;
     const state=event.data.payload || entry.state;
-    const tab=state?.tabs.find(tab=>tab.position===state.active_pane?.tab_position);
-    if(tab){entry.state=state;selected=tabKey(entry,tab);render();focus({entry,tab});}
+    entry.state=state;const tab=activeTab(entry);
+    if(tab){selected=tabKey(entry,tab);render();focus({entry,tab});}
     setStatus('That terminal is unavailable. Choose another tab.',true);
+  }else if(event.data?.type==='zellij-open-new-tab'){
+    if(entry.frame.classList.contains('active')&&!document.querySelector('dialog[open]'))$('new-tab').click();
   }else if(event.data?.type==='zellij-close-tab'){
     if(entry.frame.classList.contains('active'))closeSelectedTab();
   }else if(event.data?.type==='zellij-tab-search'){
@@ -390,7 +407,7 @@ $('new-tab').onclick=()=>{
   const select=$('new-tab-target');select.replaceChildren();
   const current=allTabs().find(t=>t.key===selected)?.entry;
   for(const [key,entry] of sessions){
-    if(!entry.state)continue;
+    if(!entry.state||!entry.catalog?.length)continue;
     const option=document.createElement('option');option.value=key;option.textContent=`${hosts.get(entry.host)?.name} · ${entry.name}`;option.selected=entry===current;select.append(option);
   }
   if(!select.options.length){setStatus('Connect to a session before creating a tab.',true);return;}
@@ -398,11 +415,11 @@ $('new-tab').onclick=()=>{
 };
 $('cancel-new-tab').onclick=()=>$('new-tab-dialog').close();
 $('new-tab-form').onsubmit=event=>{
-  event.preventDefault();const entry=sessions.get($('new-tab-target').value);if(!entry?.state)return;
-  entry.pendingNewTab=new Set(entry.state.tabs.map(tab=>tabKey(entry,tab)));
+  event.preventDefault();const entry=sessions.get($('new-tab-target').value);if(!entry?.state||!entry.catalog?.length)return;
+  entry.pendingNewTab=new Set((entry.catalog||[]).map(tab=>tabKey(entry,tab)));
   entry.frame.contentWindow.postMessage({type:'zellij-new-tab'},location.origin);
   $('new-tab-dialog').close();setStatus(`Creating a tab on ${hosts.get(entry.host)?.name}…`);
-  setTimeout(()=>{if(entry.pendingNewTab){entry.pendingNewTab=null;setStatus('No new tab received. Check the connection and try again.',true);}},10000);
+  setTimeout(()=>{if(entry.pendingNewTab){entry.pendingNewTab=null;setStatus('No new tab received. Check the connection and try again.',true);}},30000);
 };
 $('ready').onclick=()=>{
   if(!selected)return;
@@ -438,15 +455,15 @@ function renderArchive(){
   const query=$('archive-search').value.trim().toLowerCase();
   const list=$('archive-list');
   const tabs=allTabs(true,true).filter(item=>archived[item.key]);
-  const signature=JSON.stringify([query,tabs.map(item=>[item.key,SwitchboardTitles.tabTitle(item.entry.state,item.tab),hosts.get(item.entry.host)?.name,item.entry.name])]);
+  const signature=JSON.stringify([query,tabs.map(item=>[item.key,tabTitle(item),hosts.get(item.entry.host)?.name,item.entry.name])]);
   if(signature===archiveSignature)return;
   archiveSignature=signature;list.replaceChildren();
   for(const item of tabs){
-    const title=SwitchboardTitles.tabTitle(item.entry.state,item.tab);
+    const title=tabTitle(item);
     const machine=`${hosts.get(item.entry.host)?.name || item.entry.host} · ${item.entry.name}`;
     if(!`${title} ${machine}`.toLowerCase().includes(query))continue;
     const row=document.createElement('div');row.className='archive-row';
-    const label=document.createElement('span');label.textContent=`${title} — ${machine}`;
+    const label=document.createElement('span');label.textContent=`${title} · ${machine}`;
     const restore=document.createElement('button');restore.textContent='Restore';
     restore.setAttribute('aria-label',`Restore ${title}`);
     restore.onclick=()=>{
@@ -507,9 +524,11 @@ async function refreshAttention(){
     const data=await response.json();
     paneAttention=new Map((data.panes||[]).map(state=>{const key=attentionKey(state.host,state.session,state.pane_id);return [key,{...state,key}];}));
     attentionErrors=data.errors||[];
+    for(const entry of sessions.values())if(!attentionErrors.some(error=>error.host===entry.host))setCatalog(entry,(data.tabs||[]).filter(tab=>tab.host===entry.host&&tab.session===entry.name));
     const current=allTabs().find(item=>item.key===selected);
-    if(current && document.hasFocus() && !document.hidden && $('artifact-preview').hidden && !document.querySelector('dialog[open]') && !current.entry.requestedPane && !current.entry.focusPending && current.entry.state.active_pane?.tab_position===current.tab.position)acknowledgeAttention(current);
+    if(current && document.hasFocus() && !document.hidden && $('artifact-preview').hidden && !document.querySelector('dialog[open]') && !current.entry.requestedPane && !current.entry.focusPending && activeTab(current.entry)?.id===current.tab.id)acknowledgeAttention(current);
     render();
+    const selectedTab=allTabs().find(item=>item.key===selected);if(selectedTab?.entry.needsFocus)focus(selectedTab);
   }catch(_){paneAttention.clear();attentionErrors=[{host:'Switchboard'}];render();}
   finally{attentionLoading=false;}
 }

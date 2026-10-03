@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from aiohttp import ClientError, ClientSession, ClientTimeout, CookieJar, Fingerprint, WSMsgType, WSServerHandshakeError, web
-from control import CONTROL_SESSION_PREFIX, escape, cleanup_controls
+from control import CONTROL_SESSION_PREFIX, EscapeControl, escape, cleanup_controls
 from close import close_tab
 from attention import attention, lifecycle as attention_lifecycle
 
@@ -24,6 +24,7 @@ class Host:
         self.lock = asyncio.Lock()
         self.client = None
         self.logged_in = False
+        self.escape_control = EscapeControl(self)
 
     async def start(self):
         pin = self.config.get("tls_fingerprint")
@@ -158,9 +159,7 @@ async def proxy(request):
     host = request.app["hosts"].get(request.match_info["host"])
     if host is None:
         raise web.HTTPNotFound()
-    path = "/" + request.match_info["path"]
-    if request.query_string:
-        path += "?" + request.query_string
+    path = "/" + request.rel_url.raw_path_qs.split("/", 3)[3]
     if request.headers.get("Upgrade", "").lower() == "websocket":
         upstream = await host.ws_connect(path, max_msg_size=16*1024*1024)
         downstream = web.WebSocketResponse(max_msg_size=16*1024*1024)

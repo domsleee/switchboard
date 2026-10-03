@@ -208,16 +208,6 @@ test('selection mode attaches after xterm creates its service during open',()=>{
   assert.equal(h.term._core._selectionService.shouldForceSelection({shiftKey:false}),false);
 });
 
-test('only the same-origin parent can request app copying', async () => {
-  const h = harness(); h.setSelection('app selection');
-  h.event('message', {origin: 'https://other.example', source: h.context.parent, data: {type: 'zellij-copy'}});
-  h.event('message', {origin: h.context.location.origin, source: {}, data: {type: 'zellij-copy'}});
-  assert.deepEqual(h.writes, []);
-  h.event('message', {origin: h.context.location.origin, source: h.context.parent, data: {type: 'zellij-copy'}});
-  await settle();
-  assert.deepEqual(h.writes, ['app selection']);
-});
-
 test('late failures from old writes cannot replace newer successful copy with stale fallback', async () => {
   let rejectOld;
   const h = harness({write: text => text === 'old' ? new Promise((_, reject) => { rejectOld = reject; }) : Promise.resolve()});

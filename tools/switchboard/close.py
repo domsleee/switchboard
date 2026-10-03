@@ -2,13 +2,13 @@
 import json
 
 from aiohttp import web
-from control import EscapeControl, _ps_literal, validate_target
+from control import _ps_literal, validate_target
 
 
-async def close_target(control, session, pane_id, is_plugin):
-    validate_target(session, pane_id)
-    if type(is_plugin) is not bool:
-        raise web.HTTPBadRequest(text="Invalid pane type")
+async def close_target(control, session, tab_id):
+    validate_target(session, 0)
+    if type(tab_id) is not int or not 0 <= tab_id <= 0xFFFFFFFF:
+        raise web.HTTPBadRequest(text="Invalid native tab ID")
     async with control.lock:
         if control.closed:
             raise web.HTTPServiceUnavailable(text="Tab control is shutting down")
@@ -21,11 +21,10 @@ async def close_target(control, session, pane_id, is_plugin):
         if control.transport == "local":
             try:
                 panes = json.loads(await control._run_local(session, "list-panes", "--json", "--all"))
-                matches = [p for p in panes if p["id"] == pane_id and p["is_plugin"] is is_plugin]
-                tab_id = matches[0]["tab_id"] if len(matches) == 1 else None
+                available = any(p["tab_id"] == tab_id for p in panes)
             except (ValueError, KeyError, TypeError):
                 raise web.HTTPBadGateway(text="Cannot identify target tab") from None
-            if type(tab_id) is not int or tab_id < 0:
+            if not available:
                 raise web.HTTPConflict(text="That tab is no longer available")
             await control._run_local(session, "close-tab", "--tab-id", str(tab_id))
         elif control.transport == "windows":
@@ -35,14 +34,13 @@ async def close_target(control, session, pane_id, is_plugin):
                     await control._discard()
                     await control._open()
                 target = f"& zellij -s {_ps_literal(session)} action "
-                plugin = "$true" if is_plugin else "$false"
                 await control._command(
                     "$panes = " + target + "list-panes --json --all; "
                     "if ($LASTEXITCODE -ne 0) { throw 'Cannot list target panes' }; "
                     "$panes = ($panes -join [Environment]::NewLine) | ConvertFrom-Json; "
-                    f"$found = @($panes | Where-Object {{ $_.id -eq {pane_id} -and $_.is_plugin -eq {plugin} }}); "
-                    "if ($found.Count -ne 1 -or $null -eq $found[0].tab_id) { $code = 4 } else { "
-                    + target + "close-tab --tab-id $found[0].tab_id; "
+                    f"$found = @($panes | Where-Object {{ $_.tab_id -eq {tab_id} }}); "
+                    "if ($found.Count -eq 0) { $code = 4 } else { "
+                    + target + f"close-tab --tab-id {tab_id}; "
                     "$code = $LASTEXITCODE; if ($null -eq $code) { $code = 1 } }"
                 )
             except BaseException:
@@ -59,10 +57,8 @@ async def close_tab(request):
     try:
         payload = await request.json()
     except (ValueError, UnicodeDecodeError):
-        raise web.HTTPBadRequest(text="Close requires JSON session, pane_id and is_plugin") from None
-    if not isinstance(payload, dict) or set(payload) != {"session", "pane_id", "is_plugin"}:
-        raise web.HTTPBadRequest(text="Close requires only session, pane_id and is_plugin")
-    if not hasattr(host, "escape_control"):
-        host.escape_control = EscapeControl(host)
+        raise web.HTTPBadRequest(text="Close requires JSON session and tab_id") from None
+    if not isinstance(payload, dict) or set(payload) != {"session", "tab_id"}:
+        raise web.HTTPBadRequest(text="Close requires only session and tab_id")
     await close_target(host.escape_control, **payload)
     return web.json_response({"ok": True})

@@ -9,7 +9,7 @@ import time
 
 from aiohttp import web
 from attention_scan import scan_sessions
-from control import CONTROL_SESSION_PREFIX, EscapeControl, _ANSI, _ps_literal
+from control import CONTROL_SESSION_PREFIX, _ANSI, _ps_literal
 
 
 async def scan_host(host):
@@ -18,8 +18,6 @@ async def scan_host(host):
             raise RuntimeError('Cannot list attention sessions')
         names = [s['name'] for s in (await response.json())['sessions']
                  if s.get('web_clients_allowed') and not s['name'].startswith(CONTROL_SESSION_PREFIX)]
-    if not hasattr(host, 'escape_control'):
-        host.escape_control = EscapeControl(host)
     control = host.escape_control
     offset=getattr(host,'attention_offset',0);host.attention_offset=offset+1
     if control.transport == 'local':
@@ -57,13 +55,14 @@ async def scan_host(host):
 
 
 async def lifecycle(app):
-    app['attention'] = {'panes': [], 'errors': []}
+    app['attention'] = {'panes': [], 'tabs': [], 'errors': []}
     cache,observed = {},{}
     async def poll(host):
         host_id = host.config['id']
         while True:
             try:
-                rows = await scan_host(host)
+                snapshot = await scan_host(host)
+                rows = snapshot['panes']
                 for row in rows:
                     key=(host_id,row['session'],row['pane_id'])
                     previous=observed.get(key,{})
@@ -75,13 +74,14 @@ async def lifecycle(app):
                     if row['state']!='unknown':observed[key]={**row,'generation':generation,'scanned_at':row.get('scanned_at',previous.get('scanned_at',0))}
                     row.pop('scanned_at',None)
                     if row['state']=='ready':row['token']=f"{row['token']}:{generation}"
-                cache[host_id] = {'panes': [dict(row, host=host_id) for row in rows], 'errors': []}
+                cache[host_id] = {'panes': [dict(row, host=host_id) for row in rows],
+                                  'tabs': [dict(tab, host=host_id) for tab in snapshot['tabs']], 'errors': []}
             except asyncio.CancelledError:
                 raise
             except Exception as error:
                 # Disconnected hosts must not retain a stale ready state.
-                cache[host_id] = {'panes': [], 'errors': [{'host': host_id, 'message': str(error)}]}
-            app['attention'] = {key: [row for data in cache.values() for row in data[key]] for key in ('panes', 'errors')}
+                cache[host_id] = {'panes': [], 'tabs': [], 'errors': [{'host': host_id, 'message': str(error)}]}
+            app['attention'] = {key: [row for data in cache.values() for row in data[key]] for key in ('panes', 'tabs', 'errors')}
             await asyncio.sleep(3)
     tasks = [asyncio.create_task(poll(host)) for host in app['hosts'].values()]
     yield

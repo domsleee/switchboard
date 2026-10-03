@@ -49,4 +49,42 @@ class ArtifactTests(unittest.IsolatedAsyncioTestCase):
     writer.close();await writer.wait_closed()
     self.assertEqual(data.count(b'HTTP/1.1'),1);self.assertNotIn(b'502',data)
 
+
+class ProxyPathTests(unittest.IsolatedAsyncioTestCase):
+ async def test_http_and_websocket_preserve_encoded_session_paths_and_queries(self):
+  from aiohttp import ClientSession,ClientTimeout,WSMsgType
+  from aiohttp.test_utils import TestServer
+  from yarl import URL
+  from server import Host,proxy
+  async def echo(request):
+   details={'raw_path':request.raw_path,'path':request.match_info['path'],
+            'query':dict(request.query)}
+   if request.headers.get('Upgrade','').lower()!='websocket':return web.json_response(details)
+   socket=web.WebSocketResponse();await socket.prepare(request)
+   await socket.send_json(details)
+   async for message in socket:
+    if message.type==WSMsgType.BINARY:await socket.send_bytes(message.data)
+   return socket
+  source=web.Application();source.router.add_route('*','/{path:.*}',echo)
+  async with TestServer(source) as upstream,ClientSession(timeout=ClientTimeout(total=2)) as client:
+   host=Host({'url':str(upstream.make_url('/')).rstrip('/')})
+   await host.start();host.logged_in=True
+   relay=web.Application();relay['hosts']={'mac':host}
+   relay.router.add_route('*','/hosts/{host}/{path:.*}',proxy)
+   path='/task%3F%23%252F%20name?literal=one%2Btwo%26three%23four&space=a+b&slash=%252F'
+   expected={'raw_path':path,'path':'task?#%2F name',
+             'query':{'literal':'one+two&three#four','space':'a b','slash':'%2F'}}
+   try:
+    async with TestServer(relay) as server:
+     url=URL(str(server.make_url('/')).rstrip('/')+'/hosts/mac'+path,encoded=True)
+     async with client.get(url) as response:
+      self.assertEqual(response.status,200)
+      self.assertEqual(await response.json(),expected)
+     async with client.ws_connect(url) as socket:
+      self.assertEqual(await socket.receive_json(timeout=2),expected)
+      await socket.send_bytes(b'roundtrip')
+      message=await socket.receive(timeout=2)
+      self.assertEqual((message.type,message.data),(WSMsgType.BINARY,b'roundtrip'))
+   finally:await host.client.close()
+
 if __name__=='__main__':unittest.main()

@@ -250,8 +250,4 @@
   });
   window.SwitchboardClipboard = {copySelection, retryPending, clearSelection, setSelectionMode, getSelectionText: selectionText,
     get selectionMode() { return selectionMode; }, get hasPending() { return !!pending; }};
-  window.addEventListener('message', event => {
-    if (event.origin !== location.origin || event.source !== parent || event.data?.type !== 'zellij-copy') return;
-    void copySelection();
-  });
 })();

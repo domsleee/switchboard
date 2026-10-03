@@ -258,12 +258,9 @@ async def escape(request):
     if not isinstance(payload, dict) or set(payload) != {"session", "pane_id"}:
         raise web.HTTPBadRequest(text="Escape requires only session and pane_id")
     validate_target(payload["session"], payload["pane_id"])
-    if not hasattr(host, "escape_control"):
-        host.escape_control = EscapeControl(host)
     await host.escape_control.send_escape(payload["session"], payload["pane_id"])
     return web.json_response({"ok": True})
 
 
 async def cleanup_controls(app):
-    await asyncio.gather(*(host.escape_control.close() for host in app["hosts"].values()
-                           if hasattr(host, "escape_control")))
+    await asyncio.gather(*(host.escape_control.close() for host in app["hosts"].values()))

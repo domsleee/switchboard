@@ -20,6 +20,11 @@
   }
   function rejectFocus() {
     if(desiredFocus.pane_id!==pendingFocus.pane_id || desiredFocus.is_plugin!==pendingFocus.is_plugin){
+      if(latest?.active_pane?.pane_id===desiredFocus.pane_id && latest.active_pane.is_plugin===desiredFocus.is_plugin){
+        releaseFocus();window.term?.focus();
+        parent.postMessage({type:'zellij-state',host,payload:latest,focus_id:focusId,focus_pending:false},location.origin);
+        return;
+      }
       pendingFocus=null;dispatchFocus();
       return;
     }
@@ -70,6 +75,10 @@
   }
   window.addEventListener('keydown',event=>{
     if(hasDialog())return;
+    if(event.code==='KeyN'&&event.ctrlKey&&event.altKey&&!event.metaKey&&!event.shiftKey&&!event.isComposing&&terminalFocused()){
+      event.preventDefault();event.stopImmediatePropagation();
+      if(!event.repeat)parent.postMessage({type:'zellij-open-new-tab',host},location.origin);return;
+    }
     if(event.code==='KeyD'&&event.ctrlKey&&!event.metaKey&&!event.altKey&&!event.shiftKey
         &&!event.isComposing&&terminalFocused()){
       event.preventDefault();event.stopImmediatePropagation();
@@ -128,15 +137,12 @@
     const bottomRows = window.__switchboardBottomRows?.(term, latest) || 0;
     const hideBottom = bottomRows > 0 && !!cellHeight;
     const oldHeight = document.documentElement.style.getPropertyValue('--switchboard-tab-height');
-    const oldBottomHeight = document.documentElement.style.getPropertyValue('--switchboard-bottom-height');
     const height = hide && cellHeight ? `${cellHeight}px` : '0px';
-    const bottomHeight = hideBottom ? `${bottomRows * cellHeight}px` : '0px';
     const changed = document.body.classList.contains('switchboard-hide-tabs') !== hide ||
       document.body.classList.contains('switchboard-hide-status') !== hideBottom ||
-      oldHeight !== height || oldBottomHeight !== bottomHeight;
+      oldHeight !== height;
     if (!changed) return;
     document.documentElement.style.setProperty('--switchboard-tab-height',height);
-    document.documentElement.style.setProperty('--switchboard-bottom-height',bottomHeight);
     document.body.classList.toggle('switchboard-hide-tabs',hide);
     document.body.classList.toggle('switchboard-hide-status',hideBottom);
     // Let the stock fit/resize handler allocate the extra row and report it to
@@ -165,7 +171,6 @@
             const message = JSON.parse(event.data);
             if (message.type === 'MobileState') sendState(message.payload);
             if (message.type === 'LogError') {
-              window.__zjLastControlError = message.lines;
               // Unrelated control errors must not acknowledge an in-flight focus.
               if(pendingFocus && message.lines?.some(line=>line.includes(`Could not find pane with id: ${pendingFocus.is_plugin?'Plugin':'Terminal'}(${pendingFocus.pane_id})`)))rejectFocus();
             }
@@ -201,6 +206,6 @@
       updateChrome();
     } else if (message?.type === 'zellij-new-tab' && window.__zjSendControl) {
       window.__zjSendControl({type:'NewTab'});
-    } else if (message?.type === 'zellij-request-state' && latest) sendState(latest);
+    }
   });
 })();

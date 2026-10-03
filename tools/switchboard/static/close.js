@@ -6,10 +6,9 @@
     const item=contextItem;
     closeTabMenu();
     if(!item)return;
-    const pane=item.entry.state.panes.find(p=>p.tab_position===item.tab.position);
-    if(!pane){setStatus('That tab is no longer available.',true);return;}
-    target={host:item.entry.host,key:item.key,session:item.entry.name,pane_id:pane.pane_id,is_plugin:pane.is_plugin};
-    $('close-tab-name').textContent=`${SwitchboardTitles.tabTitle(item.entry.state,item.tab)} — ${hosts.get(item.entry.host)?.name || item.entry.host}`;
+    if(!Number.isInteger(item.tab.id)){setStatus('That tab is no longer available.',true);return;}
+    target={host:item.entry.host,key:item.key,session:item.entry.name,tab_id:item.tab.id};
+    $('close-tab-name').textContent=`${tabTitle(item)} · ${hosts.get(item.entry.host)?.name || item.entry.host}`;
     error.textContent='';confirm.disabled=false;
     dialog.showModal();$('cancel-close-tab').focus();
   };
