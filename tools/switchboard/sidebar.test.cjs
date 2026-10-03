@@ -59,6 +59,37 @@ test('Mark ready adds a badge without changing the saved tab order or selection'
   assert.equal(renders,1);
 });
 
+test('reordering while Windows connects preserves saved positions through reload and delayed catalogs',()=>{
+  const session=(host,ids)=>({host,name:'main',state:{panes:[]},catalog:ids.map(id=>({id,name:String(id),position:id,panes:[]}))});
+  const mac=session('mac',[1,2,3]),windows=session('win',[4,5]),stored={};
+  const key=(host,id)=>JSON.stringify([host,'main','tab',id]);
+  const initial=[key('mac',1),key('win',4),key('mac',2),key('mac',3),key('win',5)];
+  const context={sessions:new Map([['mac',mac]]),tabOrder:[...initial],archived:{},filter:'all',groups:{},ready:{},selected:null,
+    localStorage:{setItem:(name,value)=>stored[name]=value},render(){},tabButtons:new Map()};
+  vm.createContext(context);
+  vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function moveSelected(')),context);
+  context.moveTab(key('mac',3),key('mac',2));
+  const expected=[key('mac',1),key('win',4),key('mac',3),key('mac',2),key('win',5)];
+  assert.deepEqual(JSON.parse(stored['switchboard-tab-order']),expected);
+  context.tabOrder=JSON.parse(stored['switchboard-tab-order']);
+  const keys=()=>Array.from(context.allTabs(),item=>item.key);
+  assert.deepEqual(keys(),[key('mac',1),key('mac',3),key('mac',2)]);
+  context.sessions.set('win',windows);windows.state=null;
+  assert.deepEqual(keys(),[key('mac',1),key('mac',3),key('mac',2)]);
+  windows.state={panes:[]};const catalog=windows.catalog;windows.catalog=[];
+  assert.deepEqual(keys(),[key('mac',1),key('mac',3),key('mac',2)]);
+  context.setCatalog(windows,catalog);
+  assert.deepEqual(keys(),expected);
+  // Reordering still includes newly discovered tabs without discarding an offline host.
+  context.sessions.delete('win');mac.catalog.push({id:6,name:'new',position:6,panes:[]});
+  context.moveTab(key('mac',6),key('mac',2),true);
+  const withNew=[key('mac',1),key('win',4),key('mac',3),key('mac',2),key('mac',6),key('win',5)];
+  assert.deepEqual(JSON.parse(stored['switchboard-tab-order']),withNew);
+  context.sessions.set('win',windows);assert.deepEqual(keys(),withNew);
+  context.sessions.delete('mac');assert.deepEqual(keys(),[key('win',4),key('win',5)]);
+  context.sessions.set('mac',mac);assert.deepEqual(keys(),withNew);
+});
+
 
 test('native tab identity preserves selection, archive and order through pane removal, floating and reordered positions',()=>{
   const entry={host:'win',name:'main',state:{panes:[]}},stored={};

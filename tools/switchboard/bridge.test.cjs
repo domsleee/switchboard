@@ -52,6 +52,21 @@ test("bottom-bar redraws do not trigger the resize feedback loop",()=>{
   assert.equal(h.resizes.length,0);
 });
 
+test('a changed WebGL backing scale recovers without resizing the terminal or looping',()=>{
+  const h=harness(),term=h.window.term,redraws=[],repairs=[];
+  h.setFirstRow('agent output');h.setBottomRows(0);term.cols=80;term.rows=24;
+  h.properties.set('--switchboard-tab-height','0px');
+  const canvas={width:1120,height:672},expected={width:560,height:336};
+  term._core._renderService._renderer={value:{_canvas:canvas,dimensions:{device:{canvas:expected}},handleResize(cols,rows){
+    repairs.push([cols,rows]);canvas.width=expected.width;canvas.height=expected.height;
+  }}};
+  term.refresh=(start,end)=>redraws.push([start,end]);
+  h.state();h.state();
+  assert.deepEqual(repairs,[[80,24]]);assert.deepEqual(redraws,[[0,23]]);assert.equal(h.resizes.length,0);
+  expected.width=1120;expected.height=672;h.state();h.state();
+  assert.equal(repairs.length,2);assert.equal(redraws.length,2);assert.equal(h.resizes.length,0);
+});
+
 test('terminal input waits for FocusPane acknowledgement',()=>{
   const h=harness(),sent=[];h.window.__zjSendControl=message=>sent.push(message);
   h.state({active_pane:{pane_id:1,is_plugin:false}});

@@ -111,7 +111,8 @@ function moveTab(key,targetKey,after=false) {
   if(key===targetKey)return;
   const tabs=allTabs(true,true),source=tabs.find(t=>t.key===key),target=tabs.find(t=>t.key===targetKey);
   if(!source||!target)return;
-  const order=tabs.map(t=>t.key);
+  // A missing host or catalog is temporary; retain its saved positions when another tab moves.
+  const order=[...new Set([...tabOrder,...tabs.map(t=>t.key)])];
   order.splice(order.indexOf(key),1);
   order.splice(order.indexOf(targetKey)+(after?1:0),0,key);
   tabOrder=order;localStorage.setItem('switchboard-tab-order',JSON.stringify(tabOrder));render();

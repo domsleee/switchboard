@@ -120,6 +120,16 @@
     }
   `;
   document.head.append(style);
+  function syncRendererScale(term) {
+    const renderer=term._core?._renderService?._renderer?.value;
+    const canvas=renderer?._canvas,expected=renderer?.dimensions?.device?.canvas;
+    // The WebGL pixel observer can resize the backing canvas before its viewport
+    // and cell dimensions catch up after zoom or a display-scale change.
+    if(!canvas||!expected?.width||!expected.height||typeof renderer.handleResize!=='function')return;
+    if(canvas.width===expected.width&&canvas.height===expected.height)return;
+    renderer.handleResize(term.cols,term.rows);
+    term.refresh(0,term.rows-1);
+  }
   function updateChrome() {
     const term = window.term;
     if (!term || !document.body) return;
@@ -129,6 +139,7 @@
       term.onResize(updateChrome);
       new MutationObserver(updateChrome).observe(document.body,{attributes:true,attributeFilter:['class']});
     }
+    syncRendererScale(term);
     // Only crop an identified native bar. Fullscreen panes and alternate layouts
     // without the bar keep every terminal row. Mobile owns its own viewport.
     const firstRow = term.buffer.active.getLine(term.buffer.active.viewportY)?.translateToString(true) || '';
