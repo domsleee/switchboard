@@ -6,6 +6,13 @@
   let escapeQueue = Promise.resolve();
   let escapeStatus;
   let pendingFocus, desiredFocus, focusInputState, focusId;
+  let pendingNewTab;
+  function releaseNewTab() {
+    if(!pendingNewTab)return;
+    clearTimeout(pendingNewTab.timeout);
+    if(window.term)window.term.options.disableStdin=pendingNewTab.disabled;
+    pendingNewTab=null;
+  }
   function dispatchFocus() {
     pendingFocus=desiredFocus;
     window.__zjSendControl({type:'FocusPane',pane_id:pendingFocus.pane_id,is_plugin:pendingFocus.is_plugin});
@@ -54,7 +61,7 @@
     escapeStatus.hidden = !message;
   }
   function sendEscape() {
-      if(pendingFocus){showEscapeStatus('Waiting for the selected terminal to receive focus.',true);return;}
+      if(pendingFocus||pendingNewTab){showEscapeStatus('Waiting for the selected terminal to receive focus.',true);return;}
       const target = {session:latest?.session_name, pane_id:latest?.active_pane?.pane_id};
       if (!target.session || !Number.isInteger(target.pane_id)) {
         showEscapeStatus('Escape failed: terminal state is unavailable.', true);
@@ -164,6 +171,8 @@
   }
   function sendState(payload) {
     latest = payload;
+    const created=pendingNewTab&&latest.active_pane&&!latest.active_pane.is_plugin&&!pendingNewTab.panes.has(latest.active_pane.pane_id);
+    if(created){releaseNewTab();window.term?.focus();}
     const missingFocus=pendingFocus && Array.isArray(latest.panes) && !latest.panes.some(pane=>pane.pane_id===pendingFocus.pane_id && pane.is_plugin===pendingFocus.is_plugin);
     if(missingFocus)rejectFocus();
     if(!missingFocus && pendingFocus && latest.active_pane?.pane_id===pendingFocus.pane_id && latest.active_pane?.is_plugin===pendingFocus.is_plugin){
@@ -190,6 +199,7 @@
         this.addEventListener('close', () => {
           latest = undefined;
           releaseFocus();
+          releaseNewTab();
           parent.postMessage({type:'zellij-disconnected',host},location.origin);
         });
       }
@@ -216,6 +226,11 @@
       showNativeTabs = !!message.visible;
       updateChrome();
     } else if (message?.type === 'zellij-new-tab' && window.__zjSendControl) {
+      if(pendingFocus||pendingNewTab||!latest?.active_pane||!window.term)return;
+      pendingNewTab={panes:new Set((latest.panes||[]).filter(pane=>!pane.is_plugin).map(pane=>pane.pane_id)),disabled:window.term.options.disableStdin};
+      pendingNewTab.panes.add(latest.active_pane.pane_id);
+      window.term.options.disableStdin=true;
+      pendingNewTab.timeout=setTimeout(()=>{releaseNewTab();showEscapeStatus('No new tab received. Check the connection and try again.',true);},30000);
       window.__zjSendControl({type:'NewTab'});
     }
   });

@@ -71,7 +71,7 @@ function setCatalog(entry,tabs){
   entry.catalog=tabs;
   if(entry.followActiveTab&&entry.frame.classList.contains('active')&&!entry.requestedPane&&!entry.focusPending){const tab=activeTab(entry);if(tab){selected=tabKey(entry,tab);entry.followActiveTab=false;}}
   if(entry.pendingNewTab){
-    const added=tabs.find(tab=>!entry.pendingNewTab.has(tabKey(entry,tab)));
+    const added=tabs.find(tab=>!entry.pendingNewTab.has(tabKey(entry,tab))&&tab.panes.some(pane=>pane.pane_id===entry.state?.active_pane?.pane_id&&pane.is_plugin===entry.state.active_pane.is_plugin));
     if(added){entry.pendingNewTab=null;if(filter!=='all'&&groups[entry.host]!==filter)setFilter('all');$('tab-search').value='';selected=tabKey(entry,added);entry.needsFocus=true;}
   }
 }
@@ -245,6 +245,7 @@ window.addEventListener('dragend',finishDrag,true);
 window.addEventListener('drop',()=>setTimeout(finishDrag,0),true);
 window.addEventListener('blur',finishDrag);
 function focus(item) {
+  if(item.entry.pendingNewTab)return;
   item.entry.needsFocus=false;
   $('artifact-preview').hidden=true;
   $('artifact-frame').src='about:blank';
@@ -460,10 +461,16 @@ newTabDialog.onpointerdown=event=>{newTabBackdropPressed=outsideNewTab(event);};
 newTabDialog.onclick=event=>{if(newTabBackdropPressed&&outsideNewTab(event))newTabDialog.close();newTabBackdropPressed=false;};
 $('new-tab-form').onsubmit=event=>{
   event.preventDefault();const entry=sessions.get($('new-tab-target').value);if(!entry?.state||!entry.catalog?.length)return;
-  entry.pendingNewTab=new Set((entry.catalog||[]).map(tab=>tabKey(entry,tab)));
+  if(entry.pendingNewTab||entry.requestedPane||entry.focusPending){setStatus('Wait for the terminal to receive focus before creating a tab.',true);return;}
+  const pending=entry.pendingNewTab=new Set((entry.catalog||[]).map(tab=>tabKey(entry,tab)));
+  const active=activeTab(entry);if(active)selected=tabKey(entry,active);
+  restoringTab=false;entry.followActiveTab=true;
+  if(filter!=='all'&&groups[entry.host]!==filter)setFilter('all');$('tab-search').value='';
+  sidebarOpen=false;updateSidebar();$('artifact-preview').hidden=true;$('artifact-frame').src='about:blank';
+  $('new-tab-dialog').close();render();
   entry.frame.contentWindow.postMessage({type:'zellij-new-tab'},location.origin);
-  $('new-tab-dialog').close();setStatus(`Creating a tab on ${hosts.get(entry.host)?.name}…`);
-  setTimeout(()=>{if(entry.pendingNewTab){entry.pendingNewTab=null;setStatus('No new tab received. Check the connection and try again.',true);}},30000);
+  setStatus(`Creating a tab on ${hosts.get(entry.host)?.name}…`);
+  setTimeout(()=>{if(entry.pendingNewTab===pending){entry.pendingNewTab=null;setStatus('No new tab received. Check the connection and try again.',true);}},30000);
 };
 $('ready').onclick=()=>{
   if(!selected)return;

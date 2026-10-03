@@ -180,3 +180,7 @@ uv run --with aiohttp python tools/switchboard/attention.test.py
 uv run --with aiohttp python tools/switchboard/close.test.py
 python3 tools/switchboard/install_service.test.py
 ```
+
+Run browser checks with headless Playwright against isolated testing sessions.
+Keep automation clients out of live sessions: their viewport can shrink the
+shared terminal, including when the iframe is hidden.

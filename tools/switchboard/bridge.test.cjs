@@ -4,7 +4,7 @@ const vm=require('node:vm');
 const fs=require('node:fs');
 const source=fs.readFileSync(__dirname+'/static/bridge.js','utf8');
 function harness(){
-  const handlers={},messages=[],properties=new Map(),classes=new Set(),frames=[],resizes=[];
+  const handlers={},messages=[],properties=new Map(),classes=new Set(),frames=[],resizes=[],timers=new Map();let timerId=0;
   let modal=false,focused=false,bottomRows=2,firstRow='Zellij (main)';
   class Socket{constructor(){this.handlers={};}addEventListener(type,fn){this.handlers[type]=fn;}}
   const parent={postMessage:data=>messages.push(data)};
@@ -15,12 +15,35 @@ function harness(){
     activeElement:{},
     body:{append(){},classList:{contains:c=>classes.has(c),toggle:(c,on)=>on?classes.add(c):classes.delete(c)}},
     documentElement:{style:{getPropertyValue:key=>properties.get(key)||'',setProperty:(key,val)=>properties.set(key,val)}}};
-  vm.runInNewContext(source,{window,document,parent,location:{pathname:'/hosts/windows/main',origin:'http://localhost:8090'},localStorage:{getItem:()=>null},MutationObserver:class{observe(){}},requestAnimationFrame:fn=>frames.push(fn),Event:class{}});
+  vm.runInNewContext(source,{window,document,parent,location:{pathname:'/hosts/windows/main',origin:'http://localhost:8090'},localStorage:{getItem:()=>null},MutationObserver:class{observe(){}},requestAnimationFrame:fn=>frames.push(fn),setTimeout:fn=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id),Event:class{}});
   const key=(code,extra={})=>{const event={code,altKey:true,ctrlKey:false,metaKey:false,shiftKey:false,preventDefault(){this.prevented=true;},stopImmediatePropagation(){this.stopped=true;},...extra};handlers.keydown(event);return event;};
   const state=(payload={})=>{const socket=new window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');socket.handlers.message({data:JSON.stringify({type:'MobileState',payload})});while(frames.length)frames.shift()();};
   const error=(...lines)=>{const socket=new window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');socket.handlers.message({data:JSON.stringify({type:'LogError',lines})});};
-  return{window,handlers,parent,messages,properties,classes,key,state,error,setFocus:v=>focused=v,setModal:v=>modal=v,setBottomRows:v=>bottomRows=v,setFirstRow:v=>firstRow=v,frames,resizes};
+  return{window,handlers,parent,messages,properties,classes,key,state,error,setFocus:v=>focused=v,setModal:v=>modal=v,setBottomRows:v=>bottomRows=v,setFirstRow:v=>firstRow=v,frames,resizes,timers};
 }
+test('New tab holds input until its native pane is active, then focuses without waiting for the catalog',()=>{
+  const h=harness(),sent=[];let focused=0;
+  h.window.term.focus=()=>focused++;h.window.__zjSendControl=message=>sent.push(message);
+  const pane=id=>({pane_id:id,is_plugin:false,tab_position:id});
+  h.state({active_pane:pane(1),panes:[pane(1),pane(2)]});
+  const create=()=>h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-new-tab'}});
+  create();create();assert.deepEqual(sent.map(m=>m.type),['NewTab']);assert.equal(h.window.term.options.disableStdin,true);
+  h.state({active_pane:pane(1),panes:[pane(1),pane(2),pane(3)]});
+  assert.equal(focused,0);assert.equal(h.window.term.options.disableStdin,true);
+  h.state({active_pane:pane(3),panes:[pane(1),pane(2),pane(3)]});
+  assert.equal(focused,1);assert.equal(h.window.term.options.disableStdin,false);assert.equal(h.timers.size,0);
+  h.state({active_pane:pane(3),panes:[pane(1),pane(2),pane(3)]});assert.equal(focused,1);
+});
+test('failed New tab creation restores input on timeout or disconnect',()=>{
+  for(const failure of ['timeout','disconnect']){
+    const h=harness();h.window.__zjSendControl=()=>{};
+    h.state({active_pane:{pane_id:1,is_plugin:false},panes:[{pane_id:1,is_plugin:false}]});
+    h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-new-tab'}});
+    if(failure==='timeout')[...h.timers.values()][0]();
+    else{const socket=new h.window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');socket.handlers.close();}
+    assert.equal(h.window.term.options.disableStdin,false);assert.equal(h.timers.size,0);
+  }
+});
 test('iframe arrows and H/L send one switch/move and stop native/browser navigation',()=>{
   const h=harness();
   for(const [code,direction] of [['ArrowLeft',-1],['ArrowRight',1],['KeyH',-1],['KeyL',1]]){
