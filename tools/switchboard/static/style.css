@@ -12,6 +12,7 @@ button:disabled{opacity:.5;cursor:default}
 #sidebar{width:var(--sidebar-width,260px);flex-shrink:0;display:flex;flex-direction:column;min-height:0;background:#151820}
 #sidebar-tools{padding:12px 10px 10px;display:flex;flex-direction:column;gap:8px;border-bottom:1px solid #2b303b;flex-shrink:0}
 #sidebar-tools strong{padding-right:32px;min-height:22px}
+#sidebar-summary{display:flex;align-items:center;justify-content:space-between;gap:8px}
 #new-tab{padding:7px;text-align:left}
 #sidebar-toggle{position:absolute;top:8px;left:calc(var(--sidebar-width,260px) - 37px);z-index:6;width:28px;height:28px;padding:0;font-size:15px}
 body.sidebar-collapsed #sidebar-toggle{left:8px}
@@ -28,13 +29,17 @@ body.sidebar-collapsed #sidebar-toggle{left:8px}
 #tabs.drop-target::after{content:'';position:absolute;top:var(--drop-top);left:6px;right:6px;height:2px;background:#9dc2fa;border-radius:2px;pointer-events:none;z-index:1;box-shadow:0 0 4px #9dc2fa}
 #tabs [hidden]{display:none}
 #tabs .no-results{padding:10px;font-size:12px;color:#9ba7bd}
-#sidebar-bottom{display:flex;flex-direction:column;border-top:1px solid #2b303b;padding:8px 10px;gap:8px;flex-shrink:0;max-height:45dvh;overflow-y:auto}
+#sidebar-bottom{display:flex;flex-direction:column;border-top:1px solid #2b303b;padding:8px 10px;gap:10px;flex-shrink:0;max-height:45dvh;overflow-y:auto}
+.sidebar-section-heading{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:8px}
+.sidebar-section-heading h2{margin:0;font-size:10px;font-weight:500;color:#9ba7bd}
+#ready{border-color:transparent;background:transparent;padding:5px 2px;font-size:10px}
+#ready:hover{color:#ffd57a;background:#222732}
 .sidebar-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
 .sidebar-actions button{padding:6px;min-width:0;white-space:normal}
-#sidebar-more summary{cursor:pointer;font-size:11px;color:#9ba7bd;padding:3px 0}
-#sidebar-more[open] summary{margin-bottom:8px}
-#sidebar-archive{display:flex;align-items:center;justify-content:space-between;gap:8px}
-#tab-count{font-size:10px;color:#9ba7bd}
+#sidebar-utilities{border-top:1px solid #2b303b;padding-top:8px}
+#sidebar-utilities button{background:transparent;border-color:transparent;color:#b5bfd0}
+#sidebar-utilities button:hover{background:#222732;color:#e5e7eb}
+#tab-count{font-size:10px;color:#9ba7bd;white-space:nowrap}
 #sidebar-resize{width:5px;flex-shrink:0;cursor:col-resize;background:#2b303b;touch-action:none}
 #sidebar-resize:hover,#sidebar-resize:focus-visible,body.resizing #sidebar-resize{background:#6f9cdd}
 body.resizing{cursor:col-resize;user-select:none}
@@ -42,10 +47,9 @@ body.resizing iframe{pointer-events:none}
 body.sidebar-collapsed #sidebar,body.sidebar-collapsed #sidebar-resize{display:none}
 #sidebar-backdrop{display:none}
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
-#machines{padding:8px 0;display:flex;gap:8px;flex-direction:column}
-#machines[hidden]{display:none}
+#machines{padding:8px 0 0;display:flex;gap:12px;flex-direction:column}
 #machines label{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;min-width:0}
-#machines select{max-width:55%}
+#machines select{width:45%;flex-shrink:0}
 main{position:relative;flex:1;min-height:0;min-width:0;background:black}
 iframe{position:absolute;inset:0;width:100%;height:100%;border:0;visibility:hidden;pointer-events:none}
 iframe.active{visibility:visible;pointer-events:auto}
@@ -62,6 +66,17 @@ dialog button,dialog select{font-size:13px;padding:7px 10px}
 dialog select{width:100%}
 dialog p{font-size:12px;color:#9ba7bd}
 .dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}
+#settings-dialog{width:420px;max-height:90dvh;overflow-y:auto}
+.settings-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.settings-heading h2,.settings-heading h3{margin:0}
+.settings-section{margin-top:22px;padding-top:18px;border-top:1px solid #2b303b}
+.settings-section h3{font-size:12px;font-weight:600;margin:0}
+.settings-section p{line-height:1.5;margin:8px 0 0}
+#native-tabs{display:flex;align-items:center;justify-content:space-between;width:100%;margin-top:12px;text-align:left;padding:10px 12px}
+.toggle-state{font-size:11px;color:#9ba7bd}
+.toggle-state::after{content:'Off'}
+#native-tabs[aria-pressed="true"] .toggle-state{color:#c5dcff}
+#native-tabs[aria-pressed="true"] .toggle-state::after{content:'On'}
 @media(max-width:700px){
   body #artifact-preview header{padding-left:42px}
   #sidebar-toggle,body.sidebar-collapsed #sidebar-toggle{left:8px}

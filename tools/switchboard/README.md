@@ -10,7 +10,7 @@ Run on the Mac:
 uv run --script tools/switchboard/server.py
 ```
 
-Open https://switchboard.localhost (Portless), or http://127.0.0.1:8090. Use **Machines** to assign work/home groups.
+Open https://switchboard.localhost (Portless), or http://127.0.0.1:8090. Use **Settings → Machines** to assign work/home groups or refresh sessions.
 On macOS, install the menu bar app and keep the relay running independently of a terminal:
 
 ```sh
@@ -126,10 +126,10 @@ identity/status/change markers reach the browser, not terminal transcripts.
 
 **Mark ready** also stars a tab manually. Native tab names starting with `*` are
 highlighted. Manual marks and acknowledgments are stored in this browser.
-The header and browser title show the total number of marked tabs across all
+The sidebar and browser title show the total number of marked tabs across all
 machines, including tabs outside the selected group.
 
-The native tab row is hidden in the desktop combined view; **Native tabs** shows
+The native tab row is hidden in the desktop combined view; **Settings → Native tab bar** shows
 it again. This is client-side viewport clipping of an identified Zellij header,
 not a remote layout change. Fullscreen views without that header and the stock
 mobile interface are not clipped. The native status bar is also hidden. Bottom clipping does not resize the

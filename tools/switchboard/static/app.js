@@ -181,13 +181,14 @@ function render() {
   $('select-text').setAttribute('aria-pressed',String(selecting));
   $('select-text').classList.toggle('selected',selecting);
   $('select-text').disabled=!current;
+  $('copy').disabled=!current;
   $('ready').disabled=!current;
   const archiveCount=allTabs(true,true).filter(item=>archived[item.key]).length;
   $('archive').textContent=`Archive${archiveCount?' ('+archiveCount+')':''}`;
   if($('archive-dialog').open)renderArchive();
   if(!current){$('artifact-preview').hidden=true;$('artifact-frame').src='about:blank';}
   $('empty').hidden=!!current;
-  if (!current) $('empty').textContent=restoringTab?'Connecting to the requested terminal…':filter==='all'?(archiveCount?'All tabs are archived. Open Archive to restore one.':'No connected tabs. Check Machines or refresh.'):`No ${filter} tabs. Assign machines to this group using Machines.`;
+  if (!current) $('empty').textContent=restoringTab?'Connecting to the requested terminal…':filter==='all'?(archiveCount?'All tabs are archived. Open Archive to restore one.':'No connected tabs. Open Settings to check your machines or refresh.'):`No ${filter} tabs. Assign machines to this group in Settings.`;
   const errors=[...hosts.values()].filter(h=>h.error).map(h=>`${h.name}: ${h.error}`);
   for(const error of attentionErrors)errors.push(`${hosts.get(error.host)?.name||error.host}: attention status unavailable`);
   setStatus(errors.length?errors.join(' · '):`${hosts.size} machines · ${tabs.length} tabs${current?' · '+hosts.get(current.entry.host)?.name:''}`,errors.length>0);
@@ -296,7 +297,6 @@ window.addEventListener('keydown',event=>{
   if(event.key==='Escape'&&!event.altKey&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey){
     if(mobileSidebar.matches&&sidebarOpen){event.preventDefault();sidebarOpen=false;updateSidebar();return;}
     if(!$('artifact-preview').hidden){event.preventDefault();$('artifact-back').click();return;}
-    if(!$('machines').hidden)return;
     const current=allTabs().find(item=>item.key===selected);
     if(current){event.preventDefault();event.stopImmediatePropagation();current.entry.frame.contentWindow.postMessage({type:'zellij-escape'},location.origin);current.entry.frame.focus();}
     return;
@@ -308,14 +308,24 @@ window.addEventListener('keydown',event=>{
   if(event.shiftKey)moveSelected(direction);else stepTab(direction);
 },true);
 function renderMachines() {
-  $('machines').replaceChildren();
+  const container=$('machines'),rows=new Map([...container.children].map(label=>[label.dataset.host,label])),nodes=[];
   for(const host of hosts.values()) {
-    const label=document.createElement('label');label.append(document.createTextNode(host.name));
-    const select=document.createElement('select');select.setAttribute('aria-label',`${host.name} group`);
-    for(const [value,text] of [['','Ungrouped'],['work','Work'],['home','Home']]){const option=document.createElement('option');option.value=value;option.textContent=text;select.append(option);}
-    select.value=groups[host.id]||'';
-    select.onchange=()=>{groups[host.id]=select.value;localStorage.setItem('switchboard-groups',JSON.stringify(groups));render();};label.append(select);$('machines').append(label);
+    let label=rows.get(host.id);
+    if(!label){
+      label=document.createElement('label');label.dataset.host=host.id;label.append(document.createTextNode(host.name));
+      const select=document.createElement('select');
+      for(const [value,text] of [['','Ungrouped'],['work','Work'],['home','Home']]){const option=document.createElement('option');option.value=value;option.textContent=text;select.append(option);}
+      select.onchange=()=>{groups[host.id]=select.value;localStorage.setItem('switchboard-groups',JSON.stringify(groups));render();};label.append(select);
+    }
+    const select=label.lastElementChild;
+    if(label.firstChild.textContent!==host.name)label.firstChild.textContent=host.name;
+    select.setAttribute('aria-label',`${host.name} group`);
+    if(select.value!==(groups[host.id]||''))select.value=groups[host.id]||'';
+    nodes.push(label);rows.delete(host.id);
   }
+  for(const label of rows.values())label.remove();
+  let cursor=container.firstChild;
+  for(const label of nodes){if(label!==cursor)container.insertBefore(label,cursor);else cursor=cursor.nextSibling;}
 }
 async function refresh() {
   if(loading)return;loading=true;
@@ -451,8 +461,12 @@ $('ready').onclick=()=>{
   ready[selected]=Date.now();saveReady();
   render();
 };
-$('settings').onclick=()=>{$('machines').hidden=!$('machines').hidden;$('settings').setAttribute('aria-expanded',String(!$('machines').hidden));};
-$('refresh').onclick=refresh;
+$('settings').onclick=()=>$('settings-dialog').showModal();
+$('close-settings').onclick=()=>$('settings-dialog').close();
+$('refresh').onclick=async()=>{
+  const button=$('refresh');button.disabled=true;button.textContent='Refreshing…';
+  try{await refresh();}finally{button.disabled=false;button.textContent='Refresh';}
+};
 $('native-tabs').onclick=()=>{nativeTabs=!nativeTabs;localStorage.setItem('switchboard-native-tabs',String(nativeTabs));updateNativeTabs();};
 updateNativeTabs();
 refresh();setInterval(refresh,15000);
