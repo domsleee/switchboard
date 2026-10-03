@@ -159,6 +159,11 @@
   }
   window.addEventListener('keydown',event=>{
     if(hasDialog())return;
+    if(event.code==='KeyT'&&event.ctrlKey&&!event.metaKey&&!event.altKey&&!event.shiftKey
+        &&!event.isComposing&&terminalFocused()){
+      // Switchboard owns tab navigation; do not enter Zellij's native Tab mode.
+      event.preventDefault();event.stopImmediatePropagation();return;
+    }
     if(event.code==='KeyT'&&(event.ctrlKey!==event.metaKey)&&event.altKey&&!event.shiftKey&&!event.isComposing&&terminalFocused()){
       event.preventDefault();event.stopImmediatePropagation();
       if(!event.repeat)parent.postMessage({type:'zellij-open-new-tab',host},location.origin);return;

@@ -77,6 +77,7 @@ and native tab ID; refreshing reconnects to that terminal. Opening a link to an
 archived tab restores it in this browser.
 Tab labels and the browser window title follow live Codex/Claude pane titles,
 including `/rename` updates. Agent spinner prefixes are stripped from labels.
+Plain **Ctrl+T** is disabled inside the terminal so it cannot open Zellij's tab menu.
 Use **+ New tab** or **Ctrl+Alt+T** (Windows) / **Cmd+Alt+T** (Mac) to open a shell in a chosen machine/session. The new tab is
 selected automatically.
 Shell directory titles retain explicitly named Zellij tabs. If an agent disables
