@@ -226,6 +226,13 @@ function stepTab(direction) {
   const index=tabs.findIndex(t=>t.key===selected);
   activate(tabs[(Math.max(index,0)+direction+tabs.length)%tabs.length]);
 }
+function closeSelectedTab(){
+  const item=allTabs().find(item=>item.key===selected);
+  if(!item||document.querySelector('dialog[open]')||!$('artifact-preview').hidden)return;
+  if(item.entry.requestedPane||item.entry.focusPending){setStatus('Wait for the selected terminal to receive focus.',true);return;}
+  contextItem=item;
+  $('close-tab').click();
+}
 window.addEventListener('keydown',event=>{
   if((event.metaKey||event.ctrlKey)&&!event.altKey&&!event.shiftKey&&event.code==='KeyK'&&!document.querySelector('dialog[open]')){event.preventDefault();showTabSearch();return;}
   if(event.key==='Escape'&&event.target===$('tab-search')){
@@ -235,6 +242,11 @@ window.addEventListener('keydown',event=>{
   }
   if(event.target.closest?.('input,textarea,select,[contenteditable="true"]'))return;
   if(document.querySelector('dialog[open]'))return;
+  if(event.code==='KeyD'&&event.ctrlKey&&!event.metaKey&&!event.altKey&&!event.shiftKey&&!event.isComposing){
+    event.preventDefault();event.stopImmediatePropagation();
+    if(!event.repeat)closeSelectedTab();
+    return;
+  }
   if(!$('tab-menu').hidden && event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();closeTabMenu();return;}
   if(event.key==='Escape'&&!event.altKey&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey){
     if(mobileSidebar.matches&&sidebarOpen){event.preventDefault();sidebarOpen=false;updateSidebar();return;}
@@ -333,6 +345,8 @@ window.addEventListener('message',event=>{
     const tab=state?.tabs.find(tab=>tab.position===state.active_pane?.tab_position);
     if(tab){entry.state=state;selected=tabKey(entry,tab);render();focus({entry,tab});}
     setStatus('That terminal is unavailable. Choose another tab.',true);
+  }else if(event.data?.type==='zellij-close-tab'){
+    if(entry.frame.classList.contains('active'))closeSelectedTab();
   }else if(event.data?.type==='zellij-tab-search'){
     if(entry.frame.classList.contains('active'))showTabSearch();
   }else if(event.data?.type==='zellij-tab-step' && (event.data.direction===-1||event.data.direction===1)){

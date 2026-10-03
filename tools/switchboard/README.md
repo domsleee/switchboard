@@ -49,7 +49,7 @@ Remove the Startup shortcut to disable automatic startup. Other hosts can use
 at either end. They work from inside the terminal and follow the current group
 filter. These shortcuts are intercepted before reaching native Zellij.
 **Right-click a sidebar tab → Archive** hides it without closing its terminal.
-**Right-click → Close…** asks for confirmation, then closes every pane in that
+**Right-click → Close…**, or **Ctrl+D**, asks for confirmation, then closes every pane in that
 tab and stops its processes. It targets the tab by its native stable ID, even
 when another tab is focused.
 Use **Archive** to search archived tabs across machines and restore one. Archive

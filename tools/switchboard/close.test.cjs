@@ -16,8 +16,17 @@ test('Close confirms the clicked tab, preserves its target, and shows errors wit
     SwitchboardTitles:{tabTitle:(_,tab)=>tab.name},closeTabMenu(){context.contextItem=null;},
     setStatus(){},ready:{clicked:1},archived:{clicked:1},saveReady(){},localStorage:{setItem(){}},refresh:async()=>{},
     fetch:async(url,options)=>{calls.push([url,JSON.parse(options.body)]);return {ok:true};}};
-  vm.runInNewContext(fs.readFileSync(__dirname+'/static/close.js','utf8'),context);
-  $('close-tab').onclick();
+  context.selected='clicked';context.allTabs=()=>[item];
+  context.document={querySelector:()=>$('close-tab-dialog').open?{}:null};
+  $('artifact-preview').hidden=true;
+  $('close-tab').click=()=>$('close-tab').onclick();
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(__dirname+'/static/close.js','utf8'),context);
+  const source=fs.readFileSync(__dirname+'/static/app.js','utf8');
+  const start=source.indexOf('function closeSelectedTab(){');
+  vm.runInContext(source.slice(start,source.indexOf("window.addEventListener('keydown'",start)),context);
+  entry.focusPending=true;context.closeSelectedTab();assert.equal($('close-tab-dialog').open,false);
+  entry.focusPending=false;context.closeSelectedTab();
   assert.equal($('close-tab-dialog').open,true);assert.equal(calls.length,0);
   $('cancel-close-tab').onclick();await $('confirm-close-tab').onclick();assert.equal(calls.length,0);
   context.contextItem=item;$('close-tab').onclick();entry.name='elsewhere';entry.state.panes=[];

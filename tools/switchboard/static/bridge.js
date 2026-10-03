@@ -70,6 +70,13 @@
   }
   window.addEventListener('keydown',event=>{
     if(hasDialog())return;
+    if(event.code==='KeyD'&&event.ctrlKey&&!event.metaKey&&!event.altKey&&!event.shiftKey
+        &&!event.isComposing&&terminalFocused()){
+      event.preventDefault();event.stopImmediatePropagation();
+      if(event.repeat)return;
+      if(pendingFocus){showEscapeStatus('Waiting for the selected terminal to receive focus.',true);return;}
+      parent.postMessage({type:'zellij-close-tab',host},location.origin);return;
+    }
     if((event.metaKey||event.ctrlKey)&&!event.altKey&&!event.shiftKey&&event.code==='KeyK'){
       event.preventDefault();event.stopImmediatePropagation();
       parent.postMessage({type:'zellij-tab-search',host},location.origin);return;

@@ -5,20 +5,21 @@ const fs=require('node:fs');
 const source=fs.readFileSync(__dirname+'/static/bridge.js','utf8');
 function harness(){
   const handlers={},messages=[],properties=new Map(),classes=new Set(),frames=[],resizes=[];
-  let modal=false,bottomRows=2,firstRow='Zellij (main)';
+  let modal=false,focused=false,bottomRows=2,firstRow='Zellij (main)';
   class Socket{constructor(){this.handlers={};}addEventListener(type,fn){this.handlers[type]=fn;}}
   const parent={postMessage:data=>messages.push(data)};
   const window={WebSocket:Socket,addEventListener:(type,fn)=>handlers[type]=fn,dispatchEvent:()=>resizes.push(1),
     __switchboardBottomRows:()=>bottomRows,
-    term:{options:{disableStdin:false},element:{style:{pointerEvents:""}},blur(){},buffer:{active:{viewportY:0,getLine:()=>({translateToString:()=>firstRow})}},_core:{_renderService:{dimensions:{css:{cell:{height:18}}}}},onRender(){},onResize(){},focus(){}}};
+    term:{options:{disableStdin:false},element:{contains:()=>focused,style:{pointerEvents:""}},blur(){},buffer:{active:{viewportY:0,getLine:()=>({translateToString:()=>firstRow})}},_core:{_renderService:{dimensions:{css:{cell:{height:18}}}}},onRender(){},onResize(){},focus(){}}};
   const document={createElement:()=>({style:{},setAttribute(){}}),head:{append(){}},querySelector:()=>modal?{}:null,
+    activeElement:{},
     body:{append(){},classList:{contains:c=>classes.has(c),toggle:(c,on)=>on?classes.add(c):classes.delete(c)}},
     documentElement:{style:{getPropertyValue:key=>properties.get(key)||'',setProperty:(key,val)=>properties.set(key,val)}}};
   vm.runInNewContext(source,{window,document,parent,location:{pathname:'/hosts/windows/main',origin:'http://localhost:8090'},localStorage:{getItem:()=>null},MutationObserver:class{observe(){}},requestAnimationFrame:fn=>frames.push(fn),Event:class{}});
   const key=(code,extra={})=>{const event={code,altKey:true,ctrlKey:false,metaKey:false,shiftKey:false,preventDefault(){this.prevented=true;},stopImmediatePropagation(){this.stopped=true;},...extra};handlers.keydown(event);return event;};
   const state=(payload={})=>{const socket=new window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');socket.handlers.message({data:JSON.stringify({type:'MobileState',payload})});while(frames.length)frames.shift()();};
   const error=(...lines)=>{const socket=new window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');socket.handlers.message({data:JSON.stringify({type:'LogError',lines})});};
-  return{window,handlers,parent,messages,properties,classes,key,state,error,setModal:v=>modal=v,setBottomRows:v=>bottomRows=v,setFirstRow:v=>firstRow=v,frames,resizes};
+  return{window,handlers,parent,messages,properties,classes,key,state,error,setFocus:v=>focused=v,setModal:v=>modal=v,setBottomRows:v=>bottomRows=v,setFirstRow:v=>firstRow=v,frames,resizes};
 }
 test('iframe arrows and H/L send one switch/move and stop native/browser navigation',()=>{
   const h=harness();
@@ -122,4 +123,22 @@ test('Cmd/Ctrl+K opens sidebar search from the terminal and respects dialogs',()
     assert.equal(h.messages.at(-1).type,'zellij-tab-search');
   }
   h.setModal(true);assert.equal(h.key('KeyK',{altKey:false,metaKey:true}).prevented,undefined);
+});
+
+test('Ctrl+D requests Close once from the focused terminal, preserving modifiers, dialogs and unfinished focus',()=>{
+  const h=harness();h.setFocus(true);h.messages.length=0;
+  const key=h.key('KeyD',{altKey:false,ctrlKey:true});
+  assert.equal(key.prevented,true);assert.equal(key.stopped,true);
+  assert.equal(h.messages[0].type,'zellij-close-tab');
+  h.key('KeyD',{altKey:false,ctrlKey:true,repeat:true});assert.equal(h.messages.length,1);
+  for(const extra of [{metaKey:true},{shiftKey:true},{altKey:true},{isComposing:true}]){
+    assert.equal(h.key('KeyD',{altKey:false,ctrlKey:true,...extra}).prevented,undefined);
+  }
+  h.setFocus(false);assert.equal(h.key('KeyD',{altKey:false,ctrlKey:true}).prevented,undefined);
+  h.setFocus(true);h.setModal(true);assert.equal(h.key('KeyD',{altKey:false,ctrlKey:true}).prevented,undefined);
+  h.setModal(false);h.window.__zjSendControl=()=>{};
+  h.state({active_pane:{pane_id:1,is_plugin:false}});
+  h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-focus',pane_id:2,is_plugin:false}});
+  h.messages.length=0;h.key('KeyD',{altKey:false,ctrlKey:true});
+  assert.equal(h.messages.length,0);
 });
