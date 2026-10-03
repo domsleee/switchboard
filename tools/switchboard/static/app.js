@@ -449,6 +449,14 @@ $('new-tab').onclick=()=>{
   $('new-tab-dialog').showModal();
 };
 $('cancel-new-tab').onclick=()=>$('new-tab-dialog').close();
+const newTabDialog=$('new-tab-dialog');
+let newTabBackdropPressed=false;
+function outsideNewTab(event){
+  const bounds=newTabDialog.getBoundingClientRect();
+  return event.target===newTabDialog&&(event.clientX<bounds.left||event.clientX>bounds.right||event.clientY<bounds.top||event.clientY>bounds.bottom);
+}
+newTabDialog.onpointerdown=event=>{newTabBackdropPressed=outsideNewTab(event);};
+newTabDialog.onclick=event=>{if(newTabBackdropPressed&&outsideNewTab(event))newTabDialog.close();newTabBackdropPressed=false;};
 $('new-tab-form').onsubmit=event=>{
   event.preventDefault();const entry=sessions.get($('new-tab-target').value);if(!entry?.state||!entry.catalog?.length)return;
   entry.pendingNewTab=new Set((entry.catalog||[]).map(tab=>tabKey(entry,tab)));
