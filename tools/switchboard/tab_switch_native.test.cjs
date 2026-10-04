@@ -55,8 +55,8 @@ let native,relay,browser,tokenName,created=false;
     });
     await page.goto(url+'/?host=fixture&session='+name+'&tab='+panes[0].tab_id);
     const selectedPane=id=>page.waitForFunction(pane=>{const f=document.querySelector('iframe.active'),w=f?.contentWindow;return w?.__zjLastMobileState?.active_pane?.pane_id===pane&&!w.term.options.disableStdin&&f.contentDocument.activeElement===w.term.textarea;},id);
-    const choose=async pane=>{const index=await page.evaluate(id=>[...document.querySelectorAll('#tabs button')].findIndex(b=>b._item?.tab.id===id),pane.tab_id);assert.ok(index>=0);await page.locator('#tabs button').nth(index).click();await selectedPane(pane.id);};
-    await page.waitForSelector('#tabs button');await selectedPane(panes[0].id);
+    const choose=async pane=>{const index=await page.evaluate(id=>[...document.querySelectorAll('#tabs .tab-select')].findIndex(b=>b._item?.tab.id===id),pane.tab_id);assert.ok(index>=0);await page.locator('#tabs .tab-select').nth(index).click();await selectedPane(pane.id);};
+    await page.waitForSelector('#tabs .tab-select');await selectedPane(panes[0].id);
     const screen=()=>page.evaluate(()=>{const term=document.querySelector('iframe.active').contentWindow.term;return Array.from({length:term.rows},(_,n)=>term.buffer.active.getLine(term.buffer.active.viewportY+n)?.translateToString()).join('\n');});
     for(const [index,pane]of panes.entries()){
       await choose(pane);
@@ -66,7 +66,7 @@ let native,relay,browser,tokenName,created=false;
     }
     await page.evaluate(()=>{
       const f=document.querySelector('iframe.active'),w=f.contentWindow,now=()=>performance.timeOrigin+performance.now();
-      document.addEventListener('click',event=>{if(event.target.closest('#tabs button')&&window.__switchSample)window.__switchSample.click=now();},true);
+      document.addEventListener('click',event=>{if(event.target.closest('#tabs .tab-select')&&window.__switchSample)window.__switchSample.click=now();},true);
       document.addEventListener('click',()=>{const sample=window.__switchSample;if(sample?.click&&document.querySelector('#tabs .selected')?._item.tab.panes.some(p=>p.pane_id===sample.pane&&!p.is_plugin))sample.selected=now();});
       w.term.onRender(()=>{const sample=window.__switchSample;if(!sample||sample.render)return;const text=Array.from({length:w.term.rows},(_,n)=>w.term.buffer.active.getLine(w.term.buffer.active.viewportY+n)?.translateToString()).join('\n');if(text.includes(sample.prompt))sample.render=now();});
       function ready(){const sample=window.__switchSample;if(sample?.click&&!sample.input&&w.__zjLastMobileState?.active_pane?.pane_id===sample.pane&&!w.term.options.disableStdin&&f.contentDocument.activeElement===w.term.textarea)sample.input=now();requestAnimationFrame(ready);}ready();
@@ -89,7 +89,7 @@ let native,relay,browser,tokenName,created=false;
     }
     // Repeated choices can replace a command while its acknowledgment is in
     // flight. The existing bridge must still gate input until the final pane.
-    await page.evaluate(ids=>{window.__switchSample=null;for(const id of ids)[...document.querySelectorAll('#tabs button')].find(b=>b._item.tab.id===id).click();},[panes[0].tab_id,panes[1].tab_id]);
+    await page.evaluate(ids=>{window.__switchSample=null;for(const id of ids)[...document.querySelectorAll('#tabs .tab-select')].find(b=>b._item.tab.id===id).click();},[panes[0].tab_id,panes[1].tab_id]);
     await selectedPane(panes[1].id);
     const rapidMarker=crypto.randomBytes(8).toString('hex');
     await page.keyboard.type(`printf '%s%s%s\\n' 'RAPID_' "$SB_FIXTURE_TAB" '_${rapidMarker}'`);await page.keyboard.press('Enter');

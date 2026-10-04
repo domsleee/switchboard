@@ -87,7 +87,7 @@ function start(binary,args,label) {
             const Original=window.WebSocket;window.__acceptanceSockets=[];
             window.WebSocket=class extends Original {constructor(...args){super(...args);window.__acceptanceSockets.push(this);}};
         });
-        await page.goto(url);await page.waitForSelector('#tabs button');
+        await page.goto(url);await page.waitForSelector('#tabs .tab-select');
         async function connected() {
             await page.waitForFunction(session=>{
                 const w=document.querySelector('#terminals>iframe.active')?.contentWindow;
@@ -96,8 +96,8 @@ function start(binary,args,label) {
             },name);
         }
         async function select(pane) {
-            const index=await page.evaluate(id=>[...document.querySelectorAll('#tabs button')].findIndex(b=>b._item?.tab.id===id),pane.tab_id);
-            assert.ok(index>=0,'Native tab appears in sidebar');await page.locator('#tabs button').nth(index).click();
+            const index=await page.evaluate(id=>[...document.querySelectorAll('#tabs .tab-select')].findIndex(b=>b._item?.tab.id===id),pane.tab_id);
+            assert.ok(index>=0,'Native tab appears in sidebar');await page.locator('#tabs .tab-select').nth(index).click();
             await page.waitForFunction(id=>document.querySelector('#terminals>iframe.active')?.contentWindow.__zjLastMobileState?.active_pane?.pane_id===id,pane.id);
             await connected();
         }
@@ -112,7 +112,7 @@ function start(binary,args,label) {
             await page.locator('#terminals>iframe.active').contentFrame().locator('.xterm-helper-textarea').focus();
             await page.keyboard.type(text);await page.keyboard.press('Enter');await hasOutput(expected);
         }
-        const sidebarNames=()=>page.evaluate(session=>[...document.querySelectorAll('#tabs button')].filter(b=>b._item?.entry.name===session).map(b=>[b._item.tab.id,b.children[1].textContent]).sort((a,b)=>a[0]-b[0]),name);
+        const sidebarNames=()=>page.evaluate(session=>[...document.querySelectorAll('#tabs .tab-select')].filter(b=>b._item?.entry.name===session).map(b=>[b._item.tab.id,b.children[1].textContent]).sort((a,b)=>a[0]-b[0]),name);
         await select(first);
         const heartbeat=path.join(dir,'heartbeat'), agentDir=path.join(dir,'codex');fs.mkdirSync(agentDir);
         fs.writeFileSync(agentScript,`const fs=require('node:fs');let n=0;setInterval(()=>{fs.writeFileSync(process.argv[2],String(++n));process.stdout.write('HEARTBEAT:'+n+'\\n');},750);`);
