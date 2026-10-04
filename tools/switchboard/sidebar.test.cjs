@@ -206,7 +206,7 @@ test('New tab cannot snapshot an unscanned or empty catalog',()=>{
   entry.frame={contentWindow:{postMessage(){sent++;}}};
   elements.set('new-tab-form',{});elements.set('new-tab-target',{value:'main'});
   elements.set('new-tab-dialog',{close(){}});
-  const context={$,sessions:new Map([['main',entry]]),location:{origin:'https://switchboard.localhost'},hosts:new Map([['mac',{name:'Mac'}]]),setStatus(){},setTimeout(){}};
+  const context={$,sessions:new Map([['main',entry]]),sessionTabs:entry=>[...(entry.catalog||[]),...(entry.provisionalTabs||[])],location:{origin:'https://switchboard.localhost'},hosts:new Map([['mac',{name:'Mac'}]]),setStatus(){},setTimeout(){}};
   vm.createContext(context);const start=source.indexOf("$('new-tab-form').onsubmit=");
   vm.runInContext(source.slice(start,source.indexOf("$('ready').onclick=",start)),context);
   elements.get('new-tab-form').onsubmit({preventDefault(){}});assert.equal(sent,0);assert.equal(entry.pendingNewTab,undefined);
@@ -217,13 +217,13 @@ test('New tab cannot snapshot an unscanned or empty catalog',()=>{
 test('early catalog data is applied immediately and one delayed host does not block other terminals',async()=>{
   let releaseSlow;const delayed=new Promise(resolve=>releaseSlow=resolve),mounted=[];
   const catalog=[{host:'mac',session:'main',id:42,position:0,name:'A',panes:[]}];
-  const context={loading:false,hosts:new Map(),sessions:new Map(),tabCatalog:catalog,ready:{},archived:{},tabOrder:[],selected:null,catalogUnavailable:()=>false,saveReady(){},localStorage:{setItem(){}},
+  const context={loading:false,hosts:new Map(),startedHosts:new Set(),sessions:new Map(),tabCatalog:catalog,ready:{},archived:{},tabOrder:[],selected:null,catalogUnavailable:()=>false,saveReady(){},localStorage:{setItem(){}},clearTimeout(){},
     document:{createElement:()=>({remove(){}})},$:()=>({append:frame=>mounted.push(frame)}),renderMachines(){},render(){},setStatus(){},
     fetch:async url=>{if(url==='/api/hosts?summary=1')return {ok:true,json:async()=>[{id:'mac',name:'Mac'},{id:'slow',name:'Slow'}]};
       if(url==='/api/hosts/slow')return delayed;
       return {ok:true,json:async()=>({id:'mac',name:'Mac',sessions:[{name:'main',web_clients_allowed:true}]})};}};
   vm.createContext(context);vm.runInContext(source.slice(source.indexOf('function sessionKey('),source.indexOf('function attentionKey(')),context);
-  vm.runInContext(source.slice(source.indexOf('async function refresh()'),source.indexOf("window.addEventListener('message'")),context);
+  vm.runInContext(source.slice(source.indexOf('function connectSession('),source.indexOf("window.addEventListener('message'")),context);
   const refresh=context.refresh();await new Promise(resolve=>setImmediate(resolve));
   const entry=context.sessions.get(JSON.stringify(['mac','main']));assert.equal(entry.catalog[0].id,42);assert.equal(mounted.length,1);assert.equal(context.loading,true);
   releaseSlow({ok:true,json:async()=>({id:'slow',name:'Slow',error:'Offline'})});await refresh;assert.equal(context.loading,false);
