@@ -104,6 +104,26 @@ the final-session check until updated.
 **Still to check:** perceived close delay on both machines; record time from
 confirmation to removal and to native close completion.
 
+### SB-47 · Switch existing terminals without a polling delay
+
+Clicking another connected terminal selects its sidebar row immediately. Its
+content redraws and input becomes ready as soon as that client's native focus
+is confirmed. Recovered sessions request that confirmation immediately rather
+than waiting for the next background metadata poll. Rapid switches keep input
+blocked until the final selected terminal is confirmed.
+
+The disposable loopback check allows 100 ms for row selection and 500 ms for
+terminal redraw and input readiness when run without competing browser tests.
+
+**Tests:** `ui` checks acknowledgment and rapid-switch input gating. Recovery
+unit tests check immediate refresh, bounded query batches and acknowledgment.
+`switching BINARY`, with `PLAYWRIGHT_MODULE`, times six switches between real
+shells in a private recovered session and types into each selected shell.
+See [timing evidence and limits](../../docs/TAB_SWITCH_PERFORMANCE.md).
+**Still to check:** the user's actual Switchboard and online shopping tabs after
+the updated web service is installed; remote Windows latency and browser load.
+The disposable loopback timings do not establish those live timings.
+
 ## Agent status and notifications
 
 ### SB-03 · Show when an agent needs me

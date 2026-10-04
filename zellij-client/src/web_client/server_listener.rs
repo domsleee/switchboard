@@ -176,7 +176,10 @@ pub fn zellij_server_listener(
                     let _recovery_poll = if recovered_attachment {
                         sharing_recovery.as_ref().map(|recovery| recovery.poll_metadata(session_name.clone(), zellij_ipc_pipe.clone(), os_input.clone()))
                     } else { None };
-                    let mut recovery_metadata = crate::web_client::sharing_recovery::RecoveryMetadata::with_pending(_recovery_poll.as_ref().map(|poll| poll.pending()));
+                    if let Some(channels) = connection_table.lock().unwrap().client_id_to_channels.get_mut(&web_client_id) {
+                        channels.recovery_metadata_refresh = _recovery_poll.as_ref().map(|poll| poll.refresh());
+                    }
+                    let mut recovery_metadata = crate::web_client::sharing_recovery::RecoveryMetadata::with_poll(_recovery_poll.as_ref());
 
                     if let Some(pixel_dims) = client_pixel_dims {
                         os_input.send_to_server(ClientToServerMsg::TerminalPixelDimensions {

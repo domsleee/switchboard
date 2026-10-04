@@ -77,21 +77,38 @@ async fn handle_ws_control(socket: WebSocket, params: ControlParams, state: AppS
         .add_client_control_tx(&web_client_id, control_channel_tx);
 
     let send_message_to_server = |deserialized_msg: WebClientToWebServerControlMessage| {
-        let Some(client_connection) = state
+        let Some((client_connection, recovery_refresh)) = state
             .connection_table
             .lock()
             .unwrap()
-            .get_client_os_api(&deserialized_msg.web_client_id)
-            .cloned()
+            .client_id_to_channels
+            .get(&deserialized_msg.web_client_id)
+            .map(|channels| {
+                (
+                    channels.os_api.clone(),
+                    channels.recovery_metadata_refresh.clone(),
+                )
+            })
         else {
             log::error!("Unknown web_client_id: {}", deserialized_msg.web_client_id);
             return;
         };
+        let refresh_focus = matches!(
+            deserialized_msg.payload,
+            WebClientToWebServerControlMessagePayload::FocusPane { .. }
+        );
         let Some(client_msg) = control_payload_to_server_msg(deserialized_msg.payload) else {
             return;
         };
 
         let _ = client_connection.send_to_server(client_msg);
+        // Legacy recovered clients receive focus state through queries. Issue the
+        // next batch after the action, without waiting for background polling.
+        if refresh_focus {
+            if let Some(refresh) = recovery_refresh {
+                refresh.request();
+            }
+        }
     };
 
     while let Some(Ok(msg)) = control_socket_rx.next().await {
