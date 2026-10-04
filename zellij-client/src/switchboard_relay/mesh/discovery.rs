@@ -104,6 +104,45 @@ pub(super) async fn defaults(State(state): State<RelayState>) -> Result<Json<Val
     })))
 }
 
+/// Start receiving requests without requiring a visit to the Computers page.
+/// Multiple networks still require an explicit local selection.
+pub(in crate::switchboard_relay) fn start(state: RelayState) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let Some(mesh) = &state.mesh else {
+            return;
+        };
+        let setup = async {
+            if mesh.database.lock().await.local.is_some() {
+                return mesh.start_gateway().await;
+            }
+            let suggested = defaults(State(state.clone()))
+                .await
+                .map_err(|_| anyhow::anyhow!("No local pairing address"))?
+                .0;
+            let Some(address) = suggested["address"].as_str() else {
+                return Ok(());
+            };
+            mesh.configure(
+                suggested["computer_name"]
+                    .as_str()
+                    .unwrap_or("This computer")
+                    .into(),
+                address.into(),
+            )
+            .await
+        };
+        if setup.await.is_err() {
+            log::warn!("Pairing setup unavailable; choose a connection in Computers");
+        }
+        loop {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            if mesh.database.lock().await.joining.is_some() {
+                let _ = mesh.resume().await;
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

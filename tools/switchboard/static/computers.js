@@ -56,6 +56,12 @@
     try {
       const state = await api('');
       pending = Boolean(state.joining);
+      $('direct-section').hidden = Boolean(state.mesh) && !state.administrator;
+      const incoming = state.incoming || [], sent = state.sent || [];
+      $('incoming-section').hidden = !incoming.length;
+      renderPairing(incoming, sent);
+
+      $('receive-requests').hidden = Boolean(state.configured);
       $('retry-gateway').hidden = !state.configured || state.gateway_available !== false;
       $('mesh-title').textContent = state.mesh || 'Your computers';
       $('catalog').hidden = !state.members.length && !state.requests.length;
@@ -92,6 +98,9 @@
         }
         $('members').append(card);
       }
+      const requestSignature=JSON.stringify(state.requests);
+      if ($('requests').dataset.signature !== requestSignature) {
+      $('requests').dataset.signature=requestSignature;
       $('requests').replaceChildren();
       for (const request of state.requests) {
         const card = document.createElement('div'); card.className = 'card';
@@ -108,8 +117,51 @@
         approve.onclick = () => decide(true); deny.onclick = () => decide(false);
         card.append(description, code, approve, deny); $('requests').append(card);
       }
+      }
     } finally { refreshing = false; }
   }
+  function renderPairing(incoming, sent) {
+    // Polls must not replace a button while someone is focusing or clicking it.
+    const signature = JSON.stringify([incoming, sent]);
+    if ($('incoming').dataset.signature === signature) return;
+    $('incoming').dataset.signature = signature;
+    $('incoming').replaceChildren(); $('sent').replaceChildren();
+    for (const request of incoming) {
+      const card=document.createElement('div'); card.className='card';
+      const title=document.createElement('strong'); title.textContent=`${request.computer} wants to connect`;
+      const address=document.createElement('p'); address.textContent=request.address;
+      const code=document.createElement('p'); code.className='code'; code.textContent=request.code;
+      const description=document.createElement('p'); description.textContent='Compare this code on both computers. Allowing pairs your terminals with this computer after it confirms the code too.';
+      const allow=document.createElement('button'); allow.textContent='Codes match, allow';
+      const deny=document.createElement('button'); deny.textContent='Deny';
+      const answer=accepted=>action(async()=>{
+        await api('/answer',{invitation:request.invitation,code:request.code,allow:accepted});
+        show(accepted?'Allowed. Confirm the matching code on the other computer to finish.':'Request denied.');
+        await refresh();
+      });
+      allow.onclick=()=>answer(true); deny.onclick=()=>answer(false);
+      card.append(title,address,code,description,allow,deny); $('incoming').append(card);
+    }
+    for (const request of sent) {
+      const card=document.createElement('div'); card.className='card';
+      const title=document.createElement('strong'); title.textContent=`Request sent to ${request.computer}`;
+      const code=document.createElement('p'); code.className='code'; code.textContent=request.code;
+      const description=document.createElement('p'); description.textContent='On the other computer, open Switchboard and allow this matching code. Then confirm its request above.';
+      const cancel=document.createElement('button'); cancel.textContent='Cancel request';
+      cancel.onclick=()=>action(async()=>{await api('/cancel',{invitation:request.invitation}); await refresh(); show('Request cancelled.');});
+      card.append(title,code,description,cancel); $('sent').append(card);
+    }
+  }
+  $('receive-requests').onclick=()=>action(async()=>{
+    await api('/ready',local()); show('Ready to receive connection requests.'); await refresh();
+  });
+  $('add-form').onsubmit=event=>{
+    event.preventDefault(); action(async()=>{
+      const result=await api('/add',{target:$('target-address').value.trim(),name:$('mesh-name').value.trim(),...local()});
+      show(`Request sent to ${result.computer}. Compare code ${result.code} on the other computer.`);
+      await refresh();
+    });
+  };
   function clearInvitation() {
     invitationId = null; $('invitation-link').value = ''; $('invitation').hidden = true;
   }

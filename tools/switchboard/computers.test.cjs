@@ -126,3 +126,49 @@ test('pasting reviews automatically but never joins without consent', async () =
     assert.equal(await page.locator('#preview-card').isVisible(),false);
   });
 });
+
+test('Add computer sends an address without copying an invitation', async()=>{
+  await fixture(async({page,calls,responses})=>{
+    responses.set('/api/mesh/add',{computer:'work (fast)',code:'AAAA-BBBB-CCCC'});
+    await page.goto('https://switchboard.test/computers.html');
+    await page.waitForFunction(()=>document.querySelector('#address').value);
+    await page.locator('#target-address').fill('172.20.10.10');
+    await page.locator('#add-form button').click();
+    await page.waitForFunction(()=>document.querySelector('#message').textContent.includes('Request sent'));
+    assert.deepEqual(calls.find(c=>c.path==='/api/mesh/add').body,{target:'172.20.10.10',name:'My computers',computer_name:'Mac',address:'https://192.0.2.1:8082'});
+    assert.equal(calls.some(c=>c.path==='/api/mesh/invitations'),false);
+    assert.equal(await page.locator('#invitation').isVisible(),false);
+  });
+});
+
+test('Incoming address request needs explicit local approval of the displayed code',async()=>{
+  const incoming=[{invitation:'direct-one',computer:'Mac',address:'https://192.0.2.1:8082',code:'AAAA-BBBB-CCCC'}];
+  await fixture(async({page,calls,responses,setState})=>{
+    responses.set('/api/mesh/answer',{state:'awaiting_approval'});
+    await page.goto('https://switchboard.test/computers.html');
+    await page.waitForFunction(()=>document.querySelector('#incoming button'));
+    assert.equal(calls.some(c=>c.path==='/api/mesh/answer'),false);
+    assert.match(await page.locator('#incoming').textContent(),/Mac wants to connect/);
+    setState({incoming:[],joining:{computer:'Mac',mesh:'My computers',code:'AAAA-BBBB-CCCC'}});
+    await page.locator('#incoming button').first().click();
+    await page.waitForFunction(()=>document.querySelector('#message').textContent.startsWith('Allowed'));
+    assert.deepEqual(calls.find(c=>c.path==='/api/mesh/answer').body,{invitation:'direct-one',code:'AAAA-BBBB-CCCC',allow:true});
+  },{configured:true,computer:{name:'Work',address:'https://192.0.2.2:8082'},incoming});
+});
+
+test('Pairing notification leaves focused terminal and layout untouched',async()=>{
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await browser.newPage();
+    await page.route('**/api/mesh',route=>route.fulfill({contentType:'application/json',body:JSON.stringify({incoming:[{computer:'Mac'}],requests:[]})}));
+    await page.route('https://switchboard.test/',route=>route.fulfill({contentType:'text/html',body:'<a id="pairing-notice" href="/computers.html" hidden style="position:fixed;right:16px;bottom:32px">Review</a><iframe id="terminal" srcdoc="<input id=terminal-input>"></iframe>'}));
+    await page.goto('https://switchboard.test/');
+    await page.frameLocator('#terminal').locator('input').focus();
+    const box=await page.locator('#terminal').boundingBox();
+    await page.addScriptTag({path:__dirname+'/static/pairing-notice.js'});
+    await page.waitForFunction(()=>!document.querySelector('#pairing-notice').hidden);
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'terminal');
+    assert.equal(await page.frameLocator('#terminal').locator('input').evaluate(e=>e===document.activeElement),true);
+    assert.deepEqual(await page.locator('#terminal').boundingBox(),box);
+  } finally { await browser.close(); }
+});

@@ -39,6 +39,21 @@ security audit.
 
 ## Operation and persistence
 
+Open Settings → Computers → Add computer and enter the other computer's IP.
+The request is delivered over the existing HTTPS server. The other computer shows
+a non-modal notification, displays the same code, and asks its local user to
+allow the request. The initiating user then confirms the code locally. Both
+approvals are required before terminal credentials are issued. Initial discovery
+learns an untrusted TLS certificate; subsequent requests pin it, and the code
+binds both computer identities. Receiving a request never contacts its sender
+until a local user accepts. Pending offers are private, expire after ten minutes,
+and are limited to eight per computer. Background retries finish pairing after
+approval without requiring an open browser page.
+
+Single-network installations enable receiving automatically. Multiple-network
+installations require a connection choice and **Receive connection requests**.
+The existing link flow remains available:
+
 Open Settings → Computers and choose Create invitation. The computer name and
 network address are filled automatically. Advanced settings allow corrections;
 when multiple networks are available, choose the connection to use. Paste the

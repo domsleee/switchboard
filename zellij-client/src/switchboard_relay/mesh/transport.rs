@@ -2,6 +2,7 @@ use super::*;
 
 pub(in crate::switchboard_relay) fn routes() -> Router<RelayState> {
     Router::new()
+        .merge(super::direct::routes())
         .route("/api/mesh", get(status))
         .route("/api/mesh/defaults", get(super::discovery::defaults))
         .route("/api/mesh/invitations", post(create))
@@ -296,7 +297,8 @@ impl Mesh {
     pub async fn stop_gateway(&self) {
         self.gateway.lock().await.take();
     }
-    async fn resume(&self) -> anyhow::Result<Value> {
+    pub(super) async fn resume(&self) -> anyhow::Result<Value> {
+        let _enrollment = self.enrollment.lock().await;
         let joining = self
             .database
             .lock()
@@ -360,7 +362,7 @@ impl Mesh {
             },
         }
     }
-    async fn remote<T: Serialize, R: serde::de::DeserializeOwned>(
+    pub(super) async fn remote<T: Serialize, R: serde::de::DeserializeOwned>(
         &self,
         member: &Member,
         path: &str,
@@ -414,6 +416,8 @@ impl Mesh {
 pub(in crate::switchboard_relay) fn gateway_router(mesh: Arc<Mesh>) -> Router {
     Router::new()
         .route("/mesh/health", get(|| async { StatusCode::NO_CONTENT }))
+        .route("/mesh/direct-info", post(super::direct::info))
+        .route("/mesh/offer", post(super::direct::offer))
         .route("/mesh/request", post(peer_request))
         .route("/mesh/complete", post(peer_complete))
         .fallback(peer_terminal)

@@ -726,7 +726,7 @@ async fn asset(request: Request) -> Response {
         "index.html" | "computers.html" => "text/html; charset=utf-8",
         "style.css" => "text/css; charset=utf-8",
         "app.js" | "bridge.js" | "chrome.js" | "clipboard.js" | "close.js" | "links.js"
-        | "titles.js" | "computers.js" => "application/javascript",
+        | "titles.js" | "computers.js" | "pairing-notice.js" => "application/javascript",
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
     match ASSETS.get_file(name) {
@@ -811,12 +811,6 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
         match mesh::Mesh::open(config_path.with_file_name("mesh"), local).await {
             Ok(mesh) => {
                 mesh.attach_bridge(port)?;
-                let startup = mesh.clone();
-                tokio::spawn(async move {
-                    if startup.start_gateway().await.is_err() {
-                        log::warn!("Switchboard pairing unavailable; retry it from Computers");
-                    }
-                });
                 state.mesh = Some(mesh);
             },
             Err(_) => log::warn!(
@@ -824,12 +818,14 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
             ),
         }
     }
+    let pairing = mesh::discovery::start(state.clone());
     let artifact = artifacts::start(config.artifact_proxy).await?;
     let polling =
         attention::start(state.clone(), config_path.with_extension("attention.json")).await;
     let result = axum::serve(listener, app(state.clone()))
         .with_graceful_shutdown(shutdown())
         .await;
+    pairing.abort();
     for task in polling {
         task.abort();
         let _ = task.await;
