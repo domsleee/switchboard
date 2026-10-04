@@ -2187,7 +2187,9 @@ pub fn start_server_impl(
         if socket_path
             .file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("__switchboard_control_"))
+            .and_then(|name| name.strip_prefix("__switchboard_control_"))
+            .and_then(|name| uuid::Uuid::parse_str(name).ok())
+            .is_some()
             && session_data.read().unwrap().is_some()
             && !session_state.read().unwrap().active_clients_are_connected()
         {

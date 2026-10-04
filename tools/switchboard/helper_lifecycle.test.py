@@ -126,7 +126,8 @@ async def main():
                                "Helper survived its last client")
                 print("PASS helper waits for its last client to disconnect")
 
-                name = "helper-lifecycle-user-" + uuid.uuid4().hex
+                # Existing acceptance fixtures share the prefix but are persistent sessions.
+                name = "__switchboard_control_fixture_" + uuid.uuid4().hex
                 ws = await attach(name)
                 handle = await process(name)
                 await ws.close()
