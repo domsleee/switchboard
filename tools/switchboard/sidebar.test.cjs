@@ -41,11 +41,11 @@ test('attention acknowledgment never moves tabs; search, filters, archive and cr
 
 });
 
-test('Mark ready adds a badge without changing the saved tab order or selection',()=>{
+test('Flag for review targets the menu tab without changing saved order or selection',()=>{
   const button={},stored={};
   const originalOrder=['win:1','mac:0','mac:1'];
   let renders=0;
-  const context={selected:'mac:1',ready:{},tabOrder:[...originalOrder],
+  const context={selected:'mac:0',contextItem:{key:'mac:1',tab:{id:1}},closeTabMenu(){},ready:{},tabOrder:[...originalOrder],
     $:()=>button,allTabs:()=>originalOrder.map(key=>({key})),
     localStorage:{setItem:(key,value)=>stored[key]=value},
     render(){renders++;},saveReady(){stored['switchboard-ready']=JSON.stringify(context.ready);}};
@@ -53,7 +53,7 @@ test('Mark ready adds a badge without changing the saved tab order or selection'
   vm.runInContext(source.slice(source.indexOf("$('ready').onclick="),source.indexOf("$('settings').onclick=")),context);
   button.onclick();
   assert.ok(context.ready['mac:1']);
-  assert.equal(context.selected,'mac:1');
+  assert.equal(context.selected,'mac:0');
   assert.deepEqual(context.tabOrder,originalOrder);
   assert.equal(stored['switchboard-tab-order'],undefined);
   assert.equal(renders,1);

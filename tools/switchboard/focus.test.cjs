@@ -162,7 +162,7 @@ test('headless browser keeps iframe, selection, URL and input focus through fail
     await page.keyboard.type(' still typing');assert.equal(await input.inputValue(),'typed before failure still typing');
     // A requested unavailable terminal does not automatically select a healthy Mac tab on reload.
     discoveryError=true;attentionError=true;await page.reload();
-    await page.waitForFunction(()=>document.querySelector('#status').textContent.includes('attention status unavailable')&&document.querySelector('#tabs button'));
+    await page.waitForFunction(()=>document.querySelector('#status').textContent.includes('attention status unavailable')&&document.querySelector('#tabs .tab-select'));
     assert.equal(page.url(),requested);
     assert.equal(await page.locator('iframe.active').count(),0);
     assert.equal(await page.locator('#tabs .selected').count(),0);

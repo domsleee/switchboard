@@ -150,20 +150,20 @@ let recoveryPanes;
             console.log('DIAGNOSTIC: unauthenticated catalog rejected; authenticated read-only catalog excludes recovery and its terminal WebSocket is rejected.');
             await roContext.close();
         }
-        await page.waitForSelector('#tabs button');
+        await page.waitForSelector('#tabs .tab-select');
         const connected=()=>page.waitForFunction(expectedSession=>{
             const w=document.querySelector('#terminals>iframe.active')?.contentWindow;
             return w?.__zjLastMobileState?.session_name===expectedSession && ['terminal','control'].every(type=>
                 w.__acceptanceSockets.some(s=>s.url.includes('/ws/'+type)&&s.readyState===1));
         },name);
         await connected();
-        const sidebarNames=()=>page.evaluate(session=>[...document.querySelectorAll('#tabs button')]
+        const sidebarNames=()=>page.evaluate(session=>[...document.querySelectorAll('#tabs .tab-select')]
             .filter(button=>button._item?.entry.name===session)
             .map(button=>[button._item.tab.id,button.children[1].textContent])
             .sort((a,b)=>a[0]-b[0]),name);
         let beforeSidebarNames;
         if(recoveryMode){
-            await page.waitForFunction(expected=>expected.every(([id,title])=>[...document.querySelectorAll('#tabs button')]
+            await page.waitForFunction(expected=>expected.every(([id,title])=>[...document.querySelectorAll('#tabs .tab-select')]
                 .some(button=>button._item?.tab.id===id&&button.children[1].textContent===title)),beforeNames);
             beforeSidebarNames=await sidebarNames();
             assert.deepEqual(beforeSidebarNames,beforeNames,'Recovery preserves the original displayed tab names');
@@ -186,15 +186,15 @@ let recoveryPanes;
             },pane.id);
         }
         async function selectPane(pane,target=page){
-            const index=await target.evaluate(id=>[...document.querySelectorAll('#tabs button')].findIndex(b=>b._item?.tab.id===id),pane.tab_id);
+            const index=await target.evaluate(id=>[...document.querySelectorAll('#tabs .tab-select')].findIndex(b=>b._item?.tab.id===id),pane.tab_id);
             assert.ok(index>=0,'Expected tab is present in the sidebar');
-            await target.locator('#tabs button').nth(index).click();
+            await target.locator('#tabs .tab-select').nth(index).click();
             await selectedPane(pane,target);
         }
         if(!recoveryMode){
             const follower=await page.context().newPage();
             await follower.setViewportSize({width:720,height:480});
-            await follower.goto(url);await follower.waitForSelector('#tabs button');
+            await follower.goto(url);await follower.waitForSelector('#tabs .tab-select');
             // Headless Chromium reports every page focused, even with CDP focus
             // emulation disabled. Drive window focus explicitly; resize/IPC is real.
             for(const viewer of [page,follower])await viewer.evaluate(()=>{
@@ -228,7 +228,7 @@ let recoveryPanes;
         // Construct markers at runtime: echoed command text cannot satisfy output checks.
         let marker='SB_'+crypto.randomBytes(8).toString('hex');
         if(recoveryMode){
-            assert.equal(await page.locator('#tabs button').count(),2,'Both recovered tabs appear in the sidebar');
+            assert.equal(await page.locator('#tabs .tab-select').count(),2,'Both recovered tabs appear in the sidebar');
             await selectPane(recoveryPanes[0]);
             const firstMarker=marker;
             await command(`SB_STATE=${firstMarker}; printf '%s%s\\n' "FIRST_" "$SB_STATE"`,'FIRST_'+firstMarker);
@@ -240,7 +240,7 @@ let recoveryPanes;
             await selectPane(recoveryPanes[1]);
             const otherViewer=await browser.newPage({viewport:{width:1200,height:800}});
             otherViewer.setDefaultTimeout(30000);
-            await otherViewer.goto(url);await otherViewer.waitForSelector('#tabs button');
+            await otherViewer.goto(url);await otherViewer.waitForSelector('#tabs .tab-select');
             await selectPane(recoveryPanes[0],otherViewer);
             await command(`printf '%s%s\\n' "OTHER_VIEWER_" "$SB_STATE"`,'OTHER_VIEWER_'+firstMarker,otherViewer);
             await selectedPane(recoveryPanes[1]);
@@ -289,13 +289,13 @@ let recoveryPanes;
             await page.locator('#new-tab').click();
             await page.locator('#new-tab-form button[type=submit]').click();
             await page.waitForFunction(previous=>{
-                const button=document.querySelector('#tabs button.selected'),frame=document.querySelector('#terminals>iframe.active');
+                const button=document.querySelector('#tabs .tab-select.selected'),frame=document.querySelector('#terminals>iframe.active');
                 const w=frame?.contentWindow,active=w?.__zjLastMobileState?.active_pane;
                 return button&&!previous.includes(button._item.tab.id)&&!button._item.entry.pendingNewTab&&
                     button.getAttribute('aria-pressed')==='true'&&button._item.tab.panes.some(p=>p.pane_id===active?.pane_id&&!p.is_plugin)&&
                     !w.term.options.disableStdin&&document.activeElement===frame&&w.term.element.contains(w.document.activeElement);
             },previousTabIds);
-            const tabId=await page.locator('#tabs button.selected').evaluate(button=>button._item.tab.id);
+            const tabId=await page.locator('#tabs .tab-select.selected').evaluate(button=>button._item.tab.id);
             assert.equal(new URL(page.url()).searchParams.get('tab'),String(tabId),'New tab URL matches the highlighted terminal');
             const createdMarker='CREATED_'+crypto.randomBytes(8).toString('hex');
             // No explicit terminal focus: typing must work directly after Create.
@@ -306,12 +306,12 @@ let recoveryPanes;
                 return term&&Array.from({length:term.buffer.active.length},(_,n)=>term.buffer.active.getLine(n)?.translateToString()).some(line=>line?.includes('AUTOFOCUSED_'+expected));
             },createdMarker);
             await page.reload();await connected();
-            await page.waitForFunction(id=>document.querySelector('#tabs button.selected')?._item.tab.id===id,tabId);
+            await page.waitForFunction(id=>document.querySelector('#tabs .tab-select.selected')?._item.tab.id===id,tabId);
             await command(`printf '%s%s\\n' "CREATED_REFRESHED_" "$SB_NEW"`,'CREATED_REFRESHED_'+createdMarker);
             console.log('PASS: Create highlights the actual new native tab, focuses input immediately without another click, updates its URL, and refreshes into the same shell.');
             if(rustRelay){
                 const second=await context.newPage();await second.goto(page.url());
-                await second.waitForSelector('#tabs button');
+                await second.waitForSelector('#tabs .tab-select');
                 await second.waitForFunction(session=>document.querySelector('#terminals>iframe.active')?.contentWindow.__zjLastMobileState?.session_name===session,name);
                 for(const [id] of names()){
                     const result=await fetch(url+'/api/hosts/test/close-tab',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({session:name,tab_id:id})});

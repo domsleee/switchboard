@@ -5,28 +5,31 @@
 <button id="sidebar-backdrop" aria-label="Close tabs sidebar" hidden></button>
 <aside id="sidebar" aria-label="Session tabs">
 <div id="sidebar-tools">
-<div id="brand"><strong>Switchboard</strong><small id="build-version" title="Commit and commit date of the running Switchboard relay">Version unavailable</small></div><div id="sidebar-summary"><span id="notifications" role="status" aria-live="polite">0 notifications</span><span id="tab-count"></span></div>
-<button id="new-tab" title="New terminal tab · Ctrl+Alt+T on Windows · Cmd+Alt+T on Mac">+ New tab</button>
+<div class="sidebar-brand"><strong>Switchboard</strong><button id="new-tab" aria-label="New tab" title="New terminal tab · Ctrl+Alt+T on Windows · Cmd+Alt+T on Mac">+</button></div>
 <label class="sr-only" for="tab-search">Search tabs and machines</label><input id="tab-search" type="search" placeholder="Search tabs…" autocomplete="off">
 <nav id="filters" aria-label="Machine group"><button data-filter="all" class="selected">All</button><button data-filter="work">Work</button><button data-filter="home">Home</button></nav>
+<div id="sidebar-summary" hidden><span id="notifications" role="status" aria-live="polite"></span><span id="tab-count"></span></div>
 </div>
 <nav id="tabs" aria-label="Tabs across machines" title="Alt+H/L: switch tabs · Add Shift to reorder"></nav>
 <p id="tab-no-results" hidden>No matching tabs.</p>
 <div id="sidebar-bottom">
-<section id="current-tab-actions" aria-labelledby="current-tab-heading">
-<div class="sidebar-section-heading"><h2 id="current-tab-heading">Current tab</h2><button id="ready" title="Mark selected tab as ready for review">☆ Mark ready</button></div>
-<div class="sidebar-actions"><button id="select-text" aria-pressed="false" title="Enable text selection, then drag over terminal text">Select text</button><button id="copy" title="Copy selected text · Cmd+C on Mac · Ctrl+Shift+C on Windows">Copy</button></div>
-<button id="size-owner" aria-pressed="false" disabled>Use this window’s size</button>
-</section>
 <nav id="sidebar-utilities" class="sidebar-actions" aria-label="Workspace"><button id="archive" title="Find and restore archived tabs">Archive</button><button id="settings" aria-controls="settings-dialog" aria-haspopup="dialog" title="Terminal appearance and machine groups">Settings</button></nav>
 </div>
-</aside><div id="sidebar-resize" role="separator" aria-label="Resize tabs sidebar" aria-orientation="vertical" tabindex="0"></div><main id="terminals"><p id="empty">Connecting to your machines…</p><section id="artifact-preview" hidden aria-label="Artifact preview"><header><button id="artifact-back">← Back to terminal</button><span id="artifact-url"></span><a id="artifact-external" target="_blank" rel="noopener noreferrer">Open in browser tab</a></header><iframe id="artifact-frame" title="Artifact preview" sandbox="allow-scripts allow-forms allow-same-origin allow-downloads allow-modals" referrerpolicy="no-referrer"></iframe></section></main></div><footer id="status" role="status">Loading sessions…</footer>
+</aside><div id="sidebar-resize" role="separator" aria-label="Resize tabs sidebar" aria-orientation="vertical" tabindex="0"></div><main id="terminals"><div id="selection-tools" role="toolbar" aria-label="Terminal text selection" hidden><span id="selection-target"></span><button id="copy" title="Copy selected text · Cmd+C on Mac · Ctrl+Shift+C on Windows">Copy</button><button id="exit-selection">Done</button></div><p id="empty">Connecting to your machines…</p><section id="artifact-preview" hidden aria-label="Artifact preview"><header><button id="artifact-back">← Back to terminal</button><span id="artifact-url"></span><a id="artifact-external" target="_blank" rel="noopener noreferrer">Open in browser tab</a></header><iframe id="artifact-frame" title="Artifact preview" sandbox="allow-scripts allow-forms allow-same-origin allow-downloads allow-modals" referrerpolicy="no-referrer"></iframe></section></main></div><footer id="status" role="status">Loading sessions…</footer>
 <dialog id="new-tab-dialog"><form id="new-tab-form"><h2>New tab</h2><label for="new-tab-target">Machine and session</label><select id="new-tab-target" required></select><p>Opens a shell on the selected machine.</p><div class="dialog-actions"><button type="button" id="cancel-new-tab">Cancel</button><button type="submit">Create tab</button></div></form></dialog>
-<div id="tab-menu" role="menu" aria-label="Tab actions" hidden><button id="archive-tab" role="menuitem">Archive</button><button id="close-tab" class="danger" role="menuitem" title="Close current tab · Ctrl+D">Close… <kbd>Ctrl+D</kbd></button></div>
+<div id="tab-menu" role="menu" aria-label="Tab actions" hidden>
+<div id="tab-menu-target"></div>
+<button id="ready" role="menuitem">Flag for review</button>
+<button id="select-text" role="menuitem" aria-pressed="false">Select text</button>
+<button id="size-owner" role="menuitem" aria-pressed="false" disabled>Use this window’s size</button>
+<hr><button id="archive-tab" role="menuitem">Archive<small>Hide tab; keep processes running</small></button>
+<button id="close-tab" class="danger" role="menuitem" title="Close current tab · Ctrl+D">Close… <kbd>Ctrl+D</kbd><small>Stop this tab’s running processes</small></button>
+</div>
 <dialog id="close-tab-dialog" aria-labelledby="close-tab-heading"><h2 id="close-tab-heading">Close tab?</h2><p id="close-tab-name"></p><p>This closes every pane in this tab and stops its running processes. To hide it and keep processes running, use Archive.</p><p id="close-tab-error" role="alert"></p><div class="dialog-actions"><button id="cancel-close-tab">Cancel</button><button id="confirm-close-tab" class="danger">Close tab</button></div></dialog>
 <dialog id="archive-dialog" aria-labelledby="archive-heading"><h2 id="archive-heading">Archived tabs</h2><p>Hidden from the sidebar. Terminal sessions keep running. Saved in this browser.</p><label for="archive-search">Search tabs and machines</label><input id="archive-search" type="search" placeholder="Search archive…"><section id="archive-list"></section><div class="dialog-actions"><button id="close-archive">Close</button></div></dialog>
 <dialog id="settings-dialog" aria-labelledby="settings-heading">
 <header class="settings-heading"><h2 id="settings-heading">Settings</h2><button id="close-settings" autofocus>Close</button></header>
+<p id="build-version" title="Commit and commit date of the running Switchboard relay">Version unavailable</p>
 <section class="settings-section" aria-labelledby="appearance-heading"><h3 id="appearance-heading">Appearance</h3><button id="native-tabs" aria-pressed="false" aria-describedby="native-tabs-help">Native tab bar<span class="toggle-state" aria-hidden="true"></span></button><p id="native-tabs-help">Show the original Zellij tabs inside each terminal.</p></section>
 <section class="settings-section" aria-labelledby="machines-heading"><div class="settings-heading"><h3 id="machines-heading">Machines</h3><button id="refresh" title="Refresh machines and sessions">Refresh</button></div><p>Choose which machines appear in Work and Home.</p><section id="machines" aria-label="Machine groups"></section></section>
 </dialog>
