@@ -160,29 +160,55 @@ would stop its processes. Never trigger that restart automatically.
 
 ## Delivery and recovery
 
-1. GitHub Actions builds and tests complete bundles for Windows and Mac.
-   Publish a preview release after successful builds; promote tested releases
-   to the stable channel. Give Switchboard its own version and record the
-   upstream Zellij version separately.
-2. Publish versioned bundles to GitHub Releases. Actions artifacts expire and
-   should not be the installation source. Include the native binary, web UI,
-   relay, tray app, and any matching plugin assets.
-3. A small Rust updater checks at startup and periodically, downloads bundles,
-   and verifies their signatures before installation. The tray provides
-   **Check for updates**, **Update now**, and an automatic-update setting.
-4. Stage the complete bundle, switch versions, and check service health. Keep
-   the previous version and roll back if startup or reconnection fails.
-   Persistent-data changes must remain compatible with rollback.
+### Plan after the WASM removal PR merges
 
-For the private repository, use repository-scoped, read-only release access.
-Store credentials in macOS Keychain or Windows Credential Manager, outside the
-browser and release bundles.
+Start this rollout after [PR #6](https://github.com/domsleee/switchboard/pull/6)
+merges and the Mac and Windows acceptance checks pass. This is a delivery plan;
+it does not enable automatic updates yet.
 
-Implement release publishing first, then manual tray updates, then automatic
-updates. Each machine downloads prebuilt packages rather than compiling locally.
+1. **Build often, publish releases occasionally.** Build and test Mac and Windows
+   bundles on pushes to the default branch and on manual dispatch. Upload Actions
+   artifacts for routine development builds without creating GitHub Releases.
+   Keep release publishing separate and explicit. GitHub has no documented silent
+   release option, and marking a release as a prerelease does not guarantee silence.
+2. **Make each build identifiable.** Package the native executable with its
+   embedded UI and Rust relay, the platform tray helper and installation files.
+   Include a manifest with the commit, platform, architecture, checksums and
+   compatibility information. Give Switchboard its own stable version and record
+   the upstream Zellij version separately. No WASM plugin assets are needed.
+3. **Try development builds manually first.** Download a specific successful run's
+   artifact, verify it, and use the guarded updater. Record the selected run and
+   commit so a machine cannot accidentally install an unrelated branch's build.
+   Extend the binary-only updater to cover the complete bundle before offering
+   tray updates. Verify real browser input/output and automatic reconnection on
+   both platforms, including rollback, while preserving shells and tab identity.
+4. **Keep development updates opt-in.** A later development channel may resolve
+   the newest successful, compatible default-branch build. Actions artifacts
+   require GitHub authentication to download and expire; show those failures
+   clearly and retain the installed and previous bundles locally. Use a configured
+   retention period, initially 30 days. Never depend on an expired artifact for
+   rollback or for a machine returning after a long absence.
+5. **Publish stable releases deliberately.** Promote a tested build into a durable,
+   versioned GitHub Release with signed bundles and release notes. Stable installs
+   and machines catching up after several releases use this channel. Publish for
+   meaningful updates rather than every commit. Public release downloads should
+   not require users to supply GitHub credentials.
+6. **Add tray updates, then automation.** Implement **Check for updates** and
+   **Update now** in Rust before adding an automatic-update setting. Stage and
+   verify the complete bundle, replace connection services only, and require
+   existing tabs to become usable in the browser before reporting success.
+   Preserve session engines, shells, agents, names, selection, sharing settings
+   and notification history. Roll back connection services on failure, and report
+   partial recovery honestly. Keep credentials outside the browser and bundles,
+   in macOS Keychain or Windows Credential Manager.
 
-GitHub documents [artifact expiry](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/download-workflow-artifacts)
-and [read-only release asset permissions](https://docs.github.com/en/rest/releases/assets).
+The current `native-binaries.yml` is a manually dispatched Windows build with
+seven-day artifact retention. Extend it for the frequent Mac and Windows builds
+above. The inherited `release.yml` creates draft releases; replace that flow with
+an explicit stable promotion workflow rather than using it for routine builds.
+
+GitHub documents [artifact authentication and expiry](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/download-workflow-artifacts)
+and [release creation notifications](https://docs.github.com/en/rest/releases/releases#create-a-release).
 
 ## Why the session engine cannot restart safely today
 
