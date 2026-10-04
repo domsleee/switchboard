@@ -3,6 +3,11 @@
 Start with [setup and usage](../tools/switchboard/README.md) and the
 [acceptance criteria](../acceptance/switchboard/README.md).
 
+Local `cargo build --release` and `cargo install --path .` use ThinLTO.
+Publishing workflows set `CARGO_PROFILE_RELEASE_LTO=fat` for full LTO.
+Use `cargo build --release --timings` to write a build report to
+`target/cargo-timings/cargo-timing.html`.
+
 | Guide | Contents |
 | --- | --- |
 | [Architecture](ARCHITECTURE.md) | Native session workers, tabs, panes, Grid, browser sizing, web daemon, Rust relay and desktop helpers. |

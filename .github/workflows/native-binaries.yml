@@ -6,6 +6,9 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_PROFILE_RELEASE_LTO: fat
+
 jobs:
   windows:
     runs-on: windows-latest
