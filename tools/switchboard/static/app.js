@@ -4,6 +4,7 @@ fetch('/api/health',{cache:'no-store'}).then(response=>response.ok?response.json
     $('build-version').textContent=`${build.commit} · ${build.commit_date}`;
 }).catch(()=>{});
 const hosts = new Map(), sessions = new Map();
+const startedHosts = new Set();
 const tabButtons=new Map();
 const mobileSidebar=matchMedia("(max-width:700px)");
 let sidebarCollapsed=localStorage.getItem("switchboard-sidebar-collapsed")==="true",sidebarOpen=false;
@@ -65,7 +66,11 @@ function updateCreatedTabs(entry){
   if(state?.session_name!==entry.name)return;
   const requested=selected&&JSON.parse(selected);
   let paneId;
-  if(creating&&active&&!active.is_plugin&&!entry.pendingNewTab?.paneIds?.has(active.pane_id))paneId=active.pane_id;
+  if(entry.starting&&active&&!active.is_plugin){
+    paneId=active.pane_id;entry.starting=false;clearTimeout(entry.startTimeout);
+    if(entry.selectOnStart){selected=JSON.stringify([entry.host,entry.name,'pane',paneId]);restoringTab=false;entry.needsFocus=true;}
+  }
+  else if(creating&&active&&!active.is_plugin&&!entry.pendingNewTab?.paneIds?.has(active.pane_id))paneId=active.pane_id;
   else if(requested?.[0]===entry.host&&requested[1]===entry.name&&requested[2]==='pane'&&Number.isInteger(requested[3]))paneId=requested[3];
   if(Number.isInteger(paneId)&&state.panes?.some(p=>!p.is_plugin&&p.pane_id===paneId)){
     entry.provisionalTabs??=[];
@@ -261,7 +266,8 @@ function render() {
   $('tab-count').hidden=shown.length===tabs.length;
   $('sidebar-summary').hidden=notifications===0&&shown.length===tabs.length;
   document.title=`${notifications?'('+notifications+') ':''}`+(current?`${tabTitle(current)} · ${hosts.get(current.entry.host)?.name} · Switchboard`:'Switchboard');
-  const currentEntry=current?.entry||(waitingForRequestedTab()?sessions.get(sessionKey(...JSON.parse(selected).slice(0,2))):null);
+  const startingEntry=[...sessions.values()].find(entry=>entry.starting&&(filter==='all'||groups[entry.host]===filter));
+  const currentEntry=current?.entry||(waitingForRequestedTab()?sessions.get(sessionKey(...JSON.parse(selected).slice(0,2))):startingEntry);
   for (const entry of sessions.values()) entry.frame.classList.toggle('active',entry===currentEntry);
   updateSelectionTools(current);
   if(!$('tab-menu').hidden)updateTabMenu();
@@ -270,7 +276,7 @@ function render() {
   if($('archive-dialog').open)renderArchive();
   if(!current){$('artifact-preview').hidden=true;$('artifact-frame').src='about:blank';}
   $('empty').hidden=!!current;
-  if (!current) $('empty').textContent=restoringTab?'Connecting to the requested terminal…':filter==='all'?(archiveCount?'All tabs are archived. Open Archive to restore one.':'No connected tabs. Open Settings to check your machines or refresh.'):`No ${filter} tabs. Assign machines to this group in Settings.`;
+  if (!current) $('empty').textContent=restoringTab?'Connecting to the requested terminal…':startingEntry?'Starting a terminal…':filter==='all'?(archiveCount?'All tabs are archived. Open Archive to restore one.':'No connected tabs. Use + to open a terminal, or check your machines in Settings.'):`No ${filter} tabs. Assign machines to this group in Settings.`;
   const errors=[...hosts.values()].filter(h=>h.error).map(h=>`${h.name}: ${h.error}`);
   for(const entry of sessions.values())if(entry.closeError)errors.push(entry.closeError);
   for(const error of attentionErrors)errors.push(`${hosts.get(error.host)?.name||error.host}: attention status unavailable`);
@@ -422,6 +428,19 @@ function renderMachines() {
   let cursor=container.firstChild;
   for(const label of nodes){if(label!==cursor)container.insertBefore(label,cursor);else cursor=cursor.nextSibling;}
 }
+function connectSession(host,name,starting=false) {
+  const key=sessionKey(host.id,name);
+  if(sessions.has(key))return sessions.get(key);
+  const frame=document.createElement('iframe');frame.title=`${host.name}: ${name}`;
+  frame.src=`/hosts/${encodeURIComponent(host.id)}/${encodeURIComponent(name)}`;
+  frame.allow='clipboard-read; clipboard-write';
+  const entry={host:host.id,name,frame,state:null,starting,catalogUnavailable:catalogUnavailable(host.id,name)};sessions.set(key,entry);
+  setCatalog(entry,tabCatalog.filter(tab=>tab.host===entry.host&&tab.session===entry.name));$('terminals').append(frame);
+  if(starting)entry.startTimeout=setTimeout(()=>{
+    if(entry.starting){entry.starting=false;entry.closeError='Terminal did not start. Check the machine connection and use + to try again.';render();}
+  },30000);
+  return entry;
+}
 async function refresh() {
   if(loading)return;loading=true;
   try {
@@ -432,17 +451,18 @@ async function refresh() {
       try{
         const response=await fetch(`/api/hosts/${encodeURIComponent(summary.id)}`);if(!response.ok)throw Error('Cannot list sessions');
         const host=await response.json();hosts.set(host.id,host);
+        // Only the first successful catalog on this page can start a session.
+        // Closing the last tab must not make the next poll recreate it.
+        if(!host.error&&Array.isArray(host.sessions)&&!startedHosts.has(host.id)){
+          startedHosts.add(host.id);
+          if(host.sessions.length===0)connectSession(host,'main',true);
+        }
         for(const session of host.sessions||[]) {
           if(!session.web_clients_allowed)continue;
-          const key=sessionKey(host.id,session.name);
-          if(sessions.has(key))continue;
-          const frame=document.createElement('iframe');frame.title=`${host.name}: ${session.name}`;
-          frame.src=`/hosts/${encodeURIComponent(host.id)}/${encodeURIComponent(session.name)}`;
-          frame.allow='clipboard-read; clipboard-write';
-          const entry={host:host.id,name:session.name,frame,state:null,catalogUnavailable:catalogUnavailable(host.id,session.name)};sessions.set(key,entry);setCatalog(entry,tabCatalog.filter(tab=>tab.host===entry.host&&tab.session===entry.name));$('terminals').append(frame);
+          connectSession(host,session.name);
         }
         if(!host.error) for(const [key,entry] of sessions) {
-          if(entry.host===host.id&&!host.sessions.some(s=>s.name===entry.name)) {entry.frame.remove();sessions.delete(key);}
+          if(entry.host===host.id&&!entry.starting&&!host.sessions.some(s=>s.name===entry.name)) {clearTimeout(entry.startTimeout);entry.frame.remove();sessions.delete(key);}
         }
       }catch(error){hosts.set(summary.id,{...hosts.get(summary.id),connecting:false,error:error.message});}
       renderMachines();render();
@@ -557,10 +577,13 @@ $('new-tab').onclick=()=>{
   const select=$('new-tab-target');select.replaceChildren();
   const current=allTabs().find(t=>t.key===selected)?.entry;
   for(const [key,entry] of sessions){
-    if(!entry.state||!entry.catalog?.length)continue;
+    if(!entry.state||!sessionTabs(entry).length)continue;
     const option=document.createElement('option');option.value=key;option.textContent=`${hosts.get(entry.host)?.name} · ${entry.name}`;option.selected=entry===current;select.append(option);
   }
-  if(!select.options.length){setStatus('Connect to a session before creating a tab.',true);return;}
+  for(const host of hosts.values())if(!host.error&&host.sessions?.length===0&&![...select.options].some(option=>option.value===sessionKey(host.id,'main'))){
+    const option=document.createElement('option');option.value=sessionKey(host.id,'main');option.textContent=host.name;select.append(option);
+  }
+  if(!select.options.length){setStatus('No machines are connected. Check your machines in Settings.',true);return;}
   $('new-tab-dialog').showModal();
 };
 $('cancel-new-tab').onclick=()=>$('new-tab-dialog').close();
@@ -573,7 +596,16 @@ function outsideNewTab(event){
 newTabDialog.onpointerdown=event=>{newTabBackdropPressed=outsideNewTab(event);};
 newTabDialog.onclick=event=>{if(newTabBackdropPressed&&outsideNewTab(event))newTabDialog.close();newTabBackdropPressed=false;};
 $('new-tab-form').onsubmit=event=>{
-  event.preventDefault();const entry=sessions.get($('new-tab-target').value);if(!entry?.state||!entry.catalog?.length)return;
+  event.preventDefault();const key=$('new-tab-target').value;let entry=sessions.get(key);
+  if(!entry?.state){
+    const [id,name]=JSON.parse(key),host=hosts.get(id);
+    if(!host||host.error||host.sessions?.length!==0)return;
+    if(entry&&!entry.starting){entry.frame.remove();sessions.delete(key);}
+    connectSession(host,name,true).selectOnStart=true;
+    if(filter!=='all'&&groups[id]!==filter)setFilter('all');$('tab-search').value='';
+    $('new-tab-dialog').close();render();return;
+  }
+  if(!sessionTabs(entry).length)return;
   if(entry.pendingNewTab||entry.requestedPane||entry.focusPending){setStatus('Wait for the terminal to receive focus before creating a tab.',true);return;}
   const pending=entry.pendingNewTab=new Set(sessionTabs(entry).map(tab=>tabKey(entry,tab)));
   pending.paneIds=new Set((entry.state.panes||[]).filter(p=>!p.is_plugin).map(p=>p.pane_id));
