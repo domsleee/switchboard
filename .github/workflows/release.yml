@@ -5,6 +5,9 @@ on:
       - 'v*.*.*'
   workflow_dispatch:
 
+env:
+  CARGO_PROFILE_RELEASE_LTO: fat
+
 jobs:
   create-release:
     runs-on: ubuntu-latest
