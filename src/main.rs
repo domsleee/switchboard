@@ -15,9 +15,25 @@ use zellij_utils::{
 };
 
 fn main() {
+    let opts = CliArgs::parse();
+
+    if let Some(Command::Message(message)) = &opts.command {
+        #[cfg(feature = "web_server_capability")]
+        if let Err(error) = zellij_client::message_board::run_cli(message) {
+            eprintln!("Message board: {error}");
+            std::process::exit(1);
+        }
+        #[cfg(not(feature = "web_server_capability"))]
+        {
+            let _ = message;
+            eprintln!("This build has no message board support.");
+            std::process::exit(2);
+        }
+        return;
+    }
+
     configure_logger();
     create_config_and_cache_folders();
-    let opts = CliArgs::parse();
 
     if let Some(Command::Serve { host_config, port }) = &opts.command {
         #[cfg(feature = "web_server_capability")]

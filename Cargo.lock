@@ -4450,6 +4450,7 @@ dependencies = [
  "num_cpus",
  "rcgen",
  "regex",
+ "rusqlite",
  "rustls",
  "rustls-native-certs",
  "rustls-pemfile",
