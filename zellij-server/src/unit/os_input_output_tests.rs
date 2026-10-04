@@ -1,6 +1,49 @@
 use super::*;
 use zellij_utils::input::command::RunCommand;
 
+#[test]
+fn windows_pane_environment_advertises_colour_without_overriding_preferences() {
+    for term in [None, Some(""), Some("dumb"), Some("DUMB")] {
+        let mut inherited = vec![
+            ("Path".into(), "C:\\tools".into()),
+            ("zellij_pane_id".into(), "99".into()),
+        ];
+        if let Some(term) = term {
+            inherited.push(("Term".into(), term.into()));
+        }
+        let result = windows_pane_environment(inherited, 7);
+        let values: BTreeMap<_, _> = result.iter().cloned().collect();
+        assert_eq!(
+            values.get("TERM").map(String::as_str),
+            Some("xterm-256color")
+        );
+        assert_eq!(
+            values.get("COLORTERM").map(String::as_str),
+            Some("truecolor")
+        );
+        assert_eq!(values.get("ZELLIJ_PANE_ID").map(String::as_str), Some("7"));
+        assert!(!values.contains_key("Term"));
+        assert!(!values.contains_key("zellij_pane_id"));
+        assert_eq!(values.get("Path").map(String::as_str), Some("C:\\tools"));
+        assert!(result
+            .windows(2)
+            .all(|pair| pair[0].0.to_ascii_uppercase() <= pair[1].0.to_ascii_uppercase()));
+    }
+    let result: BTreeMap<_, _> = windows_pane_environment(
+        [
+            ("term".into(), "vt100".into()),
+            ("ColorTerm".into(), "24bit".into()),
+            ("NO_COLOR".into(), "1".into()),
+        ],
+        12,
+    )
+    .into_iter()
+    .collect();
+    assert_eq!(result.get("TERM").map(String::as_str), Some("vt100"));
+    assert_eq!(result.get("COLORTERM").map(String::as_str), Some("24bit"));
+    assert_eq!(result.get("NO_COLOR").map(String::as_str), Some("1"));
+}
+
 fn make_server() -> ServerOsInputOutput {
     get_server_os_input().expect("failed to create server os input")
 }

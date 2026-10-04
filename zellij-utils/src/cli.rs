@@ -148,13 +148,13 @@ pub enum Command {
     #[clap(name = "web", value_parser)]
     Web(WebCli),
 
-    /// Run the experimental Rust Switchboard relay on an isolated port
+    /// Run the Switchboard sidebar and relay on loopback
     Serve {
         /// Switchboard host configuration JSON
         #[clap(long)]
         host_config: PathBuf,
-        /// Loopback port; current production relay remains separate
-        #[clap(long, default_value = "8093")]
+        /// Loopback port
+        #[clap(long, default_value = "8090")]
         port: u16,
     },
 

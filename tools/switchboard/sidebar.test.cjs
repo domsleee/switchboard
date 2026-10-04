@@ -144,6 +144,61 @@ test('a native new tab arriving before its catalog follows its active pane after
   entry.requestedPane=null;entry.frame.classList.contains=()=>false;context.selected='other-host';context.setCatalog(entry,tabs);assert.equal(context.selected,'other-host');
 });
 
+test('new tab focus and catalog resolve selection in either arrival order without waiting for another scan',()=>{
+  for(const order of ['catalog-first','focus-first']){
+    const oldPane={pane_id:7,is_plugin:false,tab_position:0},newPane={pane_id:9,is_plugin:false,tab_position:1};
+    const oldTab={id:42,position:0,name:'A',panes:[oldPane]},newTab={id:90,position:1,name:'B',panes:[newPane]};
+    const entry={host:'win',name:'main',state:{session_name:'main',panes:[oldPane],active_pane:oldPane},catalog:[oldTab],
+      frame:{classList:{contains:()=>true},contentWindow:{postMessage(){}}},followActiveTab:true};
+    const key=id=>JSON.stringify(['win','main','tab',id]);
+    entry.pendingNewTab=new Set([key(42)]);
+    const search={value:'old search'};let handler,scans=0,highlight,focused;
+    const context={sessions:new Map([[JSON.stringify(['win','main']),entry]]),ready:{},archived:{},selected:key(42),tabOrder:[],
+      filter:'work',groups:{win:'home'},nativeTabs:false,saveReady(){},localStorage:{setItem(){}},$:()=>search,location:{origin:'http://localhost'},
+      window:{addEventListener:(_,fn)=>handler=fn},setFilter(value){context.filter=value;},
+      allTabs:()=>entry.catalog.map(tab=>({entry,tab,key:key(tab.id)})),acknowledgeAttention(){},
+      render(){highlight=context.selected;},focus(item){focused=item.key;entry.needsFocus=false;},
+      refreshAttention(){scans++;}};
+    vm.createContext(context);
+    vm.runInContext(source.slice(source.indexOf('function sessionKey('),source.indexOf('function attentionKey(')),context);
+    const start=source.indexOf("window.addEventListener('message'");
+    vm.runInContext(source.slice(start,source.indexOf("}else if(event.data?.type==='zellij-focus-failed')",start))+'}});',context);
+    const state=()=>handler({origin:'http://localhost',source:entry.frame.contentWindow,data:{type:'zellij-state',payload:{session_name:'main',panes:[oldPane,newPane],active_pane:newPane},focus_pending:false}});
+    if(order==='catalog-first'){
+      context.setCatalog(entry,[oldTab,newTab]);
+      assert.equal(context.selected,key(42));assert.ok(entry.pendingNewTab);
+      state();assert.equal(scans,0);
+    }else{
+      state();assert.equal(scans,1,'Native focus requests an immediate catalog scan');
+      assert.equal(highlight,key(42));assert.ok(entry.pendingNewTab);
+      context.setCatalog(entry,[oldTab,newTab]);context.render();
+      context.focus(context.allTabs().find(item=>item.key===context.selected));
+    }
+    assert.equal(entry.pendingNewTab,null,order);
+    assert.equal(entry.followActiveTab,false,order);
+    assert.equal(highlight,key(90),order);assert.equal(focused,key(90),order);
+    assert.equal(context.filter,'all');assert.equal(search.value,'');
+    // Repeated metadata does not start additional creation scans.
+    state();assert.equal(scans,order==='focus-first'?1:0);
+  }
+});
+
+test('new tab requests one immediate catalog refresh after an in-flight scan',async()=>{
+  let release,requests=0;
+  const response=new Promise(resolve=>release=resolve);
+  const context={attentionLoading:false,attentionRefreshPending:false,sessions:new Map(),allTabs:()=>[],render(){},
+    selected:null,attentionKey(){},setInterval(){},
+    fetch:async()=>{requests++;if(requests===1)await response;return {ok:true,json:async()=>({tabs:[],panes:[]})};}};
+  vm.createContext(context);
+  vm.runInContext(source.slice(source.indexOf('async function refreshAttention('),source.indexOf('refreshAttention();setInterval')),context);
+  const first=context.refreshAttention();
+  await context.refreshAttention();assert.equal(context.attentionRefreshPending,false);
+  await context.refreshAttention(true);await context.refreshAttention(true);
+  assert.equal(context.attentionRefreshPending,true);assert.equal(requests,1);
+  release();await first;await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(requests,2);assert.equal(context.attentionLoading,false);assert.equal(context.attentionRefreshPending,false);
+});
+
 
 test('New tab cannot snapshot an unscanned or empty catalog',()=>{
   const elements=new Map(),$=id=>elements.get(id);

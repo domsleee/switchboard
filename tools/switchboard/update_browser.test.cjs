@@ -11,6 +11,7 @@ const root = path.resolve(__dirname, '../..');
 const newBinary = path.resolve(process.argv[3] || path.join(root, 'target/release/zellij'));
 const oldBinary = path.resolve(process.argv[2] || newBinary);
 const recoveryMode=process.env.SWITCHBOARD_TEST_RECOVERY_ADAPTER==='1';
+const rustRelay=process.env.SWITCHBOARD_TEST_RUST_RELAY==='1';
 const dir = fs.mkdtempSync('/tmp/switchboard-browser-update-');
 const installed = path.join(dir, 'zellij');
 const config = path.join(dir, 'config.kdl');
@@ -65,7 +66,7 @@ let recoveryPanes;
         fs.writeFileSync(relayConfig,JSON.stringify({hosts:[{id:'test',name:'Acceptance',url:`http://127.0.0.1:${nativePort}`,token_file:tokenPath,zellij_binary:installed}]}),{mode:0o600});
         let recoveryEnabled=false;
         const startNative=()=>spawn(recoveryMode?newBinary:installed,['--config',config,'web','--port',String(nativePort)],{env:{...env,...(recoveryEnabled?{SWITCHBOARD_RECOVER_UNSHARED_SESSION:name}:{})},stdio:['ignore',fs.openSync(path.join(dir,'native.log'),'a'),fs.openSync(path.join(dir,'native-error.log'),'a')]});
-        const startRelay=()=>spawn(process.env.UV_BINARY || path.join(process.env.HOME,'.local/bin/uv'),['run','--script',path.join(__dirname,'server.py'),'--config',relayConfig,'--port',String(relayPort)],{env,stdio:['ignore',fs.openSync(path.join(dir,'relay.log'),'a'),fs.openSync(path.join(dir,'relay-error.log'),'a')]});
+        const startRelay=()=>spawn(rustRelay?newBinary:(process.env.UV_BINARY || path.join(process.env.HOME,'.local/bin/uv')),rustRelay?['serve','--host-config',relayConfig,'--port',String(relayPort)]:['run','--script',path.join(__dirname,'server.py'),'--config',relayConfig,'--port',String(relayPort)],{env,stdio:['ignore',fs.openSync(path.join(dir,'relay.log'),'a'),fs.openSync(path.join(dir,'relay-error.log'),'a')]});
         native=startNative(); relay=startRelay();
         await waitFor(async()=> (await fetch(url)).ok,'Private services did not start');
         cli('attach','--create-background',name,'--','/bin/bash','--noprofile','--norc');created=true;
@@ -101,7 +102,8 @@ let recoveryPanes;
         const children=processes().filter(p=>p.ppid===server.pid);
         assert.ok(children.length,'Session owns terminal processes');
         browser=await chromium.launch({headless:true});
-        const page=await browser.newPage({viewport:{width:1200,height:800}});
+        const context=await browser.newContext({viewport:{width:1200,height:800}});
+        const page=await context.newPage();
         page.setDefaultTimeout(30000);
         page.on('pageerror',error=>console.error('Browser error:',error.message));
         await page.addInitScript(()=>{
@@ -189,6 +191,40 @@ let recoveryPanes;
             await target.locator('#tabs button').nth(index).click();
             await selectedPane(pane,target);
         }
+        if(!recoveryMode){
+            const follower=await page.context().newPage();
+            await follower.setViewportSize({width:720,height:480});
+            await follower.goto(url);await follower.waitForSelector('#tabs button');
+            // Headless Chromium reports every page focused, even with CDP focus
+            // emulation disabled. Drive window focus explicitly; resize/IPC is real.
+            for(const viewer of [page,follower])await viewer.evaluate(()=>{
+                Object.defineProperty(document,'hasFocus',{configurable:true,value:()=>window.__viewportTestFocused});
+            });
+            async function focusViewer(target){
+                for(const viewer of [page,follower])await viewer.evaluate(focused=>{window.__viewportTestFocused=focused;},viewer===target);
+                await target.bringToFront();
+                await target.evaluate(()=>window.dispatchEvent(new Event('focus')));
+            }
+            const owned=target=>target.waitForFunction(()=>{
+                const w=document.querySelector('#terminals>iframe.active')?.contentWindow;
+                const viewport=w?.__zjLastMobileState?.tab_viewport,physical=w?.__zjViewport?.dimensions();
+                return viewport?.is_owner&&viewport.cols===physical?.cols&&viewport.rows===physical?.rows;
+            });
+            await focusViewer(follower);await owned(follower);
+            const small=await follower.evaluate(()=>document.querySelector('#terminals>iframe.active').contentWindow.__zjLastMobileState.tab_viewport.cols);
+            await focusViewer(page);await owned(page);
+            const large=await page.evaluate(()=>document.querySelector('#terminals>iframe.active').contentWindow.__zjLastMobileState.tab_viewport.cols);
+            assert.ok(large>small,'The last focused larger viewer overrides the smaller viewer');
+            await follower.setViewportSize({width:640,height:400});
+            await sleep(1200);
+            await owned(page);
+            assert.equal(await page.evaluate(()=>document.querySelector('#terminals>iframe.active').contentWindow.__zjLastMobileState.tab_viewport.cols),large,'A background resize cannot reclaim ownership');
+            await focusViewer(follower);await owned(follower);
+            await focusViewer(page);await owned(page);
+            await follower.close();
+            await page.evaluate(()=>{delete document.hasFocus;delete window.__viewportTestFocused;});
+            console.log('PASS: last focused browser owns physical dimensions; background resize does not shrink it.');
+        }
         // Construct markers at runtime: echoed command text cannot satisfy output checks.
         let marker='SB_'+crypto.randomBytes(8).toString('hex');
         if(recoveryMode){
@@ -248,6 +284,49 @@ let recoveryPanes;
         for(const original of [server,...children])assert.ok(after.some(p=>p.pid===original.pid&&p.started===original.started),'Session server and terminal processes survive');
         const host=await (await fetch(url+'/api/hosts/test')).json();
         assert.ok(host.sessions.some(s=>s.name===name&&s.web_clients_allowed),'Sharing survives connection-service restart');
+        if(!recoveryMode){
+            const previousTabIds=names().map(([id])=>id);
+            await page.locator('#new-tab').click();
+            await page.locator('#new-tab-form button[type=submit]').click();
+            await page.waitForFunction(previous=>{
+                const button=document.querySelector('#tabs button.selected'),frame=document.querySelector('#terminals>iframe.active');
+                const w=frame?.contentWindow,active=w?.__zjLastMobileState?.active_pane;
+                return button&&!previous.includes(button._item.tab.id)&&!button._item.entry.pendingNewTab&&
+                    button.getAttribute('aria-pressed')==='true'&&button._item.tab.panes.some(p=>p.pane_id===active?.pane_id&&!p.is_plugin)&&
+                    !w.term.options.disableStdin&&document.activeElement===frame&&w.term.element.contains(w.document.activeElement);
+            },previousTabIds);
+            const tabId=await page.locator('#tabs button.selected').evaluate(button=>button._item.tab.id);
+            assert.equal(new URL(page.url()).searchParams.get('tab'),String(tabId),'New tab URL matches the highlighted terminal');
+            const createdMarker='CREATED_'+crypto.randomBytes(8).toString('hex');
+            // No explicit terminal focus: typing must work directly after Create.
+            await page.keyboard.type(`SB_NEW=${createdMarker}; printf '%s%s\\n' "AUTOFOCUSED_" "$SB_NEW"`);
+            await page.keyboard.press('Enter');
+            await page.waitForFunction(expected=>{
+                const term=document.querySelector('#terminals>iframe.active')?.contentWindow.term;
+                return term&&Array.from({length:term.buffer.active.length},(_,n)=>term.buffer.active.getLine(n)?.translateToString()).some(line=>line?.includes('AUTOFOCUSED_'+expected));
+            },createdMarker);
+            await page.reload();await connected();
+            await page.waitForFunction(id=>document.querySelector('#tabs button.selected')?._item.tab.id===id,tabId);
+            await command(`printf '%s%s\\n' "CREATED_REFRESHED_" "$SB_NEW"`,'CREATED_REFRESHED_'+createdMarker);
+            console.log('PASS: Create highlights the actual new native tab, focuses input immediately without another click, updates its URL, and refreshes into the same shell.');
+            if(rustRelay){
+                const second=await context.newPage();await second.goto(page.url());
+                await second.waitForSelector('#tabs button');
+                await second.waitForFunction(session=>document.querySelector('#terminals>iframe.active')?.contentWindow.__zjLastMobileState?.session_name===session,name);
+                for(const [id] of names()){
+                    const result=await fetch(url+'/api/hosts/test/close-tab',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({session:name,tab_id:id})});
+                    assert.equal(result.status,200,await result.text());
+                }
+                const closed=async()=> !(await (await fetch(url+'/api/hosts/test')).json()).sessions.some(s=>s.name===name);
+                await waitFor(closed,'Final tab did not close');
+                await sleep(3000);
+                assert.ok(await closed(),'Two viewers must not recreate an intentionally closed session');
+                assert.ok(!processes().some(p=>p.pid===server.pid),'Closed private engine exits');
+                created=false;await second.close();
+                console.log('PASS: closing the final tab disconnects both viewers without recreating its session.');
+            }
+
+        }
         if(recoveryMode){
             await stop(native);native=null;recoveryEnabled=false;native=startNative();
             await waitFor(async()=> (await (await fetch(url+'/api/hosts/test')).json()).sessions?.some(s=>s.name===name&&!s.web_clients_allowed),'Recovery disable did not restore Off policy');

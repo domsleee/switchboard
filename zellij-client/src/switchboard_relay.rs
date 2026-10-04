@@ -1,12 +1,14 @@
-//! Opt-in Rust relay slice. Control, attention and artifacts are not ported yet.
-//! Keep the Python relay installed until those features pass parity tests.
+//! Loopback Switchboard relay. Terminal engines remain independent processes.
+mod artifacts;
+mod attention;
+mod control;
 use axum::{
     body::{to_bytes, Body, Bytes},
     extract::{ws::WebSocketUpgrade, Path as RoutePath, Request, State},
     http::{header, HeaderMap, Method, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{any, get},
+    routing::{any, get, post},
     Json, Router,
 };
 use futures_util::{SinkExt, StreamExt};
@@ -35,6 +37,8 @@ const BRIDGE: &str = "<head><script src=\"/link-config.js\"></script><script src
 #[derive(Clone, Deserialize)]
 pub struct RelayConfig {
     pub hosts: Vec<HostConfig>,
+    #[serde(default)]
+    pub artifact_proxy: Option<artifacts::ArtifactConfig>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -46,6 +50,10 @@ pub struct HostConfig {
     pub tls_fingerprint: Option<String>,
     #[serde(default)]
     pub artifact_urls: Value,
+    #[serde(default)]
+    pub escape_transport: Option<String>,
+    #[serde(default)]
+    pub zellij_binary: Option<String>,
 }
 
 trait RelayIo: AsyncRead + AsyncWrite + Send + Unpin {}
@@ -58,6 +66,7 @@ struct RelayState {
     hosts: Arc<HashMap<String, Arc<Host>>>,
     order: Arc<Vec<String>>,
     port: u16,
+    attention: Arc<Mutex<Value>>,
 }
 
 struct Host {
@@ -65,6 +74,8 @@ struct Host {
     origin: url::Url,
     tls: Option<Arc<rustls::ClientConfig>>,
     cookie: Mutex<Option<String>>,
+    control: Mutex<Option<control::Helper>>,
+    idle_http: Mutex<Vec<hyper::client::conn::http1::SendRequest<Full<Bytes>>>>,
 }
 
 struct UpstreamResponse {
@@ -174,6 +185,8 @@ impl Host {
             origin,
             tls,
             cookie: Mutex::new(None),
+            control: Mutex::new(None),
+            idle_http: Mutex::new(Vec::new()),
         })
     }
 
@@ -208,15 +221,79 @@ impl Host {
         content_type: &str,
         cookie: Option<&str>,
     ) -> anyhow::Result<UpstreamResponse> {
-        anyhow::ensure!(
-            path.starts_with('/') && !path.starts_with("//"),
-            "Invalid upstream path"
-        );
-        let (mut sender, connection) =
+        let mut sender = self.connection(true).await?;
+        let response = self
+            .send_request(&mut sender, method, path, body, content_type, cookie)
+            .await?;
+        let status = response.status();
+        let headers = response.headers().clone();
+        let body = to_bytes(Body::new(response.into_body()), LIMIT).await?;
+        // Reuse completed HTTP connections without serializing unrelated asset/control requests.
+        if sender.ready().await.is_ok() {
+            let mut idle = self.idle_http.lock().await;
+            if idle.len() < 8 {
+                idle.push(sender);
+            }
+        }
+        Ok(UpstreamResponse {
+            status,
+            headers,
+            body,
+        })
+    }
+
+    async fn stream_request(
+        &self,
+        method: Method,
+        path: &str,
+        body: Bytes,
+        content_type: &str,
+        cookie: Option<&str>,
+    ) -> anyhow::Result<hyper::Response<hyper::body::Incoming>> {
+        let mut sender = self.connection(false).await?;
+        self.send_request(&mut sender, method, path, body, content_type, cookie)
+            .await
+    }
+
+    async fn connection(
+        &self,
+        pooled: bool,
+    ) -> anyhow::Result<hyper::client::conn::http1::SendRequest<Full<Bytes>>> {
+        if pooled {
+            loop {
+                let sender = self.idle_http.lock().await.pop();
+                match sender {
+                    Some(mut sender) if !sender.is_closed() => {
+                        if sender.ready().await.is_ok() {
+                            return Ok(sender);
+                        }
+                    },
+                    Some(_) => {},
+                    None => break,
+                }
+            }
+        }
+        let (sender, connection) =
             hyper::client::conn::http1::handshake(TokioIo::new(self.stream().await?)).await?;
         tokio::spawn(async move {
             let _ = connection.await;
         });
+        Ok(sender)
+    }
+
+    async fn send_request(
+        &self,
+        sender: &mut hyper::client::conn::http1::SendRequest<Full<Bytes>>,
+        method: Method,
+        path: &str,
+        body: Bytes,
+        content_type: &str,
+        cookie: Option<&str>,
+    ) -> anyhow::Result<hyper::Response<hyper::body::Incoming>> {
+        anyhow::ensure!(
+            path.starts_with('/') && !path.starts_with("//"),
+            "Invalid upstream path"
+        );
         let mut request = hyper::Request::builder()
             .method(method)
             .uri(path)
@@ -225,15 +302,7 @@ impl Host {
         if let Some(cookie) = cookie {
             request = request.header(header::COOKIE, cookie);
         }
-        let response = sender.send_request(request.body(Full::new(body))?).await?;
-        let status = response.status();
-        let headers = response.headers().clone();
-        let body = to_bytes(Body::new(response.into_body()), LIMIT).await?;
-        Ok(UpstreamResponse {
-            status,
-            headers,
-            body,
-        })
+        Ok(sender.send_request(request.body(Full::new(body))?).await?)
     }
 
     async fn login(&self, stale: Option<&str>) -> anyhow::Result<String> {
@@ -243,16 +312,7 @@ impl Host {
                 return Ok(current.clone());
             }
         }
-        let token_path = if let Some(tail) = self.config.token_file.strip_prefix("~/") {
-            std::path::PathBuf::from(
-                std::env::var_os("HOME")
-                    .or_else(|| std::env::var_os("USERPROFILE"))
-                    .ok_or_else(|| anyhow::anyhow!("No home directory"))?,
-            )
-            .join(tail)
-        } else {
-            self.config.token_file.clone().into()
-        };
+        let token_path = control::expand_path(&self.config.token_file)?;
         let token = tokio::fs::read_to_string(token_path).await?;
         let response = self
             .raw_request(
@@ -566,7 +626,17 @@ async fn pump(downstream: axum::extract::ws::WebSocket, upstream: WebSocketStrea
                     Message::Text(value.as_str().to_owned().into())
                 },
                 axum::extract::ws::Message::Binary(value) => Message::Binary(value),
-                axum::extract::ws::Message::Close(_) => break,
+                axum::extract::ws::Message::Close(frame) => {
+                    let frame =
+                        frame.map(
+                            |frame| tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                                code: frame.code.into(),
+                                reason: frame.reason.as_str().to_owned().into(),
+                            },
+                        );
+                    let _ = upstream_tx.send(Message::Close(frame)).await;
+                    break;
+                },
                 _ => continue,
             };
             if upstream_tx.send(message).await.is_err() {
@@ -582,7 +652,16 @@ async fn pump(downstream: axum::extract::ws::WebSocket, upstream: WebSocketStrea
                     axum::extract::ws::Message::Text(value.as_str().to_owned().into())
                 },
                 Message::Binary(value) => axum::extract::ws::Message::Binary(value),
-                Message::Close(_) => break,
+                Message::Close(frame) => {
+                    let frame = frame.map(|frame| axum::extract::ws::CloseFrame {
+                        code: frame.code.into(),
+                        reason: frame.reason.as_str().to_owned().into(),
+                    });
+                    let _ = downstream_tx
+                        .send(axum::extract::ws::Message::Close(frame))
+                        .await;
+                    break;
+                },
                 _ => continue,
             };
             if downstream_tx.send(message).await.is_err() {
@@ -610,14 +689,10 @@ async fn asset(request: Request) -> Response {
     }
 }
 
-async fn not_ported() -> impl IntoResponse {
-    (StatusCode::NOT_IMPLEMENTED, "This Rust relay slice does not yet provide attention or terminal controls. Keep the Python relay for production.")
-}
-
-pub async fn router(config: RelayConfig, port: u16) -> anyhow::Result<Router> {
+async fn state(config: &RelayConfig, port: u16) -> anyhow::Result<RelayState> {
     let mut hosts = HashMap::new();
     let mut order = Vec::new();
-    for config in config.hosts {
+    for config in config.hosts.clone() {
         anyhow::ensure!(
             !config.id.is_empty() && !hosts.contains_key(&config.id),
             "Duplicate or empty host ID"
@@ -625,38 +700,80 @@ pub async fn router(config: RelayConfig, port: u16) -> anyhow::Result<Router> {
         order.push(config.id.clone());
         hosts.insert(config.id.clone(), Arc::new(Host::new(config)?));
     }
-    let state = RelayState {
+    Ok(RelayState {
         hosts: Arc::new(hosts),
         order: Arc::new(order),
         port,
-    };
-    Ok(Router::new()
+        attention: Arc::new(Mutex::new(json!({"panes": [], "tabs": [], "errors": []}))),
+    })
+}
+
+fn app(state: RelayState) -> Router {
+    Router::new()
+        .route(
+            "/api/health",
+            get(|| async { Json(json!({"relay":"rust","version":zellij_utils::consts::VERSION})) }),
+        )
         .route("/api/hosts", get(self::hosts))
         .route("/api/hosts/{host}", get(host))
-        .route("/api/attention", any(not_ported))
-        .route("/api/hosts/{host}/close-tab", any(not_ported))
-        .route("/api/hosts/{host}/escape", any(not_ported))
+        .route("/api/attention", get(attention::handler))
+        .route("/api/hosts/{host}/close-tab", post(control::close_tab))
+        .route("/api/hosts/{host}/escape", post(control::escape))
         .route("/link-config.js", get(link_config))
         .route("/hosts/{host}/{*path}", any(proxy))
         .fallback(asset)
         .layer(middleware::from_fn_with_state(state.clone(), guard))
-        .with_state(state))
+        .with_state(state)
 }
 
-/// Start an opt-in relay on loopback. Never starts or stops terminal sessions.
+pub async fn router(config: RelayConfig, port: u16) -> anyhow::Result<Router> {
+    Ok(app(state(&config, port).await?))
+}
+
+/// Start the relay on loopback. Never restarts user terminal engines.
 pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
     let config: RelayConfig = serde_json::from_slice(&tokio::fs::read(config_path).await?)?;
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await?;
     let port = listener.local_addr()?.port();
-    axum::serve(listener, router(config, port).await?).await?;
+    let state = state(&config, port).await?;
+    let artifact = artifacts::start(config.artifact_proxy).await?;
+    let polling =
+        attention::start(state.clone(), config_path.with_extension("attention.json")).await;
+    let result = axum::serve(listener, app(state.clone()))
+        .with_graceful_shutdown(shutdown())
+        .await;
+    for task in polling {
+        task.abort();
+        let _ = task.await;
+    }
+    if let Some(task) = artifact {
+        task.abort();
+    }
+    for host in state.hosts.values() {
+        control::cleanup(host).await;
+    }
+    result?;
     Ok(())
+}
+
+async fn shutdown() {
+    #[cfg(unix)]
+    {
+        if let Ok(mut termination) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
+            tokio::select! { _ = termination.recv() => {}, _ = tokio::signal::ctrl_c() => {} }
+            return;
+        }
+    }
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn config(url: &str) -> HostConfig {
+    pub(super) fn config(url: &str) -> HostConfig {
         HostConfig {
             id: "mac".into(),
             name: "Mac".into(),
@@ -664,6 +781,8 @@ mod tests {
             token_file: "/secret/token".into(),
             tls_fingerprint: None,
             artifact_urls: json!({}),
+            escape_transport: None,
+            zellij_binary: None,
         }
     }
 
@@ -723,7 +842,8 @@ mod tests {
         let host = config("http://127.0.0.1:8082");
         assert!(router(
             RelayConfig {
-                hosts: vec![host.clone(), host]
+                hosts: vec![host.clone(), host],
+                artifact_proxy: None,
             },
             8090
         )
@@ -791,6 +911,19 @@ mod tests {
                         assert_eq!(headers.get(header::COOKIE).unwrap(), "session_token=fresh");
                         websocket.on_upgrade(|mut socket| async move {
                             while let Some(Ok(message)) = socket.next().await {
+                                if message
+                                    == axum::extract::ws::Message::Text("close-with-code".into())
+                                {
+                                    let _ = socket
+                                        .send(axum::extract::ws::Message::Close(Some(
+                                            axum::extract::ws::CloseFrame {
+                                                code: 4001,
+                                                reason: "Do not reconnect".into(),
+                                            },
+                                        )))
+                                        .await;
+                                    break;
+                                }
                                 if socket.send(message).await.is_err() {
                                     break;
                                 }
@@ -816,6 +949,7 @@ mod tests {
         let relay = router(
             RelayConfig {
                 hosts: vec![upstream_config, windows_config],
+                artifact_proxy: None,
             },
             relay_port,
         )
@@ -868,18 +1002,29 @@ mod tests {
         assert!(String::from_utf8_lossy(&response.body).contains(BRIDGE));
         assert!(response.headers.get(header::SET_COOKIE).is_none());
         assert_eq!(response.headers.get("cache-control").unwrap(), "no-store");
-        for path in [
-            "/api/attention",
-            "/api/hosts/mac/close-tab",
-            "/api/hosts/mac/escape",
-        ] {
+        let attention = client
+            .raw_request(
+                Method::GET,
+                "/api/attention",
+                Bytes::new(),
+                "application/json",
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(attention.status, StatusCode::OK);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&attention.body).unwrap(),
+            json!({"panes": [], "tabs": [], "errors": []})
+        );
+        for path in ["/api/hosts/mac/close-tab", "/api/hosts/mac/escape"] {
             assert_eq!(
                 client
                     .raw_request(Method::GET, path, Bytes::new(), "application/json", None)
                     .await
                     .unwrap()
                     .status,
-                StatusCode::NOT_IMPLEMENTED
+                StatusCode::METHOD_NOT_ALLOWED
             );
         }
         assert_eq!(
@@ -895,6 +1040,24 @@ mod tests {
                 .unwrap()
                 .status,
             StatusCode::FORBIDDEN
+        );
+        // A cookie accepted by a remote HTTP server is not automatically a
+        // locally validated writable token. Local privileged CLI calls fail closed.
+        let rejected = client
+            .raw_request(
+                Method::POST,
+                "/api/hosts/mac/escape",
+                json!({"session":"main","pane_id":1}).to_string().into(),
+                "application/json",
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(rejected.status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            client.idle_http.lock().await.len(),
+            1,
+            "Completed HTTP responses reuse the connection"
         );
         let mut socket = client
             .raw_websocket("/hosts/mac/ws/echo", "browser=must-not-forward")
@@ -915,6 +1078,26 @@ mod tests {
             );
         }
         socket.close(None).await.unwrap();
+        let mut closing = client
+            .raw_websocket("/hosts/mac/ws/echo", "browser=must-not-forward")
+            .await
+            .unwrap();
+        closing
+            .send(Message::Text("close-with-code".into()))
+            .await
+            .unwrap();
+        let closed = tokio::time::timeout(Duration::from_secs(3), closing.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        match closed {
+            Message::Close(Some(frame)) => {
+                assert_eq!(u16::from(frame.code), 4001);
+                assert_eq!(frame.reason.as_str(), "Do not reconnect");
+            },
+            other => panic!("Expected original upstream close frame, got {other:?}"),
+        }
         upstream_task.abort();
         relay_task.abort();
     }

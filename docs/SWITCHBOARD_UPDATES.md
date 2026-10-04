@@ -87,22 +87,44 @@ Temporary recovery reconstructs tab metadata from the existing engine's queries.
 It lacks native viewport ownership and exact focus for multi-pane tabs. Normal
 new shared engines retain those features.
 
-## Rust consolidation preview
+## Rust relay
 
-The executable now includes an opt-in Rust relay:
+The executable includes the sidebar and Rust relay:
 
 ```sh
-zellij serve --host-config ~/.config/zellij/switchboard-hosts.json --port 8093
+zellij serve --host-config ~/.config/zellij/switchboard-hosts.json --port 8090
 ```
 
-This embeds the current UI and supports host catalogs, terminal HTTP/WebSockets,
-token authentication and certificate pinning. It uses the same executable as the
-session engine, and leaves the production relay alone. Attention, Escape,
-close-tab and artifact proxying still require the production Python relay;
-the preview reports unsupported endpoints explicitly. Do not switch the
-production service until those features pass parity checks. The current sidebar
-also obtains its stable tab catalog from the attention endpoint, so the preview
-is a transport implementation rather than a usable replacement dashboard yet.
+This embeds the UI and supports host/tab catalogs, attention polling, targeted
+Escape and tab closing, terminal HTTP/WebSockets, private token authentication,
+certificate pinning and the separate artifact listener. Attention identities use
+the same `.attention.json` file as the old relay. Each host polls independently;
+an unavailable host loses stale badges without holding up other hosts.
+
+The Mac and Windows installers start `zellij serve`; Python and `uv` are no
+longer needed at runtime. Older remote Windows hosts use a private PowerShell
+control session and bounded native CLI queries, with classification in Rust.
+Local hosts use the installed CLI directly. Neither path inputs commands into
+an existing user shell or changes focus to close a tab.
+
+One executable still runs as separate relay, web and session processes. Existing
+engines keep their loaded release. Migrating the relay requires only a relay
+service restart, followed by actual browser reconnection and usable-tab checks.
+Do not restart session engines. Keep the old relay available for rollback until
+Windows acceptance checks pass. See [Windows test plan](SWITCHBOARD_WINDOWS_TEST_PLAN.md).
+
+The relay preserves WebSocket close codes. Updated web daemons send a
+nonreconnecting close for intentional session exit; service/transport loss
+still reconnects. Two browser viewers must not recreate the session after its
+last tab closes. Older Windows web daemons fail this check and need a
+web-service-only update. Their marker-only catalogs can also show dead engines;
+new Windows catalogs check whether the marker PID is still running.
+
+For isolated browser acceptance against the Rust relay:
+
+```sh
+SWITCHBOARD_TEST_RUST_RELAY=1 node tools/switchboard/update_browser.test.cjs OLD_BINARY NEW_BINARY
+```
 
 ## Long-term priorities
 

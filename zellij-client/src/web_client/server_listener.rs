@@ -342,7 +342,13 @@ pub fn zellij_server_listener(
 
 fn handle_exit_reason(client_connection_bus: &mut ClientConnectionBus, exit_reason: ExitReason) {
     match exit_reason {
-        ExitReason::KickedByHost => {
+        ExitReason::Normal
+        | ExitReason::NormalDetached
+        | ExitReason::ForceDetached
+        | ExitReason::CustomExitStatus(_)
+        | ExitReason::KickedByHost => {
+            // A deliberate exit must stop browser reconnection. Reloading a named
+            // terminal after its last tab closes can otherwise recreate the session.
             client_connection_bus.close_connection_kicked();
             return;
         },

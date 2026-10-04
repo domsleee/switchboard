@@ -1,5 +1,35 @@
 # Switchboard memory and executable consolidation
 
+## Rust relay comparison
+
+Matched local trials on 4 October 2026 used the same private native web server,
+five idle Bash tabs, authentication and three-second polling interval. No user
+sessions were attached or restarted. Measurements exclude browser, engine, web
+server and tray memory. Python includes its `uv` supervisor.
+
+| Relay | Processes | Charged footprint, MiB | Mean RSS, MiB | Warm catalog latency p50 / p95, ms |
+| --- | ---: | ---: | ---: | ---: |
+| Python + uv | 2 | 36.05–36.35 | 41.18–54.78 | 1.53 / 1.82 |
+| Rust | 1 | 4.25–4.49 | 10.86–11.06 | 1.29 / 1.54 |
+
+The local relay saves about 32 MiB charged footprint in this workload. One Rust
+trial had a 4.42 ms p95; latency is not uniformly better. Time to the first
+complete native tab catalog was 131–134 ms for Rust, 307 ms for warm Python and
+3.33 seconds for the first Python trial. These are local catalog checks, not
+browser-to-usable-terminal timings or Windows measurements. Initial metadata
+publication and polling can affect startup samples.
+
+Raw measurements: `/tmp/switchboard-rust-relay-benchmark.json`; candidate SHA-256
+`25a406292ae8205200281b662dc2b557d07cb50ebc19cbee2bffeffadc99f2a5`.
+That candidate included HTTP pooling, native tab/attention scanning and control
+handlers. Legacy Windows snapshot transfer was still under verification;
+final-build and remote-host performance need their own measurements.
+
+The Rust relay reuses up to eight idle HTTP connections per host. Artifact
+responses stream on a separate origin; ordinary terminal HTTP responses remain
+bounded buffers. Local scans still launch CLI probes, and old remote Windows
+hosts still need a private PowerShell control shell.
+
 Audited 2026-10-04 on `remove-wasm-runtime`, baseline `9c1016c68`.
 Installed plugin-free release: `/Users/dom/.cargo/bin/zellij`, 18.70 MiB,
 SHA-256 `76876246f63053a1341962e53662648f9902bd2e22b3119352b61899417c4808`.

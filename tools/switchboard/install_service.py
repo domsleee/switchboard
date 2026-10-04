@@ -60,9 +60,10 @@ def main():
     args = parser.parse_args()
     AGENTS.mkdir(parents=True, exist_ok=True)
     LOGS.mkdir(parents=True, exist_ok=True)
-    uv, zellij = shutil.which('uv'), shutil.which('zellij')
-    if not uv or not zellij:
-        raise SystemExit('uv and zellij must be installed')
+    zellij = shutil.which('zellij')
+    if not zellij:
+        raise SystemExit('The Switchboard zellij executable must be installed')
+    subprocess.run([zellij, 'serve', '--help'], check=True, stdout=subprocess.DEVNULL)
     app = Path.home() / 'Applications/Switchboard.app'
     contents = app / 'Contents'
     executable = contents / 'MacOS/Switchboard'
@@ -75,7 +76,7 @@ def main():
     }))
     if not args.menu_only:
         startup = shlex.join([zellij, 'web', '--status', '--timeout', '2']) + ' >/dev/null 2>&1 || { ' + web_start_command(zellij) + '; }'
-        relay = shlex.join([uv, 'run', '--script', str(ROOT / 'server.py')])
+        relay = shlex.join([zellij, 'serve', '--host-config', str(Path.home() / '.config/zellij/switchboard-hosts.json'), '--port', '8090'])
         install_job(LABEL, {
             'ProgramArguments': ['/bin/sh', '-c', startup + '; exec ' + relay],
             'WorkingDirectory': str(ROOT), 'KeepAlive': True,

@@ -167,39 +167,40 @@ fn assert_socket(name: &str) -> bool {
     }
 }
 
-/// On Windows, reads the server PID from the marker file and checks whether
-/// the process is still alive via `OpenProcess`. Cleans up stale marker files.
+/// On Windows, reads the server PID and checks whether the process is running.
+/// An exited process can still have an open handle, so opening it is insufficient.
 #[cfg(windows)]
-fn assert_socket(name: &str) -> bool {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+fn windows_session_marker_is_live(path: &Path) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+    };
 
-    let path = &*ZELLIJ_SOCK_DIR.join(name);
     let pid_str = match fs::read_to_string(path) {
         Ok(s) => s,
-        Err(_) => {
-            drop(fs::remove_file(path));
-            return false;
-        },
+        Err(_) => return false,
     };
     let pid: u32 = match pid_str.trim().parse() {
         Ok(p) => p,
-        Err(_) => {
-            // Marker file exists but has no valid PID (e.g. empty from old version).
-            // Treat as stale.
-            drop(fs::remove_file(path));
-            return false;
-        },
+        Err(_) => return false,
     };
-    let alive = unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+    unsafe {
+        let handle = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
         if handle.is_null() {
             false
         } else {
+            let alive = WaitForSingleObject(handle, 0) == WAIT_TIMEOUT;
             CloseHandle(handle);
-            true
+            alive
         }
-    };
+    }
+}
+
+/// Cleans up stale Windows marker files when explicitly listing session sockets.
+#[cfg(windows)]
+fn assert_socket(name: &str) -> bool {
+    let path = ZELLIJ_SOCK_DIR.join(name);
+    let alive = windows_session_marker_is_live(&path);
     if !alive {
         drop(fs::remove_file(path));
     }
@@ -584,6 +585,13 @@ pub fn read_live_session_states(
                         .map(|file_type| is_ipc_socket(&file_type))
                         .unwrap_or(false)
                     {
+                        // Windows marker files and serialized metadata can outlive
+                        // their server. Query the supplied directory without deleting
+                        // markers or changing resurrection data during catalog reads.
+                        #[cfg(windows)]
+                        if !windows_session_marker_is_live(&file.path()) {
+                            return;
+                        }
                         let creation_time = std::fs::metadata(&file.path())
                             .ok()
                             .and_then(|f| f.created().ok().or_else(|| f.modified().ok()))
@@ -620,6 +628,60 @@ pub fn read_live_session_states_default_dirs(
         &*ZELLIJ_SOCK_DIR,
         &*ZELLIJ_SESSION_INFO_CACHE_DIR,
     )
+}
+
+#[cfg(all(test, windows))]
+mod windows_session_catalog_tests {
+    use super::*;
+
+    #[test]
+    fn live_catalog_ignores_exited_processes_and_preserves_cached_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let sockets = directory.path().join("sockets");
+        let metadata = directory.path().join("metadata");
+        fs::create_dir_all(&sockets).unwrap();
+
+        // Keep the child handle alive after exit. OpenProcess can still succeed
+        // for this PID, including when its exit code equals STILL_ACTIVE (259).
+        let mut exited = process::Command::new("cmd.exe")
+            .args(["/D", "/C", "exit /B 259"])
+            .spawn()
+            .unwrap();
+        assert_eq!(exited.wait().unwrap().code(), Some(259));
+
+        for (name, pid) in [
+            ("live", process::id().to_string()),
+            ("exited", exited.id().to_string()),
+            ("invalid", "not a PID".to_owned()),
+            ("empty", String::new()),
+            ("zero", "0".to_owned()),
+        ] {
+            fs::write(sockets.join(name), pid).unwrap();
+            let folder = metadata.join(name);
+            fs::create_dir_all(&folder).unwrap();
+            let mut session = SessionInfo::new(name.to_owned());
+            session.web_clients_allowed = true;
+            fs::write(folder.join("session-metadata.kdl"), session.to_string()).unwrap();
+        }
+
+        for _ in 0..2 {
+            let catalog = read_live_session_states("live", &sockets, &metadata);
+            assert_eq!(
+                catalog.keys().map(String::as_str).collect::<Vec<_>>(),
+                ["live"]
+            );
+            assert!(catalog["live"].web_clients_allowed);
+            assert!(catalog["live"].is_current_session);
+        }
+        for name in ["live", "exited", "invalid", "empty", "zero"] {
+            assert!(
+                sockets.join(name).exists(),
+                "Catalog reads must not delete markers"
+            );
+            assert!(metadata.join(name).join("session-metadata.kdl").exists());
+        }
+        drop(exited);
+    }
 }
 
 pub fn generate_unique_session_name() -> Option<String> {

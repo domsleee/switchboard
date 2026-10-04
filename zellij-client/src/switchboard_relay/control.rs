@@ -1,0 +1,592 @@
+use super::*;
+use base64::{engine::general_purpose::STANDARD, Engine};
+use serde::Deserialize;
+use std::path::PathBuf;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct EscapeTarget {
+    session: String,
+    pane_id: u32,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct CloseTarget {
+    session: String,
+    tab_id: u32,
+}
+
+pub(super) fn validate_session(session: &str) -> Result<(), Error> {
+    if session.trim().is_empty()
+        || session.chars().count() > 200
+        || matches!(session, "." | "..")
+        || session.starts_with(HELPER_PREFIX)
+        || session
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '/' | '\\'))
+    {
+        return Err((StatusCode::BAD_REQUEST, "Invalid session"));
+    }
+    Ok(())
+}
+
+pub(super) fn local(host: &Host) -> bool {
+    match host.config.escape_transport.as_deref() {
+        Some("local") => true,
+        Some(_) => false,
+        None => matches!(
+            host.origin.host_str(),
+            Some("localhost" | "127.0.0.1" | "::1" | "[::1]")
+        ),
+    }
+}
+
+fn binary(host: &Host) -> anyhow::Result<PathBuf> {
+    host.config
+        .zellij_binary
+        .as_ref()
+        .map(|path| expand_path(path))
+        .unwrap_or_else(|| Ok(std::env::current_exe()?))
+}
+
+pub(super) fn expand_path(path: &str) -> anyhow::Result<PathBuf> {
+    if let Some(tail) = path.strip_prefix("~/") {
+        Ok(PathBuf::from(
+            std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .ok_or_else(|| anyhow::anyhow!("No home directory"))?,
+        )
+        .join(tail))
+    } else {
+        Ok(path.into())
+    }
+}
+
+pub(super) async fn run_local(
+    host: &Host,
+    session: &str,
+    args: &[&str],
+    timeout: Duration,
+) -> anyhow::Result<String> {
+    let mut command = tokio::process::Command::new(binary(host)?);
+    command
+        .args(["-s", session, "action"])
+        .args(args)
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(timeout, command.output()).await??;
+    anyhow::ensure!(output.status.success(), "Terminal command failed");
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+pub(super) async fn sessions(host: &Host) -> anyhow::Result<Vec<String>> {
+    let response = tokio::time::timeout(
+        Duration::from_secs(20),
+        host.request(
+            Method::GET,
+            "/session-list",
+            Bytes::new(),
+            "application/json",
+        ),
+    )
+    .await??;
+    anyhow::ensure!(
+        response.status == StatusCode::OK,
+        "Cannot validate sessions"
+    );
+    let catalog: Value = serde_json::from_slice(&response.body)?;
+    let mut names = Vec::new();
+    for session in catalog["sessions"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("Invalid session catalog"))?
+    {
+        if session["web_clients_allowed"] == true {
+            if let Some(name) = session["name"].as_str() {
+                if !name.starts_with(HELPER_PREFIX) {
+                    validate_session(name)
+                        .map_err(|_| anyhow::anyhow!("Invalid shared session"))?;
+                    names.push(name.to_owned());
+                }
+            }
+        }
+    }
+    Ok(names)
+}
+
+pub(super) async fn escape(
+    State(state): State<RelayState>,
+    RoutePath(id): RoutePath<String>,
+    Json(target): Json<EscapeTarget>,
+) -> Result<Json<Value>, Error> {
+    execute(&state, &id, &target.session, target.pane_id, false).await?;
+    Ok(Json(json!({"ok":true})))
+}
+pub(super) async fn close_tab(
+    State(state): State<RelayState>,
+    RoutePath(id): RoutePath<String>,
+    Json(target): Json<CloseTarget>,
+) -> Result<Json<Value>, Error> {
+    execute(&state, &id, &target.session, target.tab_id, true).await?;
+    Ok(Json(json!({"ok":true})))
+}
+
+async fn execute(
+    state: &RelayState,
+    id: &str,
+    session: &str,
+    target: u32,
+    close: bool,
+) -> Result<(), Error> {
+    validate_session(session)?;
+    let host = state
+        .hosts
+        .get(id)
+        .ok_or((StatusCode::NOT_FOUND, "Unknown host"))?;
+    // Serialize validation and delivery with the host's private helper. No target focus changes.
+    let mut helper = host.control.lock().await;
+    let names = sessions(host)
+        .await
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot validate session"))?;
+    if !names.iter().any(|name| name == session) {
+        return Err((StatusCode::NOT_FOUND, "Session is unavailable"));
+    }
+    if local(host) {
+        let cookie = host
+            .cookie
+            .lock()
+            .await
+            .clone()
+            .ok_or((StatusCode::UNAUTHORIZED, "Host is not authenticated"))?;
+        let token = cookie
+            .strip_prefix("session_token=")
+            .ok_or((StatusCode::UNAUTHORIZED, "Invalid host authentication"))?;
+        // A local CLI has the OS user's privileges. Do not bypass a view-only
+        // upstream token by invoking it on behalf of that authenticated browser.
+        use zellij_utils::web_authentication_tokens::{
+            is_session_token_read_only, validate_session_token,
+        };
+        if !validate_session_token(token).unwrap_or(false)
+            || is_session_token_read_only(token).unwrap_or(true)
+        {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "Writable host authentication is required",
+            ));
+        }
+        let all = if close {
+            vec!["list-panes", "--json", "--all"]
+        } else {
+            vec!["list-panes", "--json"]
+        };
+        let panes = run_local(host, session, &all, Duration::from_secs(5))
+            .await
+            .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot identify target"))?;
+        let panes: Vec<Value> = serde_json::from_str(&panes)
+            .map_err(|_| (StatusCode::BAD_GATEWAY, "Invalid pane catalog"))?;
+        let available = panes.iter().any(|pane| {
+            if close {
+                pane["tab_id"] == target
+            } else {
+                pane["id"] == target
+                    && pane["is_plugin"] == false
+                    && pane["exited"] != true
+                    && pane["is_held"] != true
+            }
+        });
+        if !available {
+            return Err((StatusCode::CONFLICT, "Target is no longer available"));
+        }
+        let target = target.to_string();
+        let args = if close {
+            vec!["close-tab", "--tab-id", &target]
+        } else {
+            vec!["write", "-p", &target, "27"]
+        };
+        run_local(host, session, &args, Duration::from_secs(5))
+            .await
+            .map_err(|_| {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    "Terminal command failed; delivery may be uncertain",
+                )
+            })?;
+    } else {
+        ensure_helper(host, &mut helper)
+            .await
+            .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot open remote control"))?;
+        let filter = if close {
+            format!("$_.tab_id -eq {target}")
+        } else {
+            format!("$_.id -eq {target} -and -not $_.is_plugin -and -not $_.exited -and -not $_.is_held")
+        };
+        let session = ps_literal(session);
+        let list = if close {
+            "'list-panes','--json','--all'"
+        } else {
+            "'list-panes','--json'"
+        };
+        let action = if close {
+            format!("'close-tab','--tab-id','{target}'")
+        } else {
+            format!("'write','-p','{target}','27'")
+        };
+        let script = format!("$result=Invoke-SB @('-s',{session},'action',{list}) 5000; if($result.code -ne 0) {{ throw 'Cannot list panes' }}; $panes=$result.output | ConvertFrom-Json; $found=@($panes | Where-Object {{ {filter} }}); if($found.Count -eq 0) {{ $code=4 }} else {{ $result=Invoke-SB @('-s',{session},'action',{action}) 5000; $code=$result.code }}");
+        match helper.as_mut().unwrap().command(&script).await {
+            Ok((0, _)) => {},
+            Ok((4, _)) => return Err((StatusCode::CONFLICT, "Target is no longer available")),
+            _ => {
+                discard(&mut helper).await;
+                return Err((
+                    StatusCode::BAD_GATEWAY,
+                    "Remote command failed; delivery may be uncertain",
+                ));
+            },
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn ps_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+fn shell_command(script: &str) -> String {
+    // A fixed ASCII loader keeps quoting shell-independent and avoids UTF-16's
+    // doubled payload size hitting cmd.exe's command-line ceiling.
+    format!("powershell.exe -NoLogo -NoProfile -NonInteractive -OutputFormat Text -Command \"Invoke-Expression ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{}')))\"", STANDARD.encode(script.as_bytes()))
+}
+
+// PowerShell 5/.NET on existing Windows hosts lacks ProcessStartInfo.ArgumentList.
+// Quote argv for CreateProcess, drain both pipes asynchronously, and bound each CLI probe.
+pub(super) const WINDOWS_RUNNER: &str = r#"
+function Quote-SB([string]$value) {
+    '"' + [regex]::Replace($value,'(\\*)("|$)',{
+        param($m)
+        $slashes=$m.Groups[1].Value
+        $suffix=if($m.Groups[2].Value -eq '"'){'\"'}else{''}
+        $slashes+$slashes+$suffix
+    }) + '"'
+}
+function Invoke-SB([string[]]$argv,[int]$timeout) {
+    $info=New-Object Diagnostics.ProcessStartInfo
+    $info.FileName='zellij'
+    $info.Arguments=($argv | ForEach-Object { Quote-SB $_ }) -join ' '
+    $info.UseShellExecute=$false
+    $info.CreateNoWindow=$true
+    $info.RedirectStandardOutput=$true
+    $info.RedirectStandardError=$true
+    $info.StandardOutputEncoding=New-Object Text.UTF8Encoding($false)
+    $info.StandardErrorEncoding=New-Object Text.UTF8Encoding($false)
+    $p=New-Object Diagnostics.Process
+    $p.StartInfo=$info
+    try {
+        if(-not $p.Start()){throw 'Cannot start CLI'}
+        $out=$p.StandardOutput.ReadToEndAsync()
+        $err=$p.StandardError.ReadToEndAsync()
+        if(-not $p.WaitForExit($timeout)) {
+            $p.Kill()
+            $null=$p.WaitForExit(1000)
+            throw 'CLI timed out'
+        }
+        @{code=$p.ExitCode;output=$out.GetAwaiter().GetResult()}
+    } finally { $p.Dispose() }
+}
+"#;
+
+pub(super) struct Helper {
+    name: String,
+    terminal: WebSocketStream<Stream>,
+    control: WebSocketStream<Stream>,
+    state: Value,
+    pong: bool,
+    cookie: String,
+}
+
+pub(super) async fn ensure_helper(host: &Host, helper: &mut Option<Helper>) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        host.config.escape_transport.as_deref().unwrap_or("windows") == "windows",
+        "Unsupported control transport"
+    );
+    if let Some(existing) = helper.as_mut() {
+        // Detect broken idle sockets before delivery. Never retry an acknowledged/uncertain write.
+        if host.cookie.lock().await.as_deref() != Some(existing.cookie.as_str())
+            || existing.probe().await.is_err()
+        {
+            discard(helper).await;
+        }
+    }
+    if helper.is_none() {
+        *helper = Some(Helper::open(host).await?);
+    }
+    Ok(())
+}
+
+impl Helper {
+    pub(super) async fn json(&mut self, script: &str) -> anyhow::Result<Value> {
+        use std::io::Read;
+        let file = ps_literal(&format!("{}.json.gz", self.name));
+        let length_marker = format!("__SB_LENGTH_{}", uuid::Uuid::new_v4().simple());
+        // A terminal redraw contains only visible cells. Large JSON cannot be
+        // captured from one printed line: compress and read bounded chunks instead.
+        let prepare=format!("{script}; $bytes=[Text.Encoding]::UTF8.GetBytes($json); if($bytes.Length -gt {LIMIT}){{throw 'Snapshot too large'}}; $path=Join-Path ([IO.Path]::GetTempPath()) {file}; $f=[IO.File]::Open($path,[IO.FileMode]::Create); $gzip=New-Object IO.Compression.GZipStream($f,[IO.Compression.CompressionMode]::Compress); try{{$gzip.Write($bytes,0,$bytes.Length)}}finally{{$gzip.Dispose()}}; $length=(Get-Item -LiteralPath $path).Length; [Console]::WriteLine('{length_marker}:'+$length+':SIZEEND'); $code=0");
+        let (code, output) = self.command(&prepare).await?;
+        anyhow::ensure!(code == 0, "Cannot stage snapshot");
+        let length: usize = output
+            .split(&format!("{length_marker}:"))
+            .nth(1)
+            .and_then(|s| s.split(":SIZEEND").next())
+            .ok_or_else(|| anyhow::anyhow!("Snapshot length missing"))?
+            .trim()
+            .parse()?;
+        anyhow::ensure!(
+            length <= 65536,
+            "Snapshot exceeds legacy terminal transport capacity"
+        );
+        let mut data = Vec::with_capacity(length);
+        let result=tokio::time::timeout(Duration::from_secs(30),async {
+            for offset in (0..length).step_by(1024) {
+                let marker=format!("__SB_CHUNK_{}",uuid::Uuid::new_v4().simple());
+                let read=format!("$path=Join-Path ([IO.Path]::GetTempPath()) {file}; $f=[IO.File]::OpenRead($path); try{{$null=$f.Seek({offset},[IO.SeekOrigin]::Begin); $buffer=New-Object byte[] 1024; $n=$f.Read($buffer,0,$buffer.Length); [Console]::WriteLine('{marker}:'+ [Convert]::ToBase64String($buffer,0,$n)+':DATAEND'); $code=0}}finally{{$f.Dispose()}}");
+                let (code,output)=self.command(&read).await?;
+                anyhow::ensure!(code==0,"Cannot read staged snapshot");
+                let encoded=output.split(&format!("{marker}:")).nth(1).and_then(|s|s.split(":DATAEND").next()).ok_or_else(||anyhow::anyhow!("Snapshot chunk missing"))?;
+                let encoded:String=encoded.chars().filter(|c|!c.is_whitespace()).collect();
+                let chunk=STANDARD.decode(encoded)?;
+                anyhow::ensure!(chunk.len()==1024.min(length-offset),"Truncated snapshot chunk");
+                data.extend(chunk);
+            }
+            let mut plain=Vec::new();
+            flate2::read::GzDecoder::new(data.as_slice()).take((LIMIT+1) as u64).read_to_end(&mut plain)?;
+            anyhow::ensure!(plain.len()<=LIMIT,"Decoded snapshot too large");
+            Ok::<_,anyhow::Error>(serde_json::from_slice(&plain)?)
+        }).await;
+        let _ = self
+            .command(&format!(
+                "[IO.File]::Delete((Join-Path ([IO.Path]::GetTempPath()) {file})); $code=0"
+            ))
+            .await;
+        result?
+    }
+
+    async fn open(host: &Host) -> anyhow::Result<Self> {
+        let name = format!("{HELPER_PREFIX}{}", uuid::Uuid::new_v4().simple());
+        let response = tokio::time::timeout(
+            Duration::from_secs(20),
+            host.request(
+                Method::POST,
+                &format!("/session?session={name}&welcome=false"),
+                Bytes::new(),
+                "application/json",
+            ),
+        )
+        .await??;
+        anyhow::ensure!(response.status == StatusCode::OK, "Cannot create helper");
+        let boot: Value = serde_json::from_slice(&response.body)?;
+        anyhow::ensure!(
+            boot["is_read_only"] != true && boot["session_name"] == name,
+            "Helper must be writable and private"
+        );
+        let client = boot["web_client_id"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Invalid helper client"))?;
+        let mut terminal = tokio::time::timeout(
+            Duration::from_secs(10),
+            host.websocket(&format!(
+                "/ws/terminal/{name}?web_client_id={}&rows=30&cols=160",
+                urlencoding::encode(client)
+            )),
+        )
+        .await??;
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            host.websocket(&format!(
+                "/ws/control?web_client_id={}",
+                urlencoding::encode(client)
+            )),
+        )
+        .await;
+        let control = match result {
+            Ok(Ok(control)) => control,
+            _ => {
+                let _ = terminal.close(None).await;
+                log::warn!("Private helper {name} lost its control connection before initialization; cleanup could not be confirmed");
+                anyhow::bail!("Cannot connect private helper control");
+            },
+        };
+        let mut helper = Self {
+            name,
+            terminal,
+            control,
+            state: Value::Null,
+            pong: false,
+            cookie: host
+                .cookie
+                .lock()
+                .await
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("Helper lacks authentication"))?,
+        };
+        let result = tokio::time::timeout(Duration::from_secs(10), async {
+            while helper.state.is_null() {
+                let _ = helper.next().await?;
+            }
+            helper.check()?;
+            let (code, _) = helper
+                .command("$result=Invoke-SB @('--version') 5000; $code=$result.code")
+                .await?;
+            anyhow::ensure!(code == 0, "Remote CLI unavailable");
+            Ok::<_, anyhow::Error>(())
+        })
+        .await;
+        if !matches!(result, Ok(Ok(()))) {
+            let cause = match result {
+                Ok(Err(error)) => error.to_string(),
+                Err(_) => "Helper initialization timed out".to_owned(),
+                _ => unreachable!(),
+            };
+            let mut failed = Some(helper);
+            discard(&mut failed).await;
+            anyhow::bail!("Cannot initialize private helper: {cause}");
+        }
+        Ok(helper)
+    }
+
+    fn check(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.state["session_name"] == self.name
+                && self.state["active_pane"]["is_plugin"] == false,
+            "Helper is not its private terminal"
+        );
+        Ok(())
+    }
+
+    async fn next(&mut self) -> anyhow::Result<Option<String>> {
+        tokio::select! {
+            message = self.terminal.next() => {
+                match message.transpose()? {
+                    Some(Message::Text(value)) => Ok(Some(value.to_string())),
+                    Some(Message::Binary(value)) => Ok(Some(String::from_utf8_lossy(&value).into_owned())),
+                    Some(Message::Pong(_)) => {self.pong=true;Ok(None)},
+                    Some(Message::Close(_)) | None => anyhow::bail!("Helper disconnected; delivery is uncertain"),
+                    _ => Ok(None),
+                }
+            },
+            message = self.control.next() => {
+                match message.transpose()? {
+                    Some(Message::Text(value)) => {
+                        let data: Value = serde_json::from_str(&value)?;
+                        if data["type"] == "MobileState" { self.state = data["payload"].clone(); self.check()?; }
+                        Ok(None)
+                    },
+                    Some(Message::Close(_)) | None => anyhow::bail!("Helper control disconnected"),
+                    _ => Ok(None),
+                }
+            }
+        }
+    }
+
+    async fn probe(&mut self) -> anyhow::Result<()> {
+        self.pong = false;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            self.terminal.send(Message::Ping(Bytes::new())).await?;
+            while !self.pong {
+                let _ = self.next().await?;
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .await?
+    }
+
+    async fn send(&mut self, script: &str) -> anyhow::Result<()> {
+        self.check()?;
+        let command = shell_command(script);
+        anyhow::ensure!(
+            command.len() < 7500,
+            "Remote command exceeds the shell limit; delivery was not attempted"
+        );
+        self.terminal
+            .send(Message::Binary(command.into_bytes().into()))
+            .await?;
+        // Stock Windows parsers need Enter as a separate frame.
+        self.terminal
+            .send(Message::Binary(vec![b'\r'].into()))
+            .await?;
+        Ok(())
+    }
+
+    pub(super) async fn command(&mut self, script: &str) -> anyhow::Result<(i32, String)> {
+        let marker = format!("__SB_{}", uuid::Uuid::new_v4().simple());
+        let command = format!("$ErrorActionPreference='Stop'; {WINDOWS_RUNNER}; $code=1; try {{ {script} }} catch {{ $code=1 }}; [Console]::WriteLine('{marker}:' + $code + ':END')");
+        tokio::time::timeout(Duration::from_secs(15), async {
+            self.send(&command).await?;
+            let mut output = String::new();
+            loop {
+                if let Some(chunk) = self.next().await? {
+                    output.push_str(&chunk);
+                    // Bound retained screen output, including ANSI and echoed commands.
+                    if output.len() > 2 * LIMIT {
+                        anyhow::bail!("Helper output too large");
+                    }
+                    let plain = strip_ansi(&output);
+                    if let Some(rest) = plain.split(&format!("{marker}:")).nth(1) {
+                        if let Some((code, _)) = rest.split_once(":END") {
+                            return Ok((code.trim().parse()?, plain));
+                        }
+                    }
+                }
+            }
+        })
+        .await?
+    }
+}
+
+pub(super) fn strip_ansi(text: &str) -> String {
+    lazy_static::lazy_static! { static ref ANSI: regex::Regex = regex::Regex::new(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*?(?:\x07|\x1b\\)").unwrap(); }
+    ANSI.replace_all(text, "").into_owned()
+}
+
+pub(super) async fn discard(helper: &mut Option<Helper>) {
+    if let Some(mut private) = helper.take() {
+        let _ = tokio::time::timeout(Duration::from_secs(3), async {
+            // Old Windows kill-session CLIs can disconnect before delivery.
+            // Closing the fresh helper's native tab uses the acknowledged action path.
+            private.send(&format!("[IO.File]::Delete((Join-Path ([IO.Path]::GetTempPath()) {})); $p=(& zellij -s {} action list-panes --json --all) -join [Environment]::NewLine; if($LASTEXITCODE -eq 0) {{ $tabs=@(($p | ConvertFrom-Json).tab_id | Select-Object -Unique); foreach($id in $tabs) {{ & zellij -s {} action close-tab --tab-id $id }} }}",ps_literal(&format!("{}.json.gz",private.name)), ps_literal(&private.name),ps_literal(&private.name))).await?;
+            loop { private.next().await?; }
+            #[allow(unreachable_code)] Ok::<(), anyhow::Error>(())
+        }).await;
+    }
+}
+pub(super) async fn cleanup(host: &Host) {
+    discard(&mut *host.control.lock().await).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn boundary_and_powershell_encoding() {
+        for name in ["", "..", "x/y", "x\\y", "x\n", "__switchboard_control_x"] {
+            assert!(validate_session(name).is_err());
+        }
+        assert!(validate_session("user's session; $(anything)").is_ok());
+        assert_eq!(ps_literal("a'b"), "'a''b'");
+        let script = "Write-Output 'héllo'";
+        let cmd = shell_command(script);
+        let payload = cmd
+            .split("FromBase64String('")
+            .nth(1)
+            .unwrap()
+            .split('\'')
+            .next()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(STANDARD.decode(payload).unwrap()).unwrap(),
+            script
+        );
+        assert!(
+            serde_json::from_value::<EscapeTarget>(json!({"session":"main","pane_id":-1})).is_err()
+        );
+        assert!(serde_json::from_value::<CloseTarget>(
+            json!({"session":"main","tab_id":1,"extra":true})
+        )
+        .is_err());
+    }
+}
