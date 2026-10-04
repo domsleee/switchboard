@@ -80,6 +80,7 @@ test('approval binds the visible verification code and health requires authentic
     await page.locator('#requests button').first().click();
     await page.waitForFunction(() => document.querySelector('#message').textContent.includes('Approved'));
     assert.deepEqual(calls.find(call => call.path === '/api/mesh/approve').body, {invitation: 'invite', request: 'request', code: 'ABCD-1234-5678', allow: true});
+    await page.waitForFunction(() => !document.querySelector('#create-form button[type=submit]').disabled);
     responses.set('/api/hosts', [{id: 'mesh-peer', name: 'Windows', sessions: [{name: 'isolated'}]}]);
     await page.locator('#members button').click();
     await page.waitForFunction(() => document.querySelector('#members').textContent.includes('Connected'));
