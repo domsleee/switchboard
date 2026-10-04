@@ -225,7 +225,7 @@ not a completed fix. Existing processes retain their original environment.
 
 ## Background operation, connections and updates
 
-### SB-28 · Status errors never take my terminal focus
+### SB-46 · Status errors never take my terminal focus
 
 When “Windows: attention status unavailable” appears, my current terminal keeps
 its keyboard focus, selected tab, URL and iframe. Attention polling and machine
@@ -335,7 +335,7 @@ Review that isolation before adding a test.
 
 ### SB-26 · Keep the fork easy to understand
 
-The source lives in the private Switchboard fork. Its README plainly says that
+The source lives in the public Switchboard fork. Its README plainly says that
 it is a fork of Zellij and identifies the upstream version.
 
 **Check:** repository visibility and README review; this does not need a prose
