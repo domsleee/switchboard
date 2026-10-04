@@ -15,3 +15,5 @@ panes, with plugin bars removed. The same executable includes the Rust sidebar r
 [Setup and usage](tools/switchboard/README.md) · [Zellij documentation](https://zellij.dev/documentation/) · [License](LICENSE.md)
 
 [Update plan](docs/SWITCHBOARD_UPDATES.md): automatic updates that keep running terminals alive.
+
+[Docs index](docs/README.md): current Switchboard guidance and inherited Zellij references.
