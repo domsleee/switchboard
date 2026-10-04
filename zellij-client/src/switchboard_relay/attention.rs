@@ -126,7 +126,34 @@ fn snapshot(name: &str, panes: &[Value], screens: &HashMap<u64, String>, deferre
     json!({"panes":records,"tabs":tabs,"errors":[]})
 }
 
-async fn scan(host: &Host, offset: usize) -> anyhow::Result<Value> {
+pub(super) async fn scan(host: &Host, offset: usize) -> anyhow::Result<Value> {
+    if host.config.escape_transport.as_deref() == Some("gateway") {
+        let response = tokio::time::timeout(
+            Duration::from_secs(20),
+            host.request(
+                Method::GET,
+                &format!("/switchboard/attention?offset={offset}"),
+                Bytes::new(),
+                "application/json",
+            ),
+        )
+        .await??;
+        anyhow::ensure!(
+            response.status == StatusCode::OK,
+            "Peer attention unavailable"
+        );
+        let mut snapshot: Value = serde_json::from_slice(&response.body)?;
+        anyhow::ensure!(
+            snapshot["panes"].is_array()
+                && snapshot["tabs"].is_array()
+                && snapshot["errors"].is_array(),
+            "Invalid peer snapshot"
+        );
+        for error in snapshot["errors"].as_array_mut().unwrap() {
+            error["host"] = json!(host.config.id);
+        }
+        return Ok(snapshot);
+    }
     let mut names = control::sessions(host).await?;
     if !names.is_empty() {
         let count = names.len();
@@ -433,7 +460,7 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
         }
     }
     let poll = Arc::new(Mutex::new(poll));
-    state.order.iter().map(|id| {
+    let mut tasks: Vec<_> = state.order.iter().map(|id| {
         let host=state.hosts[id].clone(); let state=state.clone(); let poll=poll.clone(); let file=file.clone(); let id=id.clone();
         tokio::spawn(async move {
             let mut offset=0;
@@ -444,7 +471,7 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
                     Ok(mut snapshot)=>poll.update(&id,&mut snapshot),
                     Err(error)=>{poll.cache.insert(id.clone(),json!({"panes":[],"tabs":[],"errors":[{"host":id,"message":format!("Host snapshots unavailable: {error:#}")}]}));false}
                 };
-                *state.attention.lock().await=poll.merged(&state.order);
+                *state.attention.lock().await=poll.merged(&state.all_hosts().iter().map(|h| h.config.id.clone()).collect::<Vec<_>>());
                 if changed {
                     let temp=file.with_extension("attention.json.tmp");
                     let data=poll.persisted().to_string();
@@ -459,7 +486,28 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
                 tokio::time::sleep(Duration::from_secs(3)).await;
             }
         })
-    }).collect()
+    }).collect();
+    if state.mesh.is_some() {
+        tasks.push(tokio::spawn(async move {
+            let mut offset = 0;
+            loop {
+                let hosts = state.mesh.as_ref().unwrap().hosts();
+                let results = futures_util::future::join_all(hosts.iter().map(|host| scan(host, offset))).await;
+                offset = offset.wrapping_add(1);
+                let mut poll = poll.lock().await;
+                for (host, result) in hosts.iter().zip(results) {
+                    match result {
+                        Ok(mut snapshot) => { poll.update(&host.config.id, &mut snapshot); },
+                        Err(_) => { poll.cache.insert(host.config.id.clone(),json!({"panes":[],"tabs":[],"errors":[{"host":host.config.id,"message":"Peer snapshots unavailable; check connection and retry"}]})); },
+                    }
+                }
+                *state.attention.lock().await = poll.merged(&state.all_hosts().iter().map(|h| h.config.id.clone()).collect::<Vec<_>>());
+                drop(poll);
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+        }));
+    }
+    tasks
 }
 
 pub(super) async fn handler(State(state): State<RelayState>) -> Json<Value> {

@@ -23,6 +23,13 @@ flate2 = { version = "1", optional = true }
 sha2 = { workspace = true, optional = true }
 time = { version = "0.3", optional = true }
 tower-http = { version = "0.6.4", features = ["cors"], optional = true }
+hpke = { version = "0.13", default-features = false, features = ["std", "alloc", "x25519"], optional = true }
+mesh-rand = { package = "rand", version = "0.9", optional = true }
+ring = { version = "0.17", optional = true }
+subtle = { version = "2.6", optional = true }
+rcgen = { version = "0.14", optional = true }
+fs2 = { version = "0.4", optional = true }
+tempfile = { workspace = true, optional = true }
 
 anyhow = { workspace = true }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
@@ -65,6 +72,9 @@ tokio = { workspace = true }
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_System_Console",
+    "Win32_System_Threading",
+    "Win32_Security",
+    "Win32_Security_Authorization",
 ] }
 
 [dev-dependencies]
@@ -91,5 +101,12 @@ web_server_capability = [
     "dep:flate2",
     "dep:sha2",
     "dep:tower-http",
+    "dep:hpke",
+    "dep:mesh-rand",
+    "dep:ring",
+    "dep:subtle",
+    "dep:rcgen",
+    "dep:fs2",
+    "dep:tempfile",
     "zellij-utils/web_server_capability",
 ]

@@ -102,6 +102,7 @@ fn router(config: ArtifactConfig, port: u16) -> anyhow::Result<Router> {
     let prefix = target.path().trim_end_matches('/').to_owned();
     let origin = target[..url::Position::BeforePath].to_owned();
     let host = Arc::new(Host::new(HostConfig {
+        gateway_token_file: None,
         id: "artifact".into(),
         name: "Artifact".into(),
         url: origin,

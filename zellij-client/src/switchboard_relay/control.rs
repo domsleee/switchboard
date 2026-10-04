@@ -138,9 +138,36 @@ async fn execute(
 ) -> Result<(), Error> {
     validate_session(session)?;
     let host = state
-        .hosts
-        .get(id)
+        .host(id)
         .ok_or((StatusCode::NOT_FOUND, "Unknown host"))?;
+    if host.config.escape_transport.as_deref() == Some("gateway") {
+        let response = host
+            .request(
+                Method::POST,
+                "/switchboard/control",
+                json!({"session":session,"target":target,"close":close})
+                    .to_string()
+                    .into(),
+                "application/json",
+            )
+            .await
+            .map_err(|_| (StatusCode::BAD_GATEWAY, "Peer control unavailable"))?;
+        return if response.status == StatusCode::OK {
+            Ok(())
+        } else {
+            Err((response.status, "Peer rejected terminal control"))
+        };
+    }
+    execute_host(&host, session, target, close).await
+}
+
+pub(super) async fn execute_host(
+    host: &Host,
+    session: &str,
+    target: u32,
+    close: bool,
+) -> Result<(), Error> {
+    validate_session(session)?;
     // Serialize validation and delivery with the host's private helper. No target focus changes.
     let mut helper = host.control.lock().await;
     let names = sessions(host)
