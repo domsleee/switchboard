@@ -75,13 +75,21 @@ function updateCreatedTabs(entry){
       entry.creatingTab=null;entry.pendingNewTab=null;entry.followActiveTab=false;
     }
   }
+  if(entry.catalogUnavailable&&!entry.catalog?.length){
+    entry.provisionalTabs??=[];
+    for(const pane of state.panes||[]){
+      if(pane.is_plugin||entry.provisionalTabs.some(tab=>state.panes.some(current=>!current.is_plugin&&current.pane_id===tab.id&&current.tab_position===pane.tab_position)))continue;
+      entry.provisionalTabs.push({id:pane.pane_id,position:pane.tab_position,pending:true,fallback:true,panes:[]});
+    }
+  }
   // Native control messages arrive before the slower attention scanner. Pane
   // identity lets the new terminal appear and reconnect without inventing a tab ID.
   entry.provisionalTabs=(entry.provisionalTabs||[]).filter(tab=>{
+    if(tab.fallback&&(!entry.catalogUnavailable||entry.catalog?.length))return false;
     const pane=state.panes?.find(p=>!p.is_plugin&&p.pane_id===tab.id);
     if(!pane)return false;
     tab.position=pane.tab_position;
-    tab.name=state.tabs?.find(t=>t.position===pane.tab_position)?.name||'New tab';
+    tab.name=state.tabs?.find(t=>t.position===pane.tab_position)?.name||(tab.fallback?'Terminal':'New tab');
     tab.panes=state.panes.filter(p=>p.tab_position===pane.tab_position);
     return true;
   });
@@ -431,7 +439,7 @@ async function refresh() {
           const frame=document.createElement('iframe');frame.title=`${host.name}: ${session.name}`;
           frame.src=`/hosts/${encodeURIComponent(host.id)}/${encodeURIComponent(session.name)}`;
           frame.allow='clipboard-read; clipboard-write';
-          const entry={host:host.id,name:session.name,frame,state:null};sessions.set(key,entry);setCatalog(entry,tabCatalog.filter(tab=>tab.host===entry.host&&tab.session===entry.name));$('terminals').append(frame);
+          const entry={host:host.id,name:session.name,frame,state:null,catalogUnavailable:catalogUnavailable(host.id,session.name)};sessions.set(key,entry);setCatalog(entry,tabCatalog.filter(tab=>tab.host===entry.host&&tab.session===entry.name));$('terminals').append(frame);
         }
         if(!host.error) for(const [key,entry] of sessions) {
           if(entry.host===host.id&&!host.sessions.some(s=>s.name===entry.name)) {entry.frame.remove();sessions.delete(key);}
@@ -731,7 +739,11 @@ async function refreshAttention(immediate=false){
     const incoming=data.tabs||[],identity=tab=>JSON.stringify([tab.host,tab.session,tab.id]);
     const supplied=new Set(incoming.map(identity));
     tabCatalog=[...incoming,...tabCatalog.filter(tab=>catalogUnavailable(tab.host,tab.session)&&!supplied.has(identity(tab)))];
-    for(const entry of sessions.values())setCatalog(entry,tabCatalog.filter(tab=>tab.host===entry.host&&tab.session===entry.name));
+    for(const entry of sessions.values()){
+      entry.catalogUnavailable=catalogUnavailable(entry.host,entry.name);
+      setCatalog(entry,tabCatalog.filter(tab=>tab.host===entry.host&&tab.session===entry.name));
+      updateCreatedTabs(entry);
+    }
     const current=allTabs().find(item=>item.key===selected);
     if(current && document.hasFocus() && !document.hidden && $('artifact-preview').hidden && !document.querySelector('dialog[open]') && !current.entry.requestedPane && !current.entry.focusPending && activeTab(current.entry)?.id===current.tab.id)acknowledgeAttention(current);
     render();

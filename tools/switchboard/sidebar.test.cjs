@@ -187,7 +187,7 @@ test('new tab requests one immediate catalog refresh after an in-flight scan',as
   let release,requests=0;
   const response=new Promise(resolve=>release=resolve);
   const context={attentionLoading:false,attentionRefreshPending:false,tabCatalog:[],catalogUnavailable:()=>false,sessions:new Map(),allTabs:()=>[],render(){},
-    selected:null,attentionKey(){},setInterval(){},
+    selected:null,attentionKey(){},updateCreatedTabs(){},setInterval(){},
     fetch:async()=>{requests++;if(requests===1)await response;return {ok:true,json:async()=>({tabs:[],panes:[]})};}};
   vm.createContext(context);
   vm.runInContext(source.slice(source.indexOf('async function refreshAttention('),source.indexOf('refreshAttention();setInterval')),context);
