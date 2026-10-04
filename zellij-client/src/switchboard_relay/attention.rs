@@ -332,6 +332,17 @@ struct PollState {
 }
 
 impl PollState {
+    fn unavailable(&mut self, host: &str, error: &anyhow::Error) {
+        // A failed connection is not an authoritative empty tab catalog.
+        let snapshot = self
+            .cache
+            .entry(host.into())
+            .or_insert_with(|| json!({"panes":[],"tabs":[],"errors":[]}));
+        snapshot["panes"] = json!([]);
+        snapshot["errors"] =
+            json!([{"host":host,"message":format!("Host snapshots unavailable: {error:#}")}]);
+    }
+
     fn update(&mut self, host: &str, snapshot: &mut Value) -> bool {
         let now = tokio::time::Instant::now();
         let deferred = snapshot
@@ -460,48 +471,94 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
         }
     }
     let poll = Arc::new(Mutex::new(poll));
-    let mut tasks: Vec<_> = state.order.iter().map(|id| {
-        let host=state.hosts[id].clone(); let state=state.clone(); let poll=poll.clone(); let file=file.clone(); let id=id.clone();
-        tokio::spawn(async move {
-            let mut offset=0;
-            loop {
-                let result=scan(&host,offset).await; offset=offset.wrapping_add(1);
-                let mut poll=poll.lock().await;
-                let changed=match result {
-                    Ok(mut snapshot)=>poll.update(&id,&mut snapshot),
-                    Err(error)=>{poll.cache.insert(id.clone(),json!({"panes":[],"tabs":[],"errors":[{"host":id,"message":format!("Host snapshots unavailable: {error:#}")}]}));false}
-                };
-                *state.attention.lock().await=poll.merged(&state.all_hosts().iter().map(|h| h.config.id.clone()).collect::<Vec<_>>());
-                if changed {
-                    let temp=file.with_extension("attention.json.tmp");
-                    let data=poll.persisted().to_string();
-                    let _=async {
-                        if let Some(parent)=file.parent() {tokio::fs::create_dir_all(parent).await?;}
-                        tokio::fs::write(&temp,data).await?;
-                        #[cfg(unix)] {use std::os::unix::fs::PermissionsExt;tokio::fs::set_permissions(&temp,std::fs::Permissions::from_mode(0o600)).await?;}
-                        tokio::fs::rename(&temp,&file).await
-                    }.await;
+    let mut tasks: Vec<_> = state
+        .order
+        .iter()
+        .map(|id| {
+            let host = state.hosts[id].clone();
+            let state = state.clone();
+            let poll = poll.clone();
+            let file = file.clone();
+            let id = id.clone();
+            tokio::spawn(async move {
+                let mut offset = 0;
+                loop {
+                    let result = scan(&host, offset).await;
+                    offset = offset.wrapping_add(1);
+                    let mut poll = poll.lock().await;
+                    let changed = match result {
+                        Ok(mut snapshot) => poll.update(&id, &mut snapshot),
+                        Err(error) => {
+                            poll.unavailable(&id, &error);
+                            false
+                        },
+                    };
+                    *state.attention.lock().await = poll.merged(
+                        &state
+                            .all_hosts()
+                            .iter()
+                            .map(|h| h.config.id.clone())
+                            .collect::<Vec<_>>(),
+                    );
+                    if changed {
+                        let temp = file.with_extension("attention.json.tmp");
+                        let data = poll.persisted().to_string();
+                        let _ = async {
+                            if let Some(parent) = file.parent() {
+                                tokio::fs::create_dir_all(parent).await?;
+                            }
+                            tokio::fs::write(&temp, data).await?;
+                            #[cfg(unix)]
+                            {
+                                use std::os::unix::fs::PermissionsExt;
+                                tokio::fs::set_permissions(
+                                    &temp,
+                                    std::fs::Permissions::from_mode(0o600),
+                                )
+                                .await?;
+                            }
+                            tokio::fs::rename(&temp, &file).await
+                        }
+                        .await;
+                    }
+                    drop(poll);
+                    tokio::time::sleep(Duration::from_secs(3)).await;
                 }
-                drop(poll);
-                tokio::time::sleep(Duration::from_secs(3)).await;
-            }
+            })
         })
-    }).collect();
+        .collect();
     if state.mesh.is_some() {
         tasks.push(tokio::spawn(async move {
             let mut offset = 0;
             loop {
                 let hosts = state.mesh.as_ref().unwrap().hosts();
-                let results = futures_util::future::join_all(hosts.iter().map(|host| scan(host, offset))).await;
+                let results =
+                    futures_util::future::join_all(hosts.iter().map(|host| scan(host, offset)))
+                        .await;
                 offset = offset.wrapping_add(1);
                 let mut poll = poll.lock().await;
                 for (host, result) in hosts.iter().zip(results) {
                     match result {
-                        Ok(mut snapshot) => { poll.update(&host.config.id, &mut snapshot); },
-                        Err(_) => { poll.cache.insert(host.config.id.clone(),json!({"panes":[],"tabs":[],"errors":[{"host":host.config.id,"message":"Peer snapshots unavailable; check connection and retry"}]})); },
+                        Ok(mut snapshot) => {
+                            poll.update(&host.config.id, &mut snapshot);
+                        },
+                        Err(_) => {
+                            poll.unavailable(
+                                &host.config.id,
+                                &anyhow::anyhow!(
+                                    "Peer snapshots unavailable; check connection and retry"
+                                ),
+                            );
+                        },
                     }
                 }
-                *state.attention.lock().await = poll.merged(&state.all_hosts().iter().map(|h| h.config.id.clone()).collect::<Vec<_>>());
+                *state.attention.lock().await = poll.merged(
+                    &state
+                        .all_hosts()
+                        .iter()
+                        .map(|h| h.config.id.clone())
+                        .collect::<Vec<_>>(),
+                );
                 drop(poll);
                 tokio::time::sleep(Duration::from_secs(3)).await;
             }
@@ -517,6 +574,30 @@ pub(super) async fn handler(State(state): State<RelayState>) -> Json<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn failed_hosts_keep_tab_identity_without_stale_attention_and_recover() {
+        let mut poll = PollState::default();
+        let mut snapshot = json!({"panes":[{"session":"main","pane_id":1,"state":"ready","token":"result"}],"tabs":[{"session":"main","id":42}],"errors":[]});
+        poll.update("windows", &mut snapshot);
+        for _ in 0..2 {
+            poll.unavailable("windows", &anyhow::anyhow!("Connection timed out"));
+            let merged = poll.merged(&["windows".into()]);
+            assert_eq!(merged["tabs"][0]["id"], 42);
+            assert!(merged["panes"].as_array().unwrap().is_empty());
+            assert_eq!(merged["errors"][0]["host"], "windows");
+        }
+        poll.unavailable("new-host", &anyhow::anyhow!("Connection timed out"));
+        assert!(poll.cache["new-host"]["tabs"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        let mut recovered = json!({"panes":[],"tabs":[],"errors":[]});
+        poll.update("windows", &mut recovered);
+        let merged = poll.merged(&["windows".into()]);
+        assert!(merged["tabs"].as_array().unwrap().is_empty());
+        assert!(merged["errors"].as_array().unwrap().is_empty());
+    }
+
     #[test]
     fn states_match_existing_agent_ui_and_survive_reflow() {
         let pane = json!({"pane_command":"cmd.exe /c codex.cmd resume","title":"ssb orchestrator"});

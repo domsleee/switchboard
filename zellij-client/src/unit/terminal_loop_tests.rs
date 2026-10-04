@@ -48,6 +48,7 @@ impl AsyncSignals for MockAsyncSignals {
 #[derive(Clone)]
 struct TestClientOsApi {
     stdout_buffer: Arc<Mutex<Vec<u8>>>,
+    fail_flush: bool,
     stdin_rx: Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<Vec<u8>>>>,
     signal_rx: Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<SignalEvent>>>,
     terminal_size: Size,
@@ -60,6 +61,7 @@ impl TestClientOsApi {
     ) -> Self {
         Self {
             stdout_buffer: Arc::new(Mutex::new(Vec::new())),
+            fail_flush: false,
             stdin_rx: Arc::new(tokio::sync::Mutex::new(stdin_rx)),
             signal_rx: Arc::new(tokio::sync::Mutex::new(signal_rx)),
             terminal_size: Size { rows: 24, cols: 80 },
@@ -87,6 +89,7 @@ impl ClientOsApi for TestClientOsApi {
     fn get_stdout_writer(&self) -> Box<dyn Write> {
         Box::new(TestWriter {
             buffer: self.stdout_buffer.clone(),
+            fail_flush: self.fail_flush,
         })
     }
 
@@ -147,6 +150,7 @@ impl ClientOsApi for TestClientOsApi {
 
 struct TestWriter {
     buffer: Arc<Mutex<Vec<u8>>>,
+    fail_flush: bool,
 }
 
 impl Write for TestWriter {
@@ -156,7 +160,11 @@ impl Write for TestWriter {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+        if self.fail_flush {
+            Err(io::Error::from_raw_os_error(5))
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -399,6 +407,16 @@ async fn test_stdin_forwarded_to_terminal_websocket() {
 #[tokio::test]
 #[serial]
 async fn test_terminal_output_written_to_stdout() {
+    assert_terminal_output(false).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn test_terminal_output_failure_exits_without_panicking() {
+    assert_terminal_output(true).await;
+}
+
+async fn assert_terminal_output(fail_flush: bool) {
     let (port, server, _server_handle) = mock_ws_server::MockWsServer::start().await;
 
     let terminal_url = format!("ws://127.0.0.1:{}/ws/terminal", port);
@@ -434,7 +452,8 @@ async fn test_terminal_output_written_to_stdout() {
     let (_stdin_tx, stdin_rx) = mpsc::unbounded_channel();
     let (_signal_tx, signal_rx) = mpsc::unbounded_channel();
 
-    let os_input = TestClientOsApi::new(stdin_rx, signal_rx);
+    let mut os_input = TestClientOsApi::new(stdin_rx, signal_rx);
+    os_input.fail_flush = fail_flush;
     let stdout_buffer = os_input.stdout_buffer.clone();
     let os_input = Box::new(os_input);
 
@@ -453,6 +472,17 @@ async fn test_terminal_output_written_to_stdout() {
         .terminal_to_client_tx
         .send(Message::Text(test_output.to_string().into()))
         .unwrap();
+
+    if fail_flush {
+        let result = tokio::time::timeout(Duration::from_secs(2), loop_handle)
+            .await
+            .expect("Failed terminal must disconnect promptly")
+            .expect("Failed terminal must not panic");
+        assert!(
+            matches!(result, Err(crate::RemoteClientError::IoError(error)) if error.raw_os_error() == Some(5))
+        );
+        return;
+    }
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
