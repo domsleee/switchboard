@@ -24,7 +24,7 @@ jobs:
       SWITCHBOARD_TEST_RUST_RELAY: "1"
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           rustflags: ""
       - uses: actions/setup-node@v4
