@@ -638,16 +638,10 @@ mod tests {
             }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let host = Host::new(HostConfig {
-            id: "windows".into(),
-            name: "Windows".into(),
-            url: format!("http://{}", listener.local_addr().unwrap()),
-            token_file: String::new(),
-            tls_fingerprint: None,
-            artifact_urls: Value::Null,
-            escape_transport: Some("windows".into()),
-            zellij_binary: None,
-        })
+        let host = Host::new(super::super::tests::config(&format!(
+            "http://{}",
+            listener.local_addr().unwrap()
+        )))
         .unwrap();
         *host.cookie.lock().await = Some("session_token=test".into());
         let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
