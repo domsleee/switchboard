@@ -230,7 +230,7 @@ async fn execute(
             format!("'write','-p','{target}','27'")
         };
         let script = format!("$result=Invoke-SB @('-s',{session},'action',{list}) 5000; if($result.code -ne 0) {{ throw 'Cannot list panes' }}; $panes=$result.output | ConvertFrom-Json; $found=@($panes | Where-Object {{ {filter} }}); if($found.Count -eq 0) {{ $code=4 }} else {{ $result=Invoke-SB @('-s',{session},'action',{action}) 5000; $code=$result.code }}");
-        match helper.as_mut().unwrap().command(&script).await {
+        match helper.helper.as_mut().unwrap().command(&script).await {
             Ok((0, _)) => {},
             Ok((4, _)) => return Err((StatusCode::CONFLICT, "Target is no longer available")),
             _ => {
@@ -300,21 +300,47 @@ pub(super) struct Helper {
     cookie: String,
 }
 
-pub(super) async fn ensure_helper(host: &Host, helper: &mut Option<Helper>) -> anyhow::Result<()> {
+pub(super) struct Control {
+    pub(super) helper: Option<Helper>,
+    // Retain the identity even when startup/cleanup fails. A retry must attach to
+    // our existing session, not leave another randomly named server behind.
+    name: String,
+    retry_at: tokio::time::Instant,
+}
+
+impl Default for Control {
+    fn default() -> Self {
+        Self {
+            helper: None,
+            name: format!("{HELPER_PREFIX}{}", uuid::Uuid::new_v4().simple()),
+            retry_at: tokio::time::Instant::now(),
+        }
+    }
+}
+
+pub(super) async fn ensure_helper(host: &Host, control: &mut Control) -> anyhow::Result<()> {
     anyhow::ensure!(
         host.config.escape_transport.as_deref().unwrap_or("windows") == "windows",
         "Unsupported control transport"
     );
-    if let Some(existing) = helper.as_mut() {
+    if let Some(existing) = control.helper.as_mut() {
         // Detect broken idle sockets before delivery. Never retry an acknowledged/uncertain write.
         if host.cookie.lock().await.as_deref() != Some(existing.cookie.as_str())
             || existing.probe().await.is_err()
         {
-            discard(helper).await;
+            discard(control).await;
         }
     }
-    if helper.is_none() {
-        *helper = Some(Helper::open(host).await?);
+    if control.helper.is_none() {
+        anyhow::ensure!(
+            tokio::time::Instant::now() >= control.retry_at,
+            "Private helper reconnect is cooling down"
+        );
+        // Also throttle failures before either WebSocket has connected.
+        control.retry_at = tokio::time::Instant::now() + Duration::from_secs(30);
+        let result = Helper::open(host, &control.name).await;
+        control.retry_at = tokio::time::Instant::now() + Duration::from_secs(30);
+        control.helper = Some(result?);
     }
     Ok(())
 }
@@ -366,8 +392,7 @@ impl Helper {
         result?
     }
 
-    async fn open(host: &Host) -> anyhow::Result<Self> {
-        let name = format!("{HELPER_PREFIX}{}", uuid::Uuid::new_v4().simple());
+    async fn open(host: &Host, name: &str) -> anyhow::Result<Self> {
         let response = tokio::time::timeout(
             Duration::from_secs(20),
             host.request(
@@ -406,13 +431,13 @@ impl Helper {
         let control = match result {
             Ok(Ok(control)) => control,
             _ => {
-                let _ = terminal.close(None).await;
+                let _ = tokio::time::timeout(Duration::from_secs(1), terminal.close(None)).await;
                 log::warn!("Private helper {name} lost its control connection before initialization; cleanup could not be confirmed");
                 anyhow::bail!("Cannot connect private helper control");
             },
         };
         let mut helper = Self {
-            name,
+            name: name.to_owned(),
             terminal,
             control,
             state: Value::Null,
@@ -442,11 +467,33 @@ impl Helper {
                 Err(_) => "Helper initialization timed out".to_owned(),
                 _ => unreachable!(),
             };
-            let mut failed = Some(helper);
-            discard(&mut failed).await;
+            helper.close().await;
             anyhow::bail!("Cannot initialize private helper: {cause}");
         }
         Ok(helper)
+    }
+
+    async fn close(mut self) {
+        // Close the transport even if no usable pane ever arrived. Helper
+        // sessions terminate on their last client disconnect in current engines.
+        // Keep the shell cleanup for older hosts, but report an uncertain result.
+        let result = tokio::time::timeout(Duration::from_secs(3), async {
+            self.send(&format!("[IO.File]::Delete((Join-Path ([IO.Path]::GetTempPath()) {})); $p=(& zellij -s {} action list-panes --json --all) -join [Environment]::NewLine; if($LASTEXITCODE -eq 0) {{ $tabs=@(($p | ConvertFrom-Json).tab_id | Select-Object -Unique); foreach($id in $tabs) {{ & zellij -s {} action close-tab --tab-id $id }} }}", ps_literal(&format!("{}.json.gz", self.name)), ps_literal(&self.name), ps_literal(&self.name))).await?;
+            // Older engines need time to consume the cleanup before disconnect.
+            while self.next().await.is_ok() {}
+            Ok::<(), anyhow::Error>(())
+        }).await;
+        if !matches!(result, Ok(Ok(()))) {
+            log::warn!(
+                "Private helper {} shell cleanup could not be confirmed; closing its connections",
+                self.name
+            );
+        }
+        let _ = tokio::time::timeout(Duration::from_secs(1), async {
+            let _ = self.terminal.close(None).await;
+            let _ = self.control.close(None).await;
+        })
+        .await;
     }
 
     fn check(&self) -> anyhow::Result<()> {
@@ -560,15 +607,10 @@ pub(super) fn strip_ansi(text: &str) -> String {
     ANSI.replace_all(text, "").into_owned()
 }
 
-pub(super) async fn discard(helper: &mut Option<Helper>) {
-    if let Some(mut private) = helper.take() {
-        let _ = tokio::time::timeout(Duration::from_secs(3), async {
-            // Old Windows kill-session CLIs can disconnect before delivery.
-            // Closing the fresh helper's native tab uses the acknowledged action path.
-            private.send(&format!("[IO.File]::Delete((Join-Path ([IO.Path]::GetTempPath()) {})); $p=(& zellij -s {} action list-panes --json --all) -join [Environment]::NewLine; if($LASTEXITCODE -eq 0) {{ $tabs=@(($p | ConvertFrom-Json).tab_id | Select-Object -Unique); foreach($id in $tabs) {{ & zellij -s {} action close-tab --tab-id $id }} }}",ps_literal(&format!("{}.json.gz",private.name)), ps_literal(&private.name),ps_literal(&private.name))).await?;
-            loop { private.next().await?; }
-            #[allow(unreachable_code)] Ok::<(), anyhow::Error>(())
-        }).await;
+pub(super) async fn discard(control: &mut Control) {
+    control.retry_at = tokio::time::Instant::now() + Duration::from_secs(30);
+    if let Some(private) = control.helper.take() {
+        private.close().await;
     }
 }
 pub(super) async fn cleanup(host: &Host) {
@@ -578,6 +620,90 @@ pub(super) async fn cleanup(host: &Host) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn failed_helper_startup_is_throttled_and_reuses_its_session() {
+        let attempts = Arc::new(Mutex::new(Vec::<String>::new()));
+        let upstream = Router::new().route(
+            "/session",
+            post({
+                let attempts = attempts.clone();
+                move |axum::extract::Query(query): axum::extract::Query<HashMap<String, String>>| {
+                    let attempts = attempts.clone();
+                    async move {
+                        attempts.lock().await.push(query["session"].clone());
+                        StatusCode::BAD_GATEWAY
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let host = Host::new(HostConfig {
+            id: "windows".into(),
+            name: "Windows".into(),
+            url: format!("http://{}", listener.local_addr().unwrap()),
+            token_file: String::new(),
+            tls_fingerprint: None,
+            artifact_urls: Value::Null,
+            escape_transport: Some("windows".into()),
+            zellij_binary: None,
+        })
+        .unwrap();
+        *host.cookie.lock().await = Some("session_token=test".into());
+        let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+        let mut control = Control::default();
+        assert!(ensure_helper(&host, &mut control).await.is_err());
+        for _ in 0..10 {
+            assert!(ensure_helper(&host, &mut control)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("cooling down"));
+        }
+        assert_eq!(attempts.lock().await.len(), 1);
+        control.retry_at = tokio::time::Instant::now();
+        assert!(ensure_helper(&host, &mut control).await.is_err());
+        assert_eq!(
+            *attempts.lock().await,
+            vec![control.name.clone(), control.name.clone()]
+        );
+        assert_ne!(control.name, Control::default().name);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn uninitialized_helper_closes_both_sockets_without_shell_input() {
+        use tokio_tungstenite::tungstenite::protocol::Role;
+        let (terminal, terminal_peer) = tokio::io::duplex(4096);
+        let (control, control_peer) = tokio::io::duplex(4096);
+        let helper = Helper {
+            name: format!("{HELPER_PREFIX}test"),
+            terminal: WebSocketStream::from_raw_socket(
+                Box::new(terminal) as Stream,
+                Role::Client,
+                None,
+            )
+            .await,
+            control: WebSocketStream::from_raw_socket(
+                Box::new(control) as Stream,
+                Role::Client,
+                None,
+            )
+            .await,
+            state: Value::Null,
+            pong: false,
+            cookie: String::new(),
+        };
+        helper.close().await;
+        for peer in [terminal_peer, control_peer] {
+            let mut socket = WebSocketStream::from_raw_socket(peer, Role::Server, None).await;
+            assert!(matches!(
+                socket.next().await.unwrap().unwrap(),
+                Message::Close(_)
+            ));
+        }
+    }
+
     #[test]
     fn helper_startup_accepts_empty_state_but_never_another_session_or_plugin() {
         let name = "__switchboard_control_test";

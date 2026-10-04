@@ -74,7 +74,7 @@ struct Host {
     origin: url::Url,
     tls: Option<Arc<rustls::ClientConfig>>,
     cookie: Mutex<Option<String>>,
-    control: Mutex<Option<control::Helper>>,
+    control: Mutex<control::Control>,
     idle_http: Mutex<Vec<hyper::client::conn::http1::SendRequest<Full<Bytes>>>>,
 }
 
@@ -185,7 +185,7 @@ impl Host {
             origin,
             tls,
             cookie: Mutex::new(None),
-            control: Mutex::new(None),
+            control: Mutex::new(control::Control::default()),
             idle_http: Mutex::new(Vec::new()),
         })
     }
