@@ -23,6 +23,7 @@ pub mod switchboard_relay;
 #[cfg(feature = "web_server_capability")]
 pub mod web_client;
 
+use anyhow::Context;
 use log::info;
 use std::env::current_exe;
 use std::io::{self, Write};
@@ -708,37 +709,15 @@ pub async fn run_remote_client_terminal_loop(
                 match terminal_msg {
                     Some(Ok(Message::Text(text))) => {
                         let mut stdout = os_input.get_stdout_writer();
-                        if let Some(sync) = synchronised_output {
-                            stdout
-                                .write_all(sync.start_seq())
-                                .expect("cannot write to stdout");
+                        if let Err(error) = write_terminal_output(&mut *stdout, text.as_bytes(), synchronised_output) {
+                            return Err(RemoteClientError::IoError(error));
                         }
-                        stdout
-                            .write_all(text.as_bytes())
-                            .expect("cannot write to stdout");
-                        if let Some(sync) = synchronised_output {
-                            stdout
-                                .write_all(sync.end_seq())
-                                .expect("cannot write to stdout");
-                        }
-                        stdout.flush().expect("could not flush");
                     }
                     Some(Ok(Message::Binary(data))) => {
                         let mut stdout = os_input.get_stdout_writer();
-                        if let Some(sync) = synchronised_output {
-                            stdout
-                                .write_all(sync.start_seq())
-                                .expect("cannot write to stdout");
+                        if let Err(error) = write_terminal_output(&mut *stdout, &data, synchronised_output) {
+                            return Err(RemoteClientError::IoError(error));
                         }
-                        stdout
-                            .write_all(&data)
-                            .expect("cannot write to stdout");
-                        if let Some(sync) = synchronised_output {
-                            stdout
-                                .write_all(sync.end_seq())
-                                .expect("cannot write to stdout");
-                        }
-                        stdout.flush().expect("could not flush");
                     }
                     Some(Ok(Message::Close(_))) => {
                         break;
@@ -847,7 +826,10 @@ pub fn start_remote_client(
     )?;
 
     let reconnect_to_session = None;
-    os_input.unset_raw_mode().unwrap();
+    os_input
+        .unset_raw_mode()
+        .context("Cannot restore terminal mode")
+        .non_fatal();
 
     let mut stdout = os_input.get_stdout_writer();
     stdout.write_all(ENTER_ALTERNATE_SCREEN.as_bytes()).unwrap();
@@ -893,12 +875,16 @@ pub fn start_remote_client(
 
     let reset_controlling_terminal_state = |e: String, exit_status: i32| {
         os_input.disable_mouse().non_fatal();
-        os_input.unset_raw_mode().unwrap();
+        os_input
+            .unset_raw_mode()
+            .context("Cannot restore terminal mode")
+            .non_fatal();
         os_input.restore_console_mode();
         let error = terminal_teardown_message(&e, full_screen_ws.rows, true);
         let mut stdout = os_input.get_stdout_writer();
-        stdout.write_all(error.as_bytes()).unwrap();
-        stdout.flush().unwrap();
+        write_terminal_output(&mut *stdout, error.as_bytes(), None)
+            .context("Cannot restore terminal output")
+            .non_fatal();
         if exit_status == 0 {
             log::info!("{}", e);
         } else {
@@ -907,12 +893,14 @@ pub fn start_remote_client(
         std::process::exit(exit_status);
     };
 
-    runtime.block_on(run_remote_client_terminal_loop(
+    if let Err(error) = runtime.block_on(run_remote_client_terminal_loop(
         os_input.clone(),
         connections,
         Some(remote_session_name.clone()),
         host_contacted.clone(),
-    ))?;
+    )) {
+        reset_controlling_terminal_state(error.to_string(), 1);
+    }
 
     if host_contacted.load(std::sync::atomic::Ordering::Relaxed) {
         let mut stdout = os_input.get_stdout_writer();
@@ -930,8 +918,9 @@ pub fn start_remote_client(
     } else {
         let clear_screen = "\u{1b}[2J";
         let mut stdout = os_input.get_stdout_writer();
-        stdout.write_all(clear_screen.as_bytes()).unwrap();
-        stdout.flush().unwrap();
+        write_terminal_output(&mut *stdout, clear_screen.as_bytes(), None)
+            .context("Cannot restore terminal output")
+            .non_fatal();
     }
 
     Ok(reconnect_to_session)
@@ -965,7 +954,10 @@ pub fn start_client(
         .unwrap_or(true);
     let should_start_web_server = config_options.web_server.map(|w| w).unwrap_or(false);
     let mut reconnect_to_session = None;
-    os_input.unset_raw_mode().unwrap();
+    os_input
+        .unset_raw_mode()
+        .context("Cannot restore terminal mode")
+        .non_fatal();
 
     if !is_a_reconnect {
         // we don't do this for a reconnect because our controlling terminal already has the
@@ -1395,8 +1387,12 @@ pub fn start_client(
         .unwrap();
 
     let handle_error = |backtrace: String| {
+        log::error!("{backtrace}");
         os_input.disable_mouse().non_fatal();
-        os_input.unset_raw_mode().unwrap();
+        os_input
+            .unset_raw_mode()
+            .context("Cannot restore terminal mode")
+            .non_fatal();
         os_input.restore_console_mode();
         let error = terminal_teardown_message(
             &backtrace,
@@ -1404,8 +1400,9 @@ pub fn start_client(
             !explicitly_disable_kitty_keyboard_protocol,
         );
         let mut stdout = os_input.get_stdout_writer();
-        stdout.write_all(error.as_bytes()).unwrap();
-        stdout.flush().unwrap();
+        write_terminal_output(&mut *stdout, error.as_bytes(), None)
+            .context("Cannot restore terminal output")
+            .non_fatal();
         std::process::exit(1);
     };
 
@@ -1437,20 +1434,12 @@ pub fn start_client(
             },
             ClientInstruction::Render(output) => {
                 let mut stdout = os_input.get_stdout_writer();
-                if let Some(sync) = synchronised_output {
-                    stdout
-                        .write_all(sync.start_seq())
-                        .expect("cannot write to stdout");
+                if let Err(error) =
+                    write_terminal_output(&mut *stdout, output.as_bytes(), synchronised_output)
+                {
+                    os_input.send_to_server(ClientToServerMsg::ClientExited);
+                    handle_error(format!("Terminal output failed: {error}"));
                 }
-                stdout
-                    .write_all(output.as_bytes())
-                    .expect("cannot write to stdout");
-                if let Some(sync) = synchronised_output {
-                    stdout
-                        .write_all(sync.end_seq())
-                        .expect("cannot write to stdout");
-                }
-                stdout.flush().expect("could not flush");
             },
             ClientInstruction::UnblockInputThread => {
                 command_is_executing.unblock_input_thread();
@@ -1638,16 +1627,21 @@ pub fn start_client(
 
         os_input.disable_mouse().non_fatal();
         info!("{}", exit_msg);
-        os_input.unset_raw_mode().unwrap();
+        os_input
+            .unset_raw_mode()
+            .context("Cannot restore terminal mode")
+            .non_fatal();
         os_input.restore_console_mode();
         let mut stdout = os_input.get_stdout_writer();
-        stdout.write_all(goodbye_message.as_bytes()).unwrap();
-        stdout.flush().unwrap();
+        write_terminal_output(&mut *stdout, goodbye_message.as_bytes(), None)
+            .context("Cannot restore terminal output")
+            .non_fatal();
     } else {
         let clear_screen = "\u{1b}[2J";
         let mut stdout = os_input.get_stdout_writer();
-        stdout.write_all(clear_screen.as_bytes()).unwrap();
-        stdout.flush().unwrap();
+        write_terminal_output(&mut *stdout, clear_screen.as_bytes(), None)
+            .context("Cannot restore terminal output")
+            .non_fatal();
     }
 
     let _ = send_input_instructions.send(InputInstruction::Exit);
@@ -1779,6 +1773,21 @@ pub fn start_server_detached(
 
     os_input.connect_to_server(&*ipc_pipe);
     os_input.send_to_server(first_msg);
+}
+
+fn write_terminal_output(
+    stdout: &mut dyn Write,
+    output: &[u8],
+    synchronised_output: Option<SyncOutput>,
+) -> io::Result<()> {
+    if let Some(sync) = synchronised_output {
+        stdout.write_all(sync.start_seq())?;
+    }
+    stdout.write_all(output)?;
+    if let Some(sync) = synchronised_output {
+        stdout.write_all(sync.end_seq())?;
+    }
+    stdout.flush()
 }
 
 fn terminal_teardown_message(message: &str, rows: usize, include_kitty_exit: bool) -> String {

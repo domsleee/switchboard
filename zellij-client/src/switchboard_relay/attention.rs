@@ -305,6 +305,17 @@ struct PollState {
 }
 
 impl PollState {
+    fn unavailable(&mut self, host: &str, error: &anyhow::Error) {
+        // A failed connection is not an authoritative empty tab catalog.
+        let snapshot = self
+            .cache
+            .entry(host.into())
+            .or_insert_with(|| json!({"panes":[],"tabs":[],"errors":[]}));
+        snapshot["panes"] = json!([]);
+        snapshot["errors"] =
+            json!([{"host":host,"message":format!("Host snapshots unavailable: {error:#}")}]);
+    }
+
     fn update(&mut self, host: &str, snapshot: &mut Value) -> bool {
         let now = tokio::time::Instant::now();
         let deferred = snapshot
@@ -442,7 +453,7 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
                 let mut poll=poll.lock().await;
                 let changed=match result {
                     Ok(mut snapshot)=>poll.update(&id,&mut snapshot),
-                    Err(error)=>{poll.cache.insert(id.clone(),json!({"panes":[],"tabs":[],"errors":[{"host":id,"message":format!("Host snapshots unavailable: {error:#}")}]}));false}
+                    Err(error)=>{poll.unavailable(&id,&error);false}
                 };
                 *state.attention.lock().await=poll.merged(&state.order);
                 if changed {
@@ -469,6 +480,30 @@ pub(super) async fn handler(State(state): State<RelayState>) -> Json<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn failed_hosts_keep_tab_identity_without_stale_attention_and_recover() {
+        let mut poll = PollState::default();
+        let mut snapshot = json!({"panes":[{"session":"main","pane_id":1,"state":"ready","token":"result"}],"tabs":[{"session":"main","id":42}],"errors":[]});
+        poll.update("windows", &mut snapshot);
+        for _ in 0..2 {
+            poll.unavailable("windows", &anyhow::anyhow!("Connection timed out"));
+            let merged = poll.merged(&["windows".into()]);
+            assert_eq!(merged["tabs"][0]["id"], 42);
+            assert!(merged["panes"].as_array().unwrap().is_empty());
+            assert_eq!(merged["errors"][0]["host"], "windows");
+        }
+        poll.unavailable("new-host", &anyhow::anyhow!("Connection timed out"));
+        assert!(poll.cache["new-host"]["tabs"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        let mut recovered = json!({"panes":[],"tabs":[],"errors":[]});
+        poll.update("windows", &mut recovered);
+        let merged = poll.merged(&["windows".into()]);
+        assert!(merged["tabs"].as_array().unwrap().is_empty());
+        assert!(merged["errors"].as_array().unwrap().is_empty());
+    }
+
     #[test]
     fn states_match_existing_agent_ui_and_survive_reflow() {
         let pane = json!({"pane_command":"cmd.exe /c codex.cmd resume","title":"ssb orchestrator"});
