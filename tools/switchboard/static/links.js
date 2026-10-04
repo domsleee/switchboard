@@ -20,14 +20,28 @@
     }
     return url.href;
   }
+  // Modifiers belong to the viewing browser, regardless of the terminal host OS.
+  const linkGesture = event => event.button===0 && !event.altKey && (event.metaKey || event.ctrlKey || event.shiftKey);
   function open(event,uri) {
-    if (!event.shiftKey || event.button!==0) return;
+    if (!linkGesture(event)) return;
     event.preventDefault();event.stopImmediatePropagation();
     try {
-      const link=document.createElement('a');
-      link.href=resolve(uri);link.target='_blank';link.rel='noopener noreferrer';
-      // A fresh click omits Shift, which browsers interpret as a new window.
-      link.click();
+      const url=resolve(uri);
+      if(event.metaKey||event.ctrlKey){
+        // Open synchronously in this browser, then request foreground focus.
+        // No popup features: use the browser's normal new-tab behavior.
+        const tab=window.open('about:blank','_blank');
+        if(!tab)throw Error('The browser blocked the new tab');
+        tab.opener=null;
+        const link=tab.document.createElement('a');
+        link.href=url;link.rel='noreferrer';link.click();
+        tab.focus();
+      }else{
+        const link=document.createElement('a');
+        link.href=url;link.target='_blank';link.rel='noopener noreferrer';
+        // Omit Shift, which browsers otherwise interpret as a new window.
+        link.click();
+      }
     } catch(error) { console.warn('Switchboard link:',error.message); }
   }
   function atPointer(event,term) {
@@ -52,13 +66,13 @@
   }
   let down;
   window.addEventListener('mousedown',event=>{
-    if(!event.shiftKey||event.button!==0||!event.target.closest?.('#terminal'))return;
+    if(!linkGesture(event)||!event.target.closest?.('#terminal'))return;
     const uri=atPointer(event,window.term);
     if(uri){down={uri,x:event.clientX,y:event.clientY};event.preventDefault();event.stopImmediatePropagation();}
   },true);
   window.addEventListener('mouseup',event=>{
     const previous=down;down=null;
-    if(!previous||!event.shiftKey||event.button!==0)return;
+    if(!previous||!linkGesture(event))return;
     if(Math.hypot(event.clientX-previous.x,event.clientY-previous.y)>5)return;
     open(event,previous.uri);
   },true);
