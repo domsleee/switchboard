@@ -2,13 +2,16 @@
 param(
     [string]$Config = '',
     [string]$Binary = '',
+    [string]$ReleaseDirectory = '',
     [switch]$Tray
 )
 $ErrorActionPreference = 'Stop'
-if (!$Binary) { $Binary = (Get-Command zellij -ErrorAction Stop).Source }
-if (!(Test-Path -LiteralPath $Binary -PathType Leaf)) { throw 'Zellij executable does not exist' }
-& $Binary serve --help *> $null
-if ($LASTEXITCODE -ne 0) { throw 'Install a Switchboard build with the Rust relay (zellij serve)' }
+Import-Module (Join-Path $PSScriptRoot 'windows_releases.psm1') -Force
+if (!$ReleaseDirectory) { $ReleaseDirectory = Get-SwitchboardReleaseDirectory }
+if (Test-Path -LiteralPath (Join-Path $ReleaseDirectory 'current.json')) {
+    $Binary = Get-SwitchboardCurrentBinary $ReleaseDirectory
+} elseif (!$Binary) { $Binary = (Get-Command zellij -ErrorAction Stop).Source }
+Invoke-SwitchboardProbe $Binary @('serve','--help') | Out-Null
 $prefix = @()
 if ($Config) { $Config = (Resolve-Path -LiteralPath $Config).Path; $prefix = @('--config', $Config) }
 $directory = Join-Path $HOME '.config/switchboard'
@@ -17,13 +20,22 @@ $log = Join-Path $directory 'web.log'
 $relayConfig = Join-Path $directory 'hosts.json'
 $installed = Join-Path $directory 'switchboard-tray.ps1'
 $powerShell = Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe'
-$arguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $installed + '" -Tray -Binary "' + $Binary + '"'
-if ($Config) { $arguments += ' -Config "' + $Config + '"' }
+$trayArguments = @('-NoLogo','-NoProfile','-NonInteractive','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',$installed,'-Tray','-ReleaseDirectory',$ReleaseDirectory)
+if ($Config) { $trayArguments += @('-Config',$Config) }
+$arguments = ($trayArguments | ForEach-Object { ConvertTo-SwitchboardArgument $_ }) -join ' '
 if (!$Tray) {
     if (!(Test-Path -LiteralPath $relayConfig)) { throw "Configure $relayConfig with your authenticated local host first (see README)." }
+    $Binary = Initialize-SwitchboardReleaseStore -Binary $Binary -Directory $ReleaseDirectory
     $source = Split-Path $PSCommandPath
     if ([IO.Path]::GetFullPath($PSCommandPath) -ne $installed) {
         Copy-Item -LiteralPath $PSCommandPath -Destination $installed -Force
+    }
+    foreach ($file in @('windows_releases.psm1','update_windows.ps1','windows_cli.ps1')) {
+        $from = Join-Path $source $file
+        $to = Join-Path $directory $file
+        if ([IO.Path]::GetFullPath($from) -ne [IO.Path]::GetFullPath($to)) {
+            Copy-Item -LiteralPath $from -Destination $to -Force
+        }
     }
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Startup')) 'Switchboard.lnk'))
@@ -58,16 +70,25 @@ $icon.Add_DoubleClick({ Start-Process 'http://switchboard.localhost/' })
 $logs.Add_Click({ Start-Process explorer.exe $directory })
 $quit.Add_Click({ [Windows.Forms.Application]::ExitThread() })
 $script:relay = $null
+$script:selectedHash = $null
 function Start-Servers {
     try {
+        # Resolve a new selection for future service starts. Healthy loaded
+        # services keep running; updating this pointer never restarts them.
+        $release = Get-SwitchboardReleaseState $ReleaseDirectory
+        if ($script:selectedHash -cne $release.sha256) {
+            $script:selectedBinary = Get-SwitchboardCurrentBinary $ReleaseDirectory
+            $script:selectedHash = $release.sha256
+        }
+        $Binary = $script:selectedBinary
         # Native stderr on a failed status check must not prevent the fallback.
-        $ErrorActionPreference = 'Continue'
-        & $Binary @prefix web --status --timeout 2 *> $log
-        $online = $LASTEXITCODE -eq 0
-        $ErrorActionPreference = 'Stop'
+        $probe = Invoke-SwitchboardProbe $Binary ($prefix + @('web','--status','--timeout','2')) 5 -AllowFailure
+        $online = $probe.Code -eq 0
         if (!$online) {
-            & $Binary @prefix web --daemonize *>> $log
-            if ($LASTEXITCODE -ne 0) { throw 'Zellij web failed to start' }
+            $started = Invoke-SwitchboardProbe $Binary ($prefix + @('web','--daemonize'))
+            Add-Content -LiteralPath $log -Value ($started.Output + $started.Error)
+            $ready = Invoke-SwitchboardProbe $Binary ($prefix + @('web','--status','--timeout','2')) 5 -AllowFailure
+            if ($ready.Code -ne 0) { throw 'Zellij web started but is not ready (see logs)' }
         }
         try {
             $response = Invoke-WebRequest 'http://127.0.0.1/api/health' -Headers @{Host='switchboard.localhost'} -UseBasicParsing -TimeoutSec 2
@@ -76,6 +97,7 @@ function Start-Servers {
         if ($script:relay -and !$script:relay.HasExited) { $status.Text = 'Switchboard starting...'; return }
         $relayArgs = 'serve --port 80 --host-config "' + $relayConfig + '"'
         $script:relay = Start-Process -FilePath $Binary -ArgumentList $relayArgs -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $directory 'relay.log') -RedirectStandardError (Join-Path $directory 'relay-error.log')
+        if ($script:relay.WaitForExit(200)) { throw 'Relay exited during startup (see relay-error.log)' }
         $status.Text = 'Switchboard starting...'
     } catch {
         $status.Text = 'Switchboard unavailable (see logs)'

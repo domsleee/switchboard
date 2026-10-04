@@ -60,6 +60,14 @@ starts the embedded Rust relay, and starts native daemon mode only
 if the server is offline. The tray supervises the relay and web server and opens
 the actual sidebar at **http://switchboard.localhost** on loopback port 80.
 Logs are in `~/.config/switchboard`. Quitting the tray leaves terminals running.
+The installer retains its executable in `~/.local/share/switchboard/windows-releases`.
+Use `update_windows.ps1 -Candidate C:/build/zellij.exe` to select a new retained
+release, or `update_windows.ps1 -Rollback` to select the previous one. These manual
+operations preserve loaded services and engines. The tray uses the selection when
+a service next starts; `~/.config/switchboard/windows_cli.ps1 attach SESSION` uses
+it for native clients and new sessions. Existing sessions retain their old engine.
+The updater does not restart connection services or verify browser reconnection;
+see the [Windows update checks](../../docs/SWITCHBOARD_UPDATES.md#select-a-windows-release-without-stopping-terminals).
 Port 80 must be available; no administrator access or certificate installation
 is required. Windows sees the hosts in its own configuration; the Mac's
 loopback-only native server is not reachable from Windows.

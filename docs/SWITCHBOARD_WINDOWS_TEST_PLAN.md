@@ -73,6 +73,38 @@ The remote path must work without Python installed or on PATH.
 
 ## 4. Relay update and tray installation
 
+First run the isolated update transaction and tray supervision fixtures:
+
+```powershell
+node acceptance/switchboard/run.cjs windows-update
+```
+
+These execute real PowerShell/file transactions and the actual tray supervision
+function with simulated Windows processes, Zellij responses and services. They
+do not establish browser, ConPTY, WinForms or login behavior. On Mac PowerShell 7,
+54 release checks and 20 tray checks pass; Windows PowerShell/NTFS results remain
+to be recorded. The native-binaries workflow now runs these scripts with Windows
+PowerShell and packages the installer, release module, updater and launcher with
+the executable.
+
+For real Windows update/reconnection evidence with two distinct compatible builds
+and headless Playwright installed:
+
+```powershell
+node acceptance/switchboard/run.cjs windows-browser C:\build\old-zellij.exe C:\build\new-zellij.exe
+```
+
+The runner owns private sockets, unused ports, two named disposable PowerShell
+terminals and an agent fixture. It verifies browser input/output and both
+WebSockets before/after release selection, private web/relay replacement, a
+controlled relay failure, manual rollback and refresh. It checks engine/shell/
+agent-fixture PIDs with creation times, independent shell variables, ongoing
+output, a scrollback marker, native/sidebar names, IDs, sharing and selected URL.
+It starts a new session using the selected executable. It uses/revokes only a new
+fixture token and never starts a tray or changes startup configuration. This
+runner has only been syntax checked on Mac; record actual Windows output here.
+An agent fixture does not establish actual Codex/Claude turn preservation.
+
 Keep disposable shells busy printing numbered output. Restart only the relay
 with the new executable. The same headless browser must reconnect automatically,
 retain names/IDs/selected URL/viewed badges, and read/write the existing shells.
@@ -100,4 +132,6 @@ and terminal engine costs. Do not infer Windows memory from Mac measurements.
 If any usable-tab or process-preservation check fails, stop only the new relay
 and restore the old relay/tray startup command. Confirm the original browser
 reconnects and shells still respond. Preserve logs and label partial recovery
-as failure. No automatic Windows binary updater is claimed by these checks.
+as failure. The manual Windows updater now selects retained executables and
+supports guarded rollback; it never restarts loaded services or engines. A
+complete production service handoff and automatic Windows updates remain absent.

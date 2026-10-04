@@ -24,6 +24,11 @@ const commands={
     if(process.platform!=='darwin'||args.length!==2)throw Error('update requires macOS and OLD_BINARY NEW_BINARY');
     return [[node,'tools/switchboard/update_local.test.cjs',...args.map(value=>path.resolve(value))]];
   },
+  'windows-update':()=>['windows_releases','windows_tray'].map(name=>[process.env.POWERSHELL_BINARY||(process.platform==='win32'?'powershell.exe':'pwsh'),'-NoLogo','-NoProfile','-NonInteractive','-File','tools/switchboard/'+name+'.test.ps1']),
+  'windows-browser':()=>{
+    if(process.platform!=='win32'||args.length!==2)throw Error('windows-browser requires Windows and distinct OLD_BINARY NEW_BINARY');
+    return [[node,'tools/switchboard/update_windows_browser.test.cjs',...args.map(value=>path.resolve(value))]];
+  },
   windows:()=>{
     if(args.length!==3)throw Error('windows requires BINARY HOSTS_JSON HOST_ID (creates disposable remote sessions)');
     return [[node,'tools/switchboard/relay_remote.test.cjs',path.resolve(args[0]),path.resolve(args[1]),args[2]]];
@@ -32,7 +37,7 @@ const commands={
 try{
   if(suite==='--list'){console.log(Object.keys(commands).join('\n'));process.exit(0);}
   if(!commands[suite])throw Error('Unknown suite. Use --list.');
-  if(!['browser','sharing','update','windows'].includes(suite)&&args.length)throw Error('This suite takes no arguments.');
+  if(!['browser','sharing','update','windows','windows-browser'].includes(suite)&&args.length)throw Error('This suite takes no arguments.');
   for(const command of commands[suite]()){
     console.log('\nRunning '+command.slice(0,3).join(' '));
     const result=spawnSync(command[0],command.slice(1),{cwd:root,env,stdio:'inherit',windowsHide:true});
