@@ -11,7 +11,7 @@ fn render_fixture(zellij: &TestSession, terminal: &FakePtyHandle, fixture: &str)
     terminal.output(fixture.as_bytes());
     terminal.output(format!("\r\n{}", SENTINEL).as_bytes());
     let grid_snapshot = zellij.wait_until("fixture rendered", |grid_snapshot| {
-        grid_snapshot.contains(SENTINEL) && grid_snapshot.status_bar_appears()
+        grid_snapshot.contains(SENTINEL)
     });
     normalized(&grid_snapshot)
 }
@@ -89,18 +89,18 @@ fn wide_character_straddling_the_right_edge_wraps_whole() {
     terminal.output(format!("\u{1b}[1;{}HAB\u{4e16}\u{754c}", cols - 2).as_bytes());
     terminal.output(format!("\u{1b}[3;1H{}", SENTINEL).as_bytes());
     let grid_snapshot = zellij.wait_until("edge fixture rendered", |grid_snapshot| {
-        grid_snapshot.contains(SENTINEL) && grid_snapshot.status_bar_appears()
+        grid_snapshot.contains(SENTINEL)
     });
     let lines = grid_snapshot.lines();
     assert!(
-        lines[1].trim_end().ends_with("AB"),
+        lines[0].trim_end().ends_with("AB"),
         "the wide character must not be split across the pane edge, got {:?}",
-        lines[1]
+        lines[0]
     );
     assert!(
-        lines[2].starts_with("\u{4e16}\u{754c}"),
+        lines[1].starts_with("\u{4e16}\u{754c}"),
         "the straddling wide character must wrap whole to the next row, got {:?}",
-        lines[2]
+        lines[1]
     );
     assert_snapshot!(normalized(&grid_snapshot));
     zellij.quit();
@@ -117,13 +117,13 @@ fn ech_over_a_wide_character_keeps_the_rest_of_the_line_aligned() {
     terminal.output("\u{1b}[2;1H\u{1b}[1X".as_bytes());
     terminal.output(format!("\u{1b}[4;1H{}", SENTINEL).as_bytes());
     let grid_snapshot = zellij.wait_until("erased wide character rendered", |grid_snapshot| {
-        grid_snapshot.contains(SENTINEL) && grid_snapshot.status_bar_appears()
+        grid_snapshot.contains(SENTINEL)
     });
     let lines = grid_snapshot.lines();
     assert!(
-        lines[2].starts_with("  \u{754c}abc"),
+        lines[1].starts_with("  \u{754c}abc"),
         "erasing the leading half of a wide character must blank both of its columns, got {:?}",
-        lines[2]
+        lines[1]
     );
     assert_snapshot!(normalized(&grid_snapshot));
     zellij.quit();
@@ -136,13 +136,13 @@ fn cursor_forward_past_content_pads_the_row_before_wide_characters() {
     terminal.output("\u{1b}[4;1H\u{1b}[6C\u{4e16}\u{754c}X".as_bytes());
     terminal.output(format!("\u{1b}[6;1H{}", SENTINEL).as_bytes());
     let grid_snapshot = zellij.wait_until("padded row rendered", |grid_snapshot| {
-        grid_snapshot.contains(SENTINEL) && grid_snapshot.status_bar_appears()
+        grid_snapshot.contains(SENTINEL)
     });
     let lines = grid_snapshot.lines();
     assert!(
-        lines[4].starts_with("      \u{4e16}\u{754c}X"),
+        lines[3].starts_with("      \u{4e16}\u{754c}X"),
         "cursor-forward past the end of content must pad with blanks, got {:?}",
-        lines[4]
+        lines[3]
     );
     assert_snapshot!(normalized(&grid_snapshot));
     zellij.quit();

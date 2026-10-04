@@ -51,37 +51,27 @@ pub fn make(sh: &Shell, flags: flags::Make) -> anyhow::Result<()> {
 ///
 /// Runs the following steps in sequence:
 ///
-/// - [`build`](build::build) (release, plugins only)
-/// - [`build`](build::build) (release, without plugins)
+/// - [`build`](build::build) (native release build)
 /// - Copy the executable to [target file](flags::Install::destination)
 pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
     let err_context = || format!("failed to run pipeline 'install' with args {flags:?}");
 
-    // Build and optimize plugins
-    build::build(
-        sh,
-        flags::Build {
-            release: true,
-            no_plugins: false,
-            plugins_only: true,
-            no_web: flags.no_web,
-            args: vec![],
-        },
-    )
-    .and_then(|_| {
-        // Build the main executable
-        build::build(
-            sh,
-            flags::Build {
-                release: true,
-                no_plugins: true,
-                plugins_only: false,
-                no_web: flags.no_web,
-                args: flags.args.clone(),
-            },
-        )
-    })
-    .with_context(err_context)?;
+    // Generate shared protocol types before the native build
+    build::proto(sh)
+        .and_then(|_| {
+            // Build the main executable
+            build::build(
+                sh,
+                flags::Build {
+                    release: true,
+                    no_plugins: true,
+                    plugins_only: false,
+                    no_web: flags.no_web,
+                    args: flags.args.clone(),
+                },
+            )
+        })
+        .with_context(err_context)?;
 
     // Copy binary to destination
     let destination = if flags.destination.is_absolute() {
@@ -126,8 +116,6 @@ pub fn run(sh: &Shell, mut flags: flags::Run) -> anyhow::Result<()> {
             "disable_automatic_asset_installation web_server_capability"
         };
 
-        build::ensure_plugin_assets(sh).with_context(|| err_context(&flags))?;
-
         crate::cargo()
             .and_then(|cargo| {
                 cmd!(sh, "{cargo} run")
@@ -142,56 +130,47 @@ pub fn run(sh: &Shell, mut flags: flags::Run) -> anyhow::Result<()> {
             })
             .with_context(|| err_context(&flags))
     } else {
-        build::build(
-            sh,
-            flags::Build {
-                release: false,
-                no_plugins: false,
-                plugins_only: true,
-                no_web: flags.no_web,
-                args: vec![],
-            },
-        )
-        .and_then(|_| crate::cargo())
-        .and_then(|cargo| {
-            if flags.no_web {
-                // Use dynamic metadata approach to get the correct features
-                match metadata::get_no_web_features(sh, ".")
-                    .context("Failed to check web features for main crate")?
-                {
-                    Some(features) => {
-                        let mut cmd = cmd!(sh, "{cargo} run").args(["--no-default-features"]);
+        build::proto(sh)
+            .and_then(|_| crate::cargo())
+            .and_then(|cargo| {
+                if flags.no_web {
+                    // Use dynamic metadata approach to get the correct features
+                    match metadata::get_no_web_features(sh, ".")
+                        .context("Failed to check web features for main crate")?
+                    {
+                        Some(features) => {
+                            let mut cmd = cmd!(sh, "{cargo} run").args(["--no-default-features"]);
 
-                        if !features.is_empty() {
-                            cmd = cmd.args(["--features", &features]);
-                        }
+                            if !features.is_empty() {
+                                cmd = cmd.args(["--features", &features]);
+                            }
 
-                        cmd.args(["--profile", profile])
-                            .args(["--"])
-                            .args(&flags.args)
-                            .run()
-                            .map_err(anyhow::Error::new)
-                    },
-                    None => {
-                        // Main crate doesn't have web_server_capability, run normally
-                        cmd!(sh, "{cargo} run")
-                            .args(["--profile", profile])
-                            .args(["--"])
-                            .args(&flags.args)
-                            .run()
-                            .map_err(anyhow::Error::new)
-                    },
+                            cmd.args(["--profile", profile])
+                                .args(["--"])
+                                .args(&flags.args)
+                                .run()
+                                .map_err(anyhow::Error::new)
+                        },
+                        None => {
+                            // Main crate doesn't have web_server_capability, run normally
+                            cmd!(sh, "{cargo} run")
+                                .args(["--profile", profile])
+                                .args(["--"])
+                                .args(&flags.args)
+                                .run()
+                                .map_err(anyhow::Error::new)
+                        },
+                    }
+                } else {
+                    cmd!(sh, "{cargo} run")
+                        .args(["--profile", profile])
+                        .args(["--"])
+                        .args(&flags.args)
+                        .run()
+                        .map_err(anyhow::Error::new)
                 }
-            } else {
-                cmd!(sh, "{cargo} run")
-                    .args(["--profile", profile])
-                    .args(["--"])
-                    .args(&flags.args)
-                    .run()
-                    .map_err(anyhow::Error::new)
-            }
-        })
-        .with_context(|| err_context(&flags))
+            })
+            .with_context(|| err_context(&flags))
     }
 }
 
@@ -286,18 +265,8 @@ pub fn publish(sh: &Shell, flags: flags::Publish) -> anyhow::Result<()> {
         // Clean project
         cmd!(sh, "{cargo} clean").run().context(err_context)?;
 
-        // Build plugins
-        build::build(
-            sh,
-            flags::Build {
-                release: true,
-                no_plugins: false,
-                plugins_only: true,
-                no_web: false,
-                args: vec![],
-            },
-        )
-        .context(err_context)?;
+        // Generate shared protocol types
+        build::proto(sh).context(err_context)?;
 
         // Update default config
         sh.copy_file(
@@ -352,8 +321,7 @@ pub fn publish(sh: &Shell, flags: flags::Publish) -> anyhow::Result<()> {
                 println!("{}", msg);
 
                 let more_args = match *crate_name {
-                    // This is needed for zellij to pick up the plugins from the assets included in
-                    // the released zellij-utils binary
+                    // Keep the application publication independent of optional build features.
                     "." => Some("--no-default-features"),
                     _ => None,
                 };

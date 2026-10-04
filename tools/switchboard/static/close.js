@@ -7,7 +7,7 @@
     closeTabMenu();
     if(!item)return;
     if(!Number.isInteger(item.tab.id)){setStatus('That tab is no longer available.',true);return;}
-    target={host:item.entry.host,key:item.key,session:item.entry.name,tab_id:item.tab.id};
+    target={host:item.entry.host,key:item.key,session:item.entry.name,tab_id:item.tab.id,entry:item.entry};
     $('close-tab-name').textContent=`${tabTitle(item)} · ${hosts.get(item.entry.host)?.name || item.entry.host}`;
     error.textContent='';confirm.disabled=false;
     dialog.showModal();confirm.focus();
@@ -18,19 +18,33 @@
     if(!target||confirm.disabled)return;
     const closing=target;
     confirm.disabled=true;error.textContent='';
+    const tabs=allTabs(),index=tabs.findIndex(item=>item.key===closing.key);
+    const wasSelected=selected===closing.key,next=tabs[index+1]||tabs[index-1];
+    closing.pending=true;
+    closing.entry.closeError=null;
+    closing.entry.closingTabs??=new Map();
+    closing.entry.closingTabs.set(closing.tab_id,closing);
+    dialog.close();
+    if(wasSelected&&next)activate(next,false);else render();
+    const replacement=selected;
     try{
-      const {host,key,...payload}=closing;
+      const {host,key,session,tab_id}=closing;
       const response=await fetch(`/api/hosts/${encodeURIComponent(host)}/close-tab`,{
-        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),
+        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session,tab_id}),
       });
       if(!response.ok)throw new Error((await response.text()).slice(0,240)||`HTTP ${response.status}`);
+      closing.pending=false;
       delete ready[key];saveReady();
       delete archived[key];localStorage.setItem('switchboard-archived',JSON.stringify(archived));
-      if(target===closing)dialog.close();
-      await refresh();
+      render();
     }catch(failure){
-      if(target===closing)error.textContent=`Close failed: ${failure.message}`;
-      else setStatus(`Close failed: ${failure.message}`,true);
-    }finally{if(target===closing)confirm.disabled=false;}
+      closing.entry.closeError=`Close failed: ${failure.message}`;
+      closing.entry.closingTabs.delete(closing.tab_id);
+      if(wasSelected&&selected===replacement&&closing.entry.name===closing.session){
+        const item=allTabs().find(item=>item.key===closing.key);
+        if(item)activate(item,false);else render();
+      }else render();
+      setStatus(closing.entry.closeError,true);
+    }
   };
 })();

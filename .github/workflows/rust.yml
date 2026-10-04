@@ -10,6 +10,13 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: Build
@@ -22,7 +29,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install Protoc
         uses: arduino/setup-protoc@v3
@@ -45,7 +52,7 @@ jobs:
       - name: Enable long Git paths
         run: git config --global core.longpaths true
 
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install Protoc
         uses: arduino/setup-protoc@v3
@@ -55,7 +62,6 @@ jobs:
       - name: Setup toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          target: wasm32-wasip1
           rustflags: ""
 
       - name: Install NASM
@@ -75,7 +81,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install Protoc
         uses: arduino/setup-protoc@v3
@@ -93,12 +99,15 @@ jobs:
   test-windows:
     name: Test (Windows)
     runs-on: windows-latest
+    env:
+      # Debug Clap parsing exceeds the default Windows test-thread stack.
+      RUST_MIN_STACK: 8388608
 
     steps:
       - name: Enable long Git paths
         run: git config --global core.longpaths true
 
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install Protoc
         uses: arduino/setup-protoc@v3
@@ -130,7 +139,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install Protoc
         uses: arduino/setup-protoc@v3
@@ -155,7 +164,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install Protoc
         uses: arduino/setup-protoc@v3
@@ -175,7 +184,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Setup toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -193,7 +202,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Setup toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1

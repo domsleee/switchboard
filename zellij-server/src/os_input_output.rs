@@ -35,6 +35,44 @@ use std::{
 
 pub use async_trait::async_trait;
 
+// A background Windows server need not inherit a terminal environment, but its
+// ConPTY panes still provide xterm colour support. Keep explicit colour opt-outs.
+#[cfg(any(windows, test))]
+pub(super) fn windows_pane_environment(
+    environment: impl IntoIterator<Item = (String, String)>,
+    terminal_id: u32,
+) -> Vec<(String, String)> {
+    let mut environment: Vec<_> = environment.into_iter().collect();
+    let value = |name: &str| {
+        environment
+            .iter()
+            .rev()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.clone())
+    };
+    let term = value("TERM")
+        .filter(|value| !value.trim().is_empty() && !value.eq_ignore_ascii_case("dumb"))
+        .unwrap_or_else(|| "xterm-256color".into());
+    let colorterm = value("COLORTERM")
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "truecolor".into());
+    environment.retain(|(key, _)| {
+        !["TERM", "COLORTERM", "ZELLIJ_PANE_ID"]
+            .iter()
+            .any(|name| key.eq_ignore_ascii_case(name))
+    });
+    environment.extend([
+        ("TERM".into(), term),
+        ("COLORTERM".into(), colorterm),
+        ("ZELLIJ_PANE_ID".into(), terminal_id.to_string()),
+    ]);
+    // CreateProcessW expects a case-insensitively sorted environment block.
+    environment.sort_unstable_by(|(left, _), (right, _)| {
+        left.to_ascii_uppercase().cmp(&right.to_ascii_uppercase())
+    });
+    environment
+}
+
 /// Check whether a candidate path refers to an executable file, considering
 /// PATHEXT extensions on Windows (e.g. `.exe`, `.cmd`).
 ///

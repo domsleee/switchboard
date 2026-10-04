@@ -293,6 +293,19 @@ fn create_new_screen(
     create_new_screen_with_kitty_graphics(size, advanced_mouse_actions, mouse_hover_effects, true)
 }
 
+#[test]
+fn tab_ids_are_not_reused_after_closing_the_highest_tab() {
+    let mut screen = create_new_screen(Size { rows: 24, cols: 80 }, false, false);
+    let first = screen.get_new_tab_id();
+    screen.new_tab(first, (vec![], vec![]), None, None).unwrap();
+    let closed = screen.get_new_tab_id();
+    screen
+        .new_tab(closed, (vec![], vec![]), None, None)
+        .unwrap();
+    screen.tabs.remove(&closed);
+    assert!(screen.get_new_tab_id() > closed);
+}
+
 fn create_new_screen_with_kitty_graphics(
     size: Size,
     advanced_mouse_actions: bool,
@@ -717,7 +730,7 @@ impl MockScreen {
             default_shell: self.session_metadata.default_shell.clone(),
             screen_thread: None,
             pty_thread: None,
-            plugin_thread: None,
+            layout_thread: None,
             pty_writer_thread: None,
             background_jobs_thread: None,
             session_configuration: self.session_metadata.session_configuration.clone(),
@@ -771,7 +784,7 @@ impl MockScreen {
             default_shell: None,
             screen_thread: None,
             pty_thread: None,
-            plugin_thread: None,
+            layout_thread: None,
             pty_writer_thread: None,
             background_jobs_thread: None,
             session_configuration: Default::default(),
@@ -4486,215 +4499,6 @@ pub fn send_cli_query_tab_names_action() {
 }
 
 #[test]
-pub fn send_cli_launch_or_focus_plugin_action() {
-    let size = Size {
-        cols: 121,
-        rows: 20,
-    };
-    let client_id = 10; // fake client id should not appear in the screen's state
-    let mut mock_screen = MockScreen::new(size);
-    let pty_receiver = mock_screen.pty_receiver.take().unwrap();
-    let session_metadata = mock_screen.clone_session_metadata();
-    let screen_thread = mock_screen.run(None, vec![]);
-    let received_pty_instructions = Arc::new(Mutex::new(vec![]));
-    let pty_thread = log_actions_in_thread!(
-        received_pty_instructions,
-        PtyInstruction::Exit,
-        pty_receiver
-    );
-    let cli_action = CliAction::LaunchOrFocusPlugin {
-        floating: true,
-        in_place: false,
-        close_replaced_pane: false,
-        move_to_focused_tab: true,
-        url: "file:/path/to/fake/plugin".to_owned(),
-        configuration: Default::default(),
-        skip_plugin_cache: false,
-        tab_id: None,
-    };
-    send_cli_action_to_server(&session_metadata, cli_action, client_id);
-    std::thread::sleep(std::time::Duration::from_millis(100)); // give time for actions to be
-    mock_screen.teardown(vec![pty_thread, screen_thread]);
-
-    let pty_fill_plugin_cwd_instruction = received_pty_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find(|instruction| match instruction {
-            PtyInstruction::FillPluginCwd(..) => true,
-            _ => false,
-        })
-        .cloned();
-
-    assert_snapshot!(format!("{:#?}", pty_fill_plugin_cwd_instruction));
-}
-
-#[test]
-pub fn send_cli_launch_or_focus_plugin_action_when_plugin_is_already_loaded() {
-    let size = Size {
-        cols: 121,
-        rows: 20,
-    };
-    let client_id = 10; // fake client id should not appear in the screen's state
-    let mut mock_screen = MockScreen::new(size);
-    let plugin_receiver = mock_screen.plugin_receiver.take().unwrap();
-    let session_metadata = mock_screen.clone_session_metadata();
-    let mut initial_layout = TiledPaneLayout::default();
-    let existing_plugin_pane = TiledPaneLayout {
-        run: Some(Run::Plugin(RunPluginOrAlias::RunPlugin(RunPlugin {
-            _allow_exec_host_cmd: false,
-            location: RunPluginLocation::File(PathBuf::from("/path/to/fake/plugin")),
-            configuration: Default::default(),
-            ..Default::default()
-        }))),
-        ..Default::default()
-    };
-    initial_layout.children_split_direction = SplitDirection::Vertical;
-    initial_layout.children = vec![TiledPaneLayout::default(), existing_plugin_pane];
-    let screen_thread = mock_screen.run(Some(initial_layout), vec![]);
-    let received_plugin_instructions = Arc::new(Mutex::new(vec![]));
-    let plugin_thread = log_actions_in_thread!(
-        received_plugin_instructions,
-        PluginInstruction::Exit,
-        plugin_receiver
-    );
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
-    let server_receiver = mock_screen.server_receiver.take().unwrap();
-    let server_thread = log_actions_in_thread!(
-        received_server_instructions,
-        ServerInstruction::KillSession,
-        server_receiver
-    );
-    let cli_action = CliAction::LaunchOrFocusPlugin {
-        floating: true,
-        in_place: false,
-        close_replaced_pane: false,
-        move_to_focused_tab: true,
-        url: "file:/path/to/fake/plugin".to_owned(),
-        configuration: Default::default(),
-        skip_plugin_cache: false,
-        tab_id: None,
-    };
-    send_cli_action_to_server(&session_metadata, cli_action, client_id);
-    std::thread::sleep(std::time::Duration::from_millis(100)); // give time for actions to be
-    mock_screen.teardown(vec![plugin_thread, server_thread, screen_thread]);
-
-    let plugin_load_instruction_sent = received_plugin_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find(|instruction| match instruction {
-            PluginInstruction::Load(..) => true,
-            _ => false,
-        })
-        .is_some();
-    assert!(
-        !plugin_load_instruction_sent,
-        "Plugin Load instruction should not be sent for an already loaded plugin"
-    );
-    let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
-        received_server_instructions.lock().unwrap().iter(),
-        size,
-    );
-    let snapshot_count = snapshots.len();
-    assert_eq!(
-        snapshot_count, 2,
-        "Another render was sent for focusing the already loaded plugin"
-    );
-    for (cursor_coordinates, _snapshot) in snapshots.iter().skip(1) {
-        assert!(
-            cursor_coordinates.is_none(),
-            "Cursor moved to existing plugin in final snapshot indicating focus changed"
-        );
-    }
-}
-
-#[test]
-pub fn send_cli_launch_or_focus_plugin_action_when_plugin_is_already_loaded_for_plugin_alias() {
-    let size = Size {
-        cols: 121,
-        rows: 20,
-    };
-    let client_id = 10; // fake client id should not appear in the screen's state
-    let mut mock_screen = MockScreen::new(size);
-    let plugin_receiver = mock_screen.plugin_receiver.take().unwrap();
-    let session_metadata = mock_screen.clone_session_metadata();
-    let mut initial_layout = TiledPaneLayout::default();
-    let existing_plugin_pane = TiledPaneLayout {
-        run: Some(Run::Plugin(RunPluginOrAlias::Alias(PluginAlias {
-            name: "fixture_plugin_for_tests".to_owned(),
-            configuration: Some(Default::default()),
-            run_plugin: Some(RunPlugin {
-                _allow_exec_host_cmd: false,
-                location: RunPluginLocation::File(PathBuf::from("/path/to/fake/plugin")),
-                configuration: Default::default(),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }))),
-        ..Default::default()
-    };
-    initial_layout.children_split_direction = SplitDirection::Vertical;
-    initial_layout.children = vec![TiledPaneLayout::default(), existing_plugin_pane];
-    let screen_thread = mock_screen.run_with_alias(Some(initial_layout), vec![]);
-    let received_plugin_instructions = Arc::new(Mutex::new(vec![]));
-    let plugin_thread = log_actions_in_thread!(
-        received_plugin_instructions,
-        PluginInstruction::Exit,
-        plugin_receiver
-    );
-    let received_server_instructions = Arc::new(Mutex::new(vec![]));
-    let server_receiver = mock_screen.server_receiver.take().unwrap();
-    let server_thread = log_actions_in_thread!(
-        received_server_instructions,
-        ServerInstruction::KillSession,
-        server_receiver
-    );
-    let cli_action = CliAction::LaunchOrFocusPlugin {
-        floating: true,
-        in_place: false,
-        close_replaced_pane: false,
-        move_to_focused_tab: true,
-        url: "fixture_plugin_for_tests".to_owned(),
-        configuration: Default::default(),
-        skip_plugin_cache: false,
-        tab_id: None,
-    };
-    send_cli_action_to_server(&session_metadata, cli_action, client_id);
-    std::thread::sleep(std::time::Duration::from_millis(100)); // give time for actions to be
-    mock_screen.teardown(vec![plugin_thread, server_thread, screen_thread]);
-
-    let plugin_load_instruction_sent = received_plugin_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find(|instruction| match instruction {
-            PluginInstruction::Load(..) => true,
-            _ => false,
-        })
-        .is_some();
-    assert!(
-        !plugin_load_instruction_sent,
-        "Plugin Load instruction should not be sent for an already loaded plugin"
-    );
-    let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
-        received_server_instructions.lock().unwrap().iter(),
-        size,
-    );
-    let snapshot_count = snapshots.len();
-    assert_eq!(
-        snapshot_count, 3,
-        "Another render was sent for focusing the already loaded plugin"
-    );
-    for (cursor_coordinates, _snapshot) in snapshots.iter().skip(1) {
-        assert!(
-            cursor_coordinates.is_none(),
-            "Cursor moved to existing plugin in final snapshot indicating focus changed"
-        );
-    }
-}
-
-#[test]
 pub fn screen_can_suppress_pane() {
     let size = Size { cols: 80, rows: 20 };
     let mut initial_layout = TiledPaneLayout::default();
@@ -5701,52 +5505,6 @@ pub fn send_cli_edit_in_place_with_close_replaced_pane() {
         .cloned();
 
     assert_snapshot!(format!("{:#?}", spawn_in_place_instruction));
-}
-
-#[test]
-pub fn send_cli_launch_or_focus_plugin_in_place_with_close_replaced_pane() {
-    // Verify that `--close-replaced-pane` propagates from the `launch-or-focus-plugin --in-place`
-    // CLI action through to the PtyInstruction::FillPluginCwd instruction as `true`.
-    let size = Size {
-        cols: 121,
-        rows: 20,
-    };
-    let client_id = 10; // fake client id should not appear in the screen's state
-    let mut mock_screen = MockScreen::new(size);
-    let pty_receiver = mock_screen.pty_receiver.take().unwrap();
-    let session_metadata = mock_screen.clone_session_metadata();
-    let screen_thread = mock_screen.run(None, vec![]);
-    let received_pty_instructions = Arc::new(Mutex::new(vec![]));
-    let pty_thread = log_actions_in_thread!(
-        received_pty_instructions,
-        PtyInstruction::Exit,
-        pty_receiver
-    );
-    let cli_action = CliAction::LaunchOrFocusPlugin {
-        floating: false,
-        in_place: true,
-        close_replaced_pane: true,
-        move_to_focused_tab: false,
-        url: "file:/path/to/fake/plugin".to_owned(),
-        configuration: Default::default(),
-        skip_plugin_cache: false,
-        tab_id: None,
-    };
-    send_cli_action_to_server(&session_metadata, cli_action, client_id);
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    mock_screen.teardown(vec![pty_thread, screen_thread]);
-
-    let fill_plugin_cwd_instruction = received_pty_instructions
-        .lock()
-        .unwrap()
-        .iter()
-        .find(|instruction| match instruction {
-            PtyInstruction::FillPluginCwd(..) => true,
-            _ => false,
-        })
-        .cloned();
-
-    assert_snapshot!(format!("{:#?}", fill_plugin_cwd_instruction));
 }
 
 fn create_new_screen_with_message_capture(

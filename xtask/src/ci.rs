@@ -48,46 +48,13 @@ pub fn main(sh: &Shell, flags: flags::Ci) -> anyhow::Result<()> {
 fn e2e_build(sh: &Shell) -> anyhow::Result<()> {
     let err_context = "failed to build E2E binary";
 
-    build::build(
-        sh,
-        flags::Build {
-            release: true,
-            no_plugins: false,
-            plugins_only: true,
-            no_web: false,
-            args: vec![],
-        },
-    )
-    .context(err_context)?;
+    build::proto(sh).context(err_context)?;
 
-    // Copy plugins to e2e data-dir
-    let plugin_dir = crate::asset_dir().join("plugins");
     let project_root = crate::project_root();
     let data_dir = crate::target_dir().join("e2e-data");
-    let plugins: Vec<_> = std::fs::read_dir(plugin_dir)
-        .context(err_context)?
-        .filter_map(|dir_entry| {
-            if let Ok(entry) = dir_entry {
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .ends_with(".wasm")
-                    .then_some(entry.path())
-            } else {
-                None
-            }
-        })
-        .collect();
-
     sh.remove_path(&data_dir)
         .and_then(|_| sh.create_dir(&data_dir))
-        .and_then(|_| sh.create_dir(data_dir.join("plugins")))
         .context(err_context)?;
-
-    for plugin in plugins {
-        sh.copy_file(plugin, data_dir.join("plugins"))
-            .context(err_context)?;
-    }
 
     let _pd = sh.push_dir(project_root);
     // On Windows, build natively (MSVC).
@@ -141,25 +108,15 @@ fn e2e_build(sh: &Shell) -> anyhow::Result<()> {
     }
 }
 
-/// Native release build: builds plugins, generates protobufs, and runs
+/// Native release build: generates protobufs, and runs
 /// `cargo build --release` without cross-compilation.
 fn build_release(sh: &Shell, no_web: bool) -> anyhow::Result<()> {
     let err_context = "failed to perform native release build";
 
     assets::assets(sh, flags::Assets { check: true }).context(err_context)?;
 
-    // Build plugins and generate protobufs
-    build::build(
-        sh,
-        flags::Build {
-            release: true,
-            no_plugins: false,
-            plugins_only: true,
-            no_web,
-            args: vec![],
-        },
-    )
-    .context(err_context)?;
+    // Generate protobufs
+    build::proto(sh).context(err_context)?;
 
     // Build the main binary natively
     let _pd = sh.push_dir(crate::project_root());
@@ -199,7 +156,7 @@ fn e2e_test(sh: &Shell, args: Vec<OsString>) -> anyhow::Result<()> {
 
     let _pd = sh.push_dir(crate::project_root());
 
-    // set --no-default-features so the test binary gets built with the plugins from assets/plugins that just got built
+    // Build the test binary with only the requested native features.
     crate::cargo()
         .and_then(|cargo| {
             // e2e tests
@@ -238,17 +195,7 @@ fn cross_compile(sh: &Shell, target: &OsString, no_web: bool) -> anyhow::Result<
         })
         .with_context(err_context)?;
 
-    build::build(
-        sh,
-        flags::Build {
-            release: true,
-            no_plugins: false,
-            plugins_only: true,
-            no_web,
-            args: vec![],
-        },
-    )
-    .with_context(err_context)?;
+    build::proto(sh).with_context(err_context)?;
 
     cross()
         .and_then(|cross| {

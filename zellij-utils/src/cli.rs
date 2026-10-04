@@ -27,6 +27,14 @@ const CLI_STYLES: Styles = Styles::styled()
     .valid(ansi(AnsiColor::Green))
     .invalid(ansi(AnsiColor::Yellow));
 
+fn parse_web_sharing_enabled(value: &str) -> Result<bool, String> {
+    match value {
+        "on" | "true" => Ok(true),
+        "off" | "false" => Ok(false),
+        _ => Err("Use on or off for web sharing".into()),
+    }
+}
+
 fn validate_session(name: &str) -> Result<String, String> {
     #[cfg(unix)]
     {
@@ -139,6 +147,16 @@ pub enum Command {
     /// Run a web server to serve terminal sessions
     #[clap(name = "web", value_parser)]
     Web(WebCli),
+
+    /// Run the Switchboard sidebar and relay on loopback
+    Serve {
+        /// Switchboard host configuration JSON
+        #[clap(long)]
+        host_config: PathBuf,
+        /// Loopback port
+        #[clap(long, default_value = "8090")]
+        port: u16,
+    },
 
     /// Send actions to a specific session
     #[clap(visible_alias = "ac")]
@@ -337,6 +355,10 @@ pub enum Sessions {
         /// Create a detached session in the background if one does not exist
         #[clap(short('b'), long, value_parser)]
         create_background: bool,
+
+        /// Attach only to a live local session; never create or resurrect it
+        #[clap(long, requires("session_name"), conflicts_with_all(&["create", "create_background", "force_run_commands", "index", "initial_command"]))]
+        existing_only: bool,
 
         /// Number of the session index in the active sessions ordered creation date.
         #[clap(long, value_parser)]
@@ -699,6 +721,11 @@ tail -f /tmp/my-live-logfile | zellij pipe --name logs --plugin https://example.
 
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum CliAction {
+    /// Allow or stop browser connections to the existing session
+    SetWebSharing {
+        #[clap(action = clap::ArgAction::Set, value_parser = parse_web_sharing_enabled)]
+        enabled: bool,
+    },
     /// Write bytes to the terminal.
     Write {
         bytes: Vec<u8>,

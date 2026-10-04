@@ -6,8 +6,9 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 if (!$Binary) { $Binary = (Get-Command zellij -ErrorAction Stop).Source }
-$uv = (Get-Command uv -ErrorAction Stop).Source
 if (!(Test-Path -LiteralPath $Binary -PathType Leaf)) { throw 'Zellij executable does not exist' }
+& $Binary serve --help *> $null
+if ($LASTEXITCODE -ne 0) { throw 'Install a Switchboard build with the Rust relay (zellij serve)' }
 $prefix = @()
 if ($Config) { $Config = (Resolve-Path -LiteralPath $Config).Path; $prefix = @('--config', $Config) }
 $directory = Join-Path $HOME '.config/switchboard'
@@ -23,8 +24,6 @@ if (!$Tray) {
     $source = Split-Path $PSCommandPath
     if ([IO.Path]::GetFullPath($PSCommandPath) -ne $installed) {
         Copy-Item -LiteralPath $PSCommandPath -Destination $installed -Force
-        Get-ChildItem -LiteralPath $source -Filter '*.py' | Copy-Item -Destination $directory -Force
-        Copy-Item -LiteralPath (Join-Path $source 'static') -Destination $directory -Recurse -Force
     }
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Startup')) 'Switchboard.lnk'))
@@ -71,12 +70,12 @@ function Start-Servers {
             if ($LASTEXITCODE -ne 0) { throw 'Zellij web failed to start' }
         }
         try {
-            $response = Invoke-WebRequest 'http://127.0.0.1/' -Headers @{Host='switchboard.localhost'} -UseBasicParsing -TimeoutSec 2
-            if ($response.StatusCode -eq 200) { $status.Text = 'Switchboard running'; return }
+            $response = Invoke-WebRequest 'http://127.0.0.1/api/health' -Headers @{Host='switchboard.localhost'} -UseBasicParsing -TimeoutSec 2
+            if ($response.StatusCode -eq 200 -and ($response.Content | ConvertFrom-Json).relay -eq 'rust') { $status.Text = 'Switchboard running'; return }
         } catch {}
         if ($script:relay -and !$script:relay.HasExited) { $status.Text = 'Switchboard starting...'; return }
-        $relayArgs = 'run --script "' + (Join-Path $directory 'server.py') + '" --port 80 --config "' + $relayConfig + '"'
-        $script:relay = Start-Process -FilePath $uv -ArgumentList $relayArgs -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $directory 'relay.log') -RedirectStandardError (Join-Path $directory 'relay-error.log')
+        $relayArgs = 'serve --port 80 --host-config "' + $relayConfig + '"'
+        $script:relay = Start-Process -FilePath $Binary -ArgumentList $relayArgs -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $directory 'relay.log') -RedirectStandardError (Join-Path $directory 'relay-error.log')
         $status.Text = 'Switchboard starting...'
     } catch {
         $status.Text = 'Switchboard unavailable (see logs)'

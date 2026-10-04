@@ -1312,6 +1312,7 @@ impl From<crate::input::actions::Action>
             SetPaneBorderlessAction,
             SetPaneColorAction,
             SetPaneFrameStyleAction,
+            SetWebSharingAction,
             ShowFloatingPanesAction,
             SkipConfirmAction,
             StackPanesAction,
@@ -1962,6 +1963,9 @@ impl From<crate::input::actions::Action>
             },
             crate::input::actions::Action::CloseTabById { id } => {
                 ActionType::CloseTabById(CloseTabByIdAction { id })
+            },
+            crate::input::actions::Action::SetWebSharing { enabled } => {
+                ActionType::SetWebSharing(SetWebSharingAction { enabled })
             },
             crate::input::actions::Action::RenameTabById { id, name } => {
                 ActionType::RenameTabById(RenameTabByIdAction { id, name })
@@ -2879,6 +2883,11 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             ActionType::CloseTabById(close_tab_by_id_action) => {
                 Ok(crate::input::actions::Action::CloseTabById {
                     id: close_tab_by_id_action.id,
+                })
+            },
+            ActionType::SetWebSharing(sharing) => {
+                Ok(crate::input::actions::Action::SetWebSharing {
+                    enabled: sharing.enabled,
                 })
             },
             ActionType::RenameTabById(rename_tab_by_id_action) => {

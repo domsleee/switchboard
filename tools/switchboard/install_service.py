@@ -1,5 +1,6 @@
 """Install Switchboard's macOS menu bar app and supervised background relay."""
 import argparse
+import json
 import os
 from pathlib import Path
 import plistlib
@@ -13,6 +14,23 @@ LABEL = 'dev.zellij.switchboard'
 DOMAIN = f'gui/{os.getuid()}'
 AGENTS = Path.home() / 'Library/LaunchAgents'
 LOGS = Path.home() / 'Library/Logs'
+
+
+def web_start_command(zellij):
+    normal = shlex.join([zellij, 'web', '--daemonize'])
+    recovery_file = Path.home() / '.local/share/switchboard/native-web-recovery.json'
+    try:
+        policy = json.loads(recovery_file.read_text())
+        metadata = Path(policy['socket_path']).lstat()
+        identity = f'{metadata.st_dev}:{metadata.st_ino}:{metadata.st_ctime_ns // 1_000_000_000}:{metadata.st_ctime_ns % 1_000_000_000}'
+        if identity == policy['socket_identity']:
+            recovered = shlex.join(['env', 'SWITCHBOARD_RECOVER_UNSHARED_SESSION=' + policy['session'],
+                                   'SWITCHBOARD_RECOVER_UNSHARED_SOCKET_IDENTITY=' + identity,
+                                   zellij, 'web', '--daemonize'])
+            return recovered + ' || ' + normal
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return normal
 
 
 def install_job(label, config):
@@ -42,9 +60,10 @@ def main():
     args = parser.parse_args()
     AGENTS.mkdir(parents=True, exist_ok=True)
     LOGS.mkdir(parents=True, exist_ok=True)
-    uv, zellij = shutil.which('uv'), shutil.which('zellij')
-    if not uv or not zellij:
-        raise SystemExit('uv and zellij must be installed')
+    zellij = shutil.which('zellij')
+    if not zellij:
+        raise SystemExit('The Switchboard zellij executable must be installed')
+    subprocess.run([zellij, 'serve', '--help'], check=True, stdout=subprocess.DEVNULL)
     app = Path.home() / 'Applications/Switchboard.app'
     contents = app / 'Contents'
     executable = contents / 'MacOS/Switchboard'
@@ -56,14 +75,14 @@ def main():
         'CFBundleVersion': '1', 'LSUIElement': True, 'SwitchboardZellij': zellij,
     }))
     if not args.menu_only:
-        startup = shlex.join([zellij, 'web', '--status', '--timeout', '2']) + ' >/dev/null 2>&1 || ' + shlex.join([zellij, 'web', '--daemonize'])
-        relay = shlex.join([uv, 'run', '--script', str(ROOT / 'server.py')])
+        startup = shlex.join([zellij, 'web', '--status', '--timeout', '2']) + ' >/dev/null 2>&1 || { ' + web_start_command(zellij) + '; }'
+        relay = shlex.join([zellij, 'serve', '--host-config', str(Path.home() / '.config/zellij/switchboard-hosts.json'), '--port', '8090'])
         install_job(LABEL, {
             'ProgramArguments': ['/bin/sh', '-c', startup + '; exec ' + relay],
             'WorkingDirectory': str(ROOT), 'KeepAlive': True,
             'StandardOutPath': str(LOGS / 'zellij-switchboard.log'),
             'StandardErrorPath': str(LOGS / 'zellij-switchboard.log'),
-            'EnvironmentVariables': {'PATH': f'{Path.home()}/.local/bin:{Path.home()}/.cargo/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin'},
+            'EnvironmentVariables': {'PATH': f'{Path.home()}/.local/bin:{Path.home()}/.cargo/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin'},
         })
     install_job('dev.switchboard.menu', {
         'ProgramArguments': [str(executable)], 'KeepAlive': False,

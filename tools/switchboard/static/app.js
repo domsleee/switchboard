@@ -12,7 +12,7 @@ const ready = load('switchboard-ready');
 const archived = load('switchboard-archived');
 if(restoringTab&&archived[selected]){delete archived[selected];localStorage.setItem('switchboard-archived',JSON.stringify(archived));}
 const seenAttention = load('switchboard-attention-seen');
-let paneAttention=new Map(),tabCatalog=[],attentionErrors=[],attentionLoading=false;
+let paneAttention=new Map(),tabCatalog=[],attentionErrors=[],attentionLoading=false,attentionRefreshPending=false;
 let contextItem = null, archiveSignature = null;
 let tabOrder=load('switchboard-tab-order');
 if(!Array.isArray(tabOrder))tabOrder=[];
@@ -69,11 +69,18 @@ function setCatalog(entry,tabs){
   if(tabOrder.some(key=>migrations.has(key))){tabOrder=[...new Set(tabOrder.map(key=>migrations.get(key)||key))];changed=true;}
   if(changed){saveReady();localStorage.setItem('switchboard-archived',JSON.stringify(archived));localStorage.setItem('switchboard-tab-order',JSON.stringify(tabOrder));}
   entry.catalog=tabs;
-  if(entry.followActiveTab&&entry.frame.classList.contains('active')&&!entry.requestedPane&&!entry.focusPending){const tab=activeTab(entry);if(tab){selected=tabKey(entry,tab);entry.followActiveTab=false;}}
+  // Keep confirmed closes hidden through snapshots taken before the close finished.
+  for(const [id,closing] of entry.closingTabs||[])if(closing.session!==entry.name||!closing.pending&&!tabs.some(tab=>tab.id===id))entry.closingTabs.delete(id);
+  syncActiveTab(entry);
+}
+function syncActiveTab(entry){
+  const tab=activeTab(entry);
+  if(!tab||entry.requestedPane||entry.focusPending)return;
   if(entry.pendingNewTab){
-    const added=tabs.find(tab=>!entry.pendingNewTab.has(tabKey(entry,tab))&&tab.panes.some(pane=>pane.pane_id===entry.state?.active_pane?.pane_id&&pane.is_plugin===entry.state.active_pane.is_plugin));
-    if(added){entry.pendingNewTab=null;if(filter!=='all'&&groups[entry.host]!==filter)setFilter('all');$('tab-search').value='';selected=tabKey(entry,added);entry.needsFocus=true;}
-  }
+    if(entry.pendingNewTab.has(tabKey(entry,tab)))return;
+    entry.pendingNewTab=null;entry.followActiveTab=false;
+    if(filter!=='all'&&groups[entry.host]!==filter)setFilter('all');$('tab-search').value='';selected=tabKey(entry,tab);entry.needsFocus=true;
+  }else if(entry.followActiveTab&&entry.frame.classList.contains('active')){selected=tabKey(entry,tab);entry.followActiveTab=false;}
 }
 function attentionKey(host,session,pane){return JSON.stringify([host,session,pane]);}
 function statesForTab(item){
@@ -104,7 +111,7 @@ function matchesSearch(item){
 function allTabs(ignoreFilter=false, includeArchived=false) {
   const ranks=new Map(tabOrder.map((key,index)=>[key,index]));
   return [...sessions.values()].flatMap(entry => (entry.state ? entry.catalog || [] : []).map(tab => ({entry,tab,key:tabKey(entry,tab)})))
-    .filter(({entry,key}) => (includeArchived || !archived[key]) && (ignoreFilter || filter === 'all' || groups[entry.host] === filter))
+    .filter(({entry,tab,key}) => !entry.closingTabs?.has(tab.id) && (includeArchived || !archived[key]) && (ignoreFilter || filter === 'all' || groups[entry.host] === filter))
     .sort((a,b) => (ranks.get(a.key)??Infinity)-(ranks.get(b.key)??Infinity));
 }
 function moveTab(key,targetKey,after=false) {
@@ -189,8 +196,8 @@ function render() {
   const focused=current && activeTab(current.entry)?.id===current.tab.id && !current.entry.requestedPane && !current.entry.focusPending && !current.entry.pendingNewTab;
   sizeOwner.disabled=!focused || !viewport || !current.entry.frame.contentWindow.__zjSupportsTabViewport;
   sizeOwner.setAttribute('aria-pressed',String(!!viewport?.is_owner));
-  sizeOwner.textContent=viewport?.is_owner?'Release this window’s size':'Use this window’s size';
-  sizeOwner.title=!viewport?'Available in new sessions after updating Switchboard.':viewport.constrained?'A smaller terminal is keeping this tab within its screen.':viewport.is_owner?'Other browser viewers can scroll. Release to fit all viewers.':'Size this tab to this window. Smaller browser viewers can scroll, starting at the bottom.';
+  sizeOwner.textContent=viewport?.is_owner?'Using this window’s size':'Use this window’s size';
+  sizeOwner.title=!viewport?'Available in new sessions after updating Switchboard.':viewport.constrained?'A smaller plain terminal is keeping this tab within its screen.':'The last focused browser window sets the size. Smaller browser viewers can scroll, starting at the bottom.';
   const archiveCount=allTabs(true,true).filter(item=>archived[item.key]).length;
   $('archive').textContent=`Archive${archiveCount?' ('+archiveCount+')':''}`;
   if($('archive-dialog').open)renderArchive();
@@ -198,6 +205,7 @@ function render() {
   $('empty').hidden=!!current;
   if (!current) $('empty').textContent=restoringTab?'Connecting to the requested terminal…':filter==='all'?(archiveCount?'All tabs are archived. Open Archive to restore one.':'No connected tabs. Open Settings to check your machines or refresh.'):`No ${filter} tabs. Assign machines to this group in Settings.`;
   const errors=[...hosts.values()].filter(h=>h.error).map(h=>`${h.name}: ${h.error}`);
+  for(const entry of sessions.values())if(entry.closeError)errors.push(entry.closeError);
   for(const error of attentionErrors)errors.push(`${hosts.get(error.host)?.name||error.host}: attention status unavailable`);
   setStatus(errors.length?errors.join(' · '):`${hosts.size} machines · ${tabs.length} tabs${current?' · '+hosts.get(current.entry.host)?.name:''}`,errors.length>0);
   if ((selected !== previous || wasRestoring&&!restoringTab) && current) focus(current);
@@ -251,6 +259,10 @@ function finishDrag(){
 window.addEventListener('dragend',finishDrag,true);
 window.addEventListener('drop',()=>setTimeout(finishDrag,0),true);
 window.addEventListener('blur',finishDrag);
+window.addEventListener('focus',()=>{
+  const current=allTabs().find(item=>item.key===selected);
+  if(current&&document.hasFocus())current.entry.frame.contentWindow.postMessage({type:'zellij-window-focus'},location.origin);
+});
 function focus(item) {
   if(item.entry.pendingNewTab)return;
   item.entry.needsFocus=false;
@@ -390,6 +402,10 @@ window.addEventListener('message',event=>{
       const tab=activeTab(entry);
       if(tab){selected=tabKey(entry,tab);delete ready[selected];saveReady();entry.followActiveTab=false;}else entry.followActiveTab=true;
     }
+    // Catalog and native focus arrive independently. Resolve creation on either
+    // arrival and scan immediately instead of leaving the old tab highlighted.
+    syncActiveTab(entry);
+    if(entry.pendingNewTab&&!activeTab(entry))refreshAttention(true);
     const current=allTabs().find(item=>item.key===selected);
     if(current?.entry===entry && entry.acknowledgeTab===selected && !entry.requestedPane && !entry.focusPending && activeTab(entry)?.id===current.tab.id){acknowledgeAttention(current);entry.acknowledgeTab=null;}
     render();
@@ -418,11 +434,9 @@ window.addEventListener('message',event=>{
     if(!entry.frame.classList.contains('active'))return;
     try{
       const url=new URL(event.data.uri);
-      if(!['http:','https:'].includes(url.protocol))return;
-      if(url.origin===location.origin){setStatus('Artifact links must use a separate server port.',true);return;}
-      $('artifact-url').textContent=url.href;$('artifact-url').title='If embedding is blocked, use Open in browser tab.';
-      $('artifact-external').href=url.href;$('artifact-frame').src=url.href;
-      $('artifact-preview').hidden=false;$('artifact-back').focus();
+      if(!['http:','https:','mailto:'].includes(url.protocol))return;
+      const link=document.createElement('a');
+      link.href=url.href;link.target='_blank';link.rel='noopener noreferrer';link.click();
     }catch(_){setStatus('Invalid artifact link.',true);}
   }else if(event.data?.type==='zellij-clipboard'){
     setStatus(event.data.ok?'Copied to this browser.':event.data.error||'Copy failed; use the terminal’s clipboard panel.',!event.data.ok);
@@ -488,7 +502,7 @@ $('settings').onclick=()=>$('settings-dialog').showModal();
 $('size-owner').onclick=()=>{
   const current=allTabs().find(item=>item.key===selected);
   if(!current || $('size-owner').disabled)return;
-  current.entry.frame.contentWindow.postMessage({type:'zellij-size-owner',tab_position:current.tab.position,owned:!current.entry.state.tab_viewport.is_owner},location.origin);
+  current.entry.frame.contentWindow.postMessage({type:'zellij-size-owner',tab_position:current.tab.position,owned:true},location.origin);
 };
 $('close-settings').onclick=()=>$('settings-dialog').close();
 $('refresh').onclick=async()=>{
@@ -584,8 +598,8 @@ resizeHandle.onkeydown=event=>{if(['ArrowLeft','ArrowRight'].includes(event.key)
 window.addEventListener('resize',()=>{if(!mobileSidebar.matches)setSidebarWidth(sidebarWidth);});
 setSidebarWidth(sidebarWidth);updateSidebar();
 
-async function refreshAttention(){
-  if(attentionLoading)return;attentionLoading=true;
+async function refreshAttention(immediate=false){
+  if(attentionLoading){attentionRefreshPending ||= immediate;return;}attentionLoading=true;
   try{
     const response=await fetch('/api/attention');if(!response.ok)throw Error('Attention monitor unavailable');
     const data=await response.json();
@@ -597,6 +611,6 @@ async function refreshAttention(){
     render();
     const selectedTab=allTabs().find(item=>item.key===selected);if(selectedTab?.entry.needsFocus)focus(selectedTab);
   }catch(_){paneAttention.clear();attentionErrors=[{host:'Switchboard'}];render();}
-  finally{attentionLoading=false;}
+  finally{attentionLoading=false;if(attentionRefreshPending){attentionRefreshPending=false;refreshAttention();}}
 }
 refreshAttention();setInterval(refreshAttention,2000);

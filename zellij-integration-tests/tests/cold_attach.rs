@@ -18,9 +18,7 @@ fn cold_attach_lays_out_at_the_client_reported_size_without_querying_it() {
 
     let attaching_client = zellij.attach_client(ATTACHING_CLIENT_SIZE);
     attaching_client.wait_until("attaching client loaded", |grid_snapshot| {
-        grid_snapshot.tab_bar_appears()
-            && grid_snapshot.contains("Ctrl +")
-            && grid_snapshot.cursor.is_some()
+        grid_snapshot.cursor.is_some()
     });
 
     let (attached_cols, attached_rows) = terminal.wait_for_size(

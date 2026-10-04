@@ -24,9 +24,10 @@
     if (!event.shiftKey || event.button!==0) return;
     event.preventDefault();event.stopImmediatePropagation();
     try {
-      const target=resolve(uri);
-      if(parent!==window)parent.postMessage({type:'zellij-open-link',uri:target},location.origin);
-      else location.assign(target);
+      const link=document.createElement('a');
+      link.href=resolve(uri);link.target='_blank';link.rel='noopener noreferrer';
+      // A fresh click omits Shift, which browsers interpret as a new window.
+      link.click();
     } catch(error) { console.warn('Switchboard link:',error.message); }
   }
   function atPointer(event,term) {

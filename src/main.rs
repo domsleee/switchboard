@@ -19,6 +19,31 @@ fn main() {
     create_config_and_cache_folders();
     let opts = CliArgs::parse();
 
+    if let Some(Command::Serve { host_config, port }) = &opts.command {
+        #[cfg(feature = "web_server_capability")]
+        {
+            let result = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .map_err(anyhow::Error::from)
+                .and_then(|runtime| {
+                    runtime.block_on(zellij_client::switchboard_relay::serve(host_config, *port))
+                });
+            if let Err(error) = result {
+                eprintln!("Switchboard relay failed: {error}");
+                std::process::exit(1);
+            }
+        }
+        #[cfg(not(feature = "web_server_capability"))]
+        {
+            let _ = (host_config, port);
+            eprintln!("This build has no web support.");
+            std::process::exit(2);
+        }
+        return;
+    }
+
     {
         let config = Config::try_from(&opts).ok();
         if let Some(Command::Action(cli_action)) = opts.command {

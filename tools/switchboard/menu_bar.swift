@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 
 final class Switchboard: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var item: NSStatusItem!
@@ -39,6 +40,25 @@ final class Switchboard: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: command[0])
         task.arguments = Array(command.dropFirst())
+        if command.first == zellij && command.contains("--daemonize") {
+            let recoveryFile = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".local/share/switchboard/native-web-recovery.json")
+            if let data = try? Data(contentsOf: recoveryFile),
+               let policy = (try? JSONSerialization.jsonObject(with: data)) as? [String: String],
+               let session = policy["session"], let path = policy["socket_path"],
+               let identity = policy["socket_identity"] {
+                var metadata = stat()
+                if lstat(path, &metadata) == 0 {
+                    let current = "\(metadata.st_dev):\(metadata.st_ino):\(metadata.st_ctimespec.tv_sec):\(metadata.st_ctimespec.tv_nsec)"
+                    if current == identity {
+                        var environment = ProcessInfo.processInfo.environment
+                        environment["SWITCHBOARD_RECOVER_UNSHARED_SESSION"] = session
+                        environment["SWITCHBOARD_RECOVER_UNSHARED_SOCKET_IDENTITY"] = identity
+                        task.environment = environment
+                    }
+                }
+            }
+        }
         task.standardOutput = FileHandle.nullDevice
         task.standardError = FileHandle.nullDevice
         task.terminationHandler = { task in

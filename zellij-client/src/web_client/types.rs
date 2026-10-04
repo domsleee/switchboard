@@ -62,6 +62,7 @@ impl SessionManager for RealSessionManager {
             .map(|info| WebSessionInfo {
                 name: info.name,
                 web_clients_allowed: info.web_clients_allowed,
+                sharing_recovery: false,
                 tab_count: info.tabs.len(),
                 pane_count: info.panes.panes.values().map(|panes| panes.len()).sum(),
                 connected_clients: info.connected_clients,
@@ -225,6 +226,7 @@ pub struct AppState {
     pub client_os_api_factory: Arc<dyn ClientOsApiFactory>,
     pub is_https: bool,
     pub pending_welcome_sessions: PendingWelcomeSessions,
+    pub sharing_recovery: Option<crate::web_client::sharing_recovery::SharingRecovery>,
 }
 
 #[derive(Serialize)]
@@ -245,6 +247,8 @@ pub struct SessionQuery {
 pub struct WebSessionInfo {
     pub name: String,
     pub web_clients_allowed: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sharing_recovery: bool,
     pub tab_count: usize,
     pub pane_count: usize,
     pub connected_clients: usize,

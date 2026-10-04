@@ -657,6 +657,7 @@ pub(crate) fn start_client(opts: CliArgs) {
                     session_name: reconnect_to_session.name.clone(),
                     create: true,
                     create_background: false,
+                    existing_only: false,
                     force_run_commands: false,
                     index: None,
                     options: None,
@@ -695,6 +696,7 @@ pub(crate) fn start_client(opts: CliArgs) {
             session_name,
             create,
             create_background,
+            existing_only,
             force_run_commands,
             index,
             options,
@@ -715,6 +717,10 @@ pub(crate) fn start_client(opts: CliArgs) {
                     None
                 }
             }) {
+                if existing_only {
+                    eprintln!("Existing-only recovery requires a local session name.");
+                    std::process::exit(2);
+                }
                 if !cfg!(feature = "web_server_capability") {
                     eprintln!("This version of Zellij was compiled without web/remote-attach capabilities.");
                     std::process::exit(2);
@@ -764,7 +770,13 @@ pub(crate) fn start_client(opts: CliArgs) {
                         .as_ref()
                         .and_then(|s| session_exists(&s).ok())
                         .unwrap_or(false);
-                    let resurrection_layout =
+                    let resurrection_layout = if existing_only {
+                        if !session_exists {
+                            eprintln!("Existing session is unavailable; no session was created.");
+                            process::exit(2);
+                        }
+                        None
+                    } else {
                         session_name
                             .as_ref()
                             .and_then(|s| match resurrection_layout(&s) {
@@ -773,7 +785,8 @@ pub(crate) fn start_client(opts: CliArgs) {
                                     eprintln!("{}", e);
                                     process::exit(2);
                                 },
-                            });
+                            })
+                    };
                     if (create || should_create_detached)
                         && !session_exists
                         && resurrection_layout.is_none()
@@ -791,6 +804,9 @@ pub(crate) fn start_client(opts: CliArgs) {
                                 force_run_commands,
                                 new_session_cwd.clone(),
                             )
+                        },
+                        _ if existing_only => {
+                            ClientInfo::Attach(session_name.unwrap(), config_options.clone())
                         },
                         _ => attach_with_session_name(
                             session_name,

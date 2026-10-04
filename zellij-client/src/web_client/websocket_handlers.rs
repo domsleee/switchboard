@@ -196,6 +196,7 @@ async fn handle_ws_terminal(
         client_size,
         client_pixel_dims,
         state.pending_welcome_sessions.clone(),
+        state.sharing_recovery.clone(),
     );
 
     let terminal_channel_cancellation_token = CancellationToken::new();

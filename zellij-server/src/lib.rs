@@ -13,12 +13,12 @@ pub mod tab;
 
 pub mod background_jobs;
 mod global_async_runtime;
-mod logging_pipe;
 mod mobile_web;
+mod native_layout;
 pub mod nested_guest;
 pub mod notifications;
 mod pane_groups;
-mod plugins;
+use native_layout as plugins;
 mod pty;
 mod pty_writer;
 mod route;
@@ -31,7 +31,7 @@ mod ui;
 use background_jobs::{background_jobs_main, BackgroundJob};
 use log::info;
 use pty_writer::{pty_writer_main, PtyWriteInstruction};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::{
     net::{IpAddr, Ipv4Addr},
     path::{Path, PathBuf},
@@ -44,36 +44,28 @@ use zellij_utils::pane_size::Size;
 use zellij_utils::input::cli_assets::CliAssets;
 use zellij_utils::input::options::{PaneFrameStyle, DEFAULT_WORD_SEPARATORS};
 
-use wasmi::Engine;
-
 use crate::{
     os_input_output::ServerOsApi,
     panes::PaneId,
-    plugins::{plugin_thread_main, PluginInstruction},
-    pty::{get_default_shell, pty_thread_main, Pty, PtyInstruction},
+    plugins::{layout_thread_main, PluginInstruction},
+    pty::{pty_thread_main, Pty, PtyInstruction},
     screen::{screen_thread_main, ScreenInstruction},
     thread_bus::{Bus, ThreadSenders},
 };
 use route::{route_thread_main, NotificationEnd};
 use zellij_utils::{
     channels::{self, ChannelWithContext, SenderWithContext},
-    consts::{
-        DEFAULT_SCROLL_BUFFER_SIZE, SCROLL_BUFFER_SIZE, ZELLIJ_SEEN_RELEASE_NOTES_CACHE_FILE,
-    },
-    data::{
-        ConnectToSession, Direction, InputMode, KeyWithModifier, LayoutInfo, LayoutWithError,
-        Style, WebSharing,
-    },
+    consts::{DEFAULT_SCROLL_BUFFER_SIZE, SCROLL_BUFFER_SIZE},
+    data::{ConnectToSession, Direction, InputMode, KeyWithModifier, Style, WebSharing},
     errors::{prelude::*, ContextType, ErrorInstruction, FatalError, ServerContext},
-    home::{default_layout_dir, get_default_data_dir},
+    home::default_layout_dir,
     input::{
         actions::Action,
         command::{RunCommand, TerminalAction},
         config::{watch_config_file_changes, watch_layout_dir_changes, Config},
         keybinds::Keybinds,
-        layout::{FloatingPaneLayout, Layout, PluginAlias, Run, RunPluginOrAlias},
+        layout::Layout,
         options::Options,
-        plugins::PluginAliases,
     },
     ipc::{ClientAttributes, ExitReason, ServerToClientMsg},
     shared::{default_palette, web_server_base_url},
@@ -132,6 +124,11 @@ pub enum ServerInstruction {
     },
     StartWebServer(ClientId),
     ShareCurrentSession(ClientId),
+    SetWebSharing {
+        enabled: bool,
+        client_id: ClientId,
+        completion: Option<NotificationEnd>,
+    },
     StopSharingCurrentSession(ClientId),
     SendWebClientsForbidden(ClientId),
     WebServerStarted(String), // String -> base_url
@@ -181,6 +178,7 @@ impl From<&ServerInstruction> for ServerContext {
             ServerInstruction::RebindKeys { .. } => ServerContext::RebindKeys,
             ServerInstruction::StartWebServer(..) => ServerContext::StartWebServer,
             ServerInstruction::ShareCurrentSession(..) => ServerContext::ShareCurrentSession,
+            ServerInstruction::SetWebSharing { .. } => ServerContext::ShareCurrentSession,
             ServerInstruction::StopSharingCurrentSession(..) => {
                 ServerContext::StopSharingCurrentSession
             },
@@ -345,7 +343,7 @@ pub(crate) struct SessionMetaData {
     // explicit plugin action
     screen_thread: Option<thread::JoinHandle<()>>,
     pty_thread: Option<thread::JoinHandle<()>>,
-    plugin_thread: Option<thread::JoinHandle<()>>,
+    layout_thread: Option<thread::JoinHandle<()>>,
     pty_writer_thread: Option<thread::JoinHandle<()>>,
     background_jobs_thread: Option<thread::JoinHandle<()>>,
     config_file_path: Option<PathBuf>,
@@ -544,8 +542,8 @@ impl Drop for SessionMetaData {
         if let Some(pty_thread) = self.pty_thread.take() {
             let _ = pty_thread.join();
         }
-        if let Some(plugin_thread) = self.plugin_thread.take() {
-            let _ = plugin_thread.join();
+        if let Some(layout_thread) = self.layout_thread.take() {
+            let _ = layout_thread.join();
         }
         if let Some(pty_writer_thread) = self.pty_writer_thread.take() {
             let _ = pty_writer_thread.join();
@@ -994,22 +992,12 @@ pub fn start_server_impl(
             ServerInstruction::FirstClientConnected(cli_assets, is_web_client, client_id) => {
                 let host_terminal_env = cli_assets.host_terminal_env.clone();
                 let mut initial_panes = cli_assets.initial_panes.clone();
-                let (config, layout) = cli_assets.load_config_and_layout();
-                let layout_is_welcome_screen = cli_assets.layout
-                    == Some(LayoutInfo::BuiltIn("welcome".to_owned()))
-                    || config.options.default_layout == Some(PathBuf::from("welcome"));
-
-                let successfully_written_config = Config::write_config_to_disk_if_it_does_not_exist(
+                let (config, mut layout) = cli_assets.load_config_and_layout();
+                layout.remove_plugin_panes();
+                Config::write_config_to_disk_if_it_does_not_exist(
                     config.to_string(true),
                     &cli_assets.config_file_path,
                 );
-                // if we successfully wrote the config to disk, it means two things:
-                // 1. It did not exist beforehand
-                // 2. The config folder is writeable
-                //
-                // If these two are true, we should launch the setup wizard, if even one of them is
-                // false, we should never launch it.
-                let should_launch_setup_wizard = successfully_written_config;
 
                 let runtime_config_options = match &cli_assets.configuration_options {
                     Some(configuration_options) => {
@@ -1038,7 +1026,6 @@ pub fn start_server_impl(
                     Box::new(layout.clone()),                 // TODO: no box
                     cli_assets.clone(),
                     config.clone(),
-                    config.plugins.clone(),
                     client_id,
                 );
                 info!("FirstClientConnected: session initialized, spawning tabs");
@@ -1136,26 +1123,11 @@ pub fn start_server_impl(
                         );
                     }
                 } else {
-                    let mut floating_panes =
-                        layout.template.map(|t| t.1).clone().unwrap_or_default();
-                    if should_launch_setup_wizard {
-                        // we only do this here (and only once) because otherwise it will be
-                        // intrusive
-                        let setup_wizard = setup_wizard_floating_pane();
-                        floating_panes.push(setup_wizard);
-                    } else if should_show_release_notes(
-                        runtime_config_options.show_release_notes,
-                        layout_is_welcome_screen,
-                    ) {
-                        let about = about_floating_pane();
-                        floating_panes.push(about);
-                    } else if should_show_startup_tip(
-                        runtime_config_options.show_startup_tips,
-                        layout_is_welcome_screen,
-                    ) {
-                        let tip = tip_floating_pane();
-                        floating_panes.push(tip);
-                    }
+                    let floating_panes = layout
+                        .template
+                        .as_ref()
+                        .map(|t| t.1.clone())
+                        .unwrap_or_default();
                     spawn_tabs(
                         None,
                         floating_panes,
@@ -1191,6 +1163,19 @@ pub fn start_server_impl(
                 client_id,
             ) => {
                 let mut rlock = session_data.write().unwrap();
+                // The route thread's check can become stale while this instruction waits.
+                // Authorize again where sharing changes and attachment are serialized.
+                if is_web_client && !rlock.as_ref().unwrap().web_sharing.web_clients_allowed() {
+                    drop(rlock);
+                    let _ = os_input.send_to_client(
+                        client_id,
+                        ServerToClientMsg::Exit {
+                            exit_reason: ExitReason::WebClientsForbidden,
+                        },
+                    );
+                    remove_client!(client_id, os_input, session_state, session_data);
+                    continue;
+                }
                 let session_data = rlock.as_mut().unwrap();
                 let config = session_data.session_configuration.saved_config.clone();
                 let host_terminal_env = cli_assets.host_terminal_env.clone();
@@ -1262,6 +1247,24 @@ pub fn start_server_impl(
                     .unwrap();
             },
             ServerInstruction::AttachWatcherClient(client_id, terminal_size, is_web_client) => {
+                if is_web_client
+                    && !session_data
+                        .read()
+                        .unwrap()
+                        .as_ref()
+                        .unwrap()
+                        .web_sharing
+                        .web_clients_allowed()
+                {
+                    let _ = os_input.send_to_client(
+                        client_id,
+                        ServerToClientMsg::Exit {
+                            exit_reason: ExitReason::WebClientsForbidden,
+                        },
+                    );
+                    remove_client!(client_id, os_input, session_state, session_data);
+                    continue;
+                }
                 // the client_id was inserted into clients upon ipc tunnel initialization
                 // now that it identified itself as a watcher, we need to convert it
 
@@ -1822,6 +1825,95 @@ pub fn start_server_impl(
                     log::error!("Cannot start web server: this instance of Zellij was compiled without web_server_capability");
                 }
             },
+            ServerInstruction::SetWebSharing {
+                enabled,
+                client_id,
+                mut completion,
+            } => {
+                let sharing_result = if cfg!(feature = "web_server_capability") {
+                    session_data
+                        .write()
+                        .ok()
+                        .and_then(|mut session| {
+                            session.as_mut().map(|session| {
+                                if enabled {
+                                    session.web_sharing.set_sharing()
+                                } else {
+                                    session.web_sharing.set_not_sharing()
+                                }
+                            })
+                        })
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
+                if !sharing_result {
+                    let message = "Web sharing is disabled for this session.".to_owned();
+                    if let Some(completion) = completion.as_mut() {
+                        completion.set_exit_status(2);
+                        completion.set_error_message(message.clone());
+                    }
+                    send_to_client!(
+                        client_id,
+                        os_input,
+                        ServerToClientMsg::LogError {
+                            lines: vec![message]
+                        },
+                        session_state,
+                        session_data
+                    );
+                } else {
+                    if !enabled {
+                        let (web_clients, web_watchers) = {
+                            let state = session_state.read().unwrap();
+                            (
+                                state.web_client_ids().iter().copied().collect::<Vec<_>>(),
+                                state
+                                    .web_watcher_client_ids()
+                                    .iter()
+                                    .copied()
+                                    .collect::<Vec<_>>(),
+                            )
+                        };
+                        for web_client in web_clients {
+                            let _ = os_input.send_to_client(
+                                web_client,
+                                ServerToClientMsg::Exit {
+                                    exit_reason: ExitReason::WebClientsForbidden,
+                                },
+                            );
+                            remove_client!(web_client, os_input, session_state, session_data);
+                        }
+                        for watcher in web_watchers {
+                            let _ = os_input.send_to_client(
+                                watcher,
+                                ServerToClientMsg::Exit {
+                                    exit_reason: ExitReason::WebClientsForbidden,
+                                },
+                            );
+                            let _ = session_data
+                                .read()
+                                .unwrap()
+                                .as_ref()
+                                .unwrap()
+                                .senders
+                                .send_to_screen(ScreenInstruction::RemoveWatcherClient(watcher));
+                            remove_watcher!(watcher, os_input, session_state);
+                        }
+                    }
+                    if let Some(completion) = completion.as_mut() {
+                        completion.set_exit_status(0);
+                    }
+                    session_data
+                        .read()
+                        .unwrap()
+                        .as_ref()
+                        .unwrap()
+                        .senders
+                        .send_to_screen(ScreenInstruction::SetWebSharing(enabled, completion))
+                        .unwrap();
+                }
+            },
             ServerInstruction::ShareCurrentSession(_client_id) => {
                 if cfg!(feature = "web_server_capability") {
                     let successfully_changed = session_data
@@ -2073,13 +2165,14 @@ fn init_session(
     to_server: SenderWithContext<ServerInstruction>,
     client_attributes: ClientAttributes,
     config_options: Box<Options>,
-    layout: Box<Layout>,
+    mut layout: Box<Layout>,
     cli_assets: CliAssets,
     mut config: Config,
-    plugin_aliases: PluginAliases,
     client_id: ClientId,
 ) -> SessionMetaData {
     config.options = config.options.merge(*config_options.clone());
+    layout.remove_plugin_panes();
+    config.background_plugins.clear();
 
     let _ = SCROLL_BUFFER_SIZE.set(
         config_options
@@ -2107,9 +2200,6 @@ fn init_session(
         channels::unbounded();
     let to_background_jobs = SenderWithContext::new(to_background_jobs);
 
-    // Determine and initialize the data directory
-    let data_dir = cli_assets.data_dir.unwrap_or_else(get_default_data_dir);
-
     let serialization_interval = config_options.serialization_interval;
     let disable_session_metadata = config_options.disable_session_metadata.unwrap_or(false);
     let web_server_ip = config_options
@@ -2127,14 +2217,6 @@ fn init_session(
             ..Default::default()
         })
     });
-    let path_to_default_shell = config_options
-        .default_shell
-        .clone()
-        .unwrap_or_else(|| get_default_shell());
-
-    let default_mode = config_options.default_mode.unwrap_or_default();
-    let default_keybinds = config.keybinds.clone();
-
     let pty_thread = thread::Builder::new()
         .name("pty".to_string())
         .spawn({
@@ -2193,15 +2275,10 @@ fn init_session(
         })
         .unwrap();
 
-    let zellij_cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let session_env_vars: std::collections::BTreeMap<String, String> = std::env::vars().collect();
-
-    let (available_layouts, available_layout_errors) = get_available_layouts(&config_options);
-
-    let plugin_thread = thread::Builder::new()
-        .name("wasm".to_string())
+    let layout_thread = thread::Builder::new()
+        .name("layout".to_string())
         .spawn({
-            let plugin_bus = Bus::new(
+            let layout_bus = Bus::new(
                 vec![plugin_receiver],
                 Some(&to_screen_bounded),
                 Some(&to_pty),
@@ -2211,37 +2288,8 @@ fn init_session(
                 Some(&to_background_jobs),
                 None,
             );
-            let engine = get_engine();
-
             let layout = layout.clone();
-            let default_shell = default_shell.clone();
-            let layout_dir = config_options
-                .layout_dir
-                .clone()
-                .or_else(|| default_layout_dir());
-            let background_plugins = config.background_plugins.clone();
-            let session_env_vars = session_env_vars.clone();
-            move || {
-                plugin_thread_main(
-                    plugin_bus,
-                    engine,
-                    data_dir,
-                    layout,
-                    layout_dir,
-                    available_layouts,
-                    available_layout_errors,
-                    path_to_default_shell,
-                    zellij_cwd,
-                    session_env_vars,
-                    default_shell,
-                    plugin_aliases,
-                    default_mode,
-                    default_keybinds,
-                    background_plugins,
-                    client_id,
-                )
-                .fatal()
-            }
+            move || layout_thread_main(layout_bus, layout, client_id).fatal()
         })
         .unwrap();
 
@@ -2332,7 +2380,7 @@ fn init_session(
         current_input_modes: HashMap::new(),
         screen_thread: Some(screen_thread),
         pty_thread: Some(pty_thread),
-        plugin_thread: Some(plugin_thread),
+        layout_thread: Some(layout_thread),
         pty_writer_thread: Some(pty_writer_thread),
         background_jobs_thread: Some(background_jobs_thread),
         #[cfg(feature = "web_server_capability")]
@@ -2341,82 +2389,6 @@ fn init_session(
         web_sharing: WebSharing::Disabled,
         key_passthrough_clients: HashMap::new(),
         config_file_path: cli_assets.config_file_path,
-    }
-}
-
-fn setup_wizard_floating_pane() -> FloatingPaneLayout {
-    let mut setup_wizard_pane = FloatingPaneLayout::new();
-    let configuration = BTreeMap::from_iter([("is_setup_wizard".to_owned(), "true".to_owned())]);
-    setup_wizard_pane.run = Some(Run::Plugin(RunPluginOrAlias::Alias(PluginAlias::new(
-        "configuration",
-        &Some(configuration),
-        None,
-    ))));
-    setup_wizard_pane
-}
-
-fn about_floating_pane() -> FloatingPaneLayout {
-    let mut about_pane = FloatingPaneLayout::new();
-    let configuration = BTreeMap::from_iter([("is_release_notes".to_owned(), "true".to_owned())]);
-    about_pane.run = Some(Run::Plugin(RunPluginOrAlias::Alias(PluginAlias::new(
-        "about",
-        &Some(configuration),
-        None,
-    ))));
-    about_pane
-}
-
-fn tip_floating_pane() -> FloatingPaneLayout {
-    let mut about_pane = FloatingPaneLayout::new();
-    let configuration = BTreeMap::from_iter([("is_startup_tip".to_owned(), "true".to_owned())]);
-    about_pane.run = Some(Run::Plugin(RunPluginOrAlias::Alias(PluginAlias::new(
-        "about",
-        &Some(configuration),
-        None,
-    ))));
-    about_pane
-}
-
-fn should_show_release_notes(
-    should_show_release_notes_config: Option<bool>,
-    layout_is_welcome_screen: bool,
-) -> bool {
-    if layout_is_welcome_screen {
-        return false;
-    }
-    if let Some(should_show_release_notes_config) = should_show_release_notes_config {
-        if !should_show_release_notes_config {
-            // if we were explicitly told not to show release notes, we don't show them,
-            // otherwise we make sure we only show them if they were not seen AND we know
-            // we are able to write to the cache
-            return false;
-        }
-    }
-    if ZELLIJ_SEEN_RELEASE_NOTES_CACHE_FILE.exists() {
-        return false;
-    } else {
-        if let Some(parent) = ZELLIJ_SEEN_RELEASE_NOTES_CACHE_FILE.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Err(e) = std::fs::write(&*ZELLIJ_SEEN_RELEASE_NOTES_CACHE_FILE, &[]) {
-            log::error!(
-                "Failed to write seen release notes indication to disk: {}",
-                e
-            );
-            return false;
-        }
-        return true;
-    }
-}
-
-fn should_show_startup_tip(
-    should_show_startup_tip_config: Option<bool>,
-    layout_is_welcome_screen: bool,
-) -> bool {
-    if layout_is_welcome_screen {
-        false
-    } else {
-        should_show_startup_tip_config.unwrap_or(true)
     }
 }
 
@@ -2552,22 +2524,4 @@ fn update_new_saved_config(
                 );
         }
     }
-}
-
-pub fn get_engine() -> Engine {
-    log::info!("Loading plugins using Wasmi interpreter");
-    Engine::default()
-}
-
-// TODO: move elsewhere
-fn get_available_layouts(config_options: &Options) -> (Vec<LayoutInfo>, Vec<LayoutWithError>) {
-    let layout_dir = config_options
-        .layout_dir
-        .clone()
-        .or_else(|| default_layout_dir());
-    let default_layout_name = config_options
-        .default_layout
-        .as_ref()
-        .map(|l| format!("{}", l.display()));
-    Layout::list_available_layouts(layout_dir, &default_layout_name)
 }

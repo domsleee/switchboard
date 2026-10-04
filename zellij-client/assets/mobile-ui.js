@@ -247,7 +247,8 @@ function sendInitialRenderPrefs() {
         return false;
     }
     state.initialPrefsSent = true;
-    state.renderMode = "single-pane";
+    // A follower pans the owner's complete layout. Activation must not fullscreen everyone.
+    state.renderMode = window.__zjViewport?.getSizing()?.pinned ? "full" : "single-pane";
     state.fitEnabled = true;
     sendRenderPrefs();
     return true;

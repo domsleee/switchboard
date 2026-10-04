@@ -17,8 +17,16 @@ jobs:
         with:
           rustflags: ""
       - uses: ilammy/setup-nasm@v1
-      - name: Build native server
-        run: cargo build --release
+      - name: Check Windows session discovery and colours
+        run: |
+          cargo test -p zellij-utils windows_session_catalog_tests --lib
+          cargo test -p zellij-server windows_pane_environment_advertises_colour_without_overriding_preferences --lib
+      - name: Check Rust relay transport
+        run: cargo test -p zellij-client --features web_server_capability switchboard_relay --lib
+      - name: Build native server and relay
+        run: cargo build --release --features web_server_capability
+      - name: Verify packaged relay command
+        run: .\target\release\zellij.exe serve --help
       - uses: actions/upload-artifact@v4
         with:
           name: switchboard-windows

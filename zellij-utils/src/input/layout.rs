@@ -702,6 +702,174 @@ pub struct Layout {
     pub swap_floating_layouts: Vec<SwapFloatingLayout>,
 }
 
+// Remove plugin-only panes from old Zellij layouts while retaining terminal geometry.
+impl TiledPaneLayout {
+    pub fn remove_plugin_panes(&mut self) {
+        if !self.keep_without_plugins() {
+            let cwd = match self.run.take() {
+                Some(Run::Cwd(cwd)) => Some(Run::Cwd(cwd)),
+                _ => None,
+            };
+            *self = Self::default();
+            self.run = cwd;
+        }
+    }
+
+    fn keep_without_plugins(&mut self) -> bool {
+        if matches!(self.run, Some(Run::Plugin(_))) {
+            return false;
+        }
+        let had_children = !self.children.is_empty();
+        let old_len = self.children.len();
+        let fixed_before: usize = self
+            .children
+            .iter()
+            .filter_map(|child| match child.split_size {
+                Some(SplitSize::Fixed(size)) => Some(size),
+                _ => None,
+            })
+            .sum();
+        let percent_before: usize = self
+            .children
+            .iter()
+            .filter_map(|child| match child.split_size {
+                Some(SplitSize::Percent(size)) => Some(size),
+                _ => None,
+            })
+            .sum();
+        let insertion = self.external_children_index;
+        let mut kept_before_insertion = 0;
+        let mut children = Vec::with_capacity(old_len);
+        for (index, mut child) in std::mem::take(&mut self.children).into_iter().enumerate() {
+            if child.keep_without_plugins() {
+                if insertion.is_some_and(|insertion| index < insertion) {
+                    kept_before_insertion += 1;
+                }
+                children.push(child);
+            }
+        }
+        self.children = children;
+        self.external_children_index = insertion.map(|_| kept_before_insertion);
+        self.run_instructions_to_ignore
+            .retain(|run| !matches!(run, Some(Run::Plugin(_))));
+        if self.children.len() < old_len
+            && self.external_children_index.is_none()
+            && self.children.iter().all(|child| child.split_size.is_some())
+        {
+            let percent_after: usize = self
+                .children
+                .iter()
+                .filter_map(|child| match child.split_size {
+                    Some(SplitSize::Percent(size)) => Some(size),
+                    _ => None,
+                })
+                .sum();
+            if percent_after > 0 {
+                // Percentages use the root axis, including inside nested containers.
+                // Redistribute only the original sibling percentage budget.
+                let mut remaining = percent_before;
+                let count = self
+                    .children
+                    .iter()
+                    .filter(|child| matches!(child.split_size, Some(SplitSize::Percent(_))))
+                    .count();
+                let mut seen = 0;
+                for child in &mut self.children {
+                    if let Some(SplitSize::Percent(size)) = child.split_size {
+                        seen += 1;
+                        let size = if seen == count {
+                            remaining
+                        } else {
+                            size * percent_before / percent_after
+                        };
+                        child.split_size = Some(SplitSize::Percent(size));
+                        remaining -= size;
+                    }
+                }
+            } else {
+                let fixed_after: usize = self
+                    .children
+                    .iter()
+                    .filter_map(|child| match child.split_size {
+                        Some(SplitSize::Fixed(size)) => Some(size),
+                        _ => None,
+                    })
+                    .sum();
+                if let Some(child) = self.children.last_mut() {
+                    if let Some(SplitSize::Fixed(size)) = child.split_size {
+                        child.split_size = Some(SplitSize::Fixed(
+                            size + fixed_before.saturating_sub(fixed_after),
+                        ));
+                    }
+                }
+            }
+        }
+        !had_children || !self.children.is_empty() || self.external_children_index.is_some()
+    }
+}
+
+fn remove_floating_plugins(panes: &mut Vec<FloatingPaneLayout>) {
+    panes.retain(|pane| !matches!(pane.run, Some(Run::Plugin(_))));
+}
+
+pub fn remove_plugin_panes_from_swap_layouts(
+    tiled: &mut [SwapTiledLayout],
+    floating: &mut [SwapFloatingLayout],
+) {
+    for (layouts, _) in tiled {
+        for layout in layouts.values_mut() {
+            layout.remove_plugin_panes();
+        }
+    }
+    for (layouts, _) in floating {
+        for panes in layouts.values_mut() {
+            remove_floating_plugins(panes);
+        }
+    }
+}
+
+impl Layout {
+    pub fn remove_plugin_panes(&mut self) {
+        for (_, tiled, floating) in &mut self.tabs {
+            tiled.remove_plugin_panes();
+            remove_floating_plugins(floating);
+        }
+        if let Some((tiled, floating)) = &mut self.template {
+            tiled.remove_plugin_panes();
+            remove_floating_plugins(floating);
+        }
+        for (tiled, floating) in &mut self.swap_layouts {
+            tiled.remove_plugin_panes();
+            remove_floating_plugins(floating);
+        }
+        remove_plugin_panes_from_swap_layouts(
+            &mut self.swap_tiled_layouts,
+            &mut self.swap_floating_layouts,
+        );
+    }
+}
+
+impl TabLayoutInfo {
+    pub fn remove_plugin_panes(&mut self) {
+        self.tiled_layout.remove_plugin_panes();
+        remove_floating_plugins(&mut self.floating_layouts);
+        if let Some(layouts) = &mut self.swap_tiled_layouts {
+            for (layouts, _) in layouts {
+                for layout in layouts.values_mut() {
+                    layout.remove_plugin_panes();
+                }
+            }
+        }
+        if let Some(layouts) = &mut self.swap_floating_layouts {
+            for (layouts, _) in layouts {
+                for panes in layouts.values_mut() {
+                    remove_floating_plugins(panes);
+                }
+            }
+        }
+    }
+}
+
 /// Layout configuration for a single tab in multi-tab override
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct TabLayoutInfo {
@@ -2101,3 +2269,122 @@ impl FromStr for SplitSize {
 #[path = "./unit/layout_test.rs"]
 #[cfg(test)]
 mod layout_test;
+
+#[cfg(test)]
+mod plugin_removal_tests {
+    use super::*;
+    use crate::pane_size::Size;
+
+    fn sanitized(kdl: &str) -> Layout {
+        let mut layout = Layout::from_kdl(kdl, None, None, None).unwrap();
+        layout.remove_plugin_panes();
+        layout
+    }
+
+    fn geoms(layout: &Layout) -> Vec<(TiledPaneLayout, PaneGeom)> {
+        let space: PaneGeom = (&Size {
+            cols: 100,
+            rows: 40,
+        })
+            .into();
+        layout
+            .new_tab()
+            .0
+            .position_panes_in_space(&space, None, false, false)
+            .unwrap()
+    }
+
+    #[test]
+    fn older_bar_layouts_keep_a_terminal_filling_the_screen() {
+        let mut layout = Layout::default_layout_asset();
+        layout.remove_plugin_panes();
+        let panes = geoms(&layout);
+        assert_eq!(panes.len(), 1);
+        assert_eq!(panes[0].1.cols.as_usize(), 100);
+        assert_eq!(panes[0].1.rows.as_usize(), 40);
+        assert!(!matches!(panes[0].0.run, Some(Run::Plugin(_))));
+    }
+
+    #[test]
+    fn removing_plugins_preserves_fixed_and_nested_percent_geometry() {
+        for kdl in [
+            r#"layout { pane size=8 { pane size=2 { plugin location="zellij:tab-bar"; }; pane size=6; }; pane; }"#,
+            r#"layout { pane split_direction="vertical" { pane size="50%" split_direction="vertical" { pane size="10%" { plugin location="zellij:tab-bar"; }; pane size="20%"; pane size="20%"; }; pane size="50%"; }; }"#,
+        ] {
+            let panes = geoms(&sanitized(kdl));
+            assert!(panes
+                .iter()
+                .all(|(_, pane)| pane.cols.as_usize() > 0 && pane.rows.as_usize() > 0));
+            assert_eq!(
+                panes
+                    .iter()
+                    .map(|(_, pane)| pane.cols.as_usize() * pane.rows.as_usize())
+                    .sum::<usize>(),
+                4000
+            );
+        }
+    }
+
+    #[test]
+    fn nested_plugin_only_groups_do_not_spawn_extra_shells() {
+        let layout = sanitized(
+            r#"layout { pane { pane { plugin location="zellij:strider"; }; }; pane command="bash"; }"#,
+        );
+        let panes = geoms(&layout);
+        assert_eq!(panes.len(), 1);
+        assert!(matches!(panes[0].0.run, Some(Run::Command(_))));
+    }
+
+    #[test]
+    fn external_children_placeholder_survives_removal_at_the_correct_index() {
+        let plugin = Layout::default_layout_asset().new_tab().0.children[0].clone();
+        let mut template = TiledPaneLayout {
+            children: vec![plugin.clone(), TiledPaneLayout::default(), plugin],
+            external_children_index: Some(2),
+            ..Default::default()
+        };
+        template.remove_plugin_panes();
+        assert_eq!(template.external_children_index, Some(1));
+        assert_eq!(template.children.len(), 1);
+        assert!(template
+            .insert_children_layout(&mut TiledPaneLayout::default())
+            .unwrap());
+        assert_eq!(template.children.len(), 2);
+    }
+
+    #[test]
+    fn removing_floating_and_swap_plugins_keeps_commands_and_layout_choices() {
+        let mut layout = Layout::default_layout_asset();
+        let plugin = layout.new_tab().0.children[0].run.clone();
+        layout
+            .template
+            .as_mut()
+            .unwrap()
+            .1
+            .push(FloatingPaneLayout {
+                run: plugin,
+                ..Default::default()
+            });
+        layout
+            .template
+            .as_mut()
+            .unwrap()
+            .1
+            .push(FloatingPaneLayout {
+                run: Some(Run::Cwd(PathBuf::from("/tmp"))),
+                ..Default::default()
+            });
+        let swap_count = layout.swap_tiled_layouts.len();
+        layout.remove_plugin_panes();
+        assert_eq!(layout.new_tab().1.len(), 1);
+        assert_eq!(layout.swap_tiled_layouts.len(), swap_count);
+        for (choices, _) in layout.swap_tiled_layouts {
+            for layout in choices.values() {
+                assert!(layout
+                    .extract_run_instructions()
+                    .iter()
+                    .all(|run| !matches!(run, Some(Run::Plugin(_)))));
+            }
+        }
+    }
+}

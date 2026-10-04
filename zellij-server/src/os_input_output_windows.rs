@@ -1,4 +1,4 @@
-use crate::os_input_output::{resolve_command, AsyncReader};
+use crate::os_input_output::{resolve_command, windows_pane_environment, AsyncReader};
 use crate::panes::PaneId;
 
 use std::{
@@ -187,21 +187,14 @@ fn build_command_line(cmd: &RunCommand) -> Vec<u16> {
 }
 
 /// Build a UTF-16 environment block (each entry `KEY=VALUE\0`, terminated by
-/// an extra `\0`) from the current process environment, adding
-/// `ZELLIJ_PANE_ID`.
+/// an extra `\0`) with terminal capability defaults and the pane identity.
 fn build_environment_block(terminal_id: u32) -> Vec<u16> {
     let mut block: Vec<u16> = Vec::new();
-    for (key, value) in std::env::vars() {
-        if key == "ZELLIJ_PANE_ID" {
-            continue;
-        }
+    for (key, value) in windows_pane_environment(std::env::vars(), terminal_id) {
         let entry = format!("{}={}", key, value);
         block.extend(OsStr::new(&entry).encode_wide());
         block.push(0);
     }
-    let pane_entry = format!("ZELLIJ_PANE_ID={}", terminal_id);
-    block.extend(OsStr::new(&pane_entry).encode_wide());
-    block.push(0);
     block.push(0); // double-null terminator
     block
 }

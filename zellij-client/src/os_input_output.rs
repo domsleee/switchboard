@@ -145,6 +145,13 @@ pub trait ClientOsApi: Send + Sync + std::fmt::Debug {
     );
     /// Establish a connection with the server socket.
     fn connect_to_server(&self, path: &Path);
+    /// Attempt one existing-session IPC connection without retries or session creation.
+    fn try_connect_to_server(&self, _path: &Path) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Single-attempt IPC connection is not implemented",
+        ))
+    }
     fn spawn_server(&self, socket_path: &Path, debug: bool) -> Result<(), std::io::Error> {
         crate::spawn_server(socket_path, debug)
     }
@@ -311,6 +318,24 @@ impl ClientOsApi for ClientOsInputOutput {
         *self.send_instructions_to_server.lock().unwrap() = Some(sender);
         *self.receive_instructions_from_server.lock().unwrap() = Some(receiver);
     }
+    fn try_connect_to_server(&self, path: &Path) -> io::Result<()> {
+        let socket = zellij_utils::consts::ipc_connect(path)?;
+        #[cfg(not(windows))]
+        let (sender, receiver) = setup_ipc(socket, path);
+        #[cfg(windows)]
+        let (sender, receiver) = {
+            // The ordinary Windows setup retries the reply pipe forever. Existing-only
+            // connections must also attempt that second pipe just once.
+            let reply = zellij_utils::consts::ipc_connect_reply(path)?;
+            (
+                IpcSenderWithContext::new(socket),
+                IpcReceiverWithContext::new(reply),
+            )
+        };
+        *self.send_instructions_to_server.lock().unwrap() = Some(sender);
+        *self.receive_instructions_from_server.lock().unwrap() = Some(receiver);
+        Ok(())
+    }
     fn load_palette(&self) -> Palette {
         // this was removed because termbg doesn't release stdin in certain scenarios (we know of
         // windows terminal and FreeBSD): https://github.com/zellij-org/zellij/issues/538
@@ -376,6 +401,16 @@ pub const DEFAULT_STDIN_POLL_TIMEOUT_MS: u64 = 10;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn single_attempt_connection_to_missing_session_returns_error() {
+        let client = get_client_os_input().unwrap();
+        let path = std::env::temp_dir().join(format!("sb-missing-{}", uuid::Uuid::new_v4()));
+        let started = std::time::Instant::now();
+        assert!(client.try_connect_to_server(&path).is_err());
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert!(client.send_instructions_to_server.lock().unwrap().is_none());
+    }
 
     #[test]
     fn get_terminal_size_returns_nonzero_or_fallback() {

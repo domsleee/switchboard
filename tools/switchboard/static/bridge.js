@@ -8,7 +8,7 @@
   let pendingFocus, desiredFocus, focusInputState, focusId;
   let pendingNewTab;
   let terminalSocket;
-  let scrollport, lastViewport, viewportTab, bottomButton;
+  let scrollport, lastViewport, viewportTab, bottomButton, claimedViewportTab;
   let chromeKey, nativeTopBar=false, nativeBottomRows=0;
   function viewportSupported(){return !!window.__zjSupportsTabViewport && !!latest?.tab_viewport;}
   function physicalViewport(){
@@ -41,6 +41,17 @@
       return true;
     },
   };
+  function claimFocusedViewport(force=false){
+    const tab=latest?.active_pane?.tab_position;
+    // Background sessions still publish state. Only the selected frame in the
+    // focused browser window may claim, once per focus or tab change.
+    if(pendingFocus||pendingNewTab||!Number.isInteger(tab)||!parent.document.hasFocus()||
+      parent.document.visibilityState==='hidden'||(window.frameElement&&!window.frameElement.classList.contains('active'))||
+      (!force&&claimedViewportTab===tab))return;
+    const size=physicalViewport();
+    if(size&&window.__zjViewport.report(size,true))claimedViewportTab=tab;
+  }
+  window.addEventListener('focus',()=>claimFocusedViewport(true));
   function updateViewport(){
     if(!scrollport && !window.__zjViewport.getSizing()?.pinned)return;
     const terminal=document.getElementById('terminal');
@@ -262,6 +273,7 @@
     const changed = document.body.classList.contains('switchboard-hide-tabs') !== hide ||
       document.body.classList.contains('switchboard-hide-status') !== hideBottom ||
       oldHeight !== height;
+    claimFocusedViewport();
     updateViewport();
     if (!changed) return;
     document.documentElement.style.setProperty('--switchboard-tab-height',height);
@@ -307,7 +319,7 @@
         });
         this.addEventListener('close', () => {
           latest = undefined;
-          lastViewport=null;updateViewport();
+          lastViewport=null;claimedViewportTab=null;updateViewport();
           releaseFocus();
           releaseNewTab();
           parent.postMessage({type:'zellij-disconnected',host},location.origin);
@@ -335,6 +347,8 @@
     } else if (message?.type === 'zellij-native-tabs') {
       showNativeTabs = !!message.visible;
       updateChrome();
+    } else if(message?.type==='zellij-window-focus'){
+      claimFocusedViewport(true);
     } else if(message?.type==='zellij-size-owner' && viewportSupported() && !pendingFocus && !pendingNewTab && message.tab_position===latest.active_pane?.tab_position){
       const size=physicalViewport();
       if(size)window.__zjViewport.report(size,!!message.owned);

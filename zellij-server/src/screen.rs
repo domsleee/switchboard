@@ -905,6 +905,7 @@ pub enum ScreenInstruction {
     TogglePaneInGroup(ClientId, Option<NotificationEnd>),
     ToggleGroupMarking(ClientId, Option<NotificationEnd>),
     SessionSharingStatusChange(bool),
+    SetWebSharing(bool, Option<NotificationEnd>),
     SetMouseSelectionSupport(PaneId, bool),
     InterceptKeyPresses(PluginId, ClientId),
     ClearKeyPressesIntercepts(ClientId),
@@ -1273,7 +1274,8 @@ impl From<&ScreenInstruction> for ScreenContext {
             ScreenInstruction::EmbedMultiplePanes(..) => ScreenContext::EmbedMultiplePanes,
             ScreenInstruction::TogglePaneInGroup(..) => ScreenContext::TogglePaneInGroup,
             ScreenInstruction::ToggleGroupMarking(..) => ScreenContext::ToggleGroupMarking,
-            ScreenInstruction::SessionSharingStatusChange(..) => {
+            ScreenInstruction::SetWebSharing(..)
+            | ScreenInstruction::SessionSharingStatusChange(..) => {
                 ScreenContext::SessionSharingStatusChange
             },
             ScreenInstruction::SetMouseSelectionSupport(..) => {
@@ -1532,6 +1534,7 @@ pub(crate) struct Screen {
     max_panes: Option<usize>,
     /// A map between this [`Screen`]'s tabs and their ID/key.
     tabs: BTreeMap<usize, Tab>,
+    next_tab_id: usize,
     last_single_pane_tab_names: HashMap<usize, Option<String>>,
     pixel_dimensions: PixelDimensions,
     character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
@@ -1764,6 +1767,7 @@ impl Screen {
             tab_size_owners: HashMap::new(),
             global_last_active_tab_id: 0,
             tabs: BTreeMap::new(),
+            next_tab_id: 0,
             last_single_pane_tab_names: HashMap::new(),
             terminal_emulator_colors: Rc::new(RefCell::new(Palette::default())),
             terminal_emulator_color_codes: Rc::new(RefCell::new(HashMap::new())),
@@ -1860,12 +1864,14 @@ impl Screen {
             .unwrap_or(false)
     }
 
-    fn get_new_tab_id(&self) -> usize {
-        if let Some(id) = self.tabs.keys().last() {
-            *id + 1
-        } else {
-            0
-        }
+    fn get_new_tab_id(&mut self) -> usize {
+        // Closing the last tab must not recycle its ID. Browser state and
+        // in-flight close requests identify tabs by this ID for the whole session.
+        let id = self
+            .next_tab_id
+            .max(self.tabs.keys().last().map_or(0, |id| *id + 1));
+        self.next_tab_id = id + 1;
+        id
     }
 
     /// Gets a tab by its stable ID (BTreeMap key).
@@ -2423,6 +2429,9 @@ impl Screen {
                     .and_then(|client_id| self.client_sizes.get(&client_id).copied())
             })
             .or_else(|| self.client_sizes.values().next().copied())
+            // Detached sessions keep their last tab dimensions. A new native tab
+            // still needs space to spawn its terminal before a viewer reconnects.
+            .or_else(|| self.tabs.values().next().map(|tab| tab.size))
             .unwrap_or_default()
     }
 
@@ -9865,11 +9874,15 @@ pub(crate) fn screen_thread_main(
                 // initiated over the web control channel (which cannot carry the
                 // flag); resolve it from the actual connected-client status.
                 let is_web_client = is_web_client || screen.client_is_web(client_id);
-                let resolved_swap_layouts = (
+                let mut resolved_swap_layouts = (
                     swap_tiled_layouts
                         .unwrap_or_else(|| screen.default_layout.swap_tiled_layouts.clone()),
                     swap_floating_layouts
                         .unwrap_or_else(|| screen.default_layout.swap_floating_layouts.clone()),
+                );
+                zellij_utils::input::layout::remove_plugin_panes_from_swap_layouts(
+                    &mut resolved_swap_layouts.0,
+                    &mut resolved_swap_layouts.1,
                 );
                 screen.new_tab(
                     tab_index,
@@ -12168,6 +12181,23 @@ pub(crate) fn screen_thread_main(
                                 // waiting for it
             ) => {
                 screen.toggle_group_marking(client_id).non_fatal();
+            },
+            ScreenInstruction::SetWebSharing(web_sharing, mut completion) => {
+                screen.web_sharing = if web_sharing {
+                    WebSharing::On
+                } else {
+                    WebSharing::Off
+                };
+                for tab in screen.tabs.values_mut() {
+                    tab.update_web_sharing(screen.web_sharing);
+                }
+                if let Err(error) = screen.log_and_report_session_state() {
+                    if let Some(completion) = completion.as_mut() {
+                        completion.set_exit_status(1);
+                        completion.set_error_message(error.to_string());
+                    }
+                }
+                let _ = screen.render(None);
             },
             ScreenInstruction::SessionSharingStatusChange(web_sharing) => {
                 if web_sharing {

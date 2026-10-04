@@ -92,7 +92,7 @@ jobs:
       - name: Install Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          target: "${{ matrix.target }},wasm32-wasip1"
+          target: "${{ matrix.target }}"
           cache: false
           rustflags: ""
 
@@ -288,7 +288,7 @@ jobs:
       - name: Install Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          target: "${{ matrix.target }},wasm32-wasip1"
+          target: "${{ matrix.target }}"
           cache: false
           rustflags: ""
 
@@ -413,4 +413,3 @@ jobs:
           asset_path: ${{ steps.make-checksum-msi.outputs.checksum_name }}
           asset_name: zellij-no-web-${{ matrix.target }}-installer.sha256sum
           asset_content_type: text/plain
-

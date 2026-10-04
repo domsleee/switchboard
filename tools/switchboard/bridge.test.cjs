@@ -5,22 +5,49 @@ const fs=require('node:fs');
 const source=fs.readFileSync(__dirname+'/static/bridge.js','utf8');
 function harness(){
   const handlers={},messages=[],properties=new Map(),classes=new Set(),frames=[],resizes=[],timers=new Map();let timerId=0;
-  let modal=false,focused=false,bottomRows=2,firstRow='Zellij (main)';
+  let modal=false,focused=false,browserFocused=false,frameActive=true,bottomRows=2,firstRow='Zellij (main)';
   class Socket{constructor(){this.handlers={};this.readyState=1;this.sent=[];}addEventListener(type,fn){this.handlers[type]=fn;}send(data){this.sent.push(data);}}
   const parent={postMessage:data=>messages.push(data)};
-  const window={WebSocket:Socket,addEventListener:(type,fn)=>handlers[type]=fn,dispatchEvent:()=>resizes.push(1),
+  const window={WebSocket:Socket,addEventListener:(type,fn)=>handlers[type]=fn,dispatchEvent:()=>resizes.push(1),innerWidth:800,innerHeight:600,
+    frameElement:{classList:{contains:()=>frameActive}},
     __switchboardBottomRows:()=>bottomRows,
-    term:{options:{disableStdin:false},element:{contains:()=>focused,style:{pointerEvents:""}},blur(){},buffer:{active:{viewportY:0,getLine:()=>({translateToString:()=>firstRow})}},_core:{_renderService:{dimensions:{css:{cell:{height:18}}}}},onRender(){},onResize(){},focus(){}}};
+    term:{options:{disableStdin:false},element:{contains:()=>focused,style:{pointerEvents:""}},blur(){},buffer:{active:{viewportY:0,getLine:()=>({translateToString:()=>firstRow})}},_core:{_renderService:{dimensions:{css:{cell:{height:18,width:8}}}}},onRender(){},onResize(){},focus(){}}};
   const document={createElement:()=>({style:{},setAttribute(){}}),head:{append(){}},querySelector:()=>modal?{}:null,
-    activeElement:{},
+    activeElement:{},visibilityState:'visible',hasFocus:()=>browserFocused,getElementById:()=>null,
     body:{append(){},classList:{contains:c=>classes.has(c),toggle:(c,on)=>on?classes.add(c):classes.delete(c)}},
     documentElement:{style:{getPropertyValue:key=>properties.get(key)||'',setProperty:(key,val)=>properties.set(key,val)}}};
+  parent.document=document;
   vm.runInNewContext(source,{window,document,parent,location:{pathname:'/hosts/windows/main',origin:'http://localhost:8090'},localStorage:{getItem:()=>null},MutationObserver:class{observe(){}},requestAnimationFrame:fn=>frames.push(fn),setTimeout:fn=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id),Event:class{},TextEncoder});
   const key=(code,extra={})=>{const event={code,altKey:true,ctrlKey:false,metaKey:false,shiftKey:false,preventDefault(){this.prevented=true;},stopImmediatePropagation(){this.stopped=true;},...extra};handlers.keydown(event);return event;};
   const state=(payload={})=>{const socket=new window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');socket.handlers.message({data:JSON.stringify({type:'MobileState',payload})});while(frames.length)frames.shift()();};
   const error=(...lines)=>{const socket=new window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');socket.handlers.message({data:JSON.stringify({type:'LogError',lines})});};
-  return{window,handlers,parent,messages,properties,classes,key,state,error,setFocus:v=>focused=v,setModal:v=>modal=v,setBottomRows:v=>bottomRows=v,setFirstRow:v=>firstRow=v,frames,resizes,timers};
+  return{window,handlers,parent,messages,properties,classes,key,state,error,setFocus:v=>focused=v,setBrowserFocus:v=>browserFocused=v,setFrameActive:v=>frameActive=v,setModal:v=>modal=v,setBottomRows:v=>bottomRows=v,setFirstRow:v=>firstRow=v,frames,resizes,timers};
 }
+test('last focused browser claims once, background metadata and hidden sessions never reclaim',()=>{
+  const h=harness(),sent=[];h.window.__zjSupportsTabViewport=true;h.window.__zjSendControl=message=>sent.push(message);
+  const payload=tab=>({active_pane:{pane_id:tab+1,is_plugin:false,tab_position:tab},tab_viewport:{owner_active:false}});
+  h.setBrowserFocus(true);h.state(payload(0));h.state(payload(0));
+  assert.equal(sent.length,1);assert.equal(sent[0].ownership,true);assert.equal(sent[0].size.cols,100);
+  h.setBrowserFocus(false);h.state(payload(1));h.handlers.focus();assert.equal(sent.length,1);
+  h.setBrowserFocus(true);h.handlers.focus();assert.equal(sent.length,2);assert.equal(sent[1].tab_position,1);
+  h.state(payload(1));assert.equal(sent.length,2,'A new owner in metadata must not trigger focus ping-pong');
+  h.setFrameActive(false);h.state(payload(2));h.handlers.focus();assert.equal(sent.length,2);
+  h.setFrameActive(true);h.state(payload(2));assert.equal(sent.length,3);
+  h.parent.document.visibilityState='hidden';h.handlers.focus();assert.equal(sent.length,3);
+  h.parent.document.visibilityState='visible';
+  const socket=new h.window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');socket.handlers.close();
+  h.state(payload(2));assert.equal(sent.length,4,'A reconnected focused viewer claims its physical size');
+});
+test('size claim waits for the requested pane and follows the newly focused tab',()=>{
+  const h=harness(),sent=[];h.window.__zjSupportsTabViewport=true;h.window.__zjSendControl=message=>sent.push(message);h.setBrowserFocus(true);
+  const payload=tab=>({active_pane:{pane_id:tab+1,is_plugin:false,tab_position:tab},tab_viewport:{owner_active:false}});
+  h.state(payload(0));
+  h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-focus',pane_id:2,is_plugin:false}});
+  h.handlers.focus();h.state(payload(0));
+  assert.deepEqual(sent.map(m=>m.type),['SetTabViewport','FocusPane']);
+  h.state(payload(1));assert.deepEqual(sent.map(m=>m.type),['SetTabViewport','FocusPane','SetTabViewport']);
+  assert.equal(sent[2].tab_position,1);
+});
 test('New tab holds input until its native pane is active, then focuses without waiting for the catalog',()=>{
   const h=harness(),sent=[];let focused=0;
   h.window.term.focus=()=>focused++;h.window.__zjSendControl=message=>sent.push(message);

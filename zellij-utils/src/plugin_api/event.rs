@@ -2034,7 +2034,7 @@ impl TryFrom<ProtobufModeUpdatePayload> for ModeInfo {
 
         let mode_info = ModeInfo {
             mode: current_mode,
-            keybinds,
+            keybinds: keybinds.into(),
             style,
             capabilities,
             session_name,
@@ -2098,7 +2098,8 @@ impl TryFrom<ModeInfo> for ProtobufModeUpdatePayload {
             .map(|key| key.to_kdl())
             .collect();
         let mut protobuf_input_mode_keybinds: Vec<ProtobufInputModeKeybinds> = vec![];
-        for (input_mode, input_mode_keybinds) in mode_info.keybinds {
+        for (input_mode, input_mode_keybinds) in std::sync::Arc::unwrap_or_clone(mode_info.keybinds)
+        {
             let mode: ProtobufInputMode = input_mode.try_into()?;
             let mut keybinds: Vec<ProtobufKeyBind> = vec![];
             for (key, actions) in input_mode_keybinds {
@@ -2455,7 +2456,8 @@ fn serialize_mode_update_event_with_non_default_values() {
                     ),
                 ],
             ),
-        ],
+        ]
+        .into(),
         style: Style {
             colors: Palette {
                 source: crate::data::PaletteSource::Default,

@@ -18,6 +18,7 @@ use std::hash::{Hash, Hasher};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::str::{self, FromStr};
+use std::sync::Arc;
 use std::time::Duration;
 use strum_macros::{Display, EnumDiscriminants, EnumIter, EnumString};
 use unicode_width::UnicodeWidthChar;
@@ -1779,7 +1780,9 @@ pub type KeybindsVec = Vec<(InputMode, Vec<(KeyWithModifier, Vec<Action>)>)>;
 pub struct ModeInfo {
     pub mode: InputMode,
     pub base_mode: Option<InputMode>,
-    pub keybinds: KeybindsVec,
+    // Tabs and their layout managers share this immutable snapshot. Reconfiguration
+    // replaces it; serialization retains the original keybinding array format.
+    pub keybinds: Arc<KeybindsVec>,
     pub style: Style,
     pub capabilities: PluginCapabilities,
     pub session_name: Option<String>,
@@ -1808,7 +1811,7 @@ impl ModeInfo {
     }
 
     pub fn get_keybinds_for_mode(&self, mode: InputMode) -> Vec<(KeyWithModifier, Vec<Action>)> {
-        for (vec_mode, map) in &self.keybinds {
+        for (vec_mode, map) in self.keybinds.iter() {
             if mode == *vec_mode {
                 return map.to_vec();
             }
@@ -1816,7 +1819,7 @@ impl ModeInfo {
         vec![]
     }
     pub fn update_keybinds(&mut self, keybinds: Keybinds) {
-        self.keybinds = keybinds.to_keybinds_vec();
+        self.keybinds = Arc::new(keybinds.to_keybinds_vec());
     }
     pub fn update_default_mode(&mut self, new_default_mode: InputMode) {
         self.base_mode = Some(new_default_mode);
@@ -3755,5 +3758,66 @@ pub fn can_parse_unicode_bare_keys() {
         BareKey::from_bytes_with_u(&key.as_bytes()),
         Some(BareKey::Char('ъ')),
         "Can parse a bare 'ъ' keypress"
+    );
+}
+
+#[test]
+fn mode_info_clones_share_keybinds_and_keep_the_original_wire_format() {
+    let bindings = vec![(
+        InputMode::Normal,
+        vec![(
+            KeyWithModifier::new(BareKey::Char('x')),
+            vec![Action::WriteChars {
+                chars: "original".into(),
+            }],
+        )],
+    )];
+    let mode = ModeInfo {
+        keybinds: bindings.clone().into(),
+        ..Default::default()
+    };
+    let cloned = mode.clone();
+    assert!(Arc::ptr_eq(&mode.keybinds, &cloned.keybinds));
+    let mut encoded = serde_json::to_value(&mode).unwrap();
+    assert_eq!(
+        encoded["keybinds"],
+        serde_json::to_value(&bindings).unwrap()
+    );
+    // A payload from the older engine still deserializes without a wrapper.
+    encoded["keybinds"] = serde_json::to_value(&bindings).unwrap();
+    assert_eq!(serde_json::from_value::<ModeInfo>(encoded).unwrap(), mode);
+}
+
+#[test]
+fn mode_info_reconfiguration_keeps_previous_keybinding_snapshots_valid() {
+    let key = KeyWithModifier::new(BareKey::Char('x'));
+    let old_action = Action::WriteChars {
+        chars: "old".into(),
+    };
+    let new_action = Action::WriteChars {
+        chars: "new".into(),
+    };
+    let mut mode = ModeInfo {
+        keybinds: vec![(
+            InputMode::Normal,
+            vec![(key.clone(), vec![old_action.clone()])],
+        )]
+        .into(),
+        ..Default::default()
+    };
+    let previous = mode.clone();
+    let mut bindings = Keybinds::default();
+    bindings
+        .get_input_mode_mut(&InputMode::Normal)
+        .insert(key.clone(), vec![new_action.clone()]);
+    mode.update_keybinds(bindings);
+    assert!(!Arc::ptr_eq(&mode.keybinds, &previous.keybinds));
+    assert_eq!(
+        previous.get_keybinds_for_mode(InputMode::Normal),
+        vec![(key.clone(), vec![old_action])]
+    );
+    assert_eq!(
+        mode.get_keybinds_for_mode(InputMode::Normal),
+        vec![(key, vec![new_action])]
     );
 }

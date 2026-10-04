@@ -1890,9 +1890,36 @@ mod web_client_tests {
     #[tokio::test]
     #[serial]
     async fn test_kicked_by_host_sends_close_code_4001() {
-        let _ = delete_db();
+        assert_exit_close_codes(zellij_utils::ipc::ExitReason::KickedByHost, 4001).await;
+    }
 
-        let test_token_name = "test_token_kicked_by_host";
+    #[tokio::test]
+    #[serial]
+    async fn test_intentional_exit_stops_terminal_and_control_reconnect() {
+        use zellij_utils::ipc::ExitReason;
+        for reason in [
+            ExitReason::Normal,
+            ExitReason::NormalDetached,
+            ExitReason::ForceDetached,
+            ExitReason::CustomExitStatus(7),
+        ] {
+            assert_exit_close_codes(reason, 4001).await;
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_disconnect_preserves_terminal_and_control_reconnect() {
+        assert_exit_close_codes(zellij_utils::ipc::ExitReason::Disconnect, 1000).await;
+    }
+
+    async fn assert_exit_close_codes(
+        exit_reason: zellij_utils::ipc::ExitReason,
+        expected_code: u16,
+    ) {
+        // This fixture owns only its unique token; leave other development
+        // credentials intact when running the focused lifecycle regression.
+        let test_token_name = format!("test_token_exit_close_codes_{}", uuid::Uuid::new_v4());
         let read_only = false;
         let (auth_token, _) = create_token(Some(test_token_name.to_string()), read_only)
             .expect("Failed to create test token");
@@ -1983,19 +2010,18 @@ mod web_client_tests {
             );
             if let Some((_, mock_api)) = mock_apis.iter().next() {
                 mock_api.queue_server_message(ServerToClientMsg::Exit {
-                    exit_reason: zellij_utils::ipc::ExitReason::KickedByHost,
+                    exit_reason: exit_reason.clone(),
                 });
             }
         }
 
-        let mut terminal_got_4001 = false;
+        let mut terminal_got_expected_code = false;
         let mut terminal_closed = false;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
         while tokio::time::Instant::now() < deadline {
             match timeout(Duration::from_millis(500), terminal_stream.next()).await {
                 Ok(Some(Ok(Message::Close(Some(frame))))) => {
-                    terminal_got_4001 = frame.code
-                        == tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Library(4001);
+                    terminal_got_expected_code = u16::from(frame.code) == expected_code;
                     terminal_closed = true;
                     break;
                 },
@@ -2020,18 +2046,17 @@ mod web_client_tests {
             "Terminal WebSocket should have been closed within the timeout"
         );
         assert!(
-            terminal_got_4001,
-            "Terminal WebSocket should close with code 4001 when kicked by host"
+            terminal_got_expected_code,
+            "Terminal WebSocket should close with code {expected_code} for {exit_reason:?}"
         );
 
-        let mut control_got_4001 = false;
+        let mut control_got_expected_code = false;
         let mut control_closed = false;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         while tokio::time::Instant::now() < deadline {
             match timeout(Duration::from_millis(500), control_stream.next()).await {
                 Ok(Some(Ok(Message::Close(Some(frame))))) => {
-                    control_got_4001 = frame.code
-                        == tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Library(4001);
+                    control_got_expected_code = u16::from(frame.code) == expected_code;
                     control_closed = true;
                     break;
                 },
@@ -2054,155 +2079,13 @@ mod web_client_tests {
             "Control WebSocket should have been closed within the timeout"
         );
         assert!(
-            control_got_4001,
-            "Control WebSocket should close with code 4001 when kicked by host"
+            control_got_expected_code,
+            "Control WebSocket should close with code {expected_code} for {exit_reason:?}"
         );
 
         let _ = control_sink.close().await;
         server_handle.abort();
-        revoke_token(test_token_name).expect("Failed to revoke test token");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_normal_exit_sends_normal_close_code() {
-        let _ = delete_db();
-
-        let test_token_name = "test_token_normal_exit_close_code";
-        let read_only = false;
-        let (auth_token, _) = create_token(Some(test_token_name.to_string()), read_only)
-            .expect("Failed to create test token");
-
-        let session_manager = Arc::new(MockSessionManager::new());
-        let client_os_api_factory = Arc::new(MockClientOsApiFactory::new());
-        let factory_for_verification = client_os_api_factory.clone();
-
-        let config = Config::default();
-        let options = Options::default();
-
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-
-        let temp_config_path = std::env::temp_dir().join("test_config.kdl");
-        let server_handle = tokio::spawn(async move {
-            serve_web_client(
-                config,
-                options,
-                Some(temp_config_path),
-                listener,
-                None,
-                Some(session_manager),
-                Some(client_os_api_factory),
-                addr.ip(),
-                port,
-            )
-            .await;
-        });
-
-        wait_for_server(port, Duration::from_secs(5))
-            .await
-            .expect("Server failed to start");
-
-        let session_token = login_and_get_session_token(port, &auth_token).await;
-        let web_client_id = create_client_session(port, &session_token).await;
-
-        let terminal_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/terminal?web_client_id={}",
-            port, web_client_id
-        );
-        let (terminal_ws, _) = timeout(
-            Duration::from_secs(5),
-            connect_async_with_cookie(&terminal_ws_url, &session_token),
-        )
-        .await
-        .expect("Terminal WebSocket connection timed out")
-        .expect("Failed to connect to terminal WebSocket");
-
-        let (_terminal_sink, mut terminal_stream) = terminal_ws.split();
-
-        let control_ws_url = format!(
-            "ws://127.0.0.1:{}/ws/control?web_client_id={}",
-            port, web_client_id
-        );
-        let (control_ws, _) = timeout(
-            Duration::from_secs(5),
-            connect_async_with_cookie(&control_ws_url, &session_token),
-        )
-        .await
-        .expect("Control WebSocket connection timed out")
-        .expect("Failed to connect to control WebSocket");
-
-        let (mut control_sink, _control_stream) = control_ws.split();
-
-        let resize_msg = WebClientToWebServerControlMessage {
-            web_client_id: web_client_id.clone(),
-            payload: WebClientToWebServerControlMessagePayload::TerminalResize(Size {
-                rows: 30,
-                cols: 100,
-            }),
-        };
-        control_sink
-            .send(Message::Text(
-                serde_json::to_string(&resize_msg).unwrap().into(),
-            ))
-            .await
-            .expect("Failed to send resize message");
-
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        {
-            let mock_apis = factory_for_verification.mock_apis.lock().unwrap();
-            assert!(
-                !mock_apis.is_empty(),
-                "Expected at least one mock API to be registered"
-            );
-            if let Some((_, mock_api)) = mock_apis.iter().next() {
-                mock_api.queue_server_message(ServerToClientMsg::Exit {
-                    exit_reason: zellij_utils::ipc::ExitReason::Normal,
-                });
-            }
-        }
-
-        let mut terminal_got_normal = false;
-        let mut terminal_closed = false;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
-        while tokio::time::Instant::now() < deadline {
-            match timeout(Duration::from_millis(500), terminal_stream.next()).await {
-                Ok(Some(Ok(Message::Close(Some(frame))))) => {
-                    terminal_got_normal = frame.code
-                        == tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Normal;
-                    terminal_closed = true;
-                    break;
-                },
-                Ok(Some(Ok(Message::Close(None)))) => {
-                    terminal_got_normal = true;
-                    terminal_closed = true;
-                    break;
-                },
-                Ok(Some(Ok(_other))) => {
-                    continue;
-                },
-                Ok(Some(Err(_))) | Ok(None) => {
-                    terminal_closed = true;
-                    break;
-                },
-                Err(_) => continue,
-            }
-        }
-        assert!(
-            terminal_closed,
-            "Terminal WebSocket should have been closed within the timeout"
-        );
-        assert!(
-            terminal_got_normal,
-            "Terminal WebSocket should close with NORMAL code for non-kicked exit"
-        );
-
-        let _ = control_sink.close().await;
-        server_handle.abort();
-        revoke_token(test_token_name).expect("Failed to revoke test token");
+        revoke_token(&test_token_name).expect("Failed to revoke test token");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
@@ -3039,6 +2922,7 @@ mod web_client_tests {
             WebSessionInfo {
                 name: "zebra".to_owned(),
                 web_clients_allowed: false,
+                sharing_recovery: false,
                 tab_count: 1,
                 pane_count: 2,
                 connected_clients: 0,
@@ -3047,6 +2931,7 @@ mod web_client_tests {
             WebSessionInfo {
                 name: "alpha".to_owned(),
                 web_clients_allowed: true,
+                sharing_recovery: false,
                 tab_count: 3,
                 pane_count: 7,
                 connected_clients: 1,

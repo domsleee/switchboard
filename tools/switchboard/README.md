@@ -4,10 +4,18 @@ One searchable sidebar across existing Zellij web servers. Reuses each host's st
 terminal client, including its input handling and mobile controls. No remote
 Zellij changes are required.
 
+This fork runs terminals and web connections in Rust without the WASM plugin
+runtime. Existing layouts keep their terminal panes and lose plugin bars;
+background plugins are ignored and explicit plugin commands return an error.
+Native tab creation, layout changes, saved sessions and web sharing remain available.
+The sidebar relay, UI and terminal engine are bundled in the Rust executable.
+Updating the executable changes new sessions;
+running sessions keep their existing engine until they end naturally.
+
 Run on the Mac:
 
 ```sh
-uv run --script tools/switchboard/server.py
+zellij serve --host-config ~/.config/zellij/switchboard-hosts.json
 ```
 
 Open https://switchboard.localhost (Portless), or http://127.0.0.1:8090. Use **Settings → Machines** to assign work/home groups or refresh sessions.
@@ -21,10 +29,22 @@ This builds `~/Applications/Switchboard.app`, adds a terminal icon to the menu
 bar, installs login LaunchAgents, and starts native Zellij web daemon mode if
 needed. The icon opens Switchboard, shows status, starts servers, and opens logs.
 Logs are in `~/Library/Logs/zellij-switchboard.log`. Quitting the menu bar app
-leaves the relay and terminal sessions running. Swift's compiler, `uv`, and
-`zellij` must be installed.
+leaves the relay and terminal sessions running. Swift's compiler and this fork's
+`zellij` executable must be installed. Python is used only to run the Mac installer.
 
-On Windows, install `uv` and `zellij`, then put your local authenticated host
+To update a Mac's native executable while keeping open terminals running
+(requires `jq`):
+
+```sh
+bash tools/switchboard/update_local.sh target/release/zellij
+```
+
+Existing sessions keep their original engine; new sessions use the update.
+Running services and browser connections remain untouched. The updater retains
+the previous executable and checks live sessions before and after the switch.
+See [updating Switchboard](../../docs/SWITCHBOARD_UPDATES.md).
+
+On Windows, install this fork's `zellij.exe`, then put your local authenticated host
 configuration in `~/.config/switchboard/hosts.json` using the format below. Set
 `escape_transport` to `local` and keep the token file on Windows. Run once in
 PowerShell:
@@ -36,7 +56,7 @@ powershell -ExecutionPolicy Bypass -File tools/switchboard/install_windows_web.p
 ```
 
 This installs a current-user **Switchboard** Startup shortcut and a tray icon,
-copies the relay into `~/.config/switchboard`, and starts native daemon mode only
+starts the embedded Rust relay, and starts native daemon mode only
 if the server is offline. The tray supervises the relay and web server and opens
 the actual sidebar at **http://switchboard.localhost** on loopback port 80.
 Logs are in `~/.config/switchboard`. Quitting the tray leaves terminals running.
@@ -58,10 +78,11 @@ Tabs and controls live in one stable, resizable left sidebar, leaving the full
 terminal height available. An amber dot marks tabs that
 need attention; viewing a result clears the dot without moving the tab.
 
-Choose **Use this window’s size** to size the current tab to this browser. Smaller browser
+The last focused browser window sizes its current tab automatically. **Use this window’s size**
+also claims the size explicitly. Smaller browser
 viewers scroll over the same layout and start at the bottom, near the prompt. **Back to bottom**
-returns after scrolling up. **Release this window’s size** restores sizing to fit all viewers.
-Ownership transfers when another browser claims it, and releases when the owner leaves the tab or disconnects.
+returns after scrolling up. Background windows never reclaim the size from metadata updates.
+Ownership transfers on focus and releases when the owner leaves the tab or disconnects.
 Smaller plain terminals and older browsers still constrain the layout because they cannot pan.
 Existing sessions need the updated native server; updating the web server alone does not update a running session.
 See the [update plan](../../docs/SWITCHBOARD_UPDATES.md) for preserving running processes during future automatic updates.
@@ -129,8 +150,8 @@ Archive preserves processes and does not erase attention state.
 This works with already-running agents, without notification hooks or replacing
 Zellij. Detection follows terminal UI markers; unrecognized screens report
 unknown, and disconnected hosts lose stale ready status. Very short turns between
-polls can be missed if their completion marker is unchanged. The Windows scanner
-uses Python 3, installed as `~/.config/zellij/switchboard-attention-scan.py` and
+polls can be missed if their completion marker is unchanged. The Rust scanner
+reads native pane snapshots locally. Older remote Windows hosts use bounded PowerShell CLI probes and
 run through the same private control shell used by Escape and Close. Only pane
 identity/status/change markers reach the browser, not terminal transcripts.
 
@@ -150,9 +171,8 @@ attached so their tab metadata can be collected. Background frames keep their
 viewport size; attaching clients can still affect Zellij's layout sizing.
 Disconnected clients reconnect using Zellij's own behavior.
 
-Shift-click opens terminal links as a preview within Switchboard. **Back to
-terminal** restores the terminal, and **Open in browser tab** handles sites that
-block embedding. Loopback links on remote hosts use that machine’s LAN address
+Shift-click opens terminal links in a new browser tab. Loopback links on remote
+hosts use that machine’s LAN address
 or its configured `artifact_urls` mapping. This requires a reachable artifact
 server or tunnel; rewriting a URL cannot reach a remote loopback-only server.
 
@@ -194,3 +214,9 @@ python3 tools/switchboard/install_service.test.py
 Run browser checks with headless Playwright against isolated testing sessions.
 Keep automation clients out of live sessions: their viewport can shrink the
 shared terminal, including when the iframe is hidden.
+
+Run native terminal integration checks with `cargo xtask integration-test`.
+Tests now check terminal output, input, geometry and CLI errors without plugin
+bars. Older UI suites that require those bars are retained in
+`zellij-integration-tests/tests/legacy_plugin_ui` as migration fixtures and are
+not run. The server's terminal unit tests remain active.

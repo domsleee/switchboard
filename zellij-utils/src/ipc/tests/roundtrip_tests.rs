@@ -809,6 +809,14 @@ fn test_client_messages() {
         pane_to_focus: None,
         is_web_client: false,
     });
+    for enabled in [true, false] {
+        test_client_roundtrip!(ClientToServerMsg::Action {
+            action: Action::SetWebSharing { enabled },
+            terminal_id: None,
+            client_id: None,
+            is_cli_client: true,
+        });
+    }
     // TODO: Action
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::Quit,

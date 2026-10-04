@@ -19,6 +19,8 @@ mod stdin_handler;
 #[cfg(windows)]
 mod stdin_handler_windows;
 #[cfg(feature = "web_server_capability")]
+pub mod switchboard_relay;
+#[cfg(feature = "web_server_capability")]
 pub mod web_client;
 
 use log::info;
@@ -1176,7 +1178,25 @@ pub fn start_client(
         },
     };
 
-    os_input.connect_to_server(&*ipc_pipe);
+    let existing_only = matches!(
+        &cli_args.command,
+        Some(zellij_utils::cli::Command::Sessions(
+            zellij_utils::cli::Sessions::Attach {
+                existing_only: true,
+                ..
+            }
+        ))
+    );
+    if existing_only {
+        if let Err(error) = os_input.try_connect_to_server(&ipc_pipe) {
+            exit_after_startup_error(
+                Some(terminal_teardown),
+                format!("Existing session is unavailable; no session was created: {error}"),
+            );
+        }
+    } else {
+        os_input.connect_to_server(&*ipc_pipe);
+    }
     os_input.send_to_server(first_msg);
 
     let mut command_is_executing = CommandIsExecuting::new();

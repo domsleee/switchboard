@@ -29,6 +29,7 @@ names = { workspace = true }
 suggest = { workspace = true }
 thiserror = { workspace = true }
 isahc = { workspace = true }
+tokio = { workspace = true }
 
 [target.'cfg(windows)'.build-dependencies]
 embed-resource = "3"
@@ -42,25 +43,10 @@ vte = { workspace = true }
 
 [workspace]
 members = [
-    "default-plugins/compact-bar",
-    "default-plugins/status-bar",
-    "default-plugins/strider",
-    "default-plugins/tab-bar",
-    "default-plugins/fixture-plugin-for-tests",
-    "default-plugins/session-manager",
-    "default-plugins/configuration",
-    "default-plugins/plugin-manager",
-    "default-plugins/about",
-    "default-plugins/share",
-    "default-plugins/multiple-select",
-    "default-plugins/layout-manager",
-    "default-plugins/link",
     "zellij-client",
     "zellij-integration-tests",
     "zellij-server",
     "zellij-utils",
-    "zellij-tile",
-    "zellij-tile-utils",
     "xtask",
     ".",
 ]
@@ -99,7 +85,7 @@ pretty-bytes = { version = "0.2.2", default-features = false }
 prost = { version = "0.12.6", default-features = false, features = ["std", "prost-derive"] }
 rand = { version = "0.10.2", default-features = false, features = ["std", "std_rng", "thread_rng"] }
 regex = { version = "1.5.5", default-features = false, features = ["perf", "std", "unicode-perl"] }
-serde = { version = "1.0", default-features = false, features = ["derive", "std"] }
+serde = { version = "1.0", default-features = false, features = ["derive", "std", "rc"] }
 serde_json = { version = "1.0", default-features = false, features = ["std"] }
 signal-hook = { version = "0.3", default-features = false, features = ["iterator"] }
 strip-ansi-escapes = { version = "0.2.1", default-features = false }
@@ -150,13 +136,9 @@ pkg-fmt = "tgz"
 
 [features]
 # See remarks in zellij_utils/Cargo.toml
-default = ["plugins_from_target", "vendored_curl", "web_server_capability"]
+default = ["vendored_curl", "web_server_capability"]
 plugins_from_target = ["zellij-utils/plugins_from_target"]
 disable_automatic_asset_installation = ["zellij-utils/disable_automatic_asset_installation"]
 vendored_curl = ["zellij-utils/vendored_curl"]
 unstable = ["zellij-client/unstable", "zellij-utils/unstable"]
 web_server_capability = ["zellij-client/web_server_capability", "zellij-server/web_server_capability", "zellij-utils/web_server_capability"]
-
-# uncomment this when developing plugins in the Zellij UI to make plugin compilation faster
-# [profile.dev.package."*"]
-# opt-level = 3

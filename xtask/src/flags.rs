@@ -32,7 +32,7 @@ xflags::xflags! {
                 optional --no-web
             }
 
-            /// Native release build (plugins + binary, no cross-compilation)
+            /// Native release build without cross-compilation
             cmd build-release {
                 /// Compile without web server support
                 optional --no-web
@@ -69,22 +69,21 @@ xflags::xflags! {
             optional --no-web
         }
 
-        /// Generate a runnable `zellij` executable with plugins bundled
+        /// Generate a runnable native `zellij` executable
         cmd install {
             required destination: PathBuf
             /// Compile without web server support
             optional --no-web
             /// Extra arguments appended to the native `cargo build` invocation
             /// (e.g. `--no-default-features`, `--features ...`, `--offline`, `--locked`, `-j N`).
-            /// Not applied to the wasm plugin build.
             repeated args: OsString
         }
 
         /// Run debug version of zellij
         cmd run {
-            /// Take plugins from asset folder, skip building plugins.
+            /// Compatibility flag for older build scripts
             optional --quick-run
-            /// Take plugins from here, skip building plugins. Passed to zellij verbatim
+            /// Data directory passed to zellij verbatim
             optional --data-dir path: PathBuf
             /// Disable optimizing dependencies
             optional --disable-deps-optimize
@@ -119,19 +118,18 @@ xflags::xflags! {
             repeated args: OsString
         }
 
-        /// Build the application and all plugins
+        /// Build the native application
         cmd build {
             /// Build in release mode without debug symbols
             optional -r, --release
-            /// Build only the plugins
+            /// Unsupported legacy flag, reports an error
             optional -p, --plugins-only
-            /// Build everything except the plugins
+            /// Compatibility flag; all builds are plugin-free
             optional --no-plugins
             /// Compile without web support
             optional --no-web
             /// Extra arguments appended to the native `cargo build` invocation
             /// (e.g. `--no-default-features`, `--features ...`, `--offline`, `--locked`, `-j N`).
-            /// Not applied to the wasm plugin build.
             repeated args: OsString
         }
     }

@@ -16,10 +16,16 @@ futures = { version = "0.3.30", optional = true }
 axum = { version = "0.8.4", features = ["ws"], optional = true }
 axum-extra = { version = "0.12", features = ["cookie"], optional = true }
 axum-server = { version = "0.8", features = ["tls-rustls"], optional = true }
+hyper = { version = "1", features = ["client", "http1"], optional = true }
+hyper-util = { version = "0.1", features = ["tokio"], optional = true }
+http-body-util = { version = "0.1", optional = true }
+flate2 = { version = "1", optional = true }
+sha2 = { workspace = true, optional = true }
 time = { version = "0.3", optional = true }
 tower-http = { version = "0.6.4", features = ["cors"], optional = true }
 
 anyhow = { workspace = true }
+base64 = { version = "0.22", default-features = false, features = ["std"] }
 async-trait = { workspace = true }
 crossterm = { workspace = true, features = ["events", "bracketed-paste"] }
 dialoguer = { workspace = true }
@@ -79,6 +85,11 @@ web_server_capability = [
     "dep:axum-extra",
     "dep:time",
     "dep:axum-server",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:http-body-util",
+    "dep:flate2",
+    "dep:sha2",
     "dep:tower-http",
     "zellij-utils/web_server_capability",
 ]

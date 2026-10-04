@@ -146,8 +146,26 @@ pub async fn create_new_client(
     }))
 }
 
-pub async fn list_sessions_handler(State(state): State<AppState>) -> Json<SessionListResponse> {
+pub async fn list_sessions_handler(
+    State(state): State<AppState>,
+    request: axum::extract::Request,
+) -> Json<SessionListResponse> {
     let mut sessions = state.session_manager.list_sessions();
+    let is_read_only = request
+        .extensions()
+        .get::<IsReadOnly>()
+        .copied()
+        .unwrap_or(IsReadOnly(true))
+        .0;
+    if let Some(recovery) = state.sharing_recovery.as_ref() {
+        for session in &mut sessions {
+            if !session.web_clients_allowed && recovery.catalog_allowed(&session.name, is_read_only)
+            {
+                session.web_clients_allowed = true;
+                session.sharing_recovery = true;
+            }
+        }
+    }
     sessions.sort_by(|a, b| a.name.cmp(&b.name));
     Json(SessionListResponse { sessions })
 }
