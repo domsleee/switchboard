@@ -52,6 +52,16 @@
     if(size&&window.__zjViewport.report(size,true))claimedViewportTab=tab;
   }
   window.addEventListener('focus',()=>claimFocusedViewport(true));
+  function moveTerminal(terminal,target,before=null){
+    const active=document.activeElement,focused=terminal.contains(active)&&document.hasFocus();
+    // Moving a focused textarea with append/before blurs it. Prefer a state
+    // preserving DOM move, with a focus-preserving fallback for older browsers.
+    if(typeof target.moveBefore==='function')target.moveBefore(terminal,before);
+    else{
+      target.insertBefore(terminal,before);
+      if(focused&&document.activeElement!==active)active.focus({preventScroll:true});
+    }
+  }
   function updateViewport(){
     if(!scrollport && !window.__zjViewport.getSizing()?.pinned)return;
     const terminal=document.getElementById('terminal');
@@ -59,7 +69,7 @@
     const sizing=window.__zjViewport.getSizing();
     if(!sizing?.pinned){
       if(scrollport){
-        scrollport.before(terminal);scrollport.remove();scrollport=null;
+        moveTerminal(terminal,scrollport.parentNode,scrollport);scrollport.remove();scrollport=null;
         for(const key of ['width','height','marginTop'])terminal.style[key]='';
         bottomButton?.remove();bottomButton=null;viewportTab=null;
         document.body.classList.remove('switchboard-owned-viewport');
@@ -70,7 +80,7 @@
     if(!cell?.width||!cell.height)return;
     if(!scrollport){
       scrollport=document.createElement('div');scrollport.id='switchboard-viewport';
-      terminal.before(scrollport);scrollport.append(terminal);
+      terminal.before(scrollport);moveTerminal(terminal,scrollport);
       bottomButton=document.createElement('button');bottomButton.id='switchboard-bottom';bottomButton.textContent='Back to bottom';
       bottomButton.onclick=()=>{scrollport.scrollTop=scrollport.scrollHeight;window.term?.focus();};
       document.body.append(bottomButton);

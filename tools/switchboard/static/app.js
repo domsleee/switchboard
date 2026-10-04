@@ -32,14 +32,21 @@ function requestedTab(){
   return host&&session&&/^\d+$/.test(id||'')&&Number(id)<=0xffffffff?JSON.stringify([host,session,'tab',Number(id)]):null;
 }
 function waitingForRequestedTab(){
-  if(!restoringTab)return false;
+  if(!selected)return false;
   const [host,name]=JSON.parse(selected),machine=hosts.get(host),entry=sessions.get(sessionKey(host,name));
+  // An unavailable host or scan is not evidence that the selected tab closed.
+  if(machine?.error)return true;
+  if(machine?.sessions&&!machine.sessions.some(session=>session.name===name))return false;
+  if(catalogUnavailable(host,name))return true;
+  if(!restoringTab)return false;
   if(!machine)return hosts.size===0&&loading;
-  if(machine.error)return false;
   return machine.connecting||!!entry&&(!entry.state||!entry.catalog?.length);
 }
+function catalogUnavailable(host,session){
+  return attentionErrors.some(error=>(error.host==='Switchboard'||error.host===host)&&(!error.session||error.session===session));
+}
 function updateTabUrl(item){
-  if(!item&&restoringTab)return;
+  if(!item&&(restoringTab||waitingForRequestedTab()))return;
   const url=new URL(location.href);
   for(const key of ['host','session','tab'])url.searchParams.delete(key);
   if(item){url.searchParams.set('host',item.entry.host);url.searchParams.set('session',item.entry.name);url.searchParams.set('tab',item.tab.id);}
@@ -184,7 +191,8 @@ function render() {
   $('notifications').textContent=`${notifications} notification${notifications===1?'':'s'}`;
   $('notifications').classList.toggle('has-notifications',notifications>0);
   document.title=`${notifications?'('+notifications+') ':''}`+(current?`${tabTitle(current)} · ${hosts.get(current.entry.host)?.name} · Switchboard`:'Switchboard');
-  for (const entry of sessions.values()) entry.frame.classList.toggle('active',entry===current?.entry);
+  const currentEntry=current?.entry||(waitingForRequestedTab()?sessions.get(sessionKey(...JSON.parse(selected).slice(0,2))):null);
+  for (const entry of sessions.values()) entry.frame.classList.toggle('active',entry===currentEntry);
   const selecting=!!current?.entry.frame.contentWindow.SwitchboardClipboard?.selectionMode;
   $('select-text').setAttribute('aria-pressed',String(selecting));
   $('select-text').classList.toggle('selected',selecting);
@@ -208,7 +216,7 @@ function render() {
   for(const entry of sessions.values())if(entry.closeError)errors.push(entry.closeError);
   for(const error of attentionErrors)errors.push(`${hosts.get(error.host)?.name||error.host}: attention status unavailable`);
   setStatus(errors.length?errors.join(' · '):`${hosts.size} machines · ${tabs.length} tabs${current?' · '+hosts.get(current.entry.host)?.name:''}`,errors.length>0);
-  if ((selected !== previous || wasRestoring&&!restoringTab) && current) focus(current);
+  if ((selected !== previous || wasRestoring&&!restoringTab) && current) focus(current,true);
   if(selected!==previous) $('tabs').querySelector('.selected')?.scrollIntoView({block:'nearest',inline:'nearest'});
 }
 function updateDragTarget() {
@@ -263,7 +271,14 @@ window.addEventListener('focus',()=>{
   const current=allTabs().find(item=>item.key===selected);
   if(current&&document.hasFocus())current.entry.frame.contentWindow.postMessage({type:'zellij-window-focus'},location.origin);
 });
-function focus(item) {
+function focus(item,background=false) {
+  const activeElement=document.activeElement;
+  if(background&&(document.hidden||!document.hasFocus()||!$('artifact-preview').hidden||document.querySelector('dialog[open]')||activeElement&&activeElement!==document.body&&activeElement!==item.entry.frame)){
+    item.entry.needsFocus=true;return;
+  }
+  // A polling retry must not blur/disable a terminal while its control socket
+  // lacks current metadata. The next native state performs the reconnect focus.
+  if(item.entry.disconnected){item.entry.needsFocus=true;return;}
   if(item.entry.pendingNewTab)return;
   item.entry.needsFocus=false;
   $('artifact-preview').hidden=true;
@@ -380,6 +395,7 @@ window.addEventListener('message',event=>{
   const entry=[...sessions.values()].find(e=>e.frame.contentWindow===event.source);
   if(!entry)return;
   if(event.data?.type==='zellij-state') {
+    entry.disconnected=false;
     const previousPosition=entry.state?.active_pane?.tab_position;
     const previousPane=entry.state?.active_pane;
     entry.state=event.data.payload;
@@ -398,7 +414,7 @@ window.addEventListener('message',event=>{
       if(duplicate&&duplicate!==entry)duplicate.frame.remove();
       sessions.set(key,entry);
     }
-    if(!entry.requestedPane && !entry.focusPending && entry.frame.classList.contains('active') && previousPane && (previousPosition!==entry.state.active_pane?.tab_position||previousPane.pane_id!==entry.state.active_pane?.pane_id||previousPane.is_plugin!==entry.state.active_pane?.is_plugin)){
+    if(!entry.needsFocus && !entry.requestedPane && !entry.focusPending && entry.frame.classList.contains('active') && previousPane && (previousPosition!==entry.state.active_pane?.tab_position||previousPane.pane_id!==entry.state.active_pane?.pane_id||previousPane.is_plugin!==entry.state.active_pane?.is_plugin)){
       const tab=activeTab(entry);
       if(tab){selected=tabKey(entry,tab);delete ready[selected];saveReady();entry.followActiveTab=false;}else entry.followActiveTab=true;
     }
@@ -410,7 +426,7 @@ window.addEventListener('message',event=>{
     if(current?.entry===entry && entry.acknowledgeTab===selected && !entry.requestedPane && !entry.focusPending && activeTab(entry)?.id===current.tab.id){acknowledgeAttention(current);entry.acknowledgeTab=null;}
     render();
     if(entry.needsFocus && entry.frame.classList.contains('active')){
-      const current=allTabs().find(item=>item.key===selected);if(current)focus(current);
+      const current=allTabs().find(item=>item.key===selected);if(current)focus(current,true);
     }
   }else if(event.data?.type==='zellij-focus-failed'){
     if(entry.requestedPane?.focus_id!==event.data.focus_id)return;
@@ -440,7 +456,7 @@ window.addEventListener('message',event=>{
     }catch(_){setStatus('Invalid artifact link.',true);}
   }else if(event.data?.type==='zellij-clipboard'){
     setStatus(event.data.ok?'Copied to this browser.':event.data.error||'Copy failed; use the terminal’s clipboard panel.',!event.data.ok);
-  }else if(event.data?.type==='zellij-disconnected'){entry.needsFocus=true;setStatus(`${hosts.get(entry.host)?.name}: reconnecting…`,true);}
+  }else if(event.data?.type==='zellij-disconnected'){entry.disconnected=true;entry.needsFocus=true;setStatus(`${hosts.get(entry.host)?.name}: reconnecting…`,true);}
 });
 $('artifact-back').onclick=()=>{const current=allTabs().find(item=>item.key===selected);if(current)focus(current);else $('artifact-preview').hidden=true;};
 $('select-text').onclick=()=>{
@@ -604,12 +620,15 @@ async function refreshAttention(immediate=false){
     const response=await fetch('/api/attention');if(!response.ok)throw Error('Attention monitor unavailable');
     const data=await response.json();
     paneAttention=new Map((data.panes||[]).map(state=>{const key=attentionKey(state.host,state.session,state.pane_id);return [key,{...state,key}];}));
-    tabCatalog=data.tabs||[];attentionErrors=data.errors||[];
-    for(const entry of sessions.values())if(!attentionErrors.some(error=>error.host===entry.host))setCatalog(entry,tabCatalog.filter(tab=>tab.host===entry.host&&tab.session===entry.name));
+    attentionErrors=data.errors||[];
+    // Retain the last known catalog only for failed scans. An authoritative
+    // successful empty result still removes closed tabs and sessions.
+    tabCatalog=[...(data.tabs||[]).filter(tab=>!catalogUnavailable(tab.host,tab.session)),...tabCatalog.filter(tab=>catalogUnavailable(tab.host,tab.session))];
+    for(const entry of sessions.values())if(!catalogUnavailable(entry.host,entry.name))setCatalog(entry,tabCatalog.filter(tab=>tab.host===entry.host&&tab.session===entry.name));
     const current=allTabs().find(item=>item.key===selected);
     if(current && document.hasFocus() && !document.hidden && $('artifact-preview').hidden && !document.querySelector('dialog[open]') && !current.entry.requestedPane && !current.entry.focusPending && activeTab(current.entry)?.id===current.tab.id)acknowledgeAttention(current);
     render();
-    const selectedTab=allTabs().find(item=>item.key===selected);if(selectedTab?.entry.needsFocus)focus(selectedTab);
+    const selectedTab=allTabs().find(item=>item.key===selected);if(selectedTab?.entry.needsFocus)focus(selectedTab,true);
   }catch(_){paneAttention.clear();attentionErrors=[{host:'Switchboard'}];render();}
   finally{attentionLoading=false;if(attentionRefreshPending){attentionRefreshPending=false;refreshAttention();}}
 }

@@ -22,7 +22,8 @@ node acceptance/switchboard/run.cjs colours
 | `colours` | Windows pane environment rules, runnable on any build platform. Real Windows rendering still needs checking. |
 
 The acceptance runner reuses the existing tests. It does not maintain a second
-copy. Set `PLAYWRIGHT_MODULE` to include the optional headless hyperlink test.
+copy. Set `PLAYWRIGHT_MODULE` to include the optional headless hyperlink and
+terminal focus tests.
 
 ## Tabs and everyday use
 
@@ -214,6 +215,25 @@ and COLORTERM with terminal input/output; that identifies the environment gap,
 not a completed fix. Existing processes retain their original environment.
 
 ## Background operation, connections and updates
+
+### SB-28 · Status errors never take my terminal focus
+
+When “Windows: attention status unavailable” appears, my current terminal keeps
+its keyboard focus, selected tab, URL and iframe. Attention polling and machine
+discovery errors must never switch terminals, focus the sidebar, or disable input
+by retrying focus before the terminal reconnects. Known tabs stay visible during
+failed scans. Recovery keeps my selection and resumes input without another
+click. Refreshing an unavailable terminal waits for it instead of choosing a tab
+on another machine. A successful scan can still remove a genuinely closed tab.
+
+**Tests:** `ui` checks failed-host/session catalog retention and URL restoration.
+With `PLAYWRIGHT_MODULE`, it also checks actual iframe/input focus, uninterrupted
+typing, disconnects, HTTP failures, automatic recovery, viewport DOM moves and
+confirmed closes in an isolated headless browser using the actual terminal
+bridge. The fixture never connects to live sessions.
+**Still to check:** the installed Windows engine and browser reconnecting under
+real network failures. These tests do not fix the remote attention scanner's
+private-helper startup error.
 
 ### SB-16 · Run in the background on both machines
 
