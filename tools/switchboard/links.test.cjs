@@ -18,6 +18,17 @@ handlers.mousedown(click);handlers.mouseup({...click,shiftKey:false});assert.equ
 handlers.mousedown(click);handlers.blur();handlers.mouseup(click);assert.equal(opened.length,0);
 handlers.mousedown(click);handlers.mouseup(click);assert.equal(messages.length,0);
 assert.deepEqual(opened,[['http://172.20.10.69:8765/','_blank','noopener noreferrer']]);
+// A Windows terminal viewed on macOS must honor the viewer's Command key.
+for(const modifier of ['metaKey','ctrlKey']){
+  const event={...click,shiftKey:false,[modifier]:true};
+  const before=opened.length;
+  handlers.mousedown({...event,altKey:true});handlers.mouseup({...event,altKey:true});assert.equal(opened.length,before);
+  handlers.mousedown(event);handlers.mouseup({...event,[modifier]:false});assert.equal(opened.length,before);
+  handlers.mousedown(event);handlers.mouseup(event);
+  assert.deepEqual(opened.at(-1),['http://172.20.10.69:8765/','_blank','noopener noreferrer']);
+  assert.equal(opened.length,before+1,'Each modified click opens exactly one local browser tab');
+}
+opened.splice(1);
 const app=fs.readFileSync(__dirname+'/static/app.js','utf8'),frameWindow={};let active=true;
 const sessions=new Map([['main',{frame:{contentWindow:frameWindow,classList:{contains:()=>active}}}]]);
 vm.runInNewContext(app.slice(app.indexOf("window.addEventListener('message',event=>{"),app.indexOf("$('artifact-back').onclick=")),{window,location,document,URL,sessions,setStatus(){}});
@@ -29,7 +40,7 @@ handlers.message({...message,data:{...message.data,uri:'javascript:alert(1)'}});
 assert.equal(opened.length,1,'Only a valid active terminal may open a link');
 handlers.message(message);
 assert.deepEqual(opened[1],['https://example.test/artifact','_blank','noopener noreferrer']);
-console.log('Shift-click uses a native tab hyperlink; URL mapping and modifier/drag guards passed.');
+console.log('Cmd/Ctrl/Shift-click uses a native tab hyperlink; URL mapping and modifier/drag guards passed.');
 
 // Optional real-browser check: PLAYWRIGHT_MODULE=/path/to/playwright node links.test.cjs
 if(process.env.PLAYWRIGHT_MODULE)(async()=>{
@@ -51,13 +62,16 @@ if(process.env.PLAYWRIGHT_MODULE)(async()=>{
     await page.addScriptTag({path:__dirname+'/static/links.js'});
     await page.locator('#terminal').click();
     assert.equal(context.pages().length,1,'Plain click must not navigate');
+    for(const modifier of ['Meta','Control','Shift']){
     const popupReady=context.waitForEvent('page');
-    await page.locator('#terminal').click({modifiers:['Shift']});
+    await page.locator('#terminal').click({modifiers:[modifier]});
     const popup=await popupReady;await popup.waitForLoadState();
     assert.equal(popup.url(),'http://172.20.10.69:8765/test?q=1#part');
     assert.equal(await popup.evaluate(()=>window.opener),null);
-    assert.deepEqual(await page.evaluate(()=>window.linkClicks),[{shift:false,ctrl:false,alt:false,meta:false,button:0,target:'_blank',rel:'noopener noreferrer'}]);
+    assert.deepEqual(await page.evaluate(()=>window.linkClicks.splice(0)),[{shift:false,ctrl:false,alt:false,meta:false,button:0,target:'_blank',rel:'noopener noreferrer'}]);
     assert.equal(page.url(),location.href,'Original terminal stays in place');
-    console.log('Headless browser: physical Shift-click produces an unmodified hyperlink click and opens the mapped URL with no opener.');
+    await popup.close();
+    }
+    console.log('Headless browser: Cmd/Ctrl/Shift-click opens each remote URL in the viewing browser with no opener.');
   }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});
