@@ -7,7 +7,7 @@ const [suite='ui',...args]=process.argv.slice(2);
 const node=process.execPath;
 const env={...process.env};
 const commands={
-  ui:()=>[[node,'--test',...['sidebar','focus','new-tab','bridge','viewport','clipboard','escape','close','titles','links'].map(name=>'tools/switchboard/'+name+'.test.cjs')]],
+  ui:()=>[[node,'--test',...['sidebar','sidebar-ux','focus','new-tab','bridge','viewport','clipboard','escape','close','titles','links'].map(name=>'tools/switchboard/'+name+'.test.cjs')]],
   relay:()=>[['cargo','test','-p','zellij-client','--features','web_server_capability','switchboard_relay','--lib']],
   colours:()=>[['cargo','test','-p','zellij-server','windows_pane_environment_advertises_colour_without_overriding_preferences','--lib']],
   recovery:()=>['recover_local','browser_readiness','install_service'].map(name=>[process.env.PYTHON_BINARY||'python3','tools/switchboard/'+name+'.test.py']),

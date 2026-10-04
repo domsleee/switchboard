@@ -43,7 +43,7 @@ test('new terminals appear before attention discovery, remain focused, and acqui
     async function create(number){
       await page.locator('#new-tab').click();await page.locator('#new-tab-form button[type="submit"]').click();
       await page.waitForFunction(()=>document.querySelector('#tabs .selected .tab-name')?.textContent==='Creating tab…');
-      assert.equal(await page.locator('#tabs button').count(),number+1);
+      assert.equal(await page.locator('#tabs .tab-select').count(),number+1);
       // Repeated old scans must not treat the preceding provisional tab as this creation.
       await page.evaluate(()=>refreshAttention());
       assert.equal(await page.locator('#tabs .selected .tab-name').textContent(),'Creating tab…');
@@ -54,6 +54,7 @@ test('new terminals appear before attention discovery, remain focused, and acqui
       await page.keyboard.type('draft '+number);
     }
     await create(1);
+    await page.locator('#tabs .selected').click({button:'right'});
     await page.locator('#ready').click();
     await input.click();
     failed=true;await page.evaluate(()=>refreshAttention());
@@ -74,7 +75,7 @@ test('new terminals appear before attention discovery, remain focused, and acqui
     catalog=2;await page.evaluate(()=>refreshAttention());
     await page.waitForFunction(()=>new URL(location.href).searchParams.get('tab')==='91');
     assert.equal(new URL(page.url()).searchParams.has('pane'),false);
-    assert.equal(await page.locator('#tabs button').count(),3);
+    assert.equal(await page.locator('#tabs .tab-select').count(),3);
     assert.deepEqual(await page.locator('#tabs .tab-name').allTextContents(),['Original','New shell 1','New shell 2']);
     assert.equal(await page.evaluate(()=>ready[JSON.stringify(['windows','main','tab',90])]!==undefined),true);
     assert.equal(await input.evaluate(i=>document.activeElement===i),true);

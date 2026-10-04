@@ -8,14 +8,19 @@
   function selectionText() {
     return selectedText || (terminal || window.term)?.getSelection() || '';
   }
+  function selectionChanged() {
+    if(parent!==window)parent.postMessage({type:'zellij-selection-changed'},location.origin);
+  }
   function clearSelection() {
     selectedText = ''; selecting = false;
     (terminal || window.term)?.clearSelection?.();
+    selectionChanged();
   }
   function setSelectionMode(enabled) {
     selectionMode = !!enabled;
     installSelectionMode(terminal || window.term);
     (terminal || window.term)?.element?.classList?.toggle('switchboard-selecting', selectionMode);
+    selectionChanged();
     return selectionMode;
   }
   function installSelectionMode(term) {
@@ -36,6 +41,7 @@
   window.addEventListener('mouseup', () => {
     if (selecting) selectedText = (terminal || window.term)?.getSelection() || '';
     selecting = false;
+    selectionChanged();
   }, true);
 
   function report(result) {
@@ -209,6 +215,7 @@
       const selectionDisposable = term.onSelectionChange?.(() => {
         // Preserve what the user selected even when a TUI redraws those cells.
         if (selecting) selectedText = term.getSelection() || '';
+        selectionChanged();
       });
       this._terminal = term;
       this._disposable = term.parser.registerOscHandler(52, data => {

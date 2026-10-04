@@ -17,7 +17,7 @@ const archived = load('switchboard-archived');
 if(restoringTab&&archived[selected]){delete archived[selected];localStorage.setItem('switchboard-archived',JSON.stringify(archived));}
 const seenAttention = load('switchboard-attention-seen');
 let paneAttention=new Map(),tabCatalog=[],attentionErrors=[],attentionLoading=false,attentionRefreshPending=false;
-let contextItem = null, archiveSignature = null;
+let contextItem = null, menuTrigger = null, archiveSignature = null;
 let tabOrder=load('switchboard-tab-order');
 if(!Array.isArray(tabOrder))tabOrder=[];
 let nativeTabs = localStorage.getItem('switchboard-native-tabs') === 'true';
@@ -183,13 +183,21 @@ function render() {
   if(tabs.some(t=>t.key===selected))restoringTab=false;
   else if(!waitingForRequestedTab()){restoringTab=false;selected=tabs[0]?.key||null;}
   const liveKeys=new Set(tabs.map(item=>item.key));
-  for(const [key,button] of tabButtons)if(!liveKeys.has(key)){button.remove();tabButtons.delete(key);}
+  for(const [key,button] of tabButtons)if(!liveKeys.has(key)){button._row.remove();tabButtons.delete(key);}
   const shown=tabs.filter(matchesSearch), nodes=[],shownKeys=new Set(shown.map(item=>item.key));
+  const titles=new Map(tabs.map(item=>[item.key,tabTitle(item)])),titleCounts=new Map();
+  for(const item of tabs){const key=JSON.stringify([item.entry.host,titles.get(item.key)]);titleCounts.set(key,(titleCounts.get(key)||0)+1);}
   for (const item of shown) {
     let button=tabButtons.get(item.key);
     if(!button){
       button=document.createElement('button');button.draggable=true;
-      const star=document.createElement('span');star.className='star';star.textContent='●';star.title='Needs attention';star.setAttribute('aria-label','Needs attention');
+      const row=document.createElement('div');row.className='tab-row';
+      const actions=document.createElement('button');actions.className='tab-actions';actions.textContent='⋯';
+      actions.setAttribute('aria-haspopup','menu');actions.setAttribute('aria-controls','tab-menu');
+      actions.onclick=()=>{const bounds=actions.getBoundingClientRect();openTabMenu(button._item,bounds.right,bounds.top,actions);};
+      row.append(button,actions);button._row=row;
+      button.onkeydown=event=>{if(event.key==='ContextMenu'||event.shiftKey&&event.key==='F10'){event.preventDefault();const bounds=button.getBoundingClientRect();openTabMenu(button._item,bounds.right,bounds.top,button);}};
+      const star=document.createElement('span');star.className='star';star.setAttribute('aria-hidden','true');
       const name=document.createElement('span');name.className='tab-name';
       const label=document.createElement('small');button.append(star,name,label);
       button.ondragstart=event=>{
@@ -199,26 +207,38 @@ function render() {
         button.classList.add('dragging');$('tabs').classList.add('reordering');
       };
       button.ondragend=finishDrag;
-      button.oncontextmenu=event=>{event.preventDefault();openTabMenu(button._item,event.clientX,event.clientY);};
+      button.oncontextmenu=event=>{event.preventDefault();openTabMenu(button._item,event.clientX,event.clientY,button);};
       button.onclick=()=>{if(dragging||Date.now()<suppressTabClickUntil)return;activate(button._item);};
       tabButtons.set(item.key,button);
     }
     button._item=item;
     button.draggable=!item.tab.pending||Number.isInteger(item.tab.id);
-    const title=tabTitle(item);
-    button.title=`${title}\nDrag to reorder · Alt+Shift+H/L moves this tab · Right-click to archive or close`;
-    const starred = isReady(item);
-    button.className = (item.key === selected ? 'selected' : '')+(starred?' needs-attention':'');
-    button.setAttribute('aria-pressed',String(item.key===selected));
-    button.children[0].hidden=!starred;
-    if(button.children[1].textContent!==title)button.children[1].textContent=title;
+    const title=titles.get(item.key);
+    const machine=hosts.get(item.entry.host)?.name || item.entry.host;
     const stateLabel=autoLabel(item);
-    const subtitle=`${hosts.get(item.entry.host)?.name || item.entry.host} · ${item.entry.name}${stateLabel?' · '+stateLabel:''}`;
-    button.dataset.agentState=stateLabel;
+    const unavailable=attentionErrors.some(error=>error.host==='Switchboard'||error.host===item.entry.host&&(!error.session||error.session===item.entry.name));
+    const flagged=!!ready[item.key]||item.tab.name.startsWith('*');
+    const starred=isReady(item);
+    const status=unavailable?'Status unavailable':stateLabel==='Ready'?'':stateLabel;
+    const duplicate=titleCounts.get(JSON.stringify([item.entry.host,title]))>1;
+    const subtitle=`${machine}${duplicate?' · '+item.entry.name:''}${status?' · '+status:''}${flagged?' · For review':''}`;
+    button.title=`${title} · ${machine} · ${item.entry.name}\n${status||'No pending attention'}${flagged?' · Flagged for review':''}\nDrag to reorder · Alt+Shift+H/L moves this tab · Right-click for actions`;
+    button.className='tab-select'+(item.key===selected?' selected':'')+(starred?' needs-attention':'');
+    button.setAttribute('aria-pressed',String(item.key===selected));
+    button.setAttribute('aria-label',`${title}, ${machine}, ${item.entry.name}${status?', '+status:''}${flagged?', Flagged for review':''}`);
+    const dot=button.children[0];dot.hidden=false;
+    dot.className='star '+(unavailable?'unavailable':starred?'attention':stateLabel==='Working'?'working':'quiet');
+    if(button.children[1].textContent!==title)button.children[1].textContent=title;
+    button.dataset.agentState=unavailable?'Status unavailable':stateLabel;
     if(button.children[2].textContent!==subtitle)button.children[2].textContent=subtitle;
-    nodes.push(button);
+    const row=button._row,actions=row.lastElementChild;row._item=item;
+    row.classList.toggle('active',item.key===selected);
+    actions.setAttribute('aria-label',`Actions for ${title} · ${machine}`);
+    actions.title=`Actions for ${title}`;
+    actions.setAttribute('aria-expanded',String(!$('tab-menu').hidden&&contextItem?.key===item.key));
+    nodes.push(row);
   }
-  for(const button of tabButtons.values())if(!shownKeys.has(button._item.key))button.remove();
+  for(const button of tabButtons.values())if(!shownKeys.has(button._item.key))button._row.remove();
   let cursor=$('tabs').firstChild;
   for(const node of nodes){if(node!==cursor)$('tabs').insertBefore(node,cursor);else cursor=cursor.nextSibling;}
   $('tab-count').textContent=`${shown.length}${shown.length!==tabs.length?' / '+tabs.length:''} tabs`;
@@ -229,22 +249,14 @@ function render() {
   const notifications=allTabs(true,true).filter(isReady).length;
   $('notifications').textContent=`${notifications} notification${notifications===1?'':'s'}`;
   $('notifications').classList.toggle('has-notifications',notifications>0);
+  $('notifications').hidden=notifications===0;
+  $('tab-count').hidden=shown.length===tabs.length;
+  $('sidebar-summary').hidden=notifications===0&&shown.length===tabs.length;
   document.title=`${notifications?'('+notifications+') ':''}`+(current?`${tabTitle(current)} · ${hosts.get(current.entry.host)?.name} · Switchboard`:'Switchboard');
   const currentEntry=current?.entry||(waitingForRequestedTab()?sessions.get(sessionKey(...JSON.parse(selected).slice(0,2))):null);
   for (const entry of sessions.values()) entry.frame.classList.toggle('active',entry===currentEntry);
-  const selecting=!!current?.entry.frame.contentWindow.SwitchboardClipboard?.selectionMode;
-  $('select-text').setAttribute('aria-pressed',String(selecting));
-  $('select-text').classList.toggle('selected',selecting);
-  $('select-text').disabled=!current;
-  $('copy').disabled=!current;
-  $('ready').disabled=!current||current.tab.pending&&!Number.isInteger(current.tab.id);
-  const viewport=current?.entry.state?.tab_viewport;
-  const sizeOwner=$('size-owner');
-  const focused=current && activeTab(current.entry)?.id===current.tab.id && !current.entry.requestedPane && !current.entry.focusPending && !current.entry.pendingNewTab;
-  sizeOwner.disabled=!focused || !viewport || !current.entry.frame.contentWindow.__zjSupportsTabViewport;
-  sizeOwner.setAttribute('aria-pressed',String(!!viewport?.is_owner));
-  sizeOwner.textContent=viewport?.is_owner?'Using this window’s size':'Use this window’s size';
-  sizeOwner.title=!viewport?'Available in new sessions after updating Switchboard.':viewport.constrained?'A smaller plain terminal is keeping this tab within its screen.':'The last focused browser window sets the size. Smaller browser viewers can scroll, starting at the bottom.';
+  updateSelectionTools(current);
+  if(!$('tab-menu').hidden)updateTabMenu();
   const archiveCount=allTabs(true,true).filter(item=>archived[item.key]).length;
   $('archive').textContent=`Archive${archiveCount?' ('+archiveCount+')':''}`;
   if($('archive-dialog').open)renderArchive();
@@ -368,9 +380,9 @@ window.addEventListener('keydown',event=>{
     if(!event.repeat)closeSelectedTab();
     return;
   }
-  if(!$('tab-menu').hidden && event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();closeTabMenu();return;}
+  if(!$('tab-menu').hidden && event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();closeTabMenu(true);return;}
   if(event.key==='Escape'&&!event.altKey&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey){
-    if(mobileSidebar.matches&&sidebarOpen){event.preventDefault();sidebarOpen=false;updateSidebar();return;}
+    if(mobileSidebar.matches&&sidebarOpen){event.preventDefault();sidebarOpen=false;updateSidebar();$('sidebar-toggle').focus();return;}
     if(!$('artifact-preview').hidden){event.preventDefault();$('artifact-back').click();return;}
     const current=allTabs().find(item=>item.key===selected);
     if(current){event.preventDefault();event.stopImmediatePropagation();current.entry.frame.contentWindow.postMessage({type:'zellij-escape'},location.origin);current.entry.frame.focus();}
@@ -494,20 +506,36 @@ window.addEventListener('message',event=>{
       const link=document.createElement('a');
       link.href=url.href;link.target='_blank';link.rel='noopener noreferrer';link.click();
     }catch(_){setStatus('Invalid artifact link.',true);}
+  }else if(event.data?.type==='zellij-selection-changed'){
+    if(entry.frame.classList.contains('active'))updateSelectionTools();
   }else if(event.data?.type==='zellij-clipboard'){
     setStatus(event.data.ok?'Copied to this browser.':event.data.error||'Copy failed; use the terminal’s clipboard panel.',!event.data.ok);
   }else if(event.data?.type==='zellij-disconnected'){entry.disconnected=true;entry.needsFocus=true;setStatus(`${hosts.get(entry.host)?.name}: reconnecting…`,true);}
 });
 $('artifact-back').onclick=()=>{const current=allTabs().find(item=>item.key===selected);if(current)focus(current);else $('artifact-preview').hidden=true;};
+function updateSelectionTools(current=allTabs().find(item=>item.key===selected)){
+  const api=current?.entry.frame.contentWindow.SwitchboardClipboard;
+  const visible=!!current&&$('artifact-preview').hidden&&!!(api?.selectionMode||api?.getSelectionText?.());
+  $('selection-tools').hidden=!visible;
+  $('selection-target').textContent=current?tabTitle(current):'';
+  $('selection-target').title=current?`${tabTitle(current)} · ${hosts.get(current.entry.host)?.name}`:'';
+  $('copy').disabled=!api?.getSelectionText?.();
+}
 $('select-text').onclick=()=>{
-  const current=allTabs().find(item=>item.key===selected),api=current?.entry.frame.contentWindow.SwitchboardClipboard;
-  if(!api)return;
-  const selecting=api.setSelectionMode(!api.selectionMode);
-  $('select-text').setAttribute('aria-pressed',String(selecting));
-  $('select-text').classList.toggle('selected',selecting);
-  if(selecting)setStatus('Drag over terminal text, then Copy or Cmd+C / Ctrl+Shift+C.');
-  current.entry.frame.focus();
+  const item=contextItem;if(!item)return;
+  closeTabMenu();
+  if(item.key!==selected)activate(item,false);
+  const api=item.entry.frame.contentWindow.SwitchboardClipboard;
+  if(!api){setStatus('Terminal clipboard is unavailable; refresh this page.',true);return;}
+  api.setSelectionMode(true);updateSelectionTools();
+  sidebarOpen=false;updateSidebar();item.entry.frame.focus();
 };
+$('exit-selection').onclick=()=>{
+  const current=allTabs().find(item=>item.key===selected),api=current?.entry.frame.contentWindow.SwitchboardClipboard;
+  api?.setSelectionMode(false);api?.clearSelection();updateSelectionTools();current?.entry.frame.focus();
+};
+// Keep the terminal selection when using the contextual copy tools.
+$('copy').onmousedown=event=>event.preventDefault();
 $('copy').onclick=async()=>{
   const current=allTabs().find(item=>item.key===selected);
   const api=current?.entry.frame.contentWindow.SwitchboardClipboard;
@@ -553,15 +581,16 @@ $('new-tab-form').onsubmit=event=>{
   setTimeout(()=>{if(entry.pendingNewTab===pending){const waiting=selected===tabKey(entry,entry.creatingTab);entry.pendingNewTab=null;entry.creatingTab=null;entry.followActiveTab=false;if(waiting){const active=activeTab(entry);selected=active?tabKey(entry,active):null;}render();setStatus('No new tab received. Check the connection and try again.',true);}},30000);
 };
 $('ready').onclick=()=>{
-  if(!selected)return;
-  ready[selected]=Date.now();saveReady();
-  render();
+  const item=contextItem;if(!item)return;
+  ready[item.key]=Date.now();saveReady();
+  closeTabMenu(true);render();
 };
 $('settings').onclick=()=>$('settings-dialog').showModal();
 $('size-owner').onclick=()=>{
-  const current=allTabs().find(item=>item.key===selected);
-  if(!current || $('size-owner').disabled)return;
-  current.entry.frame.contentWindow.postMessage({type:'zellij-size-owner',tab_position:current.tab.position,owned:true},location.origin);
+  const item=contextItem;
+  if(!item || $('size-owner').disabled)return;
+  item.entry.frame.contentWindow.postMessage({type:'zellij-size-owner',tab_position:item.tab.position,owned:true},location.origin);
+  closeTabMenu(true);
 };
 $('close-settings').onclick=()=>$('settings-dialog').close();
 $('refresh').onclick=async()=>{
@@ -572,17 +601,47 @@ $('native-tabs').onclick=()=>{nativeTabs=!nativeTabs;localStorage.setItem('switc
 updateNativeTabs();
 refresh();setInterval(refresh,15000);
 
-function closeTabMenu(){ $('tab-menu').hidden=true;$('close-tab').disabled=false;contextItem=null; }
-function openTabMenu(item,x,y){
-  contextItem=item;
-  $('archive-tab').disabled=item.tab.pending&&!Number.isInteger(item.tab.id);
-  $('close-tab').disabled=!!item.tab.pending;
-  $('close-tab').title=item.tab.pending?'Waiting for the tab identity to finish connecting':'';
-  const menu=$('tab-menu');menu.hidden=false;
-  menu.style.left=`${Math.max(0,Math.min(x,innerWidth-menu.offsetWidth))}px`;
-  menu.style.top=`${Math.max(0,Math.min(y,innerHeight-menu.offsetHeight))}px`;
-  $('archive-tab').focus();
+function closeTabMenu(restore=false){
+  $('tab-menu').hidden=true;$('close-tab').disabled=false;contextItem=null;
+  menuTrigger?.setAttribute('aria-expanded','false');
+  if(restore===true&&menuTrigger?.isConnected)menuTrigger.focus();
+  menuTrigger=null;
 }
+function updateTabMenu(){
+  const item=allTabs().find(tab=>tab.key===contextItem?.key);
+  if(!item){closeTabMenu(true);return;}
+  contextItem=item;
+  $('tab-menu-target').textContent=`${tabTitle(item)} · ${hosts.get(item.entry.host)?.name||item.entry.host} · ${item.entry.name}`;
+  $('ready').disabled=!!item.tab.pending&&!Number.isInteger(item.tab.id);
+  $('archive-tab').disabled=!!item.tab.pending&&!Number.isInteger(item.tab.id);
+  $('close-tab').disabled=!!item.tab.pending||!Number.isInteger(item.tab.id);
+  $('close-tab').title=item.tab.pending||!Number.isInteger(item.tab.id)?'Waiting for the tab identity to finish connecting':'Close this tab · Ctrl+D';
+  $('select-text').disabled=!item.entry.frame.contentWindow.SwitchboardClipboard;
+  $('select-text').setAttribute('aria-pressed',String(!!item.entry.frame.contentWindow.SwitchboardClipboard?.selectionMode));
+  const viewport=item.entry.state?.tab_viewport,sizeOwner=$('size-owner');
+  const focused=item.key===selected&&activeTab(item.entry)?.id===item.tab.id&&!item.entry.requestedPane&&!item.entry.focusPending&&!item.entry.pendingNewTab;
+  sizeOwner.disabled=!focused||!viewport||!item.entry.frame.contentWindow.__zjSupportsTabViewport;
+  sizeOwner.setAttribute('aria-pressed',String(!!viewport?.is_owner&&focused));
+  sizeOwner.textContent=viewport?.is_owner&&focused?'Using this window’s size':'Use this window’s size';
+  sizeOwner.title=!focused?'Select this tab first.':!viewport?'Available in new sessions after updating Switchboard.':viewport.constrained?'A smaller plain terminal is keeping this tab within its screen.':'The last focused browser window sets the size.';
+}
+function openTabMenu(item,x,y,trigger=tabButtons.get(item.key)){
+  closeTabMenu();contextItem=item;menuTrigger=trigger;
+  const menu=$('tab-menu');menu.hidden=false;updateTabMenu();
+  if(menu.hidden)return;
+  trigger?.setAttribute('aria-expanded','true');
+  menu.style.left=`${Math.max(4,Math.min(x,innerWidth-menu.offsetWidth-4))}px`;
+  menu.style.top=`${Math.max(4,Math.min(y,innerHeight-menu.offsetHeight-4))}px`;
+  menu.querySelector('button:not(:disabled)')?.focus();
+}
+$('tab-menu').onkeydown=event=>{
+  const items=[...$('tab-menu').querySelectorAll('button:not(:disabled)')],index=items.indexOf(document.activeElement);
+  if(['ArrowDown','ArrowUp','Home','End'].includes(event.key)){
+    event.preventDefault();
+    const next=event.key==='Home'?0:event.key==='End'?items.length-1:(index+(event.key==='ArrowDown'?1:-1)+items.length)%items.length;
+    items[next]?.focus();
+  }else if(event.key==='Tab')closeTabMenu(true);
+};
 function archiveTab(item){
   archived[item.key]=Date.now();
   localStorage.setItem('switchboard-archived',JSON.stringify(archived));
@@ -643,11 +702,11 @@ $('sidebar-backdrop').onclick=()=>{sidebarOpen=false;updateSidebar();};
 mobileSidebar.addEventListener('change',()=>{sidebarOpen=false;updateSidebar();});
 $('tab-search').oninput=render;
 $('tab-search').onkeydown=event=>{if(event.key==='Enter'){const item=allTabs().filter(matchesSearch)[0];if(item){event.preventDefault();activate(item);item.entry.frame.focus();}}};
-let sidebarWidth=Number(localStorage.getItem('switchboard-sidebar-width'))||260;
+let sidebarWidth=Number(localStorage.getItem('switchboard-sidebar-width'))||242;
 function setSidebarWidth(width){
-  sidebarWidth=Math.max(200,Math.min(420,width,Math.max(200,innerWidth-320)));
+  sidebarWidth=Math.max(180,Math.min(420,width,Math.max(180,innerWidth-320)));
   document.documentElement.style.setProperty('--sidebar-width',`${sidebarWidth}px`);
-  $('sidebar-resize').setAttribute('aria-valuemin','200');$('sidebar-resize').setAttribute('aria-valuemax',String(Math.min(420,Math.max(200,innerWidth-320))));$('sidebar-resize').setAttribute('aria-valuenow',String(Math.round(sidebarWidth)));
+  $('sidebar-resize').setAttribute('aria-valuemin','180');$('sidebar-resize').setAttribute('aria-valuemax',String(Math.min(420,Math.max(180,innerWidth-320))));$('sidebar-resize').setAttribute('aria-valuenow',String(Math.round(sidebarWidth)));
 }
 const resizeHandle=$('sidebar-resize');
 resizeHandle.onpointerdown=event=>{
