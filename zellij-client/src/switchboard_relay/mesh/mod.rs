@@ -1,5 +1,7 @@
 //! Invitation pairing is separate from agent messages and the loopback terminal engine.
 mod crypto;
+mod direct;
+pub(super) mod discovery;
 mod storage;
 #[cfg(test)]
 mod tests;
@@ -171,6 +173,10 @@ struct Database {
     incoming: BTreeMap<String, Installed>,
     outgoing: BTreeMap<String, Credential>,
     joining: Option<Joining>,
+    #[serde(default)]
+    direct_incoming: BTreeMap<String, direct::Offer>,
+    #[serde(default)]
+    direct_sent: BTreeMap<String, direct::Sent>,
 }
 
 pub(super) trait TokenIssuer: Send + Sync {
@@ -194,7 +200,9 @@ pub(super) struct Mesh {
     issued: RwLock<BTreeMap<String, Arc<Host>>>,
     local_engine: Arc<Host>,
     issuer: Arc<dyn TokenIssuer>,
-    gateway: Mutex<Option<(String, axum_server::Handle<std::net::SocketAddr>)>>,
+    gateway: Mutex<Option<String>>,
+    enrollment: Mutex<()>,
+    pub(super) bridge: RwLock<Option<(storage::Storage, u16, String)>>,
 }
 impl Mesh {
     pub async fn open(root: PathBuf, local_engine: Arc<Host>) -> anyhow::Result<Arc<Self>> {
@@ -231,12 +239,24 @@ impl Mesh {
             local_engine,
             issuer,
             gateway: Mutex::new(None),
+            enrollment: Mutex::new(()),
+            bridge: RwLock::new(None),
         });
         {
             let db = mesh.database.lock().await;
             mesh.catalog(&db)?;
         }
         Ok(mesh)
+    }
+    pub fn attach_bridge(&self, port: u16) -> anyhow::Result<()> {
+        let storage = storage::Storage::open(&peer_bridge::directory(
+            self.local_engine
+                .origin
+                .port_or_known_default()
+                .unwrap_or(8082),
+        ))?;
+        *self.bridge.write().unwrap() = Some((storage, port, secret()));
+        Ok(())
     }
     pub fn hosts(&self) -> Vec<Arc<Host>> {
         self.catalog.read().unwrap().values().cloned().collect()
@@ -341,7 +361,10 @@ impl Mesh {
         let mut committed = self.database.lock().await;
         let mut db = committed.clone();
         let first_configuration = db.local.is_none();
-        let member = self.identity.member(computer_name, address)?;
+        let mut member = self.identity.member(computer_name, address)?;
+        if let Some(existing) = &db.local {
+            member.certificate = existing.certificate.clone();
+        }
         if let Some(existing) = &db.local {
             anyhow::ensure!(
                 existing == &member,
@@ -449,6 +472,12 @@ impl Mesh {
             "This computer is not the administrator"
         );
         let value = &attempt.request.value;
+        if let Some(sent) = db.direct_sent.get(&value.invitation) {
+            anyhow::ensure!(
+                &sent.request == value,
+                "Pairing request differs from the selected computer"
+            );
+        }
         let record = Self::record(&mut db, &attempt)?;
         if record.approved.as_deref() == Some(&value.request) {
             anyhow::ensure!(
@@ -699,7 +728,7 @@ impl Mesh {
         let db = self.database.lock().await;
         let pending: Vec<_> = db.invitations.iter().flat_map(|(id, record)| record.requests.values().filter(|p| !p.denied && record.approved.is_none() && !record.cancelled && record.expires > now()).map(move |p| json!({"invitation": id, "request": p.request.request, "computer": p.request.member.name, "address": p.request.member.endpoint, "code": p.code}))).collect();
         let members: Vec<_> = db.membership.as_ref().map(|m| m.value.members.values().map(|member| json!({ "id": member.id, "name": member.name, "address": member.endpoint, "local": db.local.as_ref().is_some_and(|l| l.id == member.id), "state": if db.incoming.contains_key(&member.id) { "paired" } else { "credential_distribution_pending" } })).collect()).unwrap_or_default();
-        json!({"configured": db.local.is_some(), "gateway_available": gateway_available, "computer": db.local.as_ref().map(|m| json!({"name":m.name,"address":m.endpoint})), "mesh": db.membership.as_ref().map(|m| &m.value.name), "administrator": db.membership.as_ref().is_some_and(|m| db.local.as_ref().is_some_and(|l| l.id == m.value.administrator)), "requests":pending, "members":members, "joining": db.joining.as_ref().map(|j| json!({"computer":j.invitation.administrator.name,"mesh":j.invitation.mesh_name,"code":verification(&j.invitation,&j.attempt.request.value).ok()}))})
+        json!({"incoming":direct::incoming(&db,now()),"sent":direct::sent(&db,now()),"configured": db.local.is_some(), "gateway_available": gateway_available, "computer": db.local.as_ref().map(|m| json!({"name":m.name,"address":m.endpoint})), "mesh": db.membership.as_ref().map(|m| &m.value.name), "administrator": db.membership.as_ref().is_some_and(|m| db.local.as_ref().is_some_and(|l| l.id == m.value.administrator)), "requests":pending, "members":members, "joining": db.joining.as_ref().map(|j| json!({"computer":j.invitation.administrator.name,"mesh":j.invitation.mesh_name,"code":verification(&j.invitation,&j.attempt.request.value).ok()}))})
     }
 }
 

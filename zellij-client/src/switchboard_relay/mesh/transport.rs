@@ -2,7 +2,9 @@ use super::*;
 
 pub(in crate::switchboard_relay) fn routes() -> Router<RelayState> {
     Router::new()
+        .merge(super::direct::routes())
         .route("/api/mesh", get(status))
+        .route("/api/mesh/defaults", get(super::discovery::defaults))
         .route("/api/mesh/invitations", post(create))
         .route("/api/mesh/cancel", post(cancel))
         .route("/api/mesh/preview", post(preview))
@@ -197,36 +199,88 @@ impl Mesh {
             None => return Ok(()),
         };
         let mut gateway = self.gateway.lock().await;
-        if let Some((existing, _)) = &*gateway {
-            anyhow::ensure!(
-                existing == &member.endpoint,
-                "Gateway address changed; restart the relay to apply it"
-            );
+        if gateway.as_ref() == Some(&member.endpoint) && self.check_gateway(&member).await.is_ok() {
             return Ok(());
         }
-        let url = endpoint(&member.endpoint)?;
-        let address: std::net::IpAddr = url.host_str().unwrap().trim_matches(['[', ']']).parse()?;
-        let socket = std::net::TcpListener::bind((address, url.port().unwrap()))
-            .map_err(|_| anyhow::anyhow!("Cannot listen on the gateway address; check that it belongs to this computer and the port is available"))?;
-        socket.set_nonblocking(true)?;
-        let tls = self.tls()?;
-        let handle = axum_server::Handle::new();
-        let server = axum_server::from_tcp_rustls(
-            socket,
-            axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(tls)),
-        )?
-        .handle(handle.clone());
-        let app = gateway_router(self.clone());
-        let mesh = self.clone();
-        tokio::spawn(async move {
-            if server.serve(app.into_make_service()).await.is_err() {
-                log::error!("Switchboard peer gateway stopped; retry it from Computers");
+        *gateway = None;
+        let revision = secret();
+        {
+            let bridge = self.bridge.read().unwrap();
+            let (storage, port, id) = bridge.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("Restart Switchboard to enable shared-server pairing")
+            })?;
+            storage.write(
+                "registration.json",
+                &peer_bridge::Registration {
+                    id: id.clone(),
+                    revision: revision.clone(),
+                    port: *port,
+                    endpoint: member.endpoint.clone(),
+                    certificate: self.identity.certificate.clone(),
+                    key: self.identity.tls_key.clone(),
+                },
+            )?;
+        }
+        for _ in 0..50 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let ready = {
+                let bridge = self.bridge.read().unwrap();
+                bridge
+                    .as_ref()
+                    .unwrap()
+                    .0
+                    .read::<peer_bridge::Ready>("ready.json")?
+            };
+            if let Some(ready) = ready.filter(|ready| ready.id == revision) {
+                let certificate = ready.certificate.ok_or_else(|| {
+                    anyhow::anyhow!(ready
+                        .error
+                        .unwrap_or_else(|| "Shared server unavailable".into()))
+                })?;
+                let mut verified = member.clone();
+                verified.certificate = certificate.clone();
+                self.check_gateway(&verified).await?;
+                let mut db = self.database.lock().await;
+                if db.membership.is_some() || db.joining.is_some() {
+                    anyhow::ensure!(
+                        member.certificate == certificate,
+                        "The web server certificate changed; restore it before reconnecting peers"
+                    );
+                }
+                let mut next = db.clone();
+                next.local.as_mut().unwrap().certificate = certificate;
+                self.save(&next)?;
+                *db = next;
+                *gateway = Some(member.endpoint);
+                return Ok(());
             }
-            mesh.gateway.lock().await.take();
-        });
-        *gateway = Some((member.endpoint, handle));
+        }
+        anyhow::bail!("Restart the Switchboard web service to enable invitations on port 8082")
+    }
+    async fn check_gateway(&self, member: &Member) -> anyhow::Result<()> {
+        let mut config = self.local_engine.config.clone();
+        config.url = member.endpoint.clone();
+        config.gateway_token_file = None;
+        config.tls_fingerprint = Some(member.certificate.clone());
+        let host = Host::new(config)?;
+        let response = tokio::time::timeout(
+            Duration::from_secs(2),
+            host.raw_request(
+                Method::GET,
+                "/mesh/health",
+                Bytes::new(),
+                "application/json",
+                None,
+            ),
+        )
+        .await??;
+        anyhow::ensure!(
+            response.status == StatusCode::NO_CONTENT,
+            "Shared port 8082 is not serving invitations"
+        );
         Ok(())
     }
+    #[cfg(test)]
     pub(super) fn tls(&self) -> anyhow::Result<rustls::ServerConfig> {
         let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
         let certificates = vec![rustls::pki_types::CertificateDer::from(crypto::decode(
@@ -241,11 +295,10 @@ impl Mesh {
             .with_single_cert(certificates, key)?)
     }
     pub async fn stop_gateway(&self) {
-        if let Some((_, handle)) = self.gateway.lock().await.take() {
-            handle.graceful_shutdown(Some(Duration::from_secs(2)));
-        }
+        self.gateway.lock().await.take();
     }
-    async fn resume(&self) -> anyhow::Result<Value> {
+    pub(super) async fn resume(&self) -> anyhow::Result<Value> {
+        let _enrollment = self.enrollment.lock().await;
         let joining = self
             .database
             .lock()
@@ -309,7 +362,7 @@ impl Mesh {
             },
         }
     }
-    async fn remote<T: Serialize, R: serde::de::DeserializeOwned>(
+    pub(super) async fn remote<T: Serialize, R: serde::de::DeserializeOwned>(
         &self,
         member: &Member,
         path: &str,
@@ -360,8 +413,11 @@ impl Mesh {
     }
 }
 
-pub(super) fn gateway_router(mesh: Arc<Mesh>) -> Router {
+pub(in crate::switchboard_relay) fn gateway_router(mesh: Arc<Mesh>) -> Router {
     Router::new()
+        .route("/mesh/health", get(|| async { StatusCode::NO_CONTENT }))
+        .route("/mesh/direct-info", post(super::direct::info))
+        .route("/mesh/offer", post(super::direct::offer))
         .route("/mesh/request", post(peer_request))
         .route("/mesh/complete", post(peer_complete))
         .fallback(peer_terminal)

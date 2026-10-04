@@ -456,6 +456,13 @@ async fn unavailable_first_gateway_does_not_lock_in_an_incorrect_address() {
 
 #[tokio::test]
 async fn tls_gateway_authenticates_http_websocket_and_revokes_an_open_socket() {
+    gateway_roundtrip(false).await;
+}
+#[tokio::test]
+async fn shared_native_server_pairs_and_authenticates_http_websocket_with_revocation() {
+    gateway_roundtrip(true).await;
+}
+async fn gateway_roundtrip(shared: bool) {
     let temp = tempfile::tempdir().unwrap();
     let logins = Arc::new(AtomicUsize::new(0));
     let count = logins.clone();
@@ -572,7 +579,44 @@ async fn tls_gateway_authenticates_http_websocket_and_revokes_an_open_socket() {
     let server = axum_server::from_tcp_rustls(listener, tls)
         .unwrap()
         .handle(handle.clone());
-    let router = transport::gateway_router(mac.clone());
+    let mut bridge_task = None;
+    let router = if shared {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let registration = peer_bridge::Registration {
+            id: secret(),
+            revision: secret(),
+            port,
+            endpoint: format!("https://{authority}"),
+            certificate: mac.identity.certificate.clone(),
+            key: mac.identity.tls_key.clone(),
+        };
+        let storage = storage::Storage::open(&temp.path().join("bridge")).unwrap();
+        storage.write("registration.json", &registration).unwrap();
+        let internal = peer_bridge::relay_router(mac.clone(), registration.id);
+        bridge_task = Some(tokio::spawn(async move {
+            axum::serve(listener, internal).await.unwrap();
+        }));
+        let root = storage.root.clone();
+        Router::new()
+            .route(
+                "/native-test",
+                get(|| async { "native cookie routes still work" }),
+            )
+            .fallback(|| async { StatusCode::UNAUTHORIZED })
+            .layer(middleware::from_fn(move |request: Request, next: Next| {
+                let root = root.clone();
+                async move {
+                    if peer_bridge::selected(&request) {
+                        peer_bridge::forward(root, request).await
+                    } else {
+                        next.run(request).await
+                    }
+                }
+            }))
+    } else {
+        transport::gateway_router(mac.clone())
+    };
     let gateway_task = tokio::spawn(async move {
         server.serve(router.into_make_service()).await.unwrap();
     });
@@ -610,6 +654,47 @@ async fn tls_gateway_authenticates_http_websocket_and_revokes_an_open_socket() {
             .await
             .unwrap()
             .status()
+    }
+    if shared {
+        assert_eq!(
+            request(
+                &client,
+                &authority,
+                None,
+                false,
+                Method::GET,
+                "/native-test",
+                Bytes::new()
+            )
+            .await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            request(
+                &client,
+                &authority,
+                None,
+                false,
+                Method::GET,
+                "/mesh/health",
+                Bytes::new()
+            )
+            .await,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            request(
+                &client,
+                &authority,
+                Some(&bearer),
+                false,
+                Method::GET,
+                "/api/mesh",
+                Bytes::new()
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
     }
     assert_eq!(
         request(
@@ -756,5 +841,230 @@ async fn tls_gateway_authenticates_http_websocket_and_revokes_an_open_socket() {
     );
     handle.shutdown();
     gateway_task.await.unwrap();
+    if let Some(task) = bridge_task {
+        task.abort();
+    }
     native_task.abort();
+}
+
+#[tokio::test]
+async fn direct_delivery_requires_local_approval_and_matching_codes_before_credentials() {
+    let temp = tempfile::tempdir().unwrap();
+    let mac = machine(&temp.path().join("mac"), "Mac", "https://192.0.2.1:8082").await;
+    let work = machine(
+        &temp.path().join("work"),
+        "work (fast)",
+        "https://192.0.2.2:8082",
+    )
+    .await;
+    let invite = invitation(&mac, 1000).await;
+    let request = work.receive_offer(invite.clone(), 1000).await.unwrap();
+    let code = verification(&invite, &request.value).unwrap();
+    assert!(
+        request.value
+            == work
+                .receive_offer(invite.clone(), 1000)
+                .await
+                .unwrap()
+                .value
+    );
+    assert!(work.database.lock().await.joining.is_none());
+    assert!(mac.database.lock().await.outgoing.is_empty());
+    assert!(work.database.lock().await.outgoing.is_empty());
+    assert!(work
+        .answer_offer(&invite.id, "WRONG", true, 1000)
+        .await
+        .is_err());
+    assert!(work.database.lock().await.joining.is_none());
+    work.answer_offer(&invite.id, &code, true, 1000)
+        .await
+        .unwrap();
+    let joining = work.database.lock().await.joining.clone().unwrap();
+    assert!(matches!(
+        mac.request(joining.attempt.clone(), 1000).await.unwrap(),
+        Decision::Pending { .. }
+    ));
+    assert!(
+        mac.database.lock().await.outgoing.is_empty(),
+        "Receiving computer's approval alone does not trust a discovered certificate"
+    );
+    mac.approve(&invite.id, &request.value.request, &code, true, 1000)
+        .await
+        .unwrap();
+    let approved = match mac.request(joining.attempt, 1000).await.unwrap() {
+        Decision::Approved { approved } => approved,
+        _ => panic!("both approvals required"),
+    };
+    let envelope = work.install(approved, &invite).await.unwrap();
+    mac.complete(envelope).await.unwrap();
+    assert_eq!(mac.hosts().len(), 1);
+    assert_eq!(work.hosts().len(), 1);
+}
+
+#[tokio::test]
+async fn direct_requests_are_bounded_expire_and_cannot_revive_after_denial() {
+    let temp = tempfile::tempdir().unwrap();
+    let mac = machine(&temp.path().join("mac"), "Mac", "https://192.0.2.1:8082").await;
+    let work = machine(&temp.path().join("work"), "Work", "https://192.0.2.2:8082").await;
+    let invite = invitation(&mac, 1000).await;
+    let request = work.receive_offer(invite.clone(), 1000).await.unwrap();
+    let code = verification(&invite, &request.value).unwrap();
+    work.answer_offer(&invite.id, &code, false, 1000)
+        .await
+        .unwrap();
+    assert!(work.receive_offer(invite.clone(), 1000).await.is_err());
+    assert!(work
+        .answer_offer(&invite.id, &code, true, 1000)
+        .await
+        .is_err());
+    for _ in 0..7 {
+        work.receive_offer(invitation(&mac, 1000).await, 1000)
+            .await
+            .unwrap();
+    }
+    assert!(work
+        .receive_offer(invitation(&mac, 1000).await, 1000)
+        .await
+        .is_err());
+    assert!(direct::incoming(&*work.database.lock().await, 1601).is_empty());
+    work.receive_offer(invitation(&mac, 1601).await, 1601)
+        .await
+        .unwrap();
+    assert!(work.database.lock().await.outgoing.is_empty());
+    let pending = direct::incoming(&*work.database.lock().await, 1601);
+    let encoded = serde_json::to_string(&pending).unwrap();
+    assert!(
+        !encoded.contains("secret")
+            && !encoded.contains("signing")
+            && !encoded.contains("switchboard://")
+    );
+}
+
+#[tokio::test]
+async fn address_pairing_delivers_over_tls_and_completes_without_copying_secrets() {
+    // Choose this host's route address without transmitting any external packet.
+    let route = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    route.connect("192.0.2.1:9").unwrap();
+    let ip = route.local_addr().unwrap().ip();
+    let temp = tempfile::tempdir().unwrap();
+    let mut handles = Vec::new();
+    let mut tasks = Vec::new();
+    let mut machines = Vec::new();
+    let mut endpoints = Vec::new();
+    let mut clients = Vec::new();
+    for label in ["Mac", "work (fast)"] {
+        let listener = std::net::TcpListener::bind((ip, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = format!("https://{}", listener.local_addr().unwrap());
+        let mesh = machine(&temp.path().join(label), label, &endpoint).await;
+        *mesh.gateway.lock().await = Some(endpoint.clone());
+        let handle = axum_server::Handle::new();
+        let server = axum_server::from_tcp_rustls(
+            listener,
+            axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(mesh.tls().unwrap())),
+        )
+        .unwrap()
+        .handle(handle.clone());
+        let router = transport::gateway_router(mesh.clone());
+        tasks.push(tokio::spawn(async move {
+            server.serve(router.into_make_service()).await.unwrap();
+        }));
+        handles.push(handle);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut state = super::super::state(
+            &RelayConfig {
+                hosts: vec![],
+                artifact_proxy: None,
+            },
+            port,
+        )
+        .await
+        .unwrap();
+        state.mesh = Some(mesh.clone());
+        let router = super::super::app(state);
+        tasks.push(tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        }));
+        clients.push(
+            Host::new(super::super::tests::config(&format!(
+                "http://127.0.0.1:{port}"
+            )))
+            .unwrap(),
+        );
+        machines.push(mesh);
+        endpoints.push(endpoint);
+    }
+    async fn call(client: &Host, path: &str, body: Value) -> UpstreamResponse {
+        client
+            .raw_request(
+                Method::POST,
+                path,
+                serde_json::to_vec(&body).unwrap().into(),
+                "application/json",
+                None,
+            )
+            .await
+            .unwrap()
+    }
+    let script = clients[0]
+        .raw_request(Method::GET, "/pairing-notice.js", Bytes::new(), "", None)
+        .await
+        .unwrap();
+    assert_eq!(script.status, StatusCode::OK);
+    let sent=call(&clients[0],"/api/mesh/add",json!({"target":endpoints[1],"name":"Direct test","computer_name":"Mac","address":endpoints[0]})).await;
+    assert_eq!(
+        sent.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&sent.body)
+    );
+    let sent: Value = serde_json::from_slice(&sent.body).unwrap();
+    assert!(sent.get("link").is_none());
+    let pending = machines[1].status().await;
+    assert_eq!(pending["incoming"][0]["code"], sent["code"]);
+    assert_eq!(pending["incoming"][0]["computer"], "Mac");
+    assert!(machines[0].status().await["requests"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    for mesh in &machines {
+        assert!(mesh.database.lock().await.outgoing.is_empty());
+    }
+    let wrong = call(
+        &clients[1],
+        "/api/mesh/answer",
+        json!({"invitation":sent["invitation"],"code":"WRONG","allow":true}),
+    )
+    .await;
+    assert_eq!(wrong.status, StatusCode::BAD_REQUEST);
+    let allowed = call(
+        &clients[1],
+        "/api/mesh/answer",
+        json!({"invitation":sent["invitation"],"code":sent["code"],"allow":true}),
+    )
+    .await;
+    assert_eq!(allowed.status, StatusCode::OK);
+    for mesh in &machines {
+        assert!(mesh.database.lock().await.outgoing.is_empty());
+    }
+    let status = machines[0].status().await;
+    let pending = &status["requests"][0];
+    assert_eq!(pending["code"], sent["code"]);
+    let approved=call(&clients[0],"/api/mesh/approve",json!({"invitation":pending["invitation"],"request":pending["request"],"code":pending["code"],"allow":true})).await;
+    assert_eq!(approved.status, StatusCode::OK);
+    let completed = call(&clients[1], "/api/mesh/retry", json!({})).await;
+    assert_eq!(completed.status, StatusCode::OK);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&completed.body).unwrap()["state"],
+        "paired"
+    );
+    assert_eq!(machines[0].hosts().len(), 1);
+    assert_eq!(machines[1].hosts().len(), 1);
+    for handle in handles {
+        handle.shutdown();
+    }
+    for task in tasks {
+        task.abort();
+    }
 }

@@ -1,6 +1,6 @@
 <!doctype html>
-<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Switchboard</title><link rel="icon" href="data:,"><link rel="stylesheet" href="/style.css"><script defer src="/titles.js"></script><script defer src="/app.js"></script><script defer src="/close.js"></script></head>
-<body><div id="workspace">
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Switchboard</title><link rel="icon" href="data:,"><link rel="stylesheet" href="/style.css"><script defer src="/titles.js"></script><script defer src="/app.js"></script><script defer src="/close.js"></script><script defer src="/pairing-notice.js"></script></head>
+<body><a id="pairing-notice" href="/computers.html" hidden style="position:fixed;right:16px;bottom:32px;z-index:1200;padding:12px 16px;border:1px solid #5689cc;border-radius:8px;background:#182c47;color:#fff;text-decoration:none" aria-live="polite"></a><div id="workspace">
 <button id="sidebar-toggle" aria-controls="sidebar" aria-expanded="true" aria-label="Toggle tabs sidebar" title="Toggle tabs sidebar">☰</button>
 <button id="sidebar-backdrop" aria-label="Close tabs sidebar" hidden></button>
 <aside id="sidebar" aria-label="Session tabs">
@@ -31,7 +31,7 @@
 <header class="settings-heading"><h2 id="settings-heading">Settings</h2><button id="close-settings" autofocus>Close</button></header>
 <p id="build-version" title="Commit and commit date of the running Switchboard relay">Version unavailable</p>
 <section class="settings-section" aria-labelledby="appearance-heading"><h3 id="appearance-heading">Appearance</h3><button id="native-tabs" aria-pressed="false" aria-describedby="native-tabs-help">Native tab bar<span class="toggle-state" aria-hidden="true"></span></button><p id="native-tabs-help">Show the original Zellij tabs inside each terminal.</p></section>
-<section class="settings-section" aria-labelledby="computers-heading"><h3 id="computers-heading">Computers</h3><p><a href="/computers.html">Create invitation or join a computer</a></p></section>
+<section class="settings-section" aria-labelledby="computers-heading"><h3 id="computers-heading">Computers</h3><p><a href="/computers.html">Add computer or review requests</a></p></section>
 <section class="settings-section" aria-labelledby="machines-heading"><div class="settings-heading"><h3 id="machines-heading">Machines</h3><button id="refresh" title="Refresh machines and sessions">Refresh</button></div><p>Choose which machines appear in Work and Home.</p><section id="machines" aria-label="Machine groups"></section></section>
 </dialog>
 </body></html>
