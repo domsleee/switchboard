@@ -709,15 +709,11 @@ pub async fn run_remote_client_terminal_loop(
                 match terminal_msg {
                     Some(Ok(Message::Text(text))) => {
                         let mut stdout = os_input.get_stdout_writer();
-                        if let Err(error) = write_terminal_output(&mut *stdout, text.as_bytes(), synchronised_output) {
-                            return Err(RemoteClientError::IoError(error));
-                        }
+                        write_terminal_output(&mut *stdout, text.as_bytes(), synchronised_output)?;
                     }
                     Some(Ok(Message::Binary(data))) => {
                         let mut stdout = os_input.get_stdout_writer();
-                        if let Err(error) = write_terminal_output(&mut *stdout, &data, synchronised_output) {
-                            return Err(RemoteClientError::IoError(error));
-                        }
+                        write_terminal_output(&mut *stdout, &data, synchronised_output)?;
                     }
                     Some(Ok(Message::Close(_))) => {
                         break;

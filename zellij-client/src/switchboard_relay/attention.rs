@@ -444,33 +444,56 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
         }
     }
     let poll = Arc::new(Mutex::new(poll));
-    state.order.iter().map(|id| {
-        let host=state.hosts[id].clone(); let state=state.clone(); let poll=poll.clone(); let file=file.clone(); let id=id.clone();
-        tokio::spawn(async move {
-            let mut offset=0;
-            loop {
-                let result=scan(&host,offset).await; offset=offset.wrapping_add(1);
-                let mut poll=poll.lock().await;
-                let changed=match result {
-                    Ok(mut snapshot)=>poll.update(&id,&mut snapshot),
-                    Err(error)=>{poll.unavailable(&id,&error);false}
-                };
-                *state.attention.lock().await=poll.merged(&state.order);
-                if changed {
-                    let temp=file.with_extension("attention.json.tmp");
-                    let data=poll.persisted().to_string();
-                    let _=async {
-                        if let Some(parent)=file.parent() {tokio::fs::create_dir_all(parent).await?;}
-                        tokio::fs::write(&temp,data).await?;
-                        #[cfg(unix)] {use std::os::unix::fs::PermissionsExt;tokio::fs::set_permissions(&temp,std::fs::Permissions::from_mode(0o600)).await?;}
-                        tokio::fs::rename(&temp,&file).await
-                    }.await;
+    state
+        .order
+        .iter()
+        .map(|id| {
+            let host = state.hosts[id].clone();
+            let state = state.clone();
+            let poll = poll.clone();
+            let file = file.clone();
+            let id = id.clone();
+            tokio::spawn(async move {
+                let mut offset = 0;
+                loop {
+                    let result = scan(&host, offset).await;
+                    offset = offset.wrapping_add(1);
+                    let mut poll = poll.lock().await;
+                    let changed = match result {
+                        Ok(mut snapshot) => poll.update(&id, &mut snapshot),
+                        Err(error) => {
+                            poll.unavailable(&id, &error);
+                            false
+                        },
+                    };
+                    *state.attention.lock().await = poll.merged(&state.order);
+                    if changed {
+                        let temp = file.with_extension("attention.json.tmp");
+                        let data = poll.persisted().to_string();
+                        let _ = async {
+                            if let Some(parent) = file.parent() {
+                                tokio::fs::create_dir_all(parent).await?;
+                            }
+                            tokio::fs::write(&temp, data).await?;
+                            #[cfg(unix)]
+                            {
+                                use std::os::unix::fs::PermissionsExt;
+                                tokio::fs::set_permissions(
+                                    &temp,
+                                    std::fs::Permissions::from_mode(0o600),
+                                )
+                                .await?;
+                            }
+                            tokio::fs::rename(&temp, &file).await
+                        }
+                        .await;
+                    }
+                    drop(poll);
+                    tokio::time::sleep(Duration::from_secs(3)).await;
                 }
-                drop(poll);
-                tokio::time::sleep(Duration::from_secs(3)).await;
-            }
+            })
         })
-    }).collect()
+        .collect()
 }
 
 pub(super) async fn handler(State(state): State<RelayState>) -> Json<Value> {

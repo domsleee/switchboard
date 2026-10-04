@@ -407,85 +407,16 @@ async fn test_stdin_forwarded_to_terminal_websocket() {
 #[tokio::test]
 #[serial]
 async fn test_terminal_output_written_to_stdout() {
-    let (port, server, _server_handle) = mock_ws_server::MockWsServer::start().await;
-
-    let terminal_url = format!("ws://127.0.0.1:{}/ws/terminal", port);
-    let control_url = format!("ws://127.0.0.1:{}/ws/control", port);
-
-    let terminal_tcp = TcpStream::connect(format!("127.0.0.1:{}", port))
-        .await
-        .unwrap();
-    let (terminal_ws, _) = tokio_tungstenite::client_async_with_config(
-        &terminal_url,
-        MaybeTls::Plain(terminal_tcp),
-        None,
-    )
-    .await
-    .unwrap();
-    let control_tcp = TcpStream::connect(format!("127.0.0.1:{}", port))
-        .await
-        .unwrap();
-    let (control_ws, _) = tokio_tungstenite::client_async_with_config(
-        &control_url,
-        MaybeTls::Plain(control_tcp),
-        None,
-    )
-    .await
-    .unwrap();
-
-    let connections = WebSocketConnections {
-        terminal_ws,
-        control_ws,
-        web_client_id: "test-stdout".to_string(),
-    };
-
-    let (_stdin_tx, stdin_rx) = mpsc::unbounded_channel();
-    let (_signal_tx, signal_rx) = mpsc::unbounded_channel();
-
-    let os_input = TestClientOsApi::new(stdin_rx, signal_rx);
-    let stdout_buffer = os_input.stdout_buffer.clone();
-    let os_input = Box::new(os_input);
-
-    let loop_handle = tokio::spawn(async move {
-        run_remote_client_terminal_loop(
-            os_input,
-            connections,
-            None,
-            Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        )
-        .await
-    });
-
-    let test_output = "Hello from terminal";
-    server
-        .terminal_to_client_tx
-        .send(Message::Text(test_output.to_string().into()))
-        .unwrap();
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let stdout = stdout_buffer.lock().unwrap().clone();
-    let stdout_str = String::from_utf8_lossy(&stdout);
-    assert!(
-        stdout_str.contains(test_output),
-        "Expected stdout to contain '{}', got: '{}'",
-        test_output,
-        stdout_str
-    );
-
-    server
-        .terminal_to_client_tx
-        .send(Message::Close(None))
-        .unwrap();
-    let _ = tokio::time::timeout(Duration::from_secs(2), loop_handle)
-        .await
-        .expect("Loop didn't exit")
-        .unwrap();
+    assert_terminal_output(false).await;
 }
 
 #[tokio::test]
 #[serial]
 async fn test_terminal_output_failure_exits_without_panicking() {
+    assert_terminal_output(true).await;
+}
+
+async fn assert_terminal_output(fail_flush: bool) {
     let (port, server, _server_handle) = mock_ws_server::MockWsServer::start().await;
 
     let terminal_url = format!("ws://127.0.0.1:{}/ws/terminal", port);
@@ -522,7 +453,8 @@ async fn test_terminal_output_failure_exits_without_panicking() {
     let (_signal_tx, signal_rx) = mpsc::unbounded_channel();
 
     let mut os_input = TestClientOsApi::new(stdin_rx, signal_rx);
-    os_input.fail_flush = true;
+    os_input.fail_flush = fail_flush;
+    let stdout_buffer = os_input.stdout_buffer.clone();
     let os_input = Box::new(os_input);
 
     let loop_handle = tokio::spawn(async move {
@@ -541,13 +473,36 @@ async fn test_terminal_output_failure_exits_without_panicking() {
         .send(Message::Text(test_output.to_string().into()))
         .unwrap();
 
-    let result = tokio::time::timeout(Duration::from_secs(2), loop_handle)
-        .await
-        .expect("Failed terminal must disconnect promptly")
-        .expect("Failed terminal must not panic");
+    if fail_flush {
+        let result = tokio::time::timeout(Duration::from_secs(2), loop_handle)
+            .await
+            .expect("Failed terminal must disconnect promptly")
+            .expect("Failed terminal must not panic");
+        assert!(
+            matches!(result, Err(crate::RemoteClientError::IoError(error)) if error.raw_os_error() == Some(5))
+        );
+        return;
+    }
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let stdout = stdout_buffer.lock().unwrap().clone();
+    let stdout_str = String::from_utf8_lossy(&stdout);
     assert!(
-        matches!(result, Err(crate::RemoteClientError::IoError(error)) if error.raw_os_error() == Some(5))
+        stdout_str.contains(test_output),
+        "Expected stdout to contain '{}', got: '{}'",
+        test_output,
+        stdout_str
     );
+
+    server
+        .terminal_to_client_tx
+        .send(Message::Close(None))
+        .unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(2), loop_handle)
+        .await
+        .expect("Loop didn't exit")
+        .unwrap();
 }
 
 #[tokio::test]
