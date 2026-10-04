@@ -2,6 +2,7 @@
 mod artifacts;
 mod attention;
 mod control;
+mod mesh;
 use axum::{
     body::{to_bytes, Body, Bytes},
     extract::{ws::WebSocketUpgrade, Path as RoutePath, Request, State},
@@ -47,6 +48,8 @@ pub struct HostConfig {
     pub name: String,
     pub url: String,
     pub token_file: String,
+    #[serde(default)]
+    pub gateway_token_file: Option<String>,
     pub tls_fingerprint: Option<String>,
     #[serde(default)]
     pub artifact_urls: Value,
@@ -67,6 +70,27 @@ struct RelayState {
     order: Arc<Vec<String>>,
     port: u16,
     attention: Arc<Mutex<Value>>,
+    mesh: Option<Arc<mesh::Mesh>>,
+}
+
+impl RelayState {
+    fn host(&self, id: &str) -> Option<Arc<Host>> {
+        self.hosts
+            .get(id)
+            .cloned()
+            .or_else(|| self.mesh.as_ref().and_then(|m| m.host(id)))
+    }
+    fn all_hosts(&self) -> Vec<Arc<Host>> {
+        let mut hosts: Vec<_> = self.order.iter().map(|id| self.hosts[id].clone()).collect();
+        if let Some(mesh) = &self.mesh {
+            hosts.extend(
+                mesh.hosts()
+                    .into_iter()
+                    .filter(|h| !self.hosts.contains_key(&h.config.id)),
+            );
+        }
+        hosts
+    }
 }
 
 struct Host {
@@ -145,6 +169,11 @@ fn fingerprint(value: &str) -> anyhow::Result<[u8; 32]> {
 impl Host {
     fn new(config: HostConfig) -> anyhow::Result<Self> {
         let origin = url::Url::parse(&config.url)?;
+        anyhow::ensure!(
+            config.gateway_token_file.is_none()
+                || (origin.scheme() == "https" && config.tls_fingerprint.is_some()),
+            "Peer gateway credentials require a pinned HTTPS origin"
+        );
         anyhow::ensure!(
             matches!(origin.scheme(), "http" | "https")
                 && origin.host_str().is_some()
@@ -302,6 +331,10 @@ impl Host {
         if let Some(cookie) = cookie {
             request = request.header(header::COOKIE, cookie);
         }
+        if let Some(path) = &self.config.gateway_token_file {
+            let token = tokio::fs::read_to_string(control::expand_path(path)?).await?;
+            request = request.header(header::AUTHORIZATION, format!("Bearer {}", token.trim()));
+        }
         Ok(sender.send_request(request.body(Full::new(body))?).await?)
     }
 
@@ -389,6 +422,22 @@ impl Host {
         request
             .headers_mut()
             .insert(header::COOKIE, cookie.parse()?);
+        if let Some(path) = &self.config.gateway_token_file {
+            let token_path = control::expand_path(path).map_err(|_| {
+                tokio_tungstenite::tungstenite::Error::Io(std::io::Error::other(
+                    "Gateway credential unavailable",
+                ))
+            })?;
+            let token = tokio::fs::read_to_string(token_path).await.map_err(|_| {
+                tokio_tungstenite::tungstenite::Error::Io(std::io::Error::other(
+                    "Gateway credential unavailable",
+                ))
+            })?;
+            request.headers_mut().insert(
+                header::AUTHORIZATION,
+                format!("Bearer {}", token.trim()).parse()?,
+            );
+        }
         let stream = self.stream().await.map_err(|_| {
             tokio_tungstenite::tungstenite::Error::Io(std::io::Error::other(
                 "Upstream connection failed",
@@ -490,16 +539,14 @@ async fn hosts(State(state): State<RelayState>, request: Request) -> Json<Value>
     }) {
         return Json(Value::Array(
             state
-                .order
+                .all_hosts()
                 .iter()
-                .map(|id| &state.hosts[id])
                 .map(|host| json!({"id": host.config.id, "name": host.config.name}))
                 .collect(),
         ));
     }
     Json(Value::Array(
-        futures_util::future::join_all(state.order.iter().map(|id| describe(&state.hosts[id])))
-            .await,
+        futures_util::future::join_all(state.all_hosts().iter().map(|host| describe(host))).await,
     ))
 }
 
@@ -508,16 +555,15 @@ async fn host(
     RoutePath(id): RoutePath<String>,
 ) -> Result<Json<Value>, Error> {
     let host = state
-        .hosts
-        .get(&id)
+        .host(&id)
         .ok_or((StatusCode::NOT_FOUND, "Unknown host"))?;
-    Ok(Json(describe(host).await))
+    Ok(Json(describe(&host).await))
 }
 
 async fn link_config(State(state): State<RelayState>) -> Response {
-    let data: serde_json::Map<String, Value> = state.hosts.iter().map(|(id, host)| {
+    let data: serde_json::Map<String, Value> = state.all_hosts().iter().map(|host| {
         let local = matches!(host.origin.host_str(), Some("localhost" | "127.0.0.1" | "::1" | "[::1]"));
-        (id.clone(), json!({"origin": host.config.url, "local": local, "artifacts": host.config.artifact_urls}))
+        (host.config.id.clone(), json!({"origin": host.config.url, "local": local, "artifacts": host.config.artifact_urls}))
     }).collect();
     (
         [(header::CONTENT_TYPE, "application/javascript")],
@@ -553,8 +599,7 @@ async fn proxy(
     request: Request,
 ) -> Result<Response, Error> {
     let host = state
-        .hosts
-        .get(&id)
+        .host(&id)
         .ok_or((StatusCode::NOT_FOUND, "Unknown host"))?
         .clone();
     let path = format!(
@@ -677,10 +722,10 @@ async fn asset(request: Request) -> Response {
     let name = request.uri().path().trim_start_matches('/');
     let name = if name.is_empty() { "index.html" } else { name };
     let mime = match name {
-        "index.html" => "text/html; charset=utf-8",
+        "index.html" | "computers.html" => "text/html; charset=utf-8",
         "style.css" => "text/css; charset=utf-8",
         "app.js" | "bridge.js" | "chrome.js" | "clipboard.js" | "close.js" | "links.js"
-        | "titles.js" => "application/javascript",
+        | "titles.js" | "computers.js" => "application/javascript",
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
     match ASSETS.get_file(name) {
@@ -705,18 +750,22 @@ async fn state(config: &RelayConfig, port: u16) -> anyhow::Result<RelayState> {
         order: Arc::new(order),
         port,
         attention: Arc::new(Mutex::new(json!({"panes": [], "tabs": [], "errors": []}))),
+        mesh: None,
     })
 }
 
 fn app(state: RelayState) -> Router {
     Router::new()
+        .merge(mesh::transport::routes())
         .route(
             "/api/health",
-            get(|| async { Json(json!({
-                "relay":"rust", "version":zellij_utils::consts::VERSION,
-                "commit":env!("SWITCHBOARD_COMMIT"),
-                "commit_date":env!("SWITCHBOARD_COMMIT_DATE")
-            })) }),
+            get(|| async {
+                Json(json!({
+                    "relay":"rust", "version":zellij_utils::consts::VERSION,
+                    "commit":env!("SWITCHBOARD_COMMIT"),
+                    "commit_date":env!("SWITCHBOARD_COMMIT_DATE")
+                }))
+            }),
         )
         .route("/api/hosts", get(self::hosts))
         .route("/api/hosts/{host}", get(host))
@@ -739,7 +788,25 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
     let config: RelayConfig = serde_json::from_slice(&tokio::fs::read(config_path).await?)?;
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await?;
     let port = listener.local_addr()?.port();
-    let state = state(&config, port).await?;
+    let mut state = state(&config, port).await?;
+    if let Some(local) = state.all_hosts().into_iter().find(|h| {
+        matches!(
+            h.origin.host_str(),
+            Some("localhost" | "127.0.0.1" | "::1" | "[::1]")
+        )
+    }) {
+        match mesh::Mesh::open(config_path.with_file_name("mesh"), local).await {
+            Ok(mesh) => {
+                if mesh.start_gateway().await.is_err() {
+                    log::warn!("Switchboard peer gateway unavailable; retry it from Computers");
+                }
+                state.mesh = Some(mesh);
+            },
+            Err(_) => log::warn!(
+                "Switchboard pairing unavailable; local relay continues (details redacted)"
+            ),
+        }
+    }
     let artifact = artifacts::start(config.artifact_proxy).await?;
     let polling =
         attention::start(state.clone(), config_path.with_extension("attention.json")).await;
@@ -753,8 +820,11 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
     if let Some(task) = artifact {
         task.abort();
     }
-    for host in state.hosts.values() {
-        control::cleanup(host).await;
+    if let Some(mesh) = &state.mesh {
+        mesh.stop_gateway().await;
+    }
+    for host in state.all_hosts() {
+        control::cleanup(&host).await;
     }
     result?;
     Ok(())
@@ -783,6 +853,7 @@ mod tests {
             name: "Mac".into(),
             url: url.into(),
             token_file: "/secret/token".into(),
+            gateway_token_file: None,
             tls_fingerprint: None,
             artifact_urls: json!({}),
             escape_transport: None,
