@@ -30,6 +30,7 @@ subtle = { version = "2.6", optional = true }
 rcgen = { version = "0.14", optional = true }
 fs2 = { version = "0.4", optional = true }
 tempfile = { workspace = true, optional = true }
+rusqlite = { version = "0.30", default-features = false, features = ["bundled"], optional = true }
 
 anyhow = { workspace = true }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
@@ -108,5 +109,6 @@ web_server_capability = [
     "dep:rcgen",
     "dep:fs2",
     "dep:tempfile",
+    "dep:rusqlite",
     "zellij-utils/web_server_capability",
 ]

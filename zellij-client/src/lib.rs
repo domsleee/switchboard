@@ -11,6 +11,8 @@ pub mod cli_client;
 mod command_is_executing;
 mod input_handler;
 mod keyboard_parser;
+#[cfg(feature = "web_server_capability")]
+pub mod message_board;
 mod nested_reannounce;
 #[cfg(feature = "web_server_capability")]
 pub mod remote_attach;

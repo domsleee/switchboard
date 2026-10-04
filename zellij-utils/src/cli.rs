@@ -158,6 +158,9 @@ pub enum Command {
         port: u16,
     },
 
+    /// Register agents and exchange messages through one authenticated board
+    Message(MessageCli),
+
     /// Send actions to a specific session
     #[clap(visible_alias = "ac")]
     #[clap(subcommand)]
@@ -172,6 +175,93 @@ pub enum Command {
         "zellij [--session <OTHER SESSION NAME>] subscribe [OPTIONS] --pane-id..."
     ))]
     Subscribe(SubscribeCli),
+}
+
+#[derive(Debug, Args, Clone, Serialize, Deserialize)]
+pub struct MessageCli {
+    /// Board client configuration; Serve uses a board host configuration instead
+    #[clap(long, global = true, env = "SWITCHBOARD_BOARD_CONFIG")]
+    pub board_config: Option<PathBuf>,
+    /// Registered agent session (never inferred from terminal titles)
+    #[clap(long, global = true, env = "SWITCHBOARD_AGENT_SESSION")]
+    pub agent_session: Option<String>,
+    /// Emit machine-readable output
+    #[clap(long, global = true)]
+    pub json: bool,
+    #[clap(subcommand)]
+    pub command: MessageCommand,
+}
+
+#[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
+pub enum MessageCommand {
+    /// Host the board on a dedicated authenticated listener without terminal routes
+    Serve,
+    /// Create a unique agent identity, or explicitly resume an owned identity
+    Register {
+        #[clap(long)]
+        name: String,
+        #[clap(long)]
+        project: String,
+        #[clap(long)]
+        resume: Option<String>,
+        #[clap(long, requires_all = ["terminal_session", "terminal_tab"])]
+        terminal_host: Option<String>,
+        #[clap(long, requires_all = ["terminal_host", "terminal_tab"])]
+        terminal_session: Option<String>,
+        #[clap(long, requires_all = ["terminal_host", "terminal_session"])]
+        terminal_tab: Option<u32>,
+    },
+    /// List registered participants with bounded pagination
+    Participants {
+        #[clap(long)]
+        project: Option<String>,
+        #[clap(long, default_value = "0")]
+        after: u64,
+        #[clap(long, default_value = "25")]
+        limit: u16,
+    },
+    /// Send plain text from --body-file or stdin; retain --send-key for uncertain retries
+    Send {
+        #[clap(
+            long,
+            conflicts_with = "broadcast",
+            required_unless_present = "broadcast"
+        )]
+        to: Option<String>,
+        #[clap(long, conflicts_with = "to", required_unless_present = "to")]
+        broadcast: Option<String>,
+        #[clap(long)]
+        body_file: Option<PathBuf>,
+        #[clap(long)]
+        send_key: Option<String>,
+    },
+    /// Read unread messages without acknowledging them
+    Unread {
+        #[clap(long, default_value = "0")]
+        after: u64,
+        #[clap(long, default_value = "25")]
+        limit: u16,
+    },
+    /// Read a thread without acknowledging it
+    Thread {
+        thread_id: String,
+        #[clap(long, default_value = "0")]
+        after: u64,
+        #[clap(long, default_value = "25")]
+        limit: u16,
+    },
+    /// Reply to a delivered message in the same thread
+    Reply {
+        message_id: String,
+        #[clap(long)]
+        body_file: Option<PathBuf>,
+        #[clap(long)]
+        send_key: Option<String>,
+    },
+    /// Explicitly confirm receipt; this does not mean the task is complete
+    Ack { message_id: String },
+    /// Stop this identity receiving new messages and broadcasts; history remains
+    Retire,
 }
 
 #[derive(Debug, Parser, Clone, Serialize, Deserialize)]
@@ -1619,6 +1709,57 @@ tail -f /tmp/my-live-logfile | zellij action pipe --name logs --plugin https://e
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn message_board_cli_keeps_identity_explicit_and_requires_one_address() {
+        let cli = CliArgs::try_parse_from([
+            "zellij",
+            "message",
+            "register",
+            "--board-config",
+            "client.json",
+            "--json",
+            "--name",
+            "backend",
+            "--project",
+            "switchboard",
+        ])
+        .unwrap();
+        let Some(Command::Message(message)) = cli.command else {
+            panic!("Expected message command");
+        };
+        assert!(message.json);
+        assert_eq!(message.board_config, Some(PathBuf::from("client.json")));
+        assert!(matches!(
+            message.command,
+            MessageCommand::Register { resume: None, .. }
+        ));
+        for args in [
+            vec!["zellij", "message", "send"],
+            vec![
+                "zellij",
+                "message",
+                "send",
+                "--to",
+                "agent",
+                "--broadcast",
+                "project",
+            ],
+            vec![
+                "zellij",
+                "message",
+                "register",
+                "--name",
+                "a",
+                "--project",
+                "p",
+                "--terminal-host",
+                "mac",
+            ],
+        ] {
+            assert!(CliArgs::try_parse_from(args).is_err());
+        }
+    }
 
     fn parse_subscribe(args: &[&str]) -> SubscribeCli {
         let mut full_args = vec!["zellij"];
