@@ -112,6 +112,8 @@ pub struct ClientChannels {
     pub terminal_channel_tx: Option<UnboundedSender<String>>,
     terminal_channel_cancellation_token: Option<CancellationToken>,
     pub should_not_reconnect: Arc<AtomicBool>,
+    pub recovery_metadata_refresh:
+        Option<crate::web_client::sharing_recovery::RecoveryMetadataRefresh>,
     pending_control_messages: Vec<Message>,
 }
 
@@ -123,6 +125,7 @@ impl ClientChannels {
             terminal_channel_tx: None,
             terminal_channel_cancellation_token: None,
             should_not_reconnect: Arc::new(AtomicBool::new(false)),
+            recovery_metadata_refresh: None,
             pending_control_messages: Vec::new(),
         }
     }

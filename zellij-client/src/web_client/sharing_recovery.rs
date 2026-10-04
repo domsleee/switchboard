@@ -370,12 +370,21 @@ pub struct RecoveryMetadata {
     panes: Option<Vec<zellij_utils::data::PaneListEntry>>,
     current_tab: Option<zellij_utils::data::TabInfo>,
     pending: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    wake: Option<std::sync::mpsc::SyncSender<()>>,
 }
 
 impl RecoveryMetadata {
+    #[cfg(test)]
     pub fn with_pending(pending: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>) -> Self {
         Self {
             pending,
+            ..Default::default()
+        }
+    }
+    pub fn with_poll(poll: Option<&RecoveryMetadataPoll>) -> Self {
+        Self {
+            pending: poll.map(|poll| poll.pending.clone()),
+            wake: poll.map(|poll| poll.refresh.wake.clone()),
             ..Default::default()
         }
     }
@@ -391,6 +400,9 @@ impl RecoveryMetadata {
                 self.current_tab = Some(tab);
                 if let Some(pending) = self.pending.as_ref() {
                     pending.store(false, std::sync::atomic::Ordering::Release);
+                }
+                if let Some(wake) = self.wake.as_ref() {
+                    let _ = wake.try_send(());
                 }
                 return true;
             }
@@ -498,16 +510,82 @@ impl RecoveryMetadata {
 pub struct RecoveryMetadataPoll {
     active: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pending: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    refresh: RecoveryMetadataRefresh,
+}
+
+#[derive(Clone, Debug)]
+pub struct RecoveryMetadataRefresh {
+    requested: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    wake: std::sync::mpsc::SyncSender<()>,
+}
+impl RecoveryMetadataRefresh {
+    pub fn request(&self) {
+        self.requested
+            .store(true, std::sync::atomic::Ordering::Release);
+        // A burst of focus changes needs one fresh batch, not an unbounded queue.
+        let _ = self.wake.try_send(());
+    }
 }
 impl RecoveryMetadataPoll {
-    pub fn pending(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
-        self.pending.clone()
+    pub fn refresh(&self) -> RecoveryMetadataRefresh {
+        self.refresh.clone()
+    }
+
+    fn start(
+        allowed: impl Fn() -> bool + Send + 'static,
+        send: impl Fn() + Send + 'static,
+    ) -> Self {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            mpsc::sync_channel,
+            Arc,
+        };
+        use std::time::{Duration, Instant};
+        let active = Arc::new(AtomicBool::new(true));
+        let pending = Arc::new(AtomicBool::new(false));
+        let requested = Arc::new(AtomicBool::new(false));
+        let (wake, receiver) = sync_channel(1);
+        let refresh = RecoveryMetadataRefresh { requested, wake };
+        let worker_active = active.clone();
+        let worker_pending = pending.clone();
+        let worker_refresh = refresh.clone();
+        std::thread::spawn(move || {
+            let mut next_poll = Instant::now();
+            let mut pending_since = None;
+            while worker_active.load(Ordering::Acquire) && allowed() {
+                let now = Instant::now();
+                let wait = if worker_pending.load(Ordering::Acquire) {
+                    // Stop rather than enqueue queries behind an unresponsive engine.
+                    let deadline = pending_since.unwrap_or(now) + Duration::from_secs(5);
+                    if now >= deadline {
+                        break;
+                    }
+                    deadline - now
+                } else if worker_refresh.requested.swap(false, Ordering::AcqRel) || now >= next_poll
+                {
+                    worker_pending.store(true, Ordering::Release);
+                    pending_since = Some(now);
+                    next_poll = now + Duration::from_secs(1);
+                    send();
+                    continue;
+                } else {
+                    next_poll - now
+                };
+                let _ = receiver.recv_timeout(wait);
+            }
+        });
+        Self {
+            active,
+            pending,
+            refresh,
+        }
     }
 }
 impl Drop for RecoveryMetadataPoll {
     fn drop(&mut self) {
         self.active
             .store(false, std::sync::atomic::Ordering::Release);
+        let _ = self.refresh.wake.try_send(());
     }
 }
 
@@ -518,75 +596,40 @@ impl SharingRecovery {
         socket: PathBuf,
         os_input: Box<dyn crate::os_input_output::ClientOsApi>,
     ) -> RecoveryMetadataPoll {
-        use std::sync::{
-            atomic::{AtomicBool, Ordering},
-            Arc,
-        };
         use zellij_utils::input::actions::Action;
-        let active = Arc::new(AtomicBool::new(true));
-        let worker_active = active.clone();
-        let pending = Arc::new(AtomicBool::new(false));
-        let worker_pending = pending.clone();
         let recovery = self.clone();
-        std::thread::spawn(move || {
-            let actions = [
-                Action::ListTabs {
-                    show_state: false,
-                    show_dimensions: false,
-                    show_panes: false,
-                    show_layout: false,
-                    show_all: true,
-                    output_json: true,
-                },
-                Action::ListPanes {
-                    show_tab: false,
-                    show_command: false,
-                    show_state: false,
-                    show_geometry: false,
-                    show_all: true,
-                    output_json: true,
-                },
-                Action::CurrentTabInfo { output_json: true },
-            ];
-            while worker_active.load(Ordering::Acquire) && recovery.allows(&session, &socket, false)
-            {
-                if worker_pending.swap(true, Ordering::AcqRel) {
-                    // Never enqueue another batch behind an unacknowledged query. An
-                    // unresponsive engine ends recovery polling rather than piling up work.
-                    for _ in 0..50 {
-                        if !worker_active.load(Ordering::Acquire) {
-                            return;
-                        }
-                        if !worker_pending.load(Ordering::Acquire) {
-                            break;
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                    }
-                    if worker_pending.load(Ordering::Acquire) {
-                        return;
-                    }
-                    continue;
-                }
-                for action in &actions {
-                    if !worker_active.load(Ordering::Acquire) {
-                        return;
-                    }
+        RecoveryMetadataPoll::start(
+            move || recovery.allows(&session, &socket, false),
+            move || {
+                let actions = [
+                    Action::ListTabs {
+                        show_state: false,
+                        show_dimensions: false,
+                        show_panes: false,
+                        show_layout: false,
+                        show_all: true,
+                        output_json: true,
+                    },
+                    Action::ListPanes {
+                        show_tab: false,
+                        show_command: false,
+                        show_state: false,
+                        show_geometry: false,
+                        show_all: true,
+                        output_json: true,
+                    },
+                    Action::CurrentTabInfo { output_json: true },
+                ];
+                for action in actions {
                     os_input.send_to_server(ClientToServerMsg::Action {
-                        action: action.clone(),
+                        action,
                         terminal_id: None,
                         client_id: None,
                         is_cli_client: false,
                     });
                 }
-                for _ in 0..10 {
-                    if !worker_active.load(Ordering::Acquire) {
-                        return;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                }
-            }
-        });
-        RecoveryMetadataPoll { active, pending }
+            },
+        )
     }
 }
 
@@ -669,12 +712,54 @@ mod metadata_tests {
 
     #[test]
     fn dropping_poll_stops_worker() {
-        let active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let poll = RecoveryMetadataPoll {
-            active: active.clone(),
-            pending: Default::default(),
-        };
+        let poll = RecoveryMetadataPoll::start(|| true, || {});
+        let active = poll.active.clone();
         drop(poll);
         assert!(!active.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn focus_refresh_wakes_idle_poll_and_coalesces_behind_unacknowledged_queries() {
+        use std::time::Duration;
+        let (sent, batches) = std::sync::mpsc::channel();
+        let poll = RecoveryMetadataPoll::start(
+            || true,
+            move || {
+                sent.send(()).unwrap();
+            },
+        );
+        let mut metadata = RecoveryMetadata::with_poll(Some(&poll));
+        let current = serde_json::to_string(&zellij_utils::data::TabInfo::default()).unwrap();
+        let acknowledge =
+            |metadata: &mut RecoveryMetadata| assert!(metadata.consume(&[current.clone()]));
+        batches.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        // A focus request during an old batch must wait for its exact current-tab
+        // response. A burst stays bounded and then sends one fresh batch promptly.
+        for _ in 0..100 {
+            poll.refresh().request();
+        }
+        assert!(batches.recv_timeout(Duration::from_millis(50)).is_err());
+        acknowledge(&mut metadata);
+        batches
+            .recv_timeout(Duration::from_millis(250))
+            .expect("Focus refresh must not wait for the one-second poll");
+        assert!(batches.recv_timeout(Duration::from_millis(50)).is_err());
+        acknowledge(&mut metadata);
+        assert!(
+            batches.recv_timeout(Duration::from_millis(50)).is_err(),
+            "Acknowledgment alone does not speed up background polling"
+        );
+
+        poll.refresh().request();
+        batches
+            .recv_timeout(Duration::from_millis(250))
+            .expect("An idle poll wakes immediately for focus");
+        drop(poll);
+        acknowledge(&mut metadata);
+        assert!(
+            batches.recv_timeout(Duration::from_millis(100)).is_err(),
+            "A dropped attachment stops sending queries"
+        );
     }
 }
