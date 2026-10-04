@@ -14,7 +14,7 @@ function monitorContext(){
     tabCatalog:[...windows.catalog,...other.catalog,...mac.catalog],sessions:new Map([['windows',windows],['other',other],['mac',mac]]),
     selected:key('windows',42),allTabs:()=>[],render(){},focus(){assert.fail('Background scanning must not request focus');},
     attentionKey:(host,session,pane)=>JSON.stringify([host,session,pane]),
-    setCatalog(entry,tabs){entry.catalog=tabs;}};
+    updateCreatedTabs(){},setCatalog(entry,tabs){entry.catalog=tabs;}};
   vm.createContext(context);
   vm.runInContext(source.slice(source.indexOf('function catalogUnavailable('),source.indexOf('function updateTabUrl(')),context);
   vm.runInContext(source.slice(source.indexOf('async function refreshAttention('),source.indexOf('refreshAttention();setInterval')),context);
@@ -37,6 +37,48 @@ test('failed attention scans preserve known catalogs, scoped to the failed host 
   await context.poll({tabs:[tab('mac',2)],errors:[]});
   assert.equal(windows.catalog.length,0);assert.equal(other.catalog.length,0);
   assert.deepEqual(Array.from(context.tabCatalog,t=>t.id),[2]);
+});
+
+test('a fresh page uses the relay catalog when a host scan is unavailable',async()=>{
+  const {context,windows,other,mac}=monitorContext();
+  context.tabCatalog=[];windows.catalog=[];other.catalog=[];mac.catalog=[];
+  const retained=tab('windows',42);
+  await context.poll({tabs:[tab('mac',1),retained],errors:[{host:'windows',message:'Private helper unavailable'}]});
+  assert.equal(windows.catalog[0].id,42);
+  assert.equal(mac.catalog[0].id,1);
+  assert.deepEqual(Array.from(context.tabCatalog,t=>t.id),[1,42]);
+  // Repeated retained catalogs never duplicate a tab already known to the page.
+  await context.poll({tabs:[retained],errors:[{host:'windows'}]});
+  assert.deepEqual(Array.from(context.tabCatalog,t=>t.id),[42]);
+  await context.poll({tabs:[],errors:[]});
+  assert.equal(windows.catalog.length,0);
+});
+
+test('native panes recover a cold catalog and reconcile pane keys with stable tab IDs',async()=>{
+  const {context,windows,other,mac}=monitorContext();
+  Object.assign(context,{ready:{},archived:{},tabOrder:[],saveReady(){},localStorage:{setItem(){}}});
+  vm.runInContext(source.slice(source.indexOf('function sessionKey('),source.indexOf('function attentionKey(')),context);
+  context.tabCatalog=[];windows.catalog=[];other.catalog=[];mac.catalog=[];
+  windows.state={session_name:'main',tabs:[{position:0,name:'First'},{position:1,name:'Second'}],
+    panes:[{pane_id:7,is_plugin:false,tab_position:0,title:'First shell'},{pane_id:8,is_plugin:false,tab_position:0},{pane_id:9,is_plugin:false,tab_position:1,title:'Second shell'}],
+    active_pane:{pane_id:7,is_plugin:false,tab_position:0}};
+  await context.poll({tabs:[],errors:[{host:'windows'}]});
+  assert.deepEqual(Array.from(windows.provisionalTabs,t=>[t.id,t.name,t.pending,t.fallback]),[[7,'First',true,true],[9,'Second',true,true]]);
+  assert.equal(context.selected,key('windows',42),'A requested stable tab stays selected until its identity returns');
+  context.selected=JSON.stringify(['windows','main','pane',8]);windows.provisionalTabs=[];
+  await context.poll({tabs:[],errors:[{host:'windows'}]});
+  assert.deepEqual(Array.from(windows.provisionalTabs,t=>t.id),[8,9],'A requested second pane does not duplicate its native tab');
+  context.selected=JSON.stringify(['windows','main','pane',9]);
+  context.tabOrder=[context.selected,JSON.stringify(['windows','main','pane',8])];
+  await context.poll({tabs:[],errors:[{host:'windows'}]});
+  assert.equal(windows.provisionalTabs.length,2,'Repeated failures do not duplicate native tabs');
+  await context.poll({tabs:[{...tab('windows',42),panes:windows.state.panes.slice(0,2)},
+    {...tab('windows',90),position:1,panes:[windows.state.panes[2]]}],errors:[]});
+  assert.equal(windows.provisionalTabs.length,0);
+  assert.equal(context.selected,key('windows',90));
+  assert.deepEqual(Array.from(context.tabOrder),[key('windows',90),key('windows',42)]);
+  await context.poll({tabs:[],errors:[]});
+  assert.equal(windows.catalog.length,0);assert.equal(windows.provisionalTabs.length,0);
 });
 
 test('transient discovery and attention failures retain the selected URL until authoritative closure',()=>{
@@ -171,6 +213,20 @@ test('headless browser keeps iframe, selection, URL and input focus through fail
     await page.evaluate(async()=>{await refresh();await refreshAttention();});
     await page.waitForFunction(()=>document.activeElement===document.querySelector('iframe[title="Windows: main"]'));
     assert.equal(page.url(),requested);
+    // A cold relay cache can still show usable native panes. A stable-tab deep
+    // link waits for its identity instead of selecting an unrelated pane key.
+    attentionError=true;await page.reload();
+    await page.waitForFunction(()=>document.querySelectorAll('#tabs .tab-select').length===2);
+    assert.equal(page.url(),requested);assert.equal(await page.locator('#tabs .selected').count(),0);
+    const fallback=page.locator('#tabs .tab-select[title*=" · Windows · main"]');
+    assert.equal(await fallback.evaluate(e=>e._item.tab.pending),true);
+    await fallback.click();
+    await page.waitForFunction(()=>document.activeElement===document.querySelector('iframe[title="Windows: main"]'));
+    assert.equal(new URL(page.url()).searchParams.get('pane'),'42');
+    await fallback.evaluate(e=>e.nextSibling.click());assert.equal(await page.locator('#close-tab').isDisabled(),true);
+    await page.keyboard.press('Escape');
+    attentionError=false;await page.evaluate(()=>refreshAttention());
+    assert.equal(page.url(),requested);assert.equal(await page.locator('#tabs .tab-select').count(),2);
     // Successful empty discovery must still remove a genuinely closed session.
     closed=true;await page.evaluate(()=>refresh());
     assert.equal(await page.locator('iframe[title="Windows: main"]').count(),0);

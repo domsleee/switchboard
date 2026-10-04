@@ -187,7 +187,7 @@ test('new tab requests one immediate catalog refresh after an in-flight scan',as
   let release,requests=0;
   const response=new Promise(resolve=>release=resolve);
   const context={attentionLoading:false,attentionRefreshPending:false,tabCatalog:[],catalogUnavailable:()=>false,sessions:new Map(),allTabs:()=>[],render(){},
-    selected:null,attentionKey(){},setInterval(){},
+    selected:null,attentionKey(){},updateCreatedTabs(){},setInterval(){},
     fetch:async()=>{requests++;if(requests===1)await response;return {ok:true,json:async()=>({tabs:[],panes:[]})};}};
   vm.createContext(context);
   vm.runInContext(source.slice(source.indexOf('async function refreshAttention('),source.indexOf('refreshAttention();setInterval')),context);
@@ -217,7 +217,7 @@ test('New tab cannot snapshot an unscanned or empty catalog',()=>{
 test('early catalog data is applied immediately and one delayed host does not block other terminals',async()=>{
   let releaseSlow;const delayed=new Promise(resolve=>releaseSlow=resolve),mounted=[];
   const catalog=[{host:'mac',session:'main',id:42,position:0,name:'A',panes:[]}];
-  const context={loading:false,hosts:new Map(),sessions:new Map(),tabCatalog:catalog,ready:{},archived:{},tabOrder:[],selected:null,saveReady(){},localStorage:{setItem(){}},
+  const context={loading:false,hosts:new Map(),sessions:new Map(),tabCatalog:catalog,ready:{},archived:{},tabOrder:[],selected:null,catalogUnavailable:()=>false,saveReady(){},localStorage:{setItem(){}},
     document:{createElement:()=>({remove(){}})},$:()=>({append:frame=>mounted.push(frame)}),renderMachines(){},render(){},setStatus(){},
     fetch:async url=>{if(url==='/api/hosts?summary=1')return {ok:true,json:async()=>[{id:'mac',name:'Mac'},{id:'slow',name:'Slow'}]};
       if(url==='/api/hosts/slow')return delayed;
