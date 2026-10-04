@@ -26,6 +26,10 @@ jobs:
           cargo test -p zellij-server windows_pane_environment_advertises_colour_without_overriding_preferences --lib
       - name: Check Rust relay transport
         run: cargo test -p zellij-client --features web_server_capability switchboard_relay --lib
+      - name: Check Windows update transactions and tray supervision
+        run: |
+          powershell -NoLogo -NoProfile -NonInteractive -File tools/switchboard/windows_releases.test.ps1
+          powershell -NoLogo -NoProfile -NonInteractive -File tools/switchboard/windows_tray.test.ps1
       - name: Build native server and relay
         run: cargo build --release --features web_server_capability
       - name: Verify packaged relay command
@@ -33,6 +37,11 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: switchboard-windows
-          path: target/release/zellij.exe
+          path: |
+            target/release/zellij.exe
+            tools/switchboard/install_windows_web.ps1
+            tools/switchboard/windows_releases.psm1
+            tools/switchboard/update_windows.ps1
+            tools/switchboard/windows_cli.ps1
           if-no-files-found: error
           retention-days: 7

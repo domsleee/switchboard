@@ -1,7 +1,8 @@
 # Updating Switchboard without stopping terminals
 
-Status: a manual macOS binary updater is available. Automatic updates and
-Windows updates are not implemented yet.
+Status: guarded macOS binary replacement and manual Windows release selection
+are available. Automatic updates and a complete connection-service bundle
+updater are not implemented.
 
 Updating Switchboard must preserve running shells, Codex, Claude, builds, and
 other terminal processes. A short browser reconnect is acceptable. Automatically
@@ -56,6 +57,68 @@ variables, server and terminal process IDs/start times, stable tab/pane IDs,
 selected terminal URL, and sharing. Both terminal and control WebSockets must
 actually be open before input is tested. This covers connection-service restarts,
 not a session-engine restart, automatic deployment, or Windows behavior.
+
+## Select a Windows release without stopping terminals
+
+The Windows installer imports its executable into
+`~/.local/share/switchboard/windows-releases/<sha256>/zellij.exe`. It installs the
+release helper, manual updater and CLI launcher beside the tray script. Settings,
+host credentials and logs remain outside the retained releases. Reinstalling the
+tray keeps an existing release selection; use the updater to change it.
+
+From PowerShell, after building or downloading a trusted executable:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/switchboard/update_windows.ps1 -Candidate C:\build\zellij.exe
+# Use the installation's custom config/release directory when applicable:
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/switchboard/update_windows.ps1 -Candidate C:\build\zellij.exe -Config C:\config\host.kdl -ReleaseDirectory C:\Switchboard\releases
+# Select the retained previous executable:
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/switchboard/update_windows.ps1 -Rollback
+```
+
+Windows locks loaded executable files. This updater copies each executable to a
+retained version directory and atomically replaces `current.json`; it never
+overwrites a loaded executable. Probes are bounded, read-only CLI calls. The
+candidate must query live panes with matching stable IDs and native tab names,
+and query an already running native web daemon when the installed CLI can do so.
+The updater compares engine, direct terminal-child and identified agent-descendant
+PIDs and full creation timestamps before and after selection. A failed check
+restores the old pointer. Both executables remain available locally.
+
+An exclusive file handle prevents concurrent updates. The retained `update.lock`
+file alone does not block future operations. If interruption or a failed pointer
+restore leaves `pending.json`, another update is refused; `-Rollback` restores
+the verified previous selection. A corrupt or missing retained executable fails
+closed and requires manual recovery from a trusted copy. No release cleanup is
+automatic.
+
+Use `~/.config/switchboard/windows_cli.ps1 attach SESSION` to launch a native
+client using the selected release. Existing sessions retain their original engine,
+including new panes inside those sessions. The tray reloads the pointer for future
+service starts and keeps healthy connection services running. Selecting or rolling
+back a release does **not** restart the relay, web daemon, tray or session engines,
+upgrade their already loaded code, or claim browser recovery. A production service
+handoff with automatic browser verification remains unfinished.
+
+`node acceptance/switchboard/run.cjs windows-update` runs actual PowerShell file
+transactions and subprocess quoting/timeouts with simulated Windows process,
+Zellij and service responses. It also executes the actual tray supervision function
+without WinForms, startup shortcuts or live services. PowerShell 7 on this Mac
+passes 54 release checks and 20 tray checks; Windows PowerShell 5.1/NTFS, login
+startup and real ConPTY behavior still require Windows evidence.
+
+`node acceptance/switchboard/run.cjs windows-browser OLD_BINARY NEW_BINARY`
+requires Windows, two distinct compatible executable builds and headless
+Playwright. It creates private sockets, unused loopback ports, two named disposable
+shells and a long-lived agent **fixture**, then checks actual browser input/output,
+both open WebSockets, automatic reconnection and manual rollback after a controlled
+private service failure. It compares PID/creation times, shell variables, ongoing
+output, a scrollback marker, native/sidebar names, IDs, selected URL and sharing,
+and starts a new engine with the selected release. It creates and revokes only its
+own authentication token. Service restarts belong only to this acceptance fixture;
+the production updater does not perform them. This runner has been syntax checked
+on Mac, not executed on Windows. Actual Codex/Claude turns and Windows login/tray
+lifecycle remain separate acceptance work.
 
 ## Recovering an existing unshared session
 

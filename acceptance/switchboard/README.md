@@ -270,7 +270,8 @@ After login, Switchboard serves the sidebar and native terminal web view without
 an extra terminal running `zellij web`. Its tray/menu icon shows whether it is
 working, opens `switchboard.localhost`, and can quit without killing my sessions.
 
-**Tests:** `recovery` checks the Mac installer and recovery helpers.
+**Tests:** `recovery` checks the Mac installer and recovery helpers;
+`windows-update` executes tray supervision with simulated services.
 **Still to check:** macOS menu behavior and Windows installation, startup,
 status, relogin and quit. Follow the [Windows plan](../../docs/SWITCHBOARD_WINDOWS_TEST_PLAN.md).
 
@@ -293,7 +294,11 @@ shell variables and output continuity are preserved. Rollback does the same.
 
 **Tests:** `update` and `browser` exercise isolated updates, rollback, process
 and state continuity, identity, names and real input/output; `sharing` checks
-private sessions and watchers.
+private sessions and watchers. `windows-update` checks release selection and
+rollback with actual PowerShell/file operations and simulated Windows processes
+and protocol responses. The opt-in `windows-browser` runner checks real Windows
+private shells, service replacement, manual rollback and reconnection; it has
+been syntax checked on Mac and still needs Windows execution.
 **Still to check:** Windows process-preserving update and browser reconnection.
 A healthy service or HTTP 200 alone does not pass. Lost names, identities or
 unusable tabs mean failed acceptance. Replacing a running engine still requires
@@ -314,8 +319,10 @@ snapshot. Routine updates must avoid recreating the engine.
 I can install a release and roll back on each machine. An automatic updater must
 preserve the running engines and verify that existing browser tabs are usable.
 
-**Tests:** `update` exercises the guarded Mac updater; the Windows plan covers
-startup and rollback.
+**Tests:** `update` exercises the guarded Mac updater; `windows-update` executes
+guarded Windows release selection, rejection and rollback with simulated Windows
+process/protocol responses. Windows checks include interrupted/failed restoration,
+retained checksums, native tab names, process creation times and tray supervision.
 **Status:** automatic GitHub release polling and installation are not implemented
 or tested. Windows rollback still needs platform execution.
 
@@ -372,6 +379,9 @@ PLAYWRIGHT_MODULE=/absolute/path/to/playwright node acceptance/switchboard/run.c
 PLAYWRIGHT_MODULE=/absolute/path/to/playwright node acceptance/switchboard/run.cjs sharing /absolute/path/to/new-zellij
 node acceptance/switchboard/run.cjs update /absolute/path/to/old-zellij /absolute/path/to/new-zellij
 node acceptance/switchboard/run.cjs windows /absolute/path/to/new-zellij /absolute/path/to/test-hosts.json windows-host-id
+node acceptance/switchboard/run.cjs windows-update
+# On Windows with headless Playwright and two distinct compatible builds:
+node acceptance/switchboard/run.cjs windows-browser C:/build/old-zellij.exe C:/build/new-zellij.exe
 ```
 
 `browser` and `update` require macOS; `sharing` requires Unix. `recovery` uses
@@ -380,6 +390,13 @@ authenticated Windows test host and creates uniquely named disposable sessions;
 existing remote sessions are queried read-only. Keep host configs and tokens
 outside the repository and logs. Use different old/new binary hashes to prove
 an actual upgrade.
+
+`windows-update` requires PowerShell (`POWERSHELL_BINARY` overrides the default).
+It runs on Mac PowerShell with simulated Windows processes/services; that is
+fixture evidence, not Windows acceptance. `windows-browser` requires Windows
+and creates only private services, shells and an agent fixture. It never changes
+startup configuration or restarts a live service/session. Actual Codex/Claude
+turns, tray login and the production connection-service handoff remain unverified.
 
 Record each run's commit/build hashes, platform, command and pass/fail result,
 including skipped checks. A listed test is coverage, not a recorded pass. Use the
