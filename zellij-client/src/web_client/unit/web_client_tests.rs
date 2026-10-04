@@ -1913,7 +1913,10 @@ mod web_client_tests {
         assert_exit_close_codes(zellij_utils::ipc::ExitReason::Disconnect, 1000).await;
     }
 
-    async fn assert_exit_close_codes(exit_reason: zellij_utils::ipc::ExitReason, expected_code: u16) {
+    async fn assert_exit_close_codes(
+        exit_reason: zellij_utils::ipc::ExitReason,
+        expected_code: u16,
+    ) {
         // This fixture owns only its unique token; leave other development
         // credentials intact when running the focused lifecycle regression.
         let test_token_name = format!("test_token_exit_close_codes_{}", uuid::Uuid::new_v4());

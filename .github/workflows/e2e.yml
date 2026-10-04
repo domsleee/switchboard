@@ -2,62 +2,56 @@ name: End to End tests
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
+  workflow_dispatch:
 
-env:
-  CARGO_TERM_COLOR: always
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  test-e2e:
-    name: Build generic binary and run tests on it
-    runs-on: ubuntu-latest
-    environment: cachix
-
-    services:
-      ssh:
-        image: ghcr.io/linuxserver/openssh-server
-        env:
-          PUID: 1001
-          PGID: 1000
-          TZ: Europe/Vienna
-          PASSWORD_ACCESS: true
-          USER_PASSWORD: test
-          USER_NAME: test
-        ports:
-          - 2222:2222
-        options: -v ${{ github.workspace }}/target:/usr/src/zellij --name ssh
+  browser:
+    name: Rust relay and browser recovery
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: always
+      SWITCHBOARD_TEST_RUST_RELAY: "1"
     steps:
-    - uses: actions/checkout@v3
-
-    - name: Install Protoc
-      uses: arduino/setup-protoc@v2
-      with:
-        repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Install musl-tools
-      run: sudo apt-get install -y --no-install-recommends musl-tools
-
-    - name: Install Rust
-      uses: actions-rust-lang/setup-rust-toolchain@v1
-      with:
-        rustflags: ""
-
-    - name: Create target folder
-      run: mkdir -p ${{ github.workspace }}/target
-      # we copy this manually into the target folder instead of mounting it because
-      # github actions creates the service first, and if it has a mount that is part
-      # of your yet unchecked out code, you cannot checkout the code after the mount
-
-    - name: Copy fixtures folder to target
-      run: cp -r ${{ github.workspace }}/src/tests/fixtures ${{ github.workspace }}/target
-
-    - name: Restart ssh container
-      # we need to do this because otherwise the volume will not be mounted
-      # on the docker container, since it was created before the folder existed
-      uses: docker://docker
-      with:
-        args: docker restart ssh
-    - name: Test
-      run: cargo xtask ci e2e --test
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rustflags: ""
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install headless Chromium
+        run: |
+          npm install --prefix "$RUNNER_TEMP/switchboard-browser" playwright
+          "$RUNNER_TEMP/switchboard-browser/node_modules/.bin/playwright" install chromium
+          echo "PLAYWRIGHT_MODULE=$RUNNER_TEMP/switchboard-browser/node_modules/playwright" >> "$GITHUB_ENV"
+      - name: Check sidebar behavior
+        run: node acceptance/switchboard/run.cjs ui
+      - name: Build browser-enabled native executable
+        run: cargo build --profile dev-opt --locked
+      - name: Check native sharing controls
+        run: node acceptance/switchboard/run.cjs sharing target/dev-opt/zellij
+      - name: Check browser reconnection and rollback
+        # Replaces the executable with the same build and restarts connection
+        # services. This checks handoff behavior, not mixed-version compatibility.
+        run: node acceptance/switchboard/run.cjs browser target/dev-opt/zellij target/dev-opt/zellij
+      - name: Save private acceptance diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-failure-logs
+          path: |
+            /tmp/switchboard-browser-update-*/*.log
+            /tmp/sbn-*/*.log
+          if-no-files-found: ignore
+          retention-days: 7

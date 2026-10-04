@@ -19,9 +19,9 @@ mod stdin_handler;
 #[cfg(windows)]
 mod stdin_handler_windows;
 #[cfg(feature = "web_server_capability")]
-pub mod web_client;
-#[cfg(feature = "web_server_capability")]
 pub mod switchboard_relay;
+#[cfg(feature = "web_server_capability")]
+pub mod web_client;
 
 use log::info;
 use std::env::current_exe;
@@ -1180,10 +1180,12 @@ pub fn start_client(
 
     let existing_only = matches!(
         &cli_args.command,
-        Some(zellij_utils::cli::Command::Sessions(zellij_utils::cli::Sessions::Attach {
-            existing_only: true,
-            ..
-        }))
+        Some(zellij_utils::cli::Command::Sessions(
+            zellij_utils::cli::Sessions::Attach {
+                existing_only: true,
+                ..
+            }
+        ))
     );
     if existing_only {
         if let Err(error) = os_input.try_connect_to_server(&ipc_pipe) {

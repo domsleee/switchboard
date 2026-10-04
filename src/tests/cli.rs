@@ -14,8 +14,20 @@ fn existing_only_attach_requires_a_named_existing_target_without_creation_option
     for args in [
         vec!["zellij", "attach", "--existing-only"],
         vec!["zellij", "attach", "--existing-only", "--create", "main"],
-        vec!["zellij", "attach", "--existing-only", "--create-background", "main"],
-        vec!["zellij", "attach", "--existing-only", "--force-run-commands", "main"],
+        vec![
+            "zellij",
+            "attach",
+            "--existing-only",
+            "--create-background",
+            "main",
+        ],
+        vec![
+            "zellij",
+            "attach",
+            "--existing-only",
+            "--force-run-commands",
+            "main",
+        ],
     ] {
         assert!(CliArgs::try_parse_from(args).is_err());
     }

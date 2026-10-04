@@ -770,14 +770,13 @@ pub(crate) fn start_client(opts: CliArgs) {
                         .as_ref()
                         .and_then(|s| session_exists(&s).ok())
                         .unwrap_or(false);
-                    let resurrection_layout =
-                        if existing_only {
-                            if !session_exists {
-                                eprintln!("Existing session is unavailable; no session was created.");
-                                process::exit(2);
-                            }
-                            None
-                        } else {
+                    let resurrection_layout = if existing_only {
+                        if !session_exists {
+                            eprintln!("Existing session is unavailable; no session was created.");
+                            process::exit(2);
+                        }
+                        None
+                    } else {
                         session_name
                             .as_ref()
                             .and_then(|s| match resurrection_layout(&s) {
@@ -787,7 +786,7 @@ pub(crate) fn start_client(opts: CliArgs) {
                                     process::exit(2);
                                 },
                             })
-                        };
+                    };
                     if (create || should_create_detached)
                         && !session_exists
                         && resurrection_layout.is_none()
@@ -806,10 +805,9 @@ pub(crate) fn start_client(opts: CliArgs) {
                                 new_session_cwd.clone(),
                             )
                         },
-                        _ if existing_only => ClientInfo::Attach(
-                            session_name.unwrap(),
-                            config_options.clone(),
-                        ),
+                        _ if existing_only => {
+                            ClientInfo::Attach(session_name.unwrap(), config_options.clone())
+                        },
                         _ => attach_with_session_name(
                             session_name,
                             config_options.clone(),
