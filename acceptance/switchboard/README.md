@@ -59,8 +59,17 @@ When I create a tab, that actual tab becomes selected and highlighted, its URL
 updates, and I can type without another click. This works whichever arrives
 first: the focus update or the refreshed tab list.
 
+The sidebar immediately shows creation in progress. As soon as the native
+terminal confirms creation, its row and input are ready without waiting for
+attention polling. Slow or failed status scans do not hide it. A second new
+tab can be created while those scans are still catching up.
+
 **Tests:** `ui` checks both arrival orders, input gating and delayed tab lists;
 `browser` creates a real tab, types into its shell and refreshes.
+The headless `new-tab.test.cjs` holds discovery stale, creates two tabs, checks
+focus and input, refreshes the new terminal's URL, and verifies promotion to
+native tab IDs without duplicate rows or lost preferences. Close waits for a
+verified native tab ID; a temporary pane ID must never close an unrelated tab.
 **Still to check:** Create through a browser connected to Windows. The `windows`
 suite checks native creation only.
 
