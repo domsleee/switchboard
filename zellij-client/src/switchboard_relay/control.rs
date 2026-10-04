@@ -425,7 +425,7 @@ impl Helper {
                 .ok_or_else(|| anyhow::anyhow!("Helper lacks authentication"))?,
         };
         let result = tokio::time::timeout(Duration::from_secs(10), async {
-            while helper.state.is_null() {
+            while helper.state["active_pane"].is_null() {
                 let _ = helper.next().await?;
             }
             helper.check()?;
@@ -473,7 +473,13 @@ impl Helper {
                 match message.transpose()? {
                     Some(Message::Text(value)) => {
                         let data: Value = serde_json::from_str(&value)?;
-                        if data["type"] == "MobileState" { self.state = data["payload"].clone(); self.check()?; }
+                        if data["type"] == "MobileState" {
+                            let state = data["payload"].clone();
+                            // A new session can report its identity before its first
+                            // terminal is ready. Never send input until it is verified.
+                            validate_helper_state(&self.name, &state)?;
+                            self.state = state;
+                        }
                         Ok(None)
                     },
                     Some(Message::Close(_)) | None => anyhow::bail!("Helper control disconnected"),
@@ -538,6 +544,17 @@ impl Helper {
     }
 }
 
+fn validate_helper_state(name: &str, state: &Value) -> anyhow::Result<()> {
+    anyhow::ensure!(state["session_name"] == name, "Helper changed session");
+    if !state["active_pane"].is_null() {
+        anyhow::ensure!(
+            state["active_pane"]["is_plugin"] == false,
+            "Helper is not its private terminal"
+        );
+    }
+    Ok(())
+}
+
 pub(super) fn strip_ansi(text: &str) -> String {
     lazy_static::lazy_static! { static ref ANSI: regex::Regex = regex::Regex::new(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*?(?:\x07|\x1b\\)").unwrap(); }
     ANSI.replace_all(text, "").into_owned()
@@ -561,6 +578,27 @@ pub(super) async fn cleanup(host: &Host) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn helper_startup_accepts_empty_state_but_never_another_session_or_plugin() {
+        let name = "__switchboard_control_test";
+        assert!(
+            validate_helper_state(name, &json!({"session_name":name,"active_pane":null})).is_ok()
+        );
+        assert!(validate_helper_state(
+            name,
+            &json!({"session_name":name,"active_pane":{"is_plugin":false}})
+        )
+        .is_ok());
+        assert!(
+            validate_helper_state(name, &json!({"session_name":"main","active_pane":null}))
+                .is_err()
+        );
+        assert!(validate_helper_state(
+            name,
+            &json!({"session_name":name,"active_pane":{"is_plugin":true}})
+        )
+        .is_err());
+    }
     #[test]
     fn boundary_and_powershell_encoding() {
         for name in ["", "..", "x/y", "x\\y", "x\n", "__switchboard_control_x"] {
