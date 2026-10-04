@@ -39,6 +39,21 @@ test('failed attention scans preserve known catalogs, scoped to the failed host 
   assert.deepEqual(Array.from(context.tabCatalog,t=>t.id),[2]);
 });
 
+test('a fresh page uses the relay catalog when a host scan is unavailable',async()=>{
+  const {context,windows,other,mac}=monitorContext();
+  context.tabCatalog=[];windows.catalog=[];other.catalog=[];mac.catalog=[];
+  const retained=tab('windows',42);
+  await context.poll({tabs:[tab('mac',1),retained],errors:[{host:'windows',message:'Private helper unavailable'}]});
+  assert.equal(windows.catalog[0].id,42);
+  assert.equal(mac.catalog[0].id,1);
+  assert.deepEqual(Array.from(context.tabCatalog,t=>t.id),[1,42]);
+  // Repeated retained catalogs never duplicate a tab already known to the page.
+  await context.poll({tabs:[retained],errors:[{host:'windows'}]});
+  assert.deepEqual(Array.from(context.tabCatalog,t=>t.id),[42]);
+  await context.poll({tabs:[],errors:[]});
+  assert.equal(windows.catalog.length,0);
+});
+
 test('transient discovery and attention failures retain the selected URL until authoritative closure',()=>{
   const location={href:'https://switchboard.test/?host=windows&session=main&tab=42',search:'?host=windows&session=main&tab=42'};
   const saved=[];

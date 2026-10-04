@@ -726,10 +726,12 @@ async function refreshAttention(immediate=false){
     const data=await response.json();
     paneAttention=new Map((data.panes||[]).map(state=>{const key=attentionKey(state.host,state.session,state.pane_id);return [key,{...state,key}];}));
     attentionErrors=data.errors||[];
-    // Retain the last known catalog only for failed scans. An authoritative
-    // successful empty result still removes closed tabs and sessions.
-    tabCatalog=[...(data.tabs||[]).filter(tab=>!catalogUnavailable(tab.host,tab.session)),...tabCatalog.filter(tab=>catalogUnavailable(tab.host,tab.session))];
-    for(const entry of sessions.values())if(!catalogUnavailable(entry.host,entry.name))setCatalog(entry,tabCatalog.filter(tab=>tab.host===entry.host&&tab.session===entry.name));
+    // The relay also preserves catalogs during failed scans. Use those on a
+    // fresh page, and retain browser entries the failed scan could not supply.
+    const incoming=data.tabs||[],identity=tab=>JSON.stringify([tab.host,tab.session,tab.id]);
+    const supplied=new Set(incoming.map(identity));
+    tabCatalog=[...incoming,...tabCatalog.filter(tab=>catalogUnavailable(tab.host,tab.session)&&!supplied.has(identity(tab)))];
+    for(const entry of sessions.values())setCatalog(entry,tabCatalog.filter(tab=>tab.host===entry.host&&tab.session===entry.name));
     const current=allTabs().find(item=>item.key===selected);
     if(current && document.hasFocus() && !document.hidden && $('artifact-preview').hidden && !document.querySelector('dialog[open]') && !current.entry.requestedPane && !current.entry.focusPending && activeTab(current.entry)?.id===current.tab.id)acknowledgeAttention(current);
     render();
