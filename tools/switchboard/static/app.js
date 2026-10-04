@@ -1,4 +1,8 @@
 const $ = id => document.getElementById(id);
+fetch('/api/health',{cache:'no-store'}).then(response=>response.ok?response.json():null).then(build=>{
+  if(build&&/^[a-f0-9]{7,40}$/.test(build.commit)&&/^\d{4}-\d{2}-\d{2}$/.test(build.commit_date))
+    $('build-version').textContent=`${build.commit} · ${build.commit_date}`;
+}).catch(()=>{});
 const hosts = new Map(), sessions = new Map();
 const tabButtons=new Map();
 const mobileSidebar=matchMedia("(max-width:700px)");
@@ -28,25 +32,61 @@ function setStatus(message,isError=false) {
   $('notifications').title=`${$('notifications').textContent}\n${message}`;
 }
 function requestedTab(){
-  const query=new URLSearchParams(location.search),host=query.get('host'),session=query.get('session'),id=query.get('tab');
-  return host&&session&&/^\d+$/.test(id||'')&&Number(id)<=0xffffffff?JSON.stringify([host,session,'tab',Number(id)]):null;
+  const query=new URLSearchParams(location.search),host=query.get('host'),session=query.get('session'),kind=query.has('tab')?'tab':'pane',id=query.get(kind);
+  return host&&session&&/^\d+$/.test(id||'')&&Number(id)<=0xffffffff?JSON.stringify([host,session,kind,Number(id)]):null;
 }
 function waitingForRequestedTab(){
-  if(!restoringTab)return false;
+  if(!selected)return false;
   const [host,name]=JSON.parse(selected),machine=hosts.get(host),entry=sessions.get(sessionKey(host,name));
+  // An unavailable host or scan is not evidence that the selected tab closed.
+  if(machine?.error)return true;
+  if(machine?.sessions&&!machine.sessions.some(session=>session.name===name))return false;
+  if(catalogUnavailable(host,name))return true;
+  if(!restoringTab)return false;
   if(!machine)return hosts.size===0&&loading;
-  if(machine.error)return false;
   return machine.connecting||!!entry&&(!entry.state||!entry.catalog?.length);
 }
+function catalogUnavailable(host,session){
+  return attentionErrors.some(error=>(error.host==='Switchboard'||error.host===host)&&(!error.session||error.session===session));
+}
 function updateTabUrl(item){
-  if(!item&&restoringTab)return;
+  if(!item&&(restoringTab||waitingForRequestedTab()))return;
+  if(item?.tab.pending&&!Number.isInteger(item.tab.id))return;
   const url=new URL(location.href);
-  for(const key of ['host','session','tab'])url.searchParams.delete(key);
-  if(item){url.searchParams.set('host',item.entry.host);url.searchParams.set('session',item.entry.name);url.searchParams.set('tab',item.tab.id);}
+  for(const key of ['host','session','tab','pane'])url.searchParams.delete(key);
+  if(item){url.searchParams.set('host',item.entry.host);url.searchParams.set('session',item.entry.name);url.searchParams.set(item.tab.pending?'pane':'tab',item.tab.id);}
   if(url.href!==location.href)history.replaceState(null,'',url);
 }
 function sessionKey(host, name) { return JSON.stringify([host, name]); }
-function tabKey(entry, tab) { return JSON.stringify([entry.host, entry.name, 'tab', tab.id]); }
+function tabKey(entry, tab) { return JSON.stringify([entry.host, entry.name, tab.pending?'pane':'tab', tab.id]); }
+function sessionTabs(entry){return [...(entry.catalog||[]),...(entry.provisionalTabs||[]),...(entry.creatingTab?[entry.creatingTab]:[])];}
+function updateCreatedTabs(entry){
+  const state=entry.state,active=state?.active_pane,creating=entry.creatingTab;
+  if(state?.session_name!==entry.name)return;
+  const requested=selected&&JSON.parse(selected);
+  let paneId;
+  if(creating&&active&&!active.is_plugin&&!entry.pendingNewTab?.paneIds?.has(active.pane_id))paneId=active.pane_id;
+  else if(requested?.[0]===entry.host&&requested[1]===entry.name&&requested[2]==='pane'&&Number.isInteger(requested[3]))paneId=requested[3];
+  if(Number.isInteger(paneId)&&state.panes?.some(p=>!p.is_plugin&&p.pane_id===paneId)){
+    entry.provisionalTabs??=[];
+    if(!entry.provisionalTabs.some(tab=>tab.id===paneId))entry.provisionalTabs.push({id:paneId,pending:true,name:'New tab',panes:[]});
+    if(creating){
+      if(selected===tabKey(entry,creating))selected=tabKey(entry,entry.provisionalTabs.find(tab=>tab.id===paneId));
+      entry.creatingTab=null;entry.pendingNewTab=null;entry.followActiveTab=false;
+    }
+  }
+  // Native control messages arrive before the slower attention scanner. Pane
+  // identity lets the new terminal appear and reconnect without inventing a tab ID.
+  entry.provisionalTabs=(entry.provisionalTabs||[]).filter(tab=>{
+    const pane=state.panes?.find(p=>!p.is_plugin&&p.pane_id===tab.id);
+    if(!pane)return false;
+    tab.position=pane.tab_position;
+    tab.name=state.tabs?.find(t=>t.position===pane.tab_position)?.name||'New tab';
+    tab.panes=state.panes.filter(p=>p.tab_position===pane.tab_position);
+    return true;
+  });
+  if(entry.provisionalTabs.length)setCatalog(entry,entry.catalog||[]);
+}
 function tabPanes(entry,tab){
   return (entry.state?.panes||[]).filter(p=>p.tab_position===tab.position && tab.panes.some(native=>native.pane_id===p.pane_id&&native.is_plugin===p.is_plugin));
 }
@@ -57,18 +97,22 @@ function tabTitle(item){
 }
 function activeTab(entry){
   const active=entry.state?.active_pane;
-  return entry.catalog?.find(tab=>tab.position===active?.tab_position&&tab.panes.some(p=>p.pane_id===active.pane_id&&p.is_plugin===active.is_plugin));
+  return sessionTabs(entry).find(tab=>tab.position===active?.tab_position&&tab.panes.some(p=>p.pane_id===active.pane_id&&p.is_plugin===active.is_plugin));
 }
 function setCatalog(entry,tabs){
   // Carry browser preferences from the earlier pane keys to native tab IDs.
   const migrations=new Map();
-  for(const tab of tabs)for(const pane of tab.panes)migrations.set(JSON.stringify([entry.host,entry.name,pane.pane_id,pane.is_plugin]),tabKey(entry,tab));
+  for(const tab of tabs)for(const pane of tab.panes){
+    migrations.set(JSON.stringify([entry.host,entry.name,pane.pane_id,pane.is_plugin]),tabKey(entry,tab));
+    if(!pane.is_plugin)migrations.set(JSON.stringify([entry.host,entry.name,'pane',pane.pane_id]),tabKey(entry,tab));
+  }
   let changed=false;
   for(const store of [ready,archived])for(const [old,key] of migrations)if(old in store){store[key]=store[old];delete store[old];changed=true;}
   if(migrations.has(selected)){selected=migrations.get(selected);changed=true;}
   if(tabOrder.some(key=>migrations.has(key))){tabOrder=[...new Set(tabOrder.map(key=>migrations.get(key)||key))];changed=true;}
   if(changed){saveReady();localStorage.setItem('switchboard-archived',JSON.stringify(archived));localStorage.setItem('switchboard-tab-order',JSON.stringify(tabOrder));}
   entry.catalog=tabs;
+  entry.provisionalTabs=entry.provisionalTabs?.filter(tab=>!migrations.has(tabKey(entry,tab)));
   // Keep confirmed closes hidden through snapshots taken before the close finished.
   for(const [id,closing] of entry.closingTabs||[])if(closing.session!==entry.name||!closing.pending&&!tabs.some(tab=>tab.id===id))entry.closingTabs.delete(id);
   syncActiveTab(entry);
@@ -77,6 +121,7 @@ function syncActiveTab(entry){
   const tab=activeTab(entry);
   if(!tab||entry.requestedPane||entry.focusPending)return;
   if(entry.pendingNewTab){
+    if(entry.creatingTab)return;
     if(entry.pendingNewTab.has(tabKey(entry,tab)))return;
     entry.pendingNewTab=null;entry.followActiveTab=false;
     if(filter!=='all'&&groups[entry.host]!==filter)setFilter('all');$('tab-search').value='';selected=tabKey(entry,tab);entry.needsFocus=true;
@@ -110,7 +155,7 @@ function matchesSearch(item){
 }
 function allTabs(ignoreFilter=false, includeArchived=false) {
   const ranks=new Map(tabOrder.map((key,index)=>[key,index]));
-  return [...sessions.values()].flatMap(entry => (entry.state ? entry.catalog || [] : []).map(tab => ({entry,tab,key:tabKey(entry,tab)})))
+  return [...sessions.values()].flatMap(entry => (entry.state ? sessionTabs(entry) : []).map(tab => ({entry,tab,key:tabKey(entry,tab)})))
     .filter(({entry,tab,key}) => !entry.closingTabs?.has(tab.id) && (includeArchived || !archived[key]) && (ignoreFilter || filter === 'all' || groups[entry.host] === filter))
     .sort((a,b) => (ranks.get(a.key)??Infinity)-(ranks.get(b.key)??Infinity));
 }
@@ -159,6 +204,7 @@ function render() {
       tabButtons.set(item.key,button);
     }
     button._item=item;
+    button.draggable=!item.tab.pending||Number.isInteger(item.tab.id);
     const title=tabTitle(item);
     button.title=`${title}\nDrag to reorder · Alt+Shift+H/L moves this tab · Right-click to archive or close`;
     const starred = isReady(item);
@@ -184,13 +230,14 @@ function render() {
   $('notifications').textContent=`${notifications} notification${notifications===1?'':'s'}`;
   $('notifications').classList.toggle('has-notifications',notifications>0);
   document.title=`${notifications?'('+notifications+') ':''}`+(current?`${tabTitle(current)} · ${hosts.get(current.entry.host)?.name} · Switchboard`:'Switchboard');
-  for (const entry of sessions.values()) entry.frame.classList.toggle('active',entry===current?.entry);
+  const currentEntry=current?.entry||(waitingForRequestedTab()?sessions.get(sessionKey(...JSON.parse(selected).slice(0,2))):null);
+  for (const entry of sessions.values()) entry.frame.classList.toggle('active',entry===currentEntry);
   const selecting=!!current?.entry.frame.contentWindow.SwitchboardClipboard?.selectionMode;
   $('select-text').setAttribute('aria-pressed',String(selecting));
   $('select-text').classList.toggle('selected',selecting);
   $('select-text').disabled=!current;
   $('copy').disabled=!current;
-  $('ready').disabled=!current;
+  $('ready').disabled=!current||current.tab.pending&&!Number.isInteger(current.tab.id);
   const viewport=current?.entry.state?.tab_viewport;
   const sizeOwner=$('size-owner');
   const focused=current && activeTab(current.entry)?.id===current.tab.id && !current.entry.requestedPane && !current.entry.focusPending && !current.entry.pendingNewTab;
@@ -208,7 +255,7 @@ function render() {
   for(const entry of sessions.values())if(entry.closeError)errors.push(entry.closeError);
   for(const error of attentionErrors)errors.push(`${hosts.get(error.host)?.name||error.host}: attention status unavailable`);
   setStatus(errors.length?errors.join(' · '):`${hosts.size} machines · ${tabs.length} tabs${current?' · '+hosts.get(current.entry.host)?.name:''}`,errors.length>0);
-  if ((selected !== previous || wasRestoring&&!restoringTab) && current) focus(current);
+  if ((selected !== previous || wasRestoring&&!restoringTab) && current) focus(current,true);
   if(selected!==previous) $('tabs').querySelector('.selected')?.scrollIntoView({block:'nearest',inline:'nearest'});
 }
 function updateDragTarget() {
@@ -263,8 +310,15 @@ window.addEventListener('focus',()=>{
   const current=allTabs().find(item=>item.key===selected);
   if(current&&document.hasFocus())current.entry.frame.contentWindow.postMessage({type:'zellij-window-focus'},location.origin);
 });
-function focus(item) {
-  if(item.entry.pendingNewTab)return;
+function focus(item,background=false) {
+  const activeElement=document.activeElement;
+  if(background&&(document.hidden||!document.hasFocus()||!$('artifact-preview').hidden||document.querySelector('dialog[open]')||activeElement&&activeElement!==document.body&&activeElement!==item.entry.frame)){
+    item.entry.needsFocus=true;return;
+  }
+  // A polling retry must not blur/disable a terminal while its control socket
+  // lacks current metadata. The next native state performs the reconnect focus.
+  if(item.entry.disconnected){item.entry.needsFocus=true;return;}
+  if(item.entry.pendingNewTab||item.tab.pending&&!item.tab.panes.length)return;
   item.entry.needsFocus=false;
   $('artifact-preview').hidden=true;
   $('artifact-frame').src='about:blank';
@@ -380,9 +434,11 @@ window.addEventListener('message',event=>{
   const entry=[...sessions.values()].find(e=>e.frame.contentWindow===event.source);
   if(!entry)return;
   if(event.data?.type==='zellij-state') {
+    entry.disconnected=false;
     const previousPosition=entry.state?.active_pane?.tab_position;
     const previousPane=entry.state?.active_pane;
     entry.state=event.data.payload;
+    updateCreatedTabs(entry);
     if(previousPane && (previousPane.pane_id!==entry.state.active_pane?.pane_id || previousPane.is_plugin!==entry.state.active_pane?.is_plugin))entry.frame.contentWindow.SwitchboardClipboard?.clearSelection();
     entry.focusPending=!!event.data.focus_pending;
     if(entry.requestedPane){
@@ -398,7 +454,7 @@ window.addEventListener('message',event=>{
       if(duplicate&&duplicate!==entry)duplicate.frame.remove();
       sessions.set(key,entry);
     }
-    if(!entry.requestedPane && !entry.focusPending && entry.frame.classList.contains('active') && previousPane && (previousPosition!==entry.state.active_pane?.tab_position||previousPane.pane_id!==entry.state.active_pane?.pane_id||previousPane.is_plugin!==entry.state.active_pane?.is_plugin)){
+    if(!entry.needsFocus && !entry.requestedPane && !entry.focusPending && entry.frame.classList.contains('active') && previousPane && (previousPosition!==entry.state.active_pane?.tab_position||previousPane.pane_id!==entry.state.active_pane?.pane_id||previousPane.is_plugin!==entry.state.active_pane?.is_plugin)){
       const tab=activeTab(entry);
       if(tab){selected=tabKey(entry,tab);delete ready[selected];saveReady();entry.followActiveTab=false;}else entry.followActiveTab=true;
     }
@@ -410,7 +466,7 @@ window.addEventListener('message',event=>{
     if(current?.entry===entry && entry.acknowledgeTab===selected && !entry.requestedPane && !entry.focusPending && activeTab(entry)?.id===current.tab.id){acknowledgeAttention(current);entry.acknowledgeTab=null;}
     render();
     if(entry.needsFocus && entry.frame.classList.contains('active')){
-      const current=allTabs().find(item=>item.key===selected);if(current)focus(current);
+      const current=allTabs().find(item=>item.key===selected);if(current)focus(current,true);
     }
   }else if(event.data?.type==='zellij-focus-failed'){
     if(entry.requestedPane?.focus_id!==event.data.focus_id)return;
@@ -440,7 +496,7 @@ window.addEventListener('message',event=>{
     }catch(_){setStatus('Invalid artifact link.',true);}
   }else if(event.data?.type==='zellij-clipboard'){
     setStatus(event.data.ok?'Copied to this browser.':event.data.error||'Copy failed; use the terminal’s clipboard panel.',!event.data.ok);
-  }else if(event.data?.type==='zellij-disconnected'){entry.needsFocus=true;setStatus(`${hosts.get(entry.host)?.name}: reconnecting…`,true);}
+  }else if(event.data?.type==='zellij-disconnected'){entry.disconnected=true;entry.needsFocus=true;setStatus(`${hosts.get(entry.host)?.name}: reconnecting…`,true);}
 });
 $('artifact-back').onclick=()=>{const current=allTabs().find(item=>item.key===selected);if(current)focus(current);else $('artifact-preview').hidden=true;};
 $('select-text').onclick=()=>{
@@ -483,15 +539,18 @@ newTabDialog.onclick=event=>{if(newTabBackdropPressed&&outsideNewTab(event))newT
 $('new-tab-form').onsubmit=event=>{
   event.preventDefault();const entry=sessions.get($('new-tab-target').value);if(!entry?.state||!entry.catalog?.length)return;
   if(entry.pendingNewTab||entry.requestedPane||entry.focusPending){setStatus('Wait for the terminal to receive focus before creating a tab.',true);return;}
-  const pending=entry.pendingNewTab=new Set((entry.catalog||[]).map(tab=>tabKey(entry,tab)));
-  const active=activeTab(entry);if(active)selected=tabKey(entry,active);
+  const pending=entry.pendingNewTab=new Set(sessionTabs(entry).map(tab=>tabKey(entry,tab)));
+  pending.paneIds=new Set((entry.state.panes||[]).filter(p=>!p.is_plugin).map(p=>p.pane_id));
+  if(entry.state.active_pane&&!entry.state.active_pane.is_plugin)pending.paneIds.add(entry.state.active_pane.pane_id);
+  entry.creatingTab={id:'creating',pending:true,name:'Creating tab…',position:Infinity,panes:[]};
+  selected=tabKey(entry,entry.creatingTab);
   restoringTab=false;entry.followActiveTab=true;
   if(filter!=='all'&&groups[entry.host]!==filter)setFilter('all');$('tab-search').value='';
   sidebarOpen=false;updateSidebar();$('artifact-preview').hidden=true;$('artifact-frame').src='about:blank';
   $('new-tab-dialog').close();render();
   entry.frame.contentWindow.postMessage({type:'zellij-new-tab'},location.origin);
   setStatus(`Creating a tab on ${hosts.get(entry.host)?.name}…`);
-  setTimeout(()=>{if(entry.pendingNewTab===pending){entry.pendingNewTab=null;setStatus('No new tab received. Check the connection and try again.',true);}},30000);
+  setTimeout(()=>{if(entry.pendingNewTab===pending){const waiting=selected===tabKey(entry,entry.creatingTab);entry.pendingNewTab=null;entry.creatingTab=null;entry.followActiveTab=false;if(waiting){const active=activeTab(entry);selected=active?tabKey(entry,active):null;}render();setStatus('No new tab received. Check the connection and try again.',true);}},30000);
 };
 $('ready').onclick=()=>{
   if(!selected)return;
@@ -513,9 +572,12 @@ $('native-tabs').onclick=()=>{nativeTabs=!nativeTabs;localStorage.setItem('switc
 updateNativeTabs();
 refresh();setInterval(refresh,15000);
 
-function closeTabMenu(){ $('tab-menu').hidden=true;contextItem=null; }
+function closeTabMenu(){ $('tab-menu').hidden=true;$('close-tab').disabled=false;contextItem=null; }
 function openTabMenu(item,x,y){
   contextItem=item;
+  $('archive-tab').disabled=item.tab.pending&&!Number.isInteger(item.tab.id);
+  $('close-tab').disabled=!!item.tab.pending;
+  $('close-tab').title=item.tab.pending?'Waiting for the tab identity to finish connecting':'';
   const menu=$('tab-menu');menu.hidden=false;
   menu.style.left=`${Math.max(0,Math.min(x,innerWidth-menu.offsetWidth))}px`;
   menu.style.top=`${Math.max(0,Math.min(y,innerHeight-menu.offsetHeight))}px`;
@@ -604,12 +666,15 @@ async function refreshAttention(immediate=false){
     const response=await fetch('/api/attention');if(!response.ok)throw Error('Attention monitor unavailable');
     const data=await response.json();
     paneAttention=new Map((data.panes||[]).map(state=>{const key=attentionKey(state.host,state.session,state.pane_id);return [key,{...state,key}];}));
-    tabCatalog=data.tabs||[];attentionErrors=data.errors||[];
-    for(const entry of sessions.values())if(!attentionErrors.some(error=>error.host===entry.host))setCatalog(entry,tabCatalog.filter(tab=>tab.host===entry.host&&tab.session===entry.name));
+    attentionErrors=data.errors||[];
+    // Retain the last known catalog only for failed scans. An authoritative
+    // successful empty result still removes closed tabs and sessions.
+    tabCatalog=[...(data.tabs||[]).filter(tab=>!catalogUnavailable(tab.host,tab.session)),...tabCatalog.filter(tab=>catalogUnavailable(tab.host,tab.session))];
+    for(const entry of sessions.values())if(!catalogUnavailable(entry.host,entry.name))setCatalog(entry,tabCatalog.filter(tab=>tab.host===entry.host&&tab.session===entry.name));
     const current=allTabs().find(item=>item.key===selected);
     if(current && document.hasFocus() && !document.hidden && $('artifact-preview').hidden && !document.querySelector('dialog[open]') && !current.entry.requestedPane && !current.entry.focusPending && activeTab(current.entry)?.id===current.tab.id)acknowledgeAttention(current);
     render();
-    const selectedTab=allTabs().find(item=>item.key===selected);if(selectedTab?.entry.needsFocus)focus(selectedTab);
+    const selectedTab=allTabs().find(item=>item.key===selected);if(selectedTab?.entry.needsFocus)focus(selectedTab,true);
   }catch(_){paneAttention.clear();attentionErrors=[{host:'Switchboard'}];render();}
   finally{attentionLoading=false;if(attentionRefreshPending){attentionRefreshPending=false;refreshAttention();}}
 }

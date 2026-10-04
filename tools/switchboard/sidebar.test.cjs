@@ -186,7 +186,7 @@ test('new tab focus and catalog resolve selection in either arrival order withou
 test('new tab requests one immediate catalog refresh after an in-flight scan',async()=>{
   let release,requests=0;
   const response=new Promise(resolve=>release=resolve);
-  const context={attentionLoading:false,attentionRefreshPending:false,sessions:new Map(),allTabs:()=>[],render(){},
+  const context={attentionLoading:false,attentionRefreshPending:false,tabCatalog:[],catalogUnavailable:()=>false,sessions:new Map(),allTabs:()=>[],render(){},
     selected:null,attentionKey(){},setInterval(){},
     fetch:async()=>{requests++;if(requests===1)await response;return {ok:true,json:async()=>({tabs:[],panes:[]})};}};
   vm.createContext(context);
@@ -232,7 +232,7 @@ test('early catalog data is applied immediately and one delayed host does not bl
 
 test('terminal URLs round-trip names and wait for the requested machine and tab',()=>{
   const location={href:'https://switchboard.localhost/?host=windows&session=work+%3F%23&tab=42',search:'?host=windows&session=work+%3F%23&tab=42'};
-  const saved=[];const context={location,URL,URLSearchParams,history:{replaceState:(_,title,url)=>saved.push(String(url))},hosts:new Map(),sessions:new Map(),loading:true,restoringTab:true};
+  const saved=[];const context={location,URL,URLSearchParams,history:{replaceState:(_,title,url)=>saved.push(String(url))},hosts:new Map(),sessions:new Map(),attentionErrors:[],loading:true,restoringTab:true};
   vm.createContext(context);vm.runInContext(source.slice(source.indexOf('function requestedTab('),source.indexOf('function tabKey(')),context);
   context.selected=context.requestedTab();assert.equal(context.selected,JSON.stringify(['windows','work ?#','tab',42]));assert.equal(context.waitingForRequestedTab(),true);
   context.hosts.set('mac',{name:'Mac'});context.hosts.set('windows',{name:'Windows',connecting:true});assert.equal(context.waitingForRequestedTab(),true);
@@ -242,7 +242,8 @@ test('terminal URLs round-trip names and wait for the requested machine and tab'
   entry.catalog=[{id:42}];assert.equal(context.waitingForRequestedTab(),false);
   context.updateTabUrl({entry,tab:{id:42}});assert.deepEqual(saved,[]);
   context.updateTabUrl({entry,tab:{id:90}});assert.equal(new URL(saved[0]).searchParams.get('tab'),'90');assert.equal(new URL(saved[0]).searchParams.get('session'),'work ?#');
-  context.hosts.set('windows',{error:'Offline'});assert.equal(context.waitingForRequestedTab(),false);
+  context.hosts.set('windows',{error:'Offline'});assert.equal(context.waitingForRequestedTab(),true);
+  context.hosts.set('windows',{sessions:[]});assert.equal(context.waitingForRequestedTab(),false);
   location.search='?host=windows&session=main&tab=-1';assert.equal(context.requestedTab(),null);
   location.search='?host=windows&session=main&tab=4294967296';assert.equal(context.requestedTab(),null);
 });

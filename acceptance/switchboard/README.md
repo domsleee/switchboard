@@ -22,7 +22,8 @@ node acceptance/switchboard/run.cjs colours
 | `colours` | Windows pane environment rules, runnable on any build platform. Real Windows rendering still needs checking. |
 
 The acceptance runner reuses the existing tests. It does not maintain a second
-copy. Set `PLAYWRIGHT_MODULE` to include the optional headless hyperlink test.
+copy. Set `PLAYWRIGHT_MODULE` to include the optional headless hyperlink and
+terminal focus tests.
 
 ## Tabs and everyday use
 
@@ -58,8 +59,17 @@ When I create a tab, that actual tab becomes selected and highlighted, its URL
 updates, and I can type without another click. This works whichever arrives
 first: the focus update or the refreshed tab list.
 
+The sidebar immediately shows creation in progress. As soon as the native
+terminal confirms creation, its row and input are ready without waiting for
+attention polling. Slow or failed status scans do not hide it. A second new
+tab can be created while those scans are still catching up.
+
 **Tests:** `ui` checks both arrival orders, input gating and delayed tab lists;
 `browser` creates a real tab, types into its shell and refreshes.
+The headless `new-tab.test.cjs` holds discovery stale, creates two tabs, checks
+focus and input, refreshes the new terminal's URL, and verifies promotion to
+native tab IDs without duplicate rows or lost preferences. Close waits for a
+verified native tab ID; a temporary pane ID must never close an unrelated tab.
 **Still to check:** Create through a browser connected to Windows. The `windows`
 suite checks native creation only.
 
@@ -215,6 +225,25 @@ not a completed fix. Existing processes retain their original environment.
 
 ## Background operation, connections and updates
 
+### SB-46 · Status errors never take my terminal focus
+
+When “Windows: attention status unavailable” appears, my current terminal keeps
+its keyboard focus, selected tab, URL and iframe. Attention polling and machine
+discovery errors must never switch terminals, focus the sidebar, or disable input
+by retrying focus before the terminal reconnects. Known tabs stay visible during
+failed scans. Recovery keeps my selection and resumes input without another
+click. Refreshing an unavailable terminal waits for it instead of choosing a tab
+on another machine. A successful scan can still remove a genuinely closed tab.
+
+**Tests:** `ui` checks failed-host/session catalog retention and URL restoration.
+With `PLAYWRIGHT_MODULE`, it also checks actual iframe/input focus, uninterrupted
+typing, disconnects, HTTP failures, automatic recovery, viewport DOM moves and
+confirmed closes in an isolated headless browser using the actual terminal
+bridge. The fixture never connects to live sessions.
+**Still to check:** the installed Windows engine and browser reconnecting under
+real network failures. These tests do not fix the remote attention scanner's
+private-helper startup error.
+
 ### SB-16 · Run in the background on both machines
 
 After login, Switchboard serves the sidebar and native terminal web view without
@@ -306,7 +335,7 @@ Review that isolation before adding a test.
 
 ### SB-26 · Keep the fork easy to understand
 
-The source lives in the private Switchboard fork. Its README plainly says that
+The source lives in the public Switchboard fork. Its README plainly says that
 it is a fork of Zellij and identifies the upstream version.
 
 **Check:** repository visibility and README review; this does not need a prose

@@ -712,7 +712,11 @@ fn app(state: RelayState) -> Router {
     Router::new()
         .route(
             "/api/health",
-            get(|| async { Json(json!({"relay":"rust","version":zellij_utils::consts::VERSION})) }),
+            get(|| async { Json(json!({
+                "relay":"rust", "version":zellij_utils::consts::VERSION,
+                "commit":env!("SWITCHBOARD_COMMIT"),
+                "commit_date":env!("SWITCHBOARD_COMMIT_DATE")
+            })) }),
         )
         .route("/api/hosts", get(self::hosts))
         .route("/api/hosts/{host}", get(host))
