@@ -26,5 +26,6 @@ contents removed. For terminal rendering issues, include pane dimensions
 (`stty size` on Unix) and the command that produces the output.
 
 If raw terminal bytes are needed, run `zellij --debug` in an isolated session.
-See [CONTRIBUTING.md](../../CONTRIBUTING.md) for native and desktop helper log
-locations.
+Native log paths are defined in
+[consts.rs](../../zellij-utils/src/consts.rs). See the
+[setup guide](../../tools/switchboard/README.md) for desktop helper logs.
