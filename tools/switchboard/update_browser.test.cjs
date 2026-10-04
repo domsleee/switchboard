@@ -291,7 +291,7 @@ let recoveryPanes;
             await page.waitForFunction(previous=>{
                 const button=document.querySelector('#tabs .tab-select.selected'),frame=document.querySelector('#terminals>iframe.active');
                 const w=frame?.contentWindow,active=w?.__zjLastMobileState?.active_pane;
-                return button&&!previous.includes(button._item.tab.id)&&!button._item.entry.pendingNewTab&&
+                return button&&!button._item.tab.pending&&!previous.includes(button._item.tab.id)&&!button._item.entry.pendingNewTab&&
                     button.getAttribute('aria-pressed')==='true'&&button._item.tab.panes.some(p=>p.pane_id===active?.pane_id&&!p.is_plugin)&&
                     !w.term.options.disableStdin&&document.activeElement===frame&&w.term.element.contains(w.document.activeElement);
             },previousTabIds);
