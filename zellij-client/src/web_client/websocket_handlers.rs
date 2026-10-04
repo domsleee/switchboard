@@ -311,11 +311,6 @@ async fn handle_ws_terminal(
                 );
             },
             Message::Close(_) => {
-                state
-                    .connection_table
-                    .lock()
-                    .unwrap()
-                    .remove_client(&web_client_id);
                 break;
             },
             // TODO: support Message::Binary
@@ -324,6 +319,11 @@ async fn handle_ws_terminal(
             },
         }
     }
+    state
+        .connection_table
+        .lock()
+        .unwrap()
+        .remove_client(&web_client_id);
     os_input.send_to_server(ClientToServerMsg::ClientExited);
 }
 

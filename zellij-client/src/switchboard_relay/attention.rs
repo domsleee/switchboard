@@ -209,7 +209,7 @@ async fn scan(host: &Host, offset: usize) -> anyhow::Result<Value> {
         control::ensure_helper(host, &mut helper).await?;
         // Run existing native read-only commands on old Windows hosts. No uploaded Python scanner.
         let script=format!("$names=([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{}'))) | ConvertFrom-Json; $offset={offset}; {WINDOWS_SCAN}",STANDARD.encode(serde_json::to_vec(&batch)?));
-        let result = helper.as_mut().unwrap().json(&script).await;
+        let result = helper.helper.as_mut().unwrap().json(&script).await;
         let data = match result {
             Ok(Value::Array(data)) => data,
             Err(error) => {

@@ -940,17 +940,46 @@ pub fn start_server_impl(
                 // reply pipe for server→client messages.
                 #[cfg(windows)]
                 let reply_listener = zellij_utils::consts::ipc_bind_reply(&socket_path).unwrap();
+                #[cfg(windows)]
+                reply_listener
+                    .set_nonblocking(interprocess::local_socket::ListenerNonblockingMode::Accept)
+                    .unwrap();
 
                 for stream in listener.incoming() {
                     match stream {
                         Ok(stream) => {
                             let mut os_input = os_input.clone();
-                            let client_id = session_state.write().unwrap().new_client();
-
                             #[cfg(windows)]
-                            let reply_stream = reply_listener
-                                .accept()
-                                .expect("failed to accept reply connection");
+                            let reply_stream = {
+                                // A cancelled CLI can connect the input pipe and
+                                // exit before opening its reply pipe. Never let
+                                // that half-connection block every future client.
+                                let deadline =
+                                    std::time::Instant::now() + std::time::Duration::from_secs(5);
+                                loop {
+                                    match reply_listener.accept() {
+                                        Ok(reply) => break Some(reply),
+                                        Err(error)
+                                            if error.kind() == std::io::ErrorKind::WouldBlock
+                                                && std::time::Instant::now() < deadline =>
+                                        {
+                                            thread::sleep(std::time::Duration::from_millis(10));
+                                        },
+                                        Err(error) => {
+                                            log::warn!(
+                                                "Dropping incomplete IPC connection: {error}"
+                                            );
+                                            break None;
+                                        },
+                                    }
+                                }
+                            };
+                            #[cfg(windows)]
+                            let Some(reply_stream) = reply_stream
+                            else {
+                                continue;
+                            };
+                            let client_id = session_state.write().unwrap().new_client();
 
                             #[cfg(windows)]
                             let receiver = os_input
@@ -2151,6 +2180,20 @@ pub fn start_server_impl(
                     session_data
                 );
             },
+        }
+        // Relay helpers are disposable command transports, not user sessions.
+        // Reap them here so EOF, failed initialization, and a crashed web server
+        // all clean up without needing a working shell to run its own teardown.
+        if socket_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_prefix("__switchboard_control_"))
+            .and_then(|name| uuid::Uuid::parse_str(name).ok())
+            .is_some()
+            && session_data.read().unwrap().is_some()
+            && !session_state.read().unwrap().active_clients_are_connected()
+        {
+            break;
         }
     }
 
