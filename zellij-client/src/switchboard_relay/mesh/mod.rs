@@ -1,5 +1,6 @@
 //! Invitation pairing is separate from agent messages and the loopback terminal engine.
 mod crypto;
+mod discovery;
 mod storage;
 #[cfg(test)]
 mod tests;
@@ -194,7 +195,8 @@ pub(super) struct Mesh {
     issued: RwLock<BTreeMap<String, Arc<Host>>>,
     local_engine: Arc<Host>,
     issuer: Arc<dyn TokenIssuer>,
-    gateway: Mutex<Option<(String, axum_server::Handle<std::net::SocketAddr>)>>,
+    gateway: Mutex<Option<String>>,
+    pub(super) bridge: RwLock<Option<(storage::Storage, u16, String)>>,
 }
 impl Mesh {
     pub async fn open(root: PathBuf, local_engine: Arc<Host>) -> anyhow::Result<Arc<Self>> {
@@ -231,12 +233,23 @@ impl Mesh {
             local_engine,
             issuer,
             gateway: Mutex::new(None),
+            bridge: RwLock::new(None),
         });
         {
             let db = mesh.database.lock().await;
             mesh.catalog(&db)?;
         }
         Ok(mesh)
+    }
+    pub fn attach_bridge(&self, port: u16) -> anyhow::Result<()> {
+        let storage = storage::Storage::open(&peer_bridge::directory(
+            self.local_engine
+                .origin
+                .port_or_known_default()
+                .unwrap_or(8082),
+        ))?;
+        *self.bridge.write().unwrap() = Some((storage, port, secret()));
+        Ok(())
     }
     pub fn hosts(&self) -> Vec<Arc<Host>> {
         self.catalog.read().unwrap().values().cloned().collect()
@@ -341,7 +354,10 @@ impl Mesh {
         let mut committed = self.database.lock().await;
         let mut db = committed.clone();
         let first_configuration = db.local.is_none();
-        let member = self.identity.member(computer_name, address)?;
+        let mut member = self.identity.member(computer_name, address)?;
+        if let Some(existing) = &db.local {
+            member.certificate = existing.certificate.clone();
+        }
         if let Some(existing) = &db.local {
             anyhow::ensure!(
                 existing == &member,

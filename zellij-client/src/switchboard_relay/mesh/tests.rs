@@ -456,6 +456,13 @@ async fn unavailable_first_gateway_does_not_lock_in_an_incorrect_address() {
 
 #[tokio::test]
 async fn tls_gateway_authenticates_http_websocket_and_revokes_an_open_socket() {
+    gateway_roundtrip(false).await;
+}
+#[tokio::test]
+async fn shared_native_server_pairs_and_authenticates_http_websocket_with_revocation() {
+    gateway_roundtrip(true).await;
+}
+async fn gateway_roundtrip(shared: bool) {
     let temp = tempfile::tempdir().unwrap();
     let logins = Arc::new(AtomicUsize::new(0));
     let count = logins.clone();
@@ -572,7 +579,44 @@ async fn tls_gateway_authenticates_http_websocket_and_revokes_an_open_socket() {
     let server = axum_server::from_tcp_rustls(listener, tls)
         .unwrap()
         .handle(handle.clone());
-    let router = transport::gateway_router(mac.clone());
+    let mut bridge_task = None;
+    let router = if shared {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let registration = peer_bridge::Registration {
+            id: secret(),
+            revision: secret(),
+            port,
+            endpoint: format!("https://{authority}"),
+            certificate: mac.identity.certificate.clone(),
+            key: mac.identity.tls_key.clone(),
+        };
+        let storage = storage::Storage::open(&temp.path().join("bridge")).unwrap();
+        storage.write("registration.json", &registration).unwrap();
+        let internal = peer_bridge::relay_router(mac.clone(), registration.id);
+        bridge_task = Some(tokio::spawn(async move {
+            axum::serve(listener, internal).await.unwrap();
+        }));
+        let root = storage.root.clone();
+        Router::new()
+            .route(
+                "/native-test",
+                get(|| async { "native cookie routes still work" }),
+            )
+            .fallback(|| async { StatusCode::UNAUTHORIZED })
+            .layer(middleware::from_fn(move |request: Request, next: Next| {
+                let root = root.clone();
+                async move {
+                    if peer_bridge::selected(&request) {
+                        peer_bridge::forward(root, request).await
+                    } else {
+                        next.run(request).await
+                    }
+                }
+            }))
+    } else {
+        transport::gateway_router(mac.clone())
+    };
     let gateway_task = tokio::spawn(async move {
         server.serve(router.into_make_service()).await.unwrap();
     });
@@ -610,6 +654,47 @@ async fn tls_gateway_authenticates_http_websocket_and_revokes_an_open_socket() {
             .await
             .unwrap()
             .status()
+    }
+    if shared {
+        assert_eq!(
+            request(
+                &client,
+                &authority,
+                None,
+                false,
+                Method::GET,
+                "/native-test",
+                Bytes::new()
+            )
+            .await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            request(
+                &client,
+                &authority,
+                None,
+                false,
+                Method::GET,
+                "/mesh/health",
+                Bytes::new()
+            )
+            .await,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            request(
+                &client,
+                &authority,
+                Some(&bearer),
+                false,
+                Method::GET,
+                "/api/mesh",
+                Bytes::new()
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
     }
     assert_eq!(
         request(
@@ -756,5 +841,8 @@ async fn tls_gateway_authenticates_http_websocket_and_revokes_an_open_socket() {
     );
     handle.shutdown();
     gateway_task.await.unwrap();
+    if let Some(task) = bridge_task {
+        task.abort();
+    }
     native_task.abort();
 }

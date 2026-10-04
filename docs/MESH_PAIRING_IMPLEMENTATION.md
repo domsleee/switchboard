@@ -1,7 +1,7 @@
 # Invitation pairing implementation
 
 The first implementation provides administrator-approved bilateral pairing,
-recipient-encrypted credentials, a separate peer gateway, and a Computers page.
+recipient-encrypted credentials, peer routes on the native web server, and a Computers page.
 It has isolated state-machine, real loopback TLS/gateway and headless UI evidence.
 It has **not** enrolled a live Mac or Windows computer or transferred live credentials.
 SB-36–44 remain open until actual cross-computer acceptance is recorded.
@@ -39,16 +39,19 @@ security audit.
 
 ## Operation and persistence
 
-Open Settings → Computers. On Mac, enter this computer's name and fixed LAN or
-private-network HTTPS address with an available port, then create the named mesh
-and invitation. On Windows, paste the invitation, review its inviter and mesh,
-enter Windows' own name/address and explicitly join. Compare codes on both
-computers and approve on Mac. The joining page retries the same persisted request
-after approval or a network interruption.
+Open Settings → Computers and choose Create invitation. The computer name and
+network address are filled automatically. Advanced settings allow corrections;
+when multiple networks are available, choose the connection to use. Paste the
+invitation on Windows, review it and choose Join. Compare the codes and approve
+on Mac. The joining page retries the same persisted request after approval or a
+network interruption.
 
-The gateway binds only the supplied IP/port. The existing engine and desktop
-relay stay on loopback; pairing never launches, restarts, rebinds or stops terminal
-engines. Each host issues a separate native terminal token and random gateway
+Pairing and terminals share the native web server's port 8082. An existing HTTPS
+listener retains its certificate. When the native listener is private HTTP on
+loopback, that same native process also serves TLS peer routes on the selected
+LAN address at 8082. The recovery listener remains private. Requests reach the
+loopback relay through an authenticated internal route; setup opens no additional
+public port. Pairing never restarts terminal engines. Each host issues a separate native terminal token and random gateway
 capability for the peer. HPKE exchanges them without browser-visible plaintext.
 HTTP and WebSocket terminal requests require that capability, the intended Host
 header, a pinned HTTPS server identity, and absence of browser Origin. The
@@ -84,7 +87,7 @@ computers remains an acceptance requirement.
   failed manifest commits, failed first gateway setup, certificate pins, HTTP/WebSocket authorization,
   gateway Host/Origin checks, and active HTTP/socket authorization cutoff.
 - The full isolated Rust relay suite passes 22 tests.
-- Three headless Playwright tests cover explicit app-fragment/paste onboarding,
+- Six headless Playwright tests cover explicit app-fragment/paste onboarding,
   preview without enrollment, invitation cancellation/clearing, approval of the
   visible code, safe display of computer names, and authenticated health state.
 
@@ -103,4 +106,8 @@ membership refresh, credential distribution between non-administrator peers,
 name/address changes, rotation, distributed removal/revocation and offline
 reconciliation are unfinished. The current bilateral flow can cache credentials
 across restart, but actual administrator-outage and Mac↔Windows terminal behavior
-must still be proven. No gateway or pairing component was deployed to live work.
+must still be proven. The shared-port implementation is deployed on the Mac:
+headless browser checks created and cancelled an invitation using port 8082,
+verified Mac terminal rendering and Windows tab visibility, and confirmed that
+engine/shell PIDs and Mac pane identities survived the connection-service update.
+The Windows installation still needs this updated build for the same onboarding.

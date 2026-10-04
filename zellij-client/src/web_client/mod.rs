@@ -62,7 +62,7 @@ use websocket_handlers::{ws_handler_control, ws_handler_terminal};
 const DEFAULT_SERVER_STARTUP_TIMEOUT_SECS: u64 = 10;
 
 pub fn start_web_client(
-    config: Config,
+    mut config: Config,
     config_options: Options,
     config_file_path: Option<PathBuf>,
     run_daemonized: bool,
@@ -100,6 +100,8 @@ pub fn start_web_client(
         custom_port.unwrap_or_else(|| config_options.web_server_port.unwrap_or_else(|| 8082));
     let web_server_cert = custom_server_cert.or_else(|| config.options.web_server_cert.clone());
     let web_server_key = custom_server_key.or_else(|| config.options.web_server_key.clone());
+    config.options.web_server_cert = web_server_cert.clone();
+    config.options.web_server_key = web_server_key.clone();
     let has_https_certificate = web_server_cert.is_some() && web_server_key.is_some();
 
     if let Err(e) = should_use_https(
@@ -229,6 +231,10 @@ pub async fn serve_web_client(
         .take(5)
         .collect();
 
+    let peer_bridge = crate::switchboard_relay::peer_bridge::start(
+        listener.local_addr().unwrap(),
+        config.options.web_server_cert.clone(),
+    );
     let is_https = rustls_config.is_some();
     let state = AppState {
         connection_table: connection_table.clone(),
@@ -256,6 +262,8 @@ pub async fn serve_web_client(
     });
 
     let is_https = state.is_https;
+    let peer_directory =
+        crate::switchboard_relay::peer_bridge::directory(listener.local_addr().unwrap().port());
     let app = Router::new()
         .route("/ws/control", any(ws_handler_control))
         .route("/ws/terminal", any(ws_handler_terminal))
@@ -269,6 +277,9 @@ pub async fn serve_web_client(
         .route("/command/login", post(login_handler))
         .route("/info/version", get(version_handler))
         .with_state(state)
+        .layer(middleware::from_fn(move |request, next| {
+            crate::switchboard_relay::peer_bridge::dispatch(peer_directory.clone(), request, next)
+        }))
         .layer(axum::middleware::from_fn(move |request, next: axum::middleware::Next| {
             async move {
                 let mut response = next.run(request).await;
@@ -323,6 +334,7 @@ pub async fn serve_web_client(
                 .await;
         },
     }
+    peer_bridge.abort();
 }
 
 #[cfg(unix)]

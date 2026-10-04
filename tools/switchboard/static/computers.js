@@ -5,6 +5,8 @@
   let pending = false;
   let refreshing = false;
   let previewLink = null;
+  let previewVersion = 0, previewTimer;
+  let defaultsLoaded = false;
   const show = (message, error = false) => {
     $('message').textContent = message;
     $('message').className = error ? 'error' : '';
@@ -23,8 +25,31 @@
     finally { buttons.forEach(button => button.disabled = false); }
   }
   function local() {
+    if (!$('address').value.trim()) {
+      if ($('network-choice').hidden) $('advanced').open = true;
+      throw new Error('Choose a connection for this computer before continuing.');
+    }
+    if (!$('computer-name').value.trim()) throw new Error('Enter a name for this computer.');
     return {computer_name: $('computer-name').value.trim(), address: $('address').value.trim()};
   }
+  async function setupDefaults() {
+    if (defaultsLoaded) return;
+    const defaults = await api('/defaults');
+    if (!$('computer-name').value) $('computer-name').value = defaults.computer_name || '';
+    if (!$('address').value) $('address').value = defaults.address || '';
+    if (!$('mesh-name').value) $('mesh-name').value = defaults.name || 'My computers';
+    for (const address of defaults.addresses || []) {
+      const option = document.createElement('option'); option.value = address; option.textContent = address;
+      $('network').append(option);
+    }
+    $('network-choice').hidden = !defaults.requires_choice;
+    if (!$('address').value && !defaults.requires_choice) {
+      $('advanced').open = true;
+      show('Could not find a local network address. Connect to your network and reload, or enter an address in Advanced.', true);
+    }
+    defaultsLoaded = true;
+  }
+  $('network').onchange = () => { $('address').value = $('network').value; };
   async function refresh() {
     if (refreshing) return;
     refreshing = true;
@@ -33,10 +58,12 @@
       pending = Boolean(state.joining);
       $('retry-gateway').hidden = !state.configured || state.gateway_available !== false;
       $('mesh-title').textContent = state.mesh || 'Your computers';
+      $('catalog').hidden = !state.members.length && !state.requests.length;
       if (state.computer) {
         $('computer-name').value = state.computer.name;
         $('address').value = state.computer.address;
         $('computer-name').readOnly = $('address').readOnly = true;
+        $('network-choice').hidden = true;
       }
       if (state.mesh) $('mesh-name').value = state.mesh;
       $('mesh-name').readOnly = Boolean(state.mesh);
@@ -57,8 +84,8 @@
         const status = document.createElement('span');
         const host = hosts.find(host => host.id === `mesh-${member.id}`);
         status.textContent = member.local ? 'This computer' : member.state === 'paired'
-          ? (host && Array.isArray(host.sessions) && !host.error ? 'Connected' : 'Paired, connection unavailable — check the address and retry')
-          : 'Credential distribution pending — retry pairing on the joining computer';
+          ? (host && Array.isArray(host.sessions) && !host.error ? 'Connected' : 'Paired, connection unavailable. Check the address and retry')
+          : 'Finishing pairing. Retry on the joining computer.';
         card.append(title, address, status);
         if (!member.local && member.state === 'paired' && (!host || host.error)) {
           const retry = document.createElement('button'); retry.textContent = 'Retry connection'; retry.onclick = () => action(refresh); card.append(retry);
@@ -70,7 +97,7 @@
         const card = document.createElement('div'); card.className = 'card';
         const description = document.createElement('p'); description.textContent = `${request.computer} (${request.address}) wants to join. Compare this code on both computers:`;
         const code = document.createElement('p'); code.className = 'code'; code.textContent = request.code;
-        const approve = document.createElement('button'); approve.textContent = 'Codes match — Approve';
+        const approve = document.createElement('button'); approve.textContent = 'Codes match, approve';
         const deny = document.createElement('button'); deny.textContent = 'Deny';
         const decide = allow => action(async () => {
           await api('/approve', {invitation: request.invitation, request: request.request, code: request.code, allow});
@@ -101,13 +128,26 @@
   $('cancel-invitation').onclick = () => action(async () => {
     await api('/cancel', {invitation: invitationId}); clearInvitation(); show('Invitation cancelled.'); await refresh();
   });
-  $('preview').onclick = () => action(async () => {
-    const link = $('join-link').value.trim(); const result = await api('/preview', {link});
-    previewLink = link; $('preview-card').hidden = false;
-    $('preview-description').textContent = `${result.computer} (${result.address}) invites you to ${result.mesh}. The invitation expires ${new Date(result.expires * 1000).toLocaleTimeString()}.`;
-    show('Review the inviting computer and mesh, then explicitly join.');
-  });
-  $('join-link').oninput = () => { previewLink = null; $('preview-card').hidden = true; };
+  async function previewInvitation() {
+    const link = $('join-link').value.trim(), version = ++previewVersion;
+    previewLink = null; $('preview-card').hidden = true; $('preview').hidden = true;
+    if (!link) return;
+    try {
+      const result = await api('/preview', {link});
+      if (version !== previewVersion || link !== $('join-link').value.trim()) return;
+      previewLink = link; $('preview-card').hidden = false;
+      $('preview-description').textContent = `${result.computer} invites you to ${result.mesh}. Expires ${new Date(result.expires * 1000).toLocaleTimeString()}.`;
+      show('Check the inviting computer, then choose Join computer.');
+    } catch (error) {
+      if (version !== previewVersion || link !== $('join-link').value.trim()) return;
+      $('preview').hidden = false; show(error.message, true);
+    }
+  }
+  $('preview').onclick = () => previewInvitation();
+  $('join-link').oninput = () => {
+    previewVersion++; previewLink = null; $('preview-card').hidden = true;
+    clearTimeout(previewTimer); previewTimer = setTimeout(previewInvitation, 250);
+  };
   $('join-form').onsubmit = event => {
     event.preventDefault(); action(async () => {
       if (previewLink !== $('join-link').value.trim()) throw new Error('Review the invitation before joining.');
@@ -133,9 +173,16 @@
     const fragment = location.hash.slice(1); history.replaceState(null, '', location.pathname);
     $('join-link').value = fragment.startsWith('switchboard://join#') ? fragment : `switchboard://join#${fragment}`;
   }
-  refresh().catch(error => show(error.message, true));
+  action(async () => {
+    await refresh();
+    try { await setupDefaults(); } catch (_) {
+      $('advanced').open = true;
+      show('Automatic setup is unavailable. Enter your connection in Advanced, or reload to retry.', true);
+    }
+    if ($('join-link').value.trim()) await previewInvitation();
+  });
   setInterval(() => (pending ? retry() : refresh()).catch(error => {
     show(error.message, true); return refresh().catch(() => {});
   }), 3000);
-  window.addEventListener('pagehide', () => { clearInvitation(); $('join-link').value = ''; previewLink = null; });
+  window.addEventListener('pagehide', () => { clearTimeout(previewTimer); previewVersion++; clearInvitation(); $('join-link').value = ''; previewLink = null; });
 })();

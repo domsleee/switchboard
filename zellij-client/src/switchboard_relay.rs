@@ -3,6 +3,7 @@ mod artifacts;
 mod attention;
 mod control;
 mod mesh;
+pub(crate) mod peer_bridge;
 use axum::{
     body::{to_bytes, Body, Bytes},
     extract::{ws::WebSocketUpgrade, Path as RoutePath, Request, State},
@@ -755,7 +756,14 @@ async fn state(config: &RelayConfig, port: u16) -> anyhow::Result<RelayState> {
 }
 
 fn app(state: RelayState) -> Router {
-    Router::new()
+    let peer = state.mesh.as_ref().and_then(|mesh| {
+        mesh.bridge
+            .read()
+            .unwrap()
+            .as_ref()
+            .map(|(_, _, secret)| peer_bridge::relay_router(mesh.clone(), secret.clone()))
+    });
+    let app = Router::new()
         .merge(mesh::transport::routes())
         .route(
             "/api/health",
@@ -776,7 +784,12 @@ fn app(state: RelayState) -> Router {
         .route("/hosts/{host}/{*path}", any(proxy))
         .fallback(asset)
         .layer(middleware::from_fn_with_state(state.clone(), guard))
-        .with_state(state)
+        .with_state(state);
+    if let Some(peer) = peer {
+        app.merge(peer)
+    } else {
+        app
+    }
 }
 
 pub async fn router(config: RelayConfig, port: u16) -> anyhow::Result<Router> {
@@ -797,9 +810,13 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
     }) {
         match mesh::Mesh::open(config_path.with_file_name("mesh"), local).await {
             Ok(mesh) => {
-                if mesh.start_gateway().await.is_err() {
-                    log::warn!("Switchboard peer gateway unavailable; retry it from Computers");
-                }
+                mesh.attach_bridge(port)?;
+                let startup = mesh.clone();
+                tokio::spawn(async move {
+                    if startup.start_gateway().await.is_err() {
+                        log::warn!("Switchboard pairing unavailable; retry it from Computers");
+                    }
+                });
                 state.mesh = Some(mesh);
             },
             Err(_) => log::warn!(

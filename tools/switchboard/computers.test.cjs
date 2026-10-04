@@ -11,7 +11,7 @@ async function fixture(fn, initial = {}) {
     const calls = [], errors = [];
     page.on('pageerror', error => errors.push(error.message));
     let state = {configured: false, computer: null, mesh: null, administrator: false, requests: [], members: [], joining: null, ...initial};
-    const responses = new Map();
+    const responses = new Map([['/api/mesh/defaults', {computer_name:'Mac',address:'https://192.0.2.1:8082',name:'My computers',addresses:['https://192.0.2.1:8082'],requires_choice:false}]]);
     await page.addInitScript(() => { window.setInterval = () => 0; });
     await context.route('**/*', async route => {
       const request = route.request(), path = new URL(request.url()).pathname;
@@ -32,16 +32,17 @@ async function fixture(fn, initial = {}) {
 
 test('opening and reviewing an app link requires an explicit Join computer click', async () => {
   await fixture(async ({page, calls, responses}) => {
+    responses.set('/api/mesh/preview', {mesh: 'Home', computer: 'Mac', address: 'https://192.0.2.1:8091', expires: 9999999999});
     await page.goto('https://switchboard.test/computers.html#isolated-invitation-fragment');
     assert.equal(new URL(page.url()).hash, '');
     assert.equal(await page.locator('#join-link').inputValue(), 'switchboard://join#isolated-invitation-fragment');
-    assert.equal(calls.filter(call => call.path !== '/api/mesh').length, 0);
+    assert.equal(calls.some(call => ['/api/mesh/join','/api/mesh/invitations'].includes(call.path)), false);
     responses.set('/api/mesh/preview', {mesh: 'Home', computer: 'Mac', address: 'https://192.0.2.1:8091', expires: 9999999999});
-    await page.locator('#preview').click();
     await page.waitForFunction(() => !document.querySelector('#preview-card').hidden);
     assert.equal(calls.some(call => call.path === '/api/mesh/join'), false);
     assert.match(await page.locator('#preview-description').textContent(), /Mac.*Home/);
     await page.locator('#computer-name').fill('Windows');
+    await page.locator('#advanced summary').click();
     await page.locator('#address').fill('https://192.0.2.2:8091');
     responses.set('/api/mesh/join', {state: 'awaiting_approval', code: 'ABCD-1234-5678'});
     await page.locator('#join-form button[type=submit]').click();
@@ -55,12 +56,13 @@ test('Create invitation shares only the one-time link and Cancel clears it', asy
   await fixture(async ({page, calls, responses}) => {
     await page.goto('https://switchboard.test/computers.html');
     responses.set('/api/mesh/invitations', {id: 'isolated-id', link: 'switchboard://join#one-time-secret', expires: 9999999999});
-    await page.locator('#computer-name').fill('Mac');
-    await page.locator('#address').fill('https://192.0.2.1:8091');
-    await page.locator('#mesh-name').fill('Home');
+    await page.waitForFunction(() => document.querySelector('#address').value);
+    assert.equal(await page.locator('#computer-name').inputValue(), 'Mac');
+    assert.equal(await page.locator('#advanced').getAttribute('open'), null);
     await page.locator('#create-form button[type=submit]').click();
     await page.waitForFunction(() => !document.querySelector('#invitation').hidden);
     assert.equal(await page.locator('#invitation-link').inputValue(), 'switchboard://join#one-time-secret');
+    assert.deepEqual(calls.find(call => call.path === '/api/mesh/invitations').body, {name:'My computers',computer_name:'Mac',address:'https://192.0.2.1:8082'});
     await page.locator('#cancel-invitation').click();
     await page.waitForFunction(() => document.querySelector('#invitation').hidden);
     assert.equal(await page.locator('#invitation-link').inputValue(), '');
@@ -85,4 +87,42 @@ test('approval binds the visible verification code and health requires authentic
     await page.locator('#members button').click();
     await page.waitForFunction(() => document.querySelector('#members').textContent.includes('Connected'));
   }, {configured: true, computer: {name: 'Mac', address: 'https://192.0.2.1:8091'}, mesh: 'Home', administrator: true, requests: [request], members: [{id: 'peer', name: 'Windows', address: 'https://192.0.2.2:8091', local: false, state: 'paired'}], joining: {mesh: 'Home', computer: 'Mac', code: 'ABCD-1234-5678'}});
+});
+
+
+test('multiple networks require one choice, without typing an address', async () => {
+  await fixture(async ({page,calls,responses}) => {
+    responses.set('/api/mesh/defaults',{computer_name:'work (fast)',name:'My computers',address:null,requires_choice:true,addresses:['https://172.20.10.10:8082','https://100.64.1.2:8082']});
+    responses.set('/api/mesh/invitations',{id:'one',link:'switchboard://join#one',expires:9999999999});
+    await page.goto('https://switchboard.test/computers.html');
+    await page.waitForFunction(()=>!document.querySelector('#network-choice').hidden);
+    await page.locator('#create-form button').click();
+    assert.equal(calls.some(call=>call.path==='/api/mesh/invitations'),false);
+    await page.locator('#network').selectOption('https://172.20.10.10:8082');
+    await page.locator('#create-form button').click();
+    await page.waitForFunction(()=>!document.querySelector('#invitation').hidden);
+    assert.equal(calls.find(call=>call.path==='/api/mesh/invitations').body.address,'https://172.20.10.10:8082');
+  });
+});
+
+test('missing network opens Advanced and never submits an empty gateway', async () => {
+  await fixture(async ({page,calls,responses}) => {
+    responses.set('/api/mesh/defaults',{computer_name:'Offline Mac',name:'My computers',address:null,addresses:[],requires_choice:false});
+    await page.goto('https://switchboard.test/computers.html');
+    await page.waitForFunction(()=>document.querySelector('#advanced').open);
+    await page.locator('#create-form button').click();
+    assert.equal(calls.some(call=>call.path==='/api/mesh/invitations'),false);
+  });
+});
+
+test('pasting reviews automatically but never joins without consent', async () => {
+  await fixture(async ({page,calls,responses}) => {
+    responses.set('/api/mesh/preview',{mesh:'My computers',computer:'Mac',expires:9999999999});
+    await page.goto('https://switchboard.test/computers.html');
+    await page.locator('#join-link').fill('switchboard://join#pasted');
+    await page.waitForFunction(()=>!document.querySelector('#preview-card').hidden);
+    assert.equal(calls.some(call=>call.path==='/api/mesh/join'),false);
+    await page.locator('#join-link').fill('');
+    assert.equal(await page.locator('#preview-card').isVisible(),false);
+  });
 });

@@ -5,7 +5,7 @@ use std::io::Write;
 #[path = "storage_windows.rs"]
 mod windows;
 
-pub(super) struct Storage {
+pub(in crate::switchboard_relay) struct Storage {
     pub root: std::path::PathBuf,
     _lock: std::fs::File,
 }
