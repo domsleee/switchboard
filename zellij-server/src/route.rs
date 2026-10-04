@@ -2305,6 +2305,10 @@ pub(crate) fn route_thread_main(
     let mut consecutive_unknown_messages_received = 0;
     'route_loop: loop {
         match receiver.try_recv_client_msg() {
+            // Startup messages may be waiting for the screen to initialize.
+            // A disconnected client will never send another message to drain
+            // that queue, so teardown must bypass it.
+            Ok((ClientToServerMsg::ClientExited, _)) => break 'route_loop,
             Ok((instruction, err_ctx)) => {
                 consecutive_unknown_messages_received = 0;
                 err_ctx.update_thread_ctx();
