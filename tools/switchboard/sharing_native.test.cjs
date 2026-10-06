@@ -59,7 +59,7 @@ const created = [];
         const before = path.join(dir,'before');
         const after = path.join(dir,'after');
         action(0,'write-chars','--pane-id',String(snapshots[0].panes[0][1]),`SB_NATIVE_STATE=${marker}; printf '%s %s\\n' "$$" "$SB_NATIVE_STATE" > '${before}'\r`);
-        await waitFor(() => fs.existsSync(before), 'Initial shell state command did not run');
+        await waitFor(() => fs.readFileSync(before,'utf8').endsWith('\n'), 'Initial shell state command did not run');
         const initialState = fs.readFileSync(before,'utf8');
         assert.ok(initialState.trim().endsWith(marker));
         const output = run(0,'web','--create-token');
@@ -149,7 +149,7 @@ const created = [];
             assert.equal(await allowed(1),false,'Disabled session remains inaccessible');
         }
         action(0,'write-chars','--pane-id',String(snapshots[0].panes[0][1]),`printf '%s %s\\n' "$$" "$SB_NATIVE_STATE" > '${after}'\r`);
-        await waitFor(() => fs.existsSync(after), 'Shell input did not work after sharing changes');
+        await waitFor(() => fs.readFileSync(after,'utf8').endsWith('\n'), 'Shell input did not work after sharing changes');
         assert.equal(fs.readFileSync(after,'utf8'),initialState,'Shell PID and in-memory variable survive sharing changes');
         const finalProcesses = processes();
         for (let index=0; index<snapshots.length; index++) {
