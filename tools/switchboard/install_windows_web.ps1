@@ -50,6 +50,15 @@ if (!$Tray) {
 $ownsMutex = $false
 $mutex = New-Object Threading.Mutex($true, 'Local\SwitchboardTray', [ref]$ownsMutex)
 if (!$ownsMutex) { $mutex.Dispose(); return }
+# Every server and pane inherits this environment. Agent and CI shells set
+# NO_COLOR, TERM=dumb and PAGER=cat; keep only values set for the account.
+function Clear-InheritedShellEnvironment {
+    $account = @([Environment]::GetEnvironmentVariables('Machine').Keys) + @([Environment]::GetEnvironmentVariables('User').Keys)
+    Get-ChildItem Env: | Where-Object {
+        $_.Name -match '^(NO_COLOR|FORCE_COLOR|TERM|COLORTERM|PAGER|GIT_PAGER|GH_PAGER|CLAUDECODE|CLAUDE_CODE_.+|CODEX_.+)$' -and $_.Name -notin $account
+    } | ForEach-Object { Remove-Item -LiteralPath ('Env:' + $_.Name) }
+}
+Clear-InheritedShellEnvironment
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()

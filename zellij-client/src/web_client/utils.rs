@@ -74,3 +74,20 @@ pub fn terminal_init_messages() -> Vec<&'static str> {
         enable_mouse_mode,
     ]
 }
+
+/// Agent and CI shells set NO_COLOR and PAGER=cat. Every session the web server
+/// starts inherits its environment, so drop them.
+#[cfg(any(unix, test))]
+pub fn is_inherited_shell_variable(name: &str) -> bool {
+    [
+        "NO_COLOR",
+        "FORCE_COLOR",
+        "PAGER",
+        "GIT_PAGER",
+        "GH_PAGER",
+        "CLAUDECODE",
+    ]
+    .contains(&name)
+        || name.starts_with("CLAUDE_CODE_")
+        || name.starts_with("CODEX_")
+}

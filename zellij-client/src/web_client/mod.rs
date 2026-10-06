@@ -72,6 +72,15 @@ pub fn start_web_client(
     custom_server_key: Option<PathBuf>,
     startup_timeout: Option<u64>,
 ) {
+    #[cfg(unix)]
+    for (name, _) in std::env::vars_os() {
+        if name
+            .to_str()
+            .is_some_and(utils::is_inherited_shell_variable)
+        {
+            std::env::remove_var(name);
+        }
+    }
     std::panic::set_hook({
         Box::new(move |info| {
             let thread = thread::current();

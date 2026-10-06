@@ -1,4 +1,4 @@
-use crate::os_input_output::{command_exists, AsyncReader};
+use crate::os_input_output::{command_exists, pane_terminal_type, AsyncReader};
 use crate::panes::PaneId;
 
 use nix::{
@@ -221,8 +221,12 @@ fn handle_openpty(
                 );
             }
         }
+        let (term, colorterm) =
+            pane_terminal_type(std::env::var("TERM").ok(), std::env::var("COLORTERM").ok());
         command
             .args(&cmd.args)
+            .env("TERM", term)
+            .env("COLORTERM", colorterm)
             .env("ZELLIJ_PANE_ID", &format!("{}", terminal_id))
             .pre_exec(move || -> io::Result<()> {
                 if libc::login_tty(pid_secondary) != 0 {

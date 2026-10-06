@@ -3317,3 +3317,25 @@ impl ClientOsApi for MockClientOsApi {
         Ok(())
     }
 }
+
+#[test]
+fn web_server_drops_agent_shell_colour_settings() {
+    for name in [
+        "NO_COLOR",
+        "PAGER",
+        "CODEX_CI",
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDECODE",
+    ] {
+        assert!(
+            utils::is_inherited_shell_variable(name),
+            "{name} was inherited"
+        );
+    }
+    for name in ["PATH", "TERM", "SWITCHBOARD_KEEP", "CLAUDE_CODE"] {
+        assert!(
+            !utils::is_inherited_shell_variable(name),
+            "{name} was removed"
+        );
+    }
+}
