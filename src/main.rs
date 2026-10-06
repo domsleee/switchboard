@@ -363,8 +363,13 @@ fn main() {
             if let Some(port) = web_opts.port {
                 config_options.web_server_port = Some(port);
             }
+            let web_server_cert = config_options.web_server_cert.clone();
             let web_server_base_url = web_server_base_url_from_config(config_options);
-            match commands::web_server_status(&web_server_base_url, web_opts.timeout) {
+            match commands::web_server_status(
+                &web_server_base_url,
+                web_opts.timeout,
+                web_server_cert,
+            ) {
                 Ok(version) => {
                     let version = version.trim();
                     println!(
