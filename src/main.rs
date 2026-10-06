@@ -386,8 +386,11 @@ fn main() {
                         println!("And then restarting it with: zellij web --start");
                     }
                 },
-                Err(_e) => {
-                    println!("Web server is offline, checked: {}", web_server_base_url);
+                Err(e) => {
+                    println!(
+                        "Web server is offline, checked: {} ({})",
+                        web_server_base_url, e
+                    );
                     // Service and tray scripts start the server when this check fails.
                     std::process::exit(1)
                 },
