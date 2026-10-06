@@ -73,15 +73,12 @@ pub fn start_web_client(
     startup_timeout: Option<u64>,
 ) {
     #[cfg(unix)]
-    {
-        let environment: Vec<_> = std::env::vars_os()
-            .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)))
-            .collect();
-        for (name, value) in utils::inherited_shell_environment_fixes(&environment) {
-            match value {
-                Some(value) => std::env::set_var(name, value),
-                None => std::env::remove_var(name),
-            }
+    for (name, _) in std::env::vars_os() {
+        if name
+            .to_str()
+            .is_some_and(utils::is_inherited_shell_variable)
+        {
+            std::env::remove_var(name);
         }
     }
     std::panic::set_hook({

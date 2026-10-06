@@ -3320,34 +3320,22 @@ impl ClientOsApi for MockClientOsApi {
 
 #[test]
 fn web_server_drops_agent_shell_colour_settings() {
-    let env = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
-    };
-    let fixes: HashMap<_, _> = utils::inherited_shell_environment_fixes(&env(&[
-        ("NO_COLOR", "1"),
-        ("TERM", "dumb"),
-        ("COLORTERM", ""),
-        ("PAGER", "cat"),
-        ("CODEX_CI", "1"),
-        ("CLAUDE_CODE_SESSION_ID", "test"),
-        ("PATH", "/bin"),
-        ("SWITCHBOARD_KEEP", "kept"),
-    ]))
-    .into_iter()
-    .collect();
-    for name in ["NO_COLOR", "PAGER", "CODEX_CI", "CLAUDE_CODE_SESSION_ID"] {
-        assert_eq!(fixes.get(name), Some(&None), "{name} was inherited");
+    for name in [
+        "NO_COLOR",
+        "PAGER",
+        "CODEX_CI",
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDECODE",
+    ] {
+        assert!(
+            utils::is_inherited_shell_variable(name),
+            "{name} was inherited"
+        );
     }
-    assert_eq!(fixes["TERM"].as_deref(), Some("xterm-256color"));
-    assert_eq!(fixes["COLORTERM"].as_deref(), Some("truecolor"));
-    assert!(!fixes.contains_key("PATH") && !fixes.contains_key("SWITCHBOARD_KEEP"));
-    // A real terminal's settings are left alone.
-    assert!(utils::inherited_shell_environment_fixes(&env(&[
-        ("TERM", "xterm-kitty"),
-        ("COLORTERM", "24bit"),
-    ]))
-    .is_empty());
+    for name in ["PATH", "TERM", "SWITCHBOARD_KEEP", "CLAUDE_CODE"] {
+        assert!(
+            !utils::is_inherited_shell_variable(name),
+            "{name} was removed"
+        );
+    }
 }

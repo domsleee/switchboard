@@ -37,6 +37,21 @@ pub use async_trait::async_trait;
 
 // A background Windows server need not inherit a terminal environment, but its
 // ConPTY panes still provide xterm colour support. Keep explicit colour opt-outs.
+/// Panes need a colour-capable TERM even when the server was started without one
+/// (launchd, CI and agent shells); a real terminal's values are kept.
+pub(super) fn pane_terminal_type(
+    term: Option<String>,
+    colorterm: Option<String>,
+) -> (String, String) {
+    let term = term
+        .filter(|value| !value.trim().is_empty() && !value.eq_ignore_ascii_case("dumb"))
+        .unwrap_or_else(|| "xterm-256color".into());
+    let colorterm = colorterm
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "truecolor".into());
+    (term, colorterm)
+}
+
 #[cfg(any(windows, test))]
 pub(super) fn windows_pane_environment(
     environment: impl IntoIterator<Item = (String, String)>,
@@ -50,12 +65,7 @@ pub(super) fn windows_pane_environment(
             .find(|(key, _)| key.eq_ignore_ascii_case(name))
             .map(|(_, value)| value.clone())
     };
-    let term = value("TERM")
-        .filter(|value| !value.trim().is_empty() && !value.eq_ignore_ascii_case("dumb"))
-        .unwrap_or_else(|| "xterm-256color".into());
-    let colorterm = value("COLORTERM")
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "truecolor".into());
+    let (term, colorterm) = pane_terminal_type(value("TERM"), value("COLORTERM"));
     environment.retain(|(key, _)| {
         !["TERM", "COLORTERM", "ZELLIJ_PANE_ID"]
             .iter()
