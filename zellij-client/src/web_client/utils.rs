@@ -74,3 +74,41 @@ pub fn terminal_init_messages() -> Vec<&'static str> {
         enable_mouse_mode,
     ]
 }
+
+/// Agent and CI shells set NO_COLOR, TERM=dumb and PAGER=cat. Every session the
+/// web server starts inherits its environment, so undo them (`None` = remove).
+#[cfg(any(unix, test))]
+pub fn inherited_shell_environment_fixes(
+    environment: &[(String, String)],
+) -> Vec<(String, Option<String>)> {
+    let value = |name: &str| {
+        environment
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.trim())
+    };
+    let mut fixes: Vec<_> = environment
+        .iter()
+        .filter(|(name, _)| {
+            [
+                "NO_COLOR",
+                "FORCE_COLOR",
+                "PAGER",
+                "GIT_PAGER",
+                "GH_PAGER",
+                "CLAUDECODE",
+            ]
+            .contains(&name.as_str())
+                || name.starts_with("CLAUDE_CODE_")
+                || name.starts_with("CODEX_")
+        })
+        .map(|(name, _)| (name.clone(), None))
+        .collect();
+    if matches!(value("TERM"), None | Some("" | "dumb")) {
+        fixes.push(("TERM".into(), Some("xterm-256color".into())));
+    }
+    if matches!(value("COLORTERM"), None | Some("")) {
+        fixes.push(("COLORTERM".into(), Some("truecolor".into())));
+    }
+    fixes
+}
