@@ -572,11 +572,13 @@ mod tests {
             }
         }
 
-        // Now the buffer is full — next write should return Ok(0)
-        let written = super::try_write_to_fd(master_fd, &[0x01, 0x02, 0x03])
-            .expect("try_write_to_fd should not error on EAGAIN");
-
-        assert_eq!(written, 0, "expected zero bytes written on full buffer");
+        // Now the buffer is full — next write should return Ok(0). Linux moves
+        // pty input to the line discipline asynchronously, so a few bytes of
+        // space can reappear after EAGAIN; keep writing until it is full again.
+        while super::try_write_to_fd(master_fd, &[0x01, 0x02, 0x03])
+            .expect("try_write_to_fd should not error on EAGAIN")
+            != 0
+        {}
 
         unsafe {
             libc::close(master_fd);
