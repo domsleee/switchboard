@@ -210,6 +210,15 @@
       sendEscape();
       return;
     }
+    if(event.code==='Backspace'&&event.ctrlKey&&!event.altKey&&!event.metaKey&&!event.shiftKey
+        &&!event.isComposing&&terminalFocused()){
+      // xterm.js sends ^H, which Zellij reads as Ctrl+H (Move mode). Send ^W
+      // (delete word left) instead, as VS Code's terminal does.
+      event.preventDefault();event.stopImmediatePropagation();
+      if(pendingFocus||pendingNewTab||window.term?.options.disableStdin)return;
+      if(terminalSocket?.readyState===1)terminalSocket.send('\x17');
+      return;
+    }
     if(!event.altKey||event.ctrlKey||event.metaKey||event.isComposing)return;
     if(!event.shiftKey && ['ArrowLeft','ArrowRight'].includes(event.code) && terminalFocused()){
       event.preventDefault();event.stopImmediatePropagation();

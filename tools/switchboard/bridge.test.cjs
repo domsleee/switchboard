@@ -91,6 +91,14 @@ test('Alt arrows move by words without switching tabs or panes',()=>{
   assert.equal(socket.sent.length,2);
   assert.equal(h.key('ArrowLeft',{shiftKey:true}).prevented,undefined);
 });
+test('Ctrl+Backspace deletes a word instead of sending ^H (Zellij Ctrl+H)',()=>{
+  const h=harness();h.setFocus(true);
+  const socket=new h.window.WebSocket('ws://localhost:8090/hosts/windows/ws/terminal/main');
+  assert.equal(h.key('Backspace',{altKey:false,ctrlKey:true}).prevented,true);
+  assert.deepEqual(socket.sent.map(data=>Buffer.from(data).toString()),['\x17']);
+  assert.equal(h.key('Backspace',{altKey:false}).prevented,undefined);
+  assert.equal(h.key('Backspace',{altKey:false,ctrlKey:true,shiftKey:true}).prevented,undefined);
+});
 test('iframe modal and unrelated/modified keys keep native behavior',()=>{
   const h=harness();
   for(const extra of [{ctrlKey:true},{metaKey:true},{altKey:false}])assert.equal(h.key('ArrowLeft',extra).prevented,undefined);
