@@ -383,6 +383,8 @@ fn main() {
                 },
                 Err(_e) => {
                     println!("Web server is offline, checked: {}", web_server_base_url);
+                    // Service and tray scripts start the server when this check fails.
+                    std::process::exit(1)
                 },
             }
         } else if web_opts.create_token {
