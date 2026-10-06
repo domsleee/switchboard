@@ -335,6 +335,10 @@ mod tests {
         let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
         ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
         ca_params.key_usages = vec![rcgen::KeyUsagePurpose::KeyCertSign];
+        // OpenSSL treats a leaf whose issuer equals its own subject as self-signed.
+        ca_params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "Message board test CA");
         let ca = ca_params.self_signed(&ca_key).unwrap();
         let mut server_params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
         server_params.subject_alt_names =
