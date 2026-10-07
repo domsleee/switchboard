@@ -183,39 +183,16 @@ const pairedState = {
   ]
 };
 
-test('a member identifies the administrator and explains where to add computers', async () => {
-  await fixture(async ({page, calls}) => {
-    await page.goto('https://switchboard.test/computers.html');
-    await page.waitForFunction(() => !document.querySelector('#administrator-help').hidden);
-    assert.match(await page.locator('#administrator-description').textContent(), /Administrator computer: Windows <admin>/);
-    assert.match(await page.locator('#members').textContent(), /Windows <admin> · Administrator/);
-    assert.equal(await page.locator('#members admin').count(), 0);
-    assert.match(await page.locator('#administrator-help').textContent(), /Windows <admin>.*192\.0\.2\.1/s);
-    assert.match(await page.locator('#administrator-help').textContent(), /Settings → Computers.*Create invitation/s);
-    assert.equal(await page.locator('#create-section').isVisible(), false);
-    assert.equal(await page.locator('#direct-section').isVisible(), false);
-    assert.equal(await page.locator('#join-section').isVisible(), false);
-    assert.equal(calls.some(c => c.body), false);
-  }, pairedState);
-});
-
-test('the administrator sees its role and retains working invitation controls', async () => {
+test('every paired computer can create invitations and add computers', async () => {
   await fixture(async ({page, calls, responses}) => {
     responses.set('/api/mesh/invitations', {id:'new', link:'switchboard://join#new', expires:9999999999});
     await page.goto('https://switchboard.test/computers.html');
-    await page.waitForFunction(() => document.querySelector('#administrator-description').textContent.includes('(this computer)'));
-    assert.equal(await page.locator('#administrator-help').isVisible(), false);
+    await page.waitForFunction(() => document.querySelector('#computer-name').readOnly);
     assert.equal(await page.locator('#direct-section').isVisible(), true);
+    assert.equal(await page.locator('#join-section').isVisible(), false);
+    assert.doesNotMatch(await page.locator('body').textContent(), /administrator/i);
     await page.locator('#create-form button').click();
     await page.waitForFunction(() => !document.querySelector('#invitation').hidden);
     assert.equal(calls.some(c => c.path === '/api/mesh/invitations'), true);
-  }, {...pairedState, administrator:true});
-});
-
-test('an older server still explains missing invitation controls', async () => {
-  await fixture(async ({page}) => {
-    await page.goto('https://switchboard.test/computers.html');
-    await page.waitForFunction(() => !document.querySelector('#administrator-help').hidden);
-    assert.match(await page.locator('#administrator-help').textContent(), /name is unavailable; update Switchboard/);
-  }, {...pairedState, administrator_computer:null});
+  }, pairedState);
 });

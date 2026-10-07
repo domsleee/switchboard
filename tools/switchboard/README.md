@@ -29,7 +29,10 @@ Open https://switchboard.localhost (Portless), or http://127.0.0.1:8090. Use **S
 Pair it: on one computer open **Settings → Computers → Create invitation**, paste
 the invitation on the other and choose **Join**, then compare the codes and
 approve. Pairing exchanges terminal tokens and certificate pins and adds the
-computer to both sidebars.
+computer throughout the group. Every paired computer can invite another computer.
+Group membership and encrypted terminal credentials sync in the background,
+including when an offline computer reconnects. Keep Switchboard updated and
+running on each computer.
 
 Do not run `zellij web --create-token`, copy token files or add the computer to
 `switchboard-hosts.json` by hand. The host list only holds this computer's own
