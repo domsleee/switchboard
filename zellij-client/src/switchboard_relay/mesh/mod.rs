@@ -179,6 +179,31 @@ struct Database {
     direct_sent: BTreeMap<String, direct::Sent>,
 }
 
+impl Database {
+    /// Creating an invitation makes a group holding only this computer. Until
+    /// another computer joins it, that group must not block joining another one.
+    fn can_join(&self) -> bool {
+        match (&self.membership, &self.local) {
+            (None, _) => true,
+            (Some(membership), Some(local)) => {
+                membership.value.members.len() == 1
+                    && membership.value.members.contains_key(&local.id)
+                    && self.incoming.is_empty()
+                    && self.outgoing.is_empty()
+            },
+            _ => false,
+        }
+    }
+    /// Only on this computer's own explicit join or approval.
+    fn leave_solo_group(&mut self) {
+        if self.membership.is_some() && self.can_join() {
+            self.membership = None;
+            self.invitations.clear();
+            self.direct_sent.clear();
+        }
+    }
+}
+
 pub(super) trait TokenIssuer: Send + Sync {
     fn issue(&self, peer: &str) -> anyhow::Result<String>;
 }

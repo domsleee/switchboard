@@ -1012,6 +1012,14 @@ async fn address_pairing_delivers_over_tls_and_completes_without_copying_secrets
         .await
         .unwrap();
     assert_eq!(script.status, StatusCode::OK);
+    // Creating an invitation leaves a one-computer group that must not block joining.
+    let own = call(
+        &clients[1],
+        "/api/mesh/invitations",
+        json!({"name":"Own group","computer_name":"work (fast)","address":endpoints[1]}),
+    )
+    .await;
+    assert_eq!(own.status, StatusCode::OK);
     let sent=call(&clients[0],"/api/mesh/add",json!({"target":endpoints[1],"name":"Direct test","computer_name":"Mac","address":endpoints[0]})).await;
     assert_eq!(
         sent.status,
