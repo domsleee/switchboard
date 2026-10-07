@@ -1,9 +1,16 @@
 const $ = id => document.getElementById(id);
+// "Wed 7 Oct 2026, 7:31 pm (2 hours ago)" in the viewer's locale and time zone.
+function humanTime(date,now=Date.now()){
+  const units=[['year',31536e6],['month',2592e6],['week',6048e5],['day',864e5],['hour',36e5],['minute',6e4]];
+  const elapsed=date-now,[unit,size]=units.find(([,size])=>Math.abs(elapsed)>=size)||['minute',6e4];
+  const ago=new Intl.RelativeTimeFormat(undefined,{numeric:'auto'}).format(Math.round(elapsed/size),unit);
+  return `${date.toLocaleString(undefined,{weekday:'short',day:'numeric',month:'short',year:'numeric',hour:'numeric',minute:'2-digit'})} (${ago})`;
+}
 fetch('/api/health',{cache:'no-store'}).then(response=>response.ok?response.json():null).then(build=>{
   if(build&&/^[a-f0-9]{7,40}$/.test(build.commit)&&/^\d{4}-\d{2}-\d{2}$/.test(build.commit_date)){
     $('build-version').textContent=`${build.commit} · ${build.commit_date}`;
-    const timestamp=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})$/.test(build.commit_timestamp)?build.commit_timestamp.replace('T',' '):build.commit_date;
-    $('settings').title=$('build-version').title=`Commit ${build.commit} · ${timestamp}`;
+    const when=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})$/.test(build.commit_timestamp)?new Date(build.commit_timestamp):null;
+    $('settings').title=$('build-version').title=`Commit ${build.commit} · ${when?humanTime(when):build.commit_date}`;
   }
 }).catch(()=>{});
 const hosts = new Map(), sessions = new Map();
