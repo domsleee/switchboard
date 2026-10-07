@@ -27,7 +27,7 @@ const ready = load('switchboard-ready');
 const archived = load('switchboard-archived');
 if(restoringTab&&archived[selected]){delete archived[selected];localStorage.setItem('switchboard-archived',JSON.stringify(archived));}
 const seenAttention = load('switchboard-attention-seen');
-let paneAttention=new Map(),tabCatalog=[],attentionErrors=[],attentionLoading=false,attentionRefreshPending=false;
+let attentionLoaded=false,paneAttention=new Map(),tabCatalog=[],attentionErrors=[],attentionLoading=false,attentionRefreshPending=false;
 let contextItem = null, menuTrigger = null, archiveSignature = null;
 let tabOrder=load('switchboard-tab-order');
 if(!Array.isArray(tabOrder))tabOrder=[];
@@ -203,13 +203,43 @@ function moveSelected(direction) {
   if(index<0||!target)return;
   moveTab(selected,target.key,direction>0);
 }
+// True until every reachable machine's terminals have reported once. Polls
+// refresh hosts and catalogs; only the first load counts.
+function terminalsSettling(){
+  const machines=[...hosts.values()];
+  return !attentionLoaded||loading&&!machines.length||machines.some(host=>host.connecting&&!host.sessions&&!host.error)
+    ||[...sessions.values()].some(entry=>!entry.state&&!entry.disconnected&&!hosts.get(entry.host)?.error);
+}
+// Says why the tab list is empty, with the one action that fixes it.
+function sidebarEmpty(tabs,shown){
+  if(shown.length)return null;
+  const machines=[...hosts.values()];
+  if(tabs.length)return {text:`No tabs match “${$('tab-search').value.trim()}”`,action:'Clear search',run(){$('tab-search').value='';render();$('tab-search').focus();}};
+  if(filter!=='all'&&allTabs(true).length)return {text:`No tabs in ${$('filters').querySelector('.selected').textContent}`,action:'Show all',run:()=>setFilter('all')};
+  if(allTabs(true,true).length)return {text:'All tabs are archived',action:'Open archive',run:()=>openPanel('archive')};
+  const entries=[...sessions.values()];
+  if(machines.length&&machines.every(host=>host.error)||entries.length&&entries.every(entry=>catalogUnavailable(entry.host,entry.name)))
+    return {state:'unreachable',text:'Can’t reach your machines',action:'View logs',run:()=>openPanel('logs')};
+  if(terminalsSettling())return {state:'loading',text:'Connecting to your machines…'};
+  if(!machines.length)return {text:'No machines connected',action:'Add computer',run:()=>openPanel('computers')};
+  return {text:'No terminals yet',action:'New tab',run:()=>$('new-tab').click()};
+}
+function renderSidebarEmpty(tabs,shown){
+  const empty=sidebarEmpty(tabs,shown),box=$('tab-empty'),action=$('tab-empty-action');
+  box.hidden=!empty;if(!empty)return null;
+  box.dataset.state=empty.state||'';
+  if($('tab-empty-text').textContent!==empty.text)$('tab-empty-text').textContent=empty.text;
+  action.hidden=!empty.action;action.textContent=empty.action||'';action.onclick=empty.run||null;
+  return empty;
+}
 function render() {
   // Live metadata arrives while dragging; keep the source element mounted.
   if(dragging)return;
   const tabs = allTabs();
   const previous = selected,wasRestoring=restoringTab;
   if(tabs.some(t=>t.key===selected))restoringTab=false;
-  else if(!waitingForRequestedTab()){restoringTab=false;selected=tabs[0]?.key||null;}
+  // Pick the top sidebar tab, not whichever machine's terminal answered first.
+  else if(!waitingForRequestedTab()){restoringTab=false;selected=terminalsSettling()?null:tabs[0]?.key||null;}
   const liveKeys=new Set(tabs.map(item=>item.key));
   for(const [key,button] of tabButtons)if(!liveKeys.has(key)){button._row.remove();tabButtons.delete(key);}
   const shown=tabs.filter(matchesSearch), nodes=[],shownKeys=new Set(shown.map(item=>item.key));
@@ -270,7 +300,7 @@ function render() {
   let cursor=$('tabs').firstChild;
   for(const node of nodes){if(node!==cursor)$('tabs').insertBefore(node,cursor);else cursor=cursor.nextSibling;}
   $('tab-count').textContent=`${shown.length}${shown.length!==tabs.length?' / '+tabs.length:''} tabs`;
-  $('tab-no-results').hidden=shown.length>0;
+  const emptyHint=renderSidebarEmpty(tabs,shown);
 
   const current=tabs.find(t=>t.key===selected);
   updateTabUrl(current);
@@ -286,10 +316,16 @@ function render() {
   if(!$('tab-menu').hidden)updateTabMenu();
   const archiveCount=allTabs(true,true).filter(item=>archived[item.key]).length;
   $('archive').textContent=`Archive${archiveCount?' ('+archiveCount+')':''}`;
-  if($('archive-dialog').open)renderArchive();
+  if(!$('panel-archive').hidden&&$('panel').open)renderArchive();
   if(!current){$('artifact-preview').hidden=true;$('artifact-frame').src='about:blank';}
+  // The sidebar says why nothing is selected; the main area repeats only its
+  // action, which matters on phones where the sidebar is a closed drawer.
   $('empty').hidden=!!current;
-  if (!current) $('empty').textContent=restoringTab?'Connecting to the requested terminal…':startingEntry?'Starting a terminal…':filter==='all'?(archiveCount?'All tabs are archived. Open Archive to restore one.':'No connected tabs. Use + to open a terminal, or check your machines in Settings.'):`No ${filter} tabs. Assign machines to this group in Settings.`;
+  if(!current){
+    const hint=restoringTab||startingEntry?null:emptyHint,action=$('empty-action');
+    $('empty-text').textContent=restoringTab?'Connecting to the requested terminal…':startingEntry?'Starting a terminal…':terminalsSettling()?'Connecting…':'No terminal selected';
+    action.hidden=!hint?.action;action.textContent=hint?.action||'';action.onclick=hint?.run||null;
+  }
   const errors=[...hosts.values()].filter(h=>h.error).map(h=>`${h.name}: ${h.error}`);
   for(const entry of sessions.values())if(entry.closeError)errors.push(entry.closeError);
   for(const error of attentionErrors)errors.push(`${hosts.get(error.host)?.name||error.host}: attention status unavailable`);
@@ -621,14 +657,17 @@ $('new-tab').onclick=()=>{
   $('new-tab-dialog').showModal();
 };
 $('cancel-new-tab').onclick=()=>$('new-tab-dialog').close();
-const newTabDialog=$('new-tab-dialog');
-let newTabBackdropPressed=false;
-function outsideNewTab(event){
-  const bounds=newTabDialog.getBoundingClientRect();
-  return event.target===newTabDialog&&(event.clientX<bounds.left||event.clientX>bounds.right||event.clientY<bounds.top||event.clientY>bounds.bottom);
+// A click on the backdrop closes a dialog. Both press and release must land
+// outside, so selecting text inside and releasing outside keeps it open.
+for(const dialog of document.querySelectorAll('dialog')){
+  let pressedOutside=false;
+  const outside=event=>{
+    const bounds=dialog.getBoundingClientRect();
+    return event.target===dialog&&(event.clientX<bounds.left||event.clientX>bounds.right||event.clientY<bounds.top||event.clientY>bounds.bottom);
+  };
+  dialog.addEventListener('pointerdown',event=>{pressedOutside=outside(event);});
+  dialog.addEventListener('click',event=>{if(pressedOutside&&outside(event))dialog.close();pressedOutside=false;});
 }
-newTabDialog.onpointerdown=event=>{newTabBackdropPressed=outsideNewTab(event);};
-newTabDialog.onclick=event=>{if(newTabBackdropPressed&&outsideNewTab(event))newTabDialog.close();newTabBackdropPressed=false;};
 $('new-tab-form').onsubmit=event=>{
   event.preventDefault();const key=$('new-tab-target').value;let entry=sessions.get(key);
   if(!entry?.state){
@@ -659,37 +698,64 @@ $('ready').onclick=()=>{
   ready[item.key]=Date.now();saveReady();
   closeTabMenu(true);render();
 };
-$('settings').onclick=()=>{$('settings-dialog').showModal();loadLogs();};
+$('settings').onclick=()=>openPanel('settings');
 $('size-owner').onclick=()=>{
   const item=contextItem;
   if(!item || $('size-owner').disabled)return;
   item.entry.frame.contentWindow.postMessage({type:'zellij-size-owner',tab_position:item.tab.position,owned:true},location.origin);
   closeTabMenu(true);
 };
-$('close-settings').onclick=()=>$('settings-dialog').close();
-// Messages and Computers open over the terminals, so terminal iframes and
-// their sockets stay connected. Modified clicks still open a real page.
-const pageDialog=$('page-dialog'),pageFrame=$('page-frame'),pageNames={'/messages.html':'Messages','/computers.html':'Computers'};
-document.addEventListener('click',event=>{
+// One panel holds Messages, Computers, Archive, Logs and Settings over the
+// terminals, so terminal iframes and their sockets stay connected. Messages and
+// Computers stay standalone pages, embedded per section; their links to each
+// other are hidden there, since each is a tab. Modified clicks still open a real page.
+const panel=$('panel'),panelTabs=[...panel.querySelectorAll('[role=tab]')];
+const panelPages={'/messages.html':'messages','/computers.html':'computers'};
+function sectionLink(event){
   const link=event.target.closest?.('a[href="/messages.html"],a[href="/computers.html"]');
-  if(!link||event.defaultPrevented||event.button||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;
+  if(!link||event.defaultPrevented||event.button||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return null;
   event.preventDefault();
-  link.closest('dialog')?.close();
-  $('page-heading').textContent=pageFrame.title=pageNames[link.pathname];
-  pageFrame.src=link.pathname;
-  pageDialog.showModal();
-});
-pageFrame.onload=()=>{
-  const doc=pageFrame.contentDocument,name=pageNames[pageFrame.contentWindow.location.pathname];
-  if(!doc||!name)return;
-  $('page-heading').textContent=pageFrame.title=name;
-  // The overlay header already shows the title and Close, so hide the page's own.
-  const style=doc.createElement('style');style.textContent='a[href="/"],h1{display:none!important}';doc.head.append(style);
-  doc.addEventListener('keydown',event=>{if(event.key==='Escape'&&!event.defaultPrevented)pageDialog.close();});
+  return panelPages[link.pathname];
+}
+function showSection(name,focusTab=false){
+  for(const tab of panelTabs){
+    const on=tab.dataset.section===name,section=$(tab.getAttribute('aria-controls'));
+    tab.setAttribute('aria-selected',String(on));tab.tabIndex=on?0:-1;section.hidden=!on;
+    if(!on)continue;
+    $('panel-title').textContent=tab.textContent;
+    const frame=section.querySelector('iframe');
+    if(frame&&frame.getAttribute('src')!==frame.dataset.src)frame.src=frame.dataset.src;
+    if(focusTab)tab.focus();
+  }
+  if(name==='logs')loadLogs();
+  if(name==='archive')renderArchive();
+}
+function openPanel(name){
+  if(name==='archive')$('archive-search').value='';
+  showSection(name);
+  if(!panel.open)panel.showModal();
+  panelTabs.find(tab=>tab.dataset.section===name).focus();
+}
+document.addEventListener('click',event=>{const name=sectionLink(event);if(name)openPanel(name);});
+$('panel-tabs').onclick=event=>{const tab=event.target.closest('[role=tab]');if(tab)showSection(tab.dataset.section,true);};
+$('panel-tabs').onkeydown=event=>{
+  const index=panelTabs.indexOf(document.activeElement),last=panelTabs.length-1;
+  const next={ArrowDown:index+1,ArrowRight:index+1,ArrowUp:index-1,ArrowLeft:index-1,Home:0,End:last}[event.key];
+  if(next===undefined||index<0)return;
+  event.preventDefault();
+  showSection(panelTabs[(next+last+1)%(last+1)].dataset.section,true);
 };
-$('close-page').onclick=()=>pageDialog.close();
-pageDialog.onclose=()=>{
-  pageFrame.src='about:blank';
+for(const frame of panel.querySelectorAll('iframe'))frame.onload=()=>{
+  const doc=frame.contentDocument;
+  if(!doc||!panelPages[frame.contentWindow.location.pathname])return;
+  // The panel header and tabs replace the page's title, back link and links to
+  // other sections; align the page with the panel's content edge and background.
+  const style=doc.createElement('style');style.textContent='a[href="/"],a[href="/messages.html"],a[href="/computers.html"],h1{display:none!important}:root{background:#111318}body{margin-left:0;margin-right:0}';doc.head.append(style);
+  doc.addEventListener('keydown',event=>{if(event.key==='Escape'&&!event.defaultPrevented)panel.close();});
+};
+$('close-panel').onclick=()=>panel.close();
+panel.onclose=()=>{
+  for(const frame of panel.querySelectorAll('iframe'))frame.src='about:blank';
   const item=allTabs().find(item=>item.key===selected);
   if(item&&$('artifact-preview').hidden&&!document.querySelector('dialog[open]'))focus(item);
 };
@@ -793,7 +859,7 @@ function renderArchive(){
     restore.setAttribute('aria-label',`Restore ${title}`);
     restore.onclick=()=>{
       delete archived[item.key];localStorage.setItem('switchboard-archived',JSON.stringify(archived));
-      $('archive-dialog').close();$('tab-search').value='';setFilter('all');activate(item);
+      panel.close();$('tab-search').value='';setFilter('all');activate(item);
       tabButtons.get(item.key)?.scrollIntoView({block:'nearest',inline:'nearest'});
       item.entry.frame.focus();
     };
@@ -801,9 +867,8 @@ function renderArchive(){
   }
   if(!list.children.length){const empty=document.createElement('p');empty.textContent=tabs.length?'No matching archived tabs.':'No archived tabs.';list.append(empty);}
 }
-$('archive').onclick=()=>{$('archive-search').value='';renderArchive();$('archive-dialog').showModal();$('archive-search').focus();};
+$('archive').onclick=()=>openPanel('archive');
 $('archive-search').oninput=renderArchive;
-$('close-archive').onclick=()=>$('archive-dialog').close();
 
 function updateSidebar(){
   document.body.classList.toggle('sidebar-collapsed',sidebarCollapsed);
@@ -811,6 +876,7 @@ function updateSidebar(){
   const visible=mobileSidebar.matches?sidebarOpen:!sidebarCollapsed;
   $('sidebar-toggle').setAttribute('aria-expanded',String(visible));
   $('sidebar-backdrop').hidden=!(mobileSidebar.matches&&sidebarOpen);
+  $('panel-tabs').setAttribute('aria-orientation',mobileSidebar.matches?'horizontal':'vertical');
 }
 function showTabSearch(){
   if(mobileSidebar.matches)sidebarOpen=true;else{sidebarCollapsed=false;localStorage.setItem('switchboard-sidebar-collapsed','false');}
@@ -846,7 +912,7 @@ async function refreshAttention(immediate=false){
   if(attentionLoading){attentionRefreshPending ||= immediate;return;}attentionLoading=true;
   try{
     const response=await fetch('/api/attention');if(!response.ok)throw Error('Attention monitor unavailable');
-    const data=await response.json();
+    const data=await response.json();attentionLoaded=true;
     paneAttention=new Map((data.panes||[]).map(state=>{const key=attentionKey(state.host,state.session,state.pane_id);return [key,{...state,key}];}));
     attentionErrors=data.errors||[];
     // The relay also preserves catalogs during failed scans. Use those on a
@@ -863,7 +929,7 @@ async function refreshAttention(immediate=false){
     if(current && document.hasFocus() && !document.hidden && $('artifact-preview').hidden && !document.querySelector('dialog[open]') && !current.entry.requestedPane && !current.entry.focusPending && activeTab(current.entry)?.id===current.tab.id)acknowledgeAttention(current);
     render();
     const selectedTab=allTabs().find(item=>item.key===selected);if(selectedTab?.entry.needsFocus)focus(selectedTab,true);
-  }catch(_){paneAttention.clear();attentionErrors=[{host:'Switchboard'}];render();}
+  }catch(_){attentionLoaded=true;paneAttention.clear();attentionErrors=[{host:'Switchboard'}];render();}
   finally{attentionLoading=false;if(attentionRefreshPending){attentionRefreshPending=false;refreshAttention();}}
 }
 refreshAttention();setInterval(refreshAttention,2000);

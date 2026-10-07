@@ -21,6 +21,8 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
       if(path.startsWith('/api/hosts/'))return json({id:path.split('/').at(-1),name:path.endsWith('/mac')?'Mac':'Windows',sessions:[{name:'main',web_clients_allowed:true}]});
       if(path==='/api/attention')return json({tabs,panes:working?[{host:'mac',session:'main',pane_id:1,state:'working'}]:[],errors:unavailable?[{host:'windows',session:'main'}]:[]});
       if(path.startsWith('/hosts/')){
+        // The top machine's terminal answers last; the first tab must still be selected.
+        if(path.split('/')[2]==='mac')await new Promise(resolve=>setTimeout(resolve,300));
         const panes=tabs.filter(t=>t.host===path.split('/')[2]).flatMap(t=>t.panes);
         return route.fulfill({contentType:'text/html',body:`<style>body{background:#0e1117;color:#d2dbeb;font:14px/1.7 monospace;padding:20px}input{margin-top:40px;background:#202633;color:inherit;border:1px solid #3d4b60;padding:14px;width:90%}</style><div id="terminal"><p>Switchboard terminal fixture</p><p>Working on the selected task…</p><input id="terminal-input" aria-label="Terminal input"></div><script>
           const panes=${JSON.stringify(panes)};let active=panes[0],selection='',selectionCallback;
@@ -135,6 +137,88 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
         assert.equal(await page.locator('iframe[title="Mac: main"]').evaluate(el=>document.activeElement===el),true);
       }
     }
+    assert.deepEqual(errors,[]);
+  }finally{await browser.close();}
+});
+
+test('sidebar empty states say why the list is empty and offer the fixing action',
+  {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
+  const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
+  const browser=await chromium.launch({headless:true});
+  try{
+    const page=await browser.newPage({viewport:{width:1280,height:800}}),errors=[];page.setDefaultTimeout(5000);
+    page.on('pageerror',e=>errors.push(e.message));
+    let releaseHosts,hostError=true,sessions=[{name:'main',web_clients_allowed:true}],tabs=[];
+    const hostsReady=new Promise(resolve=>releaseHosts=resolve);
+    await page.addInitScript(()=>{window.setInterval=()=>0;});
+    await page.route('**/*',async route=>{
+      const path=new URL(route.request().url()).pathname;
+      const json=value=>route.fulfill({contentType:'application/json',body:JSON.stringify(value)});
+      if(path==='/api/hosts'){await hostsReady;return json([{id:'mac',name:'Mac'}]);}
+      if(path==='/api/hosts/mac')return hostError?route.fulfill({status:500,body:''}):json({id:'mac',name:'Mac',sessions});
+      if(path==='/api/attention')return json({tabs,panes:[],errors:[]});
+      if(path==='/api/logs')return json({computers:[]});
+      if(path.startsWith('/api/'))return json({});
+      if(path.startsWith('/hosts/'))return route.fulfill({contentType:'text/html',body:`<input id="terminal-input"><script>
+        const panes=[{pane_id:1,is_plugin:false,tab_position:0}];window.term={element:document.body,textarea:document.querySelector('input'),options:{}};
+        parent.postMessage({type:'zellij-state',payload:{session_name:'main',panes,active_pane:panes[0],tab_viewport:{is_owner:true}}},location.origin);</script>`});
+      const file=path==='/'?'index.html':path.slice(1);
+      if(!['index.html','app.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
+      return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
+    });
+    const empty=page.locator('#tab-empty');
+    async function shows(text,action){
+      await page.waitForFunction(text=>document.querySelector('#tab-empty-text').textContent===text&&!document.querySelector('#tab-empty').hidden,text);
+      const action_=page.locator('#tab-empty-action');
+      assert.equal(await action_.isVisible(),!!action);
+      if(action)assert.equal(await action_.textContent(),action);
+      return action_;
+    }
+    await page.goto('https://switchboard.test/');
+    assert.equal(await empty.getAttribute('role'),'status');assert.equal(await empty.getAttribute('aria-live'),'polite');
+    // Still loading: a subtle connecting line, no action.
+    await shows('Connecting to your machines…');
+    assert.equal(await page.locator('#empty-text').textContent(),'Connecting…');
+    assert.equal(await page.locator('#empty-action').isHidden(),true);
+    assert.equal(await empty.getAttribute('data-state'),'loading');
+    // Every machine unreachable: point to Logs in the panel.
+    releaseHosts();
+    const viewLogs=await shows('Can’t reach your machines','View logs');
+    // The main area stays quiet: no repeated explanation, just the same action, centred.
+    assert.deepEqual(await page.evaluate(()=>{const text=document.querySelector('#empty-text').getBoundingClientRect(),main=document.querySelector('#terminals').getBoundingClientRect();
+      return [document.querySelector('#empty-text').textContent,document.querySelector('#empty-action').textContent,Math.abs(text.left+text.width/2-(main.left+main.width/2))<1,getComputedStyle(document.querySelector('#empty')).fontSize];}),
+      ['No terminal selected','View logs',true,'12px']);
+    await viewLogs.click();
+    await page.waitForFunction(()=>document.querySelector('#panel').open&&!document.querySelector('#panel-logs').hidden);
+    await page.keyboard.press('Escape');
+    // A tab arrives; the empty state goes away.
+    hostError=false;tabs=[{host:'mac',session:'main',id:1,position:0,name:'build',panes:[{pane_id:1,is_plugin:false,tab_position:0}]}];
+    await page.evaluate(async()=>{await refresh();await refreshAttention();});
+    await page.waitForFunction(()=>document.querySelector('#tabs .tab-name')?.textContent==='build');
+    assert.equal(await empty.isHidden(),true);
+    const nameLeft=await page.locator('#tabs .tab-name').evaluate(e=>e.getBoundingClientRect().left);
+    // Search hides everything: name the query and offer to clear it.
+    await page.locator('#tab-search').fill('zzz');
+    await (await shows('No tabs match “zzz”','Clear search')).click();
+    assert.equal(await page.locator('#tab-search').inputValue(),'');
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'tab-search');
+    await page.waitForFunction(()=>document.querySelector('#tabs .tab-name'));
+    // A group filter hides everything: offer All.
+    await page.locator('#filters [data-filter="work"]').click();
+    const showAll=await shows('No tabs in Work','Show all');
+    // Compact and aligned with the tab names, in the muted colour.
+    assert.deepEqual(await page.evaluate(()=>{const text=document.querySelector('#tab-empty-text'),box=document.querySelector('#tab-empty');
+      return {left:text.getBoundingClientRect().left,size:getComputedStyle(box).fontSize,color:getComputedStyle(box).color,height:box.getBoundingClientRect().height<80};}),
+      {left:nameLeft,size:'12px',color:'rgb(155, 167, 189)',height:true});
+    await showAll.click();
+    await page.waitForFunction(()=>document.querySelector('#filters .selected').dataset.filter==='all'&&document.querySelector('#tabs .tab-name'));
+    // The last tab closed and its session ended: offer a new tab.
+    sessions=[];tabs=[];
+    await page.evaluate(async()=>{await refresh();await refreshAttention();});
+    await shows('No terminals yet','New tab');
+    assert.equal(await page.locator('#empty-action').textContent(),'New tab');
+    await page.locator('#empty-action').click();
+    assert.equal(await page.locator('#new-tab-dialog').evaluate(d=>d.open),true);
     assert.deepEqual(errors,[]);
   }finally{await browser.close();}
 });
