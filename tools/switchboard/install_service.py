@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import pwd
 import shlex
 import shutil
 import subprocess
@@ -15,6 +16,10 @@ LABEL = 'dev.zellij.switchboard'
 DOMAIN = f'gui/{os.getuid()}'
 AGENTS = Path.home() / 'Library/LaunchAgents'
 LOGS = Path.home() / 'Library/Logs'
+
+
+def login_shell():
+    return pwd.getpwuid(os.getuid()).pw_shell
 
 
 def web_start_command(zellij):
@@ -76,6 +81,9 @@ def main():
         'CFBundleExecutable': 'Switchboard', 'CFBundlePackageType': 'APPL',
         'CFBundleVersion': '1', 'LSUIElement': True, 'SwitchboardZellij': zellij,
     }))
+    # Panes start $SHELL. Pin the login shell so a launcher's shell (e.g. an agent's zsh) never leaks in.
+    env = {'PATH': f'{Path.home()}/.local/bin:{Path.home()}/.cargo/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin',
+           'SHELL': login_shell()}
     if not args.menu_only:
         startup = shlex.join([zellij, 'web', '--status', '--timeout', '2']) + ' >/dev/null 2>&1 || { ' + web_start_command(zellij) + '; }'
         relay = shlex.join([zellij, 'serve', '--host-config', str(Path.home() / '.config/zellij/switchboard-hosts.json'), '--port', '8090'])
@@ -84,7 +92,7 @@ def main():
             'WorkingDirectory': str(ROOT), 'KeepAlive': True,
             'StandardOutPath': str(LOGS / 'zellij-switchboard.log'),
             'StandardErrorPath': str(LOGS / 'zellij-switchboard.log'),
-            'EnvironmentVariables': {'PATH': f'{Path.home()}/.local/bin:{Path.home()}/.cargo/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin'},
+            'EnvironmentVariables': env,
         })
         updater = Path.home() / '.local/share/switchboard/updater'
         updater.mkdir(parents=True, exist_ok=True)
@@ -97,12 +105,13 @@ def main():
             'StartInterval': 900,
             'StandardOutPath': str(LOGS / 'switchboard-update.log'),
             'StandardErrorPath': str(LOGS / 'switchboard-update.log'),
-            'EnvironmentVariables': {'PATH': f'{Path.home()}/.local/bin:{Path.home()}/.cargo/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin'},
+            'EnvironmentVariables': env,
         })
     install_job('dev.switchboard.menu', {
         'ProgramArguments': [str(executable)], 'KeepAlive': False,
         'StandardOutPath': str(LOGS / 'switchboard-menu.log'),
         'StandardErrorPath': str(LOGS / 'switchboard-menu.log'),
+        'EnvironmentVariables': {'SHELL': env['SHELL']},
     })
     print('Switchboard menu bar app installed: https://switchboard.localhost')
 
