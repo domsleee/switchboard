@@ -503,7 +503,29 @@ async fn guard(State(state): State<RelayState>, request: Request, next: Next) ->
     response
 }
 
-async fn describe(host: &Host) -> Value {
+fn host_summary(host: &Host, configured: bool) -> Value {
+    let local = matches!(
+        host.origin.host_str(),
+        Some("localhost" | "127.0.0.1" | "::1" | "[::1]")
+    );
+    // Terminal configuration predates pairing. Preserve it in the computer
+    // inventory without treating possession of a terminal token as mesh trust.
+    let mut pairing = host.origin.clone();
+    if pairing.scheme() != "https" {
+        pairing.set_scheme("https").unwrap();
+        pairing.set_port(Some(8082)).unwrap();
+    }
+    json!({
+        "id": host.config.id,
+        "name": host.config.name,
+        "address": host.origin.as_str().trim_end_matches('/'),
+        "pairing_address": pairing.as_str().trim_end_matches('/'),
+        "configured": configured,
+        "local": local,
+    })
+}
+
+async fn describe(host: &Host, configured: bool) -> Value {
     let result = tokio::time::timeout(Duration::from_secs(20), async {
         let response = host
             .request(
@@ -526,12 +548,12 @@ async fn describe(host: &Host) -> Value {
         Ok::<_, anyhow::Error>(sessions.clone())
     })
     .await;
+    let mut description = host_summary(host, configured);
     match result {
-        Ok(Ok(sessions)) => {
-            json!({"id": host.config.id, "name": host.config.name, "sessions": sessions})
-        },
-        _ => json!({"id": host.config.id, "name": host.config.name, "error": "Host unavailable"}),
+        Ok(Ok(sessions)) => description["sessions"] = json!(sessions),
+        _ => description["error"] = json!("Host unavailable"),
     }
+    description
 }
 
 async fn hosts(State(state): State<RelayState>, request: Request) -> Json<Value> {
@@ -542,12 +564,18 @@ async fn hosts(State(state): State<RelayState>, request: Request) -> Json<Value>
             state
                 .all_hosts()
                 .iter()
-                .map(|host| json!({"id": host.config.id, "name": host.config.name}))
+                .map(|host| host_summary(host, state.hosts.contains_key(&host.config.id)))
                 .collect(),
         ));
     }
     Json(Value::Array(
-        futures_util::future::join_all(state.all_hosts().iter().map(|host| describe(host))).await,
+        futures_util::future::join_all(
+            state
+                .all_hosts()
+                .iter()
+                .map(|host| describe(host, state.hosts.contains_key(&host.config.id))),
+        )
+        .await,
     ))
 }
 
@@ -558,7 +586,7 @@ async fn host(
     let host = state
         .host(&id)
         .ok_or((StatusCode::NOT_FOUND, "Unknown host"))?;
-    Ok(Json(describe(&host).await))
+    Ok(Json(describe(&host, state.hosts.contains_key(&id)).await))
 }
 
 async fn link_config(State(state): State<RelayState>) -> Response {
@@ -894,6 +922,33 @@ mod tests {
     }
 
     #[test]
+    fn configured_computer_inventory_preserves_safe_pairing_addresses() {
+        let mut configured = config("https://172.20.10.69:8082");
+        configured.id = "windows".into();
+        configured.name = "Windows".into();
+        let host = Host::new(configured).unwrap();
+        let summary = host_summary(&host, true);
+        assert_eq!(summary["address"], "https://172.20.10.69:8082");
+        assert_eq!(summary["pairing_address"], summary["address"]);
+        assert_eq!(summary["configured"], true);
+        assert_eq!(summary["local"], false);
+        assert!(!summary.to_string().contains("token"));
+        let local = Host::new(config("http://127.0.0.1:8082")).unwrap();
+        assert_eq!(host_summary(&local, true)["local"], true);
+        let http = Host::new(config("http://172.20.10.69:9000")).unwrap();
+        assert_eq!(
+            host_summary(&http, true)["pairing_address"],
+            "https://172.20.10.69:8082"
+        );
+        let ipv6 = Host::new(config("https://[fd00::69]:8091")).unwrap();
+        assert_eq!(
+            host_summary(&ipv6, false)["pairing_address"],
+            "https://[fd00::69]:8091"
+        );
+        assert_eq!(host_summary(&ipv6, false)["configured"], false);
+    }
+
+    #[test]
     fn trust_boundary_rejects_cross_site_and_wrong_hosts() {
         let mut headers = HeaderMap::new();
         headers.insert(header::HOST, "switchboard.localhost".parse().unwrap());
@@ -1151,6 +1206,9 @@ mod tests {
         let summary: Value = serde_json::from_slice(&summary.body).unwrap();
         assert_eq!(summary[0]["id"], "mac");
         assert_eq!(summary[1]["id"], "windows");
+        assert_eq!(summary[1]["configured"], true);
+        assert!(summary[1]["address"].as_str().is_some());
+        assert!(!summary.to_string().contains("secret"));
         let response = client
             .raw_request(
                 Method::GET,
