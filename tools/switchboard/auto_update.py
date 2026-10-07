@@ -163,6 +163,14 @@ def install_binary(candidate, args):
         run('bash', ROOT / 'update_local.sh', candidate, args.binary, timeout=300)
 
 
+def verify_auth(old, candidate, config):
+    prefix = ['--config', config] if config else []
+    before = set(run(old, *prefix, 'web', '--list-tokens', timeout=15).splitlines())
+    after = set(run(candidate, *prefix, 'web', '--list-tokens', timeout=15).splitlines())
+    if not before.issubset(after):
+        raise RuntimeError('Candidate cannot see existing authentication tokens; services were not changed')
+
+
 def restart_mac(args):
     # launchd owns only the relay. Native web --stop does not stop session engines.
     run(args.binary, 'web', '--stop')
@@ -192,6 +200,9 @@ def apply_bundle(bundle, manifest, args, state, state_path):
     sessions = catalog(args.port)
     old_commit = health(args.port)['commit']
     old = selected_binary(args)
+    candidate = bundle / ('zellij.exe' if WINDOWS else 'zellij')
+    candidate.chmod(candidate.stat().st_mode | 0o111)
+    verify_auth(old, candidate, args.config)
     backup = args.state_directory / ('rollback-' + str(time.time_ns()))
     backup.mkdir()
     previous = backup / ('zellij.exe' if WINDOWS else 'zellij')
@@ -208,8 +219,6 @@ def apply_bundle(bundle, manifest, args, state, state_path):
                         'processes': {} if WINDOWS else mac_processes()}
     save(state_path, state)
     try:
-        candidate = bundle / ('zellij.exe' if WINDOWS else 'zellij')
-        candidate.chmod(candidate.stat().st_mode | 0o111)
         install_binary(candidate, args)
         if WINDOWS:
             windows_services('Stop', snapshot, args)

@@ -70,6 +70,13 @@ class Updates(unittest.TestCase):
         with updater.update_lock(self.root):
             pass
 
+    def test_candidate_must_see_existing_authentication_tokens(self):
+        with patch.object(updater, 'run', side_effect=['existing token', 'other token']):
+            with self.assertRaisesRegex(RuntimeError, 'authentication'):
+                updater.verify_auth('old', 'new', '')
+        with patch.object(updater, 'run', side_effect=['existing token', 'new token\nexisting token']):
+            updater.verify_auth('old', 'new', '')
+
     def transaction(self, failure=False, rollback_failure=False, windows=True):
         installed = self.root / 'installed'
         installed.mkdir()
