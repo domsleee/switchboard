@@ -148,14 +148,15 @@
       active === window.__zjSoftKbdCapture?.element);
   }
   function showEscapeStatus(message, failed = false) {
+    if (!message && !escapeStatus) return;
     if (!escapeStatus) {
       escapeStatus = document.createElement('div');
       escapeStatus.setAttribute('role', 'status');
-      escapeStatus.style.cssText = 'position:fixed;bottom:12px;right:12px;z-index:10000;max-width:90%;padding:8px 12px;border-radius:6px;background:#282828;color:white;font:13px system-ui;pointer-events:none';
+      escapeStatus.style.cssText = 'position:fixed;bottom:12px;right:12px;z-index:10000;max-width:min(360px,calc(100vw - 24px));box-sizing:border-box;padding:7px 10px;border:1px solid #363e4d;border-radius:6px;box-shadow:0 4px 16px #0006;background:#181b22;color:#e5e7eb;font:11px/1.4 system-ui;overflow-wrap:anywhere;pointer-events:none';
       document.body.append(escapeStatus);
     }
     escapeStatus.textContent = message;
-    escapeStatus.style.background = failed ? '#8b2525' : '#282828';
+    escapeStatus.style.color = failed ? '#ffd57a' : '#e5e7eb';
     escapeStatus.hidden = !message;
   }
   function sendEscape() {
@@ -165,7 +166,7 @@
         showEscapeStatus('Escape failed: terminal state is unavailable.', true);
         return;
       }
-      showEscapeStatus('Sending Escape…');
+      showEscapeStatus('');
       escapeQueue = escapeQueue.then(async () => {
         try {
           const response = await fetch(`/api/hosts/${host}/escape`, {
