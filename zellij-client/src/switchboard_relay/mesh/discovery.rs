@@ -33,7 +33,11 @@ fn routed_address(peer: IpAddr) -> Option<IpAddr> {
     usable(local).then_some(local)
 }
 
-async fn computer_name() -> String {
+async fn computer_name(configured: &str) -> String {
+    // Keep the name the user already chose in the terminal host configuration.
+    if name(configured.trim()).is_ok() {
+        return configured.trim().to_owned();
+    }
     for key in ["COMPUTERNAME", "HOSTNAME"] {
         if let Ok(value) = std::env::var(key) {
             if name(value.trim()).is_ok() {
@@ -96,7 +100,7 @@ pub(super) async fn defaults(State(state): State<RelayState>) -> Result<Json<Val
         .map(|ip| format!("https://{}", SocketAddr::new(ip, 8082)))
         .collect();
     Ok(Json(json!({
-        "computer_name":computer_name().await,
+        "computer_name":computer_name(&mesh.local_engine.config.name).await,
         "name":"My computers",
         "address":if addresses.len()==1 { addresses.first().cloned() } else { None },
         "requires_choice":addresses.len()>1,
@@ -147,6 +151,10 @@ pub(in crate::switchboard_relay) fn start(state: RelayState) -> tokio::task::Joi
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn configured_computer_name_takes_precedence_over_system_hostname() {
+        assert_eq!(computer_name(" Windows ").await, "Windows");
+    }
     #[test]
     fn unsuitable_addresses_are_not_suggested() {
         for ip in [
