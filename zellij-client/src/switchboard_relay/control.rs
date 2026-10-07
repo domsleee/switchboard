@@ -228,14 +228,15 @@ pub(super) async fn execute_host(
     } else {
         vec!["write", "-p", &target, "27"]
     };
-    run_local(host, session, &args, Duration::from_secs(5))
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::BAD_GATEWAY,
-                "Terminal command failed; delivery may be uncertain",
-            )
-        })?;
+    let delivered = run_local(host, session, &args, Duration::from_secs(5)).await;
+    // Closing the final tab ends the session, and its server can exit before the
+    // CLI reads the reply. A session that is gone afterwards was closed.
+    if delivered.is_err() && !(final_tab && session_ended(host, session).await) {
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            "Terminal command failed; delivery may be uncertain",
+        ));
+    }
     log::info!(
         "Closed tab {target} in session {session} on {}{}",
         host.config.name,
@@ -256,6 +257,18 @@ pub(super) async fn execute_host(
         }
     }
     Ok(())
+}
+
+async fn session_ended(host: &Host, session: &str) -> bool {
+    for _ in 0..20 {
+        if let Ok(names) = sessions(host).await {
+            if !names.iter().any(|name| name == session) {
+                return true;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+    false
 }
 
 /// Closing a session's final tab ends it, but Zellij keeps its last layout, so the next start
