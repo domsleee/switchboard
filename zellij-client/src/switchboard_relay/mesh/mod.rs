@@ -763,7 +763,19 @@ impl Mesh {
         let db = self.database.lock().await;
         let pending: Vec<_> = db.invitations.iter().flat_map(|(id, record)| record.requests.values().filter(|p| !p.denied && record.approved.is_none() && !record.cancelled && record.expires > now()).map(move |p| json!({"invitation": id, "request": p.request.request, "computer": p.request.member.name, "address": p.request.member.endpoint, "code": p.code}))).collect();
         let members: Vec<_> = db.membership.as_ref().map(|m| m.value.members.values().map(|member| json!({ "id": member.id, "name": member.name, "address": member.endpoint, "local": db.local.as_ref().is_some_and(|l| l.id == member.id), "state": if db.incoming.contains_key(&member.id) { "paired" } else { "credential_distribution_pending" } })).collect()).unwrap_or_default();
-        json!({"incoming":direct::incoming(&db,now()),"sent":direct::sent(&db,now()),"configured": db.local.is_some(), "gateway_available": gateway_available, "computer": db.local.as_ref().map(|m| json!({"name":m.name,"address":m.endpoint})), "mesh": db.membership.as_ref().map(|m| &m.value.name), "administrator": db.membership.as_ref().is_some_and(|m| db.local.as_ref().is_some_and(|l| l.id == m.value.administrator)), "requests":pending, "members":members, "joining": db.joining.as_ref().map(|j| json!({"computer":j.invitation.administrator.name,"mesh":j.invitation.mesh_name,"code":verification(&j.invitation,&j.attempt.request.value).ok()}))})
+        let administrator_computer = db
+            .membership
+            .as_ref()
+            .and_then(|membership| {
+                membership
+                    .value
+                    .members
+                    .get(&membership.value.administrator)
+            })
+            .map(
+                |member| json!({"id": member.id, "name": member.name, "address": member.endpoint}),
+            );
+        json!({"administrator_computer":administrator_computer,"incoming":direct::incoming(&db,now()),"sent":direct::sent(&db,now()),"configured": db.local.is_some(), "gateway_available": gateway_available, "computer": db.local.as_ref().map(|m| json!({"name":m.name,"address":m.endpoint})), "mesh": db.membership.as_ref().map(|m| &m.value.name), "administrator": db.membership.as_ref().is_some_and(|m| db.local.as_ref().is_some_and(|l| l.id == m.value.administrator)), "requests":pending, "members":members, "joining": db.joining.as_ref().map(|j| json!({"computer":j.invitation.administrator.name,"mesh":j.invitation.mesh_name,"code":verification(&j.invitation,&j.attempt.request.value).ok()}))})
     }
 }
 

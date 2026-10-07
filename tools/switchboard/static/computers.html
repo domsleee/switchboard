@@ -6,8 +6,9 @@ details{margin:18px 0}summary{cursor:pointer;color:#bbb}button[type=submit]{back
 <body><a href="/">← Terminals</a><h1>Computers</h1>
 <p>Pair computers on the same LAN or an existing private network. Joining grants terminal access. Both computers need Switchboard running.</p>
 <p id="message" role="status" aria-live="polite"></p><button id="retry-gateway" hidden>Retry this computer’s gateway</button>
-<section id="catalog"><h2 id="mesh-title">Your computers</h2><div id="members"></div><div id="requests"></div></section>
+<section id="catalog"><h2 id="mesh-title">Your computers</h2><p id="administrator-description" hidden></p><div id="members"></div><div id="requests"></div></section>
 <section id="incoming-section" hidden><h2>Connection requests</h2><div id="incoming"></div></section>
+<section id="administrator-help" hidden aria-labelledby="administrator-help-heading"><h2 id="administrator-help-heading">Add computer</h2><p id="administrator-instructions"></p><p>On that computer, open Switchboard → Settings → Computers → Add computer or review requests, then choose <strong>Create invitation</strong> or enter the new computer’s address under <strong>Add computer</strong>.</p></section>
 <section id="direct-section"><h2>Add computer</h2><form id="add-form"><label for="target-address">Other computer’s address</label><input id="target-address" placeholder="172.20.10.10" autocomplete="off" required><button type="submit">Send request</button></form><p>Approve on the other computer, then confirm the matching code here. No links or tokens to copy.</p><div id="sent"></div></section>
 <section id="local"><label for="computer-name">This computer</label><input id="computer-name" maxlength="80" autocomplete="off" placeholder="Finding this computer’s name…">
 <div id="network-choice" hidden><label for="network">Choose a connection</label><select id="network"><option value="">Choose the network shared by your computers</option></select><small>More than one connection was found. Choose the one the other computer can reach.</small></div>

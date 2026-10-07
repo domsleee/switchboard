@@ -56,7 +56,18 @@
     try {
       const state = await api('');
       pending = Boolean(state.joining);
-      $('direct-section').hidden = Boolean(state.mesh) && !state.administrator;
+      const administrator = state.administrator_computer;
+      const managedElsewhere = Boolean(state.mesh) && !state.administrator;
+      $('administrator-description').hidden = !state.mesh;
+      $('administrator-description').textContent = administrator
+        ? `Administrator computer: ${administrator.name}${state.administrator ? ' (this computer)' : ''}. This computer manages invitations and approves new computers.`
+        : state.administrator ? 'This computer is the administrator and manages invitations.'
+          : 'Administrator computer unavailable. Open Switchboard on the computer that created this group.';
+      $('administrator-help').hidden = !managedElsewhere;
+      $('administrator-instructions').textContent = administrator
+        ? `Create invitations on ${administrator.name} (${administrator.address}). This group assigns administration to that computer; it is not a user account role.`
+        : 'Create invitations on the computer that created this group. Its name is unavailable; update Switchboard and reload to identify it.';
+      $('direct-section').hidden = managedElsewhere;
       const incoming = state.incoming || [], sent = state.sent || [];
       $('incoming-section').hidden = !incoming.length;
       renderPairing(incoming, sent);
@@ -73,7 +84,8 @@
       }
       if (state.mesh) $('mesh-name').value = state.mesh;
       $('mesh-name').readOnly = Boolean(state.mesh);
-      $('create-section').hidden = Boolean(state.mesh) && !state.administrator;
+      $('create-section').hidden = managedElsewhere;
+      $('join-section').hidden = Boolean(state.mesh) && !pending;
       $('join-form').hidden = Boolean(state.mesh) || pending;
       $('joining').hidden = !pending;
       if (pending) {
@@ -87,6 +99,7 @@
       for (const member of state.members) {
         const card = document.createElement('div'); card.className = 'card';
         const title = document.createElement('strong'); title.textContent = member.name;
+        if (member.id === administrator?.id) title.textContent += ' · Administrator';
         const address = document.createElement('p'); address.textContent = member.address;
         const status = document.createElement('span');
         const host = hosts.find(host => host.id === `mesh-${member.id}`);

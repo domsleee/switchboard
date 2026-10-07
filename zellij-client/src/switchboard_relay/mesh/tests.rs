@@ -81,6 +81,7 @@ async fn explicit_approval_installs_bilateral_credentials_and_survives_restart()
         "https://192.0.2.2:8091",
     )
     .await;
+    assert!(mac.status().await["administrator_computer"].is_null());
     let invitation = invitation(&mac, 1000).await;
     assert_eq!(
         mac.database
@@ -124,7 +125,23 @@ async fn explicit_approval_installs_bilateral_credentials_and_survives_restart()
         "the approved identity can resume after expiry"
     );
     let before = windows.database.lock().await.local.clone().unwrap();
-    let status = windows.status().await.to_string();
+    let member_status = windows.status().await;
+    let admin_status = mac.status().await;
+    assert_eq!(member_status["administrator"], false);
+    assert_eq!(admin_status["administrator"], true);
+    assert_eq!(
+        member_status["administrator_computer"],
+        admin_status["administrator_computer"]
+    );
+    assert_eq!(
+        member_status["administrator_computer"],
+        json!({
+            "id": invitation.administrator.id,
+            "name": "Mac",
+            "address": "https://192.0.2.1:8091"
+        })
+    );
+    let status = member_status.to_string();
     assert!(!status.contains("isolated-terminal") && !status.contains(&invitation.secret));
     let mac_id = invitation.administrator.id;
     let db = windows.database.lock().await;
