@@ -317,7 +317,9 @@ pub async fn serve_web_client(
 
     match rustls_config {
         Some(rustls_config) => {
-            let server = match axum_server::from_tcp_rustls(listener, rustls_config) {
+            let acceptor = axum_server::tls_rustls::RustlsAcceptor::new(rustls_config)
+                .acceptor(axum_server::accept::NoDelayAcceptor);
+            let server = match axum_server::from_tcp(listener).map(|s| s.acceptor(acceptor)) {
                 Ok(server) => server,
                 Err(e) => {
                     log::error!("Failed to create TLS web server from listener: {}", e);
@@ -330,7 +332,9 @@ pub async fn serve_web_client(
                 .await;
         },
         None => {
-            let server = match axum_server::from_tcp(listener) {
+            let server = match axum_server::from_tcp(listener)
+                .map(|s| s.acceptor(axum_server::accept::NoDelayAcceptor))
+            {
                 Ok(server) => server,
                 Err(e) => {
                     log::error!("Failed to create web server from listener: {}", e);

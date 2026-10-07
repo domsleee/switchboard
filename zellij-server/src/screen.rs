@@ -10345,9 +10345,15 @@ pub(crate) fn screen_thread_main(
                 screen.render(None)?;
             },
             ScreenInstruction::RemoveClient(client_id) => {
+                // `zellij action` CLI clients never join the screen. Reporting and repainting
+                // for each one sent every attached client a full-screen frame per CLI call, so
+                // Switchboard's attention polling queued typing echo behind those frames.
+                let joined = screen.connected_clients.borrow().contains_key(&client_id);
                 screen.remove_client(client_id).non_fatal();
-                screen.log_and_report_session_state().non_fatal();
-                screen.render(None).non_fatal();
+                if joined {
+                    screen.log_and_report_session_state().non_fatal();
+                    screen.render(None).non_fatal();
+                }
             },
             ScreenInstruction::UpdateSearch(
                 c,

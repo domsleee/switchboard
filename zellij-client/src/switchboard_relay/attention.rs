@@ -453,6 +453,7 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
             tokio::spawn(async move {
                 let mut offset = 0;
                 loop {
+                    let started = tokio::time::Instant::now();
                     let result = scan(&host, offset).await;
                     offset = offset.wrapping_add(1);
                     let mut poll = poll.lock().await;
@@ -496,7 +497,10 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
                         .await;
                     }
                     drop(poll);
-                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    // Every CLI call queues on the engine thread that also echoes typing.
+                    // A slow scan (loaded machine, many panes) waits 3x its own duration so
+                    // scanning stays under a quarter of the engine's time.
+                    tokio::time::sleep(Duration::from_secs(3).max(started.elapsed() * 3)).await;
                 }
             })
         })

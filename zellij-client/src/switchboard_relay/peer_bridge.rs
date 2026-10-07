@@ -80,8 +80,9 @@ async fn proxy(root: PathBuf, request: Request) -> anyhow::Result<Response> {
         .map(|v| v.as_str())
         .unwrap_or("/");
     let target = format!("/__switchboard_peer{path}");
-    let socket: Stream =
-        Box::new(TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, registration.port)).await?);
+    let tcp = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, registration.port)).await?;
+    tcp.set_nodelay(true)?;
+    let socket: Stream = Box::new(tcp);
     let websocket = WebSocketUpgrade::from_request_parts(&mut parts, &()).await;
     if let Ok(websocket) = websocket {
         let mut upstream =
@@ -234,11 +235,13 @@ async fn prepare(
     .with_no_client_auth()
     .with_single_cert(vec![rustls::pki_types::CertificateDer::from(cert)], key)?;
     let handle = axum_server::Handle::new();
-    let server = axum_server::from_tcp_rustls(
-        socket,
+    let acceptor = axum_server::tls_rustls::RustlsAcceptor::new(
         axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(tls)),
-    )?
-    .handle(handle.clone());
+    )
+    .acceptor(axum_server::accept::NoDelayAcceptor);
+    let server = axum_server::from_tcp(socket)?
+        .acceptor(acceptor)
+        .handle(handle.clone());
     let root = directory(listener.port());
     tokio::spawn(async move {
         let public = move |request: Request| {

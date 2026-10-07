@@ -266,6 +266,7 @@ impl Host {
         };
         let tcp = TcpStream::connect((host.as_str(), self.origin.port_or_known_default().unwrap()))
             .await?;
+        tcp.set_nodelay(true)?;
         if let Some(tls) = self.tls.as_ref() {
             let name = rustls::pki_types::ServerName::try_from(host.to_owned())?;
             Ok(Box::new(
@@ -970,6 +971,10 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
     let artifact = artifacts::start(config.artifact_proxy).await?;
     let polling =
         attention::start(state.clone(), config_path.with_extension("attention.json")).await;
+    // Keystrokes and echoes are tiny writes; Nagle plus delayed ACK can hold each one back.
+    let listener = axum::serve::ListenerExt::tap_io(listener, |stream| {
+        let _ = stream.set_nodelay(true);
+    });
     let result = axum::serve(listener, app(state.clone()))
         .with_graceful_shutdown(shutdown())
         .await;
