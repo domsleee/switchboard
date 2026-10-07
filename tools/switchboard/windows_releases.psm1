@@ -207,6 +207,64 @@ function Assert-SwitchboardProcesses($Baseline) {
     }
 }
 
+# Inverse of ConvertTo-SwitchboardArgument; unquoted values are accepted too.
+function Get-SwitchboardCommandLineValue([string]$CommandLine, [string]$Name) {
+    $match = [regex]::Match($CommandLine, '(?:^|\s)"?' + [regex]::Escape($Name) + '"?\s+(?:"((?:[^"\\]|\\.)*)"|([^\s"]+))')
+    if (!$match.Success) { return '' }
+    if (!$match.Groups[1].Success) { return $match.Groups[2].Value }
+    $value = [regex]::Replace($match.Groups[1].Value, '(\\+)$', { param($m) '\' * ($m.Groups[1].Length / 2) })
+    [regex]::Replace($value, '(\\*)\\"', { param($m) ('\' * ($m.Groups[1].Length / 2)) + '"' })
+}
+
+# The installed tray script (not the location of whichever helper runs).
+function Get-SwitchboardTrayScript {
+    if ($env:SWITCHBOARD_TRAY_SCRIPT) { $env:SWITCHBOARD_TRAY_SCRIPT }
+    else { Join-Path $HOME '.config/switchboard/switchboard-tray.ps1' }
+}
+
+function Get-SwitchboardTrays($Processes, [string]$TrayScript = (Get-SwitchboardTrayScript)) {
+    $script = [regex]::Escape([IO.Path]::GetFullPath($TrayScript).Replace('/','\'))
+    @($Processes | Where-Object { $_.Name -ieq 'powershell.exe' -and $_.CommandLine -and
+        $_.CommandLine.Replace('/','\') -match ($script + '"?\s(?:.*\s)?"?-Tray\b') })
+}
+
+# Settings the running tray (or its web service) uses, so a reinstall or an
+# update started without them keeps the same configuration.
+function Get-SwitchboardTrayArguments($Processes, [string]$TrayScript = (Get-SwitchboardTrayScript)) {
+    $tray = @(Get-SwitchboardTrays $Processes $TrayScript) | Select-Object -First 1
+    $web = @($Processes | Where-Object { $_.Name -ieq 'zellij.exe' -and $_.CommandLine -match '\bweb"?\s+"?--start\b' }) | Select-Object -First 1
+    $config = ''; $releaseDirectory = ''
+    if ($tray) {
+        $config = Get-SwitchboardCommandLineValue $tray.CommandLine '-Config'
+        $releaseDirectory = Get-SwitchboardCommandLineValue $tray.CommandLine '-ReleaseDirectory'
+    }
+    if (!$config -and $web) { $config = Get-SwitchboardCommandLineValue $web.CommandLine '--config' }
+    [pscustomobject]@{config=$config; releaseDirectory=$releaseDirectory}
+}
+
+# The tray is single-instance. After stopping it, wait until its lock is gone
+# so the replacement tray can start.
+function Wait-SwitchboardMutexRelease([string]$Name = 'Local\SwitchboardTray', [int]$TimeoutSeconds = 15) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    while ($true) {
+        $existing = $null
+        if (![Threading.Mutex]::TryOpenExisting($Name, [ref]$existing)) { return }
+        $existing.Dispose()
+        if ([DateTime]::UtcNow -ge $deadline) { throw "The previous tray app still holds $Name" }
+        Start-Sleep -Milliseconds 250
+    }
+}
+
+function Enter-SwitchboardMutex([string]$Name = 'Local\SwitchboardTray', [int]$TimeoutSeconds = 5) {
+    $owns = $false
+    $mutex = New-Object Threading.Mutex($true, $Name, [ref]$owns)
+    if (!$owns) {
+        try { $owns = $mutex.WaitOne($TimeoutSeconds * 1000) } catch [Threading.AbandonedMutexException] { $owns = $true }
+    }
+    if (!$owns) { $mutex.Dispose(); throw "Another Switchboard tray app still owns $Name" }
+    $mutex
+}
+
 function Invoke-SwitchboardWindowsUpdate {
     [CmdletBinding()]
     param([string]$Candidate, [string]$Directory = (Get-SwitchboardReleaseDirectory),
@@ -294,4 +352,4 @@ function Invoke-SwitchboardWindowsUpdate {
     } finally { $lock.Dispose() }
 }
 
-Export-ModuleMember -Function Get-SwitchboardReleaseDirectory,Get-SwitchboardReleaseState,Get-SwitchboardCurrentBinary,Initialize-SwitchboardReleaseStore,Invoke-SwitchboardWindowsUpdate,Invoke-SwitchboardProbe,ConvertTo-SwitchboardArgument
+Export-ModuleMember -Function Get-SwitchboardTrayScript,Get-SwitchboardTrays,Get-SwitchboardTrayArguments,Get-SwitchboardCommandLineValue,Wait-SwitchboardMutexRelease,Enter-SwitchboardMutex,Get-SwitchboardReleaseDirectory,Get-SwitchboardReleaseState,Get-SwitchboardCurrentBinary,Initialize-SwitchboardReleaseStore,Invoke-SwitchboardWindowsUpdate,Invoke-SwitchboardProbe,ConvertTo-SwitchboardArgument

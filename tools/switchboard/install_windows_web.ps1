@@ -7,6 +7,13 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'windows_releases.psm1') -Force
+if (!$Tray -and (!$Config -or !$ReleaseDirectory)) {
+    # Reinstalling (by hand, from a bundle or by the updater) keeps the running
+    # tray's settings, including in the logon shortcut.
+    $running = Get-SwitchboardTrayArguments @(Get-CimInstance Win32_Process) (Join-Path $HOME '.config/switchboard/switchboard-tray.ps1')
+    if (!$Config) { $Config = $running.config }
+    if (!$ReleaseDirectory) { $ReleaseDirectory = $running.releaseDirectory }
+}
 if (!$ReleaseDirectory) { $ReleaseDirectory = Get-SwitchboardReleaseDirectory }
 if (Test-Path -LiteralPath (Join-Path $ReleaseDirectory 'current.json')) {
     $Binary = Get-SwitchboardCurrentBinary $ReleaseDirectory
@@ -30,7 +37,7 @@ if (!$Tray) {
     if ([IO.Path]::GetFullPath($PSCommandPath) -ne $installed) {
         Copy-Item -LiteralPath $PSCommandPath -Destination $installed -Force
     }
-    foreach ($file in @('install_windows_web.ps1','windows_releases.psm1','update_windows.ps1','windows_cli.ps1','auto_update.py','update_services_windows.ps1')) {
+    foreach ($file in @('install_windows_web.ps1','windows_releases.psm1','update_windows.ps1','windows_cli.ps1','update_services_windows.ps1')) {
         $from = Join-Path $source $file
         $to = Join-Path $directory $file
         if ([IO.Path]::GetFullPath($from) -ne [IO.Path]::GetFullPath($to)) {
@@ -43,13 +50,14 @@ if (!$Tray) {
     $shortcut.Arguments = $arguments
     $shortcut.WindowStyle = 7
     $shortcut.Save()
-    Start-Process -FilePath $powerShell -ArgumentList $arguments -WindowStyle Hidden | Out-Null
+    $started = Start-Process -FilePath $powerShell -ArgumentList $arguments -WindowStyle Hidden -PassThru
+    # A tray that cannot take the single-instance lock exits; report it.
+    if ($started.WaitForExit(8000)) { throw "The tray app exited during startup (exit $($started.ExitCode)); see $log" }
     Write-Output 'Switchboard tray app installed: http://switchboard.localhost'
     return
 }
-$ownsMutex = $false
-$mutex = New-Object Threading.Mutex($true, 'Local\SwitchboardTray', [ref]$ownsMutex)
-if (!$ownsMutex) { $mutex.Dispose(); return }
+try { $mutex = Enter-SwitchboardMutex }
+catch { Add-Content -LiteralPath $log -Value ('Tray app not started: ' + $_.Exception.Message); exit 1 }
 # Every server and pane inherits this environment. Agent and CI shells set
 # NO_COLOR, TERM=dumb and PAGER=cat; keep only values set for the account.
 function Clear-InheritedShellEnvironment {
@@ -91,10 +99,10 @@ function Check-ForUpdates {
     }
     $script:nextUpdate = [DateTime]::UtcNow.AddMinutes(15)
     try {
-        $python = (Get-Command python -ErrorAction Stop).Source
-        $updateArguments = @((Join-Path $directory 'auto_update.py'),'--release-directory',$ReleaseDirectory)
+        # The selected release runs the updater; it never replaces its own file.
+        $updateArguments = @('switchboard','update','--release-directory',$ReleaseDirectory)
         if ($Config) { $updateArguments += @('--config',$Config) }
-        $script:updater = Start-Process -FilePath $python -WindowStyle Hidden -PassThru `
+        $script:updater = Start-Process -FilePath (Get-SwitchboardCurrentBinary $ReleaseDirectory) -WindowStyle Hidden -PassThru `
             -ArgumentList (($updateArguments | ForEach-Object { ConvertTo-SwitchboardArgument $_ }) -join ' ') `
             -RedirectStandardOutput (Join-Path $directory 'update.log') -RedirectStandardError (Join-Path $directory 'update-error.log')
     } catch { Add-Content -LiteralPath $log -Value ('Automatic update: ' + $_.Exception.Message) }

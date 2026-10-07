@@ -5,24 +5,37 @@ The manual guarded updaters remain available for release selection and recovery.
 
 ## Automatic updates
 
-Each push to `main` builds Windows, Apple Silicon and Intel Mac bundles. Each
-bundle contains the native executable, platform helpers and a SHA-256 manifest
-with its exact commit and platform. Bundles are retained for 30 days.
+Each push to `main` builds Windows, Apple Silicon and Intel Mac bundles: the
+native executable, platform helpers and `bundle.json` (commit, run number,
+platform and SHA-256 of every file), written by `zellij switchboard package`.
+When all checks pass, `native-binaries.yml` replaces the assets of one rolling
+prerelease, `latest-main`, as `switchboard-<platform>-<file>`, each manifest
+last. The release is created once and never recreated, so followers are not
+notified per build; the tag follows the build's commit. Only this repository's
+`main` publishes. Each bundle is also kept as a 30-day Actions artifact for
+updaters installed before this change.
 
-After installing these updater-enabled helpers once on each computer, the Windows
-tray and macOS LaunchAgent check every 15 minutes. Python 3 and authenticated
-GitHub CLI (`gh auth login`) must be available to that user's background process;
-macOS also needs `jq` for the guarded binary replacement. There are no Python
-package dependencies. Windows checks stop when its tray exits; the Mac updater
-runs independently of the menu app.
+The executable is the updater: `zellij switchboard update` (`--check` downloads
+and verifies only). The macOS LaunchAgent `dev.switchboard.update` and the
+Windows tray run it every 15 minutes; neither needs Python or the GitHub CLI.
+macOS also needs `jq` for `update_local.sh`. Windows checks stop when its tray
+exits; the Mac updater runs independently of the menu app. The updater reads
+the manifest over HTTPS first and installs only a run number newer than the last
+one it tried. Assets whose checksum does not match (normally a newer upload in
+progress) are skipped and retried on the next run.
 
-Only successful `main` runs from this repository's `native-binaries.yml` workflow
-are eligible. Feature-branch and pull-request artifacts are never installed.
-The updater downloads the matching platform bundle, verifies its manifest and
-checksums, and runs the existing compatibility/process-preservation probes before
-selecting it. It restarts only that installation's relay/web services, waits for
-the expected build and previously visible sessions to return, verifies terminal
-process identities, and then installs the bundled tray/menu helpers.
+On macOS the bundled `update_local.sh` does the handoff: compatibility probes,
+atomic install, `zellij web --stop`, then `launchctl kickstart -k` of
+`dev.zellij.switchboard`. Services restart only through launchd; the updater
+never starts a relay itself. On Windows the bundled PowerShell helpers select
+the release and restart the captured relay and web service. Both then wait for
+the expected build and the previously visible sessions, and only then install
+the new helpers and reload the tray or menu. The tray is found by its installed
+path (beside the installed helpers), not by where the helper runs; the updater
+waits for the old tray's single-instance lock before starting the new one, and a
+tray that cannot get the lock logs the failure and exits non-zero. An update or
+reinstall started without `--config`/`-Config` reuses the running tray's
+settings, including in the logon shortcut.
 
 Healthy existing sessions retain their engines, shells and agents, including new
 tabs created inside those sessions. A browser reconnect is expected. New sessions
@@ -30,23 +43,48 @@ use the selected release when started through the updated services/launcher.
 On Windows a separate old `zellij.exe` on PATH is not overwritten; use the
 installed `windows_cli.ps1` launcher to follow the selected release.
 
-A failed handoff restores the retained executable and helpers. Interrupted
-handoffs leave a recovery journal, which the next check processes before another
-download. A failed build is recorded and not retried repeatedly; a newer
-successful build remains eligible. Download/authentication failures leave running
-services untouched. Settings, host credentials and attention data are not bundled
-or replaced. Publishing an artifact updates each online, configured machine on
-its own schedule, not all machines at the same instant.
+A failed handoff restores the retained executable and helpers and restarts
+services on it. Rollback is local: the previous executable and helpers are kept
+in `automatic-updates/rollback-*`. A failed build is recorded and not retried; a
+newer build remains eligible. Download failures leave running services untouched.
+
+An interrupted handoff leaves `pending` in `state.json`. The next run settles it
+before checking for builds:
+
+- Relay answers `/api/health` as `rust` and the journal's sessions are listed:
+  the journal is stale (the update completed, never started, or was superseded).
+  It is dropped with a notice, and the normal check continues.
+- Relay healthy on a build that is neither side of the journal (updated by other
+  means): also dropped. Recovery would downgrade it.
+- Otherwise (relay unreachable or sessions missing): recover. The previous
+  executable is reinstalled using the helpers retained beside it, run from the
+  rollback directory; installed helpers are never overwritten with older ones.
+- A failed recovery is recorded in `error` and the journal is dropped, leaving
+  services as they are. It never blocks a later build. `--check` refuses only
+  while recovery is needed.
+
+The retired `auto_update.py` is now a shim that forwards to
+`zellij switchboard update`, so computers still scheduling the Python updater
+migrate through one normal update. Reinstall (`install_service.py` or
+`install_windows_web.ps1`) to schedule the executable directly.
+
+Settings, host credentials and attention data are not bundled or replaced. A
+published build updates each online, configured machine on its own schedule, not
+all machines at the same instant.
 
 Inspect `~/.local/share/switchboard/automatic-updates/state.json` for the selected
 commit or failure. Windows logs are `~/.config/switchboard/update*.log`; Mac logs
 are `~/Library/Logs/switchboard-update.log`. For a download-and-verify check without
-service changes, run the installed `auto_update.py --check` with Python 3.
+service changes, run `zellij switchboard update --check`.
 
-The orchestration tests simulate service failures and rollback. The opt-in
+`cargo test -p zellij-client --features web_server_capability switchboard_update --lib`
+covers the pending decisions, bundle verification, state compatibility, download
+retries, rollback and backoff with a fake relay and fake helpers; on macOS it
+also runs the real `update_local.sh` against a fake `launchctl`, and the Windows
+sequence runs its PowerShell helpers' fakes when `pwsh` is installed. The opt-in
 Windows browser test also accepts `SWITCHBOARD_TEST_AUTO_UPDATE=1` and
-`SWITCHBOARD_TEST_CANDIDATE_COMMIT=<full commit>` to exercise the production
-handoff and automatic rollback with two real builds in private sessions. It
+`SWITCHBOARD_TEST_CANDIDATE_COMMIT=<full commit>` to exercise `zellij switchboard
+update` and its automatic rollback with two real builds in private sessions. It
 checks real browser input/output, session/shell/agent-fixture process continuity,
 tab identity and sharing. Runtime health/catalog checks do not inject terminal
 input into user sessions.
@@ -95,10 +133,10 @@ cannot copy the retained executable, it leaves the complete installed executable
 in place and reports the retained path. Each read-only CLI probe has a 15-second
 timeout.
 
-`--binary-only` skips steps 4–6 and the job preflight (the old behaviour);
-`auto_update.py` uses it via `SWITCHBOARD_UPDATE_BINARY_ONLY=1` because it runs its
-own service handoff. The optional second argument selects a different installed
-binary. `SWITCHBOARD_LAUNCHD_LABEL`, `SWITCHBOARD_RELAY_PORT` and
+`--binary-only` skips steps 4–6 and the job preflight (the old behaviour), also
+selected by `SWITCHBOARD_UPDATE_BINARY_ONLY=1`. The automatic updater uses the
+full update, with `SWITCHBOARD_EXPECTED_COMMIT` set to the bundle's commit.
+The optional second argument selects a different installed binary. `SWITCHBOARD_LAUNCHD_LABEL`, `SWITCHBOARD_RELAY_PORT` and
 `SWITCHBOARD_UPDATE_SERVICE_TIMEOUT` exist for isolated tests. This does not
 download releases, update tray files or migrate settings. The probes establish CLI
 query compatibility, not browser protocol compatibility.

@@ -161,6 +161,10 @@ pub enum Command {
     /// Register agents and exchange messages through one authenticated board
     Message(MessageCli),
 
+    /// Switchboard automatic updates
+    #[clap(subcommand)]
+    Switchboard(SwitchboardCommand),
+
     /// Send actions to a specific session
     #[clap(visible_alias = "ac")]
     #[clap(subcommand)]
@@ -175,6 +179,58 @@ pub enum Command {
         "zellij [--session <OTHER SESSION NAME>] subscribe [OPTIONS] --pane-id..."
     ))]
     Subscribe(SubscribeCli),
+}
+
+#[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
+pub enum SwitchboardCommand {
+    /// Apply the newest published main build; restarts connection services, never terminal engines
+    Update(SwitchboardUpdateCli),
+    /// Stage this executable and its helpers as a checksummed update bundle (CI)
+    #[clap(hide = true)]
+    Package {
+        #[clap(long)]
+        platform: String,
+        #[clap(long)]
+        commit: String,
+        #[clap(long)]
+        run_number: u64,
+        /// Directory containing the helper scripts (tools/switchboard)
+        #[clap(long)]
+        helpers: PathBuf,
+        #[clap(long)]
+        output: PathBuf,
+    },
+}
+
+#[derive(Debug, Args, Clone, Serialize, Deserialize)]
+pub struct SwitchboardUpdateCli {
+    /// Download and verify without changing services
+    #[clap(long)]
+    pub check: bool,
+    /// Zellij configuration used by the installed services
+    #[clap(long)]
+    pub config: Option<PathBuf>,
+    /// Relay host configuration JSON
+    #[clap(long)]
+    pub host_config: Option<PathBuf>,
+    /// Relay port (default 80 on Windows, 8090 on macOS)
+    #[clap(long)]
+    pub port: Option<u16>,
+    /// Installed executable on macOS (default ~/.cargo/bin/zellij)
+    #[clap(long)]
+    pub binary: Option<PathBuf>,
+    /// Windows release store
+    #[clap(long)]
+    pub release_directory: Option<PathBuf>,
+    /// Update state, lock and rollback files
+    #[clap(long)]
+    pub state_directory: Option<PathBuf>,
+    /// Installed helper scripts (default: the Windows tray or macOS updater directory)
+    #[clap(long)]
+    pub helper_directory: Option<PathBuf>,
+    /// Release asset base URL, or a local directory of assets
+    #[clap(long, env = "SWITCHBOARD_UPDATE_SOURCE", hide = true)]
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Args, Clone, Serialize, Deserialize)]

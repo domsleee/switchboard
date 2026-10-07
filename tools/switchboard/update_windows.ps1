@@ -15,7 +15,7 @@ $ErrorActionPreference = 'Stop'
 if ([Environment]::OSVersion.Platform -ne 'Win32NT') { throw 'This updater supports Windows only.' }
 Import-Module (Join-Path $PSScriptRoot 'windows_releases.psm1') -Force
 if (!$ReleaseDirectory) { $ReleaseDirectory = Get-SwitchboardReleaseDirectory }
-# auto_update.py restarts services itself and signals that through the environment.
+# The automatic updater restarts services itself and signals that through the environment.
 if ($BinaryOnly -or $env:SWITCHBOARD_UPDATE_BINARY_ONLY -eq '1') {
     $result = Invoke-SwitchboardWindowsUpdate -Candidate $Candidate -Directory $ReleaseDirectory -Config $Config -TimeoutSeconds $TimeoutSeconds -Rollback:$Rollback
     Write-Output "Selected release $($result.sha256) for new processes. Previous binaries are retained in $ReleaseDirectory."

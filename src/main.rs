@@ -32,6 +32,21 @@ fn main() {
         return;
     }
 
+    if let Some(Command::Switchboard(command)) = &opts.command {
+        #[cfg(feature = "web_server_capability")]
+        if let Err(error) = zellij_client::switchboard_update::run(command) {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+        #[cfg(not(feature = "web_server_capability"))]
+        {
+            let _ = command;
+            eprintln!("This build has no Switchboard update support.");
+            std::process::exit(2);
+        }
+        return;
+    }
+
     configure_logger();
     create_config_and_cache_folders();
 

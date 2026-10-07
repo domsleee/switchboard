@@ -1,6 +1,6 @@
 # Only connection services captured for this installation may be restarted.
 param(
-    [ValidateSet('Snapshot','Stop','Start','Verify','StopTray')][string]$Action,
+    [ValidateSet('Arguments','Snapshot','Stop','Start','Verify','StopTray')][string]$Action,
     [string]$Snapshot,
     [string]$ReleaseDirectory,
     [string]$HostConfig,
@@ -42,6 +42,11 @@ function Stop-Captured($Identity, [string]$Pattern) {
     catch { if (Get-Process -Id $live.ProcessId -ErrorAction SilentlyContinue) { throw } }
     Wait-Process -Id $live.ProcessId -Timeout 10 -ErrorAction SilentlyContinue
 }
+if ($Action -eq 'Arguments') {
+    # The running tray's -Config/-ReleaseDirectory, for updates started without them.
+    Get-SwitchboardTrayArguments @(Get-CimInstance Win32_Process) | ConvertTo-Json -Compress
+    return
+}
 if ($Action -eq 'Snapshot') {
     $processes = @(Get-CimInstance Win32_Process)
     $relayPid = @(Get-NetTCPConnection -LocalPort $RelayPort -State Listen | Select-Object -ExpandProperty OwningProcess -Unique)
@@ -59,8 +64,9 @@ if ($Action -eq 'Snapshot') {
         if ($_.CommandLine -notmatch '^\s*(?:"[^"]+"|\S+)\s+(?<arguments>.+)$') { throw 'Cannot capture service arguments' }
         [pscustomobject]@{arguments=$Matches.arguments; binary=$_.ExecutablePath; identity=(Process-Identity $_)}
     }
-    $trayPath = [regex]::Escape((Join-Path $PSScriptRoot 'switchboard-tray.ps1'))
-    $trays = @($processes | Where-Object { $_.Name -ieq 'powershell.exe' -and $_.CommandLine -match $trayPath -and $_.CommandLine -match '\s"?-Tray\b' })
+    # The installed tray (SWITCHBOARD_TRAY_SCRIPT), not this helper's location:
+    # updates may run from a downloaded bundle.
+    $trays = @(Get-SwitchboardTrays $processes)
     $protected = @(& $module { param($Observed) Get-SwitchboardProtectedProcesses $Observed } $processes)
     $selected = Get-SwitchboardCurrentBinary $ReleaseDirectory
     $panes = @{}
@@ -87,6 +93,8 @@ if ($Action -eq 'Stop') {
     }
 } elseif ($Action -eq 'StopTray') {
     foreach ($identity in $state.trays) { Stop-Captured $identity 'switchboard-tray\.ps1.*\s"?-Tray\b' }
+    # The replacement tray exits if the old one still holds the single-instance lock.
+    if (@($state.trays).Count) { Wait-SwitchboardMutexRelease }
 } elseif ($Action -eq 'Verify') {
     # Each replacement service must still be the process we started and listen.
     $deadline = [DateTime]::UtcNow.AddSeconds(30)

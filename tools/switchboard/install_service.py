@@ -96,12 +96,13 @@ def main():
         })
         updater = Path.home() / '.local/share/switchboard/updater'
         updater.mkdir(parents=True, exist_ok=True)
-        for name in ('auto_update.py', 'install_service.py', 'update_local.sh', 'menu_bar.swift'):
+        # Helpers the updater runs; the executable itself checks for updates.
+        for name in ('install_service.py', 'update_local.sh', 'menu_bar.swift'):
             source = ROOT / name
             if source.resolve() != (updater / name).resolve():
                 shutil.copy2(source, updater / name)
         install_job('dev.switchboard.update', {
-            'ProgramArguments': [sys.executable, str(updater / 'auto_update.py'), '--binary', zellij],
+            'ProgramArguments': [zellij, 'switchboard', 'update', '--binary', zellij],
             'StartInterval': 900,
             'StandardOutPath': str(LOGS / 'switchboard-update.log'),
             'StandardErrorPath': str(LOGS / 'switchboard-update.log'),
