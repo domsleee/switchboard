@@ -228,7 +228,7 @@ async fn prepare(
     let key = rustls_pemfile::private_key(&mut registration.key.as_bytes())?
         .ok_or_else(|| anyhow::anyhow!("Missing key"))?;
     let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
-        rustls::crypto::aws_lc_rs::default_provider(),
+        rustls::crypto::ring::default_provider(),
     ))
     .with_protocol_versions(&[&rustls::version::TLS13])?
     .with_no_client_auth()

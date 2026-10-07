@@ -52,7 +52,9 @@ bar, installs login LaunchAgents, and starts native Zellij web daemon mode if
 needed. The icon opens Switchboard, shows status, starts servers, and opens logs.
 Logs are in `~/Library/Logs/zellij-switchboard.log`. Quitting the menu bar app
 leaves the relay and terminal sessions running. Swift's compiler and this fork's
-`zellij` executable must be installed. Python is used only to run the Mac installer.
+`zellij` executable must be installed. Automatic updates use Python 3 and an
+authenticated GitHub CLI; macOS also needs `jq`. See
+[automatic updates](../../docs/SWITCHBOARD_UPDATES.md#automatic-updates).
 
 To update a Mac's native executable while keeping open terminals running
 (requires `jq`):

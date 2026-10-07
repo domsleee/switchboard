@@ -1,7 +1,10 @@
 const $ = id => document.getElementById(id);
 fetch('/api/health',{cache:'no-store'}).then(response=>response.ok?response.json():null).then(build=>{
-  if(build&&/^[a-f0-9]{7,40}$/.test(build.commit)&&/^\d{4}-\d{2}-\d{2}$/.test(build.commit_date))
+  if(build&&/^[a-f0-9]{7,40}$/.test(build.commit)&&/^\d{4}-\d{2}-\d{2}$/.test(build.commit_date)){
     $('build-version').textContent=`${build.commit} · ${build.commit_date}`;
+    const timestamp=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})$/.test(build.commit_timestamp)?build.commit_timestamp.replace('T',' '):build.commit_date;
+    $('settings').title=$('build-version').title=`Commit ${build.commit} · ${timestamp}`;
+  }
 }).catch(()=>{});
 const hosts = new Map(), sessions = new Map();
 const startedHosts = new Set();
@@ -263,8 +266,6 @@ function render() {
   $('notifications').textContent=`${notifications} notification${notifications===1?'':'s'}`;
   $('notifications').classList.toggle('has-notifications',notifications>0);
   $('notifications').hidden=notifications===0;
-  $('tab-count').hidden=shown.length===tabs.length;
-  $('sidebar-summary').hidden=notifications===0&&shown.length===tabs.length;
   document.title=`${notifications?'('+notifications+') ':''}`+(current?`${tabTitle(current)} · ${hosts.get(current.entry.host)?.name} · Switchboard`:'Switchboard');
   const startingEntry=[...sessions.values()].find(entry=>entry.starting&&(filter==='all'||groups[entry.host]===filter));
   const currentEntry=current?.entry||(waitingForRequestedTab()?sessions.get(sessionKey(...JSON.parse(selected).slice(0,2))):startingEntry);
