@@ -178,6 +178,34 @@
     // Cmd+C keeps its native copy event, bypassing the stock kitty handler.
   }, true);
 
+  async function pasteClipboard() {
+    const term = terminal || window.term;
+    if (!term || term.options?.disableStdin) return {ok: false, source: 'paste', error: 'Terminal input is disabled.'};
+    let error = 'Browser clipboard access is unavailable.';
+    // The right-clicked iframe is normally focused; fall back to the parent like copyText.
+    for (const clipboard of [navigator.clipboard, parent.navigator?.clipboard]) {
+      if (typeof clipboard?.readText !== 'function') continue;
+      try {
+        const text = await clipboard.readText();
+        // term.paste is xterm's Ctrl/Cmd+V path: bracketed paste and newline handling.
+        if (text) term.paste(text);
+        return {ok: true, source: 'paste'};
+      } catch (_) { error = 'Browser clipboard access was denied.'; }
+    }
+    return report({ok: false, source: 'paste', error: error + ' Use your browser’s paste shortcut instead.'});
+  }
+
+  // Windows Terminal style: right-click copies a selection, otherwise pastes.
+  window.addEventListener('contextmenu', event => {
+    if (!isTerminalTarget(event)) return;
+    event.preventDefault();
+    // Also skips xterm's own handler, which would select a word on Mac.
+    event.stopImmediatePropagation();
+    const text = selectionText();
+    if (text) { void copyText(text, 'selection'); clearSelection(); }
+    else void pasteClipboard();
+  }, true);
+
   window.addEventListener('copy', event => {
     if (!isTerminalTarget(event)) return;
     const text = selectionText();
