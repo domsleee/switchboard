@@ -221,21 +221,77 @@ pub(super) async fn execute_host(
     if !available {
         return Err((StatusCode::CONFLICT, "Target is no longer available"));
     }
+    let final_tab = close && panes.iter().all(|pane| pane["tab_id"] == target);
     let target = target.to_string();
     let args = if close {
         vec!["close-tab", "--tab-id", &target]
     } else {
         vec!["write", "-p", &target, "27"]
     };
-    run_local(host, session, &args, Duration::from_secs(5))
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::BAD_GATEWAY,
-                "Terminal command failed; delivery may be uncertain",
-            )
-        })?;
+    let delivered = run_local(host, session, &args, Duration::from_secs(5)).await;
+    // Closing the final tab ends the session, and its server can exit before the
+    // CLI reads the reply. A session that is gone afterwards was closed.
+    if delivered.is_err() && !(final_tab && session_ended(host, session).await) {
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            "Terminal command failed; delivery may be uncertain",
+        ));
+    }
+    log::info!(
+        "Closed tab {target} in session {session} on {}{}",
+        host.config.name,
+        if final_tab {
+            " (last tab; session ended)"
+        } else {
+            ""
+        }
+    );
+    if final_tab {
+        // Visible in Logs: the session is gone, not crashed.
+        logs::record(
+            &host.config.name,
+            &format!("Closed the last tab of session '{session}'; the session ended"),
+        );
+        if let Ok(binary) = binary(host) {
+            tokio::spawn(forget_closed_session(binary, session.to_owned()));
+        }
+    }
     Ok(())
+}
+
+async fn session_ended(host: &Host, session: &str) -> bool {
+    for _ in 0..20 {
+        if let Ok(names) = sessions(host).await {
+            if !names.iter().any(|name| name == session) {
+                return true;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+    false
+}
+
+/// Closing a session's final tab ends it, but Zellij keeps its last layout, so the next start
+/// of that name (Switchboard auto-starts `main`) resurrected the very tab just closed.
+/// Plain `delete-session` refuses while the engine runs, so a tab opened meanwhile keeps it.
+async fn forget_closed_session(binary: PathBuf, session: String) {
+    for _ in 0..20 {
+        let deleted = tokio::time::timeout(
+            Duration::from_secs(5),
+            tokio::process::Command::new(&binary)
+                .args(["delete-session", &session])
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await;
+        // 0: deleted; 2: nothing was kept to resurrect. 1 means the engine is still running.
+        if let Ok(Ok(output)) = deleted {
+            if matches!(output.status.code(), Some(0 | 2)) {
+                return;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 }
 
 #[cfg(test)]
@@ -255,5 +311,29 @@ mod tests {
             json!({"session":"main","tab_id":1,"extra":true})
         )
         .is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn closed_final_tab_is_forgotten_only_after_its_engine_exits() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let (fake, log) = (dir.path().join("zellij"), dir.path().join("calls"));
+        // Mimics `delete-session`: refuses (1) twice while the engine still runs, then deletes.
+        std::fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\necho \"$*\" >> '{0}'\n[ $(wc -l < '{0}') -gt 2 ]\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        forget_closed_session(fake, "main".into()).await;
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap(),
+            "delete-session main\n".repeat(3),
+            "never forces a running engine, and stops once deleted"
+        );
     }
 }
