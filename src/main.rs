@@ -363,12 +363,19 @@ fn main() {
             if let Some(port) = web_opts.port {
                 config_options.web_server_port = Some(port);
             }
-            let web_server_cert = config_options.web_server_cert.clone();
+            // A server bound to every interface is reachable on loopback.
+            if config_options
+                .web_server_ip
+                .is_some_and(|ip| ip.is_unspecified())
+            {
+                config_options.web_server_ip = Some(std::net::Ipv4Addr::LOCALHOST.into());
+            }
+            let has_certificate = config_options.web_server_cert.is_some();
             let web_server_base_url = web_server_base_url_from_config(config_options);
             match commands::web_server_status(
                 &web_server_base_url,
                 web_opts.timeout,
-                web_server_cert,
+                has_certificate,
             ) {
                 Ok(version) => {
                     let version = version.trim();
