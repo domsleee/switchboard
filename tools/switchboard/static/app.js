@@ -203,6 +203,13 @@ function moveSelected(direction) {
   if(index<0||!target)return;
   moveTab(selected,target.key,direction>0);
 }
+// True until every reachable machine's terminals have reported once. Polls
+// refresh hosts and catalogs; only the first load counts.
+function terminalsSettling(){
+  const machines=[...hosts.values()];
+  return !attentionLoaded||loading&&!machines.length||machines.some(host=>host.connecting&&!host.sessions&&!host.error)
+    ||[...sessions.values()].some(entry=>!entry.state&&!entry.disconnected&&!hosts.get(entry.host)?.error);
+}
 // Says why the tab list is empty, with the one action that fixes it.
 function sidebarEmpty(tabs,shown){
   if(shown.length)return null;
@@ -213,9 +220,7 @@ function sidebarEmpty(tabs,shown){
   const entries=[...sessions.values()];
   if(machines.length&&machines.every(host=>host.error)||entries.length&&entries.every(entry=>catalogUnavailable(entry.host,entry.name)))
     return {state:'unreachable',text:'Can’t reach your machines',action:'View logs',run:()=>openPanel('logs')};
-  // Polls refresh hosts and catalogs; only the first load counts as connecting.
-  if(!attentionLoaded||loading&&!machines.length||machines.some(host=>host.connecting&&!host.sessions&&!host.error)||entries.some(entry=>!entry.state&&!hosts.get(entry.host)?.error))
-    return {state:'loading',text:'Connecting to your machines…'};
+  if(terminalsSettling())return {state:'loading',text:'Connecting to your machines…'};
   if(!machines.length)return {text:'No machines connected',action:'Add computer',run:()=>openPanel('computers')};
   return {text:'No terminals yet',action:'New tab',run:()=>$('new-tab').click()};
 }
@@ -233,7 +238,8 @@ function render() {
   const tabs = allTabs();
   const previous = selected,wasRestoring=restoringTab;
   if(tabs.some(t=>t.key===selected))restoringTab=false;
-  else if(!waitingForRequestedTab()){restoringTab=false;selected=tabs[0]?.key||null;}
+  // Pick the top sidebar tab, not whichever machine's terminal answered first.
+  else if(!waitingForRequestedTab()){restoringTab=false;selected=terminalsSettling()?null:tabs[0]?.key||null;}
   const liveKeys=new Set(tabs.map(item=>item.key));
   for(const [key,button] of tabButtons)if(!liveKeys.has(key)){button._row.remove();tabButtons.delete(key);}
   const shown=tabs.filter(matchesSearch), nodes=[],shownKeys=new Set(shown.map(item=>item.key));
@@ -317,7 +323,7 @@ function render() {
   $('empty').hidden=!!current;
   if(!current){
     const hint=restoringTab||startingEntry?null:emptyHint,action=$('empty-action');
-    $('empty-text').textContent=restoringTab?'Connecting to the requested terminal…':startingEntry?'Starting a terminal…':hint?.state==='loading'?'Connecting…':'No terminal selected';
+    $('empty-text').textContent=restoringTab?'Connecting to the requested terminal…':startingEntry?'Starting a terminal…':terminalsSettling()?'Connecting…':'No terminal selected';
     action.hidden=!hint?.action;action.textContent=hint?.action||'';action.onclick=hint?.run||null;
   }
   const errors=[...hosts.values()].filter(h=>h.error).map(h=>`${h.name}: ${h.error}`);

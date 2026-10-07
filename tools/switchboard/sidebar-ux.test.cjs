@@ -21,6 +21,8 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
       if(path.startsWith('/api/hosts/'))return json({id:path.split('/').at(-1),name:path.endsWith('/mac')?'Mac':'Windows',sessions:[{name:'main',web_clients_allowed:true}]});
       if(path==='/api/attention')return json({tabs,panes:working?[{host:'mac',session:'main',pane_id:1,state:'working'}]:[],errors:unavailable?[{host:'windows',session:'main'}]:[]});
       if(path.startsWith('/hosts/')){
+        // The top machine's terminal answers last; the first tab must still be selected.
+        if(path.split('/')[2]==='mac')await new Promise(resolve=>setTimeout(resolve,300));
         const panes=tabs.filter(t=>t.host===path.split('/')[2]).flatMap(t=>t.panes);
         return route.fulfill({contentType:'text/html',body:`<style>body{background:#0e1117;color:#d2dbeb;font:14px/1.7 monospace;padding:20px}input{margin-top:40px;background:#202633;color:inherit;border:1px solid #3d4b60;padding:14px;width:90%}</style><div id="terminal"><p>Switchboard terminal fixture</p><p>Working on the selected task…</p><input id="terminal-input" aria-label="Terminal input"></div><script>
           const panes=${JSON.stringify(panes)};let active=panes[0],selection='',selectionCallback;
