@@ -16,7 +16,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
     await context.route('**/*',async route=>{
       const path=new URL(route.request().url()).pathname;
       const json=data=>route.fulfill({contentType:'application/json',body:JSON.stringify(data)});
-      if(path==='/api/health')return json({commit:'abc123def',commit_date:'2026-10-04'});
+      if(path==='/api/health')return json({commit:'abc123def',commit_date:'2026-10-04',...(emptyMachine?{commit_timestamp:'2026-10-04T13:24:56+11:00'}:{})});
       if(path==='/api/hosts')return json([{id:'windows',name:'Windows'}]);
       if(path==='/api/hosts/windows')return json({id:'windows',name:'Windows',sessions:connected?[{name:'main',web_clients_allowed:true}]:[]});
       if(path==='/api/attention')return json({tabs:failed||!catalogReady?[]:nativeTabs(),panes:[],errors:failed?[{host:'windows',message:'Unavailable'}]:[]});
@@ -38,6 +38,10 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
     });
     await page.goto('https://switchboard.test/'+(emptyMachine?'':'?host=windows&session=main&tab=42'));
     await page.waitForFunction(()=>document.querySelector('#build-version').textContent==='abc123def · 2026-10-04');
+    await page.locator('#settings').hover();
+    const commitTitle=`Commit abc123def · ${emptyMachine?'2026-10-04 13:24:56+11:00':'2026-10-04'}`;
+    assert.equal(await page.locator('#settings').getAttribute('title'),commitTitle);
+    assert.equal(await page.locator('#build-version').getAttribute('title'),commitTitle);
     const frame=page.frameLocator('iframe[title="Windows: main"]'),input=frame.locator('#terminal-input');
     await page.waitForFunction(()=>document.querySelector('#tabs .selected')?.textContent.includes('Original'));
     if(emptyMachine){

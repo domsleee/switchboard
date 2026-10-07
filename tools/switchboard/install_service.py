@@ -7,6 +7,7 @@ import plistlib
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 
 ROOT = Path(__file__).resolve().parent
@@ -57,10 +58,11 @@ def install_job(label, config):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--menu-only', action='store_true', help='Install the icon without changing the relay')
+    parser.add_argument('--binary', help='Installed Switchboard executable')
     args = parser.parse_args()
     AGENTS.mkdir(parents=True, exist_ok=True)
     LOGS.mkdir(parents=True, exist_ok=True)
-    zellij = shutil.which('zellij')
+    zellij = args.binary or shutil.which('zellij')
     if not zellij:
         raise SystemExit('The Switchboard zellij executable must be installed')
     subprocess.run([zellij, 'serve', '--help'], check=True, stdout=subprocess.DEVNULL)
@@ -82,6 +84,19 @@ def main():
             'WorkingDirectory': str(ROOT), 'KeepAlive': True,
             'StandardOutPath': str(LOGS / 'zellij-switchboard.log'),
             'StandardErrorPath': str(LOGS / 'zellij-switchboard.log'),
+            'EnvironmentVariables': {'PATH': f'{Path.home()}/.local/bin:{Path.home()}/.cargo/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin'},
+        })
+        updater = Path.home() / '.local/share/switchboard/updater'
+        updater.mkdir(parents=True, exist_ok=True)
+        for name in ('auto_update.py', 'install_service.py', 'update_local.sh', 'menu_bar.swift'):
+            source = ROOT / name
+            if source.resolve() != (updater / name).resolve():
+                shutil.copy2(source, updater / name)
+        install_job('dev.switchboard.update', {
+            'ProgramArguments': [sys.executable, str(updater / 'auto_update.py'), '--binary', zellij],
+            'StartInterval': 900,
+            'StandardOutPath': str(LOGS / 'switchboard-update.log'),
+            'StandardErrorPath': str(LOGS / 'switchboard-update.log'),
             'EnvironmentVariables': {'PATH': f'{Path.home()}/.local/bin:{Path.home()}/.cargo/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin'},
         })
     install_job('dev.switchboard.menu', {

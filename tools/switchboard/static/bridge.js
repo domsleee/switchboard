@@ -5,7 +5,7 @@
   let latest;
   let escapeQueue = Promise.resolve();
   let escapeStatus;
-  let pendingFocus, desiredFocus, focusInputState, focusId;
+  let pendingFocus, desiredFocus, focusInputState, focusId, focusTimeout;
   let pendingNewTab;
   let terminalSocket;
   let scrollport, lastViewport, viewportTab, bottomButton, claimedViewportTab;
@@ -112,16 +112,32 @@
     pendingNewTab=null;
   }
   function dispatchFocus() {
+    clearTimeout(focusTimeout);
     pendingFocus=desiredFocus;
-    window.__zjSendControl({type:'FocusPane',pane_id:pendingFocus.pane_id,is_plugin:pendingFocus.is_plugin});
+    // Control sends can be dropped during reconnect, and a no-op focus may
+    // produce no MobileState. Never leave input disabled waiting forever.
+    focusTimeout=setTimeout(()=>failFocus('Terminal switch timed out. Try selecting the tab again.'),5000);
+    try {
+      window.__zjSendControl({type:'FocusPane',pane_id:pendingFocus.pane_id,is_plugin:pendingFocus.is_plugin});
+    } catch (_) {
+      failFocus('Terminal switch failed. Check the connection and try again.');
+    }
   }
   function releaseFocus() {
+    if(focusTimeout)clearTimeout(focusTimeout);
+    focusTimeout=null;
     if(focusInputState && window.term){
       window.term.options.disableStdin=focusInputState.disabled;
       window.term.element.style.pointerEvents=focusInputState.pointer;
     }
     if(pendingFocus && escapeStatus)showEscapeStatus('');
     pendingFocus=null;desiredFocus=null;focusInputState=null;
+  }
+  function failFocus(message) {
+    releaseFocus();
+    parent.postMessage({type:'zellij-focus-failed',host,focus_id:focusId,payload:latest,message},location.origin);
+    showEscapeStatus(message,true);
+    window.term?.focus();
   }
   function rejectFocus() {
     if(desiredFocus.pane_id!==pendingFocus.pane_id || desiredFocus.is_plugin!==pendingFocus.is_plugin){
@@ -133,9 +149,7 @@
       pendingFocus=null;dispatchFocus();
       return;
     }
-    releaseFocus();
-    parent.postMessage({type:'zellij-focus-failed',host,focus_id:focusId,payload:latest},location.origin);
-    showEscapeStatus('That terminal is unavailable. Choose another tab.',true);
+    failFocus('That terminal is unavailable. Choose another tab.');
   }
   function hasDialog() {
     if (document.querySelector('dialog[open], .security-modal, [aria-modal="true"]')) return true;
@@ -148,14 +162,15 @@
       active === window.__zjSoftKbdCapture?.element);
   }
   function showEscapeStatus(message, failed = false) {
+    if (!message && !escapeStatus) return;
     if (!escapeStatus) {
       escapeStatus = document.createElement('div');
       escapeStatus.setAttribute('role', 'status');
-      escapeStatus.style.cssText = 'position:fixed;bottom:12px;right:12px;z-index:10000;max-width:90%;padding:8px 12px;border-radius:6px;background:#282828;color:white;font:13px system-ui;pointer-events:none';
+      escapeStatus.style.cssText = 'position:fixed;bottom:12px;right:12px;z-index:10000;max-width:min(360px,calc(100vw - 24px));box-sizing:border-box;padding:7px 10px;border:1px solid #363e4d;border-radius:6px;box-shadow:0 4px 16px #0006;background:#181b22;color:#e5e7eb;font:11px/1.4 system-ui;overflow-wrap:anywhere;pointer-events:none';
       document.body.append(escapeStatus);
     }
     escapeStatus.textContent = message;
-    escapeStatus.style.background = failed ? '#8b2525' : '#282828';
+    escapeStatus.style.color = failed ? '#ffd57a' : '#e5e7eb';
     escapeStatus.hidden = !message;
   }
   function sendEscape() {
@@ -165,7 +180,7 @@
         showEscapeStatus('Escape failed: terminal state is unavailable.', true);
         return;
       }
-      showEscapeStatus('Sending Escape…');
+      showEscapeStatus('');
       escapeQueue = escapeQueue.then(async () => {
         try {
           const response = await fetch(`/api/hosts/${host}/escape`, {

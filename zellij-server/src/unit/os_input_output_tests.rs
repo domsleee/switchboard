@@ -44,6 +44,24 @@ fn windows_pane_environment_advertises_colour_without_overriding_preferences() {
     assert_eq!(result.get("NO_COLOR").map(String::as_str), Some("1"));
 }
 
+#[test]
+fn windows_pane_environment_clears_dumb_launcher_colour_opt_out() {
+    for term in ["dumb", "DUMB"] {
+        let pane: BTreeMap<_, _> = windows_pane_environment(
+            [
+                ("Term".into(), term.into()),
+                ("no_color".into(), "1".into()),
+            ],
+            7,
+        )
+        .into_iter()
+        .collect();
+        assert_eq!(pane.get("TERM").map(String::as_str), Some("xterm-256color"));
+        assert_eq!(pane.get("COLORTERM").map(String::as_str), Some("truecolor"));
+        assert!(!pane.keys().any(|key| key.eq_ignore_ascii_case("NO_COLOR")));
+    }
+}
+
 fn make_server() -> ServerOsInputOutput {
     get_server_os_input().expect("failed to create server os input")
 }

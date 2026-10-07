@@ -139,6 +139,7 @@ pub(in crate::switchboard_relay) fn start(state: RelayState) -> tokio::task::Joi
             if mesh.database.lock().await.joining.is_some() {
                 let _ = mesh.resume().await;
             }
+            mesh.synchronize().await;
         }
     })
 }
