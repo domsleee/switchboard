@@ -236,6 +236,18 @@ test('configured connections dedupe paired endpoints and local identity without 
   }, pairedState);
 });
 
+test('a paired computer listed under its configured id still shows Connected', async () => {
+  await fixture(async ({page,responses}) => {
+    responses.set('/api/hosts', [
+      {id:'windows',name:'Windows',address:'https://192.0.2.1:8082',pairing_address:'https://192.0.2.1:8082',configured:true,local:false,sessions:[]}
+    ]);
+    await page.goto('https://switchboard.test/computers.html');
+    await page.waitForFunction(() => document.querySelector('#members').textContent.includes('Windows'));
+    assert.equal(await page.locator('#members .card').count(),2);
+    assert.match(await page.locator('#members').textContent(), /Connected/);
+  }, pairedState);
+});
+
 test('message board host selection is explicit and only offered for initial setup', async () => {
   const board = {state:'unconfigured',host_id:null,host_name:null,can_select:true,candidates:[{id:'windows',name:'Windows <work>'},{id:'mac',name:'Mac'}]};
   await fixture(async ({page,calls,responses,setState}) => {

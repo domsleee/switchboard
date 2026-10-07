@@ -23,9 +23,8 @@
 <button id="select-text" role="menuitem" aria-pressed="false">Select text</button>
 <button id="size-owner" role="menuitem" aria-pressed="false" disabled>Use this window’s size</button>
 <hr><button id="archive-tab" role="menuitem">Archive<small>Hide tab; keep processes running</small></button>
-<button id="close-tab" class="danger" role="menuitem" title="Close current tab · Ctrl+D">Close… <kbd>Ctrl+D</kbd><small>Stop this tab’s running processes</small></button>
+<button id="close-tab" class="danger" role="menuitem" title="Close current tab · Ctrl+D">Close <kbd>Ctrl+D</kbd><small>Stop this tab’s running processes</small></button>
 </div>
-<dialog id="close-tab-dialog" aria-labelledby="close-tab-heading"><h2 id="close-tab-heading">Close tab?</h2><p id="close-tab-name"></p><p>This closes every pane in this tab and stops its running processes. To hide it and keep processes running, use Archive.</p><p id="close-tab-error" role="alert"></p><div class="dialog-actions"><button id="cancel-close-tab">Cancel</button><button id="confirm-close-tab" class="danger">Close tab</button></div></dialog>
 <dialog id="archive-dialog" aria-labelledby="archive-heading"><h2 id="archive-heading">Archived tabs</h2><p>Hidden from the sidebar. Terminal sessions keep running. Saved in this browser.</p><label for="archive-search">Search tabs and machines</label><input id="archive-search" type="search" placeholder="Search archive…"><section id="archive-list"></section><div class="dialog-actions"><button id="close-archive">Close</button></div></dialog>
 <dialog id="settings-dialog" aria-labelledby="settings-heading">
 <header class="settings-heading"><h2 id="settings-heading">Settings</h2><button id="close-settings" autofocus>Close</button></header>

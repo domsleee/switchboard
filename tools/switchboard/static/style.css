@@ -113,8 +113,7 @@ body.sidebar-collapsed #artifact-preview header{padding-left:42px}
 #tab-menu-target{padding:8px 10px;color:#a3aec0;font-size:11px;overflow-wrap:anywhere}
 #tab-menu hr{border:0;border-top:1px solid #363e4d;margin:5px}
 #tab-menu kbd{float:right;font-size:10px;color:#a3aec0}
-.danger,#close-tab-error{color:#ff9696}
-#close-tab-dialog{width:440px}
+.danger{color:#ff9696}
 #archive-dialog{width:560px}
 #archive-search{width:100%;padding:8px;border:1px solid #363e4d;border-radius:4px;background:#111318;color:inherit;font:inherit}
 #archive-list{max-height:50dvh;overflow:auto;margin-top:12px}

@@ -1,31 +1,19 @@
-// Capture the context-menu target before opening the native confirmation dialog.
+// Close immediately, like Ctrl+D in a shell. Archive hides a tab without stopping it.
 (() => {
-  let target;
-  const dialog=$('close-tab-dialog'),confirm=$('confirm-close-tab'),error=$('close-tab-error');
-  $('close-tab').onclick=()=>{
+  $('close-tab').onclick=async()=>{
     const item=contextItem;
     closeTabMenu();
     if(!item)return;
     if(item.tab.pending){setStatus('This terminal is still connecting its tab actions. Try Close again shortly.',true);return;}
     if(!Number.isInteger(item.tab.id)){setStatus('That tab is no longer available.',true);return;}
-    target={host:item.entry.host,key:item.key,session:item.entry.name,tab_id:item.tab.id,entry:item.entry};
-    $('close-tab-name').textContent=`${tabTitle(item)} · ${hosts.get(item.entry.host)?.name || item.entry.host}`;
-    error.textContent='';confirm.disabled=false;
-    dialog.showModal();confirm.focus();
-  };
-  $('cancel-close-tab').onclick=()=>dialog.close();
-  dialog.addEventListener('close',()=>{target=null;});
-  confirm.onclick=async()=>{
-    if(!target||confirm.disabled)return;
-    const closing=target;
-    confirm.disabled=true;error.textContent='';
+    const closing={host:item.entry.host,key:item.key,session:item.entry.name,tab_id:item.tab.id,entry:item.entry};
+    if(closing.entry.closingTabs?.get(closing.tab_id)?.pending)return;
     const tabs=allTabs(),index=tabs.findIndex(item=>item.key===closing.key);
     const wasSelected=selected===closing.key,next=tabs[index+1]||tabs[index-1];
     closing.pending=true;
     closing.entry.closeError=null;
     closing.entry.closingTabs??=new Map();
     closing.entry.closingTabs.set(closing.tab_id,closing);
-    dialog.close();
     if(wasSelected&&next)activate(next,false);else render();
     try{
       const {host,key,session,tab_id}=closing;
