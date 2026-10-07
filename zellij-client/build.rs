@@ -23,6 +23,7 @@ fn main() {
     for (key, format) in [
         ("SWITCHBOARD_COMMIT", "%h"),
         ("SWITCHBOARD_COMMIT_DATE", "%cs"),
+        ("SWITCHBOARD_COMMIT_TIMESTAMP", "%cI"),
     ] {
         println!("cargo:rerun-if-env-changed={key}");
         let value = std::env::var(key)

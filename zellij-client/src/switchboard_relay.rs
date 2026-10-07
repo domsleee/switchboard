@@ -771,7 +771,8 @@ fn app(state: RelayState) -> Router {
                 Json(json!({
                     "relay":"rust", "version":zellij_utils::consts::VERSION,
                     "commit":env!("SWITCHBOARD_COMMIT"),
-                    "commit_date":env!("SWITCHBOARD_COMMIT_DATE")
+                    "commit_date":env!("SWITCHBOARD_COMMIT_DATE"),
+                    "commit_timestamp":env!("SWITCHBOARD_COMMIT_TIMESTAMP")
                 }))
             }),
         )
