@@ -652,10 +652,9 @@ $('close-settings').onclick=()=>$('settings-dialog').close();
 // Messages and Computers open over the terminals, so terminal iframes and
 // their sockets stay connected. Modified clicks still open a real page.
 const pageDialog=$('page-dialog'),pageFrame=$('page-frame'),pageNames={'/messages.html':'Messages','/computers.html':'Computers'};
-const plainClick=event=>!event.defaultPrevented&&!event.button&&!event.metaKey&&!event.ctrlKey&&!event.shiftKey&&!event.altKey;
 document.addEventListener('click',event=>{
   const link=event.target.closest?.('a[href="/messages.html"],a[href="/computers.html"]');
-  if(!link||!plainClick(event))return;
+  if(!link||event.defaultPrevented||event.button||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;
   event.preventDefault();
   link.closest('dialog')?.close();
   $('page-heading').textContent=pageFrame.title=pageNames[link.pathname];
@@ -666,8 +665,8 @@ pageFrame.onload=()=>{
   const doc=pageFrame.contentDocument,name=pageNames[pageFrame.contentWindow.location.pathname];
   if(!doc||!name)return;
   $('page-heading').textContent=pageFrame.title=name;
-  // The embedded pages link back to "/"; inside the overlay that means close.
-  doc.addEventListener('click',event=>{if(event.target.closest?.('a[href="/"]')&&plainClick(event)){event.preventDefault();pageDialog.close();}});
+  // The overlay header already shows the title and Close, so hide the page's own.
+  const style=doc.createElement('style');style.textContent='a[href="/"],h1{display:none!important}';doc.head.append(style);
   doc.addEventListener('keydown',event=>{if(event.key==='Escape'&&!event.defaultPrevented)pageDialog.close();});
 };
 $('close-page').onclick=()=>pageDialog.close();

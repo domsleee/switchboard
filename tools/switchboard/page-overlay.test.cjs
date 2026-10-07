@@ -68,6 +68,7 @@ test('Messages and Computers open over live terminals and return focus on close'
     assert.equal(await page.locator('#page-heading').textContent(),'Messages');
     assert.equal(await page.locator('#page-frame').getAttribute('title'),'Messages');
     await overlay.locator('button[data-key="computer:windows"]').waitFor();
+    for(const selector of ['a[href="/"]','h1'])assert.equal(await overlay.locator(selector).isHidden(),true,selector+' hidden in overlay');
     assert.equal(page.url(),requested);
     await page.keyboard.press('Escape');
     await terminalsIntact();
@@ -78,15 +79,20 @@ test('Messages and Computers open over live terminals and return focus on close'
     await page.keyboard.press('Escape');
     await terminalsIntact();
 
-    // Settings > Computers replaces Settings; the page's own back link closes it.
+    // Settings > Computers replaces Settings, without the page's own back link or title.
     await page.locator('#settings').click();
     await page.locator('#settings-dialog a[href="/computers.html"]').click();
     assert.equal(await page.locator('#settings-dialog').evaluate(d=>d.open),false);
     assert.equal(await page.locator('#page-heading').textContent(),'Computers');
     await overlay.locator('text=Windows').first().waitFor();
-    await overlay.locator('a[href="/"]').click();
+    for(const selector of ['a[href="/"]','h1'])assert.equal(await overlay.locator(selector).isHidden(),true,selector+' hidden in overlay');
+    await page.locator('#close-page').click();
     await terminalsIntact();
 
+    // Opened standalone, the pages keep their back link and title.
+    const standalone=await context.newPage();await standalone.goto('https://switchboard.test/messages.html');
+    for(const selector of ['a[href="/"]','h1'])assert.equal(await standalone.locator(selector).isVisible(),true,selector+' visible standalone');
+    await standalone.close();
     // Close button, and a full-screen overlay at phone width.
     await page.setViewportSize({width:390,height:800});
     await page.evaluate(()=>document.querySelector('#sidebar-utilities a[href="/messages.html"]').click());
