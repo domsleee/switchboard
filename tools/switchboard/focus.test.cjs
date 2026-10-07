@@ -234,3 +234,93 @@ test('headless browser keeps iframe, selection, URL and input focus through fail
     assert.deepEqual(pageErrors,[]);
   }finally{await browser.close();}
 });
+
+// The stock client reloads its iframe after a dropped socket, which destroys the
+// focused xterm textarea. Uses synthetic hosts only, never a live terminal.
+test('headless browser returns focus to the same terminal after a reconnect reload, and only there',
+  {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE to run the isolated browser focus check'},async()=>{
+  const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
+  const browser=await chromium.launch({headless:true});
+  try{
+    const context=await browser.newContext({viewport:{width:1280,height:900}});
+    let outage=false;
+    const page=await context.newPage(),pageErrors=[];
+    page.on('pageerror',error=>pageErrors.push(error.message));
+    await page.addInitScript(()=>{if(window===top)window.setInterval=()=>0;});
+    await context.route('**/*',async route=>{
+      const pathname=new URL(route.request().url()).pathname;
+      const json=value=>route.fulfill({contentType:'application/json',body:JSON.stringify(value)});
+      if(pathname==='/api/hosts')return outage?route.fulfill({status:503,body:''}):json([{id:'mac',name:'Mac'},{id:'windows',name:'Windows'}]);
+      if(pathname.startsWith('/api/hosts/')){
+        const id=pathname.split('/')[3];
+        return json({id,name:id==='mac'?'Mac':'Windows',...(outage?{error:'Host unavailable'}:{sessions:[{name:'main',web_clients_allowed:true}]})});
+      }
+      // A restarted relay reports hosts it has not scanned yet as unavailable.
+      if(pathname==='/api/attention')return json(outage?{tabs:[],panes:[],errors:[{host:'Switchboard',message:'Status starting'}]}:{tabs:[tab('mac',1),tab('windows',42)],panes:[],errors:[]});
+      if(pathname.startsWith('/hosts/')){
+        const id=pathname.split('/')[2]==='mac'?1:42;
+        // Like the stock client: focus is managed by Switchboard, and a dropped
+        // socket reloads the whole page once the server answers again.
+        return route.fulfill({contentType:'text/html',body:`<div id="terminal"><input id="terminal-input"></div><script>
+          window.focusRequests=0;
+          const input=document.querySelector('input');
+          window.WebSocket=class extends EventTarget {constructor(){super();this.readyState=1;}send(){}};
+          window.__zjSendControl=()=>{};
+          window.term={element:document.querySelector('#terminal'),options:{disableStdin:false},focus(){focusRequests++;input.focus();},blur(){input.blur();},
+            _core:{_renderService:{dimensions:{css:{cell:{width:8,height:16}}}}},buffer:{active:{viewportY:0,getLine:()=>({translateToString:()=>''})}},onRender(){},onResize(){}};
+        </script><script src="/bridge.js"></script><script>
+          const socket=new WebSocket('wss://switchboard.test/ws/control');
+          const pane={pane_id:${id},is_plugin:false,tab_position:0};
+          const sendState=()=>socket.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'MobileState',payload:{session_name:'main',panes:[pane],active_pane:pane}})}));
+          window.drop=()=>socket.dispatchEvent(new Event('close'));
+          window.reconnect=()=>location.reload();
+          sendState();
+        </script>`});
+      }
+      const file=pathname==='/'?'index.html':pathname.slice(1);
+      if(!['index.html','app.js','bridge.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
+      return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
+    });
+    await page.goto('https://switchboard.test/?host=windows&session=main&tab=42');
+    const windows=page.frameLocator('iframe[title="Windows: main"]').locator('#terminal-input');
+    const mac=page.frameLocator('iframe[title="Mac: main"]').locator('#terminal-input');
+    const inWindowsTerminal=()=>page.evaluate(()=>{const frame=document.querySelector('iframe[title="Windows: main"]');
+      return document.activeElement===frame&&frame.classList.contains('active')&&frame.contentDocument.activeElement?.id==='terminal-input';});
+    await page.waitForFunction(()=>document.activeElement===document.querySelector('iframe.active')&&document.querySelector('iframe.active').title==='Windows: main');
+    await windows.click();assert.equal(await inWindowsTerminal(),true);
+    await page.evaluate(()=>{window.windowsFrame=document.querySelector('iframe[title="Windows: main"]');});
+    async function reconnect(locator){
+      await locator.evaluate(()=>window.drop());
+      outage=true;await page.evaluate(async()=>{await refresh();await refreshAttention();});
+      return async()=>{
+        outage=false;
+        const loaded=page.waitForEvent('framenavigated');await locator.evaluate(()=>window.reconnect());await loaded;
+        await page.evaluate(async()=>{await refresh();await refreshAttention();});
+      };
+    }
+    // 1. Typing in a terminal through a relay restart: focus returns to it.
+    const restore=await reconnect(windows);
+    assert.equal(await page.evaluate(()=>document.querySelector('iframe.active')===windowsFrame),true,'An outage keeps the selected terminal frame');
+    await restore();
+    await page.waitForFunction(()=>windowsFrame.contentDocument.activeElement?.id==='terminal-input',null,{timeout:3000}).catch(()=>{});
+    assert.equal(await inWindowsTerminal(),true,'Focus returns to the reconnected terminal');
+    assert.equal(await page.evaluate(()=>document.querySelector('iframe.active')===windowsFrame),true,'The same iframe stays mounted');
+    await page.keyboard.type('after');assert.equal(await windows.inputValue(),'after');
+    // 2. A background terminal reconnecting never takes focus.
+    await (await reconnect(mac))();
+    await page.evaluate(()=>new Promise(requestAnimationFrame));
+    assert.equal(await mac.evaluate(()=>window.focusRequests),0);
+    assert.equal(await inWindowsTerminal(),true);
+    // 3. Moving to the search box during the outage keeps focus there.
+    const later=await reconnect(windows);
+    await page.locator('#tab-search').focus();
+    await later();await page.evaluate(()=>new Promise(requestAnimationFrame));
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'tab-search');
+    assert.equal(await windows.evaluate(()=>window.focusRequests),0);
+    // Escape back from search lands in the terminal, not the reloaded page body.
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(()=>windowsFrame.contentDocument.activeElement?.id==='terminal-input',null,{timeout:3000}).catch(()=>{});
+    assert.equal(await inWindowsTerminal(),true);
+    assert.deepEqual(pageErrors,[]);
+  }finally{await browser.close();}
+});

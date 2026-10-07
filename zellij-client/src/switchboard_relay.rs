@@ -877,7 +877,10 @@ async fn state(config: &RelayConfig, port: u16) -> anyhow::Result<RelayState> {
         hosts: Arc::new(hosts),
         order: Arc::new(order),
         port,
-        attention: Arc::new(Mutex::new(json!({"panes": [], "tabs": [], "errors": []}))),
+        // Until the first scan, report every host unavailable rather than tabless.
+        attention: Arc::new(Mutex::new(
+            json!({"panes": [], "tabs": [], "errors": [{"host": "Switchboard", "message": "Status starting"}]}),
+        )),
         poll: Default::default(),
         mesh: None,
         candidates: Arc::new(candidates),
@@ -1572,7 +1575,7 @@ mod tests {
         assert_eq!(attention.status, StatusCode::OK);
         assert_eq!(
             serde_json::from_slice::<Value>(&attention.body).unwrap(),
-            json!({"panes": [], "tabs": [], "errors": []})
+            json!({"panes": [], "tabs": [], "errors": [{"host": "Switchboard", "message": "Status starting"}]})
         );
         assert_eq!(
             client

@@ -11,8 +11,13 @@
   let pendingNewTab;
   let focusOrigin, preserveFocus = false;
   function restoreTerminalFocus(origin = focusOrigin) {
-    if (!preserveFocus && parent.document.hasFocus() && !parent.document.querySelector('dialog[open]') &&
-      parent.document.activeElement === origin && (!window.frameElement || window.frameElement.classList.contains('active'))) window.term?.focus();
+    if (!parent.document.hasFocus() || parent.document.querySelector('dialog[open]') ||
+      (window.frameElement && !window.frameElement.classList.contains('active'))) return;
+    const active = parent.document.activeElement;
+    // Focus still in this frame but on nothing (a reconnect reload or a pane
+    // switch blurred xterm) belongs to the terminal; it was never elsewhere.
+    const stray = !!window.frameElement && active === window.frameElement && (!document.activeElement || document.activeElement === document.body);
+    if (stray || (!preserveFocus && active === origin)) window.term?.focus();
   }
   let terminalSocket;
   let scrollport, lastViewport, viewportTab, bottomButton, claimedViewportTab;
@@ -58,7 +63,7 @@
     const size=physicalViewport();
     if(size&&window.__zjViewport.report(size,true))claimedViewportTab=tab;
   }
-  window.addEventListener('focus',()=>claimFocusedViewport(true));
+  window.addEventListener('focus',()=>{claimFocusedViewport(true);if(!pendingFocus&&!pendingNewTab)restoreTerminalFocus(null);});
   function moveTerminal(terminal,target,before=null){
     const active=document.activeElement,focused=terminal.contains(active)&&document.hasFocus();
     // Moving a focused textarea with append/before blurs it. Prefer a state
