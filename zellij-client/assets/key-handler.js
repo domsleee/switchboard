@@ -10,6 +10,12 @@ export function installCustomKeyHandler(term, sendFunction) {
             if (isMac() && ev.key == "v" && ev.metaKey) {
                 return;
             }
+            // Leave Cmd+1-9 (tab switching) and Cmd+R / Cmd+Shift+R (reload) to the
+            // browser: no preventDefault, no xterm.
+            if (ev.metaKey && !ev.ctrlKey && !ev.altKey &&
+                ((!ev.shiftKey && /^Digit[1-9]$/.test(ev.code)) || ev.code === 'KeyR')) {
+                return false;
+            }
             // xterm.js sends a bare CR for Ctrl+Enter, dropping the modifier.
             if (hasModifiersToHandle(ev) || ((ev.ctrlKey || ev.shiftKey) && ev.key == "Enter")) {
                 ev.preventDefault();

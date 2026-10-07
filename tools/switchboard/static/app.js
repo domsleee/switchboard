@@ -396,6 +396,8 @@ function closeSelectedTab(){
 }
 window.addEventListener('keydown',event=>{
   if((event.metaKey||event.ctrlKey)&&!event.altKey&&!event.shiftKey&&event.code==='KeyK'&&!document.querySelector('dialog[open]')){event.preventDefault();showTabSearch();return;}
+  const number=tabNumber(event);
+  if(number&&!document.querySelector('dialog[open]')){event.preventDefault();event.stopImmediatePropagation();selectTabNumber(number);return;}
   if(event.key==='Escape'&&event.target===$('tab-search')){
     event.preventDefault();
     if($('tab-search').value){$('tab-search').value='';render();}else{sidebarOpen=false;updateSidebar();allTabs().find(item=>item.key===selected)?.entry.frame.focus();}
@@ -423,6 +425,15 @@ window.addEventListener('keydown',event=>{
   event.preventDefault();event.stopImmediatePropagation();
   if(event.shiftKey)moveSelected(direction);else stepTab(direction);
 },true);
+// Ctrl+1–8 pick that visible sidebar tab and Ctrl+9 the last, like browser tabs, on every
+// platform. preventDefault stops Chrome/Edge/Firefox switching browser tabs; Cmd+digit stays theirs.
+function tabNumber(event){
+  return event.ctrlKey&&!event.metaKey&&!event.altKey&&!event.shiftKey&&/^Digit[1-9]$/.test(event.code)?+event.code.slice(5):0;
+}
+function selectTabNumber(number){
+  const tabs=allTabs().filter(matchesSearch),item=number===9?tabs.at(-1):tabs[number-1];
+  if(item)activate(item);
+}
 function renderMachines() {
   const container=$('machines'),rows=new Map([...container.children].map(label=>[label.dataset.host,label])),nodes=[];
   for(const host of hosts.values()) {
@@ -543,6 +554,8 @@ window.addEventListener('message',event=>{
     if(entry.frame.classList.contains('active'))closeSelectedTab();
   }else if(event.data?.type==='zellij-tab-search'){
     if(entry.frame.classList.contains('active'))showTabSearch();
+  }else if(event.data?.type==='zellij-tab-number'){
+    if(entry.frame.classList.contains('active'))selectTabNumber(event.data.number);
   }else if(event.data?.type==='zellij-tab-step' && (event.data.direction===-1||event.data.direction===1)){
     if(entry.frame.classList.contains('active'))stepTab(event.data.direction);
   }else if(event.data?.type==='zellij-tab-move' && (event.data.direction===-1||event.data.direction===1)){
