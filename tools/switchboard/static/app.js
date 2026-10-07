@@ -1,7 +1,10 @@
 const $ = id => document.getElementById(id);
 fetch('/api/health',{cache:'no-store'}).then(response=>response.ok?response.json():null).then(build=>{
-  if(build&&/^[a-f0-9]{7,40}$/.test(build.commit)&&/^\d{4}-\d{2}-\d{2}$/.test(build.commit_date))
+  if(build&&/^[a-f0-9]{7,40}$/.test(build.commit)&&/^\d{4}-\d{2}-\d{2}$/.test(build.commit_date)){
     $('build-version').textContent=`${build.commit} · ${build.commit_date}`;
+    const timestamp=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})$/.test(build.commit_timestamp)?build.commit_timestamp.replace('T',' '):build.commit_date;
+    $('settings').title=$('build-version').title=`Commit ${build.commit} · ${timestamp}`;
+  }
 }).catch(()=>{});
 const hosts = new Map(), sessions = new Map();
 const startedHosts = new Set();
