@@ -7,6 +7,7 @@
   let previewLink = null;
   let previewVersion = 0, previewTimer;
   let defaultsLoaded = false;
+  let configuredHosts = [];
   const show = (message, error = false) => {
     $('message').textContent = message;
     $('message').className = error ? 'error' : '';
@@ -63,7 +64,6 @@
       $('receive-requests').hidden = Boolean(state.configured);
       $('retry-gateway').hidden = !state.configured || state.gateway_available !== false;
       $('mesh-title').textContent = state.mesh || 'Your computers';
-      $('catalog').hidden = !state.members.length && !state.requests.length;
       if (state.computer) {
         $('computer-name').value = state.computer.name;
         $('address').value = state.computer.address;
@@ -79,6 +79,11 @@
         $('joining-description').textContent = `Waiting for ${state.joining.computer} to approve joining ${state.joining.mesh}.`;
         $('joining-code').textContent = state.joining.code || '';
       }
+      // Configured terminal connections exist before pairing and must stay discoverable.
+      try {
+        const response = await fetch('/api/hosts?summary=1', {cache: 'no-store'});
+        if (response.ok) configuredHosts = await response.json();
+      } catch (_) {}
       const hosts = state.members.some(member => !member.local && member.state === 'paired')
         ? await fetch('/api/hosts', {cache: 'no-store'}).then(r => r.ok ? r.json() : []).catch(() => []) : [];
       // Build before swapping, and only swap on change, so polling never blanks the list.
@@ -98,6 +103,28 @@
         }
         cards.push(card);
       }
+      const endpoints = new Set(state.members.map(member => endpoint(member.address)).filter(Boolean));
+      const hasLocalMember = state.members.some(member => member.local);
+      for (const host of configuredHosts) {
+        if (!host.configured || !host.address) continue;
+        const identity = endpoint(host.pairing_address || host.address);
+        if ((host.local && hasLocalMember) || (identity && endpoints.has(identity))) continue;
+        if (identity) endpoints.add(identity);
+        const card = document.createElement('div'); card.className = 'card';
+        const title = document.createElement('strong'); title.textContent = host.name;
+        const address = document.createElement('p'); address.textContent = host.address;
+        const status = document.createElement('span');
+        status.textContent = host.local ? 'This computer · configured terminal connection'
+          : 'Configured terminal connection · not paired for shared messages';
+        card.append(title, address, status);
+        if (!host.local && host.pairing_address) {
+          const pair = document.createElement('button'); pair.textContent = 'Pair this computer';
+          pair.onclick = () => action(() => addComputer(host.pairing_address));
+          card.append(pair);
+        }
+        cards.push(card);
+      }
+      $('catalog').hidden = !cards.length && !state.requests.length;
       const memberSignature = JSON.stringify(cards.map(card => card.textContent));
       if ($('members').dataset.signature !== memberSignature) {
         $('members').dataset.signature = memberSignature;
@@ -124,6 +151,14 @@
       }
       }
     } finally { refreshing = false; }
+  }
+  function endpoint(address) {
+    try { return new URL(address).origin; } catch (_) { return null; }
+  }
+  async function addComputer(target) {
+    const result = await api('/add', {target, name: $('mesh-name').value.trim(), ...local()});
+    show(`Request sent to ${result.computer}. Compare code ${result.code} on the other computer.`);
+    await refresh();
   }
   function renderPairing(incoming, sent) {
     // Polls must not replace a button while someone is focusing or clicking it.
@@ -161,11 +196,7 @@
     await api('/ready',local()); show('Ready to receive connection requests.'); await refresh();
   });
   $('add-form').onsubmit=event=>{
-    event.preventDefault(); action(async()=>{
-      const result=await api('/add',{target:$('target-address').value.trim(),name:$('mesh-name').value.trim(),...local()});
-      show(`Request sent to ${result.computer}. Compare code ${result.code} on the other computer.`);
-      await refresh();
-    });
+    event.preventDefault(); action(() => addComputer($('target-address').value.trim()));
   };
   function clearInvitation() {
     invitationId = null; $('invitation-link').value = ''; $('invitation').hidden = true;
