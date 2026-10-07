@@ -1635,3 +1635,46 @@ fn kitty_host_ids_stay_within_signed_32_bit_range() {
         }
     }
 }
+
+// A render batch can contain clients on different tabs, whose link IDs overlap.
+fn output_with_links_on_two_tabs() -> Output {
+    let mut output = create_test_output();
+    for (client_id, uri) in [(1, "https://first.example"), (2, "https://second.example")] {
+        let handler = Rc::new(RefCell::new(LinkHandler::new()));
+        let anchor = handler.borrow_mut().new_link_from_url(uri.to_owned());
+        let mut character = TerminalCharacter::new('x');
+        character
+            .styles
+            .update(|styles| styles.link_anchor = Some(anchor));
+        output.add_clients(&HashSet::from([client_id]), handler, None);
+        output
+            .add_character_chunks_to_client(
+                client_id,
+                vec![CharacterChunk::new(vec![character], 0, 0)],
+                None,
+            )
+            .unwrap();
+    }
+    output
+}
+
+fn assert_distinct_tab_links(rendered: HashMap<ClientId, String>) {
+    assert!(rendered[&1].contains("https://first.example"));
+    assert!(!rendered[&1].contains("https://second.example"));
+    assert!(rendered[&2].contains("https://second.example"));
+    assert!(!rendered[&2].contains("https://first.example"));
+}
+
+#[test]
+fn hyperlinks_use_each_clients_tab_when_serializing() {
+    assert_distinct_tab_links(output_with_links_on_two_tabs().serialize().unwrap());
+}
+
+#[test]
+fn hyperlinks_use_each_clients_tab_when_serializing_with_size() {
+    assert_distinct_tab_links(
+        output_with_links_on_two_tabs()
+            .serialize_with_size(None, None)
+            .unwrap(),
+    );
+}

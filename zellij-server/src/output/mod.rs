@@ -636,7 +636,7 @@ pub struct Output {
     client_rendered_kitty_panes: HashMap<ClientId, HashSet<PaneId>>,
     client_kitty_visible_panes: HashMap<ClientId, HashSet<PaneId>>,
     clients_with_cleared_host_display: HashSet<ClientId>,
-    link_handler: Option<Rc<RefCell<LinkHandler>>>,
+    client_link_handlers: HashMap<ClientId, Rc<RefCell<LinkHandler>>>,
     sixel_image_store: Rc<RefCell<SixelImageStore>>,
     kitty_image_store: Rc<RefCell<KittyImageStore>>,
     kitty_host_capabilities: Rc<RefCell<HashMap<ClientId, bool>>>,
@@ -681,9 +681,10 @@ impl Output {
         link_handler: Rc<RefCell<LinkHandler>>,
         floating_panes_stack: Option<FloatingPanesStack>,
     ) {
-        self.link_handler = Some(link_handler);
         self.floating_panes_stack = floating_panes_stack;
         for client_id in client_ids {
+            self.client_link_handlers
+                .insert(*client_id, link_handler.clone());
             self.client_character_chunks.insert(*client_id, vec![]);
         }
     }
@@ -938,7 +939,7 @@ impl Output {
                 &serialize_chunks(
                     client_character_chunks,
                     sixel_chunks_for_client,
-                    self.link_handler.as_mut(),
+                    self.client_link_handlers.get_mut(&client_id),
                     Some(&mut self.sixel_image_store.borrow_mut()),
                     self.styled_underlines,
                     self.osc8_hyperlinks,
@@ -1018,7 +1019,7 @@ impl Output {
                 &serialize_chunks(
                     client_character_chunks,
                     sixel_chunks_for_client,
-                    self.link_handler.as_mut(),
+                    self.client_link_handlers.get_mut(&client_id),
                     Some(&mut self.sixel_image_store.borrow_mut()),
                     self.styled_underlines,
                     self.osc8_hyperlinks,
