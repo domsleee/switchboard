@@ -183,12 +183,21 @@ test('selection mode enables plain dragging; copy retains selected text through 
   assert.equal(force.shouldForceSelection({shiftKey:false}),true);
   h.event('mousedown',{button:0});h.setSelection('chosen answer');h.event('mouseup');
   h.setSelection('different output at the same cells');
-  await h.api.copySelection();assert.deepEqual(h.writes,['chosen answer']);
+  await h.api.copySelection();assert.deepEqual(h.writes,['chosen answer','chosen answer']);
   h.event('keydown',{metaKey:true});
   const values=[];h.event('copy',{clipboardData:{setData:(_,text)=>values.push(text)}});
   assert.deepEqual(values,['chosen answer']);
   h.api.clearSelection();assert.equal((await h.api.copySelection()).ok,false);
   h.api.setSelectionMode(false);assert.equal(force.shouldForceSelection({shiftKey:false}),false);
+});
+
+test('releasing a local drag copies it, like Zellij and agent selections; clicks copy nothing',async()=>{
+  const h=harness();
+  h.event('mousedown',{button:0});h.event('mouseup');await settle();
+  assert.deepEqual(h.writes,[]);
+  h.event('mousedown',{button:0});h.setSelection('shell output');h.event('mouseup');await settle();
+  assert.deepEqual(h.writes,['shell output']);
+  assert.equal(h.messages.at(-1).message.ok,true);
 });
 
 test('Cmd+C without a selection gives guidance while Ctrl+C still interrupts',async()=>{

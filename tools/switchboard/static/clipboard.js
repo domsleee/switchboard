@@ -39,7 +39,11 @@
     selectedText = ''; selecting = true;
   }, true);
   window.addEventListener('mouseup', () => {
-    if (selecting) selectedText = (terminal || window.term)?.getSelection() || '';
+    if (selecting) {
+      selectedText = (terminal || window.term)?.getSelection() || '';
+      // Copy on select, like Zellij's own selection and agent TUIs (both via OSC52).
+      if (selectedText) void copyText(selectedText, 'selection');
+    }
     selecting = false;
     selectionChanged();
   }, true);
