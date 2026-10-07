@@ -20,13 +20,17 @@ const agentScript = path.join(dir,'codex','fixture.cjs');
 const name = 'update-acceptance-' + crypto.randomBytes(8).toString('hex');
 const powershell = process.env.POWERSHELL_BINARY || path.join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe');
 const env = {...process.env, ZELLIJ_SOCKET_DIR:path.join(dir,'sockets'), ZELLIJ_CONFIG_FILE:config, TERM:'xterm-256color'};
+for(const key of Object.keys(env))if(key.toLowerCase()==='psmodulepath')delete env[key];
 for (const key of ['ZELLIJ','ZELLIJ_SESSION_NAME','ZELLIJ_CONFIG_DIR']) delete env[key];
 const ps = value => "'" + value.replaceAll("'", "''") + "'";
-const runPS = script => execFileSync(powershell, ['-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from("$ErrorActionPreference='Stop'; [Console]::OutputEncoding=New-Object Text.UTF8Encoding($false); " + script,'utf16le').toString('base64')], {env, encoding:'utf8', timeout:120000, windowsHide:true});
+const runPS = script => execFileSync(powershell, ['-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from("$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; [Console]::OutputEncoding=New-Object Text.UTF8Encoding($false); " + script,'utf16le').toString('base64')], {env, encoding:'utf8', timeout:120000, windowsHide:true});
 const modulePath = path.join(__dirname,'windows_releases.psm1');
 const withStore = script => runPS(`Import-Module ${ps(modulePath)} -Force; ${script}`);
 const selectedBinary = () => path.join(store, JSON.parse(fs.readFileSync(path.join(store,'current.json'),'utf8')).sha256, 'zellij.exe');
 const cli = (...args) => execFileSync(selectedBinary(), ['--config',config,...args], {env, encoding:'utf8', timeout:15000, windowsHide:true});
+// A real hidden console is required: redirected launcher handles otherwise
+// leak into the Windows shell and bypass its ConPTY.
+const startSession = session => withStore(`$parts=@(${['--config',config,'attach','--create-background',session,'--',powershell,'-NoLogo','-NoProfile'].map(ps).join(',')}); Start-Process -FilePath ${ps(selectedBinary())} -ArgumentList (($parts | ForEach-Object { ConvertTo-SwitchboardArgument $_ }) -join ' ') -WindowStyle Hidden`);
 const sleep = ms => new Promise(resolve => setTimeout(resolve,ms));
 async function wait(check,message,timeout=45000) {
     const until=Date.now()+timeout;
@@ -38,16 +42,16 @@ async function port() {
     const number=server.address().port;await new Promise(resolve=>server.close(resolve));return number;
 }
 async function stop(child) {
-    if(!child || child.exitCode!==null)return;
+    if(!child || child.exitCode!==null || child.signalCode!==null)return;
     const done=new Promise(resolve=>child.once('exit',resolve));child.kill();
     await Promise.race([done,sleep(5000)]);
-    assert.notEqual(child.exitCode,null,'Owned connection-service process did not stop');
+    assert.ok(child.exitCode!==null || child.signalCode!==null,'Owned connection-service process did not stop');
 }
 const processes = () => JSON.parse(runPS(`ConvertTo-Json -InputObject @(Get-CimInstance Win32_Process | Where-Object {$_.CreationDate} | ForEach-Object { @{pid=$_.ProcessId; ppid=$_.ParentProcessId; started=$_.CreationDate.ToUniversalTime().ToString('o'); command=$_.CommandLine} }) -Compress`));
 const panes = () => JSON.parse(cli('-s',name,'action','list-panes','--json','--all'));
 const identities = () => panes().map(p=>[p.is_plugin,p.id,p.tab_id,p.tab_name]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));
 const names = () => JSON.parse(cli('-s',name,'action','list-tabs','--json')).map(t=>[t.tab_id,t.name]).sort((a,b)=>a[0]-b[0]);
-let native,relay,browser,page,created=false,tokenName,agentIdentity;
+let native,relay,browser,page,created=false,tokenName,agentIdentity,autoHelpers;
 function start(binary,args,label) {
     const stdout=fs.openSync(path.join(dir,label+'.log'),'a'), stderr=fs.openSync(path.join(dir,label+'-error.log'),'a');
     const child=spawn(binary,args,{env, windowsHide:true, stdio:['ignore',stdout,stderr]});
@@ -69,11 +73,11 @@ function start(binary,args,label) {
         const relayConfig=path.join(dir,'hosts.json');
         fs.writeFileSync(relayConfig,JSON.stringify({hosts:[{id:'test',name:'Acceptance',url:`http://127.0.0.1:${nativePort}`,token_file:tokenPath,zellij_binary:selectedBinary(),escape_transport:'local'}]}));
         const startServices=()=>{
-            native=start(selectedBinary(),['--config',config,'web','--port',String(nativePort)],'native');
+            native=start(selectedBinary(),['--config',config,'web','--start','--port',String(nativePort)],'native');
             relay=start(selectedBinary(),['serve','--host-config',relayConfig,'--port',String(relayPort)],'relay');
         };
         startServices();await wait(async()=> (await fetch(url+'/api/health')).ok,'Private connection services did not start');
-        cli('attach','--create-background',name,'--',powershell,'-NoLogo','-NoProfile');created=true;
+        created=true;startSession(name);
         let first;
         await wait(()=>{first=panes().find(p=>!p.is_plugin);return !!first;},'Private shell did not start');
         cli('-s',name,'action','rename-tab','--tab-id',String(first.tab_id),'Agent work');
@@ -81,7 +85,7 @@ function start(binary,args,label) {
         let second;
         await wait(()=>{second=panes().find(p=>!p.is_plugin&&p.tab_id!==first.tab_id);return !!second;},'Second private shell did not start');
         await wait(async()=> (await (await fetch(url+'/api/hosts/test')).json()).sessions?.some(s=>s.name===name&&s.web_clients_allowed),'Private session is not shared');
-        browser=await chromium.launch({headless:true});page=await browser.newPage({viewport:{width:1200,height:800}});
+        browser=await chromium.launch({headless:true,...(process.env.PLAYWRIGHT_CHANNEL?{channel:process.env.PLAYWRIGHT_CHANNEL}:{})});page=await browser.newPage({viewport:{width:1200,height:800}});
         page.setDefaultTimeout(45000);
         await page.addInitScript(()=>{
             const Original=window.WebSocket;window.__acceptanceSockets=[];
@@ -128,7 +132,7 @@ function start(binary,args,label) {
         assert.deepEqual(beforeSidebar,beforeNames,'Sidebar shows actual named tabs');
         const beforeProcesses=processes(), engine=beforeProcesses.find(p=>p.command?.includes('--server ')&&p.command.includes(name));
         assert.ok(engine,'Private engine process is observable');
-        const shells=beforeProcesses.filter(p=>p.ppid===engine.pid);assert.equal(shells.length,2,'Both private terminal shells are observable');
+        const shells=beforeProcesses.filter(p=>p.ppid===engine.pid&&/powershell\.exe(?:"|\s)/i.test(p.command));assert.equal(shells.length,2,'Both private terminal shells are observable');
         agentIdentity=beforeProcesses.find(p=>p.command?.includes(agentScript));assert.ok(agentIdentity,'Long-lived agent fixture is observable');
         const protectedProcesses=[engine,...shells,agentIdentity];
         const continuity=async(prefix)=>{
@@ -148,6 +152,26 @@ function start(binary,args,label) {
             await command(`[Console]::WriteLine(${ps(prefix+'_FIRST_')}+$SB_STATE)`,prefix+'_FIRST_'+marker);
             await select(second);assert.equal(page.url(),selectedURL,'Selecting the original terminal restores its URL');
         };
+        if(process.env.SWITCHBOARD_TEST_AUTO_UPDATE==='1'){
+            const helpers=path.join(dir,'updater');fs.mkdirSync(helpers);
+            autoHelpers=helpers;
+            for(const file of ['auto_update.py','update_services_windows.ps1','windows_releases.psm1','update_windows.ps1','windows_cli.ps1','install_windows_web.ps1'])fs.copyFileSync(path.join(__dirname,file),path.join(helpers,file));
+            const fixture=path.join(dir,'automatic_fixture.py');
+            // Only the desktop tray installer is suppressed. The production
+            // selector, service capture/restart, health checks and rollback run.
+            fs.writeFileSync(fixture,`import sys,json,hashlib\nfrom pathlib import Path\nfrom types import SimpleNamespace\nsys.path.insert(0,sys.argv[1])\nimport auto_update as u\nroot=Path(sys.argv[1]); candidate=Path(sys.argv[2]); store=Path(sys.argv[3]); config=sys.argv[4]; hosts=Path(sys.argv[5]); port=int(sys.argv[6]); mode=sys.argv[7]\nstate_dir=root/'state'; state_dir.mkdir(exist_ok=True)\nbundle=root/'bundle'; bundle.mkdir(exist_ok=True)\nimport shutil\nfor p in root.iterdir():\n if p.is_file() and p.suffix in ('.py','.ps1','.psm1'): shutil.copy2(p,bundle/p.name)\nshutil.copy2(candidate,bundle/'zellij.exe')\nargs=SimpleNamespace(port=port,state_directory=state_dir,release_directory=store,config=config,host_config=hosts)\nmanifest={'commit':sys.argv[8],'files':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in bundle.iterdir()}}\nreal_ps=u.powershell\nu.powershell=lambda script,*args: '' if Path(script).name=='install_windows_web.ps1' else real_ps(script,*args)\nreal_ready=u.wait_ready\ndef ready(port,commit,sessions):\n if mode=='fail' and commit==manifest['commit']: raise RuntimeError('controlled candidate readiness failure')\n return real_ready(port,commit,sessions)\nu.wait_ready=ready\nstate={}\ntry: u.apply_bundle(bundle,manifest,args,state,state_dir/'state.json')\nexcept RuntimeError as e:\n if mode!='fail' or 'controlled candidate' not in str(e): raise\nelse:\n if mode=='fail': raise AssertionError('Expected failed-candidate rollback')\n`);
+            const candidateCommit=process.env.SWITCHBOARD_TEST_CANDIDATE_COMMIT;
+            assert.ok(candidateCommit,'Set the candidate executable commit for automatic handoff verification');
+            const apply=mode=>execFileSync('python',[fixture,helpers,newBinary,store,config,relayConfig,String(relayPort),mode,candidateCommit],{env,encoding:'utf8',timeout:240000,windowsHide:true});
+            apply('fail');await continuity('AUTO_ROLLBACK');
+            assert.equal(selectedBinary(),path.join(store,digest(oldBinary),'zellij.exe'));
+            apply('success');await continuity('AUTO_UPDATED');
+            assert.equal(selectedBinary(),path.join(store,digest(newBinary),'zellij.exe'));
+            // The service children were replaced by the updater, so capture and
+            // stop only its recorded private service PIDs during cleanup.
+            console.log('PASS: production automatic Windows handoff and failed-candidate rollback preserve browser input/output, engines, shells, agent fixture and tab identity.');
+            return;
+        }
         withStore(`Invoke-SwitchboardWindowsUpdate -Candidate ${ps(newBinary)} -Directory ${ps(store)} -Config ${ps(config)} | ConvertTo-Json -Compress`);
         assert.equal(selectedBinary(),path.join(store,digest(newBinary),'zellij.exe'));
         await continuity('SELECTED');
@@ -165,11 +189,11 @@ function start(binary,args,label) {
         // A new private engine must load the selected release after rollback.
         const newName=name+'-new';
         try {
-            cli('attach','--create-background',newName,'--',powershell,'-NoLogo','-NoProfile');
+            startSession(newName);
             await wait(()=>processes().some(p=>p.command?.includes('--server ')&&p.command.includes(newName)&&p.command.toLowerCase().includes(selectedBinary().toLowerCase())),'New session did not load the selected executable');
         } finally { cli('kill-session',newName); }
         console.log(`PASS: real Windows browser input/output, automatic service reconnection (${reconnectMs} ms including checks), manual rollback, ConPTY engine/shell/agent-fixture PID+creation-time preservation, ongoing output, shell variables, scrollback marker, native/sidebar names, pane/tab IDs, selected URL, sharing and new-session release selection.`);
-    } catch(error) { console.error('Private acceptance logs:',dir);throw error; }
+    } catch(error) { console.error('Private acceptance logs:',dir,error);throw error; }
     finally {
         if(agentIdentity)try{
             runPS(`$p=Get-CimInstance Win32_Process -Filter ${ps('ProcessId='+agentIdentity.pid)}; if($p -and $p.CreationDate.ToUniversalTime().ToString('o') -eq ${ps(agentIdentity.started)} -and $p.CommandLine.Contains(${ps(dir)})){Stop-Process -Id $p.ProcessId -ErrorAction Stop}`);
@@ -179,6 +203,11 @@ function start(binary,args,label) {
         }catch(error){console.error('Early agent fixture cleanup failed:',error.message);process.exitCode=1;}
         if(browser)await browser.close();
         if(created)try{cli('kill-session',name);}catch(error){console.error('Private session cleanup failed:',error.message);process.exitCode=1;}
+        if(autoHelpers)try{
+            const stateDir=path.join(autoHelpers,'state');
+            const latest=fs.readdirSync(stateDir).filter(n=>n.startsWith('rollback-')).sort().at(-1);
+            if(latest)runPS(`& ${ps(path.join(autoHelpers,'update_services_windows.ps1'))} -Action Stop -Snapshot ${ps(path.join(stateDir,latest,'services.json'))} -ReleaseDirectory ${ps(store)}`);
+        }catch(error){console.error('Automatic fixture service cleanup failed:',error.message);process.exitCode=1;}
         await stop(relay);await stop(native);
         if(tokenName)try{cli('web','--revoke-token',tokenName);}catch(error){console.error('Fixture token cleanup failed:',error.message);process.exitCode=1;}
         fs.rmSync(path.join(dir,'token'),{force:true});

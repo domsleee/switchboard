@@ -30,7 +30,7 @@ if (!$Tray) {
     if ([IO.Path]::GetFullPath($PSCommandPath) -ne $installed) {
         Copy-Item -LiteralPath $PSCommandPath -Destination $installed -Force
     }
-    foreach ($file in @('windows_releases.psm1','update_windows.ps1','windows_cli.ps1')) {
+    foreach ($file in @('install_windows_web.ps1','windows_releases.psm1','update_windows.ps1','windows_cli.ps1','auto_update.py','update_services_windows.ps1')) {
         $from = Join-Path $source $file
         $to = Join-Path $directory $file
         if ([IO.Path]::GetFullPath($from) -ne [IO.Path]::GetFullPath($to)) {
@@ -80,8 +80,32 @@ $logs.Add_Click({ Start-Process explorer.exe $directory })
 $quit.Add_Click({ [Windows.Forms.Application]::ExitThread() })
 $script:relay = $null
 $script:selectedHash = $null
+$script:nextUpdate = [DateTime]::MinValue
+$script:updater = $null
+function Check-ForUpdates {
+    if ([DateTime]::UtcNow -lt $script:nextUpdate -or ($script:updater -and !$script:updater.HasExited)) { return }
+    $handoff = Join-Path $HOME '.local/share/switchboard/automatic-updates/handoff.json'
+    if (Test-Path -LiteralPath $handoff) {
+        $owner = Get-Content -LiteralPath $handoff -Raw | ConvertFrom-Json
+        if (Get-Process -Id $owner.pid -ErrorAction SilentlyContinue) { return }
+    }
+    $script:nextUpdate = [DateTime]::UtcNow.AddMinutes(15)
+    try {
+        $python = (Get-Command python -ErrorAction Stop).Source
+        $updateArguments = @((Join-Path $directory 'auto_update.py'),'--release-directory',$ReleaseDirectory)
+        if ($Config) { $updateArguments += @('--config',$Config) }
+        $script:updater = Start-Process -FilePath $python -WindowStyle Hidden -PassThru `
+            -ArgumentList (($updateArguments | ForEach-Object { ConvertTo-SwitchboardArgument $_ }) -join ' ') `
+            -RedirectStandardOutput (Join-Path $directory 'update.log') -RedirectStandardError (Join-Path $directory 'update-error.log')
+    } catch { Add-Content -LiteralPath $log -Value ('Automatic update: ' + $_.Exception.Message) }
+}
 function Start-Servers {
     try {
+        $handoff = Join-Path $HOME '.local/share/switchboard/automatic-updates/handoff.json'
+        if (Test-Path -LiteralPath $handoff) {
+            $owner = Get-Content -LiteralPath $handoff -Raw | ConvertFrom-Json
+            if (Get-Process -Id $owner.pid -ErrorAction SilentlyContinue) { $status.Text = 'Updating Switchboard...'; return }
+        }
         # Resolve a new selection for future service starts. Healthy loaded
         # services keep running; updating this pointer never restarts them.
         $release = Get-SwitchboardReleaseState $ReleaseDirectory
@@ -116,9 +140,10 @@ function Start-Servers {
 $start.Add_Click({ Start-Servers })
 $timer = New-Object Windows.Forms.Timer
 $timer.Interval = 15000
-$timer.Add_Tick({ Start-Servers })
+$timer.Add_Tick({ Start-Servers; Check-ForUpdates })
 try {
     Start-Servers
+    Check-ForUpdates
     $timer.Start()
     [Windows.Forms.Application]::Run()
 } finally {
