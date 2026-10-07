@@ -125,7 +125,7 @@ async fn join(State(state): State<RelayState>, Json(input): Json<Join>) -> MeshR
     {
         let mut committed = mesh.database.lock().await;
         let mut db = committed.clone();
-        if db.membership.is_some() {
+        if !db.can_join() {
             return Err((
                 StatusCode::CONFLICT,
                 "This computer already belongs to a mesh",
@@ -148,6 +148,7 @@ async fn join(State(state): State<RelayState>, Json(input): Json<Join>) -> MeshR
                     member,
                 })
                 .map_err(rejected)?;
+            db.leave_solo_group();
             db.joining = Some(Joining {
                 attempt: JoinAttempt {
                     secret: invitation.secret.clone(),
@@ -387,7 +388,8 @@ impl Mesh {
         }
         anyhow::ensure!(
             response.status == StatusCode::OK,
-            "Inviter rejected pairing; check expiry or request a new invitation"
+            "Inviter rejected pairing; check expiry or request a new invitation ({})",
+            String::from_utf8_lossy(&response.body[..response.body.len().min(200)])
         );
         Ok(serde_json::from_slice(&response.body)?)
     }

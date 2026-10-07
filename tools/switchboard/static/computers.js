@@ -80,9 +80,10 @@
         $('joining-description').textContent = `Waiting for ${state.joining.computer} to approve joining ${state.joining.mesh}.`;
         $('joining-code').textContent = state.joining.code || '';
       }
-      $('members').replaceChildren();
       const hosts = state.members.some(member => !member.local && member.state === 'paired')
         ? await fetch('/api/hosts', {cache: 'no-store'}).then(r => r.ok ? r.json() : []).catch(() => []) : [];
+      // Build before swapping, and only swap on change, so polling never blanks the list.
+      const cards = [];
       for (const member of state.members) {
         const card = document.createElement('div'); card.className = 'card';
         const title = document.createElement('strong'); title.textContent = member.name;
@@ -96,7 +97,12 @@
         if (!member.local && member.state === 'paired' && (!host || host.error)) {
           const retry = document.createElement('button'); retry.textContent = 'Retry connection'; retry.onclick = () => action(refresh); card.append(retry);
         }
-        $('members').append(card);
+        cards.push(card);
+      }
+      const memberSignature = JSON.stringify(cards.map(card => card.textContent));
+      if ($('members').dataset.signature !== memberSignature) {
+        $('members').dataset.signature = memberSignature;
+        $('members').replaceChildren(...cards);
       }
       const requestSignature=JSON.stringify(state.requests);
       if ($('requests').dataset.signature !== requestSignature) {

@@ -181,6 +181,8 @@ async fn invitation_preview_expiry_cancel_and_denial_never_issue_credentials() {
     for _ in 0..3 {
         Invitation::parse(&invite.link().unwrap(), 1000).unwrap();
     }
+    // An inviter whose clock runs a few seconds ahead still works.
+    Invitation::parse(&invite.link().unwrap(), 998).unwrap();
     assert!(mac.database.lock().await.invitations[&invite.id]
         .requests
         .is_empty());
@@ -1012,6 +1014,14 @@ async fn address_pairing_delivers_over_tls_and_completes_without_copying_secrets
         .await
         .unwrap();
     assert_eq!(script.status, StatusCode::OK);
+    // Creating an invitation leaves a one-computer group that must not block joining.
+    let own = call(
+        &clients[1],
+        "/api/mesh/invitations",
+        json!({"name":"Own group","computer_name":"work (fast)","address":endpoints[1]}),
+    )
+    .await;
+    assert_eq!(own.status, StatusCode::OK);
     let sent=call(&clients[0],"/api/mesh/add",json!({"target":endpoints[1],"name":"Direct test","computer_name":"Mac","address":endpoints[0]})).await;
     assert_eq!(
         sent.status,
@@ -1045,20 +1055,18 @@ async fn address_pairing_delivers_over_tls_and_completes_without_copying_secrets
     )
     .await;
     assert_eq!(allowed.status, StatusCode::OK);
-    for mesh in &machines {
-        assert!(mesh.database.lock().await.outgoing.is_empty());
+    // The computer that chose Add computer does not approve a second time.
+    assert!(machines[0].status().await["requests"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    // Accepting completes pairing without a further step on either computer.
+    for _ in 0..50 {
+        if machines[1].hosts().len() == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    let status = machines[0].status().await;
-    let pending = &status["requests"][0];
-    assert_eq!(pending["code"], sent["code"]);
-    let approved=call(&clients[0],"/api/mesh/approve",json!({"invitation":pending["invitation"],"request":pending["request"],"code":pending["code"],"allow":true})).await;
-    assert_eq!(approved.status, StatusCode::OK);
-    let completed = call(&clients[1], "/api/mesh/retry", json!({})).await;
-    assert_eq!(completed.status, StatusCode::OK);
-    assert_eq!(
-        serde_json::from_slice::<Value>(&completed.body).unwrap()["state"],
-        "paired"
-    );
     assert_eq!(machines[0].hosts().len(), 1);
     assert_eq!(machines[1].hosts().len(), 1);
     for handle in handles {

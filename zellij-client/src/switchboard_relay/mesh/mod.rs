@@ -92,7 +92,7 @@ impl Invitation {
         anyhow::ensure!(
             crypto::decode(&invite.secret)?.len() == 32
                 && invite.expires > now
-                && invite.expires <= now + 600,
+                && invite.expires <= now + 600 + CLOCK_SKEW,
             "Invitation expired; ask the administrator for a new link"
         );
         Ok(invite)
@@ -177,6 +177,31 @@ struct Database {
     direct_incoming: BTreeMap<String, direct::Offer>,
     #[serde(default)]
     direct_sent: BTreeMap<String, direct::Sent>,
+}
+
+impl Database {
+    /// Creating an invitation makes a group holding only this computer. Until
+    /// another computer joins it, that group must not block joining another one.
+    fn can_join(&self) -> bool {
+        match (&self.membership, &self.local) {
+            (None, _) => true,
+            (Some(membership), Some(local)) => {
+                membership.value.members.len() == 1
+                    && membership.value.members.contains_key(&local.id)
+                    && self.incoming.is_empty()
+                    && self.outgoing.is_empty()
+            },
+            _ => false,
+        }
+    }
+    /// Only on this computer's own explicit join or approval.
+    fn leave_solo_group(&mut self) {
+        if self.membership.is_some() && self.can_join() {
+            self.membership = None;
+            self.invitations.clear();
+            self.direct_sent.clear();
+        }
+    }
 }
 
 pub(super) trait TokenIssuer: Send + Sync {
@@ -533,8 +558,18 @@ impl Mesh {
                 denied: false,
             },
         );
+        // Add computer already chose this exact request (checked above); its
+        // acceptance completes pairing.
+        let chosen = db.direct_sent.contains_key(&value.invitation);
+        let (invitation, request) = (value.invitation.clone(), value.request.clone());
         self.save(&db)?;
         *committed = db;
+        drop(committed);
+        if chosen {
+            self.approve(&invitation, &request, &code, true, now)
+                .await?;
+            return Box::pin(self.request(attempt, now)).await;
+        }
         Ok(Decision::Pending { code })
     }
     async fn approve(
@@ -766,6 +801,8 @@ fn endpoint(value: &str) -> anyhow::Result<url::Url> {
     );
     Ok(url)
 }
+/// Seconds a computer's clock may run ahead of another's; Windows clocks drift.
+const CLOCK_SKEW: u64 = 300;
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -208,13 +208,13 @@ impl Mesh {
         time: u64,
     ) -> anyhow::Result<Signed<JoinRequest>> {
         anyhow::ensure!(
-            invitation.expires > time && invitation.expires <= time + 600,
+            invitation.expires > time && invitation.expires <= time + 600 + CLOCK_SKEW,
             "Invitation expired"
         );
         let mut committed = self.database.lock().await;
         let mut db = committed.clone();
         anyhow::ensure!(
-            db.membership.is_none() && db.joining.is_none(),
+            db.can_join() && db.joining.is_none(),
             "This computer already belongs to a group or is joining one"
         );
         let member = db
@@ -270,10 +270,7 @@ impl Mesh {
     ) -> anyhow::Result<()> {
         let mut committed = self.database.lock().await;
         let mut db = committed.clone();
-        anyhow::ensure!(
-            db.membership.is_none(),
-            "This computer already belongs to a group"
-        );
+        anyhow::ensure!(db.can_join(), "This computer already belongs to a group");
         let offer = db
             .direct_incoming
             .get_mut(id)
@@ -298,7 +295,9 @@ impl Mesh {
                 "Another pairing is pending"
             );
             offer.accepted = true;
-            db.joining = Some(offer.joining.clone());
+            let joining = offer.joining.clone();
+            db.leave_solo_group();
+            db.joining = Some(joining);
         } else {
             anyhow::ensure!(!offer.accepted, "Pairing already accepted");
             offer.denied = true;
@@ -309,7 +308,7 @@ impl Mesh {
     }
 }
 pub(super) fn incoming(db: &Database, time: u64) -> Vec<Value> {
-    if db.membership.is_some() || db.joining.is_some() {
+    if !db.can_join() || db.joining.is_some() {
         return vec![];
     }
     db.direct_incoming.iter().filter(|(_,o)|!o.denied&&!o.accepted&&o.joining.invitation.expires>time).map(|(id,o)|json!({"invitation":id,"computer":o.joining.invitation.administrator.name,"address":o.joining.invitation.administrator.endpoint,"code":verification(&o.joining.invitation,&o.joining.attempt.request.value).ok()})).collect()
