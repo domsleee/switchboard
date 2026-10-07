@@ -1,4 +1,4 @@
-//! Invitation pairing is separate from agent messages and the loopback terminal engine.
+//! Invitation pairing is separate from agent messages and the local native terminal engine.
 mod board_host;
 mod crypto;
 mod direct;
@@ -248,11 +248,8 @@ impl Mesh {
         issuer: Arc<dyn TokenIssuer>,
     ) -> anyhow::Result<Arc<Self>> {
         anyhow::ensure!(
-            matches!(
-                local_engine.origin.host_str(),
-                Some("127.0.0.1" | "localhost" | "::1" | "[::1]")
-            ),
-            "Mesh gateway requires a loopback terminal engine"
+            local_engine.is_local_engine(),
+            "Mesh gateway requires a loopback or pinned HTTPS engine on a local interface"
         );
         let storage = storage::Storage::open(&root)?;
         let identity = match storage.read("identity.json")? {
