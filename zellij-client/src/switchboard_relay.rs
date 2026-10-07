@@ -472,13 +472,17 @@ fn trusted(headers: &HeaderMap, port: u16) -> bool {
     headers
         .get(header::HOST)
         .and_then(|h| h.to_str().ok())
-        .is_some_and(|host| hosts.iter().any(|h| h == host))
+        .is_some_and(|host| {
+            hosts.iter().any(|h| h == host)
+                || (port == 80 && matches!(host, "127.0.0.1" | "localhost"))
+        })
         && headers
             .get(header::ORIGIN)
             .map(|h| {
-                h.to_str()
-                    .ok()
-                    .is_some_and(|origin| origins.iter().any(|o| o == origin))
+                h.to_str().ok().is_some_and(|origin| {
+                    origins.iter().any(|o| o == origin)
+                        || (port == 80 && matches!(origin, "http://127.0.0.1" | "http://localhost"))
+                })
             })
             .unwrap_or(true)
         && !headers
@@ -946,6 +950,26 @@ mod tests {
             "https://[fd00::69]:8091"
         );
         assert_eq!(host_summary(&ipv6, false)["configured"], false);
+    }
+
+    #[test]
+    fn default_http_port_accepts_normalized_loopback_authority_only_on_port_80() {
+        for host in ["127.0.0.1", "localhost"] {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::HOST, host.parse().unwrap());
+            assert!(trusted(&headers, 80));
+            assert!(!trusted(&headers, 8090));
+            headers.insert(header::ORIGIN, format!("http://{host}").parse().unwrap());
+            assert!(trusted(&headers, 80));
+            headers.insert(header::ORIGIN, "https://127.0.0.1".parse().unwrap());
+            assert!(!trusted(&headers, 80));
+            headers.remove(header::ORIGIN);
+            headers.insert("sec-fetch-site", "cross-site".parse().unwrap());
+            assert!(!trusted(&headers, 80));
+        }
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, "attacker.example".parse().unwrap());
+        assert!(!trusted(&headers, 80));
     }
 
     #[test]
