@@ -3,7 +3,11 @@ use std::net::IpAddr;
 use std::{path::PathBuf, process, time::Duration};
 
 #[cfg(feature = "web_server_capability")]
-use isahc::{config::RedirectPolicy, prelude::*, HttpClient, Request};
+use isahc::{
+    config::{RedirectPolicy, SslOption},
+    prelude::*,
+    HttpClient, Request,
+};
 
 use zellij_client::{
     os_input_output::get_client_os_input, start_client as start_client_impl, ClientInfo,
@@ -341,14 +345,21 @@ pub const DEFAULT_WEB_SERVER_STATUS_TIMEOUT_SECS: u64 = 30;
 pub(crate) fn web_server_status(
     web_server_base_url: &str,
     timeout_secs: Option<u64>,
+    has_certificate: bool,
 ) -> Result<String, String> {
     let timeout =
         Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_WEB_SERVER_STATUS_TIMEOUT_SECS));
-    let http_client = HttpClient::builder()
+    let mut builder = HttpClient::builder()
         .timeout(timeout)
-        .redirect_policy(RedirectPolicy::Follow)
-        .build()
-        .map_err(|e| e.to_string())?;
+        .redirect_policy(RedirectPolicy::Follow);
+    // Our own server's certificate is usually self-signed, and Windows' curl
+    // rejects it even as an explicit CA. This liveness probe sends no credentials.
+    if has_certificate {
+        builder = builder.ssl_options(
+            SslOption::DANGER_ACCEPT_INVALID_CERTS | SslOption::DANGER_ACCEPT_INVALID_HOSTS,
+        );
+    }
+    let http_client = builder.build().map_err(|e| e.to_string())?;
     let request = Request::get(format!("{}/info/version", web_server_base_url,));
     let req = request.body(()).map_err(|e| e.to_string())?;
     let mut res = http_client.send(req).map_err(|e| e.to_string())?;
@@ -368,6 +379,7 @@ pub(crate) fn web_server_status(
 pub(crate) fn web_server_status(
     _web_server_base_url: &str,
     _timeout_secs: Option<u64>,
+    _has_certificate: bool,
 ) -> Result<String, String> {
     log::error!(
         "This version of Zellij was compiled without web server support, cannot get web server status!"
