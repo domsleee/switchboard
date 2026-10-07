@@ -39,7 +39,11 @@
     selectedText = ''; selecting = true;
   }, true);
   window.addEventListener('mouseup', () => {
-    if (selecting) selectedText = (terminal || window.term)?.getSelection() || '';
+    if (selecting) {
+      selectedText = (terminal || window.term)?.getSelection() || '';
+      // Copy on select, like Zellij's own selection and agent TUIs (both via OSC52).
+      if (selectedText) void copyText(selectedText, 'selection');
+    }
     selecting = false;
     selectionChanged();
   }, true);
@@ -113,17 +117,23 @@
   async function copyText(text, source) {
     const attempt = ++revision;
     let error = 'Browser clipboard access is unavailable.';
-    try {
-      // The app's Copy button focuses the parent document. Use its clipboard
-      // object so Chromium does not reject an unfocused iframe's write.
-      const clipboard = parent.navigator?.clipboard || navigator.clipboard;
-      if (typeof clipboard?.writeText === 'function') {
+    // The app's Copy button focuses the parent document, while terminal copies
+    // happen with focus inside this iframe. Either document may be the one the
+    // browser accepts, so try both before falling back.
+    const clipboards = [];
+    try { clipboards.push(parent.navigator.clipboard); } catch (_) {}
+    clipboards.push(navigator.clipboard);
+    for (const clipboard of new Set(clipboards)) {
+      if (typeof clipboard?.writeText !== 'function') continue;
+      try {
         await clipboard.writeText(text);
         if (attempt !== revision) return {ok: true, source, method: 'clipboard'};
         clearFallback();
         return report({ok: true, source, method: 'clipboard'});
+      } catch (failure) {
+        error = `Browser clipboard access was denied (${failure?.name || 'Error'}: ${failure?.message || 'no details'}).`;
       }
-    } catch (_) { error = 'Browser clipboard access was denied.'; }
+    }
     if (attempt !== revision) return {ok: false, source, error, superseded: true};
     if (legacyCopy(text)) {
       clearFallback();
