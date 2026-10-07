@@ -398,7 +398,9 @@ function encode_kitty_key(ev, send_ansi_key) {
     if (ev.metaKey) {
         modifier_string += super_value;
     }
-    let key_code = ev.key.charCodeAt(0);
+    // Named keys use their C0 code, not the first letter of their name.
+    const named = { Enter: 13, Tab: 9, Escape: 27, Backspace: 127 };
+    let key_code = named[ev.key] ?? ev.key.charCodeAt(0);
     send_ansi_key(`\x1b[${key_code};${modifier_string}u`);
 }
 /**
@@ -961,7 +963,8 @@ function installCustomKeyHandler(term, sendFunction) {
             if (isMac() && ev.key == "v" && ev.metaKey) {
                 return;
             }
-            if (hasModifiersToHandle(ev)) {
+            // xterm.js sends a bare CR for Ctrl+Enter, dropping the modifier.
+            if (hasModifiersToHandle(ev) || (ev.ctrlKey && ev.key == "Enter")) {
                 ev.preventDefault();
                 encode_kitty_key(ev, sendFunction);
                 return false;
