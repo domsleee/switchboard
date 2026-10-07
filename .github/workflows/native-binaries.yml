@@ -29,6 +29,7 @@ jobs:
       - name: Check Windows update transactions and tray supervision
         run: |
           powershell -NoLogo -NoProfile -NonInteractive -File tools/switchboard/windows_releases.test.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           powershell -NoLogo -NoProfile -NonInteractive -File tools/switchboard/windows_tray.test.ps1
       - name: Build native server and relay
         run: cargo build --release --features web_server_capability

@@ -22,7 +22,7 @@ try {
     [IO.File]::WriteAllText($argumentScript, 'param([Parameter(ValueFromRemainingArguments=$true)][string[]]$Values); [Console]::OutputEncoding=New-Object Text.UTF8Encoding($false); [Console]::WriteLine((ConvertTo-Json -InputObject @($Values) -Compress))')
     $values = @('space and Unicode 日本語', 'C:\path with spaces\', 'embedded "quotes"', '$(& no shell)', '')
     $probe = Invoke-SwitchboardProbe $powershell (@('-NoLogo','-NoProfile','-File',$argumentScript) + $values) 10
-    $received = @($probe.Output | ConvertFrom-Json)
+    $received = @($probe.Output | ConvertFrom-Json | ForEach-Object { $_ })
     Assert (($received | ConvertTo-Json -Compress) -ceq ($values | ConvertTo-Json -Compress)) 'Native argument quoting changed values'
     $probe = Invoke-SwitchboardProbe $powershell @('-NoProfile','-Command',"[Console]::Write(('x' * 200000))") 10
     Assert ($probe.Output.Length -eq 200000) 'Large probe output deadlocked or truncated'
