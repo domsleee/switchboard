@@ -295,6 +295,14 @@ impl Mesh {
     pub fn host(&self, id: &str) -> Option<Arc<Host>> {
         self.catalog.read().unwrap().get(id).cloned()
     }
+    pub async fn computer_name(&self) -> Option<String> {
+        self.database
+            .lock()
+            .await
+            .local
+            .as_ref()
+            .map(|m| m.name.clone())
+    }
     fn save(&self, db: &Database) -> anyhow::Result<()> {
         // Immutable versioned credential files are staged before the atomic manifest switch.
         // A restarted relay reconstructs its catalog from this one committed manifest.

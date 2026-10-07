@@ -2,6 +2,7 @@
 mod artifacts;
 mod attention;
 mod control;
+mod logs;
 mod mesh;
 pub(crate) mod peer_bridge;
 use axum::{
@@ -605,7 +606,13 @@ async fn describe(host: &Host, configured: bool) -> Value {
     let mut description = host_summary(host, configured);
     match result {
         Ok(Ok(sessions)) => description["sessions"] = json!(sessions),
-        _ => description["error"] = json!("Host unavailable"),
+        _ => {
+            logs::record(
+                &host.config.name,
+                "Host unavailable: sessions could not be listed",
+            );
+            description["error"] = json!("Host unavailable");
+        },
     }
     description
 }
@@ -878,6 +885,7 @@ fn app(state: RelayState) -> Router {
         .route("/api/hosts", get(self::hosts))
         .route("/api/hosts/{host}", get(host))
         .route("/api/attention", get(attention::handler))
+        .route("/api/logs", get(logs::handler))
         .route("/api/message-board/{*path}", any(message_board))
         .route("/api/hosts/{host}/close-tab", post(control::close_tab))
         .route("/api/hosts/{host}/escape", post(control::escape))
@@ -913,8 +921,9 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
                 mesh.attach_bridge(port)?;
                 state.mesh = Some(mesh);
             },
-            Err(_) => log::warn!(
-                "Switchboard pairing unavailable; local relay continues (details redacted)"
+            Err(_) => logs::record(
+                "pairing",
+                "Switchboard pairing unavailable; local relay continues",
             ),
         }
     }

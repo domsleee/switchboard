@@ -516,6 +516,10 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
                     let changed = match result {
                         Ok(mut snapshot) => poll.update(&id, &mut snapshot),
                         Err(error) => {
+                            logs::record(
+                                &host.config.name,
+                                &format!("Status unavailable: {error}"),
+                            );
                             poll.unavailable(&id, &error);
                             false
                         },
@@ -578,6 +582,10 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
                             poll.update(&host.config.id, &mut snapshot);
                         },
                         Err(_) => {
+                            logs::record(
+                                &host.config.name,
+                                "Status unavailable from paired computer",
+                            );
                             poll.unavailable(
                                 &host.config.id,
                                 &anyhow::anyhow!(
