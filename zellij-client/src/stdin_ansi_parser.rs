@@ -6,9 +6,9 @@
 //! all other bytes (keyboard input) pass through as a residue byte sequence
 //! that the caller feeds to the normal keyboard parser.
 
-use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
 use zellij_utils::{
     data::HostTerminalThemeMode,
     ipc::PixelDimensions,
@@ -76,15 +76,14 @@ impl HostReply {
     /// Classify an OSC payload (the bytes between the `ESC ]` prefix and
     /// the ST/BEL terminator) into a known `HostReply`, if possible.
     pub fn from_osc_payload(payload: &[u8]) -> Option<HostReply> {
-        lazy_static! {
-            // OSC 10 (foreground) / OSC 11 (background) answer form:
-            //   OSC 10 ; <color> ST        e.g. "10;rgb:ffff/ffff/ffff"
-            //   OSC 11 ; <color> ST
-            static ref FG_RE: Regex = Regex::new(r"^10;(.*)$").unwrap();
-            static ref BG_RE: Regex = Regex::new(r"^11;(.*)$").unwrap();
-            // OSC 4 ; N ; <color> — palette-register answer.
-            static ref COLOR_REGISTER_RE: Regex = Regex::new(r"^4;(\d+);(.*)$").unwrap();
-        }
+        // OSC 10 (foreground) / OSC 11 (background) answer form:
+        //   OSC 10 ; <color> ST        e.g. "10;rgb:ffff/ffff/ffff"
+        //   OSC 11 ; <color> ST
+        static FG_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^10;(.*)$").unwrap());
+        static BG_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^11;(.*)$").unwrap());
+        // OSC 4 ; N ; <color> — palette-register answer.
+        static COLOR_REGISTER_RE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"^4;(\d+);(.*)$").unwrap());
         let s = std::str::from_utf8(payload).ok()?;
         if let Some(caps) = BG_RE.captures(s) {
             return Some(HostReply::BackgroundColor(caps[1].to_string()));
@@ -108,16 +107,17 @@ impl HostReply {
     /// advertisement).
     pub fn from_csi_report(raw: &[u8]) -> Option<HostReply> {
         let s = std::str::from_utf8(raw).ok()?;
-        lazy_static! {
-            // <ESC>[4;H;Wt or <ESC>[6;H;Wt
-            static ref PIX_RE: Regex = Regex::new(r"^\u{1b}\[(\d+);(\d+);(\d+)t$").unwrap();
-            // <ESC>[?2026;Ny — DECRPM reply for sync-output (VT mode 2026)
-            static ref SYNC_RE: Regex = Regex::new(r"^\u{1b}\[\?2026;([0-4])\$y$").unwrap();
-            // <ESC>[?997;1n (dark) / <ESC>[?997;2n (light) — DSR 997 reply
-            // to CSI ?996n, or unsolicited host-theme notification when
-            // CSI ?2031h is enabled.
-            static ref THEME_RE: Regex = Regex::new(r"^\u{1b}\[\?997;([12])n$").unwrap();
-        }
+        // <ESC>[4;H;Wt or <ESC>[6;H;Wt
+        static PIX_RE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"^\u{1b}\[(\d+);(\d+);(\d+)t$").unwrap());
+        // <ESC>[?2026;Ny — DECRPM reply for sync-output (VT mode 2026)
+        static SYNC_RE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"^\u{1b}\[\?2026;([0-4])\$y$").unwrap());
+        // <ESC>[?997;1n (dark) / <ESC>[?997;2n (light) — DSR 997 reply
+        // to CSI ?996n, or unsolicited host-theme notification when
+        // CSI ?2031h is enabled.
+        static THEME_RE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"^\u{1b}\[\?997;([12])n$").unwrap());
         if let Some(caps) = PIX_RE.captures(s) {
             let which: usize = caps[1].parse().ok()?;
             let first: usize = caps[2].parse().ok()?;
@@ -165,9 +165,8 @@ impl HostReply {
     /// Replies that are not a primary-DA form (eg. secondary-DA `CSI > ... c`)
     /// yield `None` so they do not clobber the host capability state.
     pub fn sixel_support_from_primary_da(raw: &[u8]) -> Option<HostReply> {
-        lazy_static! {
-            static ref PRIMARY_DA_RE: Regex = Regex::new(r"^\u{1b}\[\?([0-9;]*)c$").unwrap();
-        }
+        static PRIMARY_DA_RE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"^\u{1b}\[\?([0-9;]*)c$").unwrap());
         let s = std::str::from_utf8(raw).ok()?;
         let caps = PRIMARY_DA_RE.captures(s)?;
         let supports_sixel = caps[1].split(';').any(|attribute| attribute == "4");

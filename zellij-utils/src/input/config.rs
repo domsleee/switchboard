@@ -1,6 +1,5 @@
 use crate::data::Styling;
 
-#[cfg(not(target_family = "wasm"))]
 use crate::data::{LayoutInfo, LayoutWithError};
 
 use miette::{Diagnostic, LabeledSpan, NamedSource, SourceCode};
@@ -8,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, Read};
-#[cfg(not(target_family = "wasm"))]
 use std::path::Path;
 use std::path::PathBuf;
 use thiserror::Error;
@@ -440,7 +438,6 @@ impl Config {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
 pub async fn watch_config_file_changes<F, Fut>(
     config_file_path: PathBuf,
     config_dir: Option<&Path>,
@@ -613,7 +610,6 @@ pub async fn watch_config_file_changes<F, Fut>(
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
 pub async fn watch_layout_dir_changes<F, Fut>(
     layout_dir: PathBuf,
     default_layout_name: Option<String>,

@@ -8,7 +8,6 @@
 //  place.
 //  If plugins should be able to depend on the layout system
 //  then [`zellij-utils`] could be a proper place.
-#[cfg(not(target_family = "wasm"))]
 use crate::downloader::Downloader;
 use crate::{
     data::{Direction, LayoutInfo, LayoutMetadata, LayoutParsingError, LayoutWithError},
@@ -617,7 +616,14 @@ impl RunPluginLocation {
                         None => PathBuf::from(stripped),
                     }
                 };
-                let path = match shellexpand::full(&path.to_string_lossy().to_string()) {
+                let path = match shellexpand::full_with_context(
+                    &path.to_string_lossy().to_string(),
+                    || {
+                        directories::BaseDirs::new()
+                            .and_then(|dirs| dirs.home_dir().to_str().map(str::to_owned))
+                    },
+                    |name| std::env::var(name).map(Some),
+                ) {
                     Ok(s) => PathBuf::from(s.as_ref()),
                     Err(e) => {
                         log::error!("Failed to shell expand plugin path: {}", e);
@@ -1601,16 +1607,9 @@ impl Layout {
             ),
         }
     }
-    #[cfg(not(target_family = "wasm"))]
     pub fn stringified_from_url(url: &str) -> Result<String, ConfigError> {
         Downloader::download_without_cache_blocking(url)
             .map_err(|e| ConfigError::DownloadError(format!("{}", e)))
-    }
-    #[cfg(target_family = "wasm")]
-    pub fn stringified_from_url(_url: &str) -> Result<String, ConfigError> {
-        // silently fail - this should not happen in plugins and legacy architecture is hard
-        let raw_layout = String::new();
-        Ok(raw_layout)
     }
     pub fn from_path_without_config(layout_path: &PathBuf) -> Result<Layout, ConfigError> {
         // (path_to_layout as String, stringified_layout, Option<path_to_swap_layout as String, stringified_swap_layout>)
@@ -1643,7 +1642,6 @@ impl Layout {
         let config = Config::from_kdl(&raw_layout, Some(config))?; // this merges the two config, with
         Ok((layout, config))
     }
-    #[cfg(not(target_family = "wasm"))]
     pub fn from_url(url: &str, config: Config) -> Result<(Layout, Config), ConfigError> {
         let raw_layout = Downloader::download_without_cache_blocking(url)
             .map_err(|e| ConfigError::DownloadError(format!("{}", e)))?;
@@ -1659,12 +1657,6 @@ impl Layout {
         let layout = Layout::from_kdl(&stringified_layout, None, None, None)?;
         let config = Config::from_kdl(&stringified_layout, Some(config))?; // this merges the two config, with
         Ok((layout, config))
-    }
-    #[cfg(target_family = "wasm")]
-    pub fn from_url(_url: &str, _config: Config) -> Result<(Layout, Config), ConfigError> {
-        Err(ConfigError::DownloadError(format!(
-            "Unsupported platform, cannot download layout from the web"
-        )))
     }
     pub fn from_path_or_default_without_config(
         layout_path: Option<&PathBuf>,

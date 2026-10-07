@@ -4,7 +4,7 @@ use zellij_utils::consts::{
     VERSION, ZELLIJ_SESSION_INFO_CACHE_DIR, ZELLIJ_SOCK_DIR,
 };
 #[allow(unused_imports)]
-use zellij_utils::data::{Event, HttpVerb, LayoutInfo, SessionInfo, WebServerStatus};
+use zellij_utils::data::{Event, LayoutInfo, SessionInfo, WebServerStatus};
 use zellij_utils::errors::{prelude::*, BackgroundJobContext, ContextType};
 use zellij_utils::input::layout::RunPlugin;
 #[allow(unused_imports)]
@@ -16,14 +16,10 @@ use zellij_utils::web_server_commands::{
     WebServerResponse,
 };
 
-use isahc::prelude::*;
-use isahc::AsyncReadResponseExt;
-use isahc::{config::RedirectPolicy, HttpClient, Request};
-
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -40,38 +36,13 @@ use crate::{ClientId, ServerInstruction};
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum BackgroundJob {
     DisplayPaneError(Vec<PaneId>, String),
-    AnimatePluginLoading(u32),                            // u32 - plugin_id
-    StopPluginLoadingAnimation(u32),                      // u32 - plugin_id
-    ReportSessionInfo(String, SessionInfo),               // String - session name
-    ReportPluginList(BTreeMap<PluginId, RunPlugin>),      // String - session name
+    ReportSessionInfo(String, SessionInfo), // String - session name
     ReportLayoutInfo((String, BTreeMap<String, String>)), // BTreeMap<file_name, pane_contents>
-    RunCommand(
-        PluginId,
-        ClientId,
-        String,
-        Vec<String>,
-        BTreeMap<String, String>,
-        PathBuf,
-        BTreeMap<String, String>,
-    ), // command, args, env_variables, cwd, context
-    WebRequest(
-        PluginId,
-        ClientId,
-        String, // url
-        HttpVerb,
-        BTreeMap<String, String>, // headers
-        Vec<u8>,                  // body
-        BTreeMap<String, String>, // context
-    ),
     HighlightPanesWithMessage(Vec<PaneId>, String),
     RenderToClients,
     QueryZellijWebServerStatus,
-    ClearHelpText {
-        client_id: ClientId,
-    },
-    ClearCommandOutputFlash {
-        pane_id: PaneId,
-    },
+    ClearHelpText { client_id: ClientId },
+    ClearCommandOutputFlash { pane_id: PaneId },
     FlashPaneBell(Vec<PaneId>),
     StopFlashPaneBell(Vec<PaneId>),
     FlashTabBell(usize),     // usize = tab_id
@@ -85,15 +56,8 @@ impl From<&BackgroundJob> for BackgroundJobContext {
     fn from(background_job: &BackgroundJob) -> Self {
         match *background_job {
             BackgroundJob::DisplayPaneError(..) => BackgroundJobContext::DisplayPaneError,
-            BackgroundJob::AnimatePluginLoading(..) => BackgroundJobContext::AnimatePluginLoading,
-            BackgroundJob::StopPluginLoadingAnimation(..) => {
-                BackgroundJobContext::StopPluginLoadingAnimation
-            },
             BackgroundJob::ReportSessionInfo(..) => BackgroundJobContext::ReportSessionInfo,
             BackgroundJob::ReportLayoutInfo(..) => BackgroundJobContext::ReportLayoutInfo,
-            BackgroundJob::RunCommand(..) => BackgroundJobContext::RunCommand,
-            BackgroundJob::WebRequest(..) => BackgroundJobContext::WebRequest,
-            BackgroundJob::ReportPluginList(..) => BackgroundJobContext::ReportPluginList,
             BackgroundJob::RenderToClients => BackgroundJobContext::ReportPluginList,
             BackgroundJob::HighlightPanesWithMessage(..) => {
                 BackgroundJobContext::HighlightPanesWithMessage
@@ -118,7 +82,6 @@ impl From<&BackgroundJob> for BackgroundJobContext {
 
 static LONG_FLASH_DURATION_MS: u64 = 1000;
 static FLASH_DURATION_MS: u64 = 400; // Doherty threshold
-static PLUGIN_ANIMATION_OFFSET_DURATION_MD: u64 = 500;
 static SESSION_METADATA_WRITE_INTERVAL_MS: u64 = 1000;
 static UPDATE_AND_REPORT_CWDS_INTERVAL_MS: u64 = 1000;
 static DEFAULT_SERIALIZATION_INTERVAL: u64 = 60000;
@@ -148,7 +111,6 @@ pub(crate) fn background_jobs_main(
 ) -> Result<()> {
     let err_context = || "failed to write to pty".to_string();
     let mut running_jobs: HashMap<BackgroundJob, Instant> = HashMap::new();
-    let mut loading_plugins: HashMap<u32, Arc<AtomicBool>> = HashMap::new(); // u32 - plugin_id
     let current_session_name = Arc::new(Mutex::new(String::default()));
     let current_session_info = Arc::new(Mutex::new(SessionInfo::default()));
     let current_session_plugin_list: Arc<Mutex<BTreeMap<PluginId, RunPlugin>>> =
@@ -172,11 +134,6 @@ pub(crate) fn background_jobs_main(
     let mut flashing_tab_bells: HashMap<usize, Arc<AtomicBool>> = HashMap::new();
     let mut nested_guest_pings: HashMap<PaneId, Arc<AtomicBool>> = HashMap::new();
 
-    let http_client = HttpClient::builder()
-        // TODO: timeout?
-        .redirect_policy(RedirectPolicy::Follow)
-        .build()
-        .ok();
     // We needn't do anything with the runtime, but it should exist at this point.
     let runtime = crate::global_async_runtime::get_tokio_runtime();
 
@@ -258,39 +215,9 @@ pub(crate) fn background_jobs_main(
                     }
                 });
             },
-            BackgroundJob::AnimatePluginLoading(pid) => {
-                let loading_plugin = Arc::new(AtomicBool::new(true));
-                if job_already_running(job, &mut running_jobs) {
-                    continue;
-                }
-                runtime.spawn({
-                    let senders = bus.senders.clone();
-                    let loading_plugin = loading_plugin.clone();
-                    async move {
-                        while loading_plugin.load(Ordering::SeqCst) {
-                            let _ = senders.send_to_screen(
-                                ScreenInstruction::ProgressPluginLoadingOffset(pid),
-                            );
-                            tokio::time::sleep(std::time::Duration::from_millis(
-                                PLUGIN_ANIMATION_OFFSET_DURATION_MD,
-                            ))
-                            .await;
-                        }
-                    }
-                });
-                loading_plugins.insert(pid, loading_plugin);
-            },
-            BackgroundJob::StopPluginLoadingAnimation(pid) => {
-                if let Some(loading_plugin) = loading_plugins.remove(&pid) {
-                    loading_plugin.store(false, Ordering::SeqCst);
-                }
-            },
             BackgroundJob::ReportSessionInfo(session_name, session_info) => {
                 *current_session_name.lock().unwrap() = session_name;
                 *current_session_info.lock().unwrap() = session_info;
-            },
-            BackgroundJob::ReportPluginList(plugin_list) => {
-                *current_session_plugin_list.lock().unwrap() = plugin_list;
             },
             BackgroundJob::ReportLayoutInfo(session_layout) => {
                 *current_session_layout.lock().unwrap() = session_layout;
@@ -303,135 +230,6 @@ pub(crate) fn background_jobs_main(
                 let _ = bus
                     .senders
                     .send_to_plugin(PluginInstruction::UpdateSessionSaveTime(timestamp_millis));
-            },
-            BackgroundJob::RunCommand(
-                plugin_id,
-                client_id,
-                command,
-                args,
-                env_variables,
-                cwd,
-                context,
-            ) => {
-                runtime.spawn({
-                    let senders = bus.senders.clone();
-                    async move {
-                        let output = tokio::process::Command::new(&command)
-                            .args(&args)
-                            .envs(env_variables)
-                            .current_dir(cwd)
-                            .stdin(std::process::Stdio::null())
-                            .stdout(std::process::Stdio::piped())
-                            .stderr(std::process::Stdio::piped())
-                            .output()
-                            .await;
-                        match output {
-                            Ok(output) => {
-                                let stdout = output.stdout.to_vec();
-                                let stderr = output.stderr.to_vec();
-                                let exit_code = output.status.code();
-                                let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-                                    Some(plugin_id),
-                                    Some(client_id),
-                                    Event::RunCommandResult(exit_code, stdout, stderr, context),
-                                )]));
-                            },
-                            Err(e) => {
-                                log::error!("Failed to run command: {}", e);
-                                let stdout = vec![];
-                                let stderr = format!("{}", e).as_bytes().to_vec();
-                                let exit_code = Some(2);
-                                let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-                                    Some(plugin_id),
-                                    Some(client_id),
-                                    Event::RunCommandResult(exit_code, stdout, stderr, context),
-                                )]));
-                            },
-                        }
-                    }
-                });
-            },
-            BackgroundJob::WebRequest(plugin_id, client_id, url, verb, headers, body, context) => {
-                runtime.spawn({
-                    let senders = bus.senders.clone();
-                    let http_client = http_client.clone();
-                    async move {
-                        async fn web_request(
-                            url: String,
-                            verb: HttpVerb,
-                            headers: BTreeMap<String, String>,
-                            body: Vec<u8>,
-                            http_client: HttpClient,
-                        ) -> Result<
-                            (u16, BTreeMap<String, String>, Vec<u8>), // status_code, headers, body
-                            isahc::Error,
-                        > {
-                            let mut request = match verb {
-                                HttpVerb::Get => Request::get(url),
-                                HttpVerb::Post => Request::post(url),
-                                HttpVerb::Put => Request::put(url),
-                                HttpVerb::Delete => Request::delete(url),
-                            };
-                            for (header, value) in headers {
-                                request = request.header(header.as_str(), value);
-                            }
-                            let mut res = if !body.is_empty() {
-                                let req = request.body(body)?;
-                                http_client.send_async(req).await?
-                            } else {
-                                let req = request.body(())?;
-                                http_client.send_async(req).await?
-                            };
-
-                            let status_code = res.status();
-                            let headers: BTreeMap<String, String> = res
-                                .headers()
-                                .iter()
-                                .filter_map(|(name, value)| match value.to_str() {
-                                    Ok(value) => Some((name.to_string(), value.to_string())),
-                                    Err(e) => {
-                                        log::error!(
-                                            "Failed to convert header {:?} to string: {:?}",
-                                            name,
-                                            e
-                                        );
-                                        None
-                                    },
-                                })
-                                .collect();
-                            let body = res.bytes().await?;
-                            Ok((status_code.as_u16(), headers, body))
-                        }
-                        let Some(http_client) = http_client else {
-                            log::error!("Cannot perform http request, likely due to a misconfigured http client");
-                            return;
-                        };
-
-                        match web_request(url, verb, headers, body, http_client).await {
-                            Ok((status, headers, body)) => {
-                                let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-                                    Some(plugin_id),
-                                    Some(client_id),
-                                    Event::WebRequestResult(status, headers, body, context),
-                                )]));
-                            },
-                            Err(e) => {
-                                log::error!("Failed to send web request: {}", e);
-                                let error_body = e.to_string().as_bytes().to_vec();
-                                let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-                                    Some(plugin_id),
-                                    Some(client_id),
-                                    Event::WebRequestResult(
-                                        400,
-                                        BTreeMap::new(),
-                                        error_body,
-                                        context,
-                                    ),
-                                )]));
-                            },
-                        }
-                    }
-                });
             },
             BackgroundJob::QueryZellijWebServerStatus => {
                 #[cfg(feature = "web_server_capability")]
@@ -712,9 +510,6 @@ pub(crate) fn background_jobs_main(
                 }
             },
             BackgroundJob::Exit => {
-                for loading_plugin in loading_plugins.values() {
-                    loading_plugin.store(false, Ordering::SeqCst);
-                }
                 for nested_guest_ping in nested_guest_pings.values() {
                     nested_guest_ping.store(false, Ordering::SeqCst);
                 }

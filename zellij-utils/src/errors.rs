@@ -23,7 +23,6 @@ use std::path::PathBuf;
 pub mod prelude {
     pub use super::FatalError;
     pub use super::LoggableError;
-    #[cfg(not(target_family = "wasm"))]
     pub use super::ToAnyhow;
     pub use super::ZellijError;
     pub use anyhow::anyhow;
@@ -686,35 +685,6 @@ pub enum ZellijError {
     FailedToStartPty,
 
     #[error(
-        "This version of zellij was built to load the core plugins from
-the globally configured plugin directory. However, a plugin wasn't found:
-
-    Plugin name: '{plugin_path}'
-    Plugin directory: '{plugin_dir}'
-
-If you're a user:
-    Please report this error to the distributor of your current zellij version
-
-If you're a developer:
-    Either make sure to include the plugins with the application (See feature
-    'disable_automatic_asset_installation'), or make them available in the
-    plugin directory.
-
-Possible fix for your problem:
-    Place the builtin plugin '.wasm' files in the plugin directory shown above,
-    or in the 'plugins' folder of the system data directory. Both are visible in
-    the output of `zellij setup --check`. This build carries no bundled plugins,
-    so `zellij setup --dump-plugins` cannot provide them.
-"
-    )]
-    BuiltinPluginMissing {
-        plugin_path: PathBuf,
-        plugin_dir: PathBuf,
-        #[source]
-        source: anyhow::Error,
-    },
-
-    #[error(
         "It seems you tried to load the following builtin plugin:
 
     Plugin name: '{plugin_path}'
@@ -757,10 +727,8 @@ open an issue on GitHub:
     RanOutOfRoomForSpans,
 }
 
-#[cfg(not(target_family = "wasm"))]
 pub use not_wasm::*;
 
-#[cfg(not(target_family = "wasm"))]
 mod not_wasm {
     use super::*;
     use crate::channels::{SenderWithContext, ASYNCOPENCALLS, OPENCALLS};
@@ -789,7 +757,10 @@ mod not_wasm {
         fn show_backtrace(&self) -> String {
             if let Ok(var) = std::env::var("RUST_BACKTRACE") {
                 if !var.is_empty() && var != "0" {
-                    return format!("\n\nPanic backtrace:\n{:?}", backtrace::Backtrace::new());
+                    return format!(
+                        "\n\nPanic backtrace:\n{:?}",
+                        std::backtrace::Backtrace::force_capture()
+                    );
                 }
             }
             "".into()

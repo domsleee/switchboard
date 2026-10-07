@@ -1,5 +1,4 @@
 use super::*;
-use fs2::FileExt;
 use std::io::Write;
 #[cfg(windows)]
 #[path = "storage_windows.rs"]
@@ -39,7 +38,7 @@ impl Storage {
             .create(true)
             .truncate(false)
             .open(root.join("lock"))?;
-        lock.try_lock_exclusive()
+        lock.try_lock()
             .map_err(|_| anyhow::anyhow!("Mesh state is already in use"))?;
         private(&root.join("lock"), false)?;
         Ok(Self {

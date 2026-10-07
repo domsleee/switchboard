@@ -5,7 +5,8 @@ mod table;
 mod text;
 
 use crate::panes::grid::Grid;
-use lazy_static::lazy_static;
+use std::sync::LazyLock;
+
 use regex::Regex;
 use vte;
 use zellij_utils::data::Style;
@@ -125,9 +126,8 @@ impl<'a> UiComponentParser<'a> {
         }
     }
     fn parse_coordinates(&self, coordinates: &str) -> Result<Option<Coordinates>> {
-        lazy_static! {
-            static ref RE: Regex = Regex::new(r"(\d*)/(\d*)/(\d*)/(\d*)").unwrap();
-        }
+        static RE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"(\d*)/(\d*)/(\d*)/(\d*)").unwrap());
         if let Some(captures) = RE.captures_iter(&coordinates).next() {
             let x = captures[1].parse::<usize>().with_context(|| {
                 format!(

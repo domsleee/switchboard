@@ -108,7 +108,7 @@ pub enum PtyInstruction {
     DumpLayoutToPlugin {
         session_layout_metadata: SessionLayoutMetadata,
         plugin_id: PluginId,
-        response_channel: crossbeam::channel::Sender<DumpSessionLayoutResponse>,
+        response_channel: crossbeam_channel::Sender<DumpSessionLayoutResponse>,
     },
     LogLayoutToHd(SessionLayoutMetadata),
     SaveSessionToDisk {
@@ -145,15 +145,15 @@ pub enum PtyInstruction {
     SendSigkillToPaneId(PaneId),
     GetPanePid {
         pane_id: PaneId,
-        response_channel: crossbeam::channel::Sender<GetPanePidResponse>,
+        response_channel: crossbeam_channel::Sender<GetPanePidResponse>,
     },
     GetPaneRunningCommand {
         pane_id: PaneId,
-        response_channel: crossbeam::channel::Sender<GetPaneRunningCommandResponse>,
+        response_channel: crossbeam_channel::Sender<GetPaneRunningCommandResponse>,
     },
     GetPaneCwd {
         pane_id: PaneId,
-        response_channel: crossbeam::channel::Sender<GetPaneCwdResponse>,
+        response_channel: crossbeam_channel::Sender<GetPaneCwdResponse>,
     },
     UpdateAndReportCwds,
     NotifyCwdFromOsc7(u32, PathBuf),

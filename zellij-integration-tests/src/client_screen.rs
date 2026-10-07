@@ -20,7 +20,7 @@ struct ReceivedBytes {
 struct ReceivedBytesWithChangeSignal {
     received_bytes: Mutex<ReceivedBytes>,
     change_signal: Condvar,
-    stdout_tap: Mutex<Option<crossbeam::channel::Sender<Vec<u8>>>>,
+    stdout_tap: Mutex<Option<crossbeam_channel::Sender<Vec<u8>>>>,
 }
 
 #[derive(Clone)]
@@ -43,7 +43,7 @@ impl ClientScreen {
         })
     }
 
-    pub fn set_stdout_tap(&self, sender: crossbeam::channel::Sender<Vec<u8>>) {
+    pub fn set_stdout_tap(&self, sender: crossbeam_channel::Sender<Vec<u8>>) {
         *self.inner.stdout_tap.lock().unwrap() = Some(sender);
     }
 

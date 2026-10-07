@@ -1,6 +1,7 @@
 //! Share the native web listener with pairing. The relay remains loopback-only.
 use super::*;
 use axum::extract::FromRequestParts;
+use rustls_pki_types::pem::PemObject;
 use serde::Serialize;
 use std::{net::SocketAddr, path::PathBuf};
 
@@ -199,7 +200,7 @@ async fn prepare(
     );
     if listener.ip().is_unspecified() || listener.ip() == ip {
         let pem = std::fs::read(certificate.ok_or_else(|| anyhow::anyhow!("HTTPS required"))?)?;
-        let cert = rustls_pemfile::certs(&mut pem.as_slice())
+        let cert = rustls_pki_types::CertificateDer::pem_slice_iter(&pem)
             .next()
             .transpose()?
             .ok_or_else(|| anyhow::anyhow!("Missing certificate"))?;
@@ -225,8 +226,7 @@ async fn prepare(
     );
     let socket = std::net::TcpListener::bind((ip, listener.port()))?;
     socket.set_nonblocking(true)?;
-    let key = rustls_pemfile::private_key(&mut registration.key.as_bytes())?
-        .ok_or_else(|| anyhow::anyhow!("Missing key"))?;
+    let key = rustls_pki_types::PrivateKeyDer::from_pem_slice(registration.key.as_bytes())?;
     let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))

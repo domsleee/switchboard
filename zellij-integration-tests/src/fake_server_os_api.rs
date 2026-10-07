@@ -18,12 +18,12 @@ use crate::fake_pty::{SharedPtys, FAKE_PID_BASE};
 
 #[derive(Clone)]
 struct NonBlockingClientSender {
-    buffer_tx: crossbeam::channel::Sender<ServerToClientMsg>,
+    buffer_tx: crossbeam_channel::Sender<ServerToClientMsg>,
 }
 
 impl NonBlockingClientSender {
     fn new(mut ipc_sender: IpcSenderWithContext<ServerToClientMsg>) -> Self {
-        let (buffer_tx, buffer_rx) = crossbeam::channel::bounded::<ServerToClientMsg>(5000);
+        let (buffer_tx, buffer_rx) = crossbeam_channel::bounded::<ServerToClientMsg>(5000);
         std::thread::Builder::new()
             .name("non_blocking_client_sender".to_string())
             .spawn(move || {

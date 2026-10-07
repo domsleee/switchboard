@@ -1,9 +1,9 @@
-use once_cell::sync::OnceCell;
+use std::sync::OnceLock;
 use tokio::runtime::Runtime;
 
 // Global tokio runtime for async I/O operations
 // Shared between plugin downloads, timers, and action completion tracking
-static TOKIO_RUNTIME: OnceCell<Runtime> = OnceCell::new();
+static TOKIO_RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
 pub fn get_tokio_runtime() -> &'static Runtime {
     TOKIO_RUNTIME.get_or_init(|| {
