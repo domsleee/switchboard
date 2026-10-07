@@ -3,6 +3,7 @@ mod crypto;
 mod direct;
 pub(super) mod discovery;
 mod storage;
+mod sync;
 #[cfg(test)]
 mod tests;
 pub(super) mod transport;
@@ -93,7 +94,7 @@ impl Invitation {
             crypto::decode(&invite.secret)?.len() == 32
                 && invite.expires > now
                 && invite.expires <= now + 600 + CLOCK_SKEW,
-            "Invitation expired; ask the administrator for a new link"
+            "Invitation expired; create a new invitation"
         );
         Ok(invite)
     }
@@ -430,10 +431,6 @@ impl Mesh {
             db.membership = Some(self.identity.sign(membership)?);
         }
         let membership = &db.membership.as_ref().unwrap().value;
-        anyhow::ensure!(
-            membership.administrator == local.id,
-            "Only the mesh administrator can create invitations"
-        );
         anyhow::ensure!(membership.name == mesh_name, "Use the existing mesh name");
         let invite = Invitation {
             id: secret(),
@@ -492,10 +489,6 @@ impl Mesh {
             .membership
             .clone()
             .ok_or_else(|| anyhow::anyhow!("Mesh unavailable"))?;
-        anyhow::ensure!(
-            membership.value.administrator == local.id,
-            "This computer is not the administrator"
-        );
         let value = &attempt.request.value;
         if let Some(sent) = db.direct_sent.get(&value.invitation) {
             anyhow::ensure!(
@@ -518,7 +511,7 @@ impl Mesh {
                 .ok_or_else(|| anyhow::anyhow!("Enrollment incomplete; retry"))?;
             return Ok(Decision::Approved {
                 approved: Approved {
-                    membership,
+                    membership: self.identity.sign(membership.value)?,
                     credential: self.identity.seal(&local, &value.member, 1, credential)?,
                 },
             });
@@ -582,20 +575,13 @@ impl Mesh {
     ) -> anyhow::Result<()> {
         let mut committed = self.database.lock().await;
         let mut db = committed.clone();
-        let local = db
-            .local
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("Computer unavailable"))?;
+        anyhow::ensure!(db.local.is_some(), "Computer unavailable");
         let mut membership = db
             .membership
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Mesh unavailable"))?
             .value
             .clone();
-        anyhow::ensure!(
-            membership.administrator == local.id,
-            "Only the administrator can approve pairing"
-        );
         let record = db
             .invitations
             .get_mut(invite_id)
@@ -651,8 +637,7 @@ impl Mesh {
         anyhow::ensure!(
             membership.id == invitation.mesh_id
                 && membership.name == invitation.mesh_name
-                && membership.administrator == invitation.administrator.id
-                && membership.members.get(&membership.administrator)
+                && membership.members.get(&invitation.administrator.id)
                     == Some(&invitation.administrator),
             "Membership does not match the invitation"
         );
@@ -763,7 +748,7 @@ impl Mesh {
         let db = self.database.lock().await;
         let pending: Vec<_> = db.invitations.iter().flat_map(|(id, record)| record.requests.values().filter(|p| !p.denied && record.approved.is_none() && !record.cancelled && record.expires > now()).map(move |p| json!({"invitation": id, "request": p.request.request, "computer": p.request.member.name, "address": p.request.member.endpoint, "code": p.code}))).collect();
         let members: Vec<_> = db.membership.as_ref().map(|m| m.value.members.values().map(|member| json!({ "id": member.id, "name": member.name, "address": member.endpoint, "local": db.local.as_ref().is_some_and(|l| l.id == member.id), "state": if db.incoming.contains_key(&member.id) { "paired" } else { "credential_distribution_pending" } })).collect()).unwrap_or_default();
-        json!({"incoming":direct::incoming(&db,now()),"sent":direct::sent(&db,now()),"configured": db.local.is_some(), "gateway_available": gateway_available, "computer": db.local.as_ref().map(|m| json!({"name":m.name,"address":m.endpoint})), "mesh": db.membership.as_ref().map(|m| &m.value.name), "administrator": db.membership.as_ref().is_some_and(|m| db.local.as_ref().is_some_and(|l| l.id == m.value.administrator)), "requests":pending, "members":members, "joining": db.joining.as_ref().map(|j| json!({"computer":j.invitation.administrator.name,"mesh":j.invitation.mesh_name,"code":verification(&j.invitation,&j.attempt.request.value).ok()}))})
+        json!({"incoming":direct::incoming(&db,now()),"sent":direct::sent(&db,now()),"configured": db.local.is_some(), "gateway_available": gateway_available, "computer": db.local.as_ref().map(|m| json!({"name":m.name,"address":m.endpoint})), "mesh": db.membership.as_ref().map(|m| &m.value.name), "administrator": true, "can_invite":true, "group_sync":true, "requests":pending, "members":members, "joining": db.joining.as_ref().map(|j| json!({"computer":j.invitation.administrator.name,"mesh":j.invitation.mesh_name,"code":verification(&j.invitation,&j.attempt.request.value).ok()}))})
     }
 }
 

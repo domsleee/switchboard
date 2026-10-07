@@ -9,10 +9,11 @@ permissions:
   contents: read
 
 env:
-  CARGO_PROFILE_RELEASE_LTO: fat
+  # Thin LTO with parallel codegen; dependencies already come from rust-cache.
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
 
 jobs:
-  windows:
+  checks:
     runs-on: windows-latest
     steps:
       - name: Enable long paths
@@ -37,6 +38,17 @@ jobs:
           powershell -NoLogo -NoProfile -NonInteractive -File tools/switchboard/update_services_windows.test.ps1
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python tools/switchboard/auto_update.test.py
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: Enable long paths
+        run: git config --global core.longpaths true
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          rustflags: ""
+      - uses: ilammy/setup-nasm@v1
       - name: Build native server and relay
         run: cargo build --release --features web_server_capability
       - name: Verify packaged relay command

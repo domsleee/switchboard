@@ -511,11 +511,12 @@ window.addEventListener('message',event=>{
   }else if(event.data?.type==='zellij-focus-failed'){
     if(entry.requestedPane?.focus_id!==event.data.focus_id)return;
     entry.requestedPane=null;
+    entry.focusPending=false;
     if(!entry.frame.classList.contains('active'))return;
     const state=event.data.payload || entry.state;
     entry.state=state;const tab=activeTab(entry);
     if(tab){selected=tabKey(entry,tab);render();focus({entry,tab});}
-    setStatus('That terminal is unavailable. Choose another tab.',true);
+    setStatus(event.data.message || 'That terminal is unavailable. Choose another tab.',true);
   }else if(event.data?.type==='zellij-open-new-tab'){
     if(entry.frame.classList.contains('active')&&!document.querySelector('dialog[open]'))$('new-tab').click();
   }else if(event.data?.type==='zellij-close-tab'){

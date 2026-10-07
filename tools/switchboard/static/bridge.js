@@ -5,7 +5,7 @@
   let latest;
   let escapeQueue = Promise.resolve();
   let escapeStatus;
-  let pendingFocus, desiredFocus, focusInputState, focusId;
+  let pendingFocus, desiredFocus, focusInputState, focusId, focusTimeout;
   let pendingNewTab;
   let terminalSocket;
   let scrollport, lastViewport, viewportTab, bottomButton, claimedViewportTab;
@@ -112,16 +112,32 @@
     pendingNewTab=null;
   }
   function dispatchFocus() {
+    clearTimeout(focusTimeout);
     pendingFocus=desiredFocus;
-    window.__zjSendControl({type:'FocusPane',pane_id:pendingFocus.pane_id,is_plugin:pendingFocus.is_plugin});
+    // Control sends can be dropped during reconnect, and a no-op focus may
+    // produce no MobileState. Never leave input disabled waiting forever.
+    focusTimeout=setTimeout(()=>failFocus('Terminal switch timed out. Try selecting the tab again.'),5000);
+    try {
+      window.__zjSendControl({type:'FocusPane',pane_id:pendingFocus.pane_id,is_plugin:pendingFocus.is_plugin});
+    } catch (_) {
+      failFocus('Terminal switch failed. Check the connection and try again.');
+    }
   }
   function releaseFocus() {
+    if(focusTimeout)clearTimeout(focusTimeout);
+    focusTimeout=null;
     if(focusInputState && window.term){
       window.term.options.disableStdin=focusInputState.disabled;
       window.term.element.style.pointerEvents=focusInputState.pointer;
     }
     if(pendingFocus && escapeStatus)showEscapeStatus('');
     pendingFocus=null;desiredFocus=null;focusInputState=null;
+  }
+  function failFocus(message) {
+    releaseFocus();
+    parent.postMessage({type:'zellij-focus-failed',host,focus_id:focusId,payload:latest,message},location.origin);
+    showEscapeStatus(message,true);
+    window.term?.focus();
   }
   function rejectFocus() {
     if(desiredFocus.pane_id!==pendingFocus.pane_id || desiredFocus.is_plugin!==pendingFocus.is_plugin){
@@ -133,9 +149,7 @@
       pendingFocus=null;dispatchFocus();
       return;
     }
-    releaseFocus();
-    parent.postMessage({type:'zellij-focus-failed',host,focus_id:focusId,payload:latest},location.origin);
-    showEscapeStatus('That terminal is unavailable. Choose another tab.',true);
+    failFocus('That terminal is unavailable. Choose another tab.');
   }
   function hasDialog() {
     if (document.querySelector('dialog[open], .security-modal, [aria-modal="true"]')) return true;
