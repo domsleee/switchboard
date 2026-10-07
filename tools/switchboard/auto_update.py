@@ -314,6 +314,12 @@ def main():
             bundle = Path(temporary)
             run('gh', 'run', 'download', str(build['id']), '--repo', REPO,
                 '--name', 'switchboard-' + target, '--dir', bundle, timeout=300)
+            if not (bundle / 'bundle.json').is_file():
+                state['run_number'] = build['run_number']
+                state['notice'] = 'Waiting for a newer main build with an automatic-update bundle.'
+                save(state_path, state)
+                print(state['notice'])
+                return
             manifest = validate_bundle(bundle, build['head_sha'], target)
             if args.check:
                 print('Verified update ' + manifest['commit'])
@@ -325,6 +331,7 @@ def main():
                 save(handoff, {'pid': os.getpid()})
                 apply_bundle(bundle, manifest, args, state, state_path)
                 state.pop('error', None)
+                state.pop('notice', None)
                 print('Updated connection services to ' + manifest['commit'])
             except Exception as error:
                 state['error'] = str(error)
