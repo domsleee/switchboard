@@ -963,6 +963,10 @@ function installCustomKeyHandler(term, sendFunction) {
             if (isMac() && ev.key == "v" && ev.metaKey) {
                 return;
             }
+            // Leave Cmd+1-9 to the browser's tab switching: no preventDefault, no xterm.
+            if (ev.metaKey && !ev.ctrlKey && !ev.altKey && !ev.shiftKey && /^Digit[1-9]$/.test(ev.code)) {
+                return false;
+            }
             // xterm.js sends a bare CR for Ctrl+Enter, dropping the modifier.
             if (hasModifiersToHandle(ev) || ((ev.ctrlKey || ev.shiftKey) && ev.key == "Enter")) {
                 ev.preventDefault();
