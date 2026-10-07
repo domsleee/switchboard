@@ -4,6 +4,8 @@ use super::*;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct Update {
+    #[serde(default)]
+    board_hosts: Vec<board_host::Selection>,
     membership: Signed<Membership>,
     credential: Envelope,
 }
@@ -46,6 +48,7 @@ impl Mesh {
             );
         }
         Ok(Update {
+            board_hosts: db.board_hosts.clone(),
             // Keep the inviter's signature: an existing peer may not know this
             // newly joined computer yet, but already trusts its inviter.
             membership: membership.clone(),
@@ -133,8 +136,13 @@ impl Mesh {
         if changed {
             db.membership = Some(self.identity.sign(merged)?);
         }
+        let board_changed = self.merge_board_hosts(&mut db, &update.board_hosts)?;
         let response = self.sync_payload(&mut db, peer)?;
-        if changed || credential_changed || db.outgoing.len() != committed.outgoing.len() {
+        if changed
+            || board_changed
+            || credential_changed
+            || db.outgoing.len() != committed.outgoing.len()
+        {
             self.save(&db)?;
             *committed = db;
         }

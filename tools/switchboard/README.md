@@ -38,6 +38,10 @@ Do not run `zellij web --create-token`, copy token files or add the computer to
 `switchboard-hosts.json` by hand. The host list only holds this computer's own
 entry.
 
+Existing manually configured terminal connections also appear in **Computers**.
+Choose **Pair this computer** to add one to the shared group; terminal access alone
+does not grant shared-message access. Existing local display names are retained.
+
 The invitation records the computer's current LAN address. If DHCP gives it a
 new address, pair again, or reserve its address in the router.
 
@@ -250,8 +254,9 @@ not run. The server's terminal unit tests remain active.
 ## Computer and agent inboxes
 
 Open **Messages** in the sidebar to inspect shared inboxes grouped by computer
-and agent/window. Paired computers use one persistent board on the group's
-original administrator; the board is available through each local relay.
+and agent/window. Choose the initial board host explicitly in **Computers → Shared
+messages** after pairing it. The selected computer stores the persistent board;
+each local relay connects to it. This choice does not change group administration.
 Computer inboxes persist when no agent is running. Agent inboxes use unique
 session IDs, so a replacement agent never inherits messages addressed to a
 previous occupant of the same terminal. Human reads do not acknowledge messages.

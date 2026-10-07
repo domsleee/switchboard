@@ -1,4 +1,4 @@
-//! A group's original administrator owns its durable board. Existing paired
+//! An explicitly selected computer owns the durable board. Existing paired
 //! gateway credentials authenticate callers; a disconnected host never forks it.
 use super::*;
 
@@ -7,7 +7,7 @@ const PEER_PREFIX: &str = "/mesh/board/";
 const BODY_LIMIT: usize = 64 * 1024 * 6 + 16 * 1024;
 
 fn unavailable() -> Response {
-    (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"The shared message board is unavailable. Connect to the computer that created this group."}))).into_response()
+    (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"The selected message board computer is unavailable. Connect to that computer; no local fallback board is started."}))).into_response()
 }
 
 async fn bounded(request: Request) -> Result<Request, Response> {
@@ -36,18 +36,31 @@ impl Mesh {
             if membership.value.members.get(&local.id) != Some(local) {
                 return unavailable();
             }
-            if membership.value.administrator == local.id {
+            let Some(board_host) = Self::board_host_id(&db) else {
+                let status = self.board_host_status(&db);
+                let error = match status["state"].as_str() {
+                    Some("legacy_database") => {
+                        "An existing board database requires migration before selecting a host."
+                    },
+                    Some("conflict") => {
+                        "Conflicting board host selections; the board is blocked to prevent a fork."
+                    },
+                    _ => "Select the initial shared message board computer in Computers.",
+                };
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({"configured":false,"board_host":status,"error":error})),
+                )
+                    .into_response();
+            };
+            if board_host == local.id {
                 drop(db);
                 return self.hosted_board(request, None).await;
             }
-            if !membership
-                .value
-                .members
-                .contains_key(&membership.value.administrator)
-            {
+            if !membership.value.members.contains_key(board_host) {
                 return unavailable();
             }
-            self.host(&format!("mesh-{}", membership.value.administrator))
+            self.host(&format!("mesh-{board_host}"))
         };
         let Some(host) = host else {
             return unavailable();
@@ -100,7 +113,8 @@ impl Mesh {
             return unavailable();
         };
         let membership = &signed.value;
-        if membership.administrator != local.id || membership.members.get(&local.id) != Some(local)
+        if Self::board_host_id(&db) != Some(local.id.as_str())
+            || membership.members.get(&local.id) != Some(local)
         {
             return unavailable();
         }
@@ -124,10 +138,7 @@ impl Mesh {
             .values()
             .map(|m| (m.id.clone(), m.name.clone()))
             .collect();
-        let database = self
-            .storage
-            .root
-            .join(format!("board-{}.sqlite3", hash(membership.id.as_bytes())));
+        let database = self.board_database(&membership.id);
         // This request is entering a separate router. Its gateway/relay wildcard
         // parameters must not be combined with the board's resource parameters.
         request.extensions_mut().clear();

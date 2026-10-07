@@ -25,8 +25,9 @@
       if (!response.ok) {
         let body = {};
         try { body = await response.json(); } catch {}
+        if (typeof body.error === 'string' && body.error.trim()) throw Error(body.error);
         if (body.configured === false || body.code === 'not_configured') {
-          throw Error('Shared message board is not configured. Open Manage computers to pair your computers.');
+          throw Error('Shared message board is not configured. Open Manage computers to pair your computers and choose a message board host.');
         }
         throw Error(typeof body.error === 'string' ? body.error : 'Message board unavailable. Check the shared board connection and try Refresh.');
       }
@@ -56,12 +57,26 @@
     button.addEventListener('click', () => choose(inbox));
     return button;
   }
+  async function boardHost() {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2000);
+    try {
+      const response = await fetch('/api/mesh/board-host', {cache: 'no-store', signal: controller.signal});
+      return response.ok ? await response.json() : null;
+    } catch (_) { return null; } finally { clearTimeout(timer); }
+  }
   async function loadDirectory() {
     const version = ++directoryVersion;
     status('status', 'Loading inboxes…');
     try {
-      const data = await get('inboxes');
+      const [board, result] = await Promise.all([boardHost(), get('inboxes').then(data => ({data}), error => ({error}))]);
       if (version !== directoryVersion) return;
+      $('board-host').textContent = board?.state === 'selected' ? `Message board host: ${board.host_name || board.host_id}`
+        : board?.state === 'unconfigured' ? 'Choose a message board host in Manage computers.'
+        : board?.state === 'conflict' ? 'Message board host conflict. Open Manage computers for details.'
+        : board?.state === 'legacy_database' ? 'Existing message board needs migration. Open Manage computers for details.' : '';
+      if (result.error) throw result.error;
+      const data = result.data;
       $('inboxes').replaceChildren();
       const visibleInboxes = new Set();
       for (const machine of data.machines) {

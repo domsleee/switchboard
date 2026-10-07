@@ -7,6 +7,7 @@
   let previewLink = null;
   let previewVersion = 0, previewTimer;
   let defaultsLoaded = false;
+  let configuredHosts = [];
   const show = (message, error = false) => {
     $('message').textContent = message;
     $('message').className = error ? 'error' : '';
@@ -19,10 +20,10 @@
     return response.json();
   }
   async function action(fn) {
-    const buttons = [...document.querySelectorAll('button')];
-    buttons.forEach(button => button.disabled = true);
+    const buttons = [...document.querySelectorAll('button')].map(button => [button, button.disabled]);
+    buttons.forEach(([button]) => button.disabled = true);
     try { await fn(); } catch (error) { show(error.message || 'Pairing unavailable. Check the network and retry.', true); }
-    finally { buttons.forEach(button => button.disabled = false); }
+    finally { buttons.forEach(([button, disabled]) => button.disabled = disabled); }
   }
   function local() {
     if (!$('address').value.trim()) {
@@ -54,16 +55,21 @@
     if (refreshing) return;
     refreshing = true;
     try {
-      const state = await api('');
+      let state, meshError;
+      try { state = await api(''); } catch (error) {
+        meshError = error;
+        state = {members: [], requests: []};
+        show('Pairing is unavailable. Existing terminal connections are listed below.', true);
+      }
       pending = Boolean(state.joining);
       const incoming = state.incoming || [], sent = state.sent || [];
       $('incoming-section').hidden = !incoming.length;
       renderPairing(incoming, sent);
+      renderBoardHost(state.board_host);
 
       $('receive-requests').hidden = Boolean(state.configured);
       $('retry-gateway').hidden = !state.configured || state.gateway_available !== false;
       $('mesh-title').textContent = state.mesh || 'Your computers';
-      $('catalog').hidden = !state.members.length && !state.requests.length;
       if (state.computer) {
         $('computer-name').value = state.computer.name;
         $('address').value = state.computer.address;
@@ -79,6 +85,11 @@
         $('joining-description').textContent = `Waiting for ${state.joining.computer} to approve joining ${state.joining.mesh}.`;
         $('joining-code').textContent = state.joining.code || '';
       }
+      // Configured terminal connections exist before pairing and must stay discoverable.
+      try {
+        const response = await fetch('/api/hosts?summary=1', {cache: 'no-store'});
+        if (response.ok) configuredHosts = await response.json();
+      } catch (_) {}
       const hosts = state.members.some(member => !member.local && member.state === 'paired')
         ? await fetch('/api/hosts', {cache: 'no-store'}).then(r => r.ok ? r.json() : []).catch(() => []) : [];
       // Build before swapping, and only swap on change, so polling never blanks the list.
@@ -98,7 +109,30 @@
         }
         cards.push(card);
       }
-      const memberSignature = JSON.stringify(cards.map(card => card.textContent));
+      const endpoints = new Set(state.members.map(member => endpoint(member.address)).filter(Boolean));
+      const hasLocalMember = state.members.some(member => member.local);
+      for (const host of configuredHosts) {
+        if (!host.configured || !host.address) continue;
+        const identity = endpoint(host.pairing_address || host.address);
+        if ((host.local && hasLocalMember) || (identity && endpoints.has(identity))) continue;
+        if (identity) endpoints.add(identity);
+        const card = document.createElement('div'); card.className = 'card';
+        const title = document.createElement('strong'); title.textContent = host.name;
+        const address = document.createElement('p'); address.textContent = host.address;
+        const status = document.createElement('span');
+        status.textContent = host.local ? 'This computer · configured terminal connection'
+          : 'Configured terminal connection · not paired for shared messages';
+        card.append(title, address, status);
+        if (!host.local && host.pairing_address) {
+          const pair = document.createElement('button'); pair.textContent = 'Pair this computer';
+          pair.disabled = Boolean(meshError);
+          pair.onclick = () => action(() => addComputer(host.pairing_address));
+          card.append(pair);
+        }
+        cards.push(card);
+      }
+      $('catalog').hidden = !cards.length && !state.requests.length;
+      const memberSignature = JSON.stringify([Boolean(meshError), cards.map(card => card.textContent)]);
       if ($('members').dataset.signature !== memberSignature) {
         $('members').dataset.signature = memberSignature;
         $('members').replaceChildren(...cards);
@@ -124,6 +158,45 @@
       }
       }
     } finally { refreshing = false; }
+  }
+  function renderBoardHost(board) {
+    $('board-section').hidden = !board;
+    if (!board) return;
+    const signature = JSON.stringify(board);
+    if ($('board-section').dataset.signature === signature) return;
+    $('board-section').dataset.signature = signature;
+    $('board-form').hidden = !board.can_select;
+    $('board-description').textContent = board.state === 'selected'
+      ? `Message board: ${board.host_name || board.host_id}. Keep this computer running to use shared inboxes.`
+      : board.state === 'conflict' ? 'Your computers disagree about the message board host. Resolve this before using shared messages.'
+      : board.state === 'legacy_database' ? 'An existing message board needs migration before a host can be selected. Its messages have been kept.'
+      : board.can_select ? 'Choose which paired computer will store your shared messages.'
+      : 'Pair your computers before choosing where to store shared messages.';
+    $('board-host').replaceChildren();
+    const prompt = document.createElement('option'); prompt.value = ''; prompt.textContent = 'Choose a paired computer';
+    $('board-host').append(prompt);
+    for (const candidate of board.candidates || []) {
+      const option = document.createElement('option'); option.value = candidate.id; option.textContent = candidate.name;
+      $('board-host').append(option);
+    }
+  }
+  $('board-form').onsubmit = event => {
+    event.preventDefault();
+    if (!$('board-host').value) return;
+    action(async () => {
+      const board = await api('/board-host', {host_id: $('board-host').value});
+      renderBoardHost(board);
+      show(`Shared messages are hosted by ${board.host_name || board.host_id}.`);
+      await refresh();
+    });
+  };
+  function endpoint(address) {
+    try { return new URL(address).origin; } catch (_) { return null; }
+  }
+  async function addComputer(target) {
+    const result = await api('/add', {target, name: $('mesh-name').value.trim(), ...local()});
+    show(`Request sent to ${result.computer}. Compare code ${result.code} on the other computer.`);
+    await refresh();
   }
   function renderPairing(incoming, sent) {
     // Polls must not replace a button while someone is focusing or clicking it.
@@ -161,11 +234,7 @@
     await api('/ready',local()); show('Ready to receive connection requests.'); await refresh();
   });
   $('add-form').onsubmit=event=>{
-    event.preventDefault(); action(async()=>{
-      const result=await api('/add',{target:$('target-address').value.trim(),name:$('mesh-name').value.trim(),...local()});
-      show(`Request sent to ${result.computer}. Compare code ${result.code} on the other computer.`);
-      await refresh();
-    });
+    event.preventDefault(); action(() => addComputer($('target-address').value.trim()));
   };
   function clearInvitation() {
     invitationId = null; $('invitation-link').value = ''; $('invitation').hidden = true;

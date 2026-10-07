@@ -100,6 +100,11 @@ async fn shared_board_routes_three_computers_to_one_durable_authenticated_host()
         .handle(handle.clone());
     let router = transport::gateway_router(mac.clone());
     let task = tokio::spawn(async move { server.serve(router.into_make_service()).await.unwrap() });
+    windows.select_board_host(&mac_id).await.unwrap();
+    laptop
+        .exchange(mac.prepare_sync(&laptop_id).await.unwrap())
+        .await
+        .unwrap();
     let (status, sender) = board_call(
         &windows,
         Method::POST,
@@ -1481,4 +1486,255 @@ async fn group_sync_merges_concurrent_additions_and_rejects_untrusted_updates() 
     // Replaying the earlier valid roster must not remove the concurrent addition.
     a.exchange(update).await.unwrap();
     assert_eq!(a.hosts().len(), 4);
+}
+
+#[tokio::test]
+async fn explicit_board_host_is_independent_of_administrator_and_syncs_to_new_members() {
+    let temp = tempfile::tempdir().unwrap();
+    let mac = machine(&temp.path().join("mac"), "Mac", "https://192.0.2.1:8091").await;
+    let windows = machine(
+        &temp.path().join("windows"),
+        "Windows",
+        "https://192.0.2.2:8091",
+    )
+    .await;
+    let invite = invitation(&mac, 1000).await;
+    let (_, approval) = approved(&mac, &windows, &invite, 1000).await;
+    mac.complete(windows.install(approval, &invite).await.unwrap())
+        .await
+        .unwrap();
+    let mac_id = mac.database.lock().await.local.as_ref().unwrap().id.clone();
+    let windows_id = windows
+        .database
+        .lock()
+        .await
+        .local
+        .as_ref()
+        .unwrap()
+        .id
+        .clone();
+    assert_eq!(
+        board_call(&mac, Method::GET, "inboxes", Value::Null)
+            .await
+            .0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let stale = windows.prepare_sync(&mac_id).await.unwrap();
+    assert_eq!(
+        windows.select_board_host(&windows_id).await.unwrap()["host_id"],
+        windows_id
+    );
+    mac.exchange(windows.prepare_sync(&mac_id).await.unwrap())
+        .await
+        .unwrap();
+    mac.exchange(stale).await.unwrap(); // Older peers cannot erase an explicit selection.
+    assert_eq!(
+        Mesh::board_host_id(&*mac.database.lock().await),
+        Some(windows_id.as_str())
+    );
+    assert_eq!(
+        mac.database
+            .lock()
+            .await
+            .membership
+            .as_ref()
+            .unwrap()
+            .value
+            .administrator,
+        mac_id
+    );
+    assert!(mac.select_board_host(&mac_id).await.is_err());
+    assert_eq!(
+        windows.select_board_host(&windows_id).await.unwrap()["state"],
+        "selected"
+    );
+    assert_eq!(
+        board_call(
+            &windows,
+            Method::POST,
+            "participants",
+            json!({"name":"worker","project":"p"})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let group = mac
+        .database
+        .lock()
+        .await
+        .membership
+        .as_ref()
+        .unwrap()
+        .value
+        .id
+        .clone();
+    assert!(!mac.board_database(&group).exists());
+    let laptop = machine(
+        &temp.path().join("laptop"),
+        "Laptop",
+        "https://192.0.2.3:8091",
+    )
+    .await;
+    let invite = invitation(&mac, 1001).await;
+    let (_, approval) = approved(&mac, &laptop, &invite, 1001).await;
+    mac.complete(laptop.install(approval, &invite).await.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        Mesh::board_host_id(&*laptop.database.lock().await),
+        Some(windows_id.as_str())
+    );
+    let persisted: Database =
+        serde_json::from_slice(&std::fs::read(temp.path().join("windows/state.json")).unwrap())
+            .unwrap();
+    assert_eq!(Mesh::board_host_id(&persisted), Some(windows_id.as_str()));
+}
+
+#[tokio::test]
+async fn board_host_selection_rejects_existing_database_and_signed_conflicts_fail_closed() {
+    let temp = tempfile::tempdir().unwrap();
+    let mac = machine(&temp.path().join("mac"), "Mac", "https://192.0.2.1:8091").await;
+    let windows = machine(
+        &temp.path().join("windows"),
+        "Windows",
+        "https://192.0.2.2:8091",
+    )
+    .await;
+    let invite = invitation(&mac, 1000).await;
+    let (_, approval) = approved(&mac, &windows, &invite, 1000).await;
+    mac.complete(windows.install(approval, &invite).await.unwrap())
+        .await
+        .unwrap();
+    let mac_id = mac.database.lock().await.local.as_ref().unwrap().id.clone();
+    let windows_id = windows
+        .database
+        .lock()
+        .await
+        .local
+        .as_ref()
+        .unwrap()
+        .id
+        .clone();
+    let group = mac
+        .database
+        .lock()
+        .await
+        .membership
+        .as_ref()
+        .unwrap()
+        .value
+        .id
+        .clone();
+    let database = mac.board_database(&group);
+    std::fs::write(&database, "existing database must not be overwritten").unwrap();
+    assert!(mac
+        .select_board_host(&mac_id)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("migration"));
+    let (status, body) = board_call(&mac, Method::GET, "inboxes", Value::Null).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["board_host"]["state"], "legacy_database");
+    assert_eq!(
+        std::fs::read_to_string(&database).unwrap(),
+        "existing database must not be overwritten"
+    );
+    std::fs::remove_file(database).unwrap();
+    // Two initial decisions made while disconnected cannot overwrite each other on sync.
+    mac.select_board_host(&mac_id).await.unwrap();
+    windows.select_board_host(&windows_id).await.unwrap();
+    assert_eq!(
+        board_call(
+            &mac,
+            Method::POST,
+            "participants",
+            json!({"name":"preserved","project":"p"})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let before = std::fs::read(mac.board_database(&group)).unwrap();
+    let reply = mac
+        .exchange(windows.prepare_sync(&mac_id).await.unwrap())
+        .await
+        .unwrap();
+    windows.exchange(reply).await.unwrap();
+    for mesh in [&mac, &windows] {
+        assert_eq!(
+            mesh.board_host_status(&*mesh.database.lock().await)["state"],
+            "conflict"
+        );
+        assert_eq!(
+            board_call(mesh, Method::GET, "inboxes", Value::Null)
+                .await
+                .0,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        let persisted: Database =
+            serde_json::from_slice(&std::fs::read(mesh.storage.root.join("state.json")).unwrap())
+                .unwrap();
+        assert_eq!(persisted.board_hosts.len(), 2);
+    }
+    assert_eq!(std::fs::read(mac.board_database(&group)).unwrap(), before);
+    assert!(!windows.board_database(&group).exists());
+}
+
+#[tokio::test]
+async fn board_host_approval_rejects_forgery_unpaired_host_and_cross_group_replay() {
+    let temp = tempfile::tempdir().unwrap();
+    let mac = machine(&temp.path().join("mac"), "Mac", "https://192.0.2.1:8091").await;
+    let windows = machine(
+        &temp.path().join("windows"),
+        "Windows",
+        "https://192.0.2.2:8091",
+    )
+    .await;
+    let invite = invitation(&mac, 1000).await;
+    let (_, approval) = approved(&mac, &windows, &invite, 1000).await;
+    mac.complete(windows.install(approval, &invite).await.unwrap())
+        .await
+        .unwrap();
+    let db = windows.database.lock().await;
+    let windows_id = db.local.as_ref().unwrap().id.clone();
+    let membership = &db.membership.as_ref().unwrap().value;
+    let mac_id = membership.administrator.clone();
+    let choice: board_host::Choice = serde_json::from_value(
+        json!({"group_id":membership.id,"host_id":windows_id,"selector_id":mac_id}),
+    )
+    .unwrap();
+    drop(db);
+    assert!(windows
+        .approve_board_host(windows.identity.sign(choice.clone()).unwrap())
+        .await
+        .is_err());
+    let mut wrong_group = serde_json::to_value(&choice).unwrap();
+    wrong_group["group_id"] = json!("another group");
+    assert!(windows
+        .approve_board_host(
+            mac.identity
+                .sign(serde_json::from_value(wrong_group).unwrap())
+                .unwrap()
+        )
+        .await
+        .is_err());
+    assert!(mac.select_board_host("unpaired-legacy-host").await.is_err());
+    windows
+        .approve_board_host(mac.identity.sign(choice).unwrap())
+        .await
+        .unwrap();
+    let mut forged = serde_json::to_value(windows.prepare_sync(&mac_id).await.unwrap()).unwrap();
+    forged["board_hosts"][0]["approval"]["signature"] = json!("forged");
+    assert!(mac
+        .exchange(serde_json::from_value(forged).unwrap())
+        .await
+        .is_err());
+    assert!(mac.database.lock().await.board_hosts.is_empty());
+
+    assert_eq!(
+        Mesh::board_host_id(&*windows.database.lock().await),
+        Some(windows_id.as_str())
+    );
 }

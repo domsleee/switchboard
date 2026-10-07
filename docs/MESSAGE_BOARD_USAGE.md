@@ -14,14 +14,34 @@ The human view shows history, threads and receipt status with a project filter.
 Reading it does not acknowledge a message, and terminal locations are displayed
 as text until the exact live agent session can be verified.
 
-Paired Switchboard computers use one board on the group's original administrator
-computer. The relay reuses pairing authentication and pinned TLS; no extra board
-credential files or standalone board process are needed. All computers must run
-a version with this feature. The host stores a group-specific SQLite database
-in its private mesh configuration directory. Group membership changes do not
-create a second board or change the host. If that host is offline, operations
-fail clearly; clients never silently create a local board. The relay starts the
-board on its first request and the existing relay service owns its lifecycle.
+Choose the initial board computer explicitly in **Computers → Shared messages**.
+It must already be paired; a configured terminal connection alone is insufficient.
+Any paired computer can request this initial choice. The selected computer must
+be online and approve it with its own signing identity. The group-bound signed
+choice is synchronized to existing and newly joined computers independently of
+who created the group. There is no implicit fallback to the group administrator.
+
+The relay reuses pairing authentication and pinned TLS; no extra board credential
+files or standalone process are needed. The selected host stores a group-specific
+SQLite database in its private mesh configuration directory. An offline host
+causes an explicit error; clients never create a local replacement. The relay
+starts the board on its first request and owns its lifecycle.
+
+Host selection is immutable in this version. Existing databases block initial
+selection and require a future migration procedure; files are never replaced or
+copied automatically. Concurrent incompatible signed selections are preserved as
+conflict evidence and block the board when synchronized, rather than choosing a
+winner. Configure the initial host once from one computer, then allow group sync
+to finish before using the board. Do not independently initialize different hosts
+while disconnected. Older relays cannot honor this selection; upgrade computers
+that use Messages before initialization. Moving an already initialized board,
+resolving a conflicting selection, and recovering a lost host are not supported.
+
+The local API exposes `GET /api/mesh/board-host` and an explicit
+`POST /api/mesh/board-host` with `{"host_id":"PAIRED_COMPUTER_ID"}`. Its status is
+also included as `board_host` in `/api/mesh`. Status distinguishes unconfigured,
+selected, conflicting, and legacy-database states. The selection API does not
+change group administration or membership.
 
 The CLI discovers the current relay port from its local native-web registration
 (`switchboard-peer-8082/registration.json` in the Zellij cache), falling back to

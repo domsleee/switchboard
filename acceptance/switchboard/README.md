@@ -405,7 +405,7 @@ including skipped checks. A listed test is coverage, not a recorded pass. Use th
 
 ## Shared computer and agent inboxes
 
-Paired computers use one board on the group's original administrator. A machine
+Paired computers use one board on the explicitly selected host. A machine
 inbox must exist before any agent registers, retain its messages across restarts,
 and only accept acknowledgements from that machine. Agent inboxes belong to
 unique session IDs; a new agent in the same terminal does not inherit the old

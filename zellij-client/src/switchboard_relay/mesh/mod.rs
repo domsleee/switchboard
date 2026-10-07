@@ -1,4 +1,5 @@
 //! Invitation pairing is separate from agent messages and the loopback terminal engine.
+mod board_host;
 mod crypto;
 mod direct;
 pub(super) mod discovery;
@@ -152,6 +153,8 @@ struct Installed {
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct Approved {
+    #[serde(default)]
+    board_hosts: Vec<board_host::Selection>,
     membership: Signed<Membership>,
     credential: Envelope,
 }
@@ -169,6 +172,8 @@ struct Joining {
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Database {
+    #[serde(default)]
+    board_hosts: Vec<board_host::Selection>,
     local: Option<Member>,
     membership: Option<Signed<Membership>>,
     invitations: BTreeMap<String, InviteRecord>,
@@ -190,6 +195,7 @@ impl Database {
             (Some(membership), Some(local)) => {
                 membership.value.members.len() == 1
                     && membership.value.members.contains_key(&local.id)
+                    && self.board_hosts.is_empty()
                     && self.incoming.is_empty()
                     && self.outgoing.is_empty()
             },
@@ -200,6 +206,7 @@ impl Database {
     fn leave_solo_group(&mut self) {
         if self.membership.is_some() && self.can_join() {
             self.membership = None;
+            self.board_hosts.clear();
             self.invitations.clear();
             self.direct_sent.clear();
         }
@@ -512,6 +519,7 @@ impl Mesh {
                 .ok_or_else(|| anyhow::anyhow!("Enrollment incomplete; retry"))?;
             return Ok(Decision::Approved {
                 approved: Approved {
+                    board_hosts: db.board_hosts.clone(),
                     membership: self.identity.sign(membership.value)?,
                     credential: self.identity.seal(&local, &value.member, 1, credential)?,
                 },
@@ -666,6 +674,7 @@ impl Mesh {
                 .open(&invitation.administrator, &local, &approved.credential)?;
         Self::install_credential(&mut db, &approved.credential, credential)?;
         db.membership = Some(approved.membership);
+        self.merge_board_hosts(&mut db, &approved.board_hosts)?;
         if !db.outgoing.contains_key(&invitation.administrator.id) {
             db.outgoing.insert(
                 invitation.administrator.id.clone(),
@@ -749,7 +758,7 @@ impl Mesh {
         let db = self.database.lock().await;
         let pending: Vec<_> = db.invitations.iter().flat_map(|(id, record)| record.requests.values().filter(|p| !p.denied && record.approved.is_none() && !record.cancelled && record.expires > now()).map(move |p| json!({"invitation": id, "request": p.request.request, "computer": p.request.member.name, "address": p.request.member.endpoint, "code": p.code}))).collect();
         let members: Vec<_> = db.membership.as_ref().map(|m| m.value.members.values().map(|member| json!({ "id": member.id, "name": member.name, "address": member.endpoint, "local": db.local.as_ref().is_some_and(|l| l.id == member.id), "state": if db.incoming.contains_key(&member.id) { "paired" } else { "credential_distribution_pending" } })).collect()).unwrap_or_default();
-        json!({"incoming":direct::incoming(&db,now()),"sent":direct::sent(&db,now()),"configured": db.local.is_some(), "gateway_available": gateway_available, "computer": db.local.as_ref().map(|m| json!({"name":m.name,"address":m.endpoint})), "mesh": db.membership.as_ref().map(|m| &m.value.name), "administrator": true, "can_invite":true, "group_sync":true, "requests":pending, "members":members, "joining": db.joining.as_ref().map(|j| json!({"computer":j.invitation.administrator.name,"mesh":j.invitation.mesh_name,"code":verification(&j.invitation,&j.attempt.request.value).ok()}))})
+        json!({"board_host":self.board_host_status(&db),"incoming":direct::incoming(&db,now()),"sent":direct::sent(&db,now()),"configured": db.local.is_some(), "gateway_available": gateway_available, "computer": db.local.as_ref().map(|m| json!({"name":m.name,"address":m.endpoint})), "mesh": db.membership.as_ref().map(|m| &m.value.name), "administrator": true, "can_invite":true, "group_sync":true, "requests":pending, "members":members, "joining": db.joining.as_ref().map(|j| json!({"computer":j.invitation.administrator.name,"mesh":j.invitation.mesh_name,"code":verification(&j.invitation,&j.attempt.request.value).ok()}))})
     }
 }
 
