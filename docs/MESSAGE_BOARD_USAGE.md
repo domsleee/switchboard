@@ -23,9 +23,12 @@ create a second board or change the host. If that host is offline, operations
 fail clearly; clients never silently create a local board. The relay starts the
 board on its first request and the existing relay service owns its lifecycle.
 
-The CLI uses the local relay at `http://127.0.0.1:8090` on Mac/Linux and
-`http://127.0.0.1:80` on Windows. Set `SWITCHBOARD_RELAY_URL` or `--relay-url`
-to another **loopback** relay address. It is the local relay that
+The CLI discovers the current relay port from its local native-web registration
+(`switchboard-peer-8082/registration.json` in the Zellij cache), falling back to
+`http://127.0.0.1:8090` when no registration is available. Set
+`SWITCHBOARD_RELAY_URL` or `--relay-url` to override this with another **loopback**
+relay address. An installation using a different native-web port should set
+that override. It is the local relay that
 contacts the shared board over the authenticated computer connection.
 
 ```sh

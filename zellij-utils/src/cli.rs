@@ -177,24 +177,14 @@ pub enum Command {
     Subscribe(SubscribeCli),
 }
 
-#[cfg(windows)]
-const MESSAGE_RELAY_URL: &str = "http://127.0.0.1:80";
-#[cfg(not(windows))]
-const MESSAGE_RELAY_URL: &str = "http://127.0.0.1:8090";
-
 #[derive(Debug, Args, Clone, Serialize, Deserialize)]
 pub struct MessageCli {
     /// Board client configuration; Serve uses a board host configuration instead
     #[clap(long, global = true, env = "SWITCHBOARD_BOARD_CONFIG")]
     pub board_config: Option<PathBuf>,
     /// Local Switchboard relay used when no board configuration is supplied
-    #[clap(
-        long,
-        global = true,
-        env = "SWITCHBOARD_RELAY_URL",
-        default_value = MESSAGE_RELAY_URL
-    )]
-    pub relay_url: String,
+    #[clap(long, global = true, env = "SWITCHBOARD_RELAY_URL")]
+    pub relay_url: Option<String>,
     /// Registered agent session (never inferred from terminal titles)
     #[clap(long, global = true, env = "SWITCHBOARD_AGENT_SESSION")]
     pub agent_session: Option<String>,
@@ -1817,8 +1807,20 @@ mod tests {
             let Some(Command::Message(message)) = cli.command else {
                 panic!("Expected message command")
             };
-            assert_eq!(message.relay_url, MESSAGE_RELAY_URL);
+            assert_eq!(message.relay_url, None);
         }
+        let cli = CliArgs::try_parse_from([
+            "zellij",
+            "message",
+            "--relay-url",
+            "http://127.0.0.1:8181",
+            "inboxes",
+        ])
+        .unwrap();
+        let Some(Command::Message(message)) = cli.command else {
+            panic!("Expected message command")
+        };
+        assert_eq!(message.relay_url.as_deref(), Some("http://127.0.0.1:8181"));
         for target in ["--to", "--broadcast"] {
             assert!(CliArgs::try_parse_from([
                 "zellij",

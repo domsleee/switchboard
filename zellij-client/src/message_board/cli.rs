@@ -173,6 +173,24 @@ fn page(after: u64, limit: u16) -> String {
 fn segment(value: &str) -> String {
     urlencoding::encode(value).into_owned()
 }
+// Read only the relay port; registration also contains credentials which must never be logged.
+fn default_relay_url(registration: &std::path::Path) -> String {
+    #[derive(Deserialize)]
+    struct RegisteredPort {
+        port: std::num::NonZeroU16,
+    }
+    let port = std::fs::File::open(registration)
+        .ok()
+        .and_then(|file| serde_json::from_reader::<_, RegisteredPort>(file.take(64 * 1024)).ok())
+        .map(|value| value.port.get())
+        .unwrap_or(8090);
+    format!("http://127.0.0.1:{port}")
+}
+fn relay_url(explicit: Option<&str>, registration: &std::path::Path) -> String {
+    explicit
+        .map(str::to_owned)
+        .unwrap_or_else(|| default_relay_url(registration))
+}
 pub fn run_cli(cli: &MessageCli) -> anyhow::Result<()> {
     if matches!(cli.command, MessageCommand::Serve) {
         let config = cli
@@ -188,7 +206,9 @@ pub fn run_cli(cli: &MessageCli) -> anyhow::Result<()> {
     let client = if let Some(config) = cli.board_config.as_deref() {
         Client::load(config)?
     } else {
-        Client::relay(&cli.relay_url)?
+        let registration =
+            zellij_utils::consts::ZELLIJ_CACHE_DIR.join("switchboard-peer-8082/registration.json");
+        Client::relay(&relay_url(cli.relay_url.as_deref(), &registration))?
     };
     let result = match &cli.command {
         MessageCommand::Register {
@@ -392,6 +412,41 @@ fn safe_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn message_board_cli_discovers_registered_relay_port_without_overriding_explicit_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let registration = dir.path().join("registration.json");
+        assert_eq!(relay_url(None, &registration), "http://127.0.0.1:8090");
+        assert!(!registration.exists());
+        for port in [80, 8090] {
+            std::fs::write(&registration, format!(r#"{{"port":{port},"key":"private credential","endpoint":"https://untrusted.invalid"}}"#)).unwrap();
+            assert_eq!(
+                relay_url(None, &registration),
+                format!("http://127.0.0.1:{port}")
+            );
+            assert_eq!(
+                relay_url(Some("http://127.0.0.1:8181"), &registration),
+                "http://127.0.0.1:8181"
+            );
+        }
+        for invalid in [
+            r#"{"port":0}"#,
+            r#"{"port":65536}"#,
+            r#"{"port":-1}"#,
+            r#"{"port":"80"}"#,
+            r#"{"port":80.5}"#,
+            "{}",
+            "invalid",
+        ] {
+            std::fs::write(&registration, invalid).unwrap();
+            assert_eq!(relay_url(None, &registration), "http://127.0.0.1:8090");
+        }
+        assert_eq!(
+            relay_url(Some("http://127.0.0.1:8181"), &registration),
+            "http://127.0.0.1:8181"
+        );
+    }
+
     #[test]
     fn message_board_relay_client_only_accepts_loopback_origins() {
         assert!(Client::relay("http://127.0.0.1:8090").is_ok());
