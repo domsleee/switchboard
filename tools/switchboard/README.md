@@ -249,6 +249,13 @@ Run browser checks with headless Playwright against isolated testing sessions.
 Keep automation clients out of live sessions: their viewport can shrink the
 shared terminal, including when the iframe is hidden.
 
+Measure keystroke echo latency in a private throwaway session (opt-in; never
+types into live sessions) with
+`PLAYWRIGHT_MODULE=/path/to/playwright node tools/switchboard/latency.test.cjs BINARY`.
+`--hammer N` replays the attention scan's CLI calls in N parallel loops and
+`--cpu-load N` adds busy processes; `--probe SESSION` only times the read-only
+`list-panes`/`dump-screen` calls against an existing session.
+
 Run native terminal integration checks with `cargo xtask integration-test`.
 Tests now check terminal output, input, geometry and CLI errors without plugin
 bars. Older UI suites that require those bars are retained in

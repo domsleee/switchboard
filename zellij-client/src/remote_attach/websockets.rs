@@ -153,6 +153,7 @@ async fn connect_ws(
     tls_config: Option<Arc<rustls::ClientConfig>>,
 ) -> Result<WebSocketStream<MaybeTls>, Box<dyn std::error::Error>> {
     let tcp_stream = TcpStream::connect((host, port)).await?;
+    tcp_stream.set_nodelay(true)?;
 
     let stream = if let Some(config) = tls_config {
         let connector = tokio_rustls::TlsConnector::from(config);
