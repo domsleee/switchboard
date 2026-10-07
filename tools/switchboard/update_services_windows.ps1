@@ -37,7 +37,9 @@ function Stop-Captured($Identity, [string]$Pattern) {
         $live.CommandLine -notmatch $Pattern -or $live.CommandLine -match '(?:^|\s)--server(?:\s|=)') {
         throw 'Service identity changed; refusing to stop it'
     }
-    Stop-Process -Id $live.ProcessId -ErrorAction Stop
+    # A service that exits between the identity check and the stop is fine.
+    try { Stop-Process -Id $live.ProcessId -ErrorAction Stop }
+    catch { if (Get-Process -Id $live.ProcessId -ErrorAction SilentlyContinue) { throw } }
     Wait-Process -Id $live.ProcessId -Timeout 10 -ErrorAction SilentlyContinue
 }
 if ($Action -eq 'Snapshot') {
@@ -86,6 +88,19 @@ if ($Action -eq 'Stop') {
 } elseif ($Action -eq 'StopTray') {
     foreach ($identity in $state.trays) { Stop-Captured $identity 'switchboard-tray\.ps1.*\s"?-Tray\b' }
 } elseif ($Action -eq 'Verify') {
+    # Each replacement service must still be the process we started and listen.
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    foreach ($identity in $state.running) {
+        do {
+            $live = Get-CimInstance Win32_Process -Filter "ProcessId=$($identity.id)"
+            if (!$live -or $live.CreationDate.ToUniversalTime().ToString('o') -cne $identity.started) { throw "Restarted service exited: $($identity.id)" }
+            $listening = @(Get-NetTCPConnection -OwningProcess $identity.id -State Listen -ErrorAction SilentlyContinue).Count
+            if (!$listening) { Start-Sleep -Milliseconds 500 }
+        } while (!$listening -and [DateTime]::UtcNow -lt $deadline)
+        if (!$listening) { throw "Restarted service is not listening: $($identity.id)" }
+    }
+    $health = Invoke-WebRequest "http://127.0.0.1:$RelayPort/api/health" -Headers @{Host='switchboard.localhost'} -UseBasicParsing -TimeoutSec 5
+    if (($health.Content | ConvertFrom-Json).relay -ne 'rust') { throw 'Restarted relay is not answering' }
     & $module { param($Baseline) Assert-SwitchboardProcesses $Baseline } $state.protected
     $selected = Get-SwitchboardCurrentBinary $ReleaseDirectory
     foreach ($entry in $state.panes.PSObject.Properties) {

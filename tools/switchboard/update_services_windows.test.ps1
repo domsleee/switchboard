@@ -31,4 +31,13 @@ $script:live.CreationDate = $started
 $script:live.CommandLine = 'powershell.exe "-File" "C:\switchboard-tray.ps1" "-Tray"'
 Stop-Captured $identity 'switchboard-tray\.ps1.*\s"?-Tray\b'
 if ($script:stopped.Count -ne 2) { throw 'Quoted installed tray arguments were not recognized' }
-Write-Output 'PASS: captured service stop rejects engines, unrelated processes and reused PIDs'
+function Stop-Process([int]$Id) { throw "Cannot find a process with the process identifier $Id." }
+function Get-Process { $null }
+$script:live.CommandLine = 'zellij.exe serve --port 80'
+Stop-Captured $identity '\bserve\b'
+function Get-Process { [pscustomobject]@{Id=123} }
+$rejected = $false
+try { Stop-Captured $identity '\bserve\b' } catch { $rejected = $true }
+if (!$rejected) { throw 'A failed stop of a still-running service was ignored' }
+Write-Output 'PASS: captured service stop rejects engines, unrelated processes and reused PIDs, and tolerates a service that already exited'
+

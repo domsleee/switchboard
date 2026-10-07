@@ -60,16 +60,16 @@ leaves the relay and terminal sessions running. Swift's compiler and this fork's
 authenticated GitHub CLI; macOS also needs `jq`. See
 [automatic updates](../../docs/SWITCHBOARD_UPDATES.md#automatic-updates).
 
-To update a Mac's native executable while keeping open terminals running
-(requires `jq`):
+To update a Mac while keeping open terminals running (requires `jq`):
 
 ```sh
 bash tools/switchboard/update_local.sh target/release/zellij
 ```
 
-Existing sessions keep their original engine; new sessions use the update.
-Running services and browser connections remain untouched. The updater retains
-the previous executable and checks live sessions before and after the switch.
+This replaces the executable, then restarts the web server and relay on it;
+browsers reconnect. Session servers and their shells keep running on their
+original engine; new sessions use the update. Failed checks restore the previous
+executable and services. `--binary-only` skips the restart.
 See [updating Switchboard](../../docs/SWITCHBOARD_UPDATES.md).
 
 On Windows, install this fork's `zellij.exe`, then put your local authenticated host
@@ -90,11 +90,11 @@ the actual sidebar at **http://switchboard.localhost** on loopback port 80.
 Logs are in `~/.config/switchboard`. Quitting the tray leaves terminals running.
 The installer retains its executable in `~/.local/share/switchboard/windows-releases`.
 Use `update_windows.ps1 -Candidate C:/build/zellij.exe` to select a new retained
-release, or `update_windows.ps1 -Rollback` to select the previous one. These manual
-operations preserve loaded services and engines. The tray uses the selection when
-a service next starts; `~/.config/switchboard/windows_cli.ps1 attach SESSION` uses
-it for native clients and new sessions. Existing sessions retain their old engine.
-The updater does not restart connection services or verify browser reconnection;
+release, or `update_windows.ps1 -Rollback` to select the previous one. Both then
+restart the native web server and relay on the selection (add `-BinaryOnly` to
+only select it); terminal engines keep running and browsers reconnect.
+`~/.config/switchboard/windows_cli.ps1 attach SESSION` uses the selection for
+native clients and new sessions. Existing sessions retain their old engine;
 see the [Windows update checks](../../docs/SWITCHBOARD_UPDATES.md#select-a-windows-release-without-stopping-terminals).
 Port 80 must be available; no administrator access or certificate installation
 is required. Windows sees its own host and the computers it has paired with.

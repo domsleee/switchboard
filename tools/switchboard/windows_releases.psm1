@@ -188,32 +188,11 @@ function ConvertTo-SwitchboardProcessTime($Value) {
 }
 
 function Get-SwitchboardProtectedProcesses($Processes) {
-    $engines = @($Processes | Where-Object { $_.Name -ieq 'zellij.exe' -and $_.CommandLine -match '(?:^|\s)--server(?:\s|=)' })
-    $protected = @{}
-    foreach ($engine in $engines) {
-        $protected[[string]$engine.ProcessId] = $engine
-        $descendants = @{}
-        $descendants[[string]$engine.ProcessId] = $true
-        do {
-            $added = $false
-            foreach ($process in $Processes) {
-                $key = [string]$process.ProcessId
-                if ($descendants.ContainsKey([string]$process.ParentProcessId) -and !$descendants.ContainsKey($key)) {
-                    $descendants[$key] = $true
-                    $added = $true
-                    # Direct terminal children and stable agent descendants.
-                    # Short-lived builds/commands may finish during the update.
-                    if ($process.ParentProcessId -eq $engine.ProcessId -or
-                        $process.CommandLine -match '(?i)(?:^|[\\/\s"])(?:codex|claude)\.(?:exe|js)(?:[\s"]|$)') {
-                        $protected[$key] = $process
-                    }
-                }
-            }
-        } while ($added)
-    }
-    foreach ($process in $protected.Values) {
-        if (!$process.CreationDate) { throw 'Cannot establish engine/terminal process creation time' }
-        [pscustomobject]@{id=$process.ProcessId; started=(ConvertTo-SwitchboardProcessTime $process.CreationDate)}
+    # Only terminal engines must survive. Their shells, agents and builds may
+    # exit on their own during an update; that is not an update failure.
+    foreach ($engine in @($Processes | Where-Object { $_.Name -ieq 'zellij.exe' -and $_.CommandLine -match '(?:^|\s)--server(?:\s|=)' })) {
+        if (!$engine.CreationDate) { throw 'Cannot establish engine process creation time' }
+        [pscustomobject]@{id=$engine.ProcessId; started=(ConvertTo-SwitchboardProcessTime $engine.CreationDate)}
     }
 }
 
@@ -223,7 +202,7 @@ function Assert-SwitchboardProcesses($Baseline) {
     foreach ($process in $Baseline) {
         $live = $current[[string]$process.id]
         if (!$live -or !$live.CreationDate -or (ConvertTo-SwitchboardProcessTime $live.CreationDate) -cne $process.started) {
-            throw "Engine, terminal or agent process changed: $($process.id)"
+            throw "Terminal engine process changed: $($process.id)"
         }
     }
 }
