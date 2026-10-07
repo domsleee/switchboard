@@ -39,7 +39,7 @@ for(const platform of ['MacIntel','Win32'])test(`${platform}: Ctrl+digit sidebar
       </script><script>
         const socket=new WebSocket('wss://switchboard.test/ws/control');
         function state(){const panes=${JSON.stringify(names)}.map((_,i)=>({pane_id:7+i,is_plugin:false,tab_position:i,title:'~'}));socket.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'MobileState',payload:{session_name:'main',panes,active_pane:panes[active],tabs:panes.map((p,i)=>({position:i,name:${JSON.stringify(names)}[i],active:i===active}))}})}));}
-        state();window.keys=[];addEventListener('keydown',event=>/^(Digit|Key)/.test(event.code)&&keys.push(event.code+':'+event.defaultPrevented));
+        state();window.keys=[];addEventListener('keydown',event=>/^(Digit|Key)/.test(event.code)&&keys.push(event.code+':'+event.defaultPrevented));addEventListener('keydown',event=>{if(event.metaKey&&event.code==='KeyR')event.preventDefault();});
       </script>`});
       if(path.startsWith('/assets/'))return route.fulfill({contentType:'text/javascript',body:fs.readFileSync(__dirname+'/../../zellij-client'+path,'utf8')});
       const file=path==='/'?'index.html':path.slice(1);
@@ -80,10 +80,11 @@ for(const platform of ['MacIntel','Win32'])test(`${platform}: Ctrl+digit sidebar
     await input.focus();await input.evaluate(()=>{window.keys=[];window.sent=[];});
     for(const digit of [1,2,3,4,5,6,7,8,9])await page.keyboard.press('Meta+Digit'+digit);
     await page.keyboard.press('Meta+KeyA');
+    await page.keyboard.press('Meta+KeyR');await page.keyboard.press('Meta+Shift+KeyR');
     await page.keyboard.press('Control+Digit1');await settle();
     const inner=await input.evaluate(()=>({keys,sent}));
     const metaDigits=[1,2,3,4,5,6,7,8,9].map(d=>`Digit${d}:false`);
-    assert.deepEqual(inner.keys,[...metaDigits,'KeyA:true',...(mac?[]:['Digit1:false'])],'other Cmd shortcuts still go to the terminal');
+    assert.deepEqual(inner.keys,[...metaDigits,'KeyA:true','KeyR:false','KeyR:false',...(mac?[]:['Digit1:false'])],'Cmd+R reload reaches the browser; other Cmd shortcuts still go to the terminal');
     assert.deepEqual(inner.sent,['\x1b[97;9u']);
     assert.equal(await selectedName(),mac?'Delta':'Alpha');
     assert.deepEqual(errors,[]);
