@@ -236,7 +236,21 @@ pub(super) async fn execute_host(
                 "Terminal command failed; delivery may be uncertain",
             )
         })?;
+    log::info!(
+        "Closed tab {target} in session {session} on {}{}",
+        host.config.name,
+        if final_tab {
+            " (last tab; session ended)"
+        } else {
+            ""
+        }
+    );
     if final_tab {
+        // Visible in Logs: the session is gone, not crashed.
+        logs::record(
+            &host.config.name,
+            &format!("Closed the last tab of session '{session}'; the session ended"),
+        );
         if let Ok(binary) = binary(host) {
             tokio::spawn(forget_closed_session(binary, session.to_owned()));
         }
