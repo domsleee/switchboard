@@ -92,7 +92,7 @@ impl rustls::client::danger::ServerCertVerifier for NoVerifier {
     }
 
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        rustls::crypto::aws_lc_rs::default_provider()
+        rustls::crypto::ring::default_provider()
             .signature_verification_algorithms
             .supported_schemes()
     }
@@ -104,7 +104,7 @@ fn build_tls_config(
     ca_cert: Option<&Path>,
     insecure: bool,
 ) -> Result<Arc<rustls::ClientConfig>, Box<dyn std::error::Error>> {
-    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
 
     if insecure {
         let config = rustls::ClientConfig::builder_with_provider(provider)
