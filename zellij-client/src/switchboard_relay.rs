@@ -84,14 +84,30 @@ impl RelayState {
     fn all_hosts(&self) -> Vec<Arc<Host>> {
         let mut hosts: Vec<_> = self.order.iter().map(|id| self.hosts[id].clone()).collect();
         if let Some(mesh) = &self.mesh {
-            hosts.extend(
-                mesh.hosts()
-                    .into_iter()
-                    .filter(|h| !self.hosts.contains_key(&h.config.id)),
-            );
+            // Pairing a configured computer must not list its terminals twice.
+            hosts.extend(mesh.hosts().into_iter().filter(|h| {
+                !self.hosts.contains_key(&h.config.id)
+                    && !self.hosts.values().any(|c| same_computer(c, h))
+            }));
         }
         hosts
     }
+    // A configured host keeps its id; control goes through its paired peer's
+    // gateway, which runs the CLI locally instead of driving a remote shell.
+    fn paired_twin(&self, host: &Arc<Host>) -> Option<Arc<Host>> {
+        if host.config.escape_transport.is_some() || !self.hosts.contains_key(&host.config.id) {
+            return None;
+        }
+        self.mesh
+            .as_ref()?
+            .hosts()
+            .into_iter()
+            .find(|peer| same_computer(host, peer))
+    }
+}
+
+fn same_computer(a: &Host, b: &Host) -> bool {
+    a.origin.origin() == b.origin.origin()
 }
 
 struct Host {

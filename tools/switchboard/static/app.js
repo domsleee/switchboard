@@ -1,9 +1,16 @@
 const $ = id => document.getElementById(id);
+// "Wed 7 Oct 2026, 7:31 pm (2 hours ago)" in the viewer's locale and time zone.
+function humanTime(date,now=Date.now()){
+  const units=[['year',31536e6],['month',2592e6],['week',6048e5],['day',864e5],['hour',36e5],['minute',6e4]];
+  const elapsed=date-now,[unit,size]=units.find(([,size])=>Math.abs(elapsed)>=size)||['minute',6e4];
+  const ago=new Intl.RelativeTimeFormat(undefined,{numeric:'auto'}).format(Math.round(elapsed/size),unit);
+  return `${date.toLocaleString(undefined,{weekday:'short',day:'numeric',month:'short',year:'numeric',hour:'numeric',minute:'2-digit'})} (${ago})`;
+}
 fetch('/api/health',{cache:'no-store'}).then(response=>response.ok?response.json():null).then(build=>{
   if(build&&/^[a-f0-9]{7,40}$/.test(build.commit)&&/^\d{4}-\d{2}-\d{2}$/.test(build.commit_date)){
     $('build-version').textContent=`${build.commit} · ${build.commit_date}`;
-    const timestamp=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})$/.test(build.commit_timestamp)?build.commit_timestamp.replace('T',' '):build.commit_date;
-    $('settings').title=$('build-version').title=`Commit ${build.commit} · ${timestamp}`;
+    const when=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})$/.test(build.commit_timestamp)?new Date(build.commit_timestamp):null;
+    $('settings').title=$('build-version').title=`Commit ${build.commit} · ${when?humanTime(when):build.commit_date}`;
   }
 }).catch(()=>{});
 const hosts = new Map(), sessions = new Map();
@@ -356,7 +363,9 @@ function focus(item,background=false) {
   if(active?.pane_id!==pane.pane_id||active?.is_plugin!==pane.is_plugin)item.entry.frame.contentWindow.SwitchboardClipboard?.clearSelection();
   const focusId=item.entry.focusId=(item.entry.focusId||0)+1;
   if(item.entry.requestedPane || active?.pane_id!==pane.pane_id||active?.is_plugin!==pane.is_plugin)item.entry.requestedPane={pane_id:pane.pane_id,is_plugin:pane.is_plugin,focus_id:focusId};
-  item.entry.frame.contentWindow.postMessage({type:'zellij-focus',pane_id:pane.pane_id,is_plugin:pane.is_plugin,focus_id:focusId},location.origin);
+  const preserveFocus=background&&!!item.entry.focusInitialized;
+  item.entry.focusInitialized=true;
+  item.entry.frame.contentWindow.postMessage({type:'zellij-focus',pane_id:pane.pane_id,is_plugin:pane.is_plugin,focus_id:focusId,preserve_focus:preserveFocus},location.origin);
 }
 function activate(item, clear=true) {
   selected=item.key;restoringTab=false;item.entry.followActiveTab=false;
@@ -448,6 +457,11 @@ async function refresh() {
     const response=await fetch('/api/hosts?summary=1');if(!response.ok)throw Error('Cannot reach local relay');
     const data=await response.json();
     for(const host of data)hosts.set(host.id,{...hosts.get(host.id),...host,connecting:true});
+    // A host the relay stops listing (removed, or merged into its configured twin) must not linger until reload.
+    const listed=new Set(data.map(host=>host.id));
+    for(const id of [...hosts.keys()])if(!listed.has(id)){hosts.delete(id);startedHosts.delete(id);}
+    for(const [key,entry] of sessions)if(!listed.has(entry.host)){clearTimeout(entry.startTimeout);entry.frame.remove();sessions.delete(key);}
+    renderMachines();render();
     await Promise.all(data.map(async summary=>{
       try{
         const response=await fetch(`/api/hosts/${encodeURIComponent(summary.id)}`);if(!response.ok)throw Error('Cannot list sessions');
@@ -516,7 +530,7 @@ window.addEventListener('message',event=>{
     if(!entry.frame.classList.contains('active'))return;
     const state=event.data.payload || entry.state;
     entry.state=state;const tab=activeTab(entry);
-    if(tab){selected=tabKey(entry,tab);render();focus({entry,tab});}
+    if(tab){selected=tabKey(entry,tab);render();focus({entry,tab},true);}
     setStatus(event.data.message || 'That terminal is unavailable. Choose another tab.',true);
   }else if(event.data?.type==='zellij-open-new-tab'){
     if(entry.frame.classList.contains('active')&&!document.querySelector('dialog[open]'))$('new-tab').click();

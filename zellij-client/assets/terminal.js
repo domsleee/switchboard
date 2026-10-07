@@ -113,7 +113,7 @@ export function initTerminal(config) {
     });
     term.loadAddon(webglAddon);
     term.open(document.getElementById("terminal"));
-    term.focus();
+    if (!window.__switchboardManagedFocus) term.focus();
     return { term, fitAddon };
 }
 

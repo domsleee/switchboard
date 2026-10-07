@@ -39,9 +39,10 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
     await page.goto('https://switchboard.test/'+(emptyMachine?'':'?host=windows&session=main&tab=42'));
     await page.waitForFunction(()=>document.querySelector('#build-version').textContent==='abc123def · 2026-10-04');
     await page.locator('#settings').hover();
-    const commitTitle=`Commit abc123def · ${emptyMachine?'2026-10-04 13:24:56+11:00':'2026-10-04'}`;
-    assert.equal(await page.locator('#settings').getAttribute('title'),commitTitle);
-    assert.equal(await page.locator('#build-version').getAttribute('title'),commitTitle);
+    // Exact times are shown in the viewer's locale with a relative age, e.g. "Sun, 4 Oct 2026, 1:24 pm (3 days ago)".
+    const commitTitle=emptyMachine?/^Commit abc123def · \S+ .*2026.*\d:24.* \(.+\)$/:/^Commit abc123def · 2026-10-04$/;
+    assert.match(await page.locator('#settings').getAttribute('title'),commitTitle);
+    assert.match(await page.locator('#build-version').getAttribute('title'),commitTitle);
     const frame=page.frameLocator('iframe[title="Windows: main"]'),input=frame.locator('#terminal-input');
     await page.waitForFunction(()=>document.querySelector('#tabs .selected')?.textContent.includes('Original'));
     if(emptyMachine){

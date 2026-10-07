@@ -5,8 +5,8 @@ const vm = require('node:vm');
 const source = fs.readFileSync(__dirname + '/static/clipboard.js', 'utf8');
 const stockAddon = fs.readFileSync(__dirname + '/../../zellij-client/assets/addon-clipboard.js', 'utf8');
 
-function harness({write = async () => {}, legacy = false, lateSelectionService = false} = {}) {
-  const handlers = {}, messages = [], writes = [], inputs = [], nodes = [];
+function harness({write = async () => {}, read = null, legacy = false, lateSelectionService = false} = {}) {
+  const handlers = {}, messages = [], writes = [], inputs = [], nodes = [], pastes = [];
   let selection = '', osc, disposed = false, selectionChanged;
   const document = {activeElement: null};
   function element(tag) {
@@ -28,7 +28,7 @@ function harness({write = async () => {}, legacy = false, lateSelectionService =
     clearSelection: () => { selection=''; },
     _core: {_selectionService: {shouldForceSelection: event => !!event.shiftKey}},
     onSelectionChange: callback => { selectionChanged=callback; return {dispose(){}}; },
-    input: (...args) => inputs.push(args),
+    input: (...args) => inputs.push(args), paste: text => pastes.push(text),
     parser: {registerOscHandler(id, callback) {
       assert.equal(id, 52); osc = callback;
       return {dispose() { disposed = true; }};
@@ -39,7 +39,7 @@ function harness({write = async () => {}, legacy = false, lateSelectionService =
   const window = {term, addEventListener(type, callback) { (handlers[type] ||= []).push(callback); }};
   const context = {window, self: window, document, parent,
     location: {origin: 'http://localhost:8090', pathname: '/hosts/mac/main'},
-    navigator: {clipboard: write && {writeText(text) { writes.push(text); return write(text); }}},
+    navigator: {clipboard: write && {writeText(text) { writes.push(text); return write(text); }, ...(read && {readText: read})}},
     atob, TextDecoder, TextEncoder, Uint8Array};
   vm.runInNewContext(source, context);
   // Exercise the real stock UMD assignment and addon lifecycle, not a mock addon.
@@ -54,7 +54,7 @@ function harness({write = async () => {}, legacy = false, lateSelectionService =
     for (const callback of handlers[type] || []) callback(e);
     return e;
   }
-  return {window, context, document, nodes, term, addon, messages, writes, inputs, event,
+  return {window, context, document, nodes, term, addon, messages, writes, inputs, pastes, event,
     setSelection(text) { selection = text; selectionChanged?.(); }, osc: text => osc(text),
     get disposed() { return disposed; }, api: window.SwitchboardClipboard};
 }
@@ -116,6 +116,18 @@ test('app Copy prefers the focused viewing parent clipboard over the iframe clip
   assert.equal((await h.api.copySelection()).method, 'clipboard');
   assert.deepEqual(parentWrites, ['viewer selection']);
   assert.deepEqual(h.writes, []);
+});
+
+test('a rejected parent clipboard falls back to the focused iframe clipboard and reports real errors', async () => {
+  const h = harness();
+  h.context.parent.navigator = {clipboard: {writeText: async () => { throw Object.assign(Error('Document is not focused.'), {name: 'NotAllowedError'}); }}};
+  assert.equal(h.osc('c;' + base64('from shell')), true);
+  await settle();
+  assert.deepEqual(h.writes, ['from shell']);
+  assert.equal(h.messages.at(-1).message.ok, true);
+  const denied = harness({write: async () => { throw Object.assign(Error('Write permission denied.'), {name: 'NotAllowedError'}); }});
+  denied.setSelection('text');
+  assert.match((await denied.api.copySelection()).error, /NotAllowedError: Write permission denied/);
 });
 
 test('OSC52 handles unicode, default and combined clipboard selectors without stalling parsing', async () => {
@@ -183,12 +195,21 @@ test('selection mode enables plain dragging; copy retains selected text through 
   assert.equal(force.shouldForceSelection({shiftKey:false}),true);
   h.event('mousedown',{button:0});h.setSelection('chosen answer');h.event('mouseup');
   h.setSelection('different output at the same cells');
-  await h.api.copySelection();assert.deepEqual(h.writes,['chosen answer']);
+  await h.api.copySelection();assert.deepEqual(h.writes,['chosen answer','chosen answer']);
   h.event('keydown',{metaKey:true});
   const values=[];h.event('copy',{clipboardData:{setData:(_,text)=>values.push(text)}});
   assert.deepEqual(values,['chosen answer']);
   h.api.clearSelection();assert.equal((await h.api.copySelection()).ok,false);
   h.api.setSelectionMode(false);assert.equal(force.shouldForceSelection({shiftKey:false}),false);
+});
+
+test('releasing a local drag copies it, like Zellij and agent selections; clicks copy nothing',async()=>{
+  const h=harness();
+  h.event('mousedown',{button:0});h.event('mouseup');await settle();
+  assert.deepEqual(h.writes,[]);
+  h.event('mousedown',{button:0});h.setSelection('shell output');h.event('mouseup');await settle();
+  assert.deepEqual(h.writes,['shell output']);
+  assert.equal(h.messages.at(-1).message.ok,true);
 });
 
 test('Cmd+C without a selection gives guidance while Ctrl+C still interrupts',async()=>{
@@ -219,4 +240,34 @@ test('late failures from old writes cannot replace newer successful copy with st
   assert.equal(h.api.hasPending, false);
   assert.equal(h.messages.length, 1);
   assert.equal(h.messages[0].message.ok, true);
+});
+
+test('right-click copies and clears a selection, otherwise pastes through xterm, never in other UI', async () => {
+  const h = harness({read: async () => 'from clipboard\n'});
+  h.setSelection('picked');
+  const copy = h.event('contextmenu');
+  assert.equal(copy.prevented, true); assert.equal(copy.stopped, true);
+  await settle();
+  assert.deepEqual(h.writes, ['picked']);
+  assert.equal(h.api.getSelectionText(), '');
+  assert.deepEqual(h.pastes, []);
+  const paste = h.event('contextmenu');
+  assert.equal(paste.prevented, true);
+  await settle();
+  assert.deepEqual(h.pastes, ['from clipboard\n']);
+  assert.equal(h.event('contextmenu', {target: {closest: () => null}}).prevented, undefined);
+  h.term.options.disableStdin = true;
+  h.event('contextmenu'); await settle();
+  assert.deepEqual(h.pastes, ['from clipboard\n']);
+});
+
+test('right-click paste reports denied or unavailable clipboard reads', async () => {
+  for (const read of [async () => { throw Error('Denied'); }, null]) {
+    const h = harness({read});
+    h.event('contextmenu'); await settle();
+    const result = h.messages.at(-1).message;
+    assert.equal(result.ok, false); assert.equal(result.source, 'paste');
+    assert.match(result.error, read ? /denied/ : /unavailable/);
+    assert.deepEqual(h.pastes, []);
+  }
 });

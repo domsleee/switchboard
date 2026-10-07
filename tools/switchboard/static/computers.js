@@ -99,7 +99,9 @@
         const title = document.createElement('strong'); title.textContent = member.name;
         const address = document.createElement('p'); address.textContent = member.address;
         const status = document.createElement('span');
-        const host = hosts.find(host => host.id === `mesh-${member.id}`);
+        // A paired computer that was already configured is listed under its configured id.
+        const host = hosts.find(host => host.id === `mesh-${member.id}`)
+          || hosts.find(host => !member.local && endpoint(member.address) && endpoint(host.pairing_address || host.address) === endpoint(member.address));
         status.textContent = member.local ? 'This computer' : member.state === 'paired'
           ? (host && Array.isArray(host.sessions) && !host.error ? 'Connected' : 'Paired, connection unavailable. Check the address and retry')
           : 'Connecting to this computer. Keep Switchboard running on both computers.';

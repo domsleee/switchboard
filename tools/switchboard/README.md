@@ -217,7 +217,8 @@ Portless aliases `switchboard -> 8090` and `zellij-gallery -> 8091` persist; exa
 
 Click **Select text**, drag over terminal text, then use **Copy**, Cmd+C on Mac,
 or Ctrl+Shift+C on Windows/Linux. You can also hold Option while dragging on Mac
-or Shift on Windows/Linux without enabling selection mode. The selected text is
+or Shift on Windows/Linux without enabling selection mode. Releasing the drag also
+copies, like Zellij's own and agent selections. The selected text is
 retained through agent redraws and cleared when switching panes.
 Ctrl+C without a local selection still interrupts the terminal process. Remote
 OSC52 copies use this browser’s clipboard; denied permissions show a manual
