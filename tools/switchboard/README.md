@@ -23,6 +23,21 @@ zellij serve --host-config ~/.config/zellij/switchboard-hosts.json
 ```
 
 Open https://switchboard.localhost (Portless), or http://127.0.0.1:8090. Use **Settings → Machines** to assign work/home groups or refresh sessions.
+
+## Connecting another computer
+
+Pair it: on one computer open **Settings → Computers → Create invitation**, paste
+the invitation on the other and choose **Join**, then compare the codes and
+approve. Pairing exchanges terminal tokens and certificate pins and adds the
+computer to both sidebars.
+
+Do not run `zellij web --create-token`, copy token files or add the computer to
+`switchboard-hosts.json` by hand. The host list only holds this computer's own
+entry.
+
+The invitation records the computer's current LAN address. If DHCP gives it a
+new address, pair again, or reserve its address in the router.
+
 On macOS, install the menu bar app and keep the relay running independently of a terminal:
 
 ```sh
@@ -73,8 +88,7 @@ it for native clients and new sessions. Existing sessions retain their old engin
 The updater does not restart connection services or verify browser reconnection;
 see the [Windows update checks](../../docs/SWITCHBOARD_UPDATES.md#select-a-windows-release-without-stopping-terminals).
 Port 80 must be available; no administrator access or certificate installation
-is required. Windows sees the hosts in its own configuration; the Mac's
-loopback-only native server is not reachable from Windows.
+is required. Windows sees its own host and the computers it has paired with.
 Remove the Startup shortcut to disable automatic startup. Other hosts can use
 `zellij web --daemonize` to detach web from their terminal.
 **Alt+H / Alt+L** move to the previous/next visible tab across machines, wrapping
@@ -117,12 +131,13 @@ selected automatically.
 Shell directory titles retain explicitly named Zellij tabs. If an agent disables
 terminal title updates, Switchboard cannot obtain the chat name through this
 protocol; the agent must emit it as a terminal title.
-The host list lives in `~/.config/zellij/switchboard-hosts.json`; each host has
-an ID, name, URL, and token file path. HTTPS hosts can specify a SHA-256 DER
-certificate fingerprint using `tls_fingerprint`.
+The host list lives in `~/.config/zellij/switchboard-hosts.json` and holds this
+computer's own entry: an ID, name, URL, and token file path. HTTPS hosts can
+specify a SHA-256 DER certificate fingerprint using `tls_fingerprint`. Paired
+computers are added separately (see [Connecting another computer](#connecting-another-computer));
+older hand-added remote entries keep working.
 
-Example `~/.config/zellij/switchboard-hosts.json` (replace the remote URL and
-create the token files locally):
+Example `~/.config/zellij/switchboard-hosts.json` (create the token file locally):
 
 ```json
 {
@@ -132,12 +147,6 @@ create the token files locally):
       "name": "Mac",
       "url": "http://127.0.0.1:8082",
       "token_file": "~/.config/zellij/mac-token"
-    },
-    {
-      "id": "windows",
-      "name": "Windows",
-      "url": "https://192.0.2.2:8082",
-      "token_file": "~/.config/zellij/windows-token"
     }
   ]
 }
