@@ -8,8 +8,8 @@ test('attention acknowledgment never moves tabs; search, filters, archive and cr
   const hosts=new Map([['mac',{name:'Mac'}],['win',{name:'Windows'}]]);
   function session(host,names){return {host,name:'main',state:{panes:[]},catalog:names.map((name,position)=>({id:position+40,name,position,panes:[]}))};}
   const sessions=new Map([['mac',session('mac',['home-a','home-b'])],['win',session('win',['work-a','work-b','*ready'])]]);
-  const search={value:''},stored={};
-  const context={hosts,sessions,groups:{mac:'home',win:'work'},ready:{},archived:{},paneAttention:new Map(),seenAttention:{},filter:'all',tabOrder:[],
+  const search={value:''},stored={},reviews=[];
+  const context={fetch:(url,options)=>{reviews.push([url,JSON.parse(options.body)]);return Promise.resolve();},hosts,sessions,groups:{mac:'home',win:'work'},ready:{},archived:{},paneAttention:new Map(),seenAttention:{},filter:'all',tabOrder:[],
     selected:null,saveReady(){},SwitchboardTitles:{tabTitle:(_,tab)=>tab.name},
     $:()=>search,localStorage:{setItem:(key,value)=>stored[key]=value},render(){},tabButtons:new Map()};
   vm.createContext(context);
@@ -31,11 +31,17 @@ test('attention acknowledgment never moves tabs; search, filters, archive and cr
   delete context.ready[key('mac',1)];
   const entry=sessions.get('mac');entry.catalog[1].panes=[{pane_id:7,tab_position:1,is_plugin:false}];
   const attentionKey=context.attentionKey('mac','main',7),item=context.allTabs().find(t=>t.key===key('mac',1));
-  context.paneAttention.set(attentionKey,{key:attentionKey,state:'ready',token:'result:1'});
+  const pane={host:'mac',session:'main',pane_id:7};
+  context.paneAttention.set(attentionKey,{...pane,key:attentionKey,state:'ready',token:'result:1'});
   const before=keys();
   assert.equal(context.isReady(item),true);
   context.acknowledgeAttention(item);assert.equal(context.isReady(item),false);
+  context.acknowledgeAttention(item);
+  assert.deepEqual(reviews,[['/api/attention/ack',{...pane,token:'result:1'}]],'one review reaches the relay');
   assert.deepEqual(keys(),before);
+  // A review from another computer arrives through the relay, not this browser.
+  context.paneAttention.set(attentionKey,{...pane,key:attentionKey,state:'ready',token:'result:3',seen:true});assert.equal(context.isReady(item),false);
+  context.acknowledgeAttention(item);assert.equal(reviews.length,1);
   context.paneAttention.set(attentionKey,{key:attentionKey,state:'ready',token:'result:2'});assert.equal(context.isReady(item),true);
   context.paneAttention.set(attentionKey,{key:attentionKey,state:'approval'});context.acknowledgeAttention(item);assert.equal(context.isReady(item),true);
 

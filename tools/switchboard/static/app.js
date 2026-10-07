@@ -156,7 +156,7 @@ function statesForTab(item){
     .map(p=>paneAttention.get(attentionKey(item.entry.host,item.entry.name,p.pane_id))).filter(Boolean);
 }
 function needsAttention(state){
-  return ['approval','input'].includes(state.state) || (state.state==='ready'&&seenAttention[state.key]!==state.token);
+  return ['approval','input'].includes(state.state) || (state.state==='ready'&&!state.seen&&seenAttention[state.key]!==state.token);
 }
 function autoLabel(item){
   const states=statesForTab(item);
@@ -168,7 +168,12 @@ function autoLabel(item){
 }
 function acknowledgeAttention(item){
   let changed=false;
-  for(const state of statesForTab(item))if(state.state==='ready'&&seenAttention[state.key]!==state.token){seenAttention[state.key]=state.token;changed=true;}
+  // The relay stores the review with the computer running the tab, so other
+  // viewers clear it too. The local copy only hides it until the next scan.
+  for(const state of statesForTab(item))if(state.state==='ready'&&!state.seen&&seenAttention[state.key]!==state.token){
+    seenAttention[state.key]=state.token;changed=true;
+    fetch('/api/attention/ack',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:state.host,session:state.session,pane_id:state.pane_id,token:state.token})}).catch(()=>{});
+  }
   if(changed)localStorage.setItem('switchboard-attention-seen',JSON.stringify(seenAttention));
 }
 function isReady(item){return !!(ready[item.key] || item.tab.name.startsWith('*') || statesForTab(item).some(needsAttention));}
@@ -649,6 +654,32 @@ $('size-owner').onclick=()=>{
   closeTabMenu(true);
 };
 $('close-settings').onclick=()=>$('settings-dialog').close();
+// Messages and Computers open over the terminals, so terminal iframes and
+// their sockets stay connected. Modified clicks still open a real page.
+const pageDialog=$('page-dialog'),pageFrame=$('page-frame'),pageNames={'/messages.html':'Messages','/computers.html':'Computers'};
+document.addEventListener('click',event=>{
+  const link=event.target.closest?.('a[href="/messages.html"],a[href="/computers.html"]');
+  if(!link||event.defaultPrevented||event.button||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;
+  event.preventDefault();
+  link.closest('dialog')?.close();
+  $('page-heading').textContent=pageFrame.title=pageNames[link.pathname];
+  pageFrame.src=link.pathname;
+  pageDialog.showModal();
+});
+pageFrame.onload=()=>{
+  const doc=pageFrame.contentDocument,name=pageNames[pageFrame.contentWindow.location.pathname];
+  if(!doc||!name)return;
+  $('page-heading').textContent=pageFrame.title=name;
+  // The overlay header already shows the title and Close, so hide the page's own.
+  const style=doc.createElement('style');style.textContent='a[href="/"],h1{display:none!important}';doc.head.append(style);
+  doc.addEventListener('keydown',event=>{if(event.key==='Escape'&&!event.defaultPrevented)pageDialog.close();});
+};
+$('close-page').onclick=()=>pageDialog.close();
+pageDialog.onclose=()=>{
+  pageFrame.src='about:blank';
+  const item=allTabs().find(item=>item.key===selected);
+  if(item&&$('artifact-preview').hidden&&!document.querySelector('dialog[open]'))focus(item);
+};
 $('refresh').onclick=async()=>{
   const button=$('refresh');button.disabled=true;button.textContent='Refreshing…';
   try{await refresh();}finally{button.disabled=false;button.textContent='Refresh';}

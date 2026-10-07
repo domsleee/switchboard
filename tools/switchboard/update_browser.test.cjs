@@ -260,12 +260,12 @@ let recoveryPanes;
         const failing=path.join(dir,'failed-update');
         fs.writeFileSync(failing,`#!/bin/bash\nif [[ "$1" == -s ]]; then\n n=0; [[ ! -f ${quote(counter)} ]] || read -r n < ${quote(counter)}\n n=$((n+1)); echo "$n" > ${quote(counter)}\n if [[ $n -gt 1 ]]; then echo '[]'; exit 0; fi\nfi\nexec ${quote(newBinary)} "$@"\n`,{mode:0o755});
         const beforeBytes=fs.readFileSync(installed);
-        const rejected=spawnSync('/bin/bash',[path.join(__dirname,'update_local.sh'),failing,installed],{env,encoding:'utf8',timeout:60000});
+        const rejected=spawnSync('/bin/bash',[path.join(__dirname,'update_local.sh'),'--binary-only',failing,installed],{env,encoding:'utf8',timeout:60000});
         assert.notEqual(rejected.status,0,'Post-install verification failure rejects the update');
         assert.match(rejected.stderr,/restoring the previous executable/);
         assert.ok(fs.readFileSync(installed).equals(beforeBytes),'Rollback restores the exact binary');
         await command(`printf '%s%s\\n' "ROLLED_BACK_" "$SB_STATE"`,'ROLLED_BACK_'+marker);
-        execFileSync('/bin/bash',[path.join(__dirname,'update_local.sh'),newBinary,installed],{env,timeout:60000,stdio:'pipe'});
+        execFileSync('/bin/bash',[path.join(__dirname,'update_local.sh'),'--binary-only',newBinary,installed],{env,timeout:60000,stdio:'pipe'});
         await command(`printf '%s%s\\n' "UPDATED_" "$SB_STATE"`,'UPDATED_'+marker);
         }
         // Restart only the connection services, leaving the existing shell and browser alone.

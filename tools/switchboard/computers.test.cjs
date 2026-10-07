@@ -21,9 +21,10 @@ async function fixture(fn, initial = {}) {
         return route.fulfill({contentType: 'application/json', body: JSON.stringify(path === '/api/mesh' ? state : responses.get(path) || {})});
       }
       if (path === '/api/hosts') {
-        calls.push({path,query:new URL(request.url()).search});
-        return route.fulfill({contentType: 'application/json', body: JSON.stringify(responses.get(path) || [])});
+        const query = new URL(request.url()).search; calls.push({path,query});
+        return route.fulfill({contentType: 'application/json', body: JSON.stringify(responses.get(path + query) || responses.get(path) || [])});
       }
+      if (path === '/api/health' && responses.has(path)) return route.fulfill({contentType: 'application/json', body: JSON.stringify(responses.get(path))});
       const name = path.slice(1);
       if (!['computers.html', 'computers.js'].includes(name)) return route.fulfill({status: 404, body: ''});
       return route.fulfill({contentType: name.endsWith('.js') ? 'text/javascript' : 'text/html', body: fs.readFileSync(__dirname + '/static/' + name, 'utf8')});
@@ -208,7 +209,7 @@ test('configured Windows appears before pairing and pairs using its existing gat
     await page.goto('https://switchboard.test/computers.html');
     await page.waitForFunction(() => document.querySelector('#address').value);
     assert.equal(await page.locator('#catalog').isVisible(),true);
-    assert.deepEqual(calls.filter(call => call.path === '/api/hosts').map(call => call.query), ['?summary=1']);
+    assert.equal(calls.find(call => call.path === '/api/hosts').query, '?summary=1');
     assert.match(await page.locator('#members').textContent(), /Windows <work>.*not paired for shared messages/s);
     assert.equal(await page.locator('#members work').count(),0);
     assert.equal(calls.some(call => call.path === '/api/mesh/add'),false);
@@ -289,5 +290,43 @@ test('configured hosts remain visible when pairing service is unavailable', asyn
     assert.match(await page.locator('#message').textContent(),/Pairing is unavailable/);
     assert.equal(await page.locator('#members button').isDisabled(),true);
     assert.equal(calls.some(call => call.path === '/api/mesh/add'),false);
+  });
+});
+
+test('each reachable computer shows its version and flags builds that differ from this one', async () => {
+  const windows = {id:'windows',name:'Windows',address:'http://172.20.10.69:8082',pairing_address:'https://172.20.10.69:8082',configured:true,local:false};
+  const old = {id:'old',name:'Old laptop',address:'https://172.20.10.70:8082',pairing_address:'https://172.20.10.70:8082',configured:true,local:false};
+  const offline = {id:'offline',name:'Offline',address:'https://172.20.10.71:8082',pairing_address:'https://172.20.10.71:8082',configured:true,local:false};
+  await fixture(async ({page,responses}) => {
+    responses.set('/api/health', {commit:'abc1234',commit_date:'2026-10-07'});
+    responses.set('/api/hosts?summary=1', [windows, old, offline]);
+    responses.set('/api/hosts', [
+      {id:'mesh-owner',name:'Owner',sessions:[],version:{commit:'abc1234',commit_date:'2026-10-07'}},
+      {...windows,sessions:[],version:{commit:'def5678',commit_date:'2026-09-30'}},
+      {...old,sessions:[],version:null},
+      {...offline,error:'Host unavailable'}
+    ]);
+    await page.goto('https://switchboard.test/computers.html');
+    await page.waitForFunction(() => document.querySelector('#members').textContent.includes('Old laptop'));
+    const cards = Object.fromEntries(await page.locator('#members .card').evaluateAll(cards => cards.map(card => [card.querySelector('strong').textContent, card.querySelector('small')?.textContent ?? null])));
+    assert.deepEqual(cards, {
+      'Windows <admin>': 'Version abc1234 · 2026-10-07',
+      'Mac': 'Version abc1234 · 2026-10-07',
+      'Windows': 'Version def5678 · 2026-09-30 · Different version from this computer',
+      'Old laptop': 'Version unknown',
+      'Offline': null
+    });
+  }, pairedState);
+});
+
+test('unpaired configured computers fill in versions after the fast summary renders', async () => {
+  await fixture(async ({page,responses}) => {
+    const windows = {id:'windows',name:'Windows',address:'http://172.20.10.69:8082',pairing_address:'https://172.20.10.69:8082',configured:true,local:false};
+    responses.set('/api/health', {commit:'abc1234',commit_date:'2026-10-07'});
+    responses.set('/api/hosts?summary=1', [windows]);
+    responses.set('/api/hosts', [{...windows,sessions:[],version:{commit:'def5678',commit_date:'2026-09-30'}}]);
+    await page.goto('https://switchboard.test/computers.html');
+    await page.waitForFunction(() => document.querySelector('#members small.different'));
+    assert.match(await page.locator('#members').textContent(), /Version def5678 · 2026-09-30 · Different version/);
   });
 });

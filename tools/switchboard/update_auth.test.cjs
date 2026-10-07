@@ -22,7 +22,7 @@ esac
     fs.writeFileSync(installed, binary(installedTokens), {mode:0o755});
     fs.writeFileSync(candidate, binary(candidateTokens), {mode:0o755});
     const before = fs.readFileSync(installed, 'utf8');
-    const result = spawnSync('/bin/bash', [path.join(__dirname, 'update_local.sh'), candidate, installed], {
+    const result = spawnSync('/bin/bash', [path.join(__dirname, 'update_local.sh'), '--binary-only', candidate, installed], {
       env:{...process.env, LC_ALL:'C', SWITCHBOARD_RELEASES_DIR:path.join(dir, 'releases')}, encoding:'utf8', timeout:30000,
     });
     return {...result, unchanged:fs.readFileSync(installed, 'utf8') === before};
