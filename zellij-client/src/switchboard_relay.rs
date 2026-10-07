@@ -220,6 +220,43 @@ impl Host {
         })
     }
 
+    /// A native engine can listen on a specific local interface instead of loopback.
+    /// Ephemeral UDP binding plus route-selected source checks verify local ownership
+    /// without sending traffic, even on systems that allow binding nonlocal addresses.
+    fn is_local_engine(&self) -> bool {
+        let address = match self.origin.host() {
+            Some(url::Host::Domain("localhost")) => return true,
+            Some(url::Host::Ipv4(address)) => std::net::IpAddr::V4(address),
+            Some(url::Host::Ipv6(address)) => std::net::IpAddr::V6(address),
+            _ => return false,
+        };
+        if address.is_loopback() {
+            return true;
+        }
+        if self.origin.scheme() != "https"
+            || self.config.tls_fingerprint.is_none()
+            || address.is_unspecified()
+            || address.is_multicast()
+            || matches!(address, std::net::IpAddr::V4(ip) if ip.is_broadcast())
+        {
+            return false;
+        }
+        if std::net::UdpSocket::bind((address, 0)).is_err() {
+            return false;
+        }
+        let unspecified = match address {
+            std::net::IpAddr::V4(_) => std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+            std::net::IpAddr::V6(_) => std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),
+        };
+        let Ok(route) = std::net::UdpSocket::bind((unspecified, 0)) else {
+            return false;
+        };
+        route.connect((address, 9)).is_ok()
+            && route
+                .local_addr()
+                .is_ok_and(|source| source.ip() == address)
+    }
+
     async fn stream(&self) -> anyhow::Result<Stream> {
         let host = match self.origin.host().unwrap() {
             url::Host::Ipv6(address) => address.to_string(),
@@ -508,10 +545,7 @@ async fn guard(State(state): State<RelayState>, request: Request, next: Next) ->
 }
 
 fn host_summary(host: &Host, configured: bool) -> Value {
-    let local = matches!(
-        host.origin.host_str(),
-        Some("localhost" | "127.0.0.1" | "::1" | "[::1]")
-    );
+    let local = host.is_local_engine();
     // Terminal configuration predates pairing. Preserve it in the computer
     // inventory without treating possession of a terminal token as mesh trust.
     let mut pairing = host.origin.clone();
@@ -595,7 +629,7 @@ async fn host(
 
 async fn link_config(State(state): State<RelayState>) -> Response {
     let data: serde_json::Map<String, Value> = state.all_hosts().iter().map(|host| {
-        let local = matches!(host.origin.host_str(), Some("localhost" | "127.0.0.1" | "::1" | "[::1]"));
+        let local = host.is_local_engine();
         (host.config.id.clone(), json!({"origin": host.config.url, "local": local, "artifacts": host.config.artifact_urls}))
     }).collect();
     (
@@ -853,12 +887,11 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await?;
     let port = listener.local_addr()?.port();
     let mut state = state(&config, port).await?;
-    if let Some(local) = state.all_hosts().into_iter().find(|h| {
-        matches!(
-            h.origin.host_str(),
-            Some("localhost" | "127.0.0.1" | "::1" | "[::1]")
-        )
-    }) {
+    if let Some(local) = state
+        .all_hosts()
+        .into_iter()
+        .find(|host| host.is_local_engine())
+    {
         match mesh::Mesh::open(config_path.with_file_name("mesh"), local).await {
             Ok(mesh) => {
                 mesh.attach_bridge(port)?;
@@ -950,6 +983,53 @@ mod tests {
             "https://[fd00::69]:8091"
         );
         assert_eq!(host_summary(&ipv6, false)["configured"], false);
+    }
+
+    #[test]
+    fn local_engine_accepts_pinned_local_interfaces_without_trusting_remote_or_dns_hosts() {
+        let route = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+        route.connect("192.0.2.1:9").unwrap();
+        let local_ip = route.local_addr().unwrap().ip();
+        assert!(!local_ip.is_unspecified());
+        let mut pinned = config(&format!("https://{local_ip}:8082"));
+        pinned.tls_fingerprint = Some("ab".repeat(32));
+        let local = Host::new(pinned).unwrap();
+        assert!(local.is_local_engine());
+        assert_eq!(host_summary(&local, true)["local"], true);
+        if !local_ip.is_loopback() {
+            assert!(!Host::new(config(&format!("https://{local_ip}:8082")))
+                .unwrap()
+                .is_local_engine());
+            assert!(!Host::new(config(&format!("http://{local_ip}:8082")))
+                .unwrap()
+                .is_local_engine());
+        }
+        for origin in [
+            "https://192.0.2.254:8082",
+            "https://example.invalid:8082",
+            "https://0.0.0.0:8082",
+            "https://224.0.0.1:8082",
+            "https://255.255.255.255:8082",
+            "https://[::]:8082",
+            "https://[ff02::1]:8082",
+        ] {
+            let mut configured = config(origin);
+            configured.tls_fingerprint = Some("ab".repeat(32));
+            assert!(
+                !Host::new(configured).unwrap().is_local_engine(),
+                "{origin}"
+            );
+        }
+        for origin in [
+            "http://127.0.0.1:8082",
+            "http://localhost:8082",
+            "http://[::1]:8082",
+        ] {
+            assert!(
+                Host::new(config(origin)).unwrap().is_local_engine(),
+                "{origin}"
+            );
+        }
     }
 
     #[test]
