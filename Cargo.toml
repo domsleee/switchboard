@@ -21,13 +21,8 @@ zellij-utils = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 dialoguer = { workspace = true }
-humantime = { workspace = true }
-interprocess = { workspace = true }
 log = { workspace = true }
 miette = { workspace = true }
-names = { workspace = true }
-suggest = { workspace = true }
-thiserror = { workspace = true }
 isahc = { workspace = true }
 tokio = { workspace = true }
 
@@ -68,20 +63,15 @@ clap = { version = "4.6", default-features = false, features = ["std", "color", 
 crossterm = { version = "0.29", default-features = false, features = ["windows"] }
 daemonize = { package = "daemonix", version = "0.1", default-features = false }
 dialoguer = { version = "0.11", default-features = false, features = ["password", "completion"] }
-fuzzy-matcher = { version = "0.3.7", default-features = false }
 humantime = { version = "2.1.0", default-features = false }
 interprocess = { version = "2.2", default-features = false, features = ["tokio"] }
 isahc = { version = "1.7.2", default-features = false, features = ["http2", "text-decoding"] }
 kdl = { version = "4.5.0", default-features = false, features = ["span"] }
-lazy_static = { version = "1.4.0", default-features = false }
 libc = { version = "0.2", default-features = false, features = ["std"] }
 log = { version = "0.4.17", default-features = false }
 miette = { version = "7.6", default-features = false, features = ["derive", "fancy"] }
 nix = { version = "0.30", default-features = false }
-notify-debouncer-full = { version = "0.5", default-features = false }
 notify = { version = "8.2", default-features = false, features = ["macos_kqueue"] }
-num_cpus = { version = "1.16", default-features = false }
-pretty-bytes = { version = "0.2.2", default-features = false }
 prost = { version = "0.12.6", default-features = false, features = ["std", "prost-derive"] }
 rand = { version = "0.10.2", default-features = false, features = ["std", "std_rng", "thread_rng"] }
 regex = { version = "1.5.5", default-features = false, features = ["perf", "std", "unicode-perl"] }
@@ -101,7 +91,6 @@ url = { version = "2.2.2", default-features = false, features = ["serde"] }
 uuid = { version = "1.4.1", default-features = false, features = ["serde", "v4", "std"] }
 vte = { version = "0.15", default-features = false, features = ["std"] }
 windows-sys = { version = "0.59", default-features = false }
-names = { version = "0.14.0", default-features = false }
 include_dir = { version = "0.7.3", default-features = false }
 sha2 = { version = "0.11", default-features = false }
 zellij-utils = { path = "zellij-utils/", version = "0.45.1" }
@@ -137,8 +126,5 @@ pkg-fmt = "tgz"
 [features]
 # See remarks in zellij_utils/Cargo.toml
 default = ["vendored_curl", "web_server_capability"]
-plugins_from_target = ["zellij-utils/plugins_from_target"]
-disable_automatic_asset_installation = ["zellij-utils/disable_automatic_asset_installation"]
 vendored_curl = ["zellij-utils/vendored_curl"]
-unstable = ["zellij-client/unstable", "zellij-utils/unstable"]
 web_server_capability = ["zellij-client/web_server_capability", "zellij-server/web_server_capability", "zellij-utils/web_server_capability"]

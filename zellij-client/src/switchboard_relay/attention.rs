@@ -1,5 +1,6 @@
 use super::*;
 use base64::{engine::general_purpose::STANDARD, Engine};
+use std::sync::LazyLock;
 use std::{collections::BTreeMap, path::PathBuf};
 
 fn tail(text: &str, count: usize) -> &str {
@@ -10,22 +11,45 @@ fn tail(text: &str, count: usize) -> &str {
 }
 
 pub(super) fn classify(pane: &Value, screen: &str) -> Value {
-    lazy_static::lazy_static! {
-        static ref CODEX: regex::Regex = regex::Regex::new(r"\bcodex(?:\.(?:cmd|exe))?\b").unwrap();
-        static ref CODEX_TITLE: regex::Regex = regex::Regex::new(r"^codex\s*[-:]").unwrap();
-        static ref GPT: regex::Regex = regex::Regex::new(r"gpt-[\w.-]+").unwrap();
-        static ref CODEX_FOOTER: regex::Regex = regex::Regex::new(r"for shortcuts|enter to send|tab to queue message").unwrap();
-        static ref CLAUDE: regex::Regex = regex::Regex::new(r"\bclaude(?:\.exe)?\b").unwrap();
-        static ref CLAUDE_FOOTER: regex::Regex = regex::Regex::new(r"(?:bypass permissions|accept edits) on|shift\+tab to cycle").unwrap();
-        static ref PROMPT: regex::Regex = regex::Regex::new(r"[›❯](?:[ \t\u{a0}]|\r?\n|$)").unwrap();
-        static ref COMPLETION: regex::Regex = regex::Regex::new(r"(?:worked for|[✻✽✶✳] [a-z]+ for)\s+(?:\d+\s*[hms]\s*)+(?:[•·]\s*(?:done\s+)?\d{1,2}:\d{2}\s*(?:am|pm)?)?").unwrap();
-        static ref NUMBER: regex::Regex = regex::Regex::new(r"^\s*\d+[.)]").unwrap();
-        static ref CONTROLS: regex::Regex = regex::Regex::new(r"esc(?:ape)? to cancel|enter to (?:submit|select|confirm)|press enter to confirm").unwrap();
-        static ref OPTIONS: regex::Regex = regex::Regex::new(r"(?:^|\s)[12][.)]\s+(?:yes|no|allow|approve|deny)").unwrap();
-        static ref QUESTION: regex::Regex = regex::Regex::new(r"[❯›]\s*\d+[.)]").unwrap();
-        static ref BUSY: regex::Regex = regex::Regex::new(r"(?:^|\n|[•✻✽✶✳])[^\n]{0,70}\([^\n]{0,160}esc(?:ape)? to interrupt[^\n]{0,60}\)").unwrap();
-        static ref SPACE: regex::Regex = regex::Regex::new(r"\s+").unwrap();
-    }
+    static CODEX: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\bcodex(?:\.(?:cmd|exe))?\b").unwrap());
+    static CODEX_TITLE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"^codex\s*[-:]").unwrap());
+    static GPT: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"gpt-[\w.-]+").unwrap());
+    static CODEX_FOOTER: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"for shortcuts|enter to send|tab to queue message").unwrap()
+    });
+    static CLAUDE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\bclaude(?:\.exe)?\b").unwrap());
+    static CLAUDE_FOOTER: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?:bypass permissions|accept edits) on|shift\+tab to cycle").unwrap()
+    });
+    static PROMPT: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"[›❯](?:[ \t\u{a0}]|\r?\n|$)").unwrap());
+    static COMPLETION: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?:worked for|[✻✽✶✳] [a-z]+ for)\s+(?:\d+\s*[hms]\s*)+(?:[•·]\s*(?:done\s+)?\d{1,2}:\d{2}\s*(?:am|pm)?)?").unwrap()
+    });
+    static NUMBER: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"^\s*\d+[.)]").unwrap());
+    static CONTROLS: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(
+            r"esc(?:ape)? to cancel|enter to (?:submit|select|confirm)|press enter to confirm",
+        )
+        .unwrap()
+    });
+    static OPTIONS: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?:^|\s)[12][.)]\s+(?:yes|no|allow|approve|deny)").unwrap()
+    });
+    static QUESTION: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"[❯›]\s*\d+[.)]").unwrap());
+    static BUSY: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?:^|\n|[•✻✽✶✳])[^\n]{0,70}\([^\n]{0,160}esc(?:ape)? to interrupt[^\n]{0,60}\)",
+        )
+        .unwrap()
+    });
+    static SPACE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\s+").unwrap());
     let original = tail(screen, 8000);
     let text = original.to_ascii_lowercase();
     let text = text.as_str();
@@ -84,10 +108,12 @@ pub(super) fn classify(pane: &Value, screen: &str) -> Value {
 }
 
 fn quiet_shell(pane: &Value) -> bool {
-    lazy_static::lazy_static! {
-        static ref SHELL: regex::Regex = regex::Regex::new(r"(?:^|[\\/])(?:nu|zsh|bash|fish|pwsh|powershell)(?:\.exe)?(?:\s|$)").unwrap();
-        static ref PATH_TITLE: regex::Regex = regex::Regex::new(r"^(~|/|[A-Za-z]:[\\/])").unwrap();
-    }
+    static SHELL: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?:^|[\\/])(?:nu|zsh|bash|fish|pwsh|powershell)(?:\.exe)?(?:\s|$)")
+            .unwrap()
+    });
+    static PATH_TITLE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"^(~|/|[A-Za-z]:[\\/])").unwrap());
     SHELL.is_match(
         &pane["pane_command"]
             .as_str()

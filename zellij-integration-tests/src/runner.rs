@@ -27,7 +27,7 @@ pub struct TestRunner {
     layout: Option<LayoutInfo>,
     initial_panes: Option<Vec<CommandOrPlugin>>,
     env: std::collections::HashMap<String, String>,
-    stdout_tap: Option<crossbeam::channel::Sender<Vec<u8>>>,
+    stdout_tap: Option<crossbeam_channel::Sender<Vec<u8>>>,
     skip_concurrency_slot: bool,
 }
 
@@ -67,7 +67,7 @@ impl TestRunner {
         self
     }
 
-    pub fn with_stdout_tap(mut self, sender: crossbeam::channel::Sender<Vec<u8>>) -> Self {
+    pub fn with_stdout_tap(mut self, sender: crossbeam_channel::Sender<Vec<u8>>) -> Self {
         self.stdout_tap = Some(sender);
         self
     }
@@ -369,7 +369,7 @@ pub struct TestClient {
 #[derive(Clone)]
 pub struct GuestResizer {
     size: Arc<Mutex<Size>>,
-    signal_tx: crossbeam::channel::Sender<SignalEvent>,
+    signal_tx: crossbeam_channel::Sender<SignalEvent>,
 }
 
 impl GuestResizer {
@@ -512,7 +512,7 @@ impl TestSession {
         self.main_client.send_stdin(bytes);
     }
 
-    pub fn stdin_sender(&self) -> crossbeam::channel::Sender<Vec<u8>> {
+    pub fn stdin_sender(&self) -> crossbeam_channel::Sender<Vec<u8>> {
         self.main_client.fake_client_handle.stdin_tx.clone()
     }
 

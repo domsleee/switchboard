@@ -14,7 +14,7 @@ zellij-server = { path = "../zellij-server", version = "0.45.1" }
 zellij-utils = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
-crossbeam = { version = "0.8", default-features = false, features = ["crossbeam-channel", "std"] }
+crossbeam-channel = "0.5"
 interprocess = { workspace = true }
 insta = "1.48"
 log = { workspace = true }

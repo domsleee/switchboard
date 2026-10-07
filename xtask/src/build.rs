@@ -82,7 +82,6 @@ fn run_proto_codegen(sh: &Shell, force: bool) {
     let _pd = sh.push_dir(&zellij_utils_basedir);
 
     let specs: &[(&str, &str, &str)] = &[
-        ("assets/prost", "src/plugin_api", "generated_plugin_api.rs"),
         (
             "assets/prost_ipc",
             "src/client_server_contract",

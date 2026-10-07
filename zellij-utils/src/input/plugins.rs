@@ -8,8 +8,6 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use super::layout::{PluginUserConfiguration, RunPlugin, RunPluginLocation};
-#[cfg(not(target_family = "wasm"))]
-use crate::consts::ASSET_MAP;
 use crate::consts::BUILTIN_PLUGIN_NAMES;
 pub use crate::data::PluginTag;
 use crate::errors::prelude::*;
@@ -82,10 +80,6 @@ impl PluginConfig {
     }
     /// Resolve wasm plugin bytes for the plugin path and given plugin directory.
     ///
-    /// If zellij was built without the 'disable_automatic_asset_installation' feature, builtin
-    /// plugins (Starting with 'zellij:' in the layout file) are loaded directly from the
-    /// binary-internal asset map. Otherwise:
-    ///
     /// Attempts to first resolve the plugin path as an absolute path, then adds a ".wasm"
     /// extension to the path and resolves that, then the plugin directory joined with the path
     /// with an appended ".wasm" extension, and finally the system data directory joined with
@@ -110,7 +104,6 @@ impl PluginConfig {
             self.path.with_extension("wasm"),
             plugin_dir.join(&self.path).with_extension("wasm"),
         ];
-        #[cfg(not(target_family = "wasm"))]
         paths.push(
             crate::home::system_data_dir()
                 .join("plugins")
@@ -128,26 +121,6 @@ impl PluginConfig {
         // spell it out right here.
         let mut last_err: Result<Vec<u8>> = Err(anyhow!("failed to load plugin from disk"));
         for path in paths {
-            // Check if the plugin path matches an entry in the asset map. If so, load it directly
-            // from memory, don't bother with the disk.
-            #[cfg(not(target_family = "wasm"))]
-            if !cfg!(feature = "disable_automatic_asset_installation") && self.is_builtin() {
-                let asset_path = PathBuf::from("plugins").join(&path);
-                if let Some(bytes) = ASSET_MAP.get(&asset_path) {
-                    log::debug!("Loaded plugin '{}' from internal assets", path.display());
-
-                    if plugin_dir.join(&path).with_extension("wasm").exists() {
-                        log::info!(
-                            "Plugin '{}' exists in the 'PLUGIN DIR' at '{}' but is being ignored",
-                            path.display(),
-                            plugin_dir.display()
-                        );
-                    }
-
-                    return Ok(bytes.to_vec());
-                }
-            }
-
             // Try to read from disk
             match fs::read(&path) {
                 Ok(val) => {
@@ -161,25 +134,15 @@ impl PluginConfig {
         }
 
         // Not reached if a plugin is found!
-        #[cfg(not(target_family = "wasm"))]
         if self.is_builtin() {
             // Layout requested a builtin plugin that wasn't found
             let plugin_path = self.path.with_extension("wasm");
 
-            if cfg!(feature = "disable_automatic_asset_installation") && self.is_builtin_name() {
-                return Err(ZellijError::BuiltinPluginMissing {
-                    plugin_path,
-                    plugin_dir: plugin_dir.to_owned(),
-                    source: last_err.unwrap_err(),
-                })
-                .context("failed to load a plugin");
-            } else {
-                return Err(ZellijError::BuiltinPluginNonexistent {
-                    plugin_path,
-                    source: last_err.unwrap_err(),
-                })
-                .context("failed to load a plugin");
-            }
+            return Err(ZellijError::BuiltinPluginNonexistent {
+                plugin_path,
+                source: last_err.unwrap_err(),
+            })
+            .context("failed to load a plugin");
         }
 
         return last_err;

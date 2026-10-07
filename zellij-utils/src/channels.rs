@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 
 use crate::errors::{get_current_ctx, ErrorContext};
-pub use crossbeam::channel::{
+pub use crossbeam_channel::{
     bounded, unbounded, Receiver, RecvError, RecvTimeoutError, Select, SendError, Sender,
     TrySendError,
 };

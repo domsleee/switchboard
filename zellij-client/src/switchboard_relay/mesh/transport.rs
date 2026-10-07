@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(test)]
+use rustls_pki_types::pem::PemObject;
 
 pub(in crate::switchboard_relay) fn routes() -> Router<RelayState> {
     Router::new()
@@ -287,9 +289,8 @@ impl Mesh {
         let certificates = vec![rustls::pki_types::CertificateDer::from(crypto::decode(
             &self.identity.certificate,
         )?)];
-        let key = rustls_pemfile::private_key(&mut self.identity.tls_key.as_bytes())
-            .map_err(|_| anyhow::anyhow!("Invalid gateway identity"))?
-            .ok_or_else(|| anyhow::anyhow!("Missing gateway identity"))?;
+        let key = rustls_pki_types::PrivateKeyDer::from_pem_slice(self.identity.tls_key.as_bytes())
+            .map_err(|_| anyhow::anyhow!("Invalid gateway identity"))?;
         Ok(rustls::ServerConfig::builder_with_provider(provider)
             .with_protocol_versions(&[&rustls::version::TLS13])?
             .with_no_client_auth()

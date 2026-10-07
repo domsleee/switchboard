@@ -2999,7 +2999,7 @@ fn request_panes_from_screen(
     senders: &ThreadSenders,
     show_all: bool,
 ) -> Result<Option<ListPanesResponse>> {
-    use crossbeam::channel::{unbounded, RecvTimeoutError};
+    use crossbeam_channel::{unbounded, RecvTimeoutError};
     use std::time::Duration;
 
     let (response_sender, response_receiver) = unbounded();
@@ -3025,7 +3025,7 @@ fn request_tabs_from_screen(
     senders: &ThreadSenders,
     client_id: ClientId,
 ) -> Result<Option<ListTabsResponse>> {
-    use crossbeam::channel::{unbounded, RecvTimeoutError};
+    use crossbeam_channel::{unbounded, RecvTimeoutError};
     use std::time::Duration;
 
     let (response_sender, response_receiver) = unbounded();
@@ -3051,7 +3051,7 @@ fn request_current_tab_info_from_screen(
     senders: &ThreadSenders,
     client_id: ClientId,
 ) -> Result<Option<TabInfo>> {
-    use crossbeam::channel::{unbounded, RecvTimeoutError};
+    use crossbeam_channel::{unbounded, RecvTimeoutError};
     use std::time::Duration;
 
     let (response_sender, response_receiver) = unbounded();
@@ -3092,7 +3092,7 @@ fn enrich_pane_with_running_command(
     pane_id: PaneId,
     senders: &ThreadSenders,
 ) -> Result<()> {
-    use crossbeam::channel::unbounded;
+    use crossbeam_channel::unbounded;
     use std::time::Duration;
     use zellij_utils::data::GetPaneRunningCommandResponse;
 
@@ -3116,7 +3116,7 @@ fn enrich_pane_with_cwd(
     pane_id: PaneId,
     senders: &ThreadSenders,
 ) -> Result<()> {
-    use crossbeam::channel::unbounded;
+    use crossbeam_channel::unbounded;
     use std::time::Duration;
     use zellij_utils::data::GetPaneCwdResponse;
 

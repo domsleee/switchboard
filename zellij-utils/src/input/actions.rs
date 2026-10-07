@@ -840,14 +840,10 @@ impl Action {
                         )
                     })?;
 
-                    #[cfg(not(target_family = "wasm"))]
                     let bytes = key
                         .serialize_kitty()
                         .map(|s| s.into_bytes())
                         .unwrap_or_else(Vec::new);
-
-                    #[cfg(target_family = "wasm")]
-                    let bytes = vec![];
 
                     match &pane_id {
                         Some(pane_id_str) => {

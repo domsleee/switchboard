@@ -720,7 +720,17 @@ pub fn generate_unique_session_name() -> Option<String> {
 /// and offensive combinations. Care should be taken when adding or removing to either list due to the birthday paradox/
 /// hash collisions, e.g. with 4096 unique names, the likelihood of a collision in 10 session names is 1%.
 pub fn get_name_generator() -> impl Iterator<Item = String> {
-    names::Generator::new(&ADJECTIVES, &NOUNS, names::Name::Plain)
+    std::iter::repeat_with(|| {
+        let random = uuid::Uuid::new_v4();
+        let bytes = random.as_bytes();
+        let adjective = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
+        let noun = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        format!(
+            "{}-{}",
+            ADJECTIVES[adjective % ADJECTIVES.len()],
+            NOUNS[noun % NOUNS.len()]
+        )
+    })
 }
 
 /// Generates a random human-readable name using curated adjectives and nouns.

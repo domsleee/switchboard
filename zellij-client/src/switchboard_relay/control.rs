@@ -2,6 +2,7 @@ use super::*;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Deserialize;
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -630,7 +631,9 @@ fn validate_helper_state(name: &str, state: &Value) -> anyhow::Result<()> {
 }
 
 pub(super) fn strip_ansi(text: &str) -> String {
-    lazy_static::lazy_static! { static ref ANSI: regex::Regex = regex::Regex::new(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*?(?:\x07|\x1b\\)").unwrap(); }
+    static ANSI: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*?(?:\x07|\x1b\\)").unwrap()
+    });
     ANSI.replace_all(text, "").into_owned()
 }
 

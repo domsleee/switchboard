@@ -23,7 +23,6 @@ use std::time::Duration;
 use strum_macros::{Display, EnumDiscriminants, EnumIter, EnumString};
 use unicode_width::UnicodeWidthChar;
 
-#[cfg(not(target_family = "wasm"))]
 use crate::vendored::termwiz::{
     input::KittyKeyboardFlags,
     input::{KeyCode, KeyCodeEncodeModes, KeyboardEncoding, Modifiers},
@@ -173,7 +172,6 @@ impl fmt::Display for KeyWithModifier {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
 impl Into<Modifiers> for &KeyModifier {
     fn into(self) -> Modifiers {
         match self {
@@ -544,7 +542,6 @@ impl KeyWithModifier {
         // self.bare_key == BareKey::Esc || self.is_key_with_ctrl_modifier(BareKey::Char('c'))
         self.bare_key == BareKey::Esc
     }
-    #[cfg(not(target_family = "wasm"))]
     pub fn to_termwiz_modifiers(&self) -> Modifiers {
         let mut modifiers = Modifiers::empty();
         for modifier in &self.key_modifiers {
@@ -552,7 +549,6 @@ impl KeyWithModifier {
         }
         modifiers
     }
-    #[cfg(not(target_family = "wasm"))]
     pub fn to_termwiz_keycode(&self) -> KeyCode {
         match self.bare_key {
             BareKey::PageDown => KeyCode::PageDown,
@@ -579,7 +575,6 @@ impl KeyWithModifier {
             BareKey::Menu => KeyCode::Menu,
         }
     }
-    #[cfg(not(target_family = "wasm"))]
     pub fn serialize_non_kitty(&self) -> Option<String> {
         let modifiers = self.to_termwiz_modifiers();
         let key_code_encode_modes = KeyCodeEncodeModes {
@@ -594,7 +589,6 @@ impl KeyWithModifier {
             .encode(modifiers, key_code_encode_modes, true)
             .ok()
     }
-    #[cfg(not(target_family = "wasm"))]
     pub fn serialize_kitty(&self) -> Option<String> {
         let modifiers = self.to_termwiz_modifiers();
         let key_code_encode_modes = KeyCodeEncodeModes {

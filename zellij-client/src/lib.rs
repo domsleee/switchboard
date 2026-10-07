@@ -93,7 +93,7 @@ pub(crate) fn async_runtime(maybe_number_of_workers: Option<usize>) -> tokio::ru
                     value
                 },
                 _ => {
-                    let cpus = num_cpus::get_physical();
+                    let cpus = std::thread::available_parallelism().map_or(1, |cpus| cpus.get());
                     log::debug!(
                         "Creating client async runtime with {} tasks based on CPU count",
                         cpus
