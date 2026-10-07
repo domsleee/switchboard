@@ -420,6 +420,28 @@ fn state_written_by_the_python_updater_round_trips() {
     );
 }
 
+#[test]
+fn automatic_update_lock_acquires_contends_and_releases() {
+    let mut harness = Harness::new(true);
+    harness.updater.check = true;
+    harness.publish(&full('b'), 5, "");
+    harness.updater.run().unwrap();
+
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .append(true)
+        .open(harness.root.join("state/automatic.lock"))
+        .unwrap();
+    lock.try_lock().unwrap();
+    assert_eq!(
+        harness.updater.run().unwrap_err().to_string(),
+        "Another automatic update is running"
+    );
+    drop(lock);
+    harness.updater.run().unwrap();
+    assert!(harness.calls().is_empty());
+}
+
 #[cfg(unix)]
 mod orchestration {
     use super::*;
