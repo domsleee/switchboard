@@ -2,11 +2,10 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
 
-// Cmd+1–9 always stays with the browser. Mac Ctrl+1–9 selects the visible sidebar tab (9 = last)
-// from the page or a terminal iframe; elsewhere Ctrl+digit is the browser's tab switch and passes through.
+// Cmd+1–9 always stays with the browser. On every platform Ctrl+1–9 selects the visible sidebar tab
+// (9 = last) from the page or a terminal iframe, and is preventDefault-ed so the browser keeps its tab.
 for(const platform of ['MacIntel','Win32'])test(`${platform}: Ctrl+digit sidebar selection and Cmd+digit browser passthrough`,
   {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
-  const mac=platform==='MacIntel';
   const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
   const browser=await chromium.launch({headless:true});
   try{
@@ -18,6 +17,9 @@ for(const platform of ['MacIntel','Win32'])test(`${platform}: Ctrl+digit sidebar
       Object.defineProperty(Navigator.prototype,'platform',{get:()=>platform});
       window.setInterval=()=>0;
       localStorage.setItem('switchboard-tab-order',order);
+      // Runs before Switchboard's handlers in every frame; reads defaultPrevented once dispatch ends.
+      window.ctrlDigits=[];
+      addEventListener('keydown',event=>{if(event.ctrlKey&&/^Digit/.test(event.code))setTimeout(()=>ctrlDigits.push(event.code+':'+event.defaultPrevented));},true);
     },[platform,JSON.stringify([3,1,0,2].map(key))]);
     await context.route('**/*',async route=>{
       const path=new URL(route.request().url()).pathname;
@@ -59,34 +61,34 @@ for(const platform of ['MacIntel','Win32'])test(`${platform}: Ctrl+digit sidebar
     await page.locator('#tabs .selected').focus();
     for(const digit of [1,2,3,4,5,6,7,8,9])await page.keyboard.press('Meta+Digit'+digit);
     await page.keyboard.press('Control+Digit2');await settle();
-    if(mac){
-      assert.equal(await selectedName(),'Bravo');
-      await page.keyboard.press('Control+Digit9');await settle();assert.equal(await selectedName(),'Charlie','Ctrl+9 selects the last tab');
-      await page.keyboard.press('Control+Digit5');await settle();assert.equal(await selectedName(),'Charlie','beyond the last tab is ignored');
-      // Search narrows the numbering to what is shown, even while typing in the search box.
-      await page.keyboard.press('Meta+k');await page.keyboard.type('r');
-      assert.deepEqual(await page.locator('#tabs .tab-row:not([hidden]) .tab-name').allTextContents(),['Bravo','Charlie']);
-      await page.keyboard.press('Control+Digit1');await settle();assert.equal(await selectedName(),'Bravo');
-      await page.locator('#tab-search').fill('');await page.keyboard.press('Escape');
-      assert.deepEqual(await page.evaluate(()=>keys),[...[1,2,3,4,5,6,7,8,9].map(d=>`Digit${d}:false`),'KeyR:false'],'only Cmd+digit and typing reaches the page bubble, never prevented');
-    }else{
-      assert.equal(await selectedName(),'Alpha');
-      assert.deepEqual(await page.evaluate(()=>keys),[...[1,2,3,4,5,6,7,8,9].map(d=>`Digit${d}:false`),'Digit2:false'],'Ctrl+digit stays with the browser');
-    }
+    assert.equal(await selectedName(),'Bravo');
+    await page.keyboard.press('Control+Digit9');await settle();assert.equal(await selectedName(),'Charlie','Ctrl+9 selects the last tab');
+    await page.keyboard.press('Control+Digit5');await settle();assert.equal(await selectedName(),'Charlie','beyond the last tab is ignored');
+    // Search narrows the numbering to what is shown, even while typing in the search box.
+    await page.keyboard.press('Meta+k');await page.keyboard.type('r');
+    assert.deepEqual(await page.locator('#tabs .tab-row:not([hidden]) .tab-name').allTextContents(),['Bravo','Charlie']);
+    await page.keyboard.press('Control+Digit1');await settle();assert.equal(await selectedName(),'Bravo');
+    await page.locator('#tab-search').fill('');await page.keyboard.press('Escape');
+    assert.deepEqual(await page.evaluate(()=>keys),[...[1,2,3,4,5,6,7,8,9].map(d=>`Digit${d}:false`),'KeyR:false'],'only Cmd+digit and typing reaches the page bubble, never prevented');
+    // Selecting a tab focuses its terminal, so later presses land in whichever frame has focus.
+    const ctrlDigits=(await Promise.all(page.frames().map(f=>f.evaluate(()=>window.ctrlDigits||[])))).flat();
+    assert.deepEqual(ctrlDigits.sort(),['Digit1:true','Digit2:true','Digit5:true','Digit9:true'],'Ctrl+digit is always prevented, even past the last tab');
+    await Promise.all(page.frames().map(f=>f.evaluate(()=>{window.ctrlDigits=[];})));
 
     // Terminal iframe focused: Ctrl+digit is forwarded to the parent; Cmd+digit reaches neither xterm nor zellij.
     await page.evaluate(()=>{const item=allTabs().find(item=>item.tab.name==='Alpha');activate(item);});
     await input.evaluate(()=>new Promise(resolve=>{const wait=()=>window.term.options.disableStdin?setTimeout(wait,10):resolve();wait();}));
-    await input.focus();await input.evaluate(()=>{window.keys=[];window.sent=[];});
+    await input.focus();await input.evaluate(()=>{window.keys=[];window.sent=[];window.ctrlDigits=[];});
     for(const digit of [1,2,3,4,5,6,7,8,9])await page.keyboard.press('Meta+Digit'+digit);
     await page.keyboard.press('Meta+KeyA');
     await page.keyboard.press('Meta+KeyR');await page.keyboard.press('Meta+Shift+KeyR');
     await page.keyboard.press('Control+Digit1');await settle();
-    const inner=await input.evaluate(()=>({keys,sent}));
+    const inner=await input.evaluate(()=>({keys,sent,ctrlDigits}));
     const metaDigits=[1,2,3,4,5,6,7,8,9].map(d=>`Digit${d}:false`);
-    assert.deepEqual(inner.keys,[...metaDigits,'KeyA:true','KeyR:false','KeyR:false',...(mac?[]:['Digit1:false'])],'Cmd+R reload reaches the browser; other Cmd shortcuts still go to the terminal');
-    assert.deepEqual(inner.sent,['\x1b[97;9u']);
-    assert.equal(await selectedName(),mac?'Delta':'Alpha');
+    assert.deepEqual(inner.keys,[...metaDigits,'KeyA:true','KeyR:false','KeyR:false',],'Cmd+R reload reaches the browser; other Cmd shortcuts still go to the terminal');
+    assert.deepEqual(inner.sent,['\x1b[97;9u'],'Ctrl+1 never reaches xterm or Zellij');
+    assert.deepEqual(inner.ctrlDigits,['Digit1:true']);
+    assert.equal(await selectedName(),'Delta');
     assert.deepEqual(errors,[]);
   }finally{await browser.close();}
 });

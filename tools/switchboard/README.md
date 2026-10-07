@@ -104,10 +104,13 @@ Remove the Startup shortcut to disable automatic startup. Other hosts can use
 **Alt+H / Alt+L** move to the previous/next visible tab across machines, wrapping
 at either end. They work from inside the terminal and follow the current group
 filter. **Alt+Left / Alt+Right** move between words inside the terminal.
-On Mac, **Ctrl+1…Ctrl+8** select the visible sidebar tab at that position and **Ctrl+9**
-the last, following the current order, filter and search, also from inside the terminal.
-**Cmd+1…9** stay with the browser's own tab switching. On Windows/Linux, Ctrl+1…9 is the
-browser's tab switching, so Switchboard leaves it alone there; use Alt+H / Alt+L or Cmd/Ctrl+K.
+**Ctrl+1…Ctrl+8** select the visible sidebar tab at that position and **Ctrl+9** the last,
+following the current order, filter and search, on Mac, Windows and Linux, also from inside
+the terminal. On Windows/Linux this replaces the browser's own Ctrl+1…9 tab switching while
+Switchboard is focused: Chrome, Edge and Firefox let the page take it, since none of them
+reserve those keys. If a browser or extension still switches tabs, install Switchboard as
+an app window (Chrome/Edge "Install"/PWA, or `--app=URL`), or use Alt+H / Alt+L or Cmd/Ctrl+K.
+On Mac, **Cmd+1…9** stay with the browser's own tab switching.
 **Right-click a sidebar tab → Archive** hides it without closing its terminal.
 **Right-click → Close…**, or **Ctrl+D then Enter**, confirms closing every pane in that
 tab and stops its processes. It targets the tab by its native stable ID, even

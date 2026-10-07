@@ -218,8 +218,8 @@
       if(pendingFocus){showEscapeStatus('Waiting for the selected terminal to receive focus.',true);return;}
       parent.postMessage({type:'zellij-close-tab',host},location.origin);return;
     }
-    // Mac Ctrl+1–9 selects a Switchboard tab; see tabNumber in app.js.
-    if(event.ctrlKey&&!event.metaKey&&!event.altKey&&!event.shiftKey&&/^Digit[1-9]$/.test(event.code)&&/Mac/.test(navigator.platform)){
+    // Ctrl+1–9 selects a Switchboard tab on every platform, before xterm/Zellij; see tabNumber in app.js.
+    if(event.ctrlKey&&!event.metaKey&&!event.altKey&&!event.shiftKey&&/^Digit[1-9]$/.test(event.code)){
       event.preventDefault();event.stopImmediatePropagation();
       parent.postMessage({type:'zellij-tab-number',host,number:+event.code.slice(5)},location.origin);return;
     }
