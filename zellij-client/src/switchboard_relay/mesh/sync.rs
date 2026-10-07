@@ -171,11 +171,10 @@ impl Mesh {
                 self.exchange(response).await?;
                 Ok::<_, anyhow::Error>(())
             };
-            if tokio::time::timeout(Duration::from_secs(5), result)
-                .await
-                .is_err()
-            {
-                log::debug!("Group sync timed out; will retry");
+            match tokio::time::timeout(Duration::from_secs(5), result).await {
+                Ok(Ok(())) => {},
+                Ok(Err(_)) => logs::record(&peer.name, "Group sync failed; will retry"),
+                Err(_) => logs::record(&peer.name, "Group sync timed out; will retry"),
             }
         }))
         .await;

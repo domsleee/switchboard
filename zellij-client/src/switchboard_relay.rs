@@ -2,6 +2,7 @@
 mod artifacts;
 mod attention;
 mod control;
+mod logs;
 mod mesh;
 pub(crate) mod peer_bridge;
 use axum::{
@@ -74,6 +75,7 @@ struct RelayState {
     mesh: Option<Arc<mesh::Mesh>>,
     // Remote entries left in the hosts file, offered only as "Pair this computer".
     candidates: Arc<Vec<Value>>,
+    artifact: Option<artifacts::ArtifactConfig>,
 }
 
 impl RelayState {
@@ -597,7 +599,13 @@ async fn describe(host: &Host, configured: bool) -> Value {
             description["sessions"] = json!(sessions);
             description["version"] = version;
         },
-        _ => description["error"] = json!("Host unavailable"),
+        _ => {
+            logs::record(
+                &host.config.name,
+                "Host unavailable: sessions could not be listed",
+            );
+            description["error"] = json!("Host unavailable");
+        },
     }
     description
 }
@@ -638,10 +646,37 @@ async fn host(
     Ok(Json(describe(&host, state.hosts.contains_key(&id)).await))
 }
 
+// The artifact proxy serves one computer's gallery port under a local hostname;
+// links from that computer's terminals to that port open through the proxy.
+fn artifact_links(state: &RelayState, host: &Host) -> Value {
+    if host
+        .config
+        .artifact_urls
+        .as_object()
+        .is_some_and(|links| !links.is_empty())
+    {
+        return host.config.artifact_urls.clone();
+    }
+    let Some(proxy) = &state.artifact else {
+        return Value::Null;
+    };
+    match url::Url::parse(&proxy.target) {
+        Ok(target)
+            if target.host_str().is_some() && target.host_str() == host.origin.host_str() =>
+        {
+            match target.port_or_known_default() {
+                Some(port) => json!({ port.to_string(): format!("https://{}", proxy.hostname) }),
+                None => Value::Null,
+            }
+        },
+        _ => Value::Null,
+    }
+}
+
 async fn link_config(State(state): State<RelayState>) -> Response {
     let data: serde_json::Map<String, Value> = state.all_hosts().iter().map(|host| {
         let local = host.is_local_engine();
-        (host.config.id.clone(), json!({"origin": host.config.url, "local": local, "artifacts": host.config.artifact_urls}))
+        (host.config.id.clone(), json!({"origin": host.config.url, "local": local, "artifacts": artifact_links(&state, host)}))
     }).collect();
     (
         [(header::CONTENT_TYPE, "application/javascript")],
@@ -845,6 +880,7 @@ async fn state(config: &RelayConfig, port: u16) -> anyhow::Result<RelayState> {
         poll: Default::default(),
         mesh: None,
         candidates: Arc::new(candidates),
+        artifact: config.artifact_proxy.clone(),
     })
 }
 
@@ -888,6 +924,7 @@ fn app(state: RelayState) -> Router {
         .route("/api/hosts/{host}", get(host))
         .route("/api/attention", get(attention::handler))
         .route("/api/attention/ack", post(attention::acknowledge))
+        .route("/api/logs", get(logs::handler))
         .route("/api/message-board/{*path}", any(message_board))
         .route("/api/hosts/{host}/close-tab", post(control::close_tab))
         .route("/api/hosts/{host}/escape", post(control::escape))
@@ -923,8 +960,9 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
                 mesh.attach_bridge(port)?;
                 state.mesh = Some(mesh);
             },
-            Err(_) => log::warn!(
-                "Switchboard pairing unavailable; local relay continues (details redacted)"
+            Err(_) => logs::record(
+                "pairing",
+                "Switchboard pairing unavailable; local relay continues",
             ),
         }
     }
@@ -979,6 +1017,30 @@ mod tests {
             escape_transport: None,
             zellij_binary: None,
         }
+    }
+
+    #[test]
+    fn artifact_proxy_target_computer_gets_gallery_links() {
+        let state = RelayState {
+            hosts: Default::default(),
+            order: Default::default(),
+            port: 0,
+            attention: Default::default(),
+            poll: Default::default(),
+            mesh: None,
+            candidates: Default::default(),
+            artifact: Some(artifacts::ArtifactConfig {
+                hostname: "zellij-gallery.localhost".into(),
+                target: "http://192.0.2.69:8765".into(),
+            }),
+        };
+        let paired = Host::new(config("https://192.0.2.69:8082")).unwrap();
+        assert_eq!(
+            artifact_links(&state, &paired),
+            json!({"8765": "https://zellij-gallery.localhost"})
+        );
+        let other = Host::new(config("https://192.0.2.15:8082")).unwrap();
+        assert_eq!(artifact_links(&state, &other), Value::Null);
     }
 
     #[test]

@@ -101,7 +101,9 @@ pub(super) async fn escape(
     RoutePath(id): RoutePath<String>,
     Json(target): Json<EscapeTarget>,
 ) -> Result<Json<Value>, Error> {
-    execute(&state, &id, &target.session, target.pane_id, false).await?;
+    execute(&state, &id, &target.session, target.pane_id, false)
+        .await
+        .inspect_err(|e| failed(&state, &id, "Escape", e))?;
     Ok(Json(json!({"ok":true})))
 }
 pub(super) async fn close_tab(
@@ -109,8 +111,23 @@ pub(super) async fn close_tab(
     RoutePath(id): RoutePath<String>,
     Json(target): Json<CloseTarget>,
 ) -> Result<Json<Value>, Error> {
-    execute(&state, &id, &target.session, target.tab_id, true).await?;
+    execute(&state, &id, &target.session, target.tab_id, true)
+        .await
+        .inspect_err(|e| failed(&state, &id, "Close tab", e))?;
     Ok(Json(json!({"ok":true})))
+}
+
+fn failed(state: &RelayState, id: &str, action: &str, (status, message): &Error) {
+    // Invalid input and closed-meanwhile targets are user races, not failures to review.
+    if !matches!(
+        *status,
+        StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND | StatusCode::CONFLICT
+    ) {
+        let name = state
+            .host(id)
+            .map_or(id.to_string(), |h| h.config.name.clone());
+        logs::record(&name, &format!("{action} failed: {message}"));
+    }
 }
 
 async fn execute(

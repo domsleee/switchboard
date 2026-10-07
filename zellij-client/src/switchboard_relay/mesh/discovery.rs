@@ -136,7 +136,10 @@ pub(in crate::switchboard_relay) fn start(state: RelayState) -> tokio::task::Joi
             .await
         };
         if setup.await.is_err() {
-            log::warn!("Pairing setup unavailable; choose a connection in Computers");
+            logs::record(
+                "pairing",
+                "Pairing setup unavailable; choose a connection in Computers",
+            );
         }
         loop {
             tokio::time::sleep(Duration::from_secs(3)).await;

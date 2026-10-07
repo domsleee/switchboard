@@ -979,6 +979,44 @@ async fn gateway_roundtrip(shared: bool) {
         .await,
         StatusCode::OK
     );
+    // A paired peer can review this computer's recent failures; strangers cannot.
+    logs::record("gateway-test", "Peer-visible failure");
+    let mut sender = client.connection(false).await.unwrap();
+    let response = sender
+        .send_request(
+            hyper::Request::get("/switchboard/logs")
+                .header(header::HOST, &authority)
+                .header(header::AUTHORIZATION, format!("Bearer {bearer}"))
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let logs: Value = serde_json::from_slice(
+        &to_bytes(Body::new(response.into_body()), LIMIT)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(logs["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e["source"] == "gateway-test" && e["message"] == "Peer-visible failure"));
+    assert_eq!(
+        request(
+            &client,
+            &authority,
+            None,
+            false,
+            Method::GET,
+            "/switchboard/logs",
+            Bytes::new()
+        )
+        .await,
+        StatusCode::UNAUTHORIZED
+    );
     assert_eq!(
         request(
             &client,
@@ -1852,6 +1890,7 @@ async fn attention_reviews_live_with_the_owner_and_every_peer_sees_them() {
         poll: Default::default(),
         mesh: Some(mesh.clone()),
         candidates: Default::default(),
+        artifact: None,
     };
     let (mac, laptop) = (relay(&viewers[0]), relay(&viewers[1]));
     async fn shown(relay: &super::super::RelayState, host: &str) -> Value {

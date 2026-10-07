@@ -646,7 +646,7 @@ $('ready').onclick=()=>{
   ready[item.key]=Date.now();saveReady();
   closeTabMenu(true);render();
 };
-$('settings').onclick=()=>$('settings-dialog').showModal();
+$('settings').onclick=()=>{$('settings-dialog').showModal();loadLogs();};
 $('size-owner').onclick=()=>{
   const item=contextItem;
   if(!item || $('size-owner').disabled)return;
@@ -684,6 +684,29 @@ $('refresh').onclick=async()=>{
   const button=$('refresh');button.disabled=true;button.textContent='Refreshing…';
   try{await refresh();}finally{button.disabled=false;button.textContent='Refresh';}
 };
+async function loadLogs(){
+  const list=$('logs'),button=$('refresh-logs');
+  const element=(tag,className,text)=>{const node=document.createElement(tag);node.className=className;node.textContent=text;return node;};
+  button.disabled=true;list.setAttribute('aria-busy','true');
+  try{
+    const response=await fetch('/api/logs',{cache:'no-store'});
+    if(!response.ok)throw new Error('Logs unavailable');
+    const {computers=[]}=await response.json();
+    list.replaceChildren(...computers.map(computer=>{
+      const group=element('section','log-computer','');group.append(element('h4','',computer.name));
+      if(computer.error)group.append(element('p','log-note',computer.error));
+      else if(!computer.entries?.length)group.append(element('p','log-note','No recent errors'));
+      for(const entry of computer.error?[]:computer.entries||[]){
+        const row=element('div','log-entry',''),when=new Date(entry.time);
+        const meta=element('small','',[entry.source,when.toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}),entry.count>1?`×${entry.count}`:''].filter(Boolean).join(' · '));
+        meta.title=humanTime(when);row.append(element('span','',entry.message),meta);group.append(row);
+      }
+      return group;
+    }));
+  }catch(_){list.replaceChildren(element('p','log-note','Logs unavailable; refresh to try again.'));}
+  finally{button.disabled=false;list.setAttribute('aria-busy','false');}
+}
+$('refresh-logs').onclick=loadLogs;
 $('native-tabs').onclick=()=>{nativeTabs=!nativeTabs;localStorage.setItem('switchboard-native-tabs',String(nativeTabs));updateNativeTabs();};
 updateNativeTabs();
 refresh();setInterval(refresh,15000);
