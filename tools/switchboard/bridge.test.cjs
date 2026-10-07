@@ -277,3 +277,43 @@ test('plain Ctrl+T cannot open native Tab mode, including repeats, and preserves
   h.setFocus(false);assert.equal(h.key('KeyT',{altKey:false,ctrlKey:true}).prevented,undefined);
   h.setFocus(true);h.setModal(true);assert.equal(h.key('KeyT',{altKey:false,ctrlKey:true}).prevented,undefined);
 });
+
+test('lost focus acknowledgement times out, releases input and permits another switch',()=>{
+  const h=harness(),sent=[];h.window.__zjSendControl=message=>sent.push(message);
+  const focus=(pane_id,focus_id)=>h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-focus',pane_id,is_plugin:false,focus_id}});
+  h.state({active_pane:{pane_id:1,is_plugin:false}});
+  focus(2,1);focus(3,2);
+  assert.equal(h.timers.size,1,'Queued clicks must not extend the deadline');
+  [...h.timers.values()][0]();
+  assert.equal(h.window.term.options.disableStdin,false);
+  assert.equal(h.window.term.element.style.pointerEvents,'');
+  const failure=h.messages.at(-1);
+  assert.equal(failure.type,'zellij-focus-failed');assert.equal(failure.focus_id,2);
+  assert.match(failure.message,/timed out/);assert.equal(h.timers.size,0);
+  focus(3,3);assert.deepEqual(sent.map(command=>command.pane_id),[2,3]);
+  h.state({active_pane:{pane_id:3,is_plugin:false}});
+  assert.equal(h.window.term.options.disableStdin,false);assert.equal(h.timers.size,0);
+});
+
+test('focus send exceptions restore existing input settings and report failure',()=>{
+  const h=harness();h.window.__zjSendControl=()=>{throw new Error('Disconnected');};
+  h.window.term.options.disableStdin=true;h.window.term.element.style.pointerEvents='auto';
+  h.state({active_pane:{pane_id:1,is_plugin:false}});
+  h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-focus',pane_id:2,is_plugin:false,focus_id:9}});
+  assert.equal(h.window.term.options.disableStdin,true);
+  assert.equal(h.window.term.element.style.pointerEvents,'auto');assert.equal(h.timers.size,0);
+  assert.equal(h.messages.at(-1).type,'zellij-focus-failed');assert.equal(h.messages.at(-1).focus_id,9);
+});
+
+test('focus acknowledgement and disconnect both cancel the timeout',()=>{
+  for(const outcome of ['acknowledge','disconnect']){
+    const h=harness();h.window.__zjSendControl=()=>{};
+    h.state({active_pane:{pane_id:1,is_plugin:false}});
+    h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-focus',pane_id:2,is_plugin:false,focus_id:1}});
+    assert.equal(h.timers.size,1);
+    if(outcome==='acknowledge')h.state({active_pane:{pane_id:2,is_plugin:false}});
+    else new h.window.WebSocket('ws://localhost:8090/hosts/windows/ws/control').handlers.close();
+    assert.equal(h.timers.size,0);assert.equal(h.window.term.options.disableStdin,false);
+    assert.equal(h.window.term.element.style.pointerEvents,'');
+  }
+});

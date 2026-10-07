@@ -247,3 +247,21 @@ test('terminal URLs round-trip names and wait for the requested machine and tab'
   location.search='?host=windows&session=main&tab=-1';assert.equal(context.requestedTab(),null);
   location.search='?host=windows&session=main&tab=4294967296';assert.equal(context.requestedTab(),null);
 });
+
+test('failed switch clears pending state and restores the actual active tab, ignoring stale failures',()=>{
+  const tab={id:42,position:0},pane={pane_id:7,is_plugin:false,tab_position:0};
+  const entry={requestedPane:{focus_id:9},focusPending:true,state:{active_pane:pane},frame:{contentWindow:{},classList:{contains:()=>true}}};
+  let handler,status,focused;
+  const context={sessions:new Map([['main',entry]]),location:{origin:'http://localhost'},window:{addEventListener:(_,fn)=>handler=fn},
+    selected:'requested',activeTab:()=>tab,tabKey:()=> 'actual',render(){},focus:item=>focused=item,setStatus:message=>status=message};
+  vm.createContext(context);
+  const start=source.indexOf("window.addEventListener('message'");
+  const branch=source.indexOf("}else if(event.data?.type==='zellij-focus-failed')",start);
+  const end=source.indexOf("}else if(event.data?.type==='zellij-open-new-tab')",branch);
+  const preamble=source.slice(start,source.indexOf("  if(event.data?.type==='zellij-state')",start));
+  vm.runInContext(preamble+'  if(false){'+source.slice(branch,end)+'}});',context);
+  const fail=id=>handler({origin:'http://localhost',source:entry.frame.contentWindow,data:{type:'zellij-focus-failed',focus_id:id,payload:entry.state,message:'Terminal switch timed out.'}});
+  fail(8);assert.equal(entry.focusPending,true);assert.equal(context.selected,'requested');
+  fail(9);assert.equal(entry.focusPending,false);assert.equal(entry.requestedPane,null);
+  assert.equal(context.selected,'actual');assert.equal(focused.tab,tab);assert.match(status,/timed out/);
+});
