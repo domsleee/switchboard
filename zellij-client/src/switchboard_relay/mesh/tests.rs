@@ -234,7 +234,10 @@ impl TokenIssuer for FakeIssuer {
     }
 }
 async fn machine(root: &Path, label: &str, address: &str) -> Arc<Mesh> {
-    let engine = Arc::new(Host::new(super::super::tests::config("http://127.0.0.1:1")).unwrap());
+    machine_with_engine(root, label, address, "http://127.0.0.1:1").await
+}
+async fn machine_with_engine(root: &Path, label: &str, address: &str, engine: &str) -> Arc<Mesh> {
+    let engine = Arc::new(Host::new(super::super::tests::config(engine)).unwrap());
     let mesh = Mesh::with_issuer(root.to_owned(), engine, Arc::new(FakeIssuer::default()))
         .await
         .unwrap();
@@ -1761,6 +1764,7 @@ async fn pairing_a_configured_computer_lists_it_once_and_controls_it_through_the
         order: Arc::new(vec!["windows".into()]),
         port: 0,
         attention: Default::default(),
+        poll: Default::default(),
         mesh: Some(mac.clone()),
     };
     let listed: Vec<_> = state
@@ -1782,4 +1786,128 @@ async fn pairing_a_configured_computer_lists_it_once_and_controls_it_through_the
         state.host(&twin.config.id).is_some(),
         "board routes still resolve the peer"
     );
+}
+
+#[tokio::test]
+async fn attention_reviews_live_with_the_owner_and_every_peer_sees_them() {
+    let route = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    route.connect("192.0.2.1:9").unwrap();
+    let ip = route.local_addr().unwrap().ip();
+    let temp = tempfile::tempdir().unwrap();
+    let listener = std::net::TcpListener::bind((ip, 0)).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let endpoint = format!("https://{}", listener.local_addr().unwrap());
+    // Gateway requests log in to the owner's native engine first.
+    let native = Router::new().route(
+        "/command/login",
+        post(|| async {
+            (
+                [(header::SET_COOKIE, "session_token=isolated-session")],
+                Json(json!({"ok":true})),
+            )
+        }),
+    );
+    let native_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let engine = format!("http://{}", native_listener.local_addr().unwrap());
+    let native_task = tokio::spawn(async move { axum::serve(native_listener, native).await });
+    let owner = machine_with_engine(&temp.path().join("owner"), "Owner", &endpoint, &engine).await;
+    let viewers = [
+        machine(&temp.path().join("mac"), "Mac", "https://192.0.2.2:8091").await,
+        machine(
+            &temp.path().join("laptop"),
+            "Laptop",
+            "https://192.0.2.3:8091",
+        )
+        .await,
+    ];
+    for viewer in &viewers {
+        let invite = invitation(&owner, 1000).await;
+        let (_, approval) = approved(&owner, viewer, &invite, 1000).await;
+        owner
+            .complete(viewer.install(approval, &invite).await.unwrap())
+            .await
+            .unwrap();
+    }
+    // The owner's own poll saw the agent finish once: one generation for everyone.
+    let poll: Arc<Mutex<attention::PollState>> = Default::default();
+    {
+        let mut poll = poll.lock().await;
+        let mut working = json!({"panes":[{"session":"main","pane_id":3,"state":"working"}],"tabs":[{"session":"main","id":1}],"errors":[]});
+        poll.update("mac", &mut working);
+        let mut ready = json!({"panes":[{"session":"main","pane_id":3,"state":"ready","token":"result"}],"tabs":[{"session":"main","id":1}],"errors":[]});
+        poll.update("mac", &mut ready);
+    }
+    owner.attention.set(poll.clone()).ok().unwrap();
+    let tls = axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(owner.tls().unwrap()));
+    let handle = axum_server::Handle::new();
+    let server = axum_server::from_tcp_rustls(listener, tls)
+        .unwrap()
+        .handle(handle.clone());
+    let router = transport::gateway_router(owner.clone());
+    let task = tokio::spawn(async move { server.serve(router.into_make_service()).await.unwrap() });
+    let owner_id = format!(
+        "mesh-{}",
+        owner.database.lock().await.local.as_ref().unwrap().id
+    );
+    let relay = |mesh: &Arc<Mesh>| super::super::RelayState {
+        hosts: Arc::new(HashMap::new()),
+        order: Arc::new(vec![]),
+        port: 0,
+        attention: Default::default(),
+        poll: Default::default(),
+        mesh: Some(mesh.clone()),
+    };
+    let (mac, laptop) = (relay(&viewers[0]), relay(&viewers[1]));
+    async fn shown(relay: &super::super::RelayState, host: &str) -> Value {
+        let mut snapshot = attention::scan(&relay.host(host).unwrap(), 0)
+            .await
+            .unwrap();
+        relay.poll.lock().await.update(host, &mut snapshot);
+        snapshot["panes"][0].clone()
+    }
+    for viewer in [&mac, &laptop] {
+        let pane = shown(viewer, &owner_id).await;
+        assert_eq!(
+            pane["token"], "result:1",
+            "viewers never add their own generation"
+        );
+        assert_eq!(pane["seen"], false);
+    }
+    let ack = serde_json::from_value(
+        json!({"host":owner_id,"session":"main","pane_id":3,"token":"result:1"}),
+    )
+    .unwrap();
+    assert_eq!(
+        attention::acknowledge(State(mac.clone()), Json(ack)).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        mac.attention.lock().await["panes"][0]["seen"],
+        true,
+        "the reviewing relay updates at once"
+    );
+    let pane = shown(&laptop, &owner_id).await;
+    assert_eq!(
+        pane["seen"], true,
+        "a review on one relay clears it on another"
+    );
+    assert_eq!(pane["token"], "result:1");
+    // An offline owner keeps the review on the reviewing relay without an error.
+    handle.shutdown();
+    task.await.unwrap();
+    let ack = serde_json::from_value(
+        json!({"host":owner_id,"session":"main","pane_id":3,"token":"result:1"}),
+    )
+    .unwrap();
+    assert_eq!(
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            attention::acknowledge(State(laptop.clone()), Json(ack))
+        )
+        .await
+        .unwrap(),
+        StatusCode::NO_CONTENT,
+        "an offline owner never fails the review"
+    );
+    native_task.abort();
 }

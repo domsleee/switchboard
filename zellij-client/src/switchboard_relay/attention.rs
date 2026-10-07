@@ -350,16 +350,20 @@ $json=ConvertTo-Json -InputObject @($data) -Depth 12 -Compress
 "#;
 
 #[derive(Default)]
-struct PollState {
+pub(super) struct PollState {
     cache: HashMap<String, Value>,
     observed: HashMap<String, Value>,
     scanned: HashMap<String, tokio::time::Instant>,
     sessions_scanned: HashMap<String, tokio::time::Instant>,
+    refreshed: HashMap<String, tokio::time::Instant>,
+    dirty: bool,
 }
 
 impl PollState {
     fn unavailable(&mut self, host: &str, error: &anyhow::Error) {
         // A failed connection is not an authoritative empty tab catalog.
+        self.refreshed
+            .insert(host.into(), tokio::time::Instant::now());
         let snapshot = self
             .cache
             .entry(host.into())
@@ -369,13 +373,12 @@ impl PollState {
             json!([{"host":host,"message":format!("Host snapshots unavailable: {error:#}")}]);
     }
 
-    fn update(&mut self, host: &str, snapshot: &mut Value) -> bool {
+    pub(super) fn update(&mut self, host: &str, snapshot: &mut Value) -> bool {
         let now = tokio::time::Instant::now();
-        let deferred = snapshot
-            .as_object_mut()
-            .unwrap()
-            .remove("deferred_sessions")
-            .unwrap_or(json!([]));
+        let object = snapshot.as_object_mut().unwrap();
+        let deferred = object.remove("deferred_sessions").unwrap_or(json!([]));
+        // The owner already applied its generations and acknowledgements.
+        let synced = object.remove("synced") == Some(json!(true));
         for tab in snapshot["tabs"].as_array().unwrap() {
             self.sessions_scanned
                 .insert(json!([host, tab["session"]]).to_string(), now);
@@ -410,6 +413,9 @@ impl PollState {
         }
         let mut changed = false;
         for row in snapshot["panes"].as_array_mut().unwrap() {
+            if synced {
+                continue;
+            }
             let key = json!([host, row["session"], row["pane_id"]]).to_string();
             let previous = self.observed.get(&key).cloned().unwrap_or(Value::Null);
             if row.as_object_mut().unwrap().remove("deferred") == Some(json!(true))
@@ -436,6 +442,9 @@ impl PollState {
                         observed[field] = row[field].clone();
                     }
                 }
+                if let Some(seen) = previous.get("seen") {
+                    observed["seen"] = seen.clone();
+                }
                 changed |= previous != observed;
                 self.observed.insert(key, observed);
             }
@@ -444,6 +453,7 @@ impl PollState {
                     "{}:{generation}",
                     row["token"].as_str().unwrap_or("idle")
                 ));
+                row["seen"] = json!(previous["seen"] == row["token"]);
             }
         }
         for field in ["panes", "tabs"] {
@@ -452,7 +462,38 @@ impl PollState {
             }
         }
         self.cache.insert(host.into(), snapshot.clone());
+        self.refreshed.insert(host.into(), now);
         changed
+    }
+    /// Records that a viewer reviewed this exact ready result.
+    pub(super) fn acknowledge(&mut self, host: &str, session: &str, pane: u64, token: &str) {
+        if let Some(observed) = self
+            .observed
+            .get_mut(&json!([host, session, pane]).to_string())
+        {
+            observed["seen"] = json!(token);
+            self.dirty = true;
+        }
+        if let Some(snapshot) = self.cache.get_mut(host) {
+            for row in snapshot["panes"].as_array_mut().unwrap() {
+                if row["session"] == session && row["pane_id"] == pane && row["token"] == token {
+                    row["seen"] = json!(true);
+                }
+            }
+        }
+    }
+    /// What the owner of `host` tells peers, so every relay shows the same state.
+    /// None while the owner's poll is stale, so peers fall back to scanning.
+    pub(super) fn owned(&self, host: &str) -> Option<Value> {
+        if self.refreshed.get(host)?.elapsed() > Duration::from_secs(30) {
+            return None;
+        }
+        let mut snapshot = self.cache.get(host)?.clone();
+        snapshot["synced"] = json!(true);
+        for error in snapshot["errors"].as_array_mut().unwrap() {
+            error["message"] = json!("Peer snapshots unavailable");
+        }
+        Some(snapshot)
     }
     fn merged(&self, order: &[String]) -> Value {
         let mut merged = json!({"panes":[],"tabs":[],"errors":[]});
@@ -483,7 +524,7 @@ impl PollState {
 }
 
 pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::JoinHandle<()>> {
-    let mut poll = PollState::default();
+    let mut poll = state.poll.lock().await;
     if let Ok(bytes) = tokio::fs::read(&file).await {
         if let Ok(Value::Object(rows)) = serde_json::from_slice::<Value>(&bytes) {
             for (key, value) in rows {
@@ -496,7 +537,11 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
             }
         }
     }
-    let poll = Arc::new(Mutex::new(poll));
+    drop(poll);
+    let poll = state.poll.clone();
+    if let Some(mesh) = &state.mesh {
+        let _ = mesh.attention.set(poll.clone());
+    }
     let mut tasks: Vec<_> = state
         .order
         .iter()
@@ -527,7 +572,7 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
                             .map(|h| h.config.id.clone())
                             .collect::<Vec<_>>(),
                     );
-                    if changed {
+                    if changed || std::mem::take(&mut poll.dirty) {
                         let temp = file.with_extension("attention.json.tmp");
                         let data = poll.persisted().to_string();
                         let _ = async {
@@ -606,6 +651,50 @@ pub(super) async fn handler(State(state): State<RelayState>) -> Json<Value> {
     Json(state.attention.lock().await.clone())
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Ack {
+    host: String,
+    session: String,
+    pane_id: u64,
+    token: String,
+}
+
+/// Sends a review to the computer running the tab, so every relay sees it.
+pub(super) async fn acknowledge(
+    State(state): State<RelayState>,
+    Json(ack): Json<Ack>,
+) -> StatusCode {
+    let Some(host) = state.host(&ack.host) else {
+        return StatusCode::NOT_FOUND;
+    };
+    let target = state.paired_twin(&host).unwrap_or(host);
+    if target.config.escape_transport.as_deref() == Some("gateway") {
+        let body = json!({"session":ack.session,"pane_id":ack.pane_id,"token":ack.token});
+        // Offline or older peers keep the review on this relay only.
+        let _ = tokio::time::timeout(
+            Duration::from_secs(5),
+            target.request(
+                Method::POST,
+                "/switchboard/attention/ack",
+                body.to_string().into(),
+                "application/json",
+            ),
+        )
+        .await;
+    }
+    let mut poll = state.poll.lock().await;
+    poll.acknowledge(&ack.host, &ack.session, ack.pane_id, &ack.token);
+    *state.attention.lock().await = poll.merged(
+        &state
+            .all_hosts()
+            .iter()
+            .map(|h| h.config.id.clone())
+            .collect::<Vec<_>>(),
+    );
+    StatusCode::NO_CONTENT
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -677,6 +766,49 @@ mod tests {
         let mut expired = json!({"panes":[],"tabs":[],"errors":[],"deferred_sessions":["main"]});
         poll.update("mac", &mut expired);
         assert!(expired["panes"].as_array().unwrap().is_empty());
+    }
+    #[test]
+    fn reviews_persist_per_result_and_owner_snapshots_pass_through() {
+        let mut poll = PollState::default();
+        let ready = || json!({"panes":[{"session":"main","pane_id":1,"state":"ready","token":"result"}],"tabs":[],"errors":[]});
+        let mut snapshot = ready();
+        poll.update("windows", &mut snapshot);
+        assert_eq!(snapshot["panes"][0]["seen"], false);
+        poll.acknowledge("windows", "main", 1, "result:0");
+        assert!(std::mem::take(&mut poll.dirty), "reviews are saved");
+        assert_eq!(poll.merged(&["windows".into()])["panes"][0]["seen"], true);
+        let mut restarted = PollState::default();
+        restarted.observed = serde_json::from_value(poll.persisted()).unwrap();
+        let mut snapshot = ready();
+        restarted.update("windows", &mut snapshot);
+        assert_eq!(
+            snapshot["panes"][0]["seen"], true,
+            "reviews survive restarts"
+        );
+        let mut working = json!({"panes":[{"session":"main","pane_id":1,"state":"working"}],"tabs":[],"errors":[]});
+        restarted.update("windows", &mut working);
+        let mut snapshot = ready();
+        restarted.update("windows", &mut snapshot);
+        assert_eq!(snapshot["panes"][0]["token"], "result:1");
+        assert_eq!(
+            snapshot["panes"][0]["seen"], false,
+            "a new result needs review"
+        );
+        let mut owned = restarted.owned("windows").unwrap();
+        assert_eq!(owned["synced"], true);
+        restarted.refreshed.insert(
+            "windows".into(),
+            tokio::time::Instant::now() - Duration::from_secs(31),
+        );
+        assert!(
+            restarted.owned("windows").is_none(),
+            "a stalled poll is not served"
+        );
+        let mut viewer = PollState::default();
+        viewer.update("peer", &mut owned);
+        assert_eq!(owned["panes"][0]["token"], "result:1");
+        assert_eq!(owned["panes"][0]["seen"], false);
+        assert!(owned.get("synced").is_none());
     }
     #[test]
     fn stable_tabs_and_notification_generations() {

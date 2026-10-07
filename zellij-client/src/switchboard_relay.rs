@@ -71,6 +71,7 @@ struct RelayState {
     order: Arc<Vec<String>>,
     port: u16,
     attention: Arc<Mutex<Value>>,
+    poll: Arc<Mutex<attention::PollState>>,
     mesh: Option<Arc<mesh::Mesh>>,
 }
 
@@ -851,6 +852,7 @@ async fn state(config: &RelayConfig, port: u16) -> anyhow::Result<RelayState> {
         order: Arc::new(order),
         port,
         attention: Arc::new(Mutex::new(json!({"panes": [], "tabs": [], "errors": []}))),
+        poll: Default::default(),
         mesh: None,
     })
 }
@@ -894,6 +896,7 @@ fn app(state: RelayState) -> Router {
         .route("/api/hosts", get(self::hosts))
         .route("/api/hosts/{host}", get(host))
         .route("/api/attention", get(attention::handler))
+        .route("/api/attention/ack", post(attention::acknowledge))
         .route("/api/message-board/{*path}", any(message_board))
         .route("/api/hosts/{host}/close-tab", post(control::close_tab))
         .route("/api/hosts/{host}/escape", post(control::escape))
@@ -1407,6 +1410,23 @@ mod tests {
         assert_eq!(
             serde_json::from_slice::<Value>(&attention.body).unwrap(),
             json!({"panes": [], "tabs": [], "errors": []})
+        );
+        assert_eq!(
+            client
+                .raw_request(
+                    Method::POST,
+                    "/api/attention/ack",
+                    json!({"host":"unknown","session":"main","pane_id":1,"token":"result:0"})
+                        .to_string()
+                        .into(),
+                    "application/json",
+                    None
+                )
+                .await
+                .unwrap()
+                .status,
+            StatusCode::NOT_FOUND,
+            "reviews reach the relay and name a known computer"
         );
         for path in ["/api/hosts/mac/close-tab", "/api/hosts/mac/escape"] {
             assert_eq!(
