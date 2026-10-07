@@ -15,8 +15,7 @@ button:disabled{opacity:.5;cursor:default}
 #sidebar-tools{padding:12px 10px 10px;display:flex;flex-direction:column;gap:8px;border-bottom:1px solid #2b303b;flex-shrink:0}
 .sidebar-brand{display:flex;align-items:center;gap:8px;padding-right:30px;min-height:28px}
 .sidebar-brand strong{font-size:14px}
-#sidebar-summary[hidden]{display:none}
-#sidebar-summary{display:flex;align-items:center;justify-content:space-between;gap:8px}
+#sidebar-summary{display:flex;min-height:14px;line-height:14px;align-items:center;justify-content:space-between;gap:8px}
 #new-tab{margin-left:auto;width:28px;height:28px;padding:0;font-size:21px;line-height:1}
 #sidebar-toggle{position:absolute;top:12px;left:calc(var(--sidebar-width,242px) - 37px);z-index:6;width:28px;height:28px;padding:0;font-size:15px}
 body.sidebar-collapsed #sidebar-toggle{left:8px}
@@ -48,7 +47,7 @@ body.sidebar-collapsed #sidebar-toggle{left:8px}
 #selection-tools[hidden]{display:none}
 #selection-target{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:220px;padding:0 6px;color:#b5bfd0}
 #selection-tools button{padding:6px 9px;flex-shrink:0}
-#tab-count{font-size:10px;color:#9ba7bd;white-space:nowrap}
+#tab-count{margin-left:auto;font-size:10px;color:#9ba7bd;white-space:nowrap}
 #sidebar-resize{position:relative;width:8px;flex-shrink:0;cursor:col-resize;background:#111318;touch-action:none}
 #sidebar-resize::after{content:"";position:absolute;top:45%;left:3px;width:2px;height:38px;border-radius:2px;background:#53627b}
 #sidebar-resize:hover,#sidebar-resize:focus-visible,body.resizing #sidebar-resize{background:#6f9cdd}
