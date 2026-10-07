@@ -6,6 +6,10 @@ pub(in crate::switchboard_relay) fn routes() -> Router<RelayState> {
     Router::new()
         .merge(super::direct::routes())
         .route("/api/mesh", get(status))
+        .route(
+            "/api/mesh/board-host",
+            get(super::board_host::status).post(super::board_host::select),
+        )
         .route("/api/mesh/defaults", get(super::discovery::defaults))
         .route("/api/mesh/invitations", post(create))
         .route("/api/mesh/cancel", post(cancel))
@@ -416,6 +420,7 @@ pub(in crate::switchboard_relay) fn gateway_router(mesh: Arc<Mesh>) -> Router {
         .route("/mesh/request", post(peer_request))
         .route("/mesh/complete", post(peer_complete))
         .route("/mesh/sync", post(super::sync::exchange))
+        .route("/mesh/board-host/approve", post(super::board_host::approve))
         .route(
             "/mesh/board/{*path}",
             axum::routing::any(super::inboxes::peer_board),
