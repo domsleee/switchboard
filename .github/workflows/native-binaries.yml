@@ -27,8 +27,8 @@ jobs:
         run: |
           cargo test -p zellij-utils windows_session_catalog_tests --lib
           cargo test -p zellij-server windows_pane_environment --lib
-      - name: Check Rust relay transport
-        run: cargo test -p zellij-client --features web_server_capability switchboard_relay --lib
+      - name: Check Rust relay transport and update decisions
+        run: cargo test -p zellij-client --features web_server_capability switchboard_ --lib
       - name: Check Windows update transactions and tray supervision
         run: |
           powershell -NoLogo -NoProfile -NonInteractive -File tools/switchboard/windows_releases.test.ps1
@@ -37,7 +37,6 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           powershell -NoLogo -NoProfile -NonInteractive -File tools/switchboard/update_services_windows.test.ps1
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          python tools/switchboard/auto_update.test.py
 
   windows:
     runs-on: windows-latest
@@ -54,7 +53,7 @@ jobs:
       - name: Verify packaged relay command
         run: .\target\release\zellij.exe serve --help
       - name: Package verified update bundle
-        run: python tools/switchboard/package_update.py target/release/zellij.exe windows dist
+        run: .\target\release\zellij.exe switchboard package --platform windows --commit $env:GITHUB_SHA --run-number $env:GITHUB_RUN_NUMBER --helpers tools/switchboard --output dist
       - uses: actions/upload-artifact@v4
         with:
           name: switchboard-windows
@@ -77,19 +76,57 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           rustflags: ""
-      - name: Check update orchestration and installer
-        run: |
-          python3 tools/switchboard/auto_update.test.py
-          python3 tools/switchboard/install_service.test.py
+      - name: Check installer
+        run: python3 tools/switchboard/install_service.test.py
       - name: Build native server and relay
         run: cargo build --release --features web_server_capability
       - name: Verify and package update bundle
         run: |
           target/release/zellij serve --help
-          python3 tools/switchboard/package_update.py target/release/zellij ${{ matrix.platform }} dist
+          target/release/zellij switchboard package --platform ${{ matrix.platform }} --commit $GITHUB_SHA --run-number $GITHUB_RUN_NUMBER --helpers tools/switchboard --output dist
       - uses: actions/upload-artifact@v4
         with:
           name: switchboard-${{ matrix.platform }}
           path: dist/*
           if-no-files-found: error
           retention-days: 30
+
+  # Updaters download from one rolling prerelease. Its assets are replaced on
+  # each build; the release is never recreated, so followers are not notified.
+  publish:
+    needs: [checks, windows, macos]
+    # Only this repository's main branch feeds automatic updates.
+    if: github.ref == 'refs/heads/main' && github.repository == 'domsleee/switchboard'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: latest-main-release
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: switchboard-*
+          path: artifacts
+      - name: Replace rolling release assets
+        run: |
+          set -euo pipefail
+          gh release view latest-main >/dev/null 2>&1 ||
+            gh release create latest-main --prerelease --latest=false --target "$GITHUB_SHA" \
+              --title 'Latest main build' --notes 'Rolling build used by Switchboard automatic updates.'
+          mkdir release
+          for directory in artifacts/switchboard-*; do
+            platform=${directory#artifacts/switchboard-}
+            for file in "$directory"/*; do cp "$file" "release/switchboard-$platform-$(basename "$file")"; done
+          done
+          # Manifests last: updaters verify every asset against them and retry
+          # on a mismatch while a newer upload is in progress.
+          gh release upload latest-main --clobber $(ls release/* | grep -v -- '-bundle.json$')
+          gh release upload latest-main --clobber release/*-bundle.json
+          # The manifest's commit is authoritative; the tag follows for readers.
+          git tag -f latest-main "$GITHUB_SHA"
+          git push -f origin refs/tags/latest-main

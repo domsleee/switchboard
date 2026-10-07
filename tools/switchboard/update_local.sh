@@ -10,7 +10,7 @@ usage() {
     echo "(launchd job dev.zellij.switchboard); --binary-only leaves running services alone." >&2
     exit 2
 }
-# The environment form lets auto_update.py (which restarts services itself)
+# The environment form lets an updater that restarts services itself
 # drive both this and older copies of the script, which reject unknown flags.
 binary_only=${SWITCHBOARD_UPDATE_BINARY_ONLY:-0}
 if [[ ${1:-} == --binary-only ]]; then binary_only=1; shift; fi

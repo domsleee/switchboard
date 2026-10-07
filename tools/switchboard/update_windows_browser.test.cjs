@@ -155,17 +155,34 @@ function start(binary,args,label) {
         if(process.env.SWITCHBOARD_TEST_AUTO_UPDATE==='1'){
             const helpers=path.join(dir,'updater');fs.mkdirSync(helpers);
             autoHelpers=helpers;
-            for(const file of ['auto_update.py','update_services_windows.ps1','windows_releases.psm1','update_windows.ps1','windows_cli.ps1','install_windows_web.ps1'])fs.copyFileSync(path.join(__dirname,file),path.join(helpers,file));
-            const fixture=path.join(dir,'automatic_fixture.py');
-            // Only the desktop tray installer is suppressed. The production
-            // selector, service capture/restart, health checks and rollback run.
-            fs.writeFileSync(fixture,`import sys,json,hashlib\nfrom pathlib import Path\nfrom types import SimpleNamespace\nsys.path.insert(0,sys.argv[1])\nimport auto_update as u\nroot=Path(sys.argv[1]); candidate=Path(sys.argv[2]); store=Path(sys.argv[3]); config=sys.argv[4]; hosts=Path(sys.argv[5]); port=int(sys.argv[6]); mode=sys.argv[7]\nstate_dir=root/'state'; state_dir.mkdir(exist_ok=True)\nbundle=root/'bundle'; bundle.mkdir(exist_ok=True)\nimport shutil\nfor p in root.iterdir():\n if p.is_file() and p.suffix in ('.py','.ps1','.psm1'): shutil.copy2(p,bundle/p.name)\nshutil.copy2(candidate,bundle/'zellij.exe')\nargs=SimpleNamespace(port=port,state_directory=state_dir,release_directory=store,config=config,host_config=hosts)\nmanifest={'commit':sys.argv[8],'files':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in bundle.iterdir()}}\nreal_ps=u.powershell\nu.powershell=lambda script,*args: '' if Path(script).name=='install_windows_web.ps1' else real_ps(script,*args)\nreal_ready=u.wait_ready\ndef ready(port,commit,sessions):\n if mode=='fail' and commit==manifest['commit']: raise RuntimeError('controlled candidate readiness failure')\n return real_ready(port,commit,sessions)\nu.wait_ready=ready\nstate={}\ntry: u.apply_bundle(bundle,manifest,args,state,state_dir/'state.json')\nexcept RuntimeError as e:\n if mode!='fail' or 'controlled candidate' not in str(e): raise\nelse:\n if mode=='fail': raise AssertionError('Expected failed-candidate rollback')\n`);
+            for(const file of ['auto_update.py','update_services_windows.ps1','windows_releases.psm1','update_windows.ps1','windows_cli.ps1'])fs.copyFileSync(path.join(__dirname,file),path.join(helpers,file));
+            // Only the desktop tray installer is replaced. The production updater
+            // (zellij switchboard update), selector, service capture/restart,
+            // health checks and rollback run. Trays are matched in this private
+            // helper directory, so the user's own tray is untouched.
+            fs.writeFileSync(path.join(helpers,'install_windows_web.ps1'),'param([string]$ReleaseDirectory,[string]$Config)\n');
             const candidateCommit=process.env.SWITCHBOARD_TEST_CANDIDATE_COMMIT;
-            assert.ok(candidateCommit,'Set the candidate executable commit for automatic handoff verification');
-            const apply=mode=>execFileSync('python',[fixture,helpers,newBinary,store,config,relayConfig,String(relayPort),mode,candidateCommit],{env,encoding:'utf8',timeout:240000,windowsHide:true});
-            apply('fail');await continuity('AUTO_ROLLBACK');
+            assert.ok(/^[a-f0-9]{40}$/.test(candidateCommit||''),'Set the candidate executable full commit for automatic handoff verification');
+            let runNumber=0;
+            const apply=(mode,commit)=>{
+                runNumber++;
+                const bundle=path.join(dir,'bundle-'+runNumber), release=path.join(dir,'release-'+runNumber);fs.mkdirSync(release);
+                execFileSync(newBinary,['switchboard','package','--platform','windows','--commit',commit,'--run-number',String(runNumber),'--helpers',helpers,'--output',bundle],{env,windowsHide:true});
+                for(const file of fs.readdirSync(bundle))fs.copyFileSync(path.join(bundle,file),path.join(release,'switchboard-windows-'+file));
+                try{
+                    execFileSync(newBinary,['switchboard','update','--source',release,'--state-directory',path.join(helpers,'state'),'--helper-directory',helpers,
+                        '--release-directory',store,'--config',config,'--host-config',relayConfig,'--port',String(relayPort)],{env,encoding:'utf8',timeout:240000,windowsHide:true});
+                }catch(error){
+                    if(mode!=='fail'||!/build identity/.test(String(error.stderr)))throw error;
+                    return;
+                }
+                if(mode==='fail')throw new assert.AssertionError({message:'Expected failed-candidate rollback'});
+            };
+            // A manifest naming another commit fails the relay's build identity
+            // check after the restart, exercising the production rollback.
+            apply('fail','0'.repeat(40));await continuity('AUTO_ROLLBACK');
             assert.equal(selectedBinary(),path.join(store,digest(oldBinary),'zellij.exe'));
-            apply('success');await continuity('AUTO_UPDATED');
+            apply('success',candidateCommit);await continuity('AUTO_UPDATED');
             assert.equal(selectedBinary(),path.join(store,digest(newBinary),'zellij.exe'));
             // The service children were replaced by the updater, so capture and
             // stop only its recorded private service PIDs during cleanup.

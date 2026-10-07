@@ -57,8 +57,8 @@ bar, installs login LaunchAgents, and starts native Zellij web daemon mode if
 needed. The icon opens Switchboard, shows status, starts servers, and opens logs.
 Logs are in `~/Library/Logs/zellij-switchboard.log`. Quitting the menu bar app
 leaves the relay and terminal sessions running. Swift's compiler and this fork's
-`zellij` executable must be installed. Automatic updates use Python 3 and an
-authenticated GitHub CLI; macOS also needs `jq`. See
+`zellij` executable must be installed. Automatic updates run
+`zellij switchboard update` (no Python or GitHub CLI); macOS also needs `jq`. See
 [automatic updates](../../docs/SWITCHBOARD_UPDATES.md#automatic-updates).
 
 To update a Mac while keeping open terminals running (requires `jq`):
@@ -84,7 +84,8 @@ powershell -ExecutionPolicy Bypass -File tools/switchboard/install_windows_web.p
 powershell -ExecutionPolicy Bypass -File tools/switchboard/install_windows_web.ps1 -Config C:/path/to/host.kdl
 ```
 
-This installs a current-user **Switchboard** Startup shortcut and a tray icon,
+This installs a current-user **Switchboard** Startup shortcut and a tray icon
+(reinstalling without `-Config` keeps the running tray's `-Config`),
 starts the embedded Rust relay, and starts native daemon mode only
 if the server is offline. The tray supervises the relay and web server and opens
 the actual sidebar at **http://switchboard.localhost** on loopback port 80.
