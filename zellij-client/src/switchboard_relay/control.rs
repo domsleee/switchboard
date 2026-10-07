@@ -142,6 +142,7 @@ async fn execute(
     let host = state
         .host(id)
         .ok_or((StatusCode::NOT_FOUND, "Unknown host"))?;
+    let host = state.paired_twin(&host).unwrap_or(host);
     if host.config.escape_transport.as_deref() == Some("gateway") {
         let response = host
             .request(

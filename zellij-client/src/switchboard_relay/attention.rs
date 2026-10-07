@@ -509,7 +509,8 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
             tokio::spawn(async move {
                 let mut offset = 0;
                 loop {
-                    let result = scan(&host, offset).await;
+                    let target = state.paired_twin(&host).unwrap_or_else(|| host.clone());
+                    let result = scan(&target, offset).await;
                     offset = offset.wrapping_add(1);
                     let mut poll = poll.lock().await;
                     let changed = match result {
@@ -557,7 +558,15 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
         tasks.push(tokio::spawn(async move {
             let mut offset = 0;
             loop {
-                let hosts = state.mesh.as_ref().unwrap().hosts();
+                // Twins of configured hosts are scanned under the configured id.
+                let hosts: Vec<_> = state
+                    .mesh
+                    .as_ref()
+                    .unwrap()
+                    .hosts()
+                    .into_iter()
+                    .filter(|h| state.all_hosts().iter().any(|l| l.config.id == h.config.id))
+                    .collect();
                 let results =
                     futures_util::future::join_all(hosts.iter().map(|host| scan(host, offset)))
                         .await;

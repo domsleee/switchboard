@@ -20,6 +20,7 @@ test('Close confirms the clicked tab, preserves its target, and restores it on f
   context.document={querySelector:()=>$('close-tab-dialog').open?{}:null};
   $('artifact-preview').hidden=true;
   $('close-tab').click=()=>$('close-tab').onclick();
+  context.AbortSignal=AbortSignal;
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(__dirname+'/static/close.js','utf8'),context);
   const source=fs.readFileSync(__dirname+'/static/app.js','utf8');
@@ -56,6 +57,7 @@ test('confirmation removes the selected tab before the request finishes, keeps s
     saveReady(){},localStorage:{setItem(){}},tabTitle:item=>item.tab.name,closeTabMenu(){context.contextItem=null;},render(){},
     activate(item){context.selected=item.key;},setStatus(message){context.status=message;},
     fetch:()=>{requests++;return new Promise(resolve=>finish=resolve);}};
+  context.AbortSignal=AbortSignal;
   vm.createContext(context);
   vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function moveSelected(')),context);
   vm.runInContext(fs.readFileSync(__dirname+'/static/close.js','utf8'),context);
@@ -67,7 +69,7 @@ test('confirmation removes the selected tab before the request finishes, keeps s
   context.setCatalog(entry,[]);context.setCatalog(entry,original);
   assert.equal(context.allTabs().length,1,'in-flight snapshots cannot undo a confirmed close');
   finish({ok:false,text:async()=>'Unavailable'});await pending;
-  assert.equal(context.allTabs().length,2);assert.equal(context.selected,context.tabKey(entry,original[0]));assert.match(context.status,/Unavailable/);
+  assert.equal(context.allTabs().length,2);assert.equal(context.selected,context.tabKey(entry,original[1]),'late failure must not select or focus the restored tab');assert.match(context.status,/Unavailable/);
   context.contextItem=context.allTabs()[0];$('close-tab').onclick();const success=$('confirm-close-tab').onclick();
   finish({ok:true});await success;
   context.setCatalog(entry,original);assert.equal(context.allTabs().length,1,'stale snapshots after acknowledgment stay hidden');

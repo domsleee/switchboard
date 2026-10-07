@@ -27,11 +27,10 @@
     closing.entry.closingTabs.set(closing.tab_id,closing);
     dialog.close();
     if(wasSelected&&next)activate(next,false);else render();
-    const replacement=selected;
     try{
       const {host,key,session,tab_id}=closing;
       const response=await fetch(`/api/hosts/${encodeURIComponent(host)}/close-tab`,{
-        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session,tab_id}),
+        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session,tab_id}),signal:AbortSignal.timeout(15000),
       });
       if(!response.ok)throw new Error((await response.text()).slice(0,240)||`HTTP ${response.status}`);
       closing.pending=false;
@@ -39,12 +38,12 @@
       delete archived[key];localStorage.setItem('switchboard-archived',JSON.stringify(archived));
       render();
     }catch(failure){
-      closing.entry.closeError=`Close failed: ${failure.message}`;
+      closing.entry.closeError=['AbortError','TimeoutError'].includes(failure.name)
+        ? 'Close timed out; delivery is uncertain. Check the tab before trying again.'
+        : `Close failed: ${failure.message}`;
       closing.entry.closingTabs.delete(closing.tab_id);
-      if(wasSelected&&selected===replacement&&closing.entry.name===closing.session){
-        const item=allTabs().find(item=>item.key===closing.key);
-        if(item)activate(item,false);else render();
-      }else render();
+      // Restore the card, not keyboard focus: the user may already be elsewhere.
+      render();
       setStatus(closing.entry.closeError,true);
     }
   };

@@ -1,5 +1,7 @@
 // Reuse the stock web client and expose only metadata and explicit focus commands.
 (() => {
+  // Stock reconnect notices and terminal construction must never grab parent focus.
+  window.__switchboardManagedFocus = true;
   const NativeSocket = window.WebSocket;
   const host = location.pathname.split('/')[2];
   let latest;
@@ -7,6 +9,11 @@
   let escapeStatus;
   let pendingFocus, desiredFocus, focusInputState, focusId, focusTimeout;
   let pendingNewTab;
+  let focusOrigin, preserveFocus = false;
+  function restoreTerminalFocus(origin = focusOrigin) {
+    if (!preserveFocus && parent.document.hasFocus() && !parent.document.querySelector('dialog[open]') &&
+      parent.document.activeElement === origin && (!window.frameElement || window.frameElement.classList.contains('active'))) window.term?.focus();
+  }
   let terminalSocket;
   let scrollport, lastViewport, viewportTab, bottomButton, claimedViewportTab;
   let chromeKey, nativeTopBar=false, nativeBottomRows=0;
@@ -137,12 +144,12 @@
     releaseFocus();
     parent.postMessage({type:'zellij-focus-failed',host,focus_id:focusId,payload:latest,message},location.origin);
     showEscapeStatus(message,true);
-    window.term?.focus();
+    restoreTerminalFocus();
   }
   function rejectFocus() {
     if(desiredFocus.pane_id!==pendingFocus.pane_id || desiredFocus.is_plugin!==pendingFocus.is_plugin){
       if(latest?.active_pane?.pane_id===desiredFocus.pane_id && latest.active_pane.is_plugin===desiredFocus.is_plugin){
-        releaseFocus();window.term?.focus();
+        releaseFocus();restoreTerminalFocus();
         parent.postMessage({type:'zellij-state',host,payload:latest,focus_id:focusId,focus_pending:false},location.origin);
         return;
       }
@@ -323,12 +330,12 @@
     latest = payload;
     if(viewportSupported())window.dispatchEvent(new Event('zellij:rendering-resize'));
     const created=pendingNewTab&&latest.active_pane&&!latest.active_pane.is_plugin&&!pendingNewTab.panes.has(latest.active_pane.pane_id);
-    if(created){releaseNewTab();window.term?.focus();}
+    if(created){const origin=pendingNewTab.focusOrigin;releaseNewTab();restoreTerminalFocus(origin);}
     const missingFocus=pendingFocus && Array.isArray(latest.panes) && !latest.panes.some(pane=>pane.pane_id===pendingFocus.pane_id && pane.is_plugin===pendingFocus.is_plugin);
     if(missingFocus)rejectFocus();
     if(!missingFocus && pendingFocus && latest.active_pane?.pane_id===pendingFocus.pane_id && latest.active_pane?.is_plugin===pendingFocus.is_plugin){
       if(desiredFocus.pane_id!==pendingFocus.pane_id || desiredFocus.is_plugin!==pendingFocus.is_plugin)dispatchFocus();
-      else{releaseFocus();window.term?.focus();}
+      else{releaseFocus();restoreTerminalFocus();}
     }
     parent.postMessage({type: 'zellij-state', host, payload, focus_id:focusId, focus_pending:!!pendingFocus}, location.origin);
     requestAnimationFrame(updateChrome);
@@ -366,6 +373,7 @@
     const message = event.data;
     if (message?.type === 'zellij-focus' && window.__zjSendControl) {
       focusId=message.focus_id;
+      focusOrigin=parent.document.activeElement;preserveFocus=!!message.preserve_focus;
       if (pendingFocus || latest?.active_pane?.pane_id !== message.pane_id || latest?.active_pane?.is_plugin !== message.is_plugin){
         desiredFocus={pane_id:message.pane_id,is_plugin:message.is_plugin};
         if(window.term?.element){
@@ -374,7 +382,7 @@
           showEscapeStatus('Switching terminal…');
         }
         if(!pendingFocus)dispatchFocus();
-      }else{releaseFocus();window.term?.focus();if(latest)sendState(latest);}
+      }else{releaseFocus();restoreTerminalFocus();if(latest)sendState(latest);}
     } else if (message?.type === 'zellij-escape' && !hasDialog()) {
       window.term?.focus();
       if(!latest?.active_pane?.is_plugin)sendEscape();
@@ -388,7 +396,8 @@
       if(size)window.__zjViewport.report(size,!!message.owned);
     } else if (message?.type === 'zellij-new-tab' && window.__zjSendControl) {
       if(pendingFocus||pendingNewTab||!latest?.active_pane||!window.term)return;
-      pendingNewTab={panes:new Set((latest.panes||[]).filter(pane=>!pane.is_plugin).map(pane=>pane.pane_id)),disabled:window.term.options.disableStdin};
+      preserveFocus=false;
+      pendingNewTab={focusOrigin:parent.document.activeElement,panes:new Set((latest.panes||[]).filter(pane=>!pane.is_plugin).map(pane=>pane.pane_id)),disabled:window.term.options.disableStdin};
       pendingNewTab.panes.add(latest.active_pane.pane_id);
       window.term.options.disableStdin=true;
       pendingNewTab.timeout=setTimeout(()=>{releaseNewTab();showEscapeStatus('No new tab received. Check the connection and try again.',true);},30000);

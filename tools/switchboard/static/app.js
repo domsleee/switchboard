@@ -356,7 +356,9 @@ function focus(item,background=false) {
   if(active?.pane_id!==pane.pane_id||active?.is_plugin!==pane.is_plugin)item.entry.frame.contentWindow.SwitchboardClipboard?.clearSelection();
   const focusId=item.entry.focusId=(item.entry.focusId||0)+1;
   if(item.entry.requestedPane || active?.pane_id!==pane.pane_id||active?.is_plugin!==pane.is_plugin)item.entry.requestedPane={pane_id:pane.pane_id,is_plugin:pane.is_plugin,focus_id:focusId};
-  item.entry.frame.contentWindow.postMessage({type:'zellij-focus',pane_id:pane.pane_id,is_plugin:pane.is_plugin,focus_id:focusId},location.origin);
+  const preserveFocus=background&&!!item.entry.focusInitialized;
+  item.entry.focusInitialized=true;
+  item.entry.frame.contentWindow.postMessage({type:'zellij-focus',pane_id:pane.pane_id,is_plugin:pane.is_plugin,focus_id:focusId,preserve_focus:preserveFocus},location.origin);
 }
 function activate(item, clear=true) {
   selected=item.key;restoringTab=false;item.entry.followActiveTab=false;
@@ -516,7 +518,7 @@ window.addEventListener('message',event=>{
     if(!entry.frame.classList.contains('active'))return;
     const state=event.data.payload || entry.state;
     entry.state=state;const tab=activeTab(entry);
-    if(tab){selected=tabKey(entry,tab);render();focus({entry,tab});}
+    if(tab){selected=tabKey(entry,tab);render();focus({entry,tab},true);}
     setStatus(event.data.message || 'That terminal is unavailable. Choose another tab.',true);
   }else if(event.data?.type==='zellij-open-new-tab'){
     if(entry.frame.classList.contains('active')&&!document.querySelector('dialog[open]'))$('new-tab').click();

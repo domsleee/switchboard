@@ -49,7 +49,7 @@ test('size claim waits for the requested pane and follows the newly focused tab'
   assert.equal(sent[2].tab_position,1);
 });
 test('New tab holds input until its native pane is active, then focuses without waiting for the catalog',()=>{
-  const h=harness(),sent=[];let focused=0;
+  const h=harness(),sent=[];let focused=0;h.setBrowserFocus(true);
   h.window.term.focus=()=>focused++;h.window.__zjSendControl=message=>sent.push(message);
   const pane=id=>({pane_id:id,is_plugin:false,tab_position:id});
   h.state({active_pane:pane(1),panes:[pane(1),pane(2)]});

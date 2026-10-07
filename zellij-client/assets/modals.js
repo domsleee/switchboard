@@ -362,7 +362,7 @@ function getSecurityToken() {
     `;
     
     document.body.appendChild(modal);
-    modal.querySelector('#token').focus();
+    if (!window.__switchboardManagedFocus) modal.querySelector('#token').focus();
     
     const handleKeydown = (e) => {
       if (e.key === 'Enter') {
@@ -440,7 +440,7 @@ function showErrorModal(title, description) {
     modal.appendChild(content);
     
     document.body.appendChild(modal);
-    dismissBtn.focus();
+    if (!window.__switchboardManagedFocus) dismissBtn.focus();
     
     const handleKeydown = (e) => {
       if (e.key === 'Enter' || e.key === 'Escape') {
@@ -534,7 +534,7 @@ function showReconnectionModal(attemptNumber, delaySeconds) {
     modal.appendChild(contentDiv);
     
     document.body.appendChild(modal);
-    reconnectBtn.focus();
+    if (!window.__switchboardManagedFocus) reconnectBtn.focus();
     
     let countdownInterval;
     let remainingSeconds = delaySeconds;
