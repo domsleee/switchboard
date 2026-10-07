@@ -495,7 +495,13 @@ fn daemonize_web_server(
         Ok(_child) => {
             let timeout_secs = startup_timeout.unwrap_or(DEFAULT_SERVER_STARTUP_TIMEOUT_SECS);
             let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-            let addr = format!("{}:{}", web_server_ip, web_server_port);
+            // A server bound to every interface is reachable on loopback.
+            let connect_ip = if web_server_ip.is_unspecified() {
+                IpAddr::V4(Ipv4Addr::LOCALHOST)
+            } else {
+                web_server_ip
+            };
+            let addr = format!("{}:{}", connect_ip, web_server_port);
             loop {
                 if TcpStream::connect_timeout(&addr.parse().unwrap(), Duration::from_millis(200))
                     .is_ok()
