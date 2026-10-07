@@ -43,8 +43,8 @@ fn server_message_name(msg: &ServerToClientMsg) -> String {
 pub struct FakeClientOsApi {
     client_screen: ClientScreen,
     size: Arc<Mutex<Size>>,
-    stdin_rx: crossbeam::channel::Receiver<Vec<u8>>,
-    signal_rx: crossbeam::channel::Receiver<SignalEvent>,
+    stdin_rx: crossbeam_channel::Receiver<Vec<u8>>,
+    signal_rx: crossbeam_channel::Receiver<SignalEvent>,
     send_instructions_to_server: Arc<Mutex<Option<IpcSenderWithContext<ClientToServerMsg>>>>,
     receive_instructions_from_server: Arc<Mutex<Option<IpcReceiverWithContext<ServerToClientMsg>>>>,
     session_name: Arc<Mutex<Option<String>>>,
@@ -79,8 +79,8 @@ impl std::fmt::Debug for FakeClientOsApi {
 pub struct FakeClientHandle {
     pub client_screen: ClientScreen,
     pub size: Arc<Mutex<Size>>,
-    pub stdin_tx: crossbeam::channel::Sender<Vec<u8>>,
-    pub signal_tx: crossbeam::channel::Sender<SignalEvent>,
+    pub stdin_tx: crossbeam_channel::Sender<Vec<u8>>,
+    pub signal_tx: crossbeam_channel::Sender<SignalEvent>,
     pub received_server_messages: Arc<Mutex<Vec<String>>>,
 }
 
@@ -105,8 +105,8 @@ impl FakeClientOsApi {
     ) -> (Self, FakeClientHandle) {
         let size = Arc::new(Mutex::new(initial_size));
         let client_screen = ClientScreen::new(size.clone());
-        let (stdin_tx, stdin_rx) = crossbeam::channel::unbounded();
-        let (signal_tx, signal_rx) = crossbeam::channel::unbounded();
+        let (stdin_tx, stdin_rx) = crossbeam_channel::unbounded();
+        let (signal_tx, signal_rx) = crossbeam_channel::unbounded();
         let received_server_messages = Arc::new(Mutex::new(Vec::new()));
         let fake_client_os_api = FakeClientOsApi {
             client_screen: client_screen.clone(),

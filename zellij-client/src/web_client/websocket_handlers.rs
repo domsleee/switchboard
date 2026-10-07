@@ -17,7 +17,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use futures::StreamExt;
+use futures_util::StreamExt;
 use std::sync::{atomic::AtomicBool, Arc};
 use tokio_util::sync::CancellationToken;
 use zellij_utils::{

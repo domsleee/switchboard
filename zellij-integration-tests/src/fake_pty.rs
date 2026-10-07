@@ -20,7 +20,7 @@ pub(crate) struct FakePtyState {
     pub quit_cb: Option<QuitCb>,
     pub exited: bool,
     pub echo: bool,
-    pub stdin_tap: Option<crossbeam::channel::Sender<Vec<u8>>>,
+    pub stdin_tap: Option<crossbeam_channel::Sender<Vec<u8>>>,
 }
 
 impl FakePtyState {
@@ -185,7 +185,7 @@ impl SharedPtys {
     pub(crate) fn set_stdin_tap(
         &self,
         terminal_id: u32,
-        sender: crossbeam::channel::Sender<Vec<u8>>,
+        sender: crossbeam_channel::Sender<Vec<u8>>,
     ) {
         self.mutate(|fake_pty_registry| {
             if let Some(fake_pty_state) = fake_pty_registry.fake_pty_states.get_mut(&terminal_id) {
@@ -357,8 +357,8 @@ impl FakePtyHandle {
         self.shared_ptys.write_output(self.terminal_id, bytes);
     }
 
-    pub fn tap_stdin(&self) -> crossbeam::channel::Receiver<Vec<u8>> {
-        let (sender, receiver) = crossbeam::channel::unbounded();
+    pub fn tap_stdin(&self) -> crossbeam_channel::Receiver<Vec<u8>> {
+        let (sender, receiver) = crossbeam_channel::unbounded();
         self.shared_ptys.set_stdin_tap(self.terminal_id, sender);
         receiver
     }

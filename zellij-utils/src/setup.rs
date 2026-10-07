@@ -204,14 +204,8 @@ pub fn dump_specified_swap_layout(swap_layout: &str) -> std::io::Result<()> {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
 pub fn dump_builtin_plugins(_path: &PathBuf) -> Result<()> {
     Err(anyhow!("Switchboard does not support WebAssembly plugins."))
-}
-
-#[cfg(target_family = "wasm")]
-pub fn dump_builtin_plugins(_path: &PathBuf) -> Result<()> {
-    Ok(())
 }
 
 #[derive(Debug, Default, Clone, Args, Serialize, Deserialize)]

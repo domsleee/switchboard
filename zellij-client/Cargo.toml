@@ -12,7 +12,6 @@ license.workspace = true
 # TODO: we might want to move these to be workspace dependencies as well, but
 # work is currently being done on moving all our async stuff to tokio from async_std,
 # so let's see how that works out before rocking the boat
-futures = { version = "0.3.30", optional = true }
 axum = { version = "0.8.4", features = ["ws"], optional = true }
 axum-extra = { version = "0.12", features = ["cookie"], optional = true }
 axum-server = { version = "0.8", default-features = false, features = ["tls-rustls-no-provider"], optional = true }
@@ -22,14 +21,12 @@ http-body-util = { version = "0.1", optional = true }
 flate2 = { version = "1", optional = true }
 sha2 = { workspace = true, optional = true }
 time = { version = "0.3", optional = true }
-tower-http = { version = "0.6.4", features = ["cors"], optional = true }
 tower = { version = "0.5", features = ["util"], optional = true }
 hpke = { version = "0.13", default-features = false, features = ["std", "alloc", "x25519"], optional = true }
 mesh-rand = { package = "rand", version = "0.9", optional = true }
 ring = { version = "0.17", optional = true }
 subtle = { version = "2.6", optional = true }
 rcgen = { version = "0.14", optional = true }
-fs2 = { version = "0.4", optional = true }
 tempfile = { workspace = true, optional = true }
 rusqlite = { version = "0.30", default-features = false, features = ["bundled"], optional = true }
 
@@ -39,9 +36,7 @@ async-trait = { workspace = true }
 crossterm = { workspace = true, features = ["events", "bracketed-paste"] }
 dialoguer = { workspace = true, optional = true }
 interprocess = { workspace = true }
-lazy_static = { workspace = true }
 log = { workspace = true }
-num_cpus = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -55,7 +50,6 @@ isahc = { workspace = true, optional = true }
 tokio-tungstenite = { version = "0.28", optional = true }
 rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12", "logging"], optional = true }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"], optional = true }
-rustls-pemfile = { version = "2", optional = true }
 rustls-native-certs = { version = "0.8", optional = true }
 rustls-pki-types = { version = "1", optional = true }
 futures-util = { version = "0.3", optional = true }
@@ -69,8 +63,6 @@ daemonize = { workspace = true }
 nix = { workspace = true, features = ["fs"] }
 
 [target.'cfg(windows)'.dependencies]
-crossterm = { workspace = true }
-tokio = { workspace = true }
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_System_Console",
@@ -80,9 +72,7 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
-insta = "1.48"
 rcgen = "0.14"
-serde_json = "1.0"
 serial_test = "3.0"
 tempfile = "3"
 # `test-util` enables `tokio::time::pause` / `advance`, used by the
@@ -90,13 +80,11 @@ tempfile = "3"
 tokio = { workspace = true, features = ["test-util"] }
 
 [features]
-unstable = []
 web_server_capability = [
     "dep:isahc",
     "dep:tokio-tungstenite",
     "dep:rustls",
     "dep:tokio-rustls",
-    "dep:rustls-pemfile",
     "dep:rustls-native-certs",
     "dep:rustls-pki-types",
     "dep:futures-util",
@@ -105,24 +93,21 @@ web_server_capability = [
     "dep:base64",
     "dep:include_dir",
     "dep:tokio-util",
-    "dep:futures",
     "dep:axum",
     "dep:axum-extra",
     "dep:time",
+    "dep:tower",
     "dep:axum-server",
     "dep:hyper",
     "dep:hyper-util",
     "dep:http-body-util",
     "dep:flate2",
     "dep:sha2",
-    "dep:tower-http",
-    "dep:tower",
     "dep:hpke",
     "dep:mesh-rand",
     "dep:ring",
     "dep:subtle",
     "dep:rcgen",
-    "dep:fs2",
     "dep:tempfile",
     "dep:rusqlite",
     "zellij-utils/web_server_capability",

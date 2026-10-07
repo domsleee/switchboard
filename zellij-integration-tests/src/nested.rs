@@ -3,7 +3,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crossbeam::channel::{Receiver, Sender};
+use crossbeam_channel::{Receiver, Sender};
 use zellij_utils::nested_session::{decode_payload, NestedFrameExtractor, NestedSessionMessage};
 
 use crate::client_screen::GridSnapshot;
@@ -214,7 +214,7 @@ fn bridge_guest_into_pane_for_host_with_config(
             cols > 0 && rows > 0
         });
 
-    let (guest_stdout_tx, guest_stdout_rx) = crossbeam::channel::unbounded();
+    let (guest_stdout_tx, guest_stdout_rx) = crossbeam_channel::unbounded();
     let guest = TestRunner::new(Size {
         cols: guest_cols as usize,
         rows: guest_rows as usize,

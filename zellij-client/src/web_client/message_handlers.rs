@@ -146,7 +146,7 @@ fn dispatch_termwiz_event(
 }
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
-use futures::{prelude::stream::SplitSink, SinkExt};
+use futures_util::{stream::SplitSink, SinkExt};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::sync::CancellationToken;
 

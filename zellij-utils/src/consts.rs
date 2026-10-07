@@ -3,9 +3,10 @@
 use crate::home::find_default_config_dir;
 use directories::ProjectDirs;
 use include_dir::{include_dir, Dir};
-use lazy_static::lazy_static;
-use std::{path::PathBuf, sync::OnceLock};
-use uuid::Uuid;
+use std::{
+    path::PathBuf,
+    sync::{LazyLock, OnceLock},
+};
 
 pub const ZELLIJ_CONFIG_FILE_ENV: &str = "ZELLIJ_CONFIG_FILE";
 pub const ZELLIJ_CONFIG_DIR_ENV: &str = "ZELLIJ_CONFIG_DIR";
@@ -86,35 +87,24 @@ const fn system_default_data_dir() -> &'static str {
     }
 }
 
-lazy_static! {
-    pub static ref CLIENT_SERVER_CONTRACT_DIR: String =
-        format!("contract_version_{}", CLIENT_SERVER_CONTRACT_VERSION);
-    pub static ref ZELLIJ_PROJ_DIR: ProjectDirs = {
-        if cfg!(windows) {
-            ProjectDirs::from("", "", "Zellij").unwrap()
-        } else {
-            ProjectDirs::from("org", "Zellij Contributors", "Zellij").unwrap()
-        }
-    };
-    pub static ref ZELLIJ_CACHE_DIR: PathBuf = ZELLIJ_PROJ_DIR.cache_dir().to_path_buf();
-    pub static ref ZELLIJ_SESSION_CACHE_DIR: PathBuf = ZELLIJ_PROJ_DIR
-        .cache_dir()
-        .to_path_buf()
-        .join(format!("{}", Uuid::new_v4()));
-    pub static ref ZELLIJ_PLUGIN_PERMISSIONS_CACHE: PathBuf =
-        ZELLIJ_CACHE_DIR.join("permissions.kdl");
-    pub static ref ZELLIJ_SESSION_INFO_CACHE_DIR: PathBuf = ZELLIJ_CACHE_DIR
+pub static CLIENT_SERVER_CONTRACT_DIR: LazyLock<String> =
+    LazyLock::new(|| format!("contract_version_{}", CLIENT_SERVER_CONTRACT_VERSION));
+pub static ZELLIJ_PROJ_DIR: LazyLock<ProjectDirs> = LazyLock::new(|| {
+    if cfg!(windows) {
+        ProjectDirs::from("", "", "Zellij").unwrap()
+    } else {
+        ProjectDirs::from("org", "Zellij Contributors", "Zellij").unwrap()
+    }
+});
+pub static ZELLIJ_CACHE_DIR: LazyLock<PathBuf> =
+    LazyLock::new(|| ZELLIJ_PROJ_DIR.cache_dir().to_path_buf());
+pub static ZELLIJ_SESSION_INFO_CACHE_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
+    ZELLIJ_CACHE_DIR
         .join(CLIENT_SERVER_CONTRACT_DIR.clone())
-        .join("session_info");
-    pub static ref ZELLIJ_PLUGIN_ARTIFACT_DIR: PathBuf = ZELLIJ_CACHE_DIR.join(VERSION);
-    pub static ref ZELLIJ_SEEN_RELEASE_NOTES_CACHE_FILE: PathBuf =
-        ZELLIJ_CACHE_DIR.join(VERSION).join("seen_release_notes");
-}
+        .join("session_info")
+});
 
-pub const FEATURES: &[&str] = &[
-    #[cfg(feature = "disable_automatic_asset_installation")]
-    "disable_automatic_asset_installation",
-];
+pub const FEATURES: &[&str] = &[];
 
 pub const BUILTIN_PLUGIN_NAMES: &[&str] = &[
     "compact-bar",
@@ -130,22 +120,6 @@ pub const BUILTIN_PLUGIN_NAMES: &[&str] = &[
     "layout-manager",
     "link",
 ];
-
-#[cfg(not(target_family = "wasm"))]
-pub use not_wasm::*;
-
-#[cfg(not(target_family = "wasm"))]
-mod not_wasm {
-    use lazy_static::lazy_static;
-    use std::collections::HashMap;
-    use std::path::PathBuf;
-
-    // Retained for compatibility with plugin configuration/setup APIs.
-    // Switchboard has no bundled plugins or WASM execution runtime.
-    lazy_static! {
-        pub static ref ASSET_MAP: HashMap<PathBuf, Vec<u8>> = HashMap::new();
-    }
-}
 
 #[cfg(unix)]
 pub fn is_ipc_socket(file_type: &std::fs::FileType) -> bool {
@@ -239,7 +213,6 @@ mod unix_only {
     use super::*;
     use crate::envs;
     pub use crate::shared::set_permissions;
-    use lazy_static::lazy_static;
     use nix::unistd::Uid;
     use std::env::temp_dir;
 
@@ -249,25 +222,27 @@ mod unix_only {
     #[cfg(not(target_os = "macos"))]
     pub const ZELLIJ_SOCK_MAX_LENGTH: usize = 108;
 
-    lazy_static! {
-        static ref UID: Uid = Uid::current();
-        pub static ref ZELLIJ_TMP_DIR: PathBuf = temp_dir().join(format!("zellij-{}", *UID));
-        pub static ref ZELLIJ_TMP_LOG_DIR: PathBuf = ZELLIJ_TMP_DIR.join("zellij-log");
-        pub static ref ZELLIJ_TMP_LOG_FILE: PathBuf = ZELLIJ_TMP_LOG_DIR.join("zellij.log");
-        pub static ref ZELLIJ_SOCK_DIR: PathBuf = {
-            let mut ipc_dir = envs::get_socket_dir().map_or_else(
-                |_| {
-                    ZELLIJ_PROJ_DIR
-                        .runtime_dir()
-                        .map_or_else(|| ZELLIJ_TMP_DIR.clone(), |p| p.to_owned())
-                },
-                PathBuf::from,
-            );
-            ipc_dir.push(CLIENT_SERVER_CONTRACT_DIR.clone());
-            ipc_dir
-        };
-        pub static ref WEBSERVER_SOCKET_PATH: PathBuf = ZELLIJ_SOCK_DIR.join("web_server_bus");
-    }
+    static UID: LazyLock<Uid> = LazyLock::new(|| Uid::current());
+    pub static ZELLIJ_TMP_DIR: LazyLock<PathBuf> =
+        LazyLock::new(|| temp_dir().join(format!("zellij-{}", *UID)));
+    pub static ZELLIJ_TMP_LOG_DIR: LazyLock<PathBuf> =
+        LazyLock::new(|| ZELLIJ_TMP_DIR.join("zellij-log"));
+    pub static ZELLIJ_TMP_LOG_FILE: LazyLock<PathBuf> =
+        LazyLock::new(|| ZELLIJ_TMP_LOG_DIR.join("zellij.log"));
+    pub static ZELLIJ_SOCK_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
+        let mut ipc_dir = envs::get_socket_dir().map_or_else(
+            |_| {
+                ZELLIJ_PROJ_DIR
+                    .runtime_dir()
+                    .map_or_else(|| ZELLIJ_TMP_DIR.clone(), |p| p.to_owned())
+            },
+            PathBuf::from,
+        );
+        ipc_dir.push(CLIENT_SERVER_CONTRACT_DIR.clone());
+        ipc_dir
+    });
+    pub static WEBSERVER_SOCKET_PATH: LazyLock<PathBuf> =
+        LazyLock::new(|| ZELLIJ_SOCK_DIR.join("web_server_bus"));
 }
 
 #[cfg(not(unix))]
@@ -280,7 +255,6 @@ mod not_unix {
     pub use crate::shared::set_permissions;
     #[cfg(windows)]
     use dunce;
-    use lazy_static::lazy_static;
     use std::env::temp_dir;
 
     #[cfg(windows)]
@@ -295,25 +269,26 @@ mod not_unix {
 
     pub const ZELLIJ_SOCK_MAX_LENGTH: usize = 256;
 
-    lazy_static! {
-        pub static ref ZELLIJ_TMP_DIR: PathBuf = {
-            let tmp_dir = canonicalize_path(temp_dir());
-            tmp_dir.join("zellij")
-        };
-        pub static ref ZELLIJ_TMP_LOG_DIR: PathBuf = ZELLIJ_TMP_DIR.join("zellij-log");
-        pub static ref ZELLIJ_TMP_LOG_FILE: PathBuf = ZELLIJ_TMP_LOG_DIR.join("zellij.log");
-        pub static ref ZELLIJ_SOCK_DIR: PathBuf = {
-            let mut ipc_dir = canonicalize_path(envs::get_socket_dir().map_or_else(
-                |_| {
-                    ZELLIJ_PROJ_DIR
-                        .runtime_dir()
-                        .map_or_else(|| ZELLIJ_TMP_DIR.clone(), |p| p.to_owned())
-                },
-                PathBuf::from,
-            ));
-            ipc_dir.push(CLIENT_SERVER_CONTRACT_DIR.clone());
-            ipc_dir
-        };
-        pub static ref WEBSERVER_SOCKET_PATH: PathBuf = ZELLIJ_SOCK_DIR.join("web_server_bus");
-    }
+    pub static ZELLIJ_TMP_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
+        let tmp_dir = canonicalize_path(temp_dir());
+        tmp_dir.join("zellij")
+    });
+    pub static ZELLIJ_TMP_LOG_DIR: LazyLock<PathBuf> =
+        LazyLock::new(|| ZELLIJ_TMP_DIR.join("zellij-log"));
+    pub static ZELLIJ_TMP_LOG_FILE: LazyLock<PathBuf> =
+        LazyLock::new(|| ZELLIJ_TMP_LOG_DIR.join("zellij.log"));
+    pub static ZELLIJ_SOCK_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
+        let mut ipc_dir = canonicalize_path(envs::get_socket_dir().map_or_else(
+            |_| {
+                ZELLIJ_PROJ_DIR
+                    .runtime_dir()
+                    .map_or_else(|| ZELLIJ_TMP_DIR.clone(), |p| p.to_owned())
+            },
+            PathBuf::from,
+        ));
+        ipc_dir.push(CLIENT_SERVER_CONTRACT_DIR.clone());
+        ipc_dir
+    });
+    pub static WEBSERVER_SOCKET_PATH: LazyLock<PathBuf> =
+        LazyLock::new(|| ZELLIJ_SOCK_DIR.join("web_server_bus"));
 }

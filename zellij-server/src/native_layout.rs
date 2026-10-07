@@ -127,7 +127,7 @@ pub enum PluginInstruction {
     DumpLayoutToPlugin {
         session_layout_metadata: SessionLayoutMetadata,
         plugin_id: PluginId,
-        response_channel: crossbeam::channel::Sender<DumpSessionLayoutResponse>,
+        response_channel: crossbeam_channel::Sender<DumpSessionLayoutResponse>,
     },
     LogLayoutToHd(SessionLayoutMetadata),
     CliPipe {
@@ -194,7 +194,7 @@ pub enum PluginInstruction {
     RequestStateUpdateForPlugin(PluginId),
     UpdateSessionSaveTime(u64), // u64 = milliseconds since UNIX epoch
     GetLastSessionSaveTime {
-        response_channel: crossbeam::channel::Sender<Option<u64>>,
+        response_channel: crossbeam_channel::Sender<Option<u64>>,
     },
     DetectPluginConfigChanges(PluginAliases),
     HighlightClicked {

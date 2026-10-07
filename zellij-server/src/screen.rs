@@ -427,26 +427,26 @@ pub enum ScreenInstruction {
     DumpLayoutToPlugin {
         plugin_id: PluginId,
         tab_index: Option<usize>,
-        response_channel: crossbeam::channel::Sender<DumpSessionLayoutResponse>,
+        response_channel: crossbeam_channel::Sender<DumpSessionLayoutResponse>,
     },
     GetFocusedPaneInfo {
         client_id: ClientId,
-        response_channel: crossbeam::channel::Sender<GetFocusedPaneInfoResponse>,
+        response_channel: crossbeam_channel::Sender<GetFocusedPaneInfoResponse>,
     },
     GetPaneInfo {
         pane_id: PaneId,
-        response_channel: crossbeam::channel::Sender<Option<PaneInfo>>,
+        response_channel: crossbeam_channel::Sender<Option<PaneInfo>>,
     },
     GetTabInfo {
         tab_id: usize,
-        response_channel: crossbeam::channel::Sender<Option<TabInfo>>,
+        response_channel: crossbeam_channel::Sender<Option<TabInfo>>,
     },
     EditScrollback(ClientId, bool, Option<NotificationEnd>),
     GetPaneScrollback {
         pane_id: PaneId,
         client_id: ClientId,
         get_full_scrollback: bool,
-        response_channel: crossbeam::channel::Sender<PaneScrollbackResponse>,
+        response_channel: crossbeam_channel::Sender<PaneScrollbackResponse>,
     },
     ScrollUp(ClientId, Option<NotificationEnd>),
     ScrollUpAt(Position, ClientId, Option<NotificationEnd>),
@@ -781,15 +781,15 @@ pub enum ScreenInstruction {
     ListClientsMetadata(Option<PathBuf>, ClientId, Option<NotificationEnd>), // Option<PathBuf> - default shell
     ListPanes {
         show_all: bool,
-        response_channel: crossbeam::channel::Sender<ListPanesResponse>,
+        response_channel: crossbeam_channel::Sender<ListPanesResponse>,
     },
     ListTabs {
         client_id: ClientId,
-        response_channel: crossbeam::channel::Sender<ListTabsResponse>,
+        response_channel: crossbeam_channel::Sender<ListTabsResponse>,
     },
     GetCurrentTabInfo {
         client_id: ClientId,
-        response_channel: crossbeam::channel::Sender<Option<TabInfo>>,
+        response_channel: crossbeam_channel::Sender<Option<TabInfo>>,
     },
     Reconfigure {
         client_id: ClientId,

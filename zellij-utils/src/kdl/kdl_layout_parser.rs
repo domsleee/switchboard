@@ -421,7 +421,14 @@ impl<'a> KdlLayoutParser<'a> {
         name: &'static str,
     ) -> Result<Option<PathBuf>, ConfigError> {
         match kdl_get_string_property_or_child_value_with_error!(kdl_node, name) {
-            Some(s) => match shellexpand::full(s) {
+            Some(s) => match shellexpand::full_with_context(
+                s,
+                || {
+                    directories::BaseDirs::new()
+                        .and_then(|dirs| dirs.home_dir().to_str().map(str::to_owned))
+                },
+                |name| std::env::var(name).map(Some),
+            ) {
                 Ok(s) => Ok(Some(PathBuf::from(s.as_ref()))),
                 Err(e) => Err(kdl_parsing_error!(e.to_string(), kdl_node)),
             },
