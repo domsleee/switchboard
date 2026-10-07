@@ -181,6 +181,8 @@ async fn invitation_preview_expiry_cancel_and_denial_never_issue_credentials() {
     for _ in 0..3 {
         Invitation::parse(&invite.link().unwrap(), 1000).unwrap();
     }
+    // An inviter whose clock runs a few seconds ahead still works.
+    Invitation::parse(&invite.link().unwrap(), 998).unwrap();
     assert!(mac.database.lock().await.invitations[&invite.id]
         .requests
         .is_empty());

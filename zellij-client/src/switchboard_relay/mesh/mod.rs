@@ -92,7 +92,7 @@ impl Invitation {
         anyhow::ensure!(
             crypto::decode(&invite.secret)?.len() == 32
                 && invite.expires > now
-                && invite.expires <= now + 600,
+                && invite.expires <= now + 600 + CLOCK_SKEW,
             "Invitation expired; ask the administrator for a new link"
         );
         Ok(invite)
@@ -791,6 +791,8 @@ fn endpoint(value: &str) -> anyhow::Result<url::Url> {
     );
     Ok(url)
 }
+/// Seconds a computer's clock may run ahead of another's; Windows clocks drift.
+const CLOCK_SKEW: u64 = 300;
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

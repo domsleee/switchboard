@@ -208,7 +208,7 @@ impl Mesh {
         time: u64,
     ) -> anyhow::Result<Signed<JoinRequest>> {
         anyhow::ensure!(
-            invitation.expires > time && invitation.expires <= time + 600,
+            invitation.expires > time && invitation.expires <= time + 600 + CLOCK_SKEW,
             "Invitation expired"
         );
         let mut committed = self.database.lock().await;
