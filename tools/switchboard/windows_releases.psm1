@@ -161,7 +161,8 @@ function Test-SwitchboardIdentityNumber($Value) {
 function Get-SwitchboardPaneSnapshot([string]$Binary, [string[]]$Prefix, [string]$Session, [int]$TimeoutSeconds) {
     $result = Invoke-SwitchboardProbe $Binary ($Prefix + @('-s',$Session,'action','list-panes','--json','--all')) $TimeoutSeconds
     if ($result.Output.Trim() -notmatch '(?s)^\[.*\]$') { throw 'Expected a pane array' }
-    $rows = @($result.Output | ConvertFrom-Json -ErrorAction Stop)
+    # Windows PowerShell 5.1 emits a JSON array as one object; enumerate it.
+    $rows = @($result.Output | ConvertFrom-Json -ErrorAction Stop | ForEach-Object { $_ })
     if ($rows.Count -eq 0) { throw 'Live session has no panes' }
     $seen = @{}
     $identities = foreach ($pane in $rows) {
