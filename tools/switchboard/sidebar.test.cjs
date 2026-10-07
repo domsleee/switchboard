@@ -230,6 +230,22 @@ test('early catalog data is applied immediately and one delayed host does not bl
 });
 
 
+test('a host the relay stops listing leaves the sidebar without a reload',async()=>{
+  let summary=[{id:'windows',name:'Windows'},{id:'mesh-twin',name:'Windows'}];const removed=[];
+  const context={loading:false,hosts:new Map(),startedHosts:new Set(),sessions:new Map(),tabCatalog:[],ready:{},archived:{},tabOrder:[],selected:null,catalogUnavailable:()=>false,saveReady(){},localStorage:{setItem(){}},clearTimeout(){},setTimeout(){},
+    document:{createElement:()=>({remove(){removed.push(this.src);}})},$:()=>({append(){}}),renderMachines(){},render(){},setStatus(){},
+    fetch:async url=>url==='/api/hosts?summary=1'?{ok:true,json:async()=>summary}
+      :{ok:true,json:async()=>({id:decodeURIComponent(url.split('/').pop()),name:'Windows',sessions:[{name:'main',web_clients_allowed:true}]})}};
+  vm.createContext(context);vm.runInContext(source.slice(source.indexOf('function sessionKey('),source.indexOf('function attentionKey(')),context);
+  vm.runInContext(source.slice(source.indexOf('function connectSession('),source.indexOf("window.addEventListener('message'")),context);
+  await context.refresh();
+  assert.deepEqual([...context.hosts.keys()],['windows','mesh-twin']);assert.equal(context.sessions.size,2);
+  summary=[{id:'windows',name:'Windows'}];await context.refresh();
+  assert.deepEqual([...context.hosts.keys()],['windows']);
+  assert.deepEqual([...context.sessions.values()].map(entry=>entry.host),['windows']);
+  assert.deepEqual(removed,['/hosts/mesh-twin/main']);
+});
+
 test('terminal URLs round-trip names and wait for the requested machine and tab',()=>{
   const location={href:'https://switchboard.localhost/?host=windows&session=work+%3F%23&tab=42',search:'?host=windows&session=work+%3F%23&tab=42'};
   const saved=[];const context={location,URL,URLSearchParams,history:{replaceState:(_,title,url)=>saved.push(String(url))},hosts:new Map(),sessions:new Map(),attentionErrors:[],loading:true,restoringTab:true};

@@ -450,6 +450,11 @@ async function refresh() {
     const response=await fetch('/api/hosts?summary=1');if(!response.ok)throw Error('Cannot reach local relay');
     const data=await response.json();
     for(const host of data)hosts.set(host.id,{...hosts.get(host.id),...host,connecting:true});
+    // A host the relay stops listing (removed, or merged into its configured twin) must not linger until reload.
+    const listed=new Set(data.map(host=>host.id));
+    for(const id of [...hosts.keys()])if(!listed.has(id)){hosts.delete(id);startedHosts.delete(id);}
+    for(const [key,entry] of sessions)if(!listed.has(entry.host)){clearTimeout(entry.startTimeout);entry.frame.remove();sessions.delete(key);}
+    renderMachines();render();
     await Promise.all(data.map(async summary=>{
       try{
         const response=await fetch(`/api/hosts/${encodeURIComponent(summary.id)}`);if(!response.ok)throw Error('Cannot list sessions');
