@@ -15,6 +15,9 @@ test('multi-modifier and Cmd Enter encode Enter as 13, not the letter E',()=>{
   assert.deepEqual(press('Enter',{metaKey:true}).sent,['\x1b[13;9u']);
   assert.deepEqual(press('Enter',{ctrlKey:true,shiftKey:true}).sent,['\x1b[13;6u']);
 });
-test('plain, Shift and Alt Enter stay with xterm.js',()=>{
-  for(const mods of [{},{shiftKey:true},{altKey:true}])assert.deepEqual(press('Enter',mods),{xtermHandles:true,sent:[]});
+test('Shift+Enter keeps its modifier so agent TUIs insert a newline instead of submitting',()=>{
+  assert.deepEqual(press('Enter',{shiftKey:true}),{xtermHandles:false,sent:['\x1b[13;2u']});
+});
+test('plain and Alt Enter stay with xterm.js',()=>{
+  for(const mods of [{},{altKey:true}])assert.deepEqual(press('Enter',mods),{xtermHandles:true,sent:[]});
 });

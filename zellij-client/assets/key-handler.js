@@ -11,7 +11,7 @@ export function installCustomKeyHandler(term, sendFunction) {
                 return;
             }
             // xterm.js sends a bare CR for Ctrl+Enter, dropping the modifier.
-            if (hasModifiersToHandle(ev) || (ev.ctrlKey && ev.key == "Enter")) {
+            if (hasModifiersToHandle(ev) || ((ev.ctrlKey || ev.shiftKey) && ev.key == "Enter")) {
                 ev.preventDefault();
                 encode_kitty_key(ev, sendFunction);
                 return false;
