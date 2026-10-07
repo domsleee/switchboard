@@ -261,6 +261,15 @@ pub struct WebSessionInfo {
 #[derive(Serialize, Deserialize)]
 pub struct SessionListResponse {
     pub sessions: Vec<WebSessionInfo>,
+    // Lets the Switchboard relay show which build each computer runs.
+    #[serde(default)]
+    pub build: BuildInfo,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+pub struct BuildInfo {
+    pub commit: String,
+    pub commit_date: String,
 }
 
 #[derive(Deserialize)]

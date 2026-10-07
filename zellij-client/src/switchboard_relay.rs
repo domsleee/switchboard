@@ -579,6 +579,18 @@ fn host_summary(host: &Host, configured: bool) -> Value {
     })
 }
 
+// Builds that predate the field report null; forward only these short strings.
+fn build_version(catalog: &Value) -> Value {
+    ["commit", "commit_date"]
+        .into_iter()
+        .map(|key| {
+            let value = catalog["build"][key].as_str().filter(|v| v.len() <= 40)?;
+            Some((key.to_owned(), json!(value)))
+        })
+        .collect::<Option<serde_json::Map<_, _>>>()
+        .map_or(Value::Null, Value::Object)
+}
+
 async fn describe(host: &Host, configured: bool) -> Value {
     let result = tokio::time::timeout(Duration::from_secs(20), async {
         let response = host
@@ -599,12 +611,16 @@ async fn describe(host: &Host, configured: bool) -> Value {
                 .as_str()
                 .is_some_and(|name| !name.starts_with(HELPER_PREFIX))
         });
-        Ok::<_, anyhow::Error>(sessions.clone())
+        let sessions = sessions.clone();
+        Ok::<_, anyhow::Error>((sessions, build_version(&catalog)))
     })
     .await;
     let mut description = host_summary(host, configured);
     match result {
-        Ok(Ok(sessions)) => description["sessions"] = json!(sessions),
+        Ok(Ok((sessions, version))) => {
+            description["sessions"] = json!(sessions);
+            description["version"] = version;
+        },
         _ => description["error"] = json!("Host unavailable"),
     }
     description
@@ -1184,6 +1200,19 @@ mod tests {
     }
 
     #[test]
+    fn build_version_is_null_for_older_hosts() {
+        assert_eq!(build_version(&json!({"sessions": []})), Value::Null);
+        assert_eq!(
+            build_version(&json!({"build": {"commit": "abc1234"}})),
+            Value::Null
+        );
+        assert_eq!(
+            build_version(&json!({"build": {"commit": "x".repeat(41), "commit_date": "d"}})),
+            Value::Null
+        );
+    }
+
+    #[test]
     fn certificate_pins_are_exact_sha256_values() {
         assert_eq!(fingerprint(&"ab".repeat(32)).unwrap(), [0xab; 32]);
         for value in ["invalid".to_owned(), "aa".repeat(31), "gg".repeat(32)] {
@@ -1240,7 +1269,8 @@ mod tests {
                     }
                     Json(
                         json!({"sessions": [{"name":"main", "web_clients_allowed":true},
-                    {"name":"__switchboard_control_private", "web_clients_allowed":true}]}),
+                    {"name":"__switchboard_control_private", "web_clients_allowed":true}],
+                    "build": {"commit":"abc1234", "commit_date":"2026-10-07", "extra":"dropped"}}),
                     )
                     .into_response()
                 }),
@@ -1346,6 +1376,10 @@ mod tests {
         let catalog: Value = serde_json::from_slice(&response.body).unwrap();
         assert_eq!(catalog["sessions"].as_array().unwrap().len(), 1);
         assert_eq!(catalog["sessions"][0]["name"], "main");
+        assert_eq!(
+            catalog["version"],
+            json!({"commit":"abc1234", "commit_date":"2026-10-07"})
+        );
         let response = client
             .raw_request(
                 Method::GET,

@@ -1,8 +1,8 @@
 use crate::web_client::authentication::{IsReadOnly, SessionTokenHash};
 use crate::web_client::control_message::SetConfigPayload;
 use crate::web_client::types::{
-    record_pending_welcome_session, AppState, CreateClientIdResponse, LoginRequest, LoginResponse,
-    SessionListResponse, SessionQuery,
+    record_pending_welcome_session, AppState, BuildInfo, CreateClientIdResponse, LoginRequest,
+    LoginResponse, SessionListResponse, SessionQuery,
 };
 use crate::web_client::utils::get_mime_type;
 use axum::{
@@ -167,7 +167,13 @@ pub async fn list_sessions_handler(
         }
     }
     sessions.sort_by(|a, b| a.name.cmp(&b.name));
-    Json(SessionListResponse { sessions })
+    Json(SessionListResponse {
+        sessions,
+        build: BuildInfo {
+            commit: env!("SWITCHBOARD_COMMIT").into(),
+            commit_date: env!("SWITCHBOARD_COMMIT_DATE").into(),
+        },
+    })
 }
 
 pub async fn get_static_asset(AxumPath(path): AxumPath<String>) -> impl IntoResponse {
