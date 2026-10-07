@@ -176,10 +176,17 @@ test('sidebar empty states say why the list is empty and offer the fixing action
     assert.equal(await empty.getAttribute('role'),'status');assert.equal(await empty.getAttribute('aria-live'),'polite');
     // Still loading: a subtle connecting line, no action.
     await shows('Connecting to your machines…');
+    assert.equal(await page.locator('#empty-text').textContent(),'Connecting…');
+    assert.equal(await page.locator('#empty-action').isHidden(),true);
     assert.equal(await empty.getAttribute('data-state'),'loading');
     // Every machine unreachable: point to Logs in the panel.
     releaseHosts();
-    await (await shows('Can’t reach your machines','View logs')).click();
+    const viewLogs=await shows('Can’t reach your machines','View logs');
+    // The main area stays quiet: no repeated explanation, just the same action, centred.
+    assert.deepEqual(await page.evaluate(()=>{const text=document.querySelector('#empty-text').getBoundingClientRect(),main=document.querySelector('#terminals').getBoundingClientRect();
+      return [document.querySelector('#empty-text').textContent,document.querySelector('#empty-action').textContent,Math.abs(text.left+text.width/2-(main.left+main.width/2))<1,getComputedStyle(document.querySelector('#empty')).fontSize];}),
+      ['No terminal selected','View logs',true,'12px']);
+    await viewLogs.click();
     await page.waitForFunction(()=>document.querySelector('#panel').open&&!document.querySelector('#panel-logs').hidden);
     await page.keyboard.press('Escape');
     // A tab arrives; the empty state goes away.
@@ -206,7 +213,9 @@ test('sidebar empty states say why the list is empty and offer the fixing action
     // The last tab closed and its session ended: offer a new tab.
     sessions=[];tabs=[];
     await page.evaluate(async()=>{await refresh();await refreshAttention();});
-    await (await shows('No terminals yet','New tab')).click();
+    await shows('No terminals yet','New tab');
+    assert.equal(await page.locator('#empty-action').textContent(),'New tab');
+    await page.locator('#empty-action').click();
     assert.equal(await page.locator('#new-tab-dialog').evaluate(d=>d.open),true);
     assert.deepEqual(errors,[]);
   }finally{await browser.close();}

@@ -221,10 +221,11 @@ function sidebarEmpty(tabs,shown){
 }
 function renderSidebarEmpty(tabs,shown){
   const empty=sidebarEmpty(tabs,shown),box=$('tab-empty'),action=$('tab-empty-action');
-  box.hidden=!empty;if(!empty)return;
+  box.hidden=!empty;if(!empty)return null;
   box.dataset.state=empty.state||'';
   if($('tab-empty-text').textContent!==empty.text)$('tab-empty-text').textContent=empty.text;
   action.hidden=!empty.action;action.textContent=empty.action||'';action.onclick=empty.run||null;
+  return empty;
 }
 function render() {
   // Live metadata arrives while dragging; keep the source element mounted.
@@ -293,7 +294,7 @@ function render() {
   let cursor=$('tabs').firstChild;
   for(const node of nodes){if(node!==cursor)$('tabs').insertBefore(node,cursor);else cursor=cursor.nextSibling;}
   $('tab-count').textContent=`${shown.length}${shown.length!==tabs.length?' / '+tabs.length:''} tabs`;
-  renderSidebarEmpty(tabs,shown);
+  const emptyHint=renderSidebarEmpty(tabs,shown);
 
   const current=tabs.find(t=>t.key===selected);
   updateTabUrl(current);
@@ -311,8 +312,14 @@ function render() {
   $('archive').textContent=`Archive${archiveCount?' ('+archiveCount+')':''}`;
   if(!$('panel-archive').hidden&&$('panel').open)renderArchive();
   if(!current){$('artifact-preview').hidden=true;$('artifact-frame').src='about:blank';}
+  // The sidebar says why nothing is selected; the main area repeats only its
+  // action, which matters on phones where the sidebar is a closed drawer.
   $('empty').hidden=!!current;
-  if (!current) $('empty').textContent=restoringTab?'Connecting to the requested terminal…':startingEntry?'Starting a terminal…':filter==='all'?(archiveCount?'All tabs are archived. Open Archive to restore one.':'No connected tabs. Use + to open a terminal, or check your machines in Settings.'):`No ${filter} tabs. Assign machines to this group in Settings.`;
+  if(!current){
+    const hint=restoringTab||startingEntry?null:emptyHint,action=$('empty-action');
+    $('empty-text').textContent=restoringTab?'Connecting to the requested terminal…':startingEntry?'Starting a terminal…':hint?.state==='loading'?'Connecting…':'No terminal selected';
+    action.hidden=!hint?.action;action.textContent=hint?.action||'';action.onclick=hint?.run||null;
+  }
   const errors=[...hosts.values()].filter(h=>h.error).map(h=>`${h.name}: ${h.error}`);
   for(const entry of sessions.values())if(entry.closeError)errors.push(entry.closeError);
   for(const error of attentionErrors)errors.push(`${hosts.get(error.host)?.name||error.host}: attention status unavailable`);
@@ -695,7 +702,7 @@ $('size-owner').onclick=()=>{
 // One panel holds Messages, Computers, Archive, Logs and Settings over the
 // terminals, so terminal iframes and their sockets stay connected. Messages and
 // Computers stay standalone pages, embedded per section; their links to each
-// other switch sections. Modified clicks still open a real page.
+// other are hidden there, since each is a tab. Modified clicks still open a real page.
 const panel=$('panel'),panelTabs=[...panel.querySelectorAll('[role=tab]')];
 const panelPages={'/messages.html':'messages','/computers.html':'computers'};
 function sectionLink(event){
@@ -735,11 +742,10 @@ $('panel-tabs').onkeydown=event=>{
 for(const frame of panel.querySelectorAll('iframe'))frame.onload=()=>{
   const doc=frame.contentDocument;
   if(!doc||!panelPages[frame.contentWindow.location.pathname])return;
-  // The panel header already shows the title and Close, so hide the page's own,
-  // and align the page with the panel's content edge and background.
-  const style=doc.createElement('style');style.textContent='a[href="/"],h1{display:none!important}:root{background:#111318}body{margin-left:0;margin-right:0}';doc.head.append(style);
+  // The panel header and tabs replace the page's title, back link and links to
+  // other sections; align the page with the panel's content edge and background.
+  const style=doc.createElement('style');style.textContent='a[href="/"],a[href="/messages.html"],a[href="/computers.html"],h1{display:none!important}:root{background:#111318}body{margin-left:0;margin-right:0}';doc.head.append(style);
   doc.addEventListener('keydown',event=>{if(event.key==='Escape'&&!event.defaultPrevented)panel.close();});
-  doc.addEventListener('click',event=>{const name=sectionLink(event);if(name)showSection(name,true);});
 };
 $('close-panel').onclick=()=>panel.close();
 panel.onclose=()=>{

@@ -78,13 +78,14 @@ test('One panel holds Messages, Computers, Archive, Logs and Settings over live 
     await messages.click();
     assert.deepEqual(await section(),at('Messages'));
     await messagesFrame.locator('button[data-key="computer:windows"]').waitFor();
-    for(const selector of ['a[href="/"]','h1'])assert.equal(await messagesFrame.locator(selector).isHidden(),true,selector+' hidden in panel');
+    for(const selector of ['a[href="/"]','h1','a[href="/computers.html"]'])assert.equal(await messagesFrame.locator(selector).isHidden(),true,selector+' hidden in panel');
     await page.keyboard.press('Escape');
     await terminalsIntact();
 
-    // Messages > Manage computers switches sections instead of navigating the frame.
+    // Switching sections keeps each embedded page where it was.
     await messages.click();
-    await messagesFrame.locator('a[href="/computers.html"]').click();
+    await messagesFrame.locator('button[data-key="computer:windows"]').waitFor();
+    await page.getByRole('tab',{name:'Computers'}).click();
     assert.deepEqual(await section(),at('Computers'));
     await computersFrame.locator('text=Windows').first().waitFor();
     for(const selector of ['a[href="/"]','h1'])assert.equal(await computersFrame.locator(selector).isHidden(),true,selector+' hidden in panel');
@@ -130,7 +131,7 @@ test('One panel holds Messages, Computers, Archive, Logs and Settings over live 
 
     // Opened standalone, the pages keep their back link and title.
     const standalone=await context.newPage();await standalone.goto('https://switchboard.test/messages.html');
-    for(const selector of ['a[href="/"]','h1'])assert.equal(await standalone.locator(selector).isVisible(),true,selector+' visible standalone');
+    for(const selector of ['a[href="/"]','h1','a[href="/computers.html"]'])assert.equal(await standalone.locator(selector).isVisible(),true,selector+' visible standalone');
     await standalone.close();
     // Phone width: full screen, title and Close above a single row of sections, no horizontal scroll.
     await page.setViewportSize({width:390,height:844});
