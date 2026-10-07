@@ -154,6 +154,9 @@ def selected_binary(args):
 
 
 def install_binary(candidate, args):
+    # This updater performs its own service handoff; the selectors must not.
+    # An environment variable (not a flag) keeps older retained helpers working.
+    os.environ['SWITCHBOARD_UPDATE_BINARY_ONLY'] = '1'
     if WINDOWS:
         values = ['-Candidate', candidate, '-ReleaseDirectory', args.release_directory]
         if args.config:
@@ -186,14 +189,14 @@ def mac_processes():
         if match:
             pid, parent, started, command = match.groups()
             rows.append((int(pid), int(parent), started, command))
-    engines = {pid for pid, _, _, command in rows if re.search(r'\bzellij\s+--server\s', command)}
-    return {str(pid): started for pid, parent, started, _ in rows if pid in engines or parent in engines}
+    # Only session engines must survive; their shells/agents may exit on their own.
+    return {str(pid): started for pid, _, started, command in rows if re.search(r'\bzellij\s+--server\s', command)}
 
 
 def verify_mac_processes(baseline):
     current = mac_processes()
     if any(current.get(pid) != started for pid, started in baseline.items()):
-        raise RuntimeError('A terminal engine or shell changed during the update')
+        raise RuntimeError('A terminal engine changed during the update')
 
 
 def apply_bundle(bundle, manifest, args, state, state_path):

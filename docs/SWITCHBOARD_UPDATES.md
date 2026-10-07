@@ -68,31 +68,53 @@ After building or downloading a trusted macOS executable, install `jq` if needed
 bash tools/switchboard/update_local.sh target/release/zellij
 ```
 
-Running services, browser connections, and terminal processes stay running.
-The updater checks that the candidate can query every live
-session, retains both binaries under `~/.local/share/switchboard/releases`,
-and replaces `~/.cargo/bin/zellij` with an atomic rename. It verifies session
-server and direct terminal-child IDs/start times and pane identities afterward and restores the previous executable
-if a check fails. Staging and rollback verify the executable checksum before
-renaming. If rollback cannot copy the retained executable, it leaves the complete
-installed executable in place and reports the retained path for manual recovery.
-Each read-only CLI probe has a 15-second timeout. Pane JSON is validated and
-compared by stable identity; changing a tab's position does not fail verification.
+This is a full local update. Terminal processes stay running; browsers reconnect.
 
-The optional second argument selects a different installed binary. This is a
-local executable updater, not a complete bundle updater. It does not download
-releases, restart web services, update relay or tray files, or migrate settings.
-The probes establish CLI query compatibility, not browser protocol compatibility.
+1. Preflight, before changing anything: the candidate must see the installed
+   authentication tokens and query every live session with identical pane
+   identities, and the launchd job `dev.zellij.switchboard` must be loaded and run
+   this installation's `zellij serve`.
+2. Retain both binaries under `~/.local/share/switchboard/releases` and replace
+   `~/.cargo/bin/zellij` with a checksum-verified atomic rename.
+3. Check that session server PIDs/start times and pane identities are unchanged.
+4. Run `zellij web --stop`, wait for the old web server to exit, then
+   `launchctl kickstart -k` the job, which starts `zellij web --daemonize` and
+   `zellij serve` on the new binary. Session servers are separate processes.
+5. Within 60 seconds, require that every previous web/relay process is gone, new
+   ones run from the installed path, `zellij web --status` answers and the relay's
+   `/api/health` answers (and matches `SWITCHBOARD_EXPECTED_COMMIT` when set).
+   Halfway through, a plain `zellij web --daemonize` is started if web is still
+   down: a job pinned to `SWITCHBOARD_RECOVER_UNSHARED_SESSION` for a replaced
+   socket daemonizes and then exits, so its own fallback never runs.
+6. Recheck session server PIDs and pane identities.
+
+Shells and agents inside sessions may exit on their own; only session servers
+must survive. Any failure after step 2 restores the previous executable and, if
+services were already restarted, restarts and rechecks them on it. If rollback
+cannot copy the retained executable, it leaves the complete installed executable
+in place and reports the retained path. Each read-only CLI probe has a 15-second
+timeout.
+
+`--binary-only` skips steps 4–6 and the job preflight (the old behaviour);
+`auto_update.py` uses it via `SWITCHBOARD_UPDATE_BINARY_ONLY=1` because it runs its
+own service handoff. The optional second argument selects a different installed
+binary. `SWITCHBOARD_LAUNCHD_LABEL`, `SWITCHBOARD_RELAY_PORT` and
+`SWITCHBOARD_UPDATE_SERVICE_TIMEOUT` exist for isolated tests. This does not
+download releases, update tray files or migrate settings. The probes establish CLI
+query compatibility, not browser protocol compatibility.
 Keep both retained releases until older sessions finish; no cleanup is automatic.
 An engine update takes effect in new sessions. Panes added to an existing
 session continue using that session's original engine.
 
 The isolated `node tools/switchboard/update_local.test.cjs OLD_BINARY NEW_BINARY` test
-checks rejection of incompatible, malformed, and stalled candidates; installation
-and rollback (including a failed rollback copy); surviving server and PTY child
-IDs; continuing terminal output; and creation of new native sessions. It does
-not test terminal input or browser reconnection. Tests use a private socket and
-release directory (`SWITCHBOARD_RELEASES_DIR`).
+runs real web/relay services from a fake `launchctl` on private ports, HOME,
+sockets and release directory. It checks the job preflight; rejection of
+incompatible, malformed and stalled candidates; installation and rollback
+(including a failed rollback copy); web and relay restarted onto the new build,
+including a job pinned to stale recovery; a post-restart failure rolling back and
+restarting services on the old build; `--binary-only`; surviving server and PTY
+child IDs; continuing output; and new native sessions. It does not test real
+launchd, terminal input or browser reconnection.
 
 The separate headless `node tools/switchboard/update_browser.test.cjs OLD_BINARY
 NEW_BINARY` acceptance test requires Playwright (or `PLAYWRIGHT_MODULE` pointing
@@ -113,7 +135,8 @@ release helper, manual updater and CLI launcher beside the tray script. Settings
 host credentials and logs remain outside the retained releases. Reinstalling the
 tray keeps an existing release selection; use the updater to change it.
 
-From PowerShell, after building or downloading a trusted executable:
+From PowerShell, after building or downloading a trusted executable (add
+`-BinaryOnly` to only select the release):
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/switchboard/update_windows.ps1 -Candidate C:\build\zellij.exe
@@ -128,9 +151,19 @@ retained version directory and atomically replaces `current.json`; it never
 overwrites a loaded executable. Probes are bounded, read-only CLI calls. The
 candidate must query live panes with matching stable IDs and native tab names,
 and query an already running native web daemon when the installed CLI can do so.
-The updater compares engine, direct terminal-child and identified agent-descendant
-PIDs and full creation timestamps before and after selection. A failed check
-restores the old pointer. Both executables remain available locally.
+The updater compares engine PIDs and full creation timestamps before and after
+selection; shells and agents may exit on their own. A failed check restores the
+old pointer. Both executables remain available locally.
+
+By default it then performs the same service handoff as the automatic updater.
+Before selecting, it captures this installation's relay (listening on
+`-RelayPort`, default 80, with `-HostConfig`) and `web --start` process, engine
+identities and pane snapshots; it refuses if they cannot be identified. While it
+holds `handoff.json` the tray does not restart services. It stops only the
+captured service PIDs (identity rechecked, never a `--server` engine), starts both
+from the selected release, and requires both to stay up and listen, the relay to
+answer `/api/health`, and engines and panes to be unchanged. On failure it
+re-selects the previous release and restarts services on it.
 
 An exclusive file handle prevents concurrent updates. The retained `update.lock`
 file alone does not block future operations. If interruption or a failed pointer
@@ -141,11 +174,9 @@ automatic.
 
 Use `~/.config/switchboard/windows_cli.ps1 attach SESSION` to launch a native
 client using the selected release. Existing sessions retain their original engine,
-including new panes inside those sessions. The tray reloads the pointer for future
-service starts and keeps healthy connection services running. Selecting or rolling
-back a release does **not** restart the relay, web daemon, tray or session engines,
-upgrade their already loaded code, or claim browser recovery. The automatic
-bundle updater above wraps this selector with a separate service handoff.
+including new panes inside those sessions. With `-BinaryOnly`, the tray uses the
+pointer only for future service starts and loaded services keep their old code.
+Neither mode restarts the tray or session engines, or claims browser recovery.
 
 `node acceptance/switchboard/run.cjs windows-update` runs actual PowerShell file
 transactions and subprocess quoting/timeouts with simulated Windows process,
@@ -162,8 +193,9 @@ both open WebSockets, automatic reconnection and manual rollback after a control
 private service failure. It compares PID/creation times, shell variables, ongoing
 output, a scrollback marker, native/sidebar names, IDs, selected URL and sharing,
 and starts a new engine with the selected release. It creates and revokes only its
-own authentication token. Service restarts belong only to this acceptance fixture;
-the production updater does not perform them. This runner has been syntax checked
+own authentication token. This runner drives the selector function directly and
+restarts the private services itself; it does not exercise `update_windows.ps1`'s
+service handoff. This runner has been syntax checked
 on Mac, not executed on Windows. Actual Codex/Claude turns and Windows login/tray
 lifecycle remain separate acceptance work.
 

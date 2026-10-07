@@ -48,8 +48,9 @@ try {
             $script:fixture.ProcessReads++
             $shellStarted = [DateTime]::Parse('2026-10-04T12:00:00.001Z').ToUniversalTime()
             if ($script:fixture.Mode -eq 'pid-reuse' -and $script:fixture.ProcessReads -ge 3) { $shellStarted = $shellStarted.AddMilliseconds(1) }
+            $engineStarted = if ($script:fixture.Mode -eq 'engine-restart' -and $script:fixture.ProcessReads -ge 3) { 'engine-restarted' } else { 'engine-start' }
             @(
-                [pscustomobject]@{ProcessId=10; ParentProcessId=1; Name='zellij.exe'; CreationDate='engine-start'; CommandLine=$(if ($script:fixture.Mode -eq 'mismatched-engine') { 'zellij.exe --server C:\private\other' } else { '"C:\old\zellij.exe" --server "C:\private\work session"' })},
+                [pscustomobject]@{ProcessId=10; ParentProcessId=1; Name='zellij.exe'; CreationDate=$engineStarted; CommandLine=$(if ($script:fixture.Mode -eq 'mismatched-engine') { 'zellij.exe --server C:\private\other' } else { '"C:\old\zellij.exe" --server "C:\private\work session"' })},
                 [pscustomobject]@{ProcessId=20; ParentProcessId=10; Name='powershell.exe'; CreationDate=$shellStarted; CommandLine='powershell.exe'},
                 [pscustomobject]@{ProcessId=30; ParentProcessId=20; Name='node.exe'; CreationDate='agent-start'; CommandLine='node C:\tools\codex\bin\codex.js'},
                 [pscustomobject]@{ProcessId=40; ParentProcessId=30; Name='rustc.exe'; CreationDate='build-start'; CommandLine='rustc.exe --out-dir C:\Temp\claude\scratch\target'},
@@ -133,7 +134,14 @@ try {
     $result = Invoke-SwitchboardWindowsUpdate -Candidate $candidate -Directory $fixture.Directory
     Assert ($result.sha256 -ceq $fixture.NewHash) 'A finished build in an agent scratch directory blocked the update'
 
-    foreach ($mode in @('normal','pid-reuse','agent-exit')) {
+    # Shells and agents may exit (or their PIDs be reused) on their own mid-update.
+    foreach ($mode in @('pid-reuse','agent-exit')) {
+        $candidate = New-Fixture 'new' $mode
+        $result = Invoke-SwitchboardWindowsUpdate -Candidate $candidate -Directory $fixture.Directory
+        Assert ($result.sha256 -ceq $fixture.NewHash) "$mode of a non-engine process blocked the update"
+        Invoke-SwitchboardWindowsUpdate -Directory $fixture.Directory -Rollback | Out-Null
+    }
+    foreach ($mode in @('normal','engine-restart')) {
         $candidate = New-Fixture $(if ($mode -eq 'normal') { 'post-failure' } else { 'new' }) $mode
         Reject { Invoke-SwitchboardWindowsUpdate -Candidate $candidate -Directory $fixture.Directory } 'changed'
         Assert ((Get-SwitchboardReleaseState $fixture.Directory).sha256 -ceq $fixture.OldHash) "$mode failure did not restore the pointer"
