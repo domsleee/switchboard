@@ -71,6 +71,24 @@ test('failed New tab creation restores input on timeout or disconnect',()=>{
     assert.equal(h.window.term.options.disableStdin,false);assert.equal(h.timers.size,0);
   }
 });
+test('Command+digits reach Chrome without reaching old peer terminal handlers',()=>{
+  const h=harness();h.setFocus(true);
+  for(const modal of [false,true]){
+    h.setModal(modal);
+    for(let n=1;n<=9;n++){
+      const event=h.key(`Digit${n}`,{altKey:false,metaKey:true});
+      // A legacy target listener would preventDefault unless capture stopped it.
+      if(!event.stopped)event.preventDefault();
+      assert.equal(event.prevented,undefined);
+      assert.equal(event.stopped,true);
+    }
+  }
+  assert.equal(h.messages.length,0);
+  h.setModal(false);
+  for(const extra of [{shiftKey:true},{ctrlKey:true},{altKey:true}]){
+    assert.equal(h.key('Digit2',{altKey:false,metaKey:true,...extra}).stopped,undefined);
+  }
+});
 test('iframe H/L send one switch/move and stop native/browser navigation',()=>{
   const h=harness();
   for(const [code,direction] of [['KeyH',-1],['KeyL',1]]){
