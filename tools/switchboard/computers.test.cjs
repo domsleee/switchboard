@@ -209,8 +209,8 @@ test('configured Windows appears before pairing and pairs using its existing gat
     await page.goto('https://switchboard.test/computers.html');
     await page.waitForFunction(() => document.querySelector('#address').value);
     assert.equal(await page.locator('#catalog').isVisible(),true);
-    assert.equal(calls.find(call => call.path === '/api/hosts').query, '?summary=1');
-    assert.match(await page.locator('#members').textContent(), /Windows <work>.*not paired for shared messages/s);
+    assert.equal(calls.find(call => call.path === '/api/hosts').query, '?summary=1&candidates=1');
+    assert.match(await page.locator('#members').textContent(), /Windows <work>.*pair this computer to use its terminals/s);
     assert.equal(await page.locator('#members work').count(),0);
     assert.equal(calls.some(call => call.path === '/api/mesh/add'),false);
     await page.locator('#members button').click();
@@ -234,18 +234,6 @@ test('configured connections dedupe paired endpoints and local identity without 
     assert.doesNotMatch(await page.locator('#members').textContent(), /Local legacy|Duplicate legacy/);
     assert.match(await page.locator('#members').textContent(), /Connected/);
     assert.equal(await page.locator('#members button').textContent(),'Pair this computer');
-  }, pairedState);
-});
-
-test('a paired computer listed under its configured id still shows Connected', async () => {
-  await fixture(async ({page,responses}) => {
-    responses.set('/api/hosts', [
-      {id:'windows',name:'Windows',address:'https://192.0.2.1:8082',pairing_address:'https://192.0.2.1:8082',configured:true,local:false,sessions:[]}
-    ]);
-    await page.goto('https://switchboard.test/computers.html');
-    await page.waitForFunction(() => document.querySelector('#members').textContent.includes('Windows'));
-    assert.equal(await page.locator('#members .card').count(),2);
-    assert.match(await page.locator('#members').textContent(), /Connected/);
   }, pairedState);
 });
 

@@ -4430,7 +4430,6 @@ dependencies = [
  "crossterm",
  "daemonix",
  "dialoguer",
- "flate2",
  "futures-util",
  "hpke",
  "http-body-util",

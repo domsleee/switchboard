@@ -128,6 +128,11 @@ pub fn zellij_server_listener(
                     let recovery_target = sharing_recovery.as_ref().filter(|recovery| recovery.is_target(&session_name));
                     let recovery_socket = zellij_utils::consts::ZELLIJ_SOCK_DIR.join(&session_name);
                     if recovery_target.map(|recovery| !session_exists || !recovery.allows(&session_name, &recovery_socket, false)).unwrap_or(false) {
+                        if session_exists {
+                            log::warn!("Refusing connection to {session_name}: recovery pin no longer matches the session socket; restart the web service without SWITCHBOARD_RECOVER_UNSHARED_SESSION");
+                        } else {
+                            log::warn!("Refusing connection to {session_name}: pinned recovery session no longer exists; restart the web service without SWITCHBOARD_RECOVER_UNSHARED_SESSION");
+                        }
                         client_connection_bus.close_connection();
                         return;
                     }
@@ -151,6 +156,7 @@ pub fn zellij_server_listener(
                             || os_input.send_to_server(first_message.clone())) {
                             Ok(true) => {},
                             Ok(false) => {
+                                log::warn!("Refusing connection to {session_name}: recovery pin no longer matches the session socket; restart the web service without SWITCHBOARD_RECOVER_UNSHARED_SESSION");
                                 // No connection exists when the initial check failed. The
                                 // target was checked immediately above; close without any
                                 // further IPC send to avoid assuming a connected channel.

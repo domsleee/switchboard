@@ -244,10 +244,10 @@ the same `.attention.json` file as the old relay. Each host polls independently;
 an unavailable host loses stale badges without holding up other hosts.
 
 The Mac and Windows installers start `zellij serve`; Python and `uv` are no
-longer needed at runtime. Older remote Windows hosts use a private PowerShell
-control session and bounded native CLI queries, with classification in Rust.
-Local hosts use the installed CLI directly. Neither path inputs commands into
-an existing user shell or changes focus to close a tab.
+longer needed at runtime. Each relay queries its own engine with the installed
+CLI and reaches paired computers through their gateways, which run the same CLI
+locally. Neither path inputs commands into an existing user shell or changes
+focus to close a tab.
 
 One executable still runs as separate relay, web and session processes. Existing
 engines keep their loaded release. Migrating the relay requires only a relay
@@ -265,7 +265,7 @@ new Windows catalogs check whether the marker PID is still running.
 For isolated browser acceptance against the Rust relay:
 
 ```sh
-SWITCHBOARD_TEST_RUST_RELAY=1 node tools/switchboard/update_browser.test.cjs OLD_BINARY NEW_BINARY
+node tools/switchboard/update_browser.test.cjs OLD_BINARY NEW_BINARY
 ```
 
 ## Long-term priorities

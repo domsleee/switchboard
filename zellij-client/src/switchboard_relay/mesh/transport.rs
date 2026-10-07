@@ -27,8 +27,12 @@ fn unavailable() -> Error {
     )
 }
 fn rejected(error: anyhow::Error) -> Error {
+    let (status, message) = rejection(error);
+    logs::record("pairing", message);
+    (status, message)
+}
+fn rejection(error: anyhow::Error) -> Error {
     // Error chains can contain a request URI or TLS diagnostic. Return only the bounded operation error.
-    log::debug!("Switchboard mesh operation rejected (details redacted)");
     let reason = error.to_string();
     if reason.contains("expired")
         || reason.contains("cancelled")
@@ -580,6 +584,9 @@ async fn terminal_response(
             &ack.token,
         );
         return Ok(StatusCode::NO_CONTENT.into_response());
+    }
+    if path == "/switchboard/logs" && request.method() == Method::GET {
+        return Ok(Json(logs::local()).into_response());
     }
     if path == "/switchboard/control" && request.method() == Method::POST {
         #[derive(Deserialize)]

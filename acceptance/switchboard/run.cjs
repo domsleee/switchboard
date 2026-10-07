@@ -14,7 +14,6 @@ const commands={
   recovery:()=>['recover_local','browser_readiness','install_service'].map(name=>[process.env.PYTHON_BINARY||'python3','tools/switchboard/'+name+'.test.py']),
   browser:()=>{
     if(process.platform!=='darwin'||args.length!==2)throw Error('browser requires macOS and OLD_BINARY NEW_BINARY');
-    env.SWITCHBOARD_TEST_RUST_RELAY='1';
     return [[node,'tools/switchboard/update_browser.test.cjs',...args.map(value=>path.resolve(value))]];
   },
   sharing:()=>{
@@ -34,15 +33,11 @@ const commands={
     if(process.platform!=='win32'||args.length!==2)throw Error('windows-browser requires Windows and distinct OLD_BINARY NEW_BINARY');
     return [[node,'tools/switchboard/update_windows_browser.test.cjs',...args.map(value=>path.resolve(value))]];
   },
-  windows:()=>{
-    if(args.length!==3)throw Error('windows requires BINARY HOSTS_JSON HOST_ID (creates disposable remote sessions)');
-    return [[node,'tools/switchboard/relay_remote.test.cjs',path.resolve(args[0]),path.resolve(args[1]),args[2]]];
-  },
 };
 try{
   if(suite==='--list'){console.log(Object.keys(commands).join('\n'));process.exit(0);}
   if(!commands[suite])throw Error('Unknown suite. Use --list.');
-  if(!['browser','sharing','switching','update','windows','windows-browser'].includes(suite)&&args.length)throw Error('This suite takes no arguments.');
+  if(!['browser','sharing','switching','update','windows-browser'].includes(suite)&&args.length)throw Error('This suite takes no arguments.');
   for(const command of commands[suite]()){
     console.log('\nRunning '+command.slice(0,3).join(' '));
     const result=spawnSync(command[0],command.slice(1),{cwd:root,env,stdio:'inherit',windowsHide:true});

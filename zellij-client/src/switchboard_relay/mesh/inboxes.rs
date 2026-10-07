@@ -101,7 +101,10 @@ impl Mesh {
                     .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
                 response
             },
-            _ => unavailable(),
+            _ => {
+                logs::record(&host.config.name, "Message board host unreachable");
+                unavailable()
+            },
         }
     }
 

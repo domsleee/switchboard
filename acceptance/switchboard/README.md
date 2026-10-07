@@ -42,7 +42,7 @@ its processes or identity, and I can restore it. Closing asks for confirmation
 and closes that exact tab, even if it is inactive or focus changes meanwhile.
 
 **Tests:** `ui` checks archive identity and captured close targets; `relay` checks
-close targets and conflicts; `windows` exercises inactive and last-tab close.
+close targets, conflicts and gateway delivery to a paired computer.
 **Still to check:** the context menu and archive process continuity in a browser.
 
 ### SB-04 · Keep my tab order
@@ -70,8 +70,7 @@ The headless `new-tab.test.cjs` holds discovery stale, creates two tabs, checks
 focus and input, refreshes the new terminal's URL, and verifies promotion to
 native tab IDs without duplicate rows or lost preferences. Close waits for a
 verified native tab ID; a temporary pane ID must never close an unrelated tab.
-**Still to check:** Create through a browser connected to Windows. The `windows`
-suite checks native creation only.
+**Still to check:** Create through a browser connected to Windows.
 
 ### SB-11 · Make the popup and actions straightforward
 
@@ -133,7 +132,7 @@ finished and waiting for approval. An unrecognized screen stays unknown.
 Opening a finished result acknowledges it without dismissing an approval.
 
 **Tests:** `relay` checks scanner states and background tabs; `ui` checks
-acknowledgment; `windows` runs terminal fixtures through the remote scanner.
+acknowledgment.
 **Still to check:** real Codex and Claude turns. A fixture is not a real agent
 run; changed agent screens need updated fixtures.
 
@@ -166,7 +165,7 @@ In a focused terminal, Ctrl+D opens one confirmation. Enter closes the tab that
 was captured when I asked; Cancel keeps it. Other modifiers and open dialogs do
 not accidentally close anything. The confirmation text has no em dash.
 
-**Tests:** `ui` checks shortcut routing and confirmation; `windows` exercises
+**Tests:** `ui` checks shortcut routing and confirmation; `relay` exercises
 the close endpoint.
 **Still to check:** the physical key sequence and displayed wording on Windows.
 
@@ -261,8 +260,7 @@ typing, disconnects, HTTP failures, automatic recovery, viewport DOM moves and
 confirmed closes in an isolated headless browser using the actual terminal
 bridge. The fixture never connects to live sessions.
 **Still to check:** the installed Windows engine and browser reconnecting under
-real network failures. These tests do not fix the remote attention scanner's
-private-helper startup error.
+real network failures.
 
 ### SB-16 · Run in the background on both machines
 
@@ -331,10 +329,10 @@ or tested. Windows rollback still needs platform execution.
 ### SB-21 · Ship one native executable
 
 One executable provides the terminal engine, web server and full Rust sidebar
-relay, including attention, controls, remote hosts and artifact streaming. The
+relay, including attention, controls, paired computers and artifact streaming. The
 running service does not depend on Python.
 
-**Tests:** `relay`, `browser` in Rust mode and `windows` exercise those paths.
+**Tests:** `relay` and `browser` exercise those paths.
 **Still to check:** a full Windows tray installation and runtime/latency results.
 One executable can run as separate processes to preserve shells. The macOS
 installer may still use Python as a setup tool.
@@ -378,16 +376,13 @@ node acceptance/switchboard/run.cjs recovery
 PLAYWRIGHT_MODULE=/absolute/path/to/playwright node acceptance/switchboard/run.cjs browser /absolute/path/to/old-zellij /absolute/path/to/new-zellij
 PLAYWRIGHT_MODULE=/absolute/path/to/playwright node acceptance/switchboard/run.cjs sharing /absolute/path/to/new-zellij
 node acceptance/switchboard/run.cjs update /absolute/path/to/old-zellij /absolute/path/to/new-zellij
-node acceptance/switchboard/run.cjs windows /absolute/path/to/new-zellij /absolute/path/to/test-hosts.json windows-host-id
 node acceptance/switchboard/run.cjs windows-update
 # On Windows with headless Playwright and two distinct compatible builds:
 node acceptance/switchboard/run.cjs windows-browser C:/build/old-zellij.exe C:/build/new-zellij.exe
 ```
 
 `browser` and `update` require macOS; `sharing` requires Unix. `recovery` uses
-Python for the existing Mac setup/recovery helpers. `windows` needs an
-authenticated Windows test host and creates uniquely named disposable sessions;
-existing remote sessions are queried read-only. Keep host configs and tokens
+Python for the existing Mac setup/recovery helpers. Keep host configs and tokens
 outside the repository and logs. Use different old/new binary hashes to prove
 an actual upgrade.
 

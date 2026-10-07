@@ -21,7 +21,6 @@ jobs:
     timeout-minutes: 30
     env:
       CARGO_TERM_COLOR: always
-      SWITCHBOARD_TEST_RUST_RELAY: "1"
     steps:
       - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v2

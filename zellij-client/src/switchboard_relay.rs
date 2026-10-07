@@ -2,6 +2,7 @@
 mod artifacts;
 mod attention;
 mod control;
+mod logs;
 mod mesh;
 pub(crate) mod peer_bridge;
 use axum::{
@@ -33,7 +34,6 @@ use tokio_tungstenite::{
 
 static ASSETS: Dir = include_dir!("$CARGO_MANIFEST_DIR/../tools/switchboard/static");
 const LIMIT: usize = 16 * 1024 * 1024;
-const HELPER_PREFIX: &str = "__switchboard_control_";
 const BRIDGE: &str = "<head><script src=\"/link-config.js\"></script><script src=\"/links.js\"></script><script src=\"/clipboard.js\"></script><script src=\"/chrome.js\"></script><script src=\"/bridge.js\"></script>";
 
 #[derive(Clone, Deserialize)]
@@ -73,6 +73,9 @@ struct RelayState {
     attention: Arc<Mutex<Value>>,
     poll: Arc<Mutex<attention::PollState>>,
     mesh: Option<Arc<mesh::Mesh>>,
+    // Remote entries left in the hosts file, offered only as "Pair this computer".
+    candidates: Arc<Vec<Value>>,
+    artifact: Option<artifacts::ArtifactConfig>,
 }
 
 impl RelayState {
@@ -85,30 +88,14 @@ impl RelayState {
     fn all_hosts(&self) -> Vec<Arc<Host>> {
         let mut hosts: Vec<_> = self.order.iter().map(|id| self.hosts[id].clone()).collect();
         if let Some(mesh) = &self.mesh {
-            // Pairing a configured computer must not list its terminals twice.
-            hosts.extend(mesh.hosts().into_iter().filter(|h| {
-                !self.hosts.contains_key(&h.config.id)
-                    && !self.hosts.values().any(|c| same_computer(c, h))
-            }));
+            hosts.extend(
+                mesh.hosts()
+                    .into_iter()
+                    .filter(|h| !self.hosts.contains_key(&h.config.id)),
+            );
         }
         hosts
     }
-    // A configured host keeps its id; control goes through its paired peer's
-    // gateway, which runs the CLI locally instead of driving a remote shell.
-    fn paired_twin(&self, host: &Arc<Host>) -> Option<Arc<Host>> {
-        if host.config.escape_transport.is_some() || !self.hosts.contains_key(&host.config.id) {
-            return None;
-        }
-        self.mesh
-            .as_ref()?
-            .hosts()
-            .into_iter()
-            .find(|peer| same_computer(host, peer))
-    }
-}
-
-fn same_computer(a: &Host, b: &Host) -> bool {
-    a.origin.origin() == b.origin.origin()
 }
 
 struct Host {
@@ -116,7 +103,6 @@ struct Host {
     origin: url::Url,
     tls: Option<Arc<rustls::ClientConfig>>,
     cookie: Mutex<Option<String>>,
-    control: Mutex<control::Control>,
     idle_http: Mutex<Vec<hyper::client::conn::http1::SendRequest<Full<Bytes>>>>,
 }
 
@@ -232,7 +218,6 @@ impl Host {
             origin,
             tls,
             cookie: Mutex::new(None),
-            control: Mutex::new(control::Control::default()),
             idle_http: Mutex::new(Vec::new()),
         })
     }
@@ -603,17 +588,9 @@ async fn describe(host: &Host, configured: bool) -> Value {
             )
             .await?;
         anyhow::ensure!(response.status == StatusCode::OK, "Cannot query sessions");
-        let mut catalog: Value = serde_json::from_slice(&response.body)?;
-        let sessions = catalog["sessions"]
-            .as_array_mut()
-            .ok_or_else(|| anyhow::anyhow!("Invalid session catalog"))?;
-        sessions.retain(|session| {
-            session["name"]
-                .as_str()
-                .is_some_and(|name| !name.starts_with(HELPER_PREFIX))
-        });
-        let sessions = sessions.clone();
-        Ok::<_, anyhow::Error>((sessions, build_version(&catalog)))
+        let catalog: Value = serde_json::from_slice(&response.body)?;
+        anyhow::ensure!(catalog["sessions"].is_array(), "Invalid session catalog");
+        Ok::<_, anyhow::Error>((catalog["sessions"].clone(), build_version(&catalog)))
     })
     .await;
     let mut description = host_summary(host, configured);
@@ -622,22 +599,31 @@ async fn describe(host: &Host, configured: bool) -> Value {
             description["sessions"] = json!(sessions);
             description["version"] = version;
         },
-        _ => description["error"] = json!("Host unavailable"),
+        _ => {
+            logs::record(
+                &host.config.name,
+                "Host unavailable: sessions could not be listed",
+            );
+            description["error"] = json!("Host unavailable");
+        },
     }
     description
 }
 
 async fn hosts(State(state): State<RelayState>, request: Request) -> Json<Value> {
-    if request.uri().query().is_some_and(|query| {
-        url::form_urlencoded::parse(query.as_bytes()).any(|(k, v)| k == "summary" && v == "1")
-    }) {
-        return Json(Value::Array(
-            state
-                .all_hosts()
-                .iter()
-                .map(|host| host_summary(host, state.hosts.contains_key(&host.config.id)))
-                .collect(),
-        ));
+    let query = request.uri().query().unwrap_or("").to_owned();
+    let flag =
+        |name| url::form_urlencoded::parse(query.as_bytes()).any(|(k, v)| k == name && v == "1");
+    if flag("summary") {
+        let mut summaries: Vec<_> = state
+            .all_hosts()
+            .iter()
+            .map(|host| host_summary(host, state.hosts.contains_key(&host.config.id)))
+            .collect();
+        if flag("candidates") {
+            summaries.extend(state.candidates.iter().cloned());
+        }
+        return Json(Value::Array(summaries));
     }
     Json(Value::Array(
         futures_util::future::join_all(
@@ -660,10 +646,37 @@ async fn host(
     Ok(Json(describe(&host, state.hosts.contains_key(&id)).await))
 }
 
+// The artifact proxy serves one computer's gallery port under a local hostname;
+// links from that computer's terminals to that port open through the proxy.
+fn artifact_links(state: &RelayState, host: &Host) -> Value {
+    if host
+        .config
+        .artifact_urls
+        .as_object()
+        .is_some_and(|links| !links.is_empty())
+    {
+        return host.config.artifact_urls.clone();
+    }
+    let Some(proxy) = &state.artifact else {
+        return Value::Null;
+    };
+    match url::Url::parse(&proxy.target) {
+        Ok(target)
+            if target.host_str().is_some() && target.host_str() == host.origin.host_str() =>
+        {
+            match target.port_or_known_default() {
+                Some(port) => json!({ port.to_string(): format!("https://{}", proxy.hostname) }),
+                None => Value::Null,
+            }
+        },
+        _ => Value::Null,
+    }
+}
+
 async fn link_config(State(state): State<RelayState>) -> Response {
     let data: serde_json::Map<String, Value> = state.all_hosts().iter().map(|host| {
         let local = host.is_local_engine();
-        (host.config.id.clone(), json!({"origin": host.config.url, "local": local, "artifacts": host.config.artifact_urls}))
+        (host.config.id.clone(), json!({"origin": host.config.url, "local": local, "artifacts": artifact_links(&state, host)}))
     }).collect();
     (
         [(header::CONTENT_TYPE, "application/javascript")],
@@ -839,13 +852,25 @@ async fn asset(request: Request) -> Response {
 async fn state(config: &RelayConfig, port: u16) -> anyhow::Result<RelayState> {
     let mut hosts = HashMap::new();
     let mut order = Vec::new();
+    let mut candidates = Vec::new();
+    let mut ids = std::collections::HashSet::new();
     for config in config.hosts.clone() {
         anyhow::ensure!(
-            !config.id.is_empty() && !hosts.contains_key(&config.id),
+            !config.id.is_empty() && ids.insert(config.id.clone()),
             "Duplicate or empty host ID"
         );
-        order.push(config.id.clone());
-        hosts.insert(config.id.clone(), Arc::new(Host::new(config)?));
+        let host = Host::new(config)?;
+        // Other computers exist only through pairing; this file holds the local engine.
+        if host.config.escape_transport.as_deref() == Some("local") || host.is_local_engine() {
+            order.push(host.config.id.clone());
+            hosts.insert(host.config.id.clone(), Arc::new(host));
+        } else {
+            log::warn!(
+                "Ignoring remote host '{}' in the hosts file: pair this computer in Computers",
+                host.config.id
+            );
+            candidates.push(host_summary(&host, true));
+        }
     }
     Ok(RelayState {
         hosts: Arc::new(hosts),
@@ -854,6 +879,8 @@ async fn state(config: &RelayConfig, port: u16) -> anyhow::Result<RelayState> {
         attention: Arc::new(Mutex::new(json!({"panes": [], "tabs": [], "errors": []}))),
         poll: Default::default(),
         mesh: None,
+        candidates: Arc::new(candidates),
+        artifact: config.artifact_proxy.clone(),
     })
 }
 
@@ -897,6 +924,7 @@ fn app(state: RelayState) -> Router {
         .route("/api/hosts/{host}", get(host))
         .route("/api/attention", get(attention::handler))
         .route("/api/attention/ack", post(attention::acknowledge))
+        .route("/api/logs", get(logs::handler))
         .route("/api/message-board/{*path}", any(message_board))
         .route("/api/hosts/{host}/close-tab", post(control::close_tab))
         .route("/api/hosts/{host}/escape", post(control::escape))
@@ -932,8 +960,9 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
                 mesh.attach_bridge(port)?;
                 state.mesh = Some(mesh);
             },
-            Err(_) => log::warn!(
-                "Switchboard pairing unavailable; local relay continues (details redacted)"
+            Err(_) => logs::record(
+                "pairing",
+                "Switchboard pairing unavailable; local relay continues",
             ),
         }
     }
@@ -954,9 +983,6 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
     }
     if let Some(mesh) = &state.mesh {
         mesh.stop_gateway().await;
-    }
-    for host in state.all_hosts() {
-        control::cleanup(&host).await;
     }
     result?;
     Ok(())
@@ -994,6 +1020,30 @@ mod tests {
     }
 
     #[test]
+    fn artifact_proxy_target_computer_gets_gallery_links() {
+        let state = RelayState {
+            hosts: Default::default(),
+            order: Default::default(),
+            port: 0,
+            attention: Default::default(),
+            poll: Default::default(),
+            mesh: None,
+            candidates: Default::default(),
+            artifact: Some(artifacts::ArtifactConfig {
+                hostname: "zellij-gallery.localhost".into(),
+                target: "http://192.0.2.69:8765".into(),
+            }),
+        };
+        let paired = Host::new(config("https://192.0.2.69:8082")).unwrap();
+        assert_eq!(
+            artifact_links(&state, &paired),
+            json!({"8765": "https://zellij-gallery.localhost"})
+        );
+        let other = Host::new(config("https://192.0.2.15:8082")).unwrap();
+        assert_eq!(artifact_links(&state, &other), Value::Null);
+    }
+
+    #[test]
     fn configured_computer_inventory_preserves_safe_pairing_addresses() {
         let mut configured = config("https://172.20.10.69:8082");
         configured.id = "windows".into();
@@ -1018,6 +1068,115 @@ mod tests {
             "https://[fd00::69]:8091"
         );
         assert_eq!(host_summary(&ipv6, false)["configured"], false);
+    }
+
+    #[tokio::test]
+    async fn remote_hosts_file_entries_are_pair_candidates_not_hosts() {
+        use tower::ServiceExt;
+        let mut remote = config("https://192.0.2.69:8082");
+        remote.id = "windows".into();
+        remote.name = "Windows".into();
+        remote.tls_fingerprint = Some("ab".repeat(32));
+        let mut declared = config("https://192.0.2.70:8082");
+        declared.id = "declared".into();
+        declared.escape_transport = Some("local".into());
+        let config = RelayConfig {
+            hosts: vec![config("http://127.0.0.1:8082"), remote, declared],
+            artifact_proxy: None,
+        };
+        let relay = state(&config, 8090).await.unwrap();
+        let ids: Vec<_> = relay
+            .all_hosts()
+            .iter()
+            .map(|h| h.config.id.clone())
+            .collect();
+        assert_eq!(ids, ["mac", "declared"]);
+        assert!(relay.host("windows").is_none());
+        let app = app(relay);
+        let get = |path: &str| {
+            app.clone().oneshot(
+                hyper::Request::builder()
+                    .uri(path)
+                    .header(header::HOST, "127.0.0.1:8090")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+        };
+        let body = |response: Response| async move {
+            serde_json::from_slice::<Value>(&to_bytes(response.into_body(), 65536).await.unwrap())
+                .unwrap()
+        };
+        let summary = body(get("/api/hosts?summary=1").await.unwrap()).await;
+        assert_eq!(summary.as_array().unwrap().len(), 2);
+        let candidates = body(get("/api/hosts?summary=1&candidates=1").await.unwrap()).await;
+        assert_eq!(candidates[2]["id"], "windows");
+        assert_eq!(candidates[2]["configured"], true);
+        assert_eq!(candidates[2]["local"], false);
+        assert_eq!(candidates[2]["pairing_address"], "https://192.0.2.69:8082");
+        assert_eq!(
+            get("/api/hosts/windows").await.unwrap().status(),
+            StatusCode::NOT_FOUND
+        );
+        let links = get("/link-config.js").await.unwrap().into_body();
+        assert!(
+            !String::from_utf8_lossy(&to_bytes(links, 65536).await.unwrap()).contains("windows")
+        );
+    }
+
+    #[tokio::test]
+    async fn paired_host_control_goes_only_through_its_gateway() {
+        let received = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let upstream = Router::new()
+            .route(
+                "/command/login",
+                post(|| async {
+                    (
+                        [(header::SET_COOKIE, "session_token=peer; Path=/")],
+                        Json(json!({})),
+                    )
+                }),
+            )
+            .route(
+                "/switchboard/control",
+                post({
+                    let received = received.clone();
+                    move |Json(body): Json<Value>| async move {
+                        received.lock().await.push(body);
+                        Json(json!({"ok": true}))
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+        let token = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(token.path(), "peer-token").unwrap();
+        let mut peer = config(&url);
+        peer.id = "mesh-peer".into();
+        peer.token_file = token.path().to_str().unwrap().into();
+        peer.escape_transport = Some("gateway".into());
+        let mut relay = state(
+            &RelayConfig {
+                hosts: vec![],
+                artifact_proxy: None,
+            },
+            8090,
+        )
+        .await
+        .unwrap();
+        relay.hosts = Arc::new([("mesh-peer".into(), Arc::new(Host::new(peer).unwrap()))].into());
+        let response = control::close_tab(
+            State(relay),
+            RoutePath("mesh-peer".into()),
+            Json(serde_json::from_value(json!({"session":"main","tab_id":7})).unwrap()),
+        )
+        .await;
+        assert!(response.is_ok());
+        assert_eq!(
+            *received.lock().await,
+            [json!({"session":"main","target":7,"close":true})]
+        );
+        server.abort();
     }
 
     #[test]
@@ -1271,8 +1430,7 @@ mod tests {
                         return StatusCode::UNAUTHORIZED.into_response();
                     }
                     Json(
-                        json!({"sessions": [{"name":"main", "web_clients_allowed":true},
-                    {"name":"__switchboard_control_private", "web_clients_allowed":true}],
+                        json!({"sessions": [{"name":"main", "web_clients_allowed":true}],
                     "build": {"commit":"abc1234", "commit_date":"2026-10-07", "extra":"dropped"}}),
                     )
                     .into_response()

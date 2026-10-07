@@ -2181,20 +2181,6 @@ pub fn start_server_impl(
                 );
             },
         }
-        // Relay helpers are disposable command transports, not user sessions.
-        // Reap them here so EOF, failed initialization, and a crashed web server
-        // all clean up without needing a working shell to run its own teardown.
-        if socket_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .and_then(|name| name.strip_prefix("__switchboard_control_"))
-            .and_then(|name| uuid::Uuid::parse_str(name).ok())
-            .is_some()
-            && session_data.read().unwrap().is_some()
-            && !session_state.read().unwrap().active_clients_are_connected()
-        {
-            break;
-        }
     }
 
     // Drop cached session data before exit.

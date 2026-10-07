@@ -1,5 +1,4 @@
 use super::*;
-use base64::{engine::general_purpose::STANDARD, Engine};
 use std::sync::LazyLock;
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -188,166 +187,66 @@ pub(super) async fn scan(host: &Host, offset: usize) -> anyhow::Result<Value> {
     let mut results = Vec::new();
     let mut errors = Vec::new();
     let mut deferred_sessions = Vec::new();
-    if control::local(host) {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
-        for name in names {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                deferred_sessions.push(name);
-                continue;
-            }
-            let panes = control::run_local(
-                host,
-                &name,
-                &["list-panes", "--json", "--all"],
-                remaining.min(Duration::from_secs(2)),
-            )
-            .await;
-            let panes: Vec<Value> = match panes
-                .ok()
-                .and_then(|text| serde_json::from_str(&text).ok())
-            {
-                Some(panes) => panes,
-                None => {
-                    errors.push(json!({"host":host.config.id,"session":name,"message":"Session snapshots unavailable"}));
-                    continue;
-                },
-            };
-            let mut screens = HashMap::new();
-            for index in 0..panes.len() {
-                let pane = &panes[(index + offset) % panes.len()];
-                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-                if remaining.is_zero() {
-                    break;
-                }
-                if pane["is_plugin"] == true
-                    || pane["is_selectable"] == false
-                    || pane["exited"] == true
-                    || pane["is_held"] == true
-                    || quiet_shell(pane)
-                {
-                    continue;
-                }
-                if let Some(id) = pane["id"].as_u64() {
-                    if let Ok(screen) = control::run_local(
-                        host,
-                        &name,
-                        &["dump-screen", "-p", &id.to_string()],
-                        remaining.min(Duration::from_secs(3)),
-                    )
-                    .await
-                    {
-                        screens.insert(id, screen);
-                    }
-                }
-            }
-            results.push(snapshot(
-                &name,
-                &panes,
-                &screens,
-                tokio::time::Instant::now() >= deadline,
-            ));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+    for name in names {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            deferred_sessions.push(name);
+            continue;
         }
-    } else if !names.is_empty() {
-        // Keep the complete command comfortably below cmd.exe's line limit.
-        let mut batch = Vec::new();
-        for name in &names {
-            if serde_json::to_vec(&batch)?.len() + name.len() + 4 > 1000 {
-                deferred_sessions.push(name.clone());
-            } else {
-                batch.push(name.clone());
-            }
-        }
-        let mut helper = host.control.lock().await;
-        control::ensure_helper(host, &mut helper).await?;
-        // Run existing native read-only commands on old Windows hosts. No uploaded Python scanner.
-        let script=format!("$names=([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{}'))) | ConvertFrom-Json; $offset={offset}; {WINDOWS_SCAN}",STANDARD.encode(serde_json::to_vec(&batch)?));
-        let result = helper.helper.as_mut().unwrap().json(&script).await;
-        let data = match result {
-            Ok(Value::Array(data)) => data,
-            Err(error) => {
-                control::discard(&mut helper).await;
-                return Err(error.context("Remote snapshots unavailable"));
-            },
-            Ok(_) => {
-                control::discard(&mut helper).await;
-                anyhow::bail!("Invalid remote snapshot");
-            },
-        };
-        for session in data {
-            let name = session["name"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("Invalid snapshot session"))?;
-            anyhow::ensure!(
-                names.iter().any(|n| n == name),
-                "Unexpected snapshot session"
-            );
-            if session["missing_session"] == true {
-                continue;
-            }
-            if session["deferred_session"] == true {
-                deferred_sessions.push(name.to_owned());
-                continue;
-            }
-            if !session["error"].is_null() {
+        let panes = control::run_local(
+            host,
+            &name,
+            &["list-panes", "--json", "--all"],
+            remaining.min(Duration::from_secs(2)),
+        )
+        .await;
+        let panes: Vec<Value> = match panes.ok().and_then(|text| serde_json::from_str(&text).ok()) {
+            Some(panes) => panes,
+            None => {
                 errors.push(json!({"host":host.config.id,"session":name,"message":"Session snapshots unavailable"}));
                 continue;
+            },
+        };
+        let mut screens = HashMap::new();
+        for index in 0..panes.len() {
+            let pane = &panes[(index + offset) % panes.len()];
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
             }
-            let panes = session["panes"]
-                .as_array()
-                .ok_or_else(|| anyhow::anyhow!("Invalid panes"))?;
-            anyhow::ensure!(
-                panes
-                    .iter()
-                    .all(|pane| pane.is_object() && pane["id"].is_u64() && pane["tab_id"].is_u64()),
-                "Invalid native pane catalog"
-            );
-            let screens = session["screens"]
-                .as_object()
-                .ok_or_else(|| anyhow::anyhow!("Invalid screens"))?
-                .iter()
-                .filter_map(|(id, text)| Some((id.parse().ok()?, text.as_str()?.to_owned())))
-                .collect();
-            results.push(snapshot(name, panes, &screens, session["deferred"] == true));
+            if pane["is_plugin"] == true
+                || pane["is_selectable"] == false
+                || pane["exited"] == true
+                || pane["is_held"] == true
+                || quiet_shell(pane)
+            {
+                continue;
+            }
+            if let Some(id) = pane["id"].as_u64() {
+                if let Ok(screen) = control::run_local(
+                    host,
+                    &name,
+                    &["dump-screen", "-p", &id.to_string()],
+                    remaining.min(Duration::from_secs(3)),
+                )
+                .await
+                {
+                    screens.insert(id, screen);
+                }
+            }
         }
+        results.push(snapshot(
+            &name,
+            &panes,
+            &screens,
+            tokio::time::Instant::now() >= deadline,
+        ));
     }
     Ok(
         json!({"panes":results.iter().flat_map(|v|v["panes"].as_array().unwrap().clone()).collect::<Vec<_>>(),"tabs":results.iter().flat_map(|v|v["tabs"].as_array().unwrap().clone()).collect::<Vec<_>>(),"errors":errors,"deferred_sessions":deferred_sessions}),
     )
 }
-
-const WINDOWS_SCAN: &str = r#"
-$data=@(); $deadline=[DateTime]::UtcNow.AddSeconds(8)
-# Old Windows web catalogs can retain marker files after an engine exits.
-# Native listing checks the marker PID and removes stale entries.
-$live=Invoke-SB @('list-sessions','--no-formatting','--short') 2000
-if($live.code -ne 0){throw 'Cannot validate live sessions'}
-$alive=@($live.output -split '[\r\n]+' | Where-Object {$_ -ne ''})
-foreach($name in $names) {
-    if($alive -notcontains $name){$data+=@{name=$name;missing_session=$true};continue}
-    $remaining=($deadline-[DateTime]::UtcNow).TotalMilliseconds
-    if($remaining -le 0){$data+=@{name=$name;deferred_session=$true};continue}
-    try {
-        $result=Invoke-SB @('-s',$name,'action','list-panes','--json','--all') ([int][Math]::Max(100,[Math]::Min(2000,$remaining)))
-        if($result.code -ne 0){throw 'Cannot list panes'}
-        # PowerShell 5 emits the JSON array as one pipeline object. Assign first,
-        # then enumerate it, otherwise @(... | ConvertFrom-Json) nests panes.
-        $panes=$result.output | ConvertFrom-Json; $panes=@($panes); $screens=@{}
-        for($i=0;$i -lt $panes.Count;$i++) {
-            $p=$panes[($i+$offset)%$panes.Count];$remaining=($deadline-[DateTime]::UtcNow).TotalMilliseconds
-            if($remaining -le 0){break}
-            if($p.is_plugin -or $p.is_selectable -eq $false -or $p.exited -or $p.is_held){continue}
-            if($p.pane_command -match '(?:^|[\\/])(?:nu|zsh|bash|fish|pwsh|powershell)(?:\.exe)?(?:\s|$)' -and $p.title -match '^(~|/|[A-Za-z]:[\\/])'){continue}
-            try {
-                $result=Invoke-SB @('-s',$name,'action','dump-screen','-p',[string]$p.id) ([int][Math]::Max(100,[Math]::Min(3000,$remaining)))
-                if($result.code -eq 0){$screens[[string]$p.id]=$result.output}
-            } catch {}
-        }
-        $data+=@{name=$name;panes=@($panes);screens=$screens;deferred=([DateTime]::UtcNow -ge $deadline)}
-    } catch {$data+=@{name=$name;error='Session snapshots unavailable'}}
-}
-$json=ConvertTo-Json -InputObject @($data) -Depth 12 -Compress
-"#;
 
 #[derive(Default)]
 pub(super) struct PollState {
@@ -554,13 +453,16 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
             tokio::spawn(async move {
                 let mut offset = 0;
                 loop {
-                    let target = state.paired_twin(&host).unwrap_or_else(|| host.clone());
-                    let result = scan(&target, offset).await;
+                    let result = scan(&host, offset).await;
                     offset = offset.wrapping_add(1);
                     let mut poll = poll.lock().await;
                     let changed = match result {
                         Ok(mut snapshot) => poll.update(&id, &mut snapshot),
                         Err(error) => {
+                            logs::record(
+                                &host.config.name,
+                                &format!("Status unavailable: {error}"),
+                            );
                             poll.unavailable(&id, &error);
                             false
                         },
@@ -603,7 +505,6 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
         tasks.push(tokio::spawn(async move {
             let mut offset = 0;
             loop {
-                // Twins of configured hosts are scanned under the configured id.
                 let hosts: Vec<_> = state
                     .mesh
                     .as_ref()
@@ -623,6 +524,10 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
                             poll.update(&host.config.id, &mut snapshot);
                         },
                         Err(_) => {
+                            logs::record(
+                                &host.config.name,
+                                "Status unavailable from paired computer",
+                            );
                             poll.unavailable(
                                 &host.config.id,
                                 &anyhow::anyhow!(
@@ -668,13 +573,12 @@ pub(super) async fn acknowledge(
     let Some(host) = state.host(&ack.host) else {
         return StatusCode::NOT_FOUND;
     };
-    let target = state.paired_twin(&host).unwrap_or(host);
-    if target.config.escape_transport.as_deref() == Some("gateway") {
+    if host.config.escape_transport.as_deref() == Some("gateway") {
         let body = json!({"session":ack.session,"pane_id":ack.pane_id,"token":ack.token});
         // Offline or older peers keep the review on this relay only.
         let _ = tokio::time::timeout(
             Duration::from_secs(5),
-            target.request(
+            host.request(
                 Method::POST,
                 "/switchboard/attention/ack",
                 body.to_string().into(),
@@ -698,6 +602,54 @@ pub(super) async fn acknowledge(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_hosts_scan_with_the_cli_and_paired_hosts_through_their_gateway() {
+        use std::os::unix::fs::PermissionsExt;
+        let upstream = Router::new()
+            .route(
+                "/command/login",
+                post(|| async { ([(header::SET_COOKIE, "session_token=t")], "{}") }),
+            )
+            .route(
+                "/session-list",
+                get(|| async { Json(json!({"sessions":[{"name":"main","web_clients_allowed":true}]})) }),
+            )
+            .route(
+                "/switchboard/attention",
+                get(|| async {
+                    Json(json!({"panes":[],"tabs":[{"session":"peer","id":9}],"errors":[{"message":"x"}]}))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+        let dir = tempfile::tempdir().unwrap();
+        let token = dir.path().join("token");
+        std::fs::write(&token, "t").unwrap();
+        let cli = dir.path().join("zellij");
+        std::fs::write(&cli, r#"#!/bin/sh
+case "$*" in
+*list-panes*) echo '[{"id":1,"tab_id":4,"tab_position":0,"tab_name":"T","title":"x","pane_command":"codex","is_plugin":false}]';;
+*dump-screen*) printf '(3s esc to interrupt)\n> x\ngpt-5 tab to queue message\n';;
+esac
+"#).unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut local = super::super::tests::config(&url);
+        local.token_file = token.to_str().unwrap().into();
+        local.zellij_binary = Some(cli.to_str().unwrap().into());
+        let snapshot = scan(&Host::new(local.clone()).unwrap(), 0).await.unwrap();
+        assert_eq!(snapshot["tabs"][0]["id"], 4);
+        assert_eq!(snapshot["panes"][0]["state"], "working");
+        local.id = "mesh-peer".into();
+        local.zellij_binary = Some("/nonexistent".into());
+        local.escape_transport = Some("gateway".into());
+        let snapshot = scan(&Host::new(local).unwrap(), 0).await.unwrap();
+        assert_eq!(snapshot["tabs"][0]["session"], "peer");
+        assert_eq!(snapshot["errors"][0]["host"], "mesh-peer");
+        server.abort();
+    }
     #[test]
     fn failed_hosts_keep_tab_identity_without_stale_attention_and_recover() {
         let mut poll = PollState::default();
