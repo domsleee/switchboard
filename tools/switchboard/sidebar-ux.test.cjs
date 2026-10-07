@@ -42,7 +42,8 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     await page.waitForFunction(()=>document.querySelectorAll('#tabs .tab-select').length===3);
     const order=()=>page.locator('#tabs .tab-name').allTextContents();
     assert.deepEqual(await order(),names);
-    assert.equal(await page.locator('#sidebar-summary').isVisible(),false);
+    assert.equal(await page.locator('#sidebar-summary').isVisible(),true);
+    assert.equal(await page.locator('#tab-count').textContent(),'3 tabs');
     assert.equal(await page.locator('#selection-tools').isVisible(),false);
     assert.equal(await page.locator('#tabs small').first().textContent(),'Mac · Working');
     const action=page.locator('.tab-actions').nth(1);
@@ -92,6 +93,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.equal(await page.locator('#sidebar-resize').getAttribute('aria-valuenow'),'222');
     assert.deepEqual(await order(),reordered);
     await page.setViewportSize({width:390,height:844});
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
     assert.equal(await page.locator('#sidebar').isVisible(),false);
     await page.locator('#sidebar-toggle').focus();await page.keyboard.press('Control+k');assert.equal(await page.locator('#sidebar').isVisible(),true);
     await page.locator('#sidebar-toggle').focus();await page.keyboard.press('Escape');
@@ -99,6 +101,40 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.equal(await page.evaluate(()=>document.activeElement.id),'sidebar-toggle');
     await page.locator('#sidebar-toggle').click();
     if(process.env.SWITCHBOARD_UX_SCREENSHOTS)await page.screenshot({path:process.env.SWITCHBOARD_UX_SCREENSHOTS+'/mobile.png'});
+    // A background tab changing attention must never insert a summary row,
+    // move scrolled tab rows, resize the terminal, or steal keyboard focus.
+    for(let i=4;i<=30;i++)tabs.push({host:'mac',session:'main',id:i,position:i,name:`Fixture ${i}`,panes:[{pane_id:i,is_plugin:false,tab_position:i}]});
+    await page.evaluate(()=>{for(const key of Object.keys(ready))delete ready[key];});
+    await page.evaluate(()=>refreshAttention());
+    for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
+      await page.setViewportSize(viewport);
+      await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+      await page.evaluate(()=>{document.body.classList.remove('sidebar-collapsed');document.body.classList.add('sidebar-open');});
+      const target=page.locator('#tabs .tab-select').nth(5);
+      await target.focus();
+      await page.locator('#tabs').evaluate(el=>{el.scrollTop=180;});
+      const snapshot=()=>page.evaluate(()=>{
+        const rect=el=>{const r=el.getBoundingClientRect();return [r.x,r.y,r.width,r.height];};
+        return {bounds:['sidebar-summary','tabs','terminals','tab-count'].map(id=>rect(document.getElementById(id))),
+          rows:[...document.querySelectorAll('.tab-row')].map(rect),scroll:document.querySelector('#tabs').scrollTop,
+          selected:document.querySelector('.tab-select.selected')?.getAttribute('aria-label'),focus:document.activeElement?.outerHTML};
+      });
+      const before=await snapshot();assert.ok(before.scroll>0);
+      for(const attention of [true,false]){
+        await page.evaluate(value=>{const item=allTabs().at(-1);if(value)ready[item.key]=1;else delete ready[item.key];render();},attention);
+        assert.equal(await page.locator('#notifications').isVisible(),attention);
+        assert.deepEqual(await snapshot(),before,`attention ${attention}, width ${viewport.width}`);
+      }
+      // Check terminal focus separately: the sidebar focus assertion above also
+      // catches DOM replacement of a tab button during a background update.
+      const input=page.frameLocator('iframe[title="Mac: main"]').locator('#terminal-input');
+      await input.focus();
+      for(const attention of [true,false]){
+        await page.evaluate(value=>{const item=allTabs().at(-1);if(value)ready[item.key]=1;else delete ready[item.key];render();},attention);
+        assert.equal(await input.evaluate(el=>document.activeElement===el),true);
+        assert.equal(await page.locator('iframe[title="Mac: main"]').evaluate(el=>document.activeElement===el),true);
+      }
+    }
     assert.deepEqual(errors,[]);
   }finally{await browser.close();}
 });
