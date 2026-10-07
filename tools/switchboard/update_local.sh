@@ -85,6 +85,18 @@ fi
 [[ $(digest "$new_release") == "$new_hash" ]] || { echo 'Invalid staged release.' >&2; exit 1; }
 probe "$new_release" --version
 
+# A development build may use a different token database while still speaking
+# the same session protocol. Refuse to strand the installed app's credentials.
+probe "$installed" web --list-tokens > "$work/installed-tokens"
+probe "$new_release" web --list-tokens > "$work/candidate-tokens"
+LC_ALL=C sort -u "$work/installed-tokens" > "$work/installed-tokens-sorted"
+LC_ALL=C sort -u "$work/candidate-tokens" > "$work/candidate-tokens-sorted"
+LC_ALL=C comm -23 "$work/installed-tokens-sorted" "$work/candidate-tokens-sorted" > "$work/missing-tokens"
+[[ ! -s "$work/missing-tokens" ]] || {
+    echo 'Authentication compatibility check failed: candidate cannot see existing tokens. Use a release build with the same authentication database.' >&2
+    exit 1
+}
+
 # Only live sessions: resurrectable layouts do not contain running processes.
 if probe "$installed" list-sessions --no-formatting > "$work/session-list" 2> "$work/list-error"; then
     awk '!/\(EXITED - attach to resurrect\)/ {sub(/ \[Created .*$/, ""); print}' "$work/session-list" > "$work/sessions"
