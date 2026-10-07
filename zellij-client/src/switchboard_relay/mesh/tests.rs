@@ -1743,7 +1743,12 @@ async fn board_host_approval_rejects_forgery_unpaired_host_and_cross_group_repla
 async fn pairing_a_configured_computer_lists_it_once_and_controls_it_through_the_gateway() {
     let temp = tempfile::tempdir().unwrap();
     let mac = machine(&temp.path().join("mac"), "Mac", "https://192.0.2.1:8091").await;
-    let windows = machine(&temp.path().join("windows"), "Windows", "https://192.0.2.2:8091").await;
+    let windows = machine(
+        &temp.path().join("windows"),
+        "Windows",
+        "https://192.0.2.2:8091",
+    )
+    .await;
     let invitation = invitation(&mac, 1000).await;
     let (_, approval) = approved(&mac, &windows, &invitation, 1000).await;
     let envelope = windows.install(approval, &invitation).await.unwrap();
@@ -1758,10 +1763,23 @@ async fn pairing_a_configured_computer_lists_it_once_and_controls_it_through_the
         attention: Default::default(),
         mesh: Some(mac.clone()),
     };
-    let listed: Vec<_> = state.all_hosts().iter().map(|h| h.config.id.clone()).collect();
-    assert_eq!(listed, ["windows"], "the paired twin must not duplicate tabs");
-    let twin = state.paired_twin(&configured).expect("control routes through the gateway");
+    let listed: Vec<_> = state
+        .all_hosts()
+        .iter()
+        .map(|h| h.config.id.clone())
+        .collect();
+    assert_eq!(
+        listed,
+        ["windows"],
+        "the paired twin must not duplicate tabs"
+    );
+    let twin = state
+        .paired_twin(&configured)
+        .expect("control routes through the gateway");
     assert_eq!(twin.config.escape_transport.as_deref(), Some("gateway"));
     assert!(state.paired_twin(&twin).is_none());
-    assert!(state.host(&twin.config.id).is_some(), "board routes still resolve the peer");
+    assert!(
+        state.host(&twin.config.id).is_some(),
+        "board routes still resolve the peer"
+    );
 }
