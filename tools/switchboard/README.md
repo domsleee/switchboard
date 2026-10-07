@@ -38,9 +38,10 @@ Do not run `zellij web --create-token`, copy token files or add the computer to
 `switchboard-hosts.json` by hand. The host list only holds this computer's own
 entry.
 
-Existing manually configured terminal connections also appear in **Computers**.
-Choose **Pair this computer** to add one to the shared group; terminal access alone
-does not grant shared-message access. Existing local display names are retained.
+Remote entries left in the host list are ignored (the relay logs a warning for
+each) and appear in **Computers** with **Pair this computer**. Pair them, then
+delete the entry. A paired computer gets a new id, so its browser tab order and
+archive state start fresh.
 
 The invitation records the computer's current LAN address. If DHCP gives it a
 new address, pair again, or reserve its address in the router.
@@ -143,8 +144,7 @@ protocol; the agent must emit it as a terminal title.
 The host list lives in `~/.config/zellij/switchboard-hosts.json` and holds this
 computer's own entry: an ID, name, URL, and token file path. HTTPS hosts can
 specify a SHA-256 DER certificate fingerprint using `tls_fingerprint`. Paired
-computers are added separately (see [Connecting another computer](#connecting-another-computer));
-older hand-added remote entries keep working.
+computers are added separately (see [Connecting another computer](#connecting-another-computer)).
 
 Example `~/.config/zellij/switchboard-hosts.json` (create the token file locally):
 
@@ -181,8 +181,8 @@ This works with already-running agents, without notification hooks or replacing
 Zellij. Detection follows terminal UI markers; unrecognized screens report
 unknown, and disconnected hosts lose stale ready status. Very short turns between
 polls can be missed if their completion marker is unchanged. The Rust scanner
-reads native pane snapshots locally. Older remote Windows hosts use bounded PowerShell CLI probes and
-run through the same private control shell used by Escape and Close. Only pane
+reads native pane snapshots locally; paired computers scan themselves and return
+snapshots through their gateway. Only pane
 identity/status/change markers reach the browser, not terminal transcripts.
 
 **Mark ready** also stars a tab manually. Native tab names starting with `*` are
@@ -201,9 +201,8 @@ attached so their tab metadata can be collected. Background frames keep their
 viewport size; attaching clients can still affect Zellij's layout sizing.
 Disconnected clients reconnect using Zellij's own behavior.
 
-Shift-click opens terminal links in a new browser tab. Loopback links on remote
-hosts use that machine’s LAN address
-or its configured `artifact_urls` mapping. This requires a reachable artifact
+Shift-click opens terminal links in a new browser tab. Loopback links on paired
+computers use that machine’s LAN address. This requires a reachable artifact
 server or tunnel; rewriting a URL cannot reach a remote loopback-only server.
 
 The Windows gallery on port 8765 uses the separate HTTPS origin
@@ -226,9 +225,8 @@ copy panel instead of silently failing.
 
 Bare Escape in stock web 0.45.1 drops its byte during parser finalization. The
 relay bypasses it with a validated, pane-targeted `zellij action write ... 27`.
-Local hosts use the native CLI; remote Windows hosts use one private helper
-shell, hidden from the shared tab list. Requests are serialized and uncertain delivery is never
-automatically retried. Input waits for focus acknowledgement when switching
+This computer uses the native CLI; paired computers run it behind their gateway.
+Uncertain delivery is never automatically retried. Input waits for focus acknowledgement when switching
 remote panes; Back to terminal preserves the focused pane. Dialogs and plugin
 focus retain their native behavior.
 
@@ -236,9 +234,6 @@ Run the small checks with:
 
 ```sh
 node --test tools/switchboard/*.test.cjs
-uv run --with aiohttp python tools/switchboard/control.test.py
-uv run --with aiohttp python tools/switchboard/attention.test.py
-uv run --with aiohttp python tools/switchboard/close.test.py
 python3 tools/switchboard/install_service.test.py
 ```
 

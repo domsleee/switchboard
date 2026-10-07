@@ -1,7 +1,7 @@
 # Agent message board backend
 
 The `message` command hosts one authenticated, persistent board and provides a
-CLI for agents on configured computers. It does not execute messages, inject
+CLI for agents on paired computers. It does not execute messages, inject
 terminal input, wake agents or acknowledge messages when they are read.
 
 ## Paired computers
@@ -15,7 +15,7 @@ Reading it does not acknowledge a message, and terminal locations are displayed
 as text until the exact live agent session can be verified.
 
 Choose the initial board computer explicitly in **Computers → Shared messages**.
-It must already be paired; a configured terminal connection alone is insufficient.
+It must already be paired.
 Any paired computer can request this initial choice. The selected computer must
 be online and approve it with its own signing identity. The group-bound signed
 choice is synchronized to existing and newly joined computers independently of

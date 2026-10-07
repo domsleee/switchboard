@@ -1743,7 +1743,7 @@ async fn board_host_approval_rejects_forgery_unpaired_host_and_cross_group_repla
 }
 
 #[tokio::test]
-async fn pairing_a_configured_computer_lists_it_once_and_controls_it_through_the_gateway() {
+async fn a_paired_computer_is_listed_only_under_its_mesh_id() {
     let temp = tempfile::tempdir().unwrap();
     let mac = machine(&temp.path().join("mac"), "Mac", "https://192.0.2.1:8091").await;
     let windows = machine(
@@ -1758,34 +1758,29 @@ async fn pairing_a_configured_computer_lists_it_once_and_controls_it_through_the
     mac.complete(envelope).await.unwrap();
     let mut configured = super::super::tests::config("https://192.0.2.2:8091/");
     configured.id = "windows".into();
-    let configured = Arc::new(Host::new(configured).unwrap());
-    let state = super::super::RelayState {
-        hosts: Arc::new([("windows".to_string(), configured.clone())].into()),
-        order: Arc::new(vec!["windows".into()]),
-        port: 0,
-        attention: Default::default(),
-        poll: Default::default(),
-        mesh: Some(mac.clone()),
-    };
-    let listed: Vec<_> = state
-        .all_hosts()
-        .iter()
-        .map(|h| h.config.id.clone())
-        .collect();
+    let mut state = super::super::state(
+        &super::super::RelayConfig {
+            hosts: vec![configured],
+            artifact_proxy: None,
+        },
+        0,
+    )
+    .await
+    .unwrap();
+    state.mesh = Some(mac.clone());
+    let listed = state.all_hosts();
     assert_eq!(
-        listed,
-        ["windows"],
-        "the paired twin must not duplicate tabs"
+        listed.len(),
+        1,
+        "the hosts-file entry must not duplicate tabs"
     );
-    let twin = state
-        .paired_twin(&configured)
-        .expect("control routes through the gateway");
-    assert_eq!(twin.config.escape_transport.as_deref(), Some("gateway"));
-    assert!(state.paired_twin(&twin).is_none());
-    assert!(
-        state.host(&twin.config.id).is_some(),
-        "board routes still resolve the peer"
+    assert!(listed[0].config.id.starts_with("mesh-"));
+    assert_eq!(
+        listed[0].config.escape_transport.as_deref(),
+        Some("gateway")
     );
+    assert!(state.host("windows").is_none());
+    assert_eq!(state.candidates[0]["id"], "windows");
 }
 
 #[tokio::test]
@@ -1856,6 +1851,7 @@ async fn attention_reviews_live_with_the_owner_and_every_peer_sees_them() {
         attention: Default::default(),
         poll: Default::default(),
         mesh: Some(mesh.clone()),
+        candidates: Default::default(),
     };
     let (mac, laptop) = (relay(&viewers[0]), relay(&viewers[1]));
     async fn shown(relay: &super::super::RelayState, host: &str) -> Value {

@@ -11,7 +11,6 @@ const root = path.resolve(__dirname, '../..');
 const newBinary = path.resolve(process.argv[3] || path.join(root, 'target/release/zellij'));
 const oldBinary = path.resolve(process.argv[2] || newBinary);
 const recoveryMode=process.env.SWITCHBOARD_TEST_RECOVERY_ADAPTER==='1';
-const rustRelay=process.env.SWITCHBOARD_TEST_RUST_RELAY==='1';
 const dir = fs.mkdtempSync('/tmp/switchboard-browser-update-');
 const installed = path.join(dir, 'zellij');
 const config = path.join(dir, 'config.kdl');
@@ -66,7 +65,7 @@ let recoveryPanes;
         fs.writeFileSync(relayConfig,JSON.stringify({hosts:[{id:'test',name:'Acceptance',url:`http://127.0.0.1:${nativePort}`,token_file:tokenPath,zellij_binary:installed}]}),{mode:0o600});
         let recoveryEnabled=false;
         const startNative=()=>spawn(recoveryMode?newBinary:installed,['--config',config,'web','--port',String(nativePort)],{env:{...env,...(recoveryEnabled?{SWITCHBOARD_RECOVER_UNSHARED_SESSION:name}:{})},stdio:['ignore',fs.openSync(path.join(dir,'native.log'),'a'),fs.openSync(path.join(dir,'native-error.log'),'a')]});
-        const startRelay=()=>spawn(rustRelay?newBinary:(process.env.UV_BINARY || path.join(process.env.HOME,'.local/bin/uv')),rustRelay?['serve','--host-config',relayConfig,'--port',String(relayPort)]:['run','--script',path.join(__dirname,'server.py'),'--config',relayConfig,'--port',String(relayPort)],{env,stdio:['ignore',fs.openSync(path.join(dir,'relay.log'),'a'),fs.openSync(path.join(dir,'relay-error.log'),'a')]});
+        const startRelay=()=>spawn(newBinary,['serve','--host-config',relayConfig,'--port',String(relayPort)],{env,stdio:['ignore',fs.openSync(path.join(dir,'relay.log'),'a'),fs.openSync(path.join(dir,'relay-error.log'),'a')]});
         native=startNative(); relay=startRelay();
         await waitFor(async()=> (await fetch(url)).ok,'Private services did not start');
         cli('attach','--create-background',name,'--','/bin/bash','--noprofile','--norc');created=true;
@@ -309,22 +308,20 @@ let recoveryPanes;
             await page.waitForFunction(id=>document.querySelector('#tabs .tab-select.selected')?._item.tab.id===id,tabId);
             await command(`printf '%s%s\\n' "CREATED_REFRESHED_" "$SB_NEW"`,'CREATED_REFRESHED_'+createdMarker);
             console.log('PASS: Create highlights the actual new native tab, focuses input immediately without another click, updates its URL, and refreshes into the same shell.');
-            if(rustRelay){
-                const second=await context.newPage();await second.goto(page.url());
-                await second.waitForSelector('#tabs .tab-select');
-                await second.waitForFunction(session=>document.querySelector('#terminals>iframe.active')?.contentWindow.__zjLastMobileState?.session_name===session,name);
-                for(const [id] of names()){
-                    const result=await fetch(url+'/api/hosts/test/close-tab',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({session:name,tab_id:id})});
-                    assert.equal(result.status,200,await result.text());
-                }
-                const closed=async()=> !(await (await fetch(url+'/api/hosts/test')).json()).sessions.some(s=>s.name===name);
-                await waitFor(closed,'Final tab did not close');
-                await sleep(3000);
-                assert.ok(await closed(),'Two viewers must not recreate an intentionally closed session');
-                assert.ok(!processes().some(p=>p.pid===server.pid),'Closed private engine exits');
-                created=false;await second.close();
-                console.log('PASS: closing the final tab disconnects both viewers without recreating its session.');
+            const second=await context.newPage();await second.goto(page.url());
+            await second.waitForSelector('#tabs .tab-select');
+            await second.waitForFunction(session=>document.querySelector('#terminals>iframe.active')?.contentWindow.__zjLastMobileState?.session_name===session,name);
+            for(const [id] of names()){
+                const result=await fetch(url+'/api/hosts/test/close-tab',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({session:name,tab_id:id})});
+                assert.equal(result.status,200,await result.text());
             }
+            const closed=async()=> !(await (await fetch(url+'/api/hosts/test')).json()).sessions.some(s=>s.name===name);
+            await waitFor(closed,'Final tab did not close');
+            await sleep(3000);
+            assert.ok(await closed(),'Two viewers must not recreate an intentionally closed session');
+            assert.ok(!processes().some(p=>p.pid===server.pid),'Closed private engine exits');
+            created=false;await second.close();
+            console.log('PASS: closing the final tab disconnects both viewers without recreating its session.');
 
         }
         if(recoveryMode){

@@ -66,7 +66,7 @@ pub fn create_first_message(
 ) -> ClientToServerMsg {
     let resurrection_layout = resurrection_layout(&session_name).ok().flatten();
 
-    let mut layout_info = if resurrection_layout.is_some() {
+    let layout_info = if resurrection_layout.is_some() {
         Some(LayoutInfo::File(
             session_layout_cache_file_name(&session_name)
                 .display()
@@ -88,14 +88,6 @@ pub fn create_first_message(
             is_web_client,
         }
     } else if should_create_session {
-        // Private relay helpers must not inherit interactive shell startup hooks
-        // or layouts that launch user applications.
-        if cfg!(windows) && session_name.starts_with("__switchboard_control_") {
-            layout_info = Some(LayoutInfo::Stringified(
-                "layout {\n pane command=\"powershell.exe\" {\n args \"-NoLogo\" \"-NoProfile\"\n }\n}\n"
-                    .into(),
-            ));
-        }
         config_opts.web_server = Some(true);
         config_opts.web_sharing = Some(WebSharing::On);
         let cli_assets = CliAssets {
@@ -159,49 +151,4 @@ pub fn create_ipc_pipe(session_name: &str) -> PathBuf {
     };
     crate::check_ipc_pipe_length(&zellij_ipc_pipe);
     zellij_ipc_pipe
-}
-
-#[cfg(all(test, windows))]
-mod tests {
-    use super::*;
-    use zellij_utils::input::layout::Layout;
-
-    #[test]
-    fn private_helper_uses_plain_powershell_without_changing_user_sessions() {
-        for (name, private) in [
-            ("__switchboard_control_test", true),
-            ("ordinary-test", false),
-        ] {
-            let options = Options {
-                default_shell: Some("nu".into()),
-                ..Default::default()
-            };
-            let message = create_first_message(
-                false,
-                None,
-                ClientAttributes::default(),
-                options,
-                true,
-                name,
-                Some(LayoutInfo::BuiltIn("default".into())),
-            );
-            let ClientToServerMsg::FirstClientConnected { cli_assets, .. } = message else {
-                panic!("Expected new session")
-            };
-            assert_eq!(
-                cli_assets.configuration_options.unwrap().default_shell,
-                Some("nu".into())
-            );
-            if private {
-                let Some(LayoutInfo::Stringified(layout)) = cli_assets.layout else {
-                    panic!("Expected private layout")
-                };
-                assert!(Layout::from_kdl(&layout, None, None, None).is_ok());
-                assert!(layout.contains("powershell.exe"));
-                assert!(layout.contains("-NoProfile"));
-            } else {
-                assert!(matches!(cli_assets.layout, Some(LayoutInfo::BuiltIn(_))));
-            }
-        }
-    }
 }

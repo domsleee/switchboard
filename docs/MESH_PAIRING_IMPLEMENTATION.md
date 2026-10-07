@@ -71,8 +71,8 @@ capability for the peer. HPKE exchanges them without browser-visible plaintext.
 HTTP and WebSocket terminal requests require that capability, the intended Host
 header, a pinned HTTPS server identity, and absence of browser Origin. The
 gateway authenticates its own loopback upstream using the peer's dedicated native
-token. Gateway-native snapshots and fixed close/escape actions avoid copying
-Windows helper assumptions to Mac peers. HTTP is reauthorized per request and before returning a response;
+token. Gateway-native snapshots and fixed close/escape actions are the only way a relay
+controls another computer. HTTP is reauthorized per request and before returning a response;
 in-flight HTTP/control work is cancelled and open WebSockets are closed within one polling interval after their gateway
 authorization disappears. This does not implement distributed member removal.
 

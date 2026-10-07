@@ -10,7 +10,7 @@ Each live session has a native server process that owns its tabs, terminal
 state and child processes. Terminal clients attach over local IPC. The native
 web daemon attaches browser clients to those same sessions. The Switchboard
 relay serves the sidebar and proxies authenticated HTTP and WebSocket traffic
-to the configured hosts' web servers.
+to its own engine and to paired computers' gateways.
 
 These are separate processes even though they use the same executable:
 

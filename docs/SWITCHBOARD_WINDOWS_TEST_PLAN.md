@@ -50,9 +50,8 @@ tab/pane IDs, shell PID and a shell variable in each tab. Confirm:
 - New tab is focused and ready for input. Shift-click an artifact link requests
   a new tab, routes to the intended machine and has no opener access.
 
-Exercise both `escape_transport: "local"` on Windows and a Mac Rust relay
-connected to the Windows native server using `escape_transport: "windows"`.
-The remote path must work without Python installed or on PATH.
+Exercise both the Windows relay's own engine and a paired Mac relay reaching
+Windows through its gateway. Neither path may need Python installed or on PATH.
 
 ## 3. Transport, isolation and failure recovery
 
@@ -66,9 +65,7 @@ The remote path must work without Python installed or on PATH.
 - Disconnect one host. Other hosts remain usable; unavailable tabs/badges are
   cleared and an error is shown. A single vanished session must not discard the
   other sessions on that host.
-- Terminate a private control helper, then invoke another control. It recreates
-  the helper before delivery. A command timeout never retries an uncertain write.
-  Test stalled native CLI probes; the child CLI is killed, the user engine stays
+- A control timeout never retries an uncertain write. Test stalled native CLI probes; the child CLI is killed, the user engine stays
   alive, and subsequent polling recovers.
 
 ## 4. Relay update and tray installation
@@ -126,7 +123,7 @@ must report failure without killing the process that owns it.
 
 Run matched Python/Rust trials with the same hosts, tabs and polling workload.
 Record idle/private working-set memory, CPU, startup-to-usable-terminal time,
-reconnect time and p50/p95 catalog/control latency. Separate relay, helper, CLI
+reconnect time and p50/p95 catalog/control latency. Separate relay, CLI
 and terminal engine costs. Do not infer Windows memory from Mac measurements.
 
 If any usable-tab or process-preservation check fails, stop only the new relay

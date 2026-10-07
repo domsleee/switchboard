@@ -89,9 +89,9 @@
         $('joining-description').textContent = `Waiting for ${state.joining.computer} to approve joining ${state.joining.mesh}.`;
         $('joining-code').textContent = state.joining.code || '';
       }
-      // Configured terminal connections exist before pairing and must stay discoverable.
+      // Remote entries left in the hosts file are offered for pairing only.
       try {
-        const response = await fetch('/api/hosts?summary=1', {cache: 'no-store'});
+        const response = await fetch('/api/hosts?summary=1&candidates=1', {cache: 'no-store'});
         if (response.ok) configuredHosts = await response.json();
       } catch (_) {}
       const loadHosts = () => fetch('/api/hosts', {cache: 'no-store'}).then(r => r.ok ? r.json() : []).catch(() => []);
@@ -119,9 +119,7 @@
         const title = document.createElement('strong'); title.textContent = member.name;
         const address = document.createElement('p'); address.textContent = member.address;
         const status = document.createElement('span');
-        // A paired computer that was already configured is listed under its configured id.
-        const host = hosts.find(host => host.id === `mesh-${member.id}`)
-          || hosts.find(host => !member.local && endpoint(member.address) && endpoint(host.pairing_address || host.address) === endpoint(member.address));
+        const host = hosts.find(host => host.id === `mesh-${member.id}`);
         status.textContent = member.local ? 'This computer' : member.state === 'paired'
           ? (host && Array.isArray(host.sessions) && !host.error ? 'Connected' : 'Paired, connection unavailable. Check the address and retry')
           : 'Connecting to this computer. Keep Switchboard running on both computers.';
@@ -144,7 +142,7 @@
         const address = document.createElement('p'); address.textContent = host.address;
         const status = document.createElement('span');
         status.textContent = host.local ? 'This computer · configured terminal connection'
-          : 'Configured terminal connection · not paired for shared messages';
+          : 'In the hosts file · pair this computer to use its terminals';
         card.append(title, address, status);
         const detail = hostDetails.find(candidate => candidate.id === host.id);
         if (host.local || (detail && !detail.error)) card.append(version(detail && detail.version, host.local));
