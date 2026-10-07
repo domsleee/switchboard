@@ -404,6 +404,13 @@ impl PollState {
                         .unwrap()
                         .extend(snapshot[field].as_array().unwrap().clone());
                 }
+            } else {
+                // Not scanned since this relay started: browsers keep its tabs
+                // instead of reading the absence as every tab having closed.
+                merged["errors"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({"host":host,"message":"Status not scanned yet"}));
             }
         }
         merged
@@ -676,6 +683,10 @@ esac
         let merged = poll.merged(&["windows".into()]);
         assert!(merged["tabs"].as_array().unwrap().is_empty());
         assert!(merged["errors"].as_array().unwrap().is_empty());
+        // A restarted relay has not scanned yet; that is not an empty catalog.
+        let cold = PollState::default().merged(&["windows".into()]);
+        assert!(cold["tabs"].as_array().unwrap().is_empty());
+        assert_eq!(cold["errors"][0]["host"], "windows");
     }
 
     #[test]
