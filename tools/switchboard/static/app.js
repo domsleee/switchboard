@@ -649,6 +649,33 @@ $('size-owner').onclick=()=>{
   closeTabMenu(true);
 };
 $('close-settings').onclick=()=>$('settings-dialog').close();
+// Messages and Computers open over the terminals, so terminal iframes and
+// their sockets stay connected. Modified clicks still open a real page.
+const pageDialog=$('page-dialog'),pageFrame=$('page-frame'),pageNames={'/messages.html':'Messages','/computers.html':'Computers'};
+const plainClick=event=>!event.defaultPrevented&&!event.button&&!event.metaKey&&!event.ctrlKey&&!event.shiftKey&&!event.altKey;
+document.addEventListener('click',event=>{
+  const link=event.target.closest?.('a[href="/messages.html"],a[href="/computers.html"]');
+  if(!link||!plainClick(event))return;
+  event.preventDefault();
+  link.closest('dialog')?.close();
+  $('page-heading').textContent=pageFrame.title=pageNames[link.pathname];
+  pageFrame.src=link.pathname;
+  pageDialog.showModal();
+});
+pageFrame.onload=()=>{
+  const doc=pageFrame.contentDocument,name=pageNames[pageFrame.contentWindow.location.pathname];
+  if(!doc||!name)return;
+  $('page-heading').textContent=pageFrame.title=name;
+  // The embedded pages link back to "/"; inside the overlay that means close.
+  doc.addEventListener('click',event=>{if(event.target.closest?.('a[href="/"]')&&plainClick(event)){event.preventDefault();pageDialog.close();}});
+  doc.addEventListener('keydown',event=>{if(event.key==='Escape'&&!event.defaultPrevented)pageDialog.close();});
+};
+$('close-page').onclick=()=>pageDialog.close();
+pageDialog.onclose=()=>{
+  pageFrame.src='about:blank';
+  const item=allTabs().find(item=>item.key===selected);
+  if(item&&$('artifact-preview').hidden&&!document.querySelector('dialog[open]'))focus(item);
+};
 $('refresh').onclick=async()=>{
   const button=$('refresh');button.disabled=true;button.textContent='Refreshing…';
   try{await refresh();}finally{button.disabled=false;button.textContent='Refresh';}
