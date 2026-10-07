@@ -93,6 +93,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.equal(await page.locator('#sidebar-resize').getAttribute('aria-valuenow'),'222');
     assert.deepEqual(await order(),reordered);
     await page.setViewportSize({width:390,height:844});
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
     assert.equal(await page.locator('#sidebar').isVisible(),false);
     await page.locator('#sidebar-toggle').focus();await page.keyboard.press('Control+k');assert.equal(await page.locator('#sidebar').isVisible(),true);
     await page.locator('#sidebar-toggle').focus();await page.keyboard.press('Escape');
