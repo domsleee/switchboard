@@ -27,4 +27,8 @@ $script:live.CreationDate = $started.AddSeconds(1)
 $rejected = $false
 try { Stop-Captured $identity '\bserve\b' } catch { $rejected = $true }
 if (!$rejected -or $script:stopped.Count -ne 1) { throw 'Reused PID was stopped' }
+$script:live.CreationDate = $started
+$script:live.CommandLine = 'powershell.exe "-File" "C:\switchboard-tray.ps1" "-Tray"'
+Stop-Captured $identity 'switchboard-tray\.ps1.*\s"?-Tray\b'
+if ($script:stopped.Count -ne 2) { throw 'Quoted installed tray arguments were not recognized' }
 Write-Output 'PASS: captured service stop rejects engines, unrelated processes and reused PIDs'

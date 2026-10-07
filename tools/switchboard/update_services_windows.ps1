@@ -58,7 +58,7 @@ if ($Action -eq 'Snapshot') {
         [pscustomobject]@{arguments=$Matches.arguments; binary=$_.ExecutablePath; identity=(Process-Identity $_)}
     }
     $trayPath = [regex]::Escape((Join-Path $PSScriptRoot 'switchboard-tray.ps1'))
-    $trays = @($processes | Where-Object { $_.Name -ieq 'powershell.exe' -and $_.CommandLine -match $trayPath -and $_.CommandLine -match '\s-Tray\b' })
+    $trays = @($processes | Where-Object { $_.Name -ieq 'powershell.exe' -and $_.CommandLine -match $trayPath -and $_.CommandLine -match '\s"?-Tray\b' })
     $protected = @(& $module { param($Observed) Get-SwitchboardProtectedProcesses $Observed } $processes)
     $selected = Get-SwitchboardCurrentBinary $ReleaseDirectory
     $panes = @{}
@@ -84,7 +84,7 @@ if ($Action -eq 'Stop') {
         Save-Snapshot $state
     }
 } elseif ($Action -eq 'StopTray') {
-    foreach ($identity in $state.trays) { Stop-Captured $identity 'switchboard-tray\.ps1.*\s-Tray\b' }
+    foreach ($identity in $state.trays) { Stop-Captured $identity 'switchboard-tray\.ps1.*\s"?-Tray\b' }
 } elseif ($Action -eq 'Verify') {
     & $module { param($Baseline) Assert-SwitchboardProcesses $Baseline } $state.protected
     $selected = Get-SwitchboardCurrentBinary $ReleaseDirectory
