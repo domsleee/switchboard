@@ -7,7 +7,11 @@
   let previewLink = null;
   let previewVersion = 0, previewTimer;
   let defaultsLoaded = false;
-  let configuredHosts = [];
+  let configuredHosts = [], hostDetails = [];
+  const buildText = build => build && /^[a-f0-9]{7,40}$/.test(build.commit) && /^\d{4}-\d{2}-\d{2}$/.test(build.commit_date)
+    ? `${build.commit} · ${build.commit_date}` : null;
+  const localBuild = fetch('/api/health', {cache: 'no-store'}).then(r => r.ok ? r.json() : null).catch(() => null);
+  const versionKey = list => JSON.stringify(list.map(host => [host.id, host.error, host.version]));
   const show = (message, error = false) => {
     $('message').textContent = message;
     $('message').className = error ? 'error' : '';
@@ -90,8 +94,24 @@
         const response = await fetch('/api/hosts?summary=1', {cache: 'no-store'});
         if (response.ok) configuredHosts = await response.json();
       } catch (_) {}
-      const hosts = state.members.some(member => !member.local && member.state === 'paired')
-        ? await fetch('/api/hosts', {cache: 'no-store'}).then(r => r.ok ? r.json() : []).catch(() => []) : [];
+      const loadHosts = () => fetch('/api/hosts', {cache: 'no-store'}).then(r => r.ok ? r.json() : []).catch(() => []);
+      let hosts = [];
+      if (state.members.some(member => !member.local && member.state === 'paired')) hosts = hostDetails = await loadHosts();
+      // Unpaired pages render from the fast summary; versions fill in once the full catalog lands.
+      else if (configuredHosts.length) loadHosts().then(list => {
+        const changed = versionKey(list) !== versionKey(hostDetails);
+        hostDetails = list;
+        if (changed) refresh().catch(() => {});
+      });
+      const thisBuild = buildText(await localBuild);
+      const version = (build, local) => {
+        const line = document.createElement('small'), text = local ? thisBuild : buildText(build);
+        line.textContent = text ? `Version ${text}` : 'Version unknown';
+        if (!local && text && thisBuild && text !== thisBuild) {
+          line.textContent += ' · Different version from this computer'; line.className = 'different';
+        }
+        return line;
+      };
       // Build before swapping, and only swap on change, so polling never blanks the list.
       const cards = [];
       for (const member of state.members) {
@@ -106,6 +126,7 @@
           ? (host && Array.isArray(host.sessions) && !host.error ? 'Connected' : 'Paired, connection unavailable. Check the address and retry')
           : 'Connecting to this computer. Keep Switchboard running on both computers.';
         card.append(title, address, status);
+        if (member.local || (host && !host.error)) card.append(version(host && host.version, member.local));
         if (!member.local && member.state === 'paired' && (!host || host.error)) {
           const retry = document.createElement('button'); retry.textContent = 'Retry connection'; retry.onclick = () => action(refresh); card.append(retry);
         }
@@ -125,6 +146,8 @@
         status.textContent = host.local ? 'This computer · configured terminal connection'
           : 'Configured terminal connection · not paired for shared messages';
         card.append(title, address, status);
+        const detail = hostDetails.find(candidate => candidate.id === host.id);
+        if (host.local || (detail && !detail.error)) card.append(version(detail && detail.version, host.local));
         if (!host.local && host.pairing_address) {
           const pair = document.createElement('button'); pair.textContent = 'Pair this computer';
           pair.disabled = Boolean(meshError);
