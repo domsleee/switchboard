@@ -723,10 +723,12 @@ async fn asset(request: Request) -> Response {
     let name = request.uri().path().trim_start_matches('/');
     let name = if name.is_empty() { "index.html" } else { name };
     let mime = match name {
-        "index.html" | "computers.html" => "text/html; charset=utf-8",
-        "style.css" => "text/css; charset=utf-8",
+        "index.html" | "computers.html" | "messages.html" => "text/html; charset=utf-8",
+        "style.css" | "messages.css" => "text/css; charset=utf-8",
         "app.js" | "bridge.js" | "chrome.js" | "clipboard.js" | "close.js" | "links.js"
-        | "titles.js" | "computers.js" | "pairing-notice.js" => "application/javascript",
+        | "titles.js" | "computers.js" | "pairing-notice.js" | "messages.js" => {
+            "application/javascript"
+        },
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
     match ASSETS.get_file(name) {
@@ -755,6 +757,21 @@ async fn state(config: &RelayConfig, port: u16) -> anyhow::Result<RelayState> {
     })
 }
 
+async fn message_board(State(state): State<RelayState>, request: Request) -> Response {
+    // Humans inspect inboxes without acknowledging on an agent's behalf.
+    // CLI mutations arrive without browser headers and still pass the loopback guard.
+    if request.method() != Method::GET
+        && (request.headers().contains_key(header::ORIGIN)
+            || request.headers().contains_key("sec-fetch-mode"))
+    {
+        return (StatusCode::FORBIDDEN, Json(json!({"error":"The Messages view is read-only. Agents send and acknowledge through the CLI."}))).into_response();
+    }
+    match state.mesh {
+        Some(mesh) => mesh.board(request).await,
+        None => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"configured":false,"error":"Pair your computers in Manage computers to use a shared message board."}))).into_response(),
+    }
+}
+
 fn app(state: RelayState) -> Router {
     let peer = state.mesh.as_ref().and_then(|mesh| {
         mesh.bridge
@@ -778,6 +795,7 @@ fn app(state: RelayState) -> Router {
         .route("/api/hosts", get(self::hosts))
         .route("/api/hosts/{host}", get(host))
         .route("/api/attention", get(attention::handler))
+        .route("/api/message-board/{*path}", any(message_board))
         .route("/api/hosts/{host}/close-tab", post(control::close_tab))
         .route("/api/hosts/{host}/escape", post(control::escape))
         .route("/link-config.js", get(link_config))
@@ -887,6 +905,78 @@ mod tests {
         headers.remove("sec-fetch-site");
         headers.insert(header::HOST, "attacker.example".parse().unwrap());
         assert!(!trusted(&headers, 8090));
+    }
+
+    #[tokio::test]
+    async fn board_view_is_available_without_pairing_and_cannot_ack_for_agents() {
+        use tower::ServiceExt;
+        let app = router(
+            RelayConfig {
+                hosts: vec![],
+                artifact_proxy: None,
+            },
+            8090,
+        )
+        .await
+        .unwrap();
+        let request = |method: Method, path: &str| {
+            hyper::Request::builder()
+                .method(method)
+                .uri(path)
+                .header(header::HOST, "127.0.0.1:8090")
+        };
+        for (path, mime) in [
+            ("/messages.html", "text/html; charset=utf-8"),
+            ("/messages.js", "application/javascript"),
+            ("/messages.css", "text/css; charset=utf-8"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(request(Method::GET, path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()[header::CONTENT_TYPE], mime);
+        }
+        let response = app
+            .clone()
+            .oneshot(
+                request(Method::GET, "/api/message-board/inboxes")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let value: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+        assert_eq!(value["configured"], false);
+        for (name, value) in [
+            ("origin", "http://127.0.0.1:8090"),
+            ("sec-fetch-mode", "same-origin"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    request(Method::POST, "/api/message-board/machines/mac/ack/example")
+                        .header(name, value)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        }
+        let response = app
+            .oneshot(
+                request(Method::GET, "/api/message-board/inboxes")
+                    .header(header::ORIGIN, "https://attacker.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[test]

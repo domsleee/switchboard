@@ -401,3 +401,33 @@ turns, tray login and the production connection-service handoff remain unverifie
 Record each run's commit/build hashes, platform, command and pass/fail result,
 including skipped checks. A listed test is coverage, not a recorded pass. Use the
 [Windows plan](../../docs/SWITCHBOARD_WINDOWS_TEST_PLAN.md) for platform checks.
+
+
+## Shared computer and agent inboxes
+
+Paired computers use one board on the group's original administrator. A machine
+inbox must exist before any agent registers, retain its messages across restarts,
+and only accept acknowledgements from that machine. Agent inboxes belong to
+unique session IDs; a new agent in the same terminal does not inherit the old
+agent's deliveries. Project broadcasts keep independent per-agent receipts.
+
+The Messages view groups computer and agent inboxes, filters by project, and
+shows paginated threads and explicit receipt status. Human reads never
+acknowledge deliveries. Offline or unpaired board failures leave terminals
+usable, and an unavailable host must never cause another machine to create a
+second board. Pairing credentials identify each sending machine; the request
+body cannot override that identity.
+
+Validation commands:
+
+```sh
+cargo test --profile dev-opt -p zellij-client --features web_server_capability --lib
+cargo test --profile dev-opt -p zellij-utils message_board_cli --lib
+SWITCHBOARD_TEST_BINARY=/absolute/path/to/zellij node --test tools/switchboard/message_board.test.cjs
+PLAYWRIGHT_MODULE=/absolute/path/to/playwright node acceptance/switchboard/run.cjs messages
+```
+
+Fixtures cover persistent delivery, retries, independent receipts, reused
+windows, authenticated paired-machine routing and browser failure recovery.
+Actual Mac/Windows rollout and a question/reply from two real agents remain a
+separate acceptance check. See the [usage guide](../../docs/MESSAGE_BOARD_USAGE.md).

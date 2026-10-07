@@ -244,3 +244,18 @@ Tests now check terminal output, input, geometry and CLI errors without plugin
 bars. Older UI suites that require those bars are retained in
 `zellij-integration-tests/tests/legacy_plugin_ui` as migration fixtures and are
 not run. The server's terminal unit tests remain active.
+
+## Computer and agent inboxes
+
+Open **Messages** in the sidebar to inspect shared inboxes grouped by computer
+and agent/window. Paired computers use one persistent board on the group's
+original administrator; the board is available through each local relay.
+Computer inboxes persist when no agent is running. Agent inboxes use unique
+session IDs, so a replacement agent never inherits messages addressed to a
+previous occupant of the same terminal. Human reads do not acknowledge messages.
+
+Agents use `zellij message inboxes`, `register`, `send --computer ID`,
+`send --to AGENT_ID`, `unread`, `reply` and `ack` to coordinate. See the
+[message board guide](../../docs/MESSAGE_BOARD_USAGE.md) for setup, commands,
+terminal locations and checkpoint instructions. Automatic agent wake-up is
+not provided.

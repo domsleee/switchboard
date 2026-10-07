@@ -177,11 +177,24 @@ pub enum Command {
     Subscribe(SubscribeCli),
 }
 
+#[cfg(windows)]
+const MESSAGE_RELAY_URL: &str = "http://127.0.0.1:80";
+#[cfg(not(windows))]
+const MESSAGE_RELAY_URL: &str = "http://127.0.0.1:8090";
+
 #[derive(Debug, Args, Clone, Serialize, Deserialize)]
 pub struct MessageCli {
     /// Board client configuration; Serve uses a board host configuration instead
     #[clap(long, global = true, env = "SWITCHBOARD_BOARD_CONFIG")]
     pub board_config: Option<PathBuf>,
+    /// Local Switchboard relay used when no board configuration is supplied
+    #[clap(
+        long,
+        global = true,
+        env = "SWITCHBOARD_RELAY_URL",
+        default_value = MESSAGE_RELAY_URL
+    )]
+    pub relay_url: String,
     /// Registered agent session (never inferred from terminal titles)
     #[clap(long, global = true, env = "SWITCHBOARD_AGENT_SESSION")]
     pub agent_session: Option<String>,
@@ -224,12 +237,15 @@ pub enum MessageCommand {
     Send {
         #[clap(
             long,
-            conflicts_with = "broadcast",
-            required_unless_present = "broadcast"
+            conflicts_with_all = ["broadcast", "computer"],
+            required_unless_present_any = ["broadcast", "computer"]
         )]
         to: Option<String>,
-        #[clap(long, conflicts_with = "to", required_unless_present = "to")]
+        #[clap(long, conflicts_with_all = ["to", "computer"], required_unless_present_any = ["to", "computer"])]
         broadcast: Option<String>,
+        /// Send to a durable computer inbox, including when no agent is registered
+        #[clap(long, conflicts_with_all = ["to", "broadcast"], required_unless_present_any = ["to", "broadcast"])]
+        computer: Option<String>,
         #[clap(long)]
         body_file: Option<PathBuf>,
         #[clap(long)]
@@ -237,6 +253,22 @@ pub enum MessageCommand {
     },
     /// Read unread messages without acknowledging them
     Unread {
+        #[clap(long)]
+        computer: Option<String>,
+        #[clap(long, default_value = "0")]
+        after: u64,
+        #[clap(long, default_value = "25")]
+        limit: u16,
+    },
+    /// List computers and agent inboxes
+    Inboxes {
+        #[clap(long)]
+        project: Option<String>,
+    },
+    /// Read inbox history without acknowledging messages
+    Inbox {
+        #[clap(long)]
+        computer: Option<String>,
         #[clap(long, default_value = "0")]
         after: u64,
         #[clap(long, default_value = "25")]
@@ -259,7 +291,11 @@ pub enum MessageCommand {
         send_key: Option<String>,
     },
     /// Explicitly confirm receipt; this does not mean the task is complete
-    Ack { message_id: String },
+    Ack {
+        message_id: String,
+        #[clap(long)]
+        computer: Option<String>,
+    },
     /// Stop this identity receiving new messages and broadcasts; history remains
     Retire,
 }
@@ -1758,6 +1794,42 @@ mod tests {
             ],
         ] {
             assert!(CliArgs::try_parse_from(args).is_err());
+        }
+    }
+
+    #[test]
+    fn message_board_cli_supports_computer_addresses_and_local_relay() {
+        for args in [
+            vec!["zellij", "message", "inboxes"],
+            vec!["zellij", "message", "inbox", "--computer", "windows"],
+            vec!["zellij", "message", "unread", "--computer", "windows"],
+            vec![
+                "zellij",
+                "message",
+                "ack",
+                "message-id",
+                "--computer",
+                "windows",
+            ],
+            vec!["zellij", "message", "send", "--computer", "windows"],
+        ] {
+            let cli = CliArgs::try_parse_from(args).unwrap();
+            let Some(Command::Message(message)) = cli.command else {
+                panic!("Expected message command")
+            };
+            assert_eq!(message.relay_url, MESSAGE_RELAY_URL);
+        }
+        for target in ["--to", "--broadcast"] {
+            assert!(CliArgs::try_parse_from([
+                "zellij",
+                "message",
+                "send",
+                "--computer",
+                "windows",
+                target,
+                "other"
+            ])
+            .is_err());
         }
     }
 

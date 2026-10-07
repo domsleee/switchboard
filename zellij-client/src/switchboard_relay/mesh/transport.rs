@@ -385,7 +385,7 @@ impl Mesh {
         );
         Ok(serde_json::from_slice(&response.body)?)
     }
-    async fn authorized(&self, authorization: &str) -> Option<(String, Arc<Host>)> {
+    pub(super) async fn authorized(&self, authorization: &str) -> Option<(String, Arc<Host>)> {
         let bearer = authorization.strip_prefix("Bearer ")?;
         let db = self.database.lock().await;
         let membership = &db.membership.as_ref()?.value;
@@ -415,6 +415,10 @@ pub(in crate::switchboard_relay) fn gateway_router(mesh: Arc<Mesh>) -> Router {
         .route("/mesh/request", post(peer_request))
         .route("/mesh/complete", post(peer_complete))
         .route("/mesh/sync", post(super::sync::exchange))
+        .route(
+            "/mesh/board/{*path}",
+            axum::routing::any(super::inboxes::peer_board),
+        )
         .fallback(peer_terminal)
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
         .layer(middleware::from_fn_with_state(mesh.clone(), gateway_guard))

@@ -36,7 +36,7 @@ impl Store {
         };
         let conn = store.connection()?;
         let version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        anyhow::ensure!(version <= 1, "Unsupported message board database version");
+        anyhow::ensure!(version <= 2, "Unsupported message board database version");
         conn.execute_batch("PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS participants (
                 seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
@@ -56,7 +56,13 @@ impl Store {
                 name TEXT NOT NULL, machine_id TEXT NOT NULL, machine_name TEXT NOT NULL, acknowledged_at INTEGER,
                 PRIMARY KEY(message_seq, recipient));
             CREATE INDEX IF NOT EXISTS deliveries_unread ON deliveries(recipient, acknowledged_at, message_seq);
-            PRAGMA user_version=1;")?;
+            CREATE TABLE IF NOT EXISTS machines (id TEXT PRIMARY KEY, name TEXT NOT NULL, active INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS machine_deliveries (
+                message_seq INTEGER NOT NULL REFERENCES messages(seq), recipient TEXT NOT NULL REFERENCES machines(id),
+                name TEXT NOT NULL, machine_id TEXT NOT NULL, machine_name TEXT NOT NULL, acknowledged_at INTEGER,
+                PRIMARY KEY(message_seq, recipient));
+            CREATE INDEX IF NOT EXISTS machine_deliveries_unread ON machine_deliveries(recipient, acknowledged_at, message_seq);
+            PRAGMA user_version=2;")?;
         Ok(store)
     }
 
@@ -65,6 +71,106 @@ impl Store {
         conn.busy_timeout(Duration::from_secs(5))?;
         conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;")?;
         Ok(conn)
+    }
+
+    pub(super) fn configure_machines(&self, machines: &[Machine]) -> Result<()> {
+        let mut conn = self.connection()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute("UPDATE machines SET active=0", [])?;
+        for machine in machines {
+            tx.execute("INSERT INTO machines VALUES (?1,?2,1) ON CONFLICT(id) DO UPDATE SET name=excluded.name,active=1", params![machine.id,machine.name])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub(super) fn inboxes(&self, machine: &Machine, page: ReadPage) -> Result<serde_json::Value> {
+        validate_page(&page)?;
+        let conn = self.connection()?;
+        let mut query =
+            conn.prepare("SELECT id,name FROM machines WHERE active=1 ORDER BY name,id")?;
+        let machines = query
+            .query_map([], |r| {
+                Ok(Machine {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut result = vec![];
+        for computer in machines {
+            let count: u64 = conn.query_row("SELECT COUNT(*) FROM machine_deliveries d JOIN messages m ON m.seq=d.message_seq WHERE d.recipient=?1 AND d.acknowledged_at IS NULL AND (?2 IS NULL OR m.project=?2)", params![computer.id,page.project], |r|r.get(0))?;
+            let mut agents = conn.prepare("SELECT seq,id,machine_id,machine_name,name,project,terminal,active,created_at FROM participants WHERE machine_id=?1 AND (?2 IS NULL OR project=?2 OR EXISTS (SELECT 1 FROM deliveries d JOIN messages m ON m.seq=d.message_seq WHERE d.recipient=participants.id AND m.project=?2)) ORDER BY active DESC,seq")?;
+            let participants = agents
+                .query_map(params![computer.id, page.project], participant_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut entries = vec![];
+            for participant in participants {
+                let count: u64 = conn.query_row("SELECT COUNT(*) FROM deliveries d JOIN messages m ON m.seq=d.message_seq WHERE d.recipient=?1 AND d.acknowledged_at IS NULL AND (?2 IS NULL OR m.project=?2)", params![participant.id,page.project], |r|r.get(0))?;
+                let mut value = serde_json::to_value(participant).unwrap();
+                value["unread_count"] = json!(count);
+                entries.push(value);
+            }
+            result.push(json!({"id":computer.id,"name":computer.name,"unread_count":count,"participants":entries}));
+        }
+        Ok(json!({"machine_id":machine.id,"machines":result}))
+    }
+
+    pub(super) fn inbox(
+        &self,
+        id: &str,
+        computer: bool,
+        unread: bool,
+        page: ReadPage,
+    ) -> Result<Page<Message>> {
+        validate_page(&page)?;
+        let conn = self.connection()?;
+        if computer {
+            conn.query_row(
+                "SELECT 1 FROM machines WHERE id=?1 AND active=1",
+                [id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .ok_or_else(BoardError::missing)?;
+        } else {
+            participant(&conn, id)?;
+        }
+        let table = if computer {
+            "machine_deliveries"
+        } else {
+            "deliveries"
+        };
+        let mut query = conn.prepare(&format!("SELECT m.seq FROM {table} d JOIN messages m ON m.seq=d.message_seq WHERE d.recipient=?1 AND m.seq>?2 AND (?3=0 OR d.acknowledged_at IS NULL) AND (?4 IS NULL OR m.project=?4) ORDER BY m.seq LIMIT ?5"))?;
+        let ids = query
+            .query_map(
+                params![id, page.after, unread, page.project, page.limit as u32 + 1],
+                |r| r.get(0),
+            )?
+            .collect::<rusqlite::Result<Vec<u64>>>()?;
+        message_page(&conn, ids, page.limit)
+    }
+
+    pub(super) fn machine_ack(
+        &self,
+        machine: &Machine,
+        id: &str,
+        message_id: &str,
+    ) -> Result<Delivery> {
+        if machine.id != id {
+            return Err(BoardError::forbidden());
+        }
+        let mut conn = self.connection()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let seq = message_seq(&tx, message_id)?;
+        if tx.execute("UPDATE machine_deliveries SET acknowledged_at=COALESCE(acknowledged_at,?1) WHERE message_seq=?2 AND recipient=?3", params![now(),seq,id])? == 0 { return Err(BoardError::forbidden()); }
+        let result = message(&tx, seq)?
+            .deliveries
+            .into_iter()
+            .find(|d| d.recipient_kind == "computer" && d.recipient == id)
+            .unwrap();
+        tx.commit()?;
+        Ok(result)
     }
 
     pub(super) fn register(&self, machine: &Machine, request: Register) -> Result<Participant> {
@@ -130,14 +236,23 @@ impl Store {
             ));
         }
         if request.reply_to.is_some() {
-            if request.to.is_some() || request.broadcast.is_some() {
+            if request.to.is_some() || request.broadcast.is_some() || request.to_machine.is_some() {
                 return Err(BoardError::invalid(
                     "Reply chooses the original sender automatically",
                 ));
             }
-        } else if request.to.is_some() == request.broadcast.is_some() {
+        } else if [
+            request.to.is_some(),
+            request.broadcast.is_some(),
+            request.to_machine.is_some(),
+        ]
+        .into_iter()
+        .filter(|v| *v)
+        .count()
+            != 1
+        {
             return Err(BoardError::invalid(
-                "Choose one recipient or a project broadcast",
+                "Choose one agent, computer, or project broadcast",
             ));
         }
         let hash = Sha256::digest(serde_json::to_vec(&request).unwrap());
@@ -167,20 +282,23 @@ impl Store {
         let (project, thread, recipients) = if let Some(reply_id) = &request.reply_to {
             let seq = message_seq(&tx, reply_id)?;
             let original = message(&tx, seq)?;
-            if !original.deliveries.iter().any(|d| d.recipient == sender.id) {
+            if !original.deliveries.iter().any(|d| {
+                (d.recipient_kind == "agent" && d.recipient == sender.id)
+                    || (d.recipient_kind == "computer" && d.machine_id == machine.id)
+            }) {
                 return Err(BoardError::forbidden());
             }
             let recipient = participant(&tx, &original.sender)?;
-            if !recipient.active {
-                return Err(BoardError::conflict("The original sender is retired"));
-            }
+            active_recipient(&tx, &recipient)?;
             (original.project, original.thread_id, vec![recipient])
         } else {
-            let recipients = if let Some(project) = &request.broadcast {
+            let recipients = if request.to_machine.is_some() {
+                vec![]
+            } else if let Some(project) = &request.broadcast {
                 if project != &sender.project {
                     return Err(BoardError::forbidden());
                 }
-                let mut query = tx.prepare("SELECT id FROM participants WHERE active=1 AND project=?1 AND id<>?2 ORDER BY seq LIMIT ?3")?;
+                let mut query = tx.prepare("SELECT p.id FROM participants p JOIN machines c ON c.id=p.machine_id WHERE p.active=1 AND c.active=1 AND p.project=?1 AND p.id<>?2 ORDER BY p.seq LIMIT ?3")?;
                 let ids = query
                     .query_map(params![project, sender.id, MAX_RECIPIENTS + 1], |r| {
                         r.get::<_, String>(0)
@@ -212,6 +330,17 @@ impl Store {
         for recipient in recipients {
             tx.execute("INSERT INTO deliveries (message_seq,recipient,name,machine_id,machine_name) VALUES (?1,?2,?3,?4,?5)",
                 params![seq,recipient.id,recipient.name,recipient.machine_id,recipient.machine_name])?;
+        }
+        if let Some(id) = &request.to_machine {
+            let name: String = tx
+                .query_row(
+                    "SELECT name FROM machines WHERE id=?1 AND active=1",
+                    [id],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .ok_or_else(BoardError::missing)?;
+            tx.execute("INSERT INTO machine_deliveries (message_seq,recipient,name,machine_id,machine_name) VALUES (?1,?2,?3,?2,?3)", params![seq,id,name])?;
         }
         let result = message(&tx, seq)?;
         tx.commit()?;
@@ -313,20 +442,36 @@ fn owned(conn: &Connection, machine: &Machine, id: &str) -> Result<Participant> 
     }
     Ok(result)
 }
+fn active_recipient(conn: &Connection, recipient: &Participant) -> Result<()> {
+    if !recipient.active {
+        return Err(BoardError::conflict("Recipient is retired"));
+    }
+    let configured = conn
+        .query_row(
+            "SELECT 1 FROM machines WHERE id=?1 AND active=1",
+            [&recipient.machine_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if !configured {
+        return Err(BoardError::conflict(
+            "Recipient computer is no longer in this board",
+        ));
+    }
+    Ok(())
+}
 fn resolve(conn: &Connection, address: &str, project: &str) -> Result<Participant> {
     match participant(conn, address) {
         Ok(result) => {
-            return if result.active {
-                Ok(result)
-            } else {
-                Err(BoardError::conflict("Recipient is retired"))
-            }
+            active_recipient(conn, &result)?;
+            return Ok(result);
         },
         Err(error) if error.0 == StatusCode::NOT_FOUND => {},
         Err(error) => return Err(error),
     }
     label(address, "Recipient")?;
-    let mut query = conn.prepare("SELECT id FROM participants WHERE active=1 AND name=?1 AND project=?2 ORDER BY seq LIMIT 257")?;
+    let mut query = conn.prepare("SELECT p.id FROM participants p JOIN machines c ON c.id=p.machine_id WHERE p.active=1 AND c.active=1 AND p.name=?1 AND p.project=?2 ORDER BY p.seq LIMIT 257")?;
     let ids = query
         .query_map(params![address, project], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -355,10 +500,11 @@ fn message(conn: &Connection, seq: u64) -> Result<Message> {
         FROM messages WHERE seq=?1", [seq], |r| Ok(Message { cursor:r.get(0)?,id:r.get(1)?,sender:r.get(2)?,sender_name:r.get(3)?,
             sender_machine_id:r.get(4)?,sender_machine_name:r.get(5)?,project:r.get(6)?,thread_id:r.get(7)?,reply_to:r.get(8)?,
             body:r.get(9)?,created_at:r.get(10)?,deliveries:vec![] })).optional()?.ok_or_else(BoardError::missing)?;
-    let mut query = conn.prepare("SELECT recipient,name,machine_id,machine_name,acknowledged_at FROM deliveries WHERE message_seq=?1 ORDER BY recipient")?;
+    let mut query = conn.prepare("SELECT recipient,name,machine_id,machine_name,acknowledged_at,'agent' FROM deliveries WHERE message_seq=?1 UNION ALL SELECT recipient,name,machine_id,machine_name,acknowledged_at,'computer' FROM machine_deliveries WHERE message_seq=?1 ORDER BY recipient")?;
     result.deliveries = query
         .query_map([seq], |r| {
             Ok(Delivery {
+                recipient_kind: r.get(5)?,
                 recipient: r.get(0)?,
                 name: r.get(1)?,
                 machine_id: r.get(2)?,

@@ -121,7 +121,34 @@ pub(super) fn router(config: &HostConfig) -> anyhow::Result<Router> {
         )?,
         credentials: Arc::new(credentials),
     };
-    Ok(Router::new()
+    state
+        .store
+        .configure_machines(
+            &state
+                .credentials
+                .iter()
+                .map(|(_, m)| m.clone())
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|e| anyhow::anyhow!(e.1))?;
+    Ok(routes(state.clone()).layer(middleware::from_fn_with_state(state, authenticate)))
+}
+fn routes(state: BoardState) -> Router {
+    Router::new()
+        .route("/api/message-board/inboxes", get(inboxes))
+        .route("/api/message-board/machines/{id}/inbox", get(machine_inbox))
+        .route(
+            "/api/message-board/participants/{id}/inbox",
+            get(agent_inbox),
+        )
+        .route(
+            "/api/message-board/machines/{id}/unread",
+            get(machine_unread),
+        )
+        .route(
+            "/api/message-board/machines/{id}/ack/{message}",
+            post(machine_ack),
+        )
         .route(
             "/api/message-board/health",
             get(|| async { Json(json!({"status":"ok","protocol":1})) }),
@@ -139,8 +166,7 @@ pub(super) fn router(config: &HostConfig) -> anyhow::Result<Router> {
             post(ack),
         )
         .layer(DefaultBodyLimit::max(MAX_BODY * 6 + 16 * 1024))
-        .layer(middleware::from_fn_with_state(state.clone(), authenticate))
-        .with_state(state))
+        .with_state(state)
 }
 async fn authenticate(
     State(state): State<BoardState>,
@@ -258,4 +284,87 @@ pub(super) async fn serve(config: HostConfig) -> anyhow::Result<()> {
         axum::serve(listener, app).await?;
     }
     Ok(())
+}
+
+async fn inboxes(
+    State(state): State<BoardState>,
+    Extension(machine): Extension<Machine>,
+    Query(page): Query<ReadPage>,
+) -> Result<Json<serde_json::Value>> {
+    operation(move || state.store.inboxes(&machine, page)).await
+}
+async fn machine_inbox(
+    State(state): State<BoardState>,
+    Path(id): Path<String>,
+    Query(page): Query<ReadPage>,
+) -> Result<Json<Page<Message>>> {
+    operation(move || state.store.inbox(&id, true, false, page)).await
+}
+async fn agent_inbox(
+    State(state): State<BoardState>,
+    Path(id): Path<String>,
+    Query(page): Query<ReadPage>,
+) -> Result<Json<Page<Message>>> {
+    operation(move || state.store.inbox(&id, false, false, page)).await
+}
+async fn machine_unread(
+    State(state): State<BoardState>,
+    Extension(machine): Extension<Machine>,
+    Path(id): Path<String>,
+    Query(page): Query<ReadPage>,
+) -> Result<Json<Page<Message>>> {
+    if machine.id != id {
+        return Err(BoardError::forbidden());
+    }
+    operation(move || state.store.inbox(&id, true, true, page)).await
+}
+async fn machine_ack(
+    State(state): State<BoardState>,
+    Extension(machine): Extension<Machine>,
+    Path((id, message)): Path<(String, String)>,
+) -> Result<Json<Delivery>> {
+    operation(move || state.store.machine_ack(&machine, &id, &message)).await
+}
+
+/// Dispatch a request whose computer identity has already been authenticated by the relay mesh.
+pub(crate) async fn dispatch(
+    database: PathBuf,
+    machine: (String, String),
+    machines: Vec<(String, String)>,
+    mut request: Request,
+) -> Response {
+    use tower::ServiceExt;
+    let store = match tokio::task::spawn_blocking(move || {
+        let store = Store::open(&database)?;
+        let machines = machines
+            .into_iter()
+            .map(|(id, name)| Machine { id, name })
+            .collect::<Vec<_>>();
+        store
+            .configure_machines(&machines)
+            .map_err(|e| anyhow::anyhow!(e.1))?;
+        Ok::<_, anyhow::Error>(store)
+    })
+    .await
+    {
+        Ok(Ok(store)) => store,
+        _ => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error":"Board storage is unavailable"})),
+            )
+                .into_response()
+        },
+    };
+    request.extensions_mut().insert(Machine {
+        id: machine.0,
+        name: machine.1,
+    });
+    routes(BoardState {
+        store,
+        credentials: Arc::new(vec![]),
+    })
+    .oneshot(request)
+    .await
+    .unwrap()
 }

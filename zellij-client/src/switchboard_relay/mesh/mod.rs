@@ -2,6 +2,7 @@
 mod crypto;
 mod direct;
 pub(super) mod discovery;
+mod inboxes;
 mod storage;
 mod sync;
 #[cfg(test)]

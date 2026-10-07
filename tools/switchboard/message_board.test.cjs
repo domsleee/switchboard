@@ -56,7 +56,20 @@ test('message board CLI exchanges multiline threads, preserves delivery across r
     async function ok(machine,args,input){const result=await invoke(machine,args,input);assert.equal(result.code,0,result.stderr);return result.value;}
     await start();
     const a=await ok('mac',['register','--name','backend','--project','switchboard']);
+    const directory=await ok('mac',['inboxes']);
+    assert.equal(directory.machine_id,'mac');
+    assert.deepEqual(directory.machines.find(m=>m.id==='windows').participants,[]);
+    const computerArgs=['--agent-session',a.id,'send','--computer','windows','--send-key','computer-question'];
+    const computerMessage=await ok('mac',computerArgs,'Computer question');
+    assert.equal(computerMessage.deliveries[0].recipient_kind,'computer');
+    assert.equal((await ok('mac',computerArgs,'Computer question')).id,computerMessage.id);
+    assert.equal((await ok('mac',['inbox','--computer','windows'])).items[0].id,computerMessage.id);
+    assert.equal((await invoke('mac',['unread','--computer','windows'])).code,1);
+    assert.equal((await invoke('mac',['ack',computerMessage.id,'--computer','windows'])).code,1);
+    assert.equal((await ok('windows',['unread','--computer','windows'])).items[0].id,computerMessage.id);
     const b=await ok('windows',['register','--name','reviewer','--project','switchboard']);
+    const computerReply=await ok('windows',['--agent-session',b.id,'reply',computerMessage.id,'--send-key','computer-reply'],'Received on Windows');
+    assert.equal(computerReply.thread_id,computerMessage.thread_id);
     const duplicate=await ok('windows',['register','--name','reviewer','--project','switchboard']);
     assert.notEqual(b.id,duplicate.id);
     const ambiguous=await invoke('mac',['--agent-session',a.id,'send','--to','reviewer','--send-key','ambiguous'],'Question');
@@ -72,6 +85,11 @@ test('message board CLI exchanges multiline threads, preserves delivery across r
     const acknowledgement=await ok('windows',['--agent-session',b.id,'ack',sent.id]);assert.ok(acknowledgement.acknowledged_at);
     await stop(server);await start();
     assert.equal((await ok('windows',['--agent-session',b.id,'unread'])).items.length,0);
+    assert.equal((await ok('windows',['unread','--computer','windows'])).items[0].id,computerMessage.id);
+    await ok('windows',['ack',computerMessage.id,'--computer','windows']);
+    assert.equal((await ok('windows',['unread','--computer','windows'])).items.length,0);
+    assert.ok((await ok('mac',['inbox','--computer','windows'])).items[0].deliveries[0].acknowledged_at);
+    assert.equal((await ok('mac',['--agent-session',b.id,'inbox'])).items[0].id,sent.id);
     const thread=await ok('mac',['thread',sent.thread_id]);assert.equal(thread.items.length,2);
     assert.equal(thread.items[0].deliveries[0].acknowledged_at,acknowledgement.acknowledged_at);
     const replacement=await ok('windows',['register','--name','reviewer','--project','switchboard']);
