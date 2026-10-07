@@ -1,6 +1,223 @@
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+async fn board_call(mesh: &Mesh, method: Method, path: &str, body: Value) -> (StatusCode, Value) {
+    let response = mesh
+        .board(
+            Request::builder()
+                .method(method)
+                .uri(format!("/api/message-board/{path}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await;
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), LIMIT).await.unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes)
+            .unwrap_or_else(|_| json!({"error":String::from_utf8_lossy(&bytes)})),
+    )
+}
+
+#[tokio::test]
+async fn shared_board_routes_three_computers_to_one_durable_authenticated_host() {
+    use tower::ServiceExt;
+    let route = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    route.connect("192.0.2.1:9").unwrap();
+    let ip = route.local_addr().unwrap().ip();
+    let temp = tempfile::tempdir().unwrap();
+    let listener = std::net::TcpListener::bind((ip, 0)).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let endpoint = format!("https://{}", listener.local_addr().unwrap());
+    let mac = machine(&temp.path().join("mac"), "Mac", &endpoint).await;
+    let windows = machine(
+        &temp.path().join("windows"),
+        "Windows",
+        "https://192.0.2.2:8091",
+    )
+    .await;
+    let laptop = machine(
+        &temp.path().join("laptop"),
+        "Laptop",
+        "https://192.0.2.3:8091",
+    )
+    .await;
+    assert_eq!(
+        board_call(&windows, Method::GET, "inboxes", Value::Null)
+            .await
+            .0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    for peer in [&windows, &laptop] {
+        let invite = invitation(&mac, 1000).await;
+        let (_, approval) = approved(&mac, peer, &invite, 1000).await;
+        mac.complete(peer.install(approval, &invite).await.unwrap())
+            .await
+            .unwrap();
+    }
+    let mac_id = mac.database.lock().await.local.as_ref().unwrap().id.clone();
+    let windows_id = windows
+        .database
+        .lock()
+        .await
+        .local
+        .as_ref()
+        .unwrap()
+        .id
+        .clone();
+    let laptop_id = laptop
+        .database
+        .lock()
+        .await
+        .local
+        .as_ref()
+        .unwrap()
+        .id
+        .clone();
+    // Windows' stale two-computer roster is reconciled without changing the host.
+    windows
+        .exchange(mac.prepare_sync(&windows_id).await.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        windows
+            .database
+            .lock()
+            .await
+            .membership
+            .as_ref()
+            .unwrap()
+            .value
+            .administrator,
+        mac_id
+    );
+    let tls = axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(mac.tls().unwrap()));
+    let handle = axum_server::Handle::new();
+    let server = axum_server::from_tcp_rustls(listener, tls)
+        .unwrap()
+        .handle(handle.clone());
+    let router = transport::gateway_router(mac.clone());
+    let task = tokio::spawn(async move { server.serve(router.into_make_service()).await.unwrap() });
+    let (status, sender) = board_call(
+        &windows,
+        Method::POST,
+        "participants",
+        json!({"name":"worker","project":"switchboard"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{sender}");
+    assert_eq!(sender["machine_id"], windows_id);
+    let (status, recipient) = board_call(
+        &laptop,
+        Method::POST,
+        "participants",
+        json!({"name":"reviewer","project":"switchboard"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{recipient}");
+    let (status, message) = board_call(&windows, Method::POST, "messages", json!({"sender":sender["id"],"send_key":"mesh-message","body":"Review this","to":recipient["id"]})).await;
+    assert_eq!(status, StatusCode::OK, "{message}");
+    let path = format!(
+        "participants/{}/unread?limit=1",
+        recipient["id"].as_str().unwrap()
+    );
+    let (status, inbox) = board_call(&laptop, Method::GET, &path, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{inbox}");
+    assert_eq!(inbox["items"][0]["id"], message["id"]);
+    // The host independently sees the same durable record.
+    let (_, inbox) = board_call(
+        &mac,
+        Method::GET,
+        &format!("participants/{}/inbox", recipient["id"].as_str().unwrap()),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(inbox["items"][0]["id"], message["id"]);
+    let (status, _) = board_call(
+        &laptop,
+        Method::POST,
+        "messages",
+        json!({"sender":sender["id"],"send_key":"spoof","body":"Forged","to_machine":mac_id}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, machine_message) = board_call(&windows, Method::POST, "messages", json!({"sender":sender["id"],"send_key":"machine-message","body":"Machine handoff","to_machine":laptop_id})).await;
+    assert_eq!(status, StatusCode::OK, "{machine_message}");
+    let (_, inbox) = board_call(
+        &laptop,
+        Method::GET,
+        &format!("machines/{laptop_id}/unread"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(inbox["items"][0]["id"], machine_message["id"]);
+    // JSON escaping can grow a valid 64 KiB message sixfold on the wire.
+    let (status, large) = board_call(&windows, Method::POST, "messages", json!({"sender":sender["id"],"send_key":"escaped-message","body":"\u{1}".repeat(64 * 1024),"to_machine":laptop_id})).await;
+    assert_eq!(status, StatusCode::OK, "{large}");
+    let bearer = mac.database.lock().await.outgoing[&windows_id]
+        .gateway
+        .clone();
+    let authority = endpoint.strip_prefix("https://").unwrap();
+    for (token, origin, expected) in [
+        ("invalid", false, StatusCode::UNAUTHORIZED),
+        (&bearer, true, StatusCode::FORBIDDEN),
+    ] {
+        let mut request = Request::builder()
+            .uri("/mesh/board/inboxes")
+            .header(header::HOST, authority)
+            .header(header::AUTHORIZATION, format!("Bearer {token}"));
+        if origin {
+            request = request.header(header::ORIGIN, "http://localhost");
+        }
+        let response = transport::gateway_router(mac.clone())
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+    }
+    // Revoked membership cannot access the board, even with its old credential.
+    {
+        let mut db = mac.database.lock().await;
+        db.membership
+            .as_mut()
+            .unwrap()
+            .value
+            .members
+            .remove(&windows_id);
+    }
+    assert_eq!(
+        board_call(&windows, Method::GET, "inboxes", Value::Null)
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    handle.shutdown();
+    task.await.unwrap();
+    assert_eq!(
+        board_call(&laptop, Method::GET, "inboxes", Value::Null)
+            .await
+            .0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    for peer in [&windows, &laptop] {
+        assert!(
+            !std::fs::read_dir(&peer.storage.root).unwrap().any(|p| p
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("board-")),
+            "A non-host must never create a competing board"
+        );
+    }
+    assert!(std::fs::read_dir(&mac.storage.root).unwrap().any(|p| p
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .ends_with(".sqlite3")));
+}
+
 #[derive(Default)]
 struct FakeIssuer(AtomicUsize);
 impl TokenIssuer for FakeIssuer {

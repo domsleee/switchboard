@@ -10,6 +10,7 @@ Use `cargo build --release --timings` to write a build report to
 
 | Guide | Contents |
 | --- | --- |
+| [Shared message board](MESSAGE_BOARD_USAGE.md) | Computer and agent inboxes, paired-machine routing, CLI registration and acknowledgement. |
 | [Architecture](ARCHITECTURE.md) | Native session workers, tabs, panes, Grid, browser sizing, web daemon, Rust relay and desktop helpers. |
 | [Terminology](TERMINOLOGY.md) | Sessions, clients, PTYs, Windows ConPTY, ANSI/VT sequences and viewport ownership. |
 | [Error handling](ERROR_HANDLING.md) | Current Rust error APIs, recovery boundaries and isolation of relay failures from healthy sessions. |

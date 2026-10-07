@@ -17,13 +17,13 @@ struct ClientConfig {
     token_file: PathBuf,
     ca_cert: Option<PathBuf>,
 }
-struct Client {
+pub(crate) struct Client {
     origin: url::Url,
-    token: String,
+    token: Option<String>,
     http: HttpClient,
 }
 impl Client {
-    fn load(path: &std::path::Path) -> anyhow::Result<Self> {
+    pub(crate) fn load(path: &std::path::Path) -> anyhow::Result<Self> {
         let mut config: ClientConfig = serde_json::from_slice(
             &std::fs::read(path).context("Cannot read board client configuration")?,
         )?;
@@ -58,26 +58,28 @@ impl Client {
         }
         Ok(Self {
             origin: config.url,
-            token: token_file(&config.token_file)?,
+            token: Some(token_file(&config.token_file)?),
             http: builder.build()?,
         })
     }
-    fn request(
+    pub(crate) fn request_response(
         &self,
         method: &str,
         path: &str,
         payload: Option<serde_json::Value>,
-    ) -> anyhow::Result<serde_json::Value> {
+    ) -> anyhow::Result<(u16, serde_json::Value)> {
         let url = self.origin.join(&format!("api/message-board/{path}"))?;
         let body = payload
             .map(|v| serde_json::to_vec(&v).unwrap())
             .unwrap_or_default();
-        let request = Request::builder()
+        let mut builder = Request::builder()
             .method(method)
             .uri(url.as_str())
-            .header("Authorization", format!("Bearer {}", self.token))
-            .header("Content-Type", "application/json")
-            .body(body)?;
+            .header("Content-Type", "application/json");
+        if let Some(token) = &self.token {
+            builder = builder.header("Authorization", format!("Bearer {token}"));
+        }
+        let request = builder.body(body)?;
         // Never follow a redirect with a machine credential, and never start a local fallback board.
         let mut response = self.http.send(request).map_err(|_| {
             anyhow::anyhow!(
@@ -96,8 +98,17 @@ impl Client {
         );
         let value: serde_json::Value =
             serde_json::from_slice(&bytes).context("Board returned an invalid response")?;
+        Ok((status.as_u16(), value))
+    }
+    fn request(
+        &self,
+        method: &str,
+        path: &str,
+        payload: Option<serde_json::Value>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let (status, value) = self.request_response(method, path, payload)?;
         anyhow::ensure!(
-            status.is_success(),
+            (200..300).contains(&status),
             "{}",
             value
                 .get("error")
@@ -105,6 +116,33 @@ impl Client {
                 .unwrap_or("Board request failed")
         );
         Ok(value)
+    }
+    fn relay(origin: &str) -> anyhow::Result<Self> {
+        let origin = url::Url::parse(origin)?;
+        let loopback = match origin.host() {
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+            Some(url::Host::Domain(name)) => name == "localhost",
+            _ => false,
+        };
+        anyhow::ensure!(
+            loopback
+                && matches!(origin.scheme(), "http" | "https")
+                && origin.username().is_empty()
+                && origin.password().is_none()
+                && origin.path() == "/"
+                && origin.query().is_none()
+                && origin.fragment().is_none(),
+            "Relay URL must be a loopback HTTP(S) origin"
+        );
+        Ok(Self {
+            origin,
+            token: None,
+            http: HttpClient::builder()
+                .timeout(Duration::from_secs(15))
+                .redirect_policy(RedirectPolicy::None)
+                .build()?,
+        })
     }
 }
 fn body(path: &Option<PathBuf>) -> anyhow::Result<String> {
@@ -135,20 +173,43 @@ fn page(after: u64, limit: u16) -> String {
 fn segment(value: &str) -> String {
     urlencoding::encode(value).into_owned()
 }
+// Read only the relay port; registration also contains credentials which must never be logged.
+fn default_relay_url(registration: &std::path::Path) -> String {
+    #[derive(Deserialize)]
+    struct RegisteredPort {
+        port: std::num::NonZeroU16,
+    }
+    let port = std::fs::File::open(registration)
+        .ok()
+        .and_then(|file| serde_json::from_reader::<_, RegisteredPort>(file.take(64 * 1024)).ok())
+        .map(|value| value.port.get())
+        .unwrap_or(8090);
+    format!("http://127.0.0.1:{port}")
+}
+fn relay_url(explicit: Option<&str>, registration: &std::path::Path) -> String {
+    explicit
+        .map(str::to_owned)
+        .unwrap_or_else(|| default_relay_url(registration))
+}
 pub fn run_cli(cli: &MessageCli) -> anyhow::Result<()> {
-    let config = cli.board_config.as_deref().ok_or_else(|| {
-        anyhow::anyhow!(
-            "Supply --board-config or SWITCHBOARD_BOARD_CONFIG; no local fallback board is started"
-        )
-    })?;
     if matches!(cli.command, MessageCommand::Serve) {
+        let config = cli
+            .board_config
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("Serve requires --board-config"))?;
         return tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
             .build()?
             .block_on(transport::serve(load_host(config)?));
     }
-    let client = Client::load(config)?;
+    let client = if let Some(config) = cli.board_config.as_deref() {
+        Client::load(config)?
+    } else {
+        let registration =
+            zellij_utils::consts::ZELLIJ_CACHE_DIR.join("switchboard-peer-8082/registration.json");
+        Client::relay(&relay_url(cli.relay_url.as_deref(), &registration))?
+    };
     let result = match &cli.command {
         MessageCommand::Register {
             name,
@@ -193,15 +254,43 @@ pub fn run_cli(cli: &MessageCli) -> anyhow::Result<()> {
                 None,
             )?
         },
-        MessageCommand::Unread { after, limit } => client.request(
+        MessageCommand::Inboxes { project } => client.request(
             "GET",
             &format!(
-                "participants/{}/unread?{}",
-                segment(agent(cli)?),
-                page(*after, *limit)
+                "inboxes{}",
+                project
+                    .as_ref()
+                    .map(|p| format!("?project={}", segment(p)))
+                    .unwrap_or_default()
             ),
             None,
         )?,
+        MessageCommand::Unread {
+            computer,
+            after,
+            limit,
+        }
+        | MessageCommand::Inbox {
+            computer,
+            after,
+            limit,
+        } => {
+            let resource = if matches!(&cli.command, MessageCommand::Unread { .. }) {
+                "unread"
+            } else {
+                "inbox"
+            };
+            let (kind, id) = if let Some(id) = computer {
+                ("machines", id.as_str())
+            } else {
+                ("participants", agent(cli)?)
+            };
+            client.request(
+                "GET",
+                &format!("{kind}/{}/{resource}?{}", segment(id), page(*after, *limit)),
+                None,
+            )?
+        },
         MessageCommand::Thread {
             thread_id,
             after,
@@ -211,15 +300,21 @@ pub fn run_cli(cli: &MessageCli) -> anyhow::Result<()> {
             &format!("threads/{}?{}", segment(thread_id), page(*after, *limit)),
             None,
         )?,
-        MessageCommand::Ack { message_id } => client.request(
-            "POST",
-            &format!(
-                "participants/{}/ack/{}",
-                segment(agent(cli)?),
-                segment(message_id)
-            ),
-            None,
-        )?,
+        MessageCommand::Ack {
+            message_id,
+            computer,
+        } => {
+            let (kind, id) = if let Some(id) = computer {
+                ("machines", id.as_str())
+            } else {
+                ("participants", agent(cli)?)
+            };
+            client.request(
+                "POST",
+                &format!("{kind}/{}/ack/{}", segment(id), segment(message_id)),
+                None,
+            )?
+        },
         MessageCommand::Retire => client.request(
             "POST",
             &format!("participants/{}/retire", segment(agent(cli)?)),
@@ -227,6 +322,7 @@ pub fn run_cli(cli: &MessageCli) -> anyhow::Result<()> {
         )?,
         MessageCommand::Send {
             to,
+            computer,
             broadcast,
             body_file,
             send_key,
@@ -239,6 +335,7 @@ pub fn run_cli(cli: &MessageCli) -> anyhow::Result<()> {
                 body: body(body_file)?,
                 to: to.clone(),
                 broadcast: broadcast.clone(),
+                to_machine: computer.clone(),
                 reply_to: None,
             };
             eprintln!("Send key: {}", request.send_key);
@@ -257,6 +354,7 @@ pub fn run_cli(cli: &MessageCli) -> anyhow::Result<()> {
                 body: body(body_file)?,
                 to: None,
                 broadcast: None,
+                to_machine: None,
                 reply_to: Some(message_id.clone()),
             };
             eprintln!("Send key: {}", request.send_key);
@@ -314,6 +412,54 @@ fn safe_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn message_board_cli_discovers_registered_relay_port_without_overriding_explicit_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let registration = dir.path().join("registration.json");
+        assert_eq!(relay_url(None, &registration), "http://127.0.0.1:8090");
+        assert!(!registration.exists());
+        for port in [80, 8090] {
+            std::fs::write(&registration, format!(r#"{{"port":{port},"key":"private credential","endpoint":"https://untrusted.invalid"}}"#)).unwrap();
+            assert_eq!(
+                relay_url(None, &registration),
+                format!("http://127.0.0.1:{port}")
+            );
+            assert_eq!(
+                relay_url(Some("http://127.0.0.1:8181"), &registration),
+                "http://127.0.0.1:8181"
+            );
+        }
+        for invalid in [
+            r#"{"port":0}"#,
+            r#"{"port":65536}"#,
+            r#"{"port":-1}"#,
+            r#"{"port":"80"}"#,
+            r#"{"port":80.5}"#,
+            "{}",
+            "invalid",
+        ] {
+            std::fs::write(&registration, invalid).unwrap();
+            assert_eq!(relay_url(None, &registration), "http://127.0.0.1:8090");
+        }
+        assert_eq!(
+            relay_url(Some("http://127.0.0.1:8181"), &registration),
+            "http://127.0.0.1:8181"
+        );
+    }
+
+    #[test]
+    fn message_board_relay_client_only_accepts_loopback_origins() {
+        assert!(Client::relay("http://127.0.0.1:8090").is_ok());
+        assert!(Client::relay("http://[::1]:8090").is_ok());
+        for url in [
+            "http://192.0.2.1:8090",
+            "http://localhost:8090/path",
+            "http://secret@localhost:8090",
+            "http://localhost:8090/?token=secret",
+        ] {
+            assert!(Client::relay(url).is_err(), "{url}");
+        }
+    }
     #[test]
     fn message_board_cli_preserves_utf8_multiline_file_and_never_prints_terminal_controls() {
         let dir = tempfile::tempdir().unwrap();

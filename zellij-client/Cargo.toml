@@ -21,6 +21,7 @@ http-body-util = { version = "0.1", optional = true }
 flate2 = { version = "1", optional = true }
 sha2 = { workspace = true, optional = true }
 time = { version = "0.3", optional = true }
+tower = { version = "0.5", features = ["util"], optional = true }
 hpke = { version = "0.13", default-features = false, features = ["std", "alloc", "x25519"], optional = true }
 mesh-rand = { package = "rand", version = "0.9", optional = true }
 ring = { version = "0.17", optional = true }
@@ -95,6 +96,7 @@ web_server_capability = [
     "dep:axum",
     "dep:axum-extra",
     "dep:time",
+    "dep:tower",
     "dep:axum-server",
     "dep:hyper",
     "dep:hyper-util",

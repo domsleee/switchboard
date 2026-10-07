@@ -1,5 +1,5 @@
 //! A single durable agent board, served separately from terminals and artifacts.
-mod cli;
+pub(crate) mod cli;
 mod store;
 #[cfg(test)]
 mod tests;
@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 pub use cli::run_cli;
+pub(crate) use transport::dispatch;
 const MAX_BODY: usize = 64 * 1024;
 const MAX_RECIPIENTS: usize = 256;
 type Result<T> = std::result::Result<T, BoardError>;
@@ -99,12 +100,16 @@ struct SendMessage {
     to: Option<String>,
     #[serde(default)]
     broadcast: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    to_machine: Option<String>,
     #[serde(default)]
     reply_to: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Delivery {
+    #[serde(default = "agent_kind")]
+    recipient_kind: String,
     recipient: String,
     name: String,
     machine_id: String,
@@ -168,4 +173,8 @@ fn now() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn agent_kind() -> String {
+    "agent".into()
 }

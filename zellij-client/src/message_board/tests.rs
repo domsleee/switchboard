@@ -12,6 +12,9 @@ fn machine(id: &str) -> Machine {
 fn fixture() -> (TempDir, Store) {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(&dir.path().join("board.sqlite3")).unwrap();
+    store
+        .configure_machines(&[machine("mac"), machine("windows")])
+        .unwrap();
     (dir, store)
 }
 fn register(store: &Store, machine_id: &str, name: &str) -> Participant {
@@ -34,6 +37,7 @@ fn request(sender: &Participant, recipient: &Participant, key: &str) -> SendMess
         body: "Question 🦀\nSecond line".into(),
         to: Some(recipient.id.clone()),
         broadcast: None,
+        to_machine: None,
         reply_to: None,
     }
 }
@@ -133,6 +137,7 @@ fn message_board_multiline_reply_unread_and_ack_survive_restart_without_implicit
                 body: "Answer\nYes".into(),
                 to: None,
                 broadcast: None,
+                to_machine: None,
                 reply_to: Some(sent.id.clone()),
             },
         )
@@ -437,4 +442,400 @@ fn message_board_lan_listener_requires_tls_and_unique_machine_credentials() {
         .unwrap_err()
         .to_string()
         .contains("tokens must be distinct"));
+}
+
+#[test]
+fn message_board_computer_inbox_is_durable_independent_and_retry_safe() {
+    let (dir, store) = fixture();
+    store
+        .configure_machines(&[machine("mac"), machine("windows")])
+        .unwrap();
+    let sender = register(&store, "mac", "sender");
+    let mut send = request(&sender, &sender, "computer-delivery");
+    send.to = None;
+    send.to_machine = Some("windows".into());
+    let sent = store.send(&machine("mac"), send.clone()).unwrap();
+    assert_eq!(sent.deliveries[0].recipient_kind, "computer");
+    assert_eq!(sent.deliveries[0].recipient, "windows");
+    assert_eq!(
+        store.send(&machine("mac"), send.clone()).unwrap().id,
+        sent.id
+    );
+    let listing = store.inboxes(&machine("mac"), page()).unwrap();
+    let windows = listing["machines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == "windows")
+        .unwrap();
+    assert_eq!(windows["unread_count"], 1);
+    assert!(windows["participants"].as_array().unwrap().is_empty());
+    for _ in 0..2 {
+        assert_eq!(
+            store
+                .inbox("windows", true, false, page())
+                .unwrap()
+                .items
+                .len(),
+            1
+        );
+        assert!(
+            store.thread(&sent.thread_id, page()).unwrap().items[0].deliveries[0]
+                .acknowledged_at
+                .is_none()
+        );
+    }
+    assert_eq!(
+        store
+            .machine_ack(&machine("mac"), "windows", &sent.id)
+            .unwrap_err()
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    let receiver = register(&store, "windows", "receiver");
+    assert!(store
+        .unread(&machine("windows"), &receiver.id, page())
+        .unwrap()
+        .items
+        .is_empty());
+    let mut reply = request(&receiver, &sender, "reply-computer");
+    reply.to = None;
+    reply.reply_to = Some(sent.id.clone());
+    assert_eq!(
+        store.send(&machine("windows"), reply).unwrap().thread_id,
+        sent.thread_id
+    );
+    let personal = store
+        .send(&machine("mac"), request(&sender, &receiver, "personal"))
+        .unwrap();
+    let ack = store
+        .machine_ack(&machine("windows"), "windows", &sent.id)
+        .unwrap();
+    assert_eq!(
+        store
+            .machine_ack(&machine("windows"), "windows", &sent.id)
+            .unwrap()
+            .acknowledged_at,
+        ack.acknowledged_at
+    );
+    assert_eq!(
+        store
+            .unread(&machine("windows"), &receiver.id, page())
+            .unwrap()
+            .items[0]
+            .id,
+        personal.id
+    );
+    drop(store);
+    let store = Store::open(&dir.path().join("board.sqlite3")).unwrap();
+    assert!(store
+        .inbox("windows", true, true, page())
+        .unwrap()
+        .items
+        .is_empty());
+    assert_eq!(
+        store.inbox("windows", true, false, page()).unwrap().items[0].deliveries[0].acknowledged_at,
+        ack.acknowledged_at
+    );
+    assert_eq!(
+        store.send(&machine("mac"), send.clone()).unwrap().id,
+        sent.id
+    );
+    send.to_machine = Some("mac".into());
+    assert_eq!(
+        store.send(&machine("mac"), send).unwrap_err().0,
+        StatusCode::CONFLICT
+    );
+}
+
+#[test]
+fn message_board_history_is_paginated_and_filters_project_without_ack() {
+    let (_dir, store) = fixture();
+    store
+        .configure_machines(&[machine("mac"), machine("windows")])
+        .unwrap();
+    let sender = register(&store, "mac", "sender");
+    let receiver = register(&store, "windows", "receiver");
+    for n in 0..3 {
+        store
+            .send(
+                &machine("mac"),
+                request(&sender, &receiver, &format!("history-{n}")),
+            )
+            .unwrap();
+    }
+    let mut query = page();
+    query.limit = 2;
+    let first = store
+        .inbox(&receiver.id, false, false, query.clone())
+        .unwrap();
+    assert_eq!(first.items.len(), 2);
+    query.after = first.next_cursor.unwrap();
+    assert_eq!(
+        store
+            .inbox(&receiver.id, false, false, query)
+            .unwrap()
+            .items
+            .len(),
+        1
+    );
+    let mut query = page();
+    query.project = Some("other".into());
+    assert!(store
+        .inbox(&receiver.id, false, false, query)
+        .unwrap()
+        .items
+        .is_empty());
+    assert_eq!(
+        store
+            .unread(&machine("windows"), &receiver.id, page())
+            .unwrap()
+            .items
+            .len(),
+        3
+    );
+    store.retire(&machine("windows"), &receiver.id).unwrap();
+    assert_eq!(
+        store
+            .inbox(&receiver.id, false, false, page())
+            .unwrap()
+            .items
+            .len(),
+        3
+    );
+    let listing = store.inboxes(&machine("mac"), page()).unwrap();
+    let windows = listing["machines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == "windows")
+        .unwrap();
+    assert_eq!(windows["participants"][0]["active"], false);
+    assert_eq!(windows["participants"][0]["unread_count"], 3);
+}
+
+#[test]
+fn message_board_v1_migration_keeps_original_request_retry_hash() {
+    let (dir, store) = fixture();
+    let sender = register(&store, "mac", "sender");
+    let receiver = register(&store, "windows", "receiver");
+    let send = request(&sender, &receiver, "old-key");
+    assert!(serde_json::to_value(&send)
+        .unwrap()
+        .get("to_machine")
+        .is_none());
+    let sent = store.send(&machine("mac"), send.clone()).unwrap();
+    let conn = rusqlite::Connection::open(dir.path().join("board.sqlite3")).unwrap();
+    conn.execute_batch(
+        "DROP TABLE machine_deliveries; DROP TABLE machines; PRAGMA user_version=1;",
+    )
+    .unwrap();
+    drop(conn);
+    drop(store);
+    let store = Store::open(&dir.path().join("board.sqlite3")).unwrap();
+    store
+        .configure_machines(&[machine("mac"), machine("windows")])
+        .unwrap();
+    assert_eq!(store.send(&machine("mac"), send).unwrap().id, sent.id);
+    assert_eq!(
+        store
+            .inbox(&receiver.id, false, false, page())
+            .unwrap()
+            .items[0]
+            .id,
+        sent.id
+    );
+}
+
+#[tokio::test]
+async fn message_board_dispatch_enforces_computer_ownership_and_never_acks_history() {
+    let (dir, store) = fixture();
+    store
+        .configure_machines(&[machine("mac"), machine("windows")])
+        .unwrap();
+    let sender = register(&store, "mac", "sender");
+    let mut send = request(&sender, &sender, "mesh-machine");
+    send.to = None;
+    send.to_machine = Some("windows".into());
+    let sent = store.send(&machine("mac"), send).unwrap();
+    for (caller, path, method, status) in [
+        ("mac", "machines/windows/inbox".to_string(), "GET", 200),
+        ("mac", "machines/windows/unread".to_string(), "GET", 403),
+        (
+            "mac",
+            format!("machines/windows/ack/{}", sent.id),
+            "POST",
+            403,
+        ),
+        ("windows", "machines/windows/unread".to_string(), "GET", 200),
+        ("mac", "machines/unknown/inbox".to_string(), "GET", 404),
+    ] {
+        let req = axum::http::Request::builder()
+            .method(method)
+            .uri(format!("/api/message-board/{path}"))
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = dispatch(
+            dir.path().join("board.sqlite3"),
+            (caller.into(), caller.into()),
+            vec![
+                ("mac".into(), "Mac".into()),
+                ("windows".into(), "Windows".into()),
+            ],
+            req,
+        )
+        .await;
+        assert_eq!(response.status().as_u16(), status, "{method} {path}");
+    }
+    assert!(
+        store.inbox("windows", true, false, page()).unwrap().items[0].deliveries[0]
+            .acknowledged_at
+            .is_none()
+    );
+}
+
+#[test]
+fn message_board_directory_keeps_cross_project_history_reachable_after_resume() {
+    let (_dir, store) = fixture();
+    store
+        .configure_machines(&[machine("mac"), machine("windows")])
+        .unwrap();
+    let sender = register(&store, "mac", "sender");
+    let receiver = register(&store, "windows", "receiver");
+    store
+        .register(
+            &machine("windows"),
+            Register {
+                name: "renamed".into(),
+                project: "different-project".into(),
+                resume: Some(receiver.id.clone()),
+                terminal: None,
+            },
+        )
+        .unwrap();
+    let sent = store
+        .send(
+            &machine("mac"),
+            request(&sender, &receiver, "cross-project"),
+        )
+        .unwrap();
+    let mut query = page();
+    query.project = Some("switchboard".into());
+    let directory = store.inboxes(&machine("mac"), query.clone()).unwrap();
+    let windows = directory["machines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == "windows")
+        .unwrap();
+    assert_eq!(windows["participants"][0]["id"], receiver.id);
+    assert_eq!(windows["participants"][0]["name"], "renamed");
+    assert_eq!(windows["participants"][0]["project"], "different-project");
+    assert_eq!(windows["participants"][0]["unread_count"], 1);
+    assert_eq!(
+        store
+            .inbox(&receiver.id, false, false, query.clone())
+            .unwrap()
+            .items[0]
+            .id,
+        sent.id
+    );
+    store
+        .ack(&machine("windows"), &receiver.id, &sent.id)
+        .unwrap();
+    let directory = store.inboxes(&machine("mac"), query).unwrap();
+    let windows = directory["machines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == "windows")
+        .unwrap();
+    assert_eq!(windows["participants"][0]["id"], receiver.id);
+    assert_eq!(windows["participants"][0]["unread_count"], 0);
+}
+
+#[test]
+fn message_board_removed_computers_stop_new_deliveries_without_replacing_identity() {
+    let (_dir, store) = fixture();
+    let sender = register(&store, "mac", "sender");
+    let survivor = register(&store, "mac", "survivor");
+    let receiver = register(&store, "windows", "receiver");
+    let retired = register(&store, "windows", "retired");
+    store.retire(&machine("windows"), &retired.id).unwrap();
+    let old = store
+        .send(
+            &machine("mac"),
+            request(&sender, &receiver, "before-removal"),
+        )
+        .unwrap();
+    let question = store
+        .send(
+            &machine("windows"),
+            request(&receiver, &sender, "question-before-removal"),
+        )
+        .unwrap();
+    store.configure_machines(&[machine("mac")]).unwrap();
+    assert_eq!(
+        store
+            .send(&machine("mac"), request(&sender, &receiver, "removed-id"))
+            .unwrap_err()
+            .0,
+        StatusCode::CONFLICT
+    );
+    let mut named = request(&sender, &receiver, "removed-name");
+    named.to = Some(receiver.name.clone());
+    assert_eq!(
+        store.send(&machine("mac"), named).unwrap_err().0,
+        StatusCode::NOT_FOUND
+    );
+    let mut reply = request(&sender, &receiver, "removed-reply");
+    reply.to = None;
+    reply.reply_to = Some(question.id);
+    assert_eq!(
+        store.send(&machine("mac"), reply).unwrap_err().0,
+        StatusCode::CONFLICT
+    );
+    let mut broadcast = request(&sender, &receiver, "removed-broadcast");
+    broadcast.to = None;
+    broadcast.broadcast = Some("switchboard".into());
+    let sent = store.send(&machine("mac"), broadcast).unwrap();
+    assert_eq!(sent.deliveries.len(), 1);
+    assert_eq!(sent.deliveries[0].recipient, survivor.id);
+    assert_eq!(
+        store
+            .inbox(&receiver.id, false, false, page())
+            .unwrap()
+            .items[0]
+            .id,
+        old.id
+    );
+    assert_eq!(
+        store
+            .send(
+                &machine("mac"),
+                request(&sender, &receiver, "before-removal")
+            )
+            .unwrap()
+            .id,
+        old.id,
+        "Committed retries survive membership changes"
+    );
+    store
+        .configure_machines(&[machine("mac"), machine("windows")])
+        .unwrap();
+    assert_eq!(
+        store
+            .send(&machine("mac"), request(&sender, &receiver, "after-readd"))
+            .unwrap()
+            .deliveries[0]
+            .recipient,
+        receiver.id
+    );
+    assert_eq!(
+        store
+            .send(&machine("mac"), request(&sender, &retired, "still-retired"))
+            .unwrap_err()
+            .0,
+        StatusCode::CONFLICT
+    );
 }

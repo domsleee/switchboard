@@ -41,6 +41,8 @@ body.sidebar-collapsed #sidebar-toggle{left:8px}
 #tabs .no-results{padding:10px;font-size:12px;color:#9ba7bd}
 #sidebar-bottom{border-top:1px solid #2b303b;padding:10px 14px;flex-shrink:0}
 #sidebar-utilities{display:flex;justify-content:space-between;gap:8px}
+#sidebar-utilities a{font-size:11px;text-decoration:none;padding:6px 0;color:#b5bfd0}
+#sidebar-utilities a:hover{color:#e5e7eb}
 #sidebar-utilities button{background:transparent;border-color:transparent;color:#b5bfd0;padding:6px 0}
 #sidebar-utilities button:hover{color:#e5e7eb}
 #selection-tools{position:absolute;top:10px;right:12px;z-index:3;display:flex;align-items:center;gap:6px;max-width:calc(100% - 56px);padding:6px;border:1px solid #465674;background:#202b3e;border-radius:7px;box-shadow:0 4px 18px #0006;font-size:12px}
