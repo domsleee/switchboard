@@ -17,6 +17,10 @@ if [[ ${1:-} == --binary-only ]]; then binary_only=1; shift; fi
 [[ $# -ge 1 && $# -le 2 && ${1:-} != --* ]] || usage
 [[ $(uname -s) == Darwin ]] || { echo 'This updater supports macOS only.' >&2; exit 2; }
 command -v jq >/dev/null || { echo 'Install jq before updating.' >&2; exit 2; }
+# The web server and its sessions start panes with $SHELL; use the login shell,
+# not whatever shell ran this script (agents often run zsh or sh).
+login_shell=$(dscl . -read "/Users/$(id -un)" UserShell 2>/dev/null | sed -n 's/^UserShell: //p') || true
+[[ -z $login_shell ]] || export SHELL=$login_shell
 candidate=$1
 installed=${2:-$HOME/.cargo/bin/zellij}
 probe_timeout=${SWITCHBOARD_UPDATE_PROBE_TIMEOUT:-15}

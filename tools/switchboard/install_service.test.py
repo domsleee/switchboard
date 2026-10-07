@@ -6,6 +6,7 @@ import plistlib
 import subprocess
 import socket
 import tempfile
+from types import SimpleNamespace
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('installer', Path(__file__).with_name('install_service.py'))
@@ -44,3 +45,18 @@ with tempfile.TemporaryDirectory(prefix='sbi-') as directory:
             policy_file.write_text(json.dumps(policy))
             assert installer.web_start_command('/bin/zellij') == '/bin/zellij web --daemonize'
 print('Web recovery is retained only for the original socket identity.')
+
+with tempfile.TemporaryDirectory(prefix='sbs-') as directory:
+    home = Path(directory)
+    installer.AGENTS, installer.LOGS = home / 'agents', home / 'logs'
+    ok = lambda command, **kwargs: subprocess.CompletedProcess(command, 0)
+    with patch.object(installer.Path, 'home', return_value=home), \
+            patch.object(installer.subprocess, 'run', side_effect=ok), \
+            patch.object(installer.pwd, 'getpwuid', return_value=SimpleNamespace(pw_shell='/opt/login/nu')), \
+            patch.object(installer.sys, 'argv', ['install_service.py', '--binary', '/bin/zellij']), \
+            patch.dict(installer.os.environ, {'SHELL': '/bin/zsh'}):
+        installer.main()
+    for label in ('dev.zellij.switchboard', 'dev.switchboard.update', 'dev.switchboard.menu'):
+        job = plistlib.loads((installer.AGENTS / (label + '.plist')).read_bytes())
+        assert job['EnvironmentVariables']['SHELL'] == '/opt/login/nu', (label, job['EnvironmentVariables'])
+print('Services start panes with the login shell, not the installing shell.')

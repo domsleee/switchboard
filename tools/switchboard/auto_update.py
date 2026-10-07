@@ -176,8 +176,9 @@ def verify_auth(old, candidate, config):
 
 def restart_mac(args):
     # launchd owns only the relay. Native web --stop does not stop session engines.
+    from install_service import login_shell, web_start_command
+    os.environ['SHELL'] = login_shell()  # new panes start $SHELL; don't inherit a caller's
     run(args.binary, 'web', '--stop')
-    from install_service import web_start_command
     run('/bin/sh', '-c', web_start_command(str(args.binary)))
     run('launchctl', 'kickstart', '-k', f'gui/{os.getuid()}/dev.zellij.switchboard')
 
