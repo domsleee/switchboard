@@ -25,6 +25,7 @@
       if (!response.ok) {
         let body = {};
         try { body = await response.json(); } catch {}
+        if (typeof body.error === 'string' && body.error.trim()) throw Error(body.error);
         if (body.configured === false || body.code === 'not_configured') {
           throw Error('Shared message board is not configured. Open Manage computers to pair your computers and choose a message board host.');
         }
@@ -71,7 +72,9 @@
       const [board, result] = await Promise.all([boardHost(), get('inboxes').then(data => ({data}), error => ({error}))]);
       if (version !== directoryVersion) return;
       $('board-host').textContent = board?.state === 'selected' ? `Message board host: ${board.host_name || board.host_id}`
-        : board?.state === 'unconfigured' ? 'Choose a message board host in Manage computers.' : '';
+        : board?.state === 'unconfigured' ? 'Choose a message board host in Manage computers.'
+        : board?.state === 'conflict' ? 'Message board host conflict. Open Manage computers for details.'
+        : board?.state === 'legacy_database' ? 'Existing message board needs migration. Open Manage computers for details.' : '';
       if (result.error) throw result.error;
       const data = result.data;
       $('inboxes').replaceChildren();

@@ -189,3 +189,17 @@ test('offline board names its selected computer and initial setup directs to Man
     assert.match(await page.locator('#status').textContent(),/choose a message board host/);
   });
 });
+
+test('conflicts and existing board storage preserve the server error instead of offering initial setup', async () => {
+  for (const state of ['conflict','legacy_database']) {
+    await fixture(async ({page,respond}) => {
+      const error = state === 'conflict' ? 'Computers disagree about the selected board host.' : 'Existing message history must be migrated before choosing a host.';
+      respond(url => url.pathname === '/api/mesh/board-host' ? {state} : {status:503,body:{configured:false,board_host:{state},error}});
+      await page.goto('https://switchboard.test/messages.html');
+      await page.waitForFunction(expected => document.querySelector('#status').textContent === expected,error);
+      assert.match(await page.locator('#board-host').textContent(),state === 'conflict' ? /host conflict/ : /needs migration/);
+      assert.doesNotMatch(await page.locator('#status').textContent(),/not configured|pair your computers/);
+      assert.equal(await page.locator('a[href="/computers.html"]').count(),1);
+    });
+  }
+});
