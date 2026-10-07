@@ -118,6 +118,18 @@ test('app Copy prefers the focused viewing parent clipboard over the iframe clip
   assert.deepEqual(h.writes, []);
 });
 
+test('a rejected parent clipboard falls back to the focused iframe clipboard and reports real errors', async () => {
+  const h = harness();
+  h.context.parent.navigator = {clipboard: {writeText: async () => { throw Object.assign(Error('Document is not focused.'), {name: 'NotAllowedError'}); }}};
+  assert.equal(h.osc('c;' + base64('from shell')), true);
+  await settle();
+  assert.deepEqual(h.writes, ['from shell']);
+  assert.equal(h.messages.at(-1).message.ok, true);
+  const denied = harness({write: async () => { throw Object.assign(Error('Write permission denied.'), {name: 'NotAllowedError'}); }});
+  denied.setSelection('text');
+  assert.match((await denied.api.copySelection()).error, /NotAllowedError: Write permission denied/);
+});
+
 test('OSC52 handles unicode, default and combined clipboard selectors without stalling parsing', async () => {
   const h = harness();
   for (const selector of ['c', '', 'pc']) {
