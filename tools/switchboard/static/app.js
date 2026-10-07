@@ -156,7 +156,7 @@ function statesForTab(item){
     .map(p=>paneAttention.get(attentionKey(item.entry.host,item.entry.name,p.pane_id))).filter(Boolean);
 }
 function needsAttention(state){
-  return ['approval','input'].includes(state.state) || (state.state==='ready'&&seenAttention[state.key]!==state.token);
+  return ['approval','input'].includes(state.state) || (state.state==='ready'&&!state.seen&&seenAttention[state.key]!==state.token);
 }
 function autoLabel(item){
   const states=statesForTab(item);
@@ -168,7 +168,12 @@ function autoLabel(item){
 }
 function acknowledgeAttention(item){
   let changed=false;
-  for(const state of statesForTab(item))if(state.state==='ready'&&seenAttention[state.key]!==state.token){seenAttention[state.key]=state.token;changed=true;}
+  // The relay stores the review with the computer running the tab, so other
+  // viewers clear it too. The local copy only hides it until the next scan.
+  for(const state of statesForTab(item))if(state.state==='ready'&&!state.seen&&seenAttention[state.key]!==state.token){
+    seenAttention[state.key]=state.token;changed=true;
+    fetch('/api/attention/ack',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:state.host,session:state.session,pane_id:state.pane_id,token:state.token})}).catch(()=>{});
+  }
   if(changed)localStorage.setItem('switchboard-attention-seen',JSON.stringify(seenAttention));
 }
 function isReady(item){return !!(ready[item.key] || item.tab.name.startsWith('*') || statesForTab(item).some(needsAttention));}

@@ -545,10 +545,41 @@ async fn terminal_response(
                     .and_then(|(_, v)| v.parse::<usize>().ok())
             })
             .unwrap_or(0);
+        // Serve the owner's poll, so every peer shows its generations and reviews.
+        if let Some(poll) = mesh.attention.get() {
+            if let Some(snapshot) = poll.lock().await.owned(&mesh.local_engine.config.id) {
+                return Ok(Json(snapshot).into_response());
+            }
+        }
         let snapshot = attention::scan(&host, offset)
             .await
             .map_err(|_| (StatusCode::BAD_GATEWAY, "Peer snapshots unavailable"))?;
         return Ok(Json(snapshot).into_response());
+    }
+    if path == "/switchboard/attention/ack" && request.method() == Method::POST {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Ack {
+            session: String,
+            pane_id: u64,
+            token: String,
+        }
+        let bytes = to_bytes(request.into_body(), 2048)
+            .await
+            .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid attention review"))?;
+        let ack: Ack = serde_json::from_slice(&bytes)
+            .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid attention review"))?;
+        let poll = mesh
+            .attention
+            .get()
+            .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Attention unavailable"))?;
+        poll.lock().await.acknowledge(
+            &mesh.local_engine.config.id,
+            &ack.session,
+            ack.pane_id,
+            &ack.token,
+        );
+        return Ok(StatusCode::NO_CONTENT.into_response());
     }
     if path == "/switchboard/control" && request.method() == Method::POST {
         #[derive(Deserialize)]
