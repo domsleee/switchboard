@@ -1055,20 +1055,18 @@ async fn address_pairing_delivers_over_tls_and_completes_without_copying_secrets
     )
     .await;
     assert_eq!(allowed.status, StatusCode::OK);
-    for mesh in &machines {
-        assert!(mesh.database.lock().await.outgoing.is_empty());
+    // The computer that chose Add computer does not approve a second time.
+    assert!(machines[0].status().await["requests"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    // Accepting completes pairing without a further step on either computer.
+    for _ in 0..50 {
+        if machines[1].hosts().len() == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    let status = machines[0].status().await;
-    let pending = &status["requests"][0];
-    assert_eq!(pending["code"], sent["code"]);
-    let approved=call(&clients[0],"/api/mesh/approve",json!({"invitation":pending["invitation"],"request":pending["request"],"code":pending["code"],"allow":true})).await;
-    assert_eq!(approved.status, StatusCode::OK);
-    let completed = call(&clients[1], "/api/mesh/retry", json!({})).await;
-    assert_eq!(completed.status, StatusCode::OK);
-    assert_eq!(
-        serde_json::from_slice::<Value>(&completed.body).unwrap()["state"],
-        "paired"
-    );
     assert_eq!(machines[0].hosts().len(), 1);
     assert_eq!(machines[1].hosts().len(), 1);
     for handle in handles {
