@@ -20,10 +20,10 @@
     return response.json();
   }
   async function action(fn) {
-    const buttons = [...document.querySelectorAll('button')];
-    buttons.forEach(button => button.disabled = true);
+    const buttons = [...document.querySelectorAll('button')].map(button => [button, button.disabled]);
+    buttons.forEach(([button]) => button.disabled = true);
     try { await fn(); } catch (error) { show(error.message || 'Pairing unavailable. Check the network and retry.', true); }
-    finally { buttons.forEach(button => button.disabled = false); }
+    finally { buttons.forEach(([button, disabled]) => button.disabled = disabled); }
   }
   function local() {
     if (!$('address').value.trim()) {
@@ -55,11 +55,17 @@
     if (refreshing) return;
     refreshing = true;
     try {
-      const state = await api('');
+      let state, meshError;
+      try { state = await api(''); } catch (error) {
+        meshError = error;
+        state = {members: [], requests: []};
+        show('Pairing is unavailable. Existing terminal connections are listed below.', true);
+      }
       pending = Boolean(state.joining);
       const incoming = state.incoming || [], sent = state.sent || [];
       $('incoming-section').hidden = !incoming.length;
       renderPairing(incoming, sent);
+      renderBoardHost(state.board_host);
 
       $('receive-requests').hidden = Boolean(state.configured);
       $('retry-gateway').hidden = !state.configured || state.gateway_available !== false;
@@ -119,13 +125,14 @@
         card.append(title, address, status);
         if (!host.local && host.pairing_address) {
           const pair = document.createElement('button'); pair.textContent = 'Pair this computer';
+          pair.disabled = Boolean(meshError);
           pair.onclick = () => action(() => addComputer(host.pairing_address));
           card.append(pair);
         }
         cards.push(card);
       }
       $('catalog').hidden = !cards.length && !state.requests.length;
-      const memberSignature = JSON.stringify(cards.map(card => card.textContent));
+      const memberSignature = JSON.stringify([Boolean(meshError), cards.map(card => card.textContent)]);
       if ($('members').dataset.signature !== memberSignature) {
         $('members').dataset.signature = memberSignature;
         $('members').replaceChildren(...cards);
@@ -152,6 +159,37 @@
       }
     } finally { refreshing = false; }
   }
+  function renderBoardHost(board) {
+    $('board-section').hidden = !board;
+    if (!board) return;
+    const signature = JSON.stringify(board);
+    if ($('board-section').dataset.signature === signature) return;
+    $('board-section').dataset.signature = signature;
+    $('board-form').hidden = !board.can_select;
+    $('board-description').textContent = board.state === 'selected'
+      ? `Message board: ${board.host_name || board.host_id}. Keep this computer running to use shared inboxes.`
+      : board.state === 'conflict' ? 'Your computers disagree about the message board host. Resolve this before using shared messages.'
+      : board.state === 'legacy_database' ? 'An existing message board needs migration before a host can be selected. Its messages have been kept.'
+      : board.can_select ? 'Choose which paired computer will store your shared messages.'
+      : 'Pair your computers before choosing where to store shared messages.';
+    $('board-host').replaceChildren();
+    const prompt = document.createElement('option'); prompt.value = ''; prompt.textContent = 'Choose a paired computer';
+    $('board-host').append(prompt);
+    for (const candidate of board.candidates || []) {
+      const option = document.createElement('option'); option.value = candidate.id; option.textContent = candidate.name;
+      $('board-host').append(option);
+    }
+  }
+  $('board-form').onsubmit = event => {
+    event.preventDefault();
+    if (!$('board-host').value) return;
+    action(async () => {
+      const board = await api('/board-host', {host_id: $('board-host').value});
+      renderBoardHost(board);
+      show(`Shared messages are hosted by ${board.host_name || board.host_id}.`);
+      await refresh();
+    });
+  };
   function endpoint(address) {
     try { return new URL(address).origin; } catch (_) { return null; }
   }

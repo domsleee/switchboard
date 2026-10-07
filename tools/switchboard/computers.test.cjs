@@ -17,6 +17,7 @@ async function fixture(fn, initial = {}) {
       const request = route.request(), path = new URL(request.url()).pathname;
       if (path.startsWith('/api/mesh')) {
         const body = request.postDataJSON(); calls.push({path, body});
+        if (path === '/api/mesh' && responses.has('/api/mesh-error')) return route.fulfill({status:503,body:responses.get('/api/mesh-error')});
         return route.fulfill({contentType: 'application/json', body: JSON.stringify(path === '/api/mesh' ? state : responses.get(path) || {})});
       }
       if (path === '/api/hosts') {
@@ -233,4 +234,48 @@ test('configured connections dedupe paired endpoints and local identity without 
     assert.match(await page.locator('#members').textContent(), /Connected/);
     assert.equal(await page.locator('#members button').textContent(),'Pair this computer');
   }, pairedState);
+});
+
+test('message board host selection is explicit and only offered for initial setup', async () => {
+  const board = {state:'unconfigured',host_id:null,host_name:null,can_select:true,candidates:[{id:'windows',name:'Windows <work>'},{id:'mac',name:'Mac'}]};
+  await fixture(async ({page,calls,responses,setState}) => {
+    await page.goto('https://switchboard.test/computers.html');
+    await page.waitForFunction(() => !document.querySelector('#board-form').hidden);
+    assert.equal(await page.locator('#board-host').inputValue(),'');
+    assert.equal(calls.some(call => call.path === '/api/mesh/board-host'),false);
+    assert.equal(await page.locator('#board-host work').count(),0);
+    await page.locator('#board-host').selectOption('windows');
+    const selected = {...board,state:'selected',host_id:'windows',host_name:'Windows <work>',can_select:false};
+    responses.set('/api/mesh/board-host',selected);setState({board_host:selected});
+    await page.locator('#board-form button').click();
+    await page.waitForFunction(() => document.querySelector('#board-form').hidden);
+    assert.deepEqual(calls.find(call => call.path === '/api/mesh/board-host').body,{host_id:'windows'});
+    assert.match(await page.locator('#board-description').textContent(), /Message board: Windows <work>/);
+    assert.equal(await page.locator('#board-description work').count(),0);
+  }, {...pairedState,board_host:board});
+});
+
+test('conflicting or existing board storage never offers a replacement host', async () => {
+  for (const state of ['conflict','legacy_database']) {
+    await fixture(async ({page,calls}) => {
+      await page.goto('https://switchboard.test/computers.html');
+      await page.waitForFunction(() => !document.querySelector('#board-section').hidden);
+      assert.equal(await page.locator('#board-form').isVisible(),false);
+      assert.match(await page.locator('#board-description').textContent(),state === 'conflict' ? /disagree/ : /migration/);
+      assert.equal(calls.some(call => call.path === '/api/mesh/board-host'),false);
+    }, {...pairedState,board_host:{state,can_select:false,candidates:[]}});
+  }
+});
+
+test('configured hosts remain visible when pairing service is unavailable', async () => {
+  await fixture(async ({page,calls,responses}) => {
+    responses.set('/api/mesh-error','Pairing unavailable');
+    responses.set('/api/hosts',[{id:'windows',name:'Windows',address:'http://172.20.10.69:8082',pairing_address:'https://172.20.10.69:8082',configured:true,local:false}]);
+    await page.goto('https://switchboard.test/computers.html');
+    await page.waitForFunction(() => document.querySelector('#members').textContent.includes('Windows'));
+    assert.equal(await page.locator('#catalog').isVisible(),true);
+    assert.match(await page.locator('#message').textContent(),/Pairing is unavailable/);
+    assert.equal(await page.locator('#members button').isDisabled(),true);
+    assert.equal(calls.some(call => call.path === '/api/mesh/add'),false);
+  });
 });
