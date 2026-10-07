@@ -248,7 +248,7 @@ async fn ack(
 pub(super) async fn serve(config: HostConfig) -> anyhow::Result<()> {
     let app = router(&config)?;
     if let (Some(cert), Some(key)) = (config.tls_cert, config.tls_key) {
-        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key).await?;
         axum_server::bind_rustls(config.listen, tls)
             .serve(app.into_make_service())

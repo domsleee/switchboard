@@ -186,7 +186,7 @@ impl Host {
             "Host URL must be an HTTP(S) origin without credentials or a path"
         );
         let tls = if origin.scheme() == "https" {
-            let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+            let provider = Arc::new(rustls::crypto::ring::default_provider());
             let builder = rustls::ClientConfig::builder_with_provider(provider.clone())
                 .with_safe_default_protocol_versions()?;
             let config = if let Some(pin) = config.tls_fingerprint.as_ref() {
