@@ -124,7 +124,11 @@ async fn explicit_approval_installs_bilateral_credentials_and_survives_restart()
         "the approved identity can resume after expiry"
     );
     let before = windows.database.lock().await.local.clone().unwrap();
-    let status = windows.status().await.to_string();
+    let member_status = windows.status().await;
+    let admin_status = mac.status().await;
+    assert_eq!(member_status["can_invite"], true);
+    assert_eq!(admin_status["can_invite"], true);
+    let status = member_status.to_string();
     assert!(!status.contains("isolated-terminal") && !status.contains(&invitation.secret));
     let mac_id = invitation.administrator.id;
     let db = windows.database.lock().await;
@@ -350,7 +354,7 @@ async fn hpke_rejects_tampering_wrong_recipient_issuer_and_stale_credentials() {
 }
 
 #[tokio::test]
-async fn ordinary_members_cannot_invite_and_duplicate_names_are_rejected() {
+async fn every_member_can_invite_and_duplicate_names_are_rejected() {
     let temp = tempfile::tempdir().unwrap();
     let mac = machine(&temp.path().join("mac"), "Mac", "https://192.0.2.1:8091").await;
     let windows = machine(
@@ -362,7 +366,7 @@ async fn ordinary_members_cannot_invite_and_duplicate_names_are_rejected() {
     let invite = invitation(&mac, 1000).await;
     let (_, approval) = approved(&mac, &windows, &invite, 1000).await;
     windows.install(approval, &invite).await.unwrap();
-    assert!(windows.create("Isolated mesh".into(), 1000).await.is_err());
+    assert!(windows.create("Isolated mesh".into(), 1000).await.is_ok());
     let duplicate = machine(
         &temp.path().join("duplicate"),
         "windows",
@@ -954,7 +958,7 @@ async fn address_pairing_delivers_over_tls_and_completes_without_copying_secrets
     let mut machines = Vec::new();
     let mut endpoints = Vec::new();
     let mut clients = Vec::new();
-    for label in ["Mac", "work (fast)"] {
+    for label in ["Mac", "work (fast)", "Laptop"] {
         let listener = std::net::TcpListener::bind((ip, 0)).unwrap();
         listener.set_nonblocking(true).unwrap();
         let endpoint = format!("https://{}", listener.local_addr().unwrap());
@@ -1069,10 +1073,195 @@ async fn address_pairing_delivers_over_tls_and_completes_without_copying_secrets
     }
     assert_eq!(machines[0].hosts().len(), 1);
     assert_eq!(machines[1].hosts().len(), 1);
+    // Add from a joined computer, not the computer that started the group.
+    let sent = call(
+        &clients[1],
+        "/api/mesh/add",
+        json!({
+            "target":endpoints[2], "name":"Direct test",
+            "computer_name":"work (fast)", "address":endpoints[1]
+        }),
+    )
+    .await;
+    assert_eq!(
+        sent.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&sent.body)
+    );
+    let sent: Value = serde_json::from_slice(&sent.body).unwrap();
+    let allowed = call(
+        &clients[2],
+        "/api/mesh/answer",
+        json!({
+            "invitation":sent["invitation"], "code":sent["code"], "allow":true
+        }),
+    )
+    .await;
+    assert_eq!(
+        allowed.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&allowed.body)
+    );
+    // The first computer was offline during enrollment. Ordinary background sync
+    // must discover the new member and exchange credentials in all directions.
+    for _ in 0..3 {
+        futures_util::future::join_all(machines.iter().map(|m| m.synchronize())).await;
+    }
+    for mesh in &machines {
+        assert_eq!(mesh.hosts().len(), 2);
+        assert_eq!(mesh.status().await["members"].as_array().unwrap().len(), 3);
+        let db = mesh.database.lock().await;
+        assert_eq!(db.outgoing.len(), 2);
+        assert_eq!(db.incoming.len(), 2);
+        for other in &machines {
+            if Arc::ptr_eq(mesh, other) {
+                continue;
+            }
+            let other_db = other.database.lock().await;
+            let local_id = &db.local.as_ref().unwrap().id;
+            let other_id = &other_db.local.as_ref().unwrap().id;
+            assert_eq!(
+                db.incoming[other_id].credential.gateway,
+                other_db.outgoing[local_id].gateway
+            );
+            assert_eq!(
+                db.incoming[other_id].credential.terminal,
+                other_db.outgoing[local_id].terminal
+            );
+        }
+    }
+    // Repeated sync is idempotent, and persisted state restores the full catalog.
+    let before: Vec<_> = machines
+        .iter()
+        .map(|m| std::fs::read(m.storage.root.join("state.json")).unwrap())
+        .collect();
+    for mesh in &machines {
+        mesh.synchronize().await;
+    }
+    for (index, mesh) in machines.iter().enumerate() {
+        assert_eq!(
+            before[index],
+            std::fs::read(mesh.storage.root.join("state.json")).unwrap()
+        );
+        let db: Database = mesh.storage.read("state.json").unwrap().unwrap();
+        mesh.catalog(&db).unwrap();
+        assert_eq!(mesh.hosts().len(), 2);
+    }
     for handle in handles {
         handle.shutdown();
     }
     for task in tasks {
         task.abort();
     }
+}
+
+#[tokio::test]
+async fn group_sync_merges_concurrent_additions_and_rejects_untrusted_updates() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut machines = Vec::new();
+    for (i, label) in ["A", "B", "C", "D", "E", "Outsider"].iter().enumerate() {
+        machines.push(
+            machine(
+                &temp.path().join(label),
+                label,
+                &format!("https://192.0.2.{}:8082", i + 1),
+            )
+            .await,
+        );
+    }
+    for (from, to) in [(0, 1), (0, 2), (1, 3), (2, 4)] {
+        let invite = invitation(&machines[from], 1000).await;
+        let (_, approval) = approved(&machines[from], &machines[to], &invite, 1000).await;
+        let envelope = machines[to].install(approval, &invite).await.unwrap();
+        machines[from].complete(envelope).await.unwrap();
+    }
+    let a = &machines[0];
+    let b = &machines[1];
+    let a_id = a.database.lock().await.local.as_ref().unwrap().id.clone();
+    let update = b.prepare_sync(&a_id).await.unwrap();
+    let original = std::fs::read(a.storage.root.join("state.json")).unwrap();
+    let mut tampered = serde_json::to_value(&update).unwrap();
+    tampered["membership"]["value"]["name"] = json!("Different group");
+    assert!(a
+        .exchange(serde_json::from_value(tampered).unwrap())
+        .await
+        .is_err());
+    let mut forged = serde_json::to_value(&update).unwrap();
+    let value: Membership = serde_json::from_value(forged["membership"]["value"].clone()).unwrap();
+    forged["membership"] = serde_json::to_value(machines[5].identity.sign(value).unwrap()).unwrap();
+    assert!(a
+        .exchange(serde_json::from_value(forged).unwrap())
+        .await
+        .is_err());
+    let mut corrupt = serde_json::to_value(&update).unwrap();
+    corrupt["credential"]["ciphertext"] = json!("broken");
+    assert!(a
+        .exchange(serde_json::from_value(corrupt).unwrap())
+        .await
+        .is_err());
+    assert_eq!(
+        original,
+        std::fs::read(a.storage.root.join("state.json")).unwrap(),
+        "Rejected updates cannot change saved membership or credentials"
+    );
+    // Reconcile two independently approved additions, including stale rosters.
+    for _ in 0..3 {
+        for source in &machines[..5] {
+            let ids: Vec<_> = source
+                .database
+                .lock()
+                .await
+                .membership
+                .as_ref()
+                .unwrap()
+                .value
+                .members
+                .keys()
+                .cloned()
+                .collect();
+            for target in &machines[..5] {
+                if Arc::ptr_eq(source, target) {
+                    continue;
+                }
+                let target_id = target
+                    .database
+                    .lock()
+                    .await
+                    .local
+                    .as_ref()
+                    .unwrap()
+                    .id
+                    .clone();
+                if !ids.contains(&target_id) {
+                    continue;
+                }
+                let response = target
+                    .exchange(source.prepare_sync(&target_id).await.unwrap())
+                    .await;
+                if let Ok(response) = response {
+                    source.exchange(response).await.unwrap();
+                }
+            }
+        }
+    }
+    for mesh in &machines[..5] {
+        assert_eq!(mesh.hosts().len(), 4);
+        assert_eq!(
+            mesh.database
+                .lock()
+                .await
+                .membership
+                .as_ref()
+                .unwrap()
+                .value
+                .members
+                .len(),
+            5
+        );
+    }
+    // Replaying the earlier valid roster must not remove the concurrent addition.
+    a.exchange(update).await.unwrap();
+    assert_eq!(a.hosts().len(), 4);
 }

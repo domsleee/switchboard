@@ -56,7 +56,6 @@
     try {
       const state = await api('');
       pending = Boolean(state.joining);
-      $('direct-section').hidden = Boolean(state.mesh) && !state.administrator;
       const incoming = state.incoming || [], sent = state.sent || [];
       $('incoming-section').hidden = !incoming.length;
       renderPairing(incoming, sent);
@@ -73,7 +72,7 @@
       }
       if (state.mesh) $('mesh-name').value = state.mesh;
       $('mesh-name').readOnly = Boolean(state.mesh);
-      $('create-section').hidden = Boolean(state.mesh) && !state.administrator;
+      $('join-section').hidden = Boolean(state.mesh) && !pending;
       $('join-form').hidden = Boolean(state.mesh) || pending;
       $('joining').hidden = !pending;
       if (pending) {
@@ -92,7 +91,7 @@
         const host = hosts.find(host => host.id === `mesh-${member.id}`);
         status.textContent = member.local ? 'This computer' : member.state === 'paired'
           ? (host && Array.isArray(host.sessions) && !host.error ? 'Connected' : 'Paired, connection unavailable. Check the address and retry')
-          : 'Finishing pairing. Retry on the joining computer.';
+          : 'Connecting to this computer. Keep Switchboard running on both computers.';
         card.append(title, address, status);
         if (!member.local && member.state === 'paired' && (!host || host.error)) {
           const retry = document.createElement('button'); retry.textContent = 'Retry connection'; retry.onclick = () => action(refresh); card.append(retry);
@@ -218,7 +217,7 @@
   async function retry() {
     const result = await api('/retry', {});
     if (result.state === 'paired') show('Paired. Checking authenticated terminal availability.');
-    else if (result.state === 'denied') { pending = false; show('The administrator denied pairing. Ask for a new invitation.', true); }
+    else if (result.state === 'denied') { pending = false; show('The other computer denied pairing. Ask for a new invitation.', true); }
     await refresh();
   }
   $('retry').onclick = () => action(retry);

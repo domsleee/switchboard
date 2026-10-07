@@ -228,7 +228,7 @@ async fn prepare(
     socket.set_nonblocking(true)?;
     let key = rustls_pki_types::PrivateKeyDer::from_pem_slice(registration.key.as_bytes())?;
     let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
-        rustls::crypto::aws_lc_rs::default_provider(),
+        rustls::crypto::ring::default_provider(),
     ))
     .with_protocol_versions(&[&rustls::version::TLS13])?
     .with_no_client_auth()

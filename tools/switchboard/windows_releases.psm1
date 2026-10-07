@@ -204,7 +204,7 @@ function Get-SwitchboardProtectedProcesses($Processes) {
                     # Direct terminal children and stable agent descendants.
                     # Short-lived builds/commands may finish during the update.
                     if ($process.ParentProcessId -eq $engine.ProcessId -or
-                        $process.CommandLine -match '(?i)(?:^|[\\/\s"])(?:codex|claude)(?:\.exe|\.js)?(?:[\\/\s"]|$)') {
+                        $process.CommandLine -match '(?i)(?:^|[\\/\s"])(?:codex|claude)\.(?:exe|js)(?:[\s"]|$)') {
                         $protected[$key] = $process
                     }
                 }

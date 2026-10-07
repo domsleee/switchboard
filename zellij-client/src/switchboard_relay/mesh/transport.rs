@@ -31,7 +31,10 @@ fn rejected(error: anyhow::Error) -> Error {
         || reason.contains("consumed")
         || reason.contains("Invitation unavailable")
     {
-        return (StatusCode::GONE, "Invitation expired, cancelled or consumed. Ask the administrator for a new invitation.");
+        return (
+            StatusCode::GONE,
+            "Invitation expired, cancelled or consumed. Create a new invitation.",
+        );
     }
     if reason.contains("Verification code") || reason.contains("Pairing identity verification") {
         return (
@@ -76,17 +79,6 @@ async fn cancel(State(state): State<RelayState>, Json(input): Json<Cancel>) -> M
     let mesh = state.mesh.as_ref().ok_or_else(unavailable)?;
     let mut committed = mesh.database.lock().await;
     let mut db = committed.clone();
-    let local = db.local.as_ref().ok_or_else(unavailable)?;
-    if !db
-        .membership
-        .as_ref()
-        .is_some_and(|m| m.value.administrator == local.id)
-    {
-        return Err((
-            StatusCode::FORBIDDEN,
-            "Only the administrator can cancel an invitation",
-        ));
-    }
     let record = db
         .invitations
         .get_mut(&input.invitation)
@@ -285,7 +277,7 @@ impl Mesh {
     }
     #[cfg(test)]
     pub(super) fn tls(&self) -> anyhow::Result<rustls::ServerConfig> {
-        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
         let certificates = vec![rustls::pki_types::CertificateDer::from(crypto::decode(
             &self.identity.certificate,
         )?)];
@@ -423,6 +415,7 @@ pub(in crate::switchboard_relay) fn gateway_router(mesh: Arc<Mesh>) -> Router {
         .route("/mesh/offer", post(super::direct::offer))
         .route("/mesh/request", post(peer_request))
         .route("/mesh/complete", post(peer_complete))
+        .route("/mesh/sync", post(super::sync::exchange))
         .fallback(peer_terminal)
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
         .layer(middleware::from_fn_with_state(mesh.clone(), gateway_guard))

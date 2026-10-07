@@ -52,8 +52,10 @@ try {
                 [pscustomobject]@{ProcessId=10; ParentProcessId=1; Name='zellij.exe'; CreationDate='engine-start'; CommandLine=$(if ($script:fixture.Mode -eq 'mismatched-engine') { 'zellij.exe --server C:\private\other' } else { '"C:\old\zellij.exe" --server "C:\private\work session"' })},
                 [pscustomobject]@{ProcessId=20; ParentProcessId=10; Name='powershell.exe'; CreationDate=$shellStarted; CommandLine='powershell.exe'},
                 [pscustomobject]@{ProcessId=30; ParentProcessId=20; Name='node.exe'; CreationDate='agent-start'; CommandLine='node C:\tools\codex\bin\codex.js'},
+                [pscustomobject]@{ProcessId=40; ParentProcessId=30; Name='rustc.exe'; CreationDate='build-start'; CommandLine='rustc.exe --out-dir C:\Temp\claude\scratch\target'},
                 [pscustomobject]@{ProcessId=99; ParentProcessId=1; Name='unrelated.exe'; CreationDate='other-start'; CommandLine='unrelated.exe'}
-            ) | Where-Object { !($script:fixture.Mode -eq 'agent-exit' -and $script:fixture.ProcessReads -ge 3 -and $_.ProcessId -eq 30) -and !($script:fixture.Mode -eq 'no-engines' -and $_.ProcessId -eq 10) }
+            ) | Where-Object { !($script:fixture.Mode -eq 'agent-exit' -and $script:fixture.ProcessReads -ge 3 -and $_.ProcessId -eq 30) -and
+                !($script:fixture.Mode -eq 'build-exit' -and $script:fixture.ProcessReads -ge 3 -and $_.ProcessId -eq 40) -and !($script:fixture.Mode -eq 'no-engines' -and $_.ProcessId -eq 10) }
         }
         function script:Invoke-SwitchboardProbe([string]$Binary, [string[]]$Arguments, [int]$TimeoutSeconds = 15, [switch]$AllowFailure) {
             $script:fixture.Calls += ,@($Arguments)
@@ -127,6 +129,9 @@ try {
     Assert ($result.sha256 -ceq $fixture.NewHash) 'Repeated rollback did not toggle retained releases'
     $same = Invoke-SwitchboardWindowsUpdate -Candidate $candidate -Directory $fixture.Directory
     Assert ((Get-SwitchboardReleaseState $fixture.Directory).previous_sha256 -ceq $fixture.OldHash) 'Reinstalling the selected release must retain rollback history'
+    $candidate = New-Fixture 'new' 'build-exit'
+    $result = Invoke-SwitchboardWindowsUpdate -Candidate $candidate -Directory $fixture.Directory
+    Assert ($result.sha256 -ceq $fixture.NewHash) 'A finished build in an agent scratch directory blocked the update'
 
     foreach ($mode in @('normal','pid-reuse','agent-exit')) {
         $candidate = New-Fixture $(if ($mode -eq 'normal') { 'post-failure' } else { 'new' }) $mode

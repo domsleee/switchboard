@@ -442,10 +442,13 @@ impl RecoveryMetadata {
                 pane.tab_position == current.position
                     && pane.pane_info.is_selectable
                     && !pane.pane_info.is_suppressed
+                    && pane.pane_info.is_floating == current.are_floating_panes_visible
             })
             .collect();
-        // Do not invent per-client focus for a multi-pane tab. Existing IPC exposes the
-        // exact current tab; a single selectable pane then identifies its focus exactly.
+        // Only the active layer can receive input: hidden floating panes must not
+        // prevent confirmation of a tiled pane (or vice versa). Existing IPC
+        // exposes the exact current tab and active layer, but not per-client
+        // focus among multiple selectable panes in that layer.
         let active_pane = if eligible.len() == 1 {
             Some(MobileActivePanePayload {
                 pane_id: eligible[0].pane_info.id,
@@ -637,6 +640,91 @@ impl SharingRecovery {
 mod metadata_tests {
     use super::*;
     use zellij_utils::data::{PaneInfo, PaneListEntry, TabInfo};
+
+    #[test]
+    fn metadata_confirms_only_an_unambiguous_pane_in_the_active_layer() {
+        let pane = |id, is_floating| PaneListEntry {
+            pane_info: PaneInfo {
+                id,
+                is_floating,
+                is_selectable: true,
+                ..Default::default()
+            },
+            tab_id: 12,
+            tab_position: 0,
+            tab_name: "main".into(),
+            pane_command: None,
+            pane_cwd: None,
+        };
+        let tab = TabInfo {
+            tab_id: 12,
+            ..Default::default()
+        };
+        let mut metadata = RecoveryMetadata {
+            tabs: Some(vec![tab.clone()]),
+            current_tab: Some(tab),
+            panes: Some(vec![pane(20, false), pane(23, true)]),
+            ..Default::default()
+        };
+        assert_eq!(
+            metadata
+                .payload("main", vec![])
+                .unwrap()
+                .active_pane
+                .unwrap()
+                .pane_id,
+            20,
+            "A hidden floating terminal must not strand tiled focus confirmation"
+        );
+        assert_eq!(
+            metadata.payload("main", vec![]).unwrap().panes.len(),
+            2,
+            "Inactive-layer panes remain available in the catalog"
+        );
+        metadata
+            .current_tab
+            .as_mut()
+            .unwrap()
+            .are_floating_panes_visible = true;
+        assert_eq!(
+            metadata
+                .payload("main", vec![])
+                .unwrap()
+                .active_pane
+                .unwrap()
+                .pane_id,
+            23
+        );
+        metadata.panes.as_mut().unwrap().push(pane(24, true));
+        assert!(
+            metadata
+                .payload("main", vec![])
+                .unwrap()
+                .active_pane
+                .is_none(),
+            "Never guess focus between multiple panes in the active layer"
+        );
+        metadata
+            .current_tab
+            .as_mut()
+            .unwrap()
+            .are_floating_panes_visible = false;
+        assert_eq!(
+            metadata
+                .payload("main", vec![])
+                .unwrap()
+                .active_pane
+                .unwrap()
+                .pane_id,
+            20
+        );
+        metadata.panes.as_mut().unwrap().push(pane(21, false));
+        assert!(metadata
+            .payload("main", vec![])
+            .unwrap()
+            .active_pane
+            .is_none());
+    }
 
     #[test]
     fn metadata_uses_this_clients_tab_and_preserves_real_pane_ids() {

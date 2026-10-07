@@ -369,7 +369,7 @@ mod tests {
             tls_key: Some(key_path.clone()),
         };
         let app = transport::router(&config).unwrap();
-        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert_path, key_path)
             .await
             .unwrap();

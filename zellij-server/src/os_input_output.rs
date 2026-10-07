@@ -65,11 +65,17 @@ pub(super) fn windows_pane_environment(
             .find(|(key, _)| key.eq_ignore_ascii_case(name))
             .map(|(_, value)| value.clone())
     };
+    // Agent launchers pair TERM=dumb with NO_COLOR. Drop that opt-out before
+    // promoting their environment to a real ConPTY; shells see the new TERM.
+    let dumb_launcher = value("TERM")
+        .map(|term| term.eq_ignore_ascii_case("dumb"))
+        .unwrap_or(false);
     let (term, colorterm) = pane_terminal_type(value("TERM"), value("COLORTERM"));
     environment.retain(|(key, _)| {
         !["TERM", "COLORTERM", "ZELLIJ_PANE_ID"]
             .iter()
             .any(|name| key.eq_ignore_ascii_case(name))
+            && !(dumb_launcher && key.eq_ignore_ascii_case("NO_COLOR"))
     });
     environment.extend([
         ("TERM".into(), term),

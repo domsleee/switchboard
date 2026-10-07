@@ -1,16 +1,19 @@
 name: Native binaries
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 env:
-  CARGO_PROFILE_RELEASE_LTO: fat
+  # Thin LTO with parallel codegen; dependencies already come from rust-cache.
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
 
 jobs:
-  windows:
+  checks:
     runs-on: windows-latest
     steps:
       - name: Enable long paths
@@ -23,7 +26,7 @@ jobs:
       - name: Check Windows session discovery and colours
         run: |
           cargo test -p zellij-utils windows_session_catalog_tests --lib
-          cargo test -p zellij-server windows_pane_environment_advertises_colour_without_overriding_preferences --lib
+          cargo test -p zellij-server windows_pane_environment --lib
       - name: Check Rust relay transport
         run: cargo test -p zellij-client --features web_server_capability switchboard_relay --lib
       - name: Check Windows update transactions and tray supervision
@@ -31,18 +34,62 @@ jobs:
           powershell -NoLogo -NoProfile -NonInteractive -File tools/switchboard/windows_releases.test.ps1
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           powershell -NoLogo -NoProfile -NonInteractive -File tools/switchboard/windows_tray.test.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          powershell -NoLogo -NoProfile -NonInteractive -File tools/switchboard/update_services_windows.test.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python tools/switchboard/auto_update.test.py
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: Enable long paths
+        run: git config --global core.longpaths true
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          rustflags: ""
+      - uses: ilammy/setup-nasm@v1
       - name: Build native server and relay
         run: cargo build --release --features web_server_capability
       - name: Verify packaged relay command
         run: .\target\release\zellij.exe serve --help
+      - name: Package verified update bundle
+        run: python tools/switchboard/package_update.py target/release/zellij.exe windows dist
       - uses: actions/upload-artifact@v4
         with:
           name: switchboard-windows
-          path: |
-            target/release/zellij.exe
-            tools/switchboard/install_windows_web.ps1
-            tools/switchboard/windows_releases.psm1
-            tools/switchboard/update_windows.ps1
-            tools/switchboard/windows_cli.ps1
+          path: dist/*
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 30
+
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            platform: macos-arm64
+          - runner: macos-15-intel
+            platform: macos-x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          rustflags: ""
+      - name: Check update orchestration and installer
+        run: |
+          python3 tools/switchboard/auto_update.test.py
+          python3 tools/switchboard/install_service.test.py
+      - name: Build native server and relay
+        run: cargo build --release --features web_server_capability
+      - name: Verify and package update bundle
+        run: |
+          target/release/zellij serve --help
+          python3 tools/switchboard/package_update.py target/release/zellij ${{ matrix.platform }} dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: switchboard-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30

@@ -1,8 +1,55 @@
 # Updating Switchboard without stopping terminals
 
-Status: guarded macOS binary replacement and manual Windows release selection
-are available. Automatic updates and a complete connection-service bundle
-updater are not implemented.
+Windows and macOS installers enable automatic connection-service updates.
+The manual guarded updaters remain available for release selection and recovery.
+
+## Automatic updates
+
+Each push to `main` builds Windows, Apple Silicon and Intel Mac bundles. Each
+bundle contains the native executable, platform helpers and a SHA-256 manifest
+with its exact commit and platform. Bundles are retained for 30 days.
+
+After installing these updater-enabled helpers once on each computer, the Windows
+tray and macOS LaunchAgent check every 15 minutes. Python 3 and authenticated
+GitHub CLI (`gh auth login`) must be available to that user's background process;
+macOS also needs `jq` for the guarded binary replacement. There are no Python
+package dependencies. Windows checks stop when its tray exits; the Mac updater
+runs independently of the menu app.
+
+Only successful `main` runs from this repository's `native-binaries.yml` workflow
+are eligible. Feature-branch and pull-request artifacts are never installed.
+The updater downloads the matching platform bundle, verifies its manifest and
+checksums, and runs the existing compatibility/process-preservation probes before
+selecting it. It restarts only that installation's relay/web services, waits for
+the expected build and previously visible sessions to return, verifies terminal
+process identities, and then installs the bundled tray/menu helpers.
+
+Healthy existing sessions retain their engines, shells and agents, including new
+tabs created inside those sessions. A browser reconnect is expected. New sessions
+use the selected release when started through the updated services/launcher.
+On Windows a separate old `zellij.exe` on PATH is not overwritten; use the
+installed `windows_cli.ps1` launcher to follow the selected release.
+
+A failed handoff restores the retained executable and helpers. Interrupted
+handoffs leave a recovery journal, which the next check processes before another
+download. A failed build is recorded and not retried repeatedly; a newer
+successful build remains eligible. Download/authentication failures leave running
+services untouched. Settings, host credentials and attention data are not bundled
+or replaced. Publishing an artifact updates each online, configured machine on
+its own schedule, not all machines at the same instant.
+
+Inspect `~/.local/share/switchboard/automatic-updates/state.json` for the selected
+commit or failure. Windows logs are `~/.config/switchboard/update*.log`; Mac logs
+are `~/Library/Logs/switchboard-update.log`. For a download-and-verify check without
+service changes, run the installed `auto_update.py --check` with Python 3.
+
+The orchestration tests simulate service failures and rollback. The opt-in
+Windows browser test also accepts `SWITCHBOARD_TEST_AUTO_UPDATE=1` and
+`SWITCHBOARD_TEST_CANDIDATE_COMMIT=<full commit>` to exercise the production
+handoff and automatic rollback with two real builds in private sessions. It
+checks real browser input/output, session/shell/agent-fixture process continuity,
+tab identity and sharing. Runtime health/catalog checks do not inject terminal
+input into user sessions.
 
 Updating Switchboard must preserve running shells, Codex, Claude, builds, and
 other terminal processes. A short browser reconnect is acceptable. Automatically
@@ -97,8 +144,8 @@ client using the selected release. Existing sessions retain their original engin
 including new panes inside those sessions. The tray reloads the pointer for future
 service starts and keeps healthy connection services running. Selecting or rolling
 back a release does **not** restart the relay, web daemon, tray or session engines,
-upgrade their already loaded code, or claim browser recovery. A production service
-handoff with automatic browser verification remains unfinished.
+upgrade their already loaded code, or claim browser recovery. The automatic
+bundle updater above wraps this selector with a separate service handoff.
 
 `node acceptance/switchboard/run.cjs windows-update` runs actual PowerShell file
 transactions and subprocess quoting/timeouts with simulated Windows process,
