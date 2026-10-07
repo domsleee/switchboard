@@ -1,4 +1,5 @@
 use super::*;
+use anyhow::Context;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -237,9 +238,15 @@ pub(super) async fn execute_host(
                 )
             })?;
     } else {
-        ensure_helper(host, &mut helper)
-            .await
-            .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot open remote control"))?;
+        ensure_helper(host, &mut helper).await.map_err(|error| {
+            let message = helper_failure_message(&error);
+            log::warn!(
+                "Remote control startup failed for host {}: {}",
+                host.config.id,
+                message
+            );
+            (StatusCode::BAD_GATEWAY, message)
+        })?;
         let filter = if close {
             format!("$_.tab_id -eq {target}")
         } else {
@@ -345,6 +352,23 @@ impl Default for Control {
     }
 }
 
+// Expose only fixed local descriptions, never raw upstream errors/cookies/output.
+#[derive(Debug)]
+struct HelperFailure(&'static str);
+impl std::fmt::Display for HelperFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+impl std::error::Error for HelperFailure {}
+
+fn helper_failure_message(error: &anyhow::Error) -> &'static str {
+    error.downcast_ref::<HelperFailure>().map_or(
+        "Cannot open remote control: connection or session setup failed",
+        |failure| failure.0,
+    )
+}
+
 pub(super) async fn ensure_helper(host: &Host, control: &mut Control) -> anyhow::Result<()> {
     anyhow::ensure!(
         host.config.escape_transport.as_deref().unwrap_or("windows") == "windows",
@@ -361,7 +385,7 @@ pub(super) async fn ensure_helper(host: &Host, control: &mut Control) -> anyhow:
     if control.helper.is_none() {
         anyhow::ensure!(
             tokio::time::Instant::now() >= control.retry_at,
-            "Private helper reconnect is cooling down"
+            HelperFailure("Remote control is reconnecting; retry in 30 seconds")
         );
         // Also throttle failures before either WebSocket has connected.
         control.retry_at = tokio::time::Instant::now() + Duration::from_secs(30);
@@ -476,28 +500,41 @@ impl Helper {
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("Helper lacks authentication"))?,
         };
-        let result = tokio::time::timeout(Duration::from_secs(10), async {
-            while helper.state["active_pane"].is_null() {
-                let _ = helper.next().await?;
-            }
-            helper.check()?;
-            let (code, _) = helper
-                .command("$result=Invoke-SB @('--version') 5000; $code=$result.code")
-                .await?;
-            anyhow::ensure!(code == 0, "Remote CLI unavailable");
-            Ok::<_, anyhow::Error>(())
-        })
-        .await;
-        if !matches!(result, Ok(Ok(()))) {
-            let cause = match result {
-                Ok(Err(error)) => error.to_string(),
-                Err(_) => "Helper initialization timed out".to_owned(),
-                _ => unreachable!(),
-            };
+        let result = helper.initialize().await;
+        if let Err(error) = result {
             helper.close().await;
-            anyhow::bail!("Cannot initialize private helper: {cause}");
+            return Err(error);
         }
         Ok(helper)
+    }
+
+    async fn initialize(&mut self) -> anyhow::Result<()> {
+        // Give terminal readiness its own budget. The command's 15-second
+        // deadline must not be cut short by a shared 10-second startup timer.
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while self.state["active_pane"].is_null() {
+                let _ = self.next().await?;
+            }
+            self.check()
+        })
+        .await
+        .context(HelperFailure(
+            "Remote control terminal did not become ready within 10 seconds",
+        ))?
+        .context(HelperFailure(
+            "Remote control terminal disconnected or reported an invalid pane",
+        ))?;
+        let (code, _) = self
+            .command("$result=Invoke-SB @('--version') 5000; $code=$result.code")
+            .await
+            .context(HelperFailure(
+                "Remote control shell did not complete the CLI check",
+            ))?;
+        anyhow::ensure!(
+            code == 0,
+            HelperFailure("Remote control cannot run the Windows zellij CLI")
+        );
+        Ok::<_, anyhow::Error>(())
     }
 
     async fn close(mut self) {
@@ -648,6 +685,94 @@ pub(super) async fn cleanup(host: &Host) {
 mod tests {
     use super::*;
 
+    #[tokio::test(start_paused = true)]
+    async fn helper_cli_probe_receives_its_full_deadline_after_terminal_readiness() {
+        use tokio_tungstenite::tungstenite::protocol::Role;
+        let (terminal, terminal_peer) = tokio::io::duplex(16384);
+        let (control, control_peer) = tokio::io::duplex(4096);
+        let name = format!("{HELPER_PREFIX}slow-start");
+        let mut helper = Helper {
+            name: name.clone(),
+            terminal: WebSocketStream::from_raw_socket(
+                Box::new(terminal) as Stream,
+                Role::Client,
+                None,
+            )
+            .await,
+            control: WebSocketStream::from_raw_socket(
+                Box::new(control) as Stream,
+                Role::Client,
+                None,
+            )
+            .await,
+            state: Value::Null,
+            pong: false,
+            cookie: String::new(),
+        };
+        let peer = tokio::spawn(async move {
+            let mut terminal =
+                WebSocketStream::from_raw_socket(terminal_peer, Role::Server, None).await;
+            let mut control =
+                WebSocketStream::from_raw_socket(control_peer, Role::Server, None).await;
+            tokio::time::sleep(Duration::from_secs(4)).await;
+            control
+                .send(Message::Text(
+                    json!({"type":"MobileState", "payload": {
+                        "session_name":name, "active_pane":{"is_plugin":false}
+                    }})
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+            let command = terminal.next().await.unwrap().unwrap();
+            let command = String::from_utf8(command.into_data().to_vec()).unwrap();
+            assert_eq!(
+                terminal.next().await.unwrap().unwrap().into_data().as_ref(),
+                b"\r"
+            );
+            let encoded = command
+                .split("FromBase64String('")
+                .nth(1)
+                .unwrap()
+                .split('\'')
+                .next()
+                .unwrap();
+            let script = String::from_utf8(STANDARD.decode(encoded).unwrap()).unwrap();
+            let marker = script
+                .split("[Console]::WriteLine('")
+                .nth(1)
+                .unwrap()
+                .split(':')
+                .next()
+                .unwrap();
+            tokio::time::sleep(Duration::from_secs(11)).await;
+            terminal
+                .send(Message::Text(format!("{marker}:0:END").into()))
+                .await
+                .unwrap();
+            // Keep control open until the successful terminal response is consumed.
+            while terminal.next().await.is_some() {}
+            drop(control);
+        });
+        helper.initialize().await.unwrap();
+        peer.abort();
+    }
+
+    #[test]
+    fn helper_diagnostics_expose_only_fixed_local_messages() {
+        let upstream = anyhow::anyhow!("secret cookie and upstream output");
+        assert_eq!(
+            helper_failure_message(&upstream),
+            "Cannot open remote control: connection or session setup failed"
+        );
+        let contextual = upstream.context(HelperFailure("Remote control CLI check failed"));
+        assert_eq!(
+            helper_failure_message(&contextual),
+            "Remote control CLI check failed"
+        );
+    }
+
     #[tokio::test]
     async fn failed_helper_startup_is_throttled_and_reuses_its_session() {
         let attempts = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -679,7 +804,7 @@ mod tests {
                 .await
                 .unwrap_err()
                 .to_string()
-                .contains("cooling down"));
+                .contains("retry in 30 seconds"));
         }
         assert_eq!(attempts.lock().await.len(), 1);
         control.retry_at = tokio::time::Instant::now();
