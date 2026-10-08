@@ -33,6 +33,8 @@ pub mod web_authentication_tokens;
 pub mod web_server_commands;
 #[cfg(feature = "web_server_capability")]
 pub mod web_server_contract;
+#[cfg(any(windows, test))]
+pub mod windows_ipc;
 
 // TODO(hartan): Remove this re-export for the next minor release.
 pub use ::prost;
