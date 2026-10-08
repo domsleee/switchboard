@@ -26,6 +26,9 @@ jobs:
       - name: Check Windows session discovery and colours
         run: |
           cargo test -p zellij-utils windows_session_catalog_tests --lib
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo test -p zellij-utils windows_ipc --lib
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cargo test -p zellij-server windows_pane_environment --lib
       - name: Check Rust relay transport and update decisions
         run: cargo test -p zellij-client --features web_server_capability switchboard_ --lib

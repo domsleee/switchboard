@@ -9,8 +9,8 @@ use crate::os_input_output_unix::{
 };
 #[cfg(windows)]
 use crate::os_input_output_windows::{
-    disable_mouse_support, enable_mouse_support, restore_console_mode, setup_ipc,
-    AsyncSignalListener, BlockingSignalIterator,
+    disable_mouse_support, enable_mouse_support, restore_console_mode, AsyncSignalListener,
+    BlockingSignalIterator,
 };
 
 use std::io::prelude::*;
@@ -302,31 +302,37 @@ impl ClientOsApi for ClientOsInputOutput {
         }
     }
     fn connect_to_server(&self, path: &Path) {
-        let socket;
-        loop {
-            match zellij_utils::consts::ipc_connect(path) {
-                Ok(sock) => {
-                    socket = sock;
-                    break;
+        #[cfg(windows)]
+        let (sender, receiver) = loop {
+            match zellij_utils::windows_ipc::connect(path) {
+                Ok((command, reply)) => {
+                    break (
+                        IpcSenderWithContext::new(command),
+                        IpcReceiverWithContext::new(reply),
+                    )
                 },
-                Err(_) => {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                },
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(50)),
             }
-        }
-        let (sender, receiver) = setup_ipc(socket, path);
+        };
+        #[cfg(not(windows))]
+        let (sender, receiver) = {
+            let socket = loop {
+                match zellij_utils::consts::ipc_connect(path) {
+                    Ok(socket) => break socket,
+                    Err(_) => std::thread::sleep(std::time::Duration::from_millis(50)),
+                }
+            };
+            setup_ipc(socket, path)
+        };
         *self.send_instructions_to_server.lock().unwrap() = Some(sender);
         *self.receive_instructions_from_server.lock().unwrap() = Some(receiver);
     }
     fn try_connect_to_server(&self, path: &Path) -> io::Result<()> {
-        let socket = zellij_utils::consts::ipc_connect(path)?;
         #[cfg(not(windows))]
-        let (sender, receiver) = setup_ipc(socket, path);
+        let (sender, receiver) = setup_ipc(zellij_utils::consts::ipc_connect(path)?, path);
         #[cfg(windows)]
         let (sender, receiver) = {
-            // The ordinary Windows setup retries the reply pipe forever. Existing-only
-            // connections must also attempt that second pipe just once.
-            let reply = zellij_utils::consts::ipc_connect_reply(path)?;
+            let (socket, reply) = zellij_utils::windows_ipc::connect(path)?;
             (
                 IpcSenderWithContext::new(socket),
                 IpcReceiverWithContext::new(reply),

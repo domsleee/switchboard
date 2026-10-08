@@ -580,9 +580,9 @@ pub fn recv_protobuf_server_to_client(
 /// peer.
 ///
 /// On Unix the local socket is bidirectional, so the same async stream is
-/// used for both send and receive. On Windows the named pipe is half-duplex
-/// and the existing sync `ipc_connect` / `ipc_connect_reply` flow is
-/// dispatched onto a blocking task.
+/// used for both send and receive. Windows uses separate command and reply
+/// pipes to avoid concurrent blocking I/O on one pipe handle; connection setup
+/// is dispatched onto a blocking task.
 #[cfg(unix)]
 pub async fn async_send_kill_and_await(path: &std::path::Path) -> io::Result<()> {
     use interprocess::local_socket::traits::tokio::Stream as _;
@@ -616,18 +616,14 @@ pub async fn async_send_kill_and_await(path: &std::path::Path) -> io::Result<()>
 pub async fn async_send_kill_and_await(path: &std::path::Path) -> io::Result<()> {
     let path = path.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        use crate::consts::{ipc_connect, ipc_connect_reply};
-        let stream = ipc_connect(&path)?;
-        let reply = ipc_connect_reply(&path);
+        let (stream, reply_stream) = crate::windows_ipc::connect(&path)?;
         let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(stream);
         sender
             .send_client_msg(ClientToServerMsg::KillSession)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-        if let Ok(reply_stream) = reply {
-            let mut receiver: IpcReceiverWithContext<ServerToClientMsg> =
-                IpcReceiverWithContext::new(reply_stream);
-            let _ = receiver.recv_server_msg();
-        }
+        let mut receiver: IpcReceiverWithContext<ServerToClientMsg> =
+            IpcReceiverWithContext::new(reply_stream);
+        let _ = receiver.recv_server_msg();
         Ok::<(), io::Error>(())
     })
     .await
