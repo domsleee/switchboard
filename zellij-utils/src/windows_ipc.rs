@@ -65,7 +65,7 @@ fn timed_out() -> io::Error {
 // a slow handshake is not mistaken for a disconnected client.
 #[cfg(windows)]
 fn bytes_ready(stream: &Stream) -> io::Result<bool> {
-    use std::os::windows::io::AsRawHandle;
+    use std::os::windows::io::{AsHandle, AsRawHandle};
     use windows_sys::Win32::Foundation::{ERROR_BROKEN_PIPE, ERROR_PIPE_NOT_CONNECTED};
     use windows_sys::Win32::System::Pipes::PeekNamedPipe;
     let Stream::NamedPipe(pipe) = stream;
@@ -74,7 +74,7 @@ fn bytes_ready(stream: &Stream) -> io::Result<bool> {
     // are null and available is a valid output pointer. No bytes are consumed.
     let ok = unsafe {
         PeekNamedPipe(
-            pipe.as_raw_handle(),
+            pipe.as_handle().as_raw_handle(),
             std::ptr::null_mut(),
             0,
             std::ptr::null_mut(),
