@@ -24,7 +24,7 @@ fn reply_path(id: Uuid) -> PathBuf {
     // Keep Unix test socket names below sockaddr_un's length limit. On Windows
     // this is a namespaced pipe name, not a file or a session discovery marker.
     #[cfg(windows)]
-    let base = std::env::temp_dir();
+    let base = PathBuf::new();
     #[cfg(unix)]
     let base = PathBuf::from("/tmp");
     base.join(format!("zellij-reply-{id}"))
@@ -60,18 +60,54 @@ fn timed_out() -> io::Error {
     io::Error::new(io::ErrorKind::TimedOut, "session IPC pairing timed out")
 }
 
-/// Complete one accepted command connection. The caller runs each handshake on
-/// its own thread; a stalled client must not hold up other session connections.
-pub fn accept(mut command: Stream) -> io::Result<(Stream, Stream)> {
-    command.set_nonblocking(true)?;
-    let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
-    let mut id = [0u8; 16];
+// PIPE_NOWAIT reads are not portable: Windows reports an empty live pipe as
+// ERROR_NO_DATA, which interprocess maps to EOF. Peek before a blocking read so
+// a slow handshake is not mistaken for a disconnected client.
+#[cfg(windows)]
+fn bytes_ready(stream: &Stream) -> io::Result<bool> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{ERROR_BROKEN_PIPE, ERROR_PIPE_NOT_CONNECTED};
+    use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+    let Stream::NamedPipe(pipe) = stream;
+    let mut available = 0;
+    // SAFETY: pipe owns the handle throughout this call; all optional outputs
+    // are null and available is a valid output pointer. No bytes are consumed.
+    let ok = unsafe {
+        PeekNamedPipe(
+            pipe.as_raw_handle(),
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            &mut available,
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        let error = io::Error::last_os_error();
+        return match error.raw_os_error().map(|code| code as u32) {
+            Some(ERROR_BROKEN_PIPE | ERROR_PIPE_NOT_CONNECTED) => {
+                Err(io::ErrorKind::UnexpectedEof.into())
+            },
+            _ => Err(error),
+        };
+    }
+    Ok(available > 0)
+}
+
+fn read_before(stream: &mut Stream, buffer: &mut [u8], deadline: Instant) -> io::Result<()> {
+    #[cfg(unix)]
+    stream.set_nonblocking(true)?;
     let mut received = 0;
-    while received < id.len() {
+    while received < buffer.len() {
         if Instant::now() >= deadline {
             return Err(timed_out());
         }
-        match command.read(&mut id[received..]) {
+        #[cfg(windows)]
+        if !bytes_ready(stream)? {
+            std::thread::sleep(POLL_INTERVAL);
+            continue;
+        }
+        match stream.read(&mut buffer[received..]) {
             Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
             Ok(count) => received += count,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -81,8 +117,17 @@ pub fn accept(mut command: Stream) -> io::Result<(Stream, Stream)> {
             Err(error) => return Err(error),
         }
     }
+    #[cfg(unix)]
+    stream.set_nonblocking(false)?;
+    Ok(())
+}
+
+/// Complete one accepted command connection. The caller runs each handshake on
+/// its own thread; a stalled client must not hold up other session connections.
+pub fn accept(mut command: Stream) -> io::Result<(Stream, Stream)> {
+    let mut id = [0u8; 16];
+    read_before(&mut command, &mut id, Instant::now() + HANDSHAKE_TIMEOUT)?;
     let reply = connect_endpoint(&reply_path(Uuid::from_bytes(id)))?;
-    command.set_nonblocking(false)?;
     Ok((command, reply))
 }
 
@@ -145,20 +190,13 @@ mod tests {
     fn exchange(pair: (Stream, Stream), expected: u8) {
         let (mut command, mut reply) = pair;
         command.write_all(&[expected]).unwrap();
-        reply.set_nonblocking(true).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
         let mut response = [0];
-        loop {
-            match reply.read(&mut response) {
-                Ok(1) => break,
-                Err(error)
-                    if error.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline =>
-                {
-                    thread::sleep(POLL_INTERVAL)
-                },
-                result => panic!("reply failed: {result:?}"),
-            }
-        }
+        read_before(
+            &mut reply,
+            &mut response,
+            Instant::now() + Duration::from_secs(5),
+        )
+        .unwrap();
         assert_eq!(response[0], expected);
     }
 

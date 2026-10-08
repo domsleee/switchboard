@@ -580,9 +580,9 @@ pub fn recv_protobuf_server_to_client(
 /// peer.
 ///
 /// On Unix the local socket is bidirectional, so the same async stream is
-/// used for both send and receive. On Windows the named pipe is half-duplex
-/// and the existing sync `ipc_connect` / `ipc_connect_reply` flow is
-/// dispatched onto a blocking task.
+/// used for both send and receive. Windows uses separate command and reply
+/// pipes to avoid concurrent blocking I/O on one pipe handle; connection setup
+/// is dispatched onto a blocking task.
 #[cfg(unix)]
 pub async fn async_send_kill_and_await(path: &std::path::Path) -> io::Result<()> {
     use interprocess::local_socket::traits::tokio::Stream as _;
