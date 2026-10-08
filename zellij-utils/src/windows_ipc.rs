@@ -169,8 +169,27 @@ pub fn connect(path: &Path) -> io::Result<(Stream, Stream)> {
         return Ok(pair);
     }
     let command = crate::consts::ipc_connect(path)?;
-    let reply = crate::consts::ipc_connect_reply(path)?;
-    Ok((command, reply))
+    let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
+    // Old engines publish the command pipe before binding their reply pipe.
+    // Retain this command connection while waiting; opening another one would
+    // itself leave an orphan and shift the legacy engine's reply queue.
+    loop {
+        match crate::consts::ipc_connect_reply(path) {
+            Ok(reply) => return Ok((command, reply)),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::WouldBlock
+                ) =>
+            {
+                if Instant::now() >= deadline {
+                    return Err(timed_out());
+                }
+                std::thread::sleep(POLL_INTERVAL);
+            },
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -205,6 +224,33 @@ mod tests {
         let mut request = [0];
         command.read_exact(&mut request).unwrap();
         reply.write_all(&request).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_ipc_legacy_startup_waits_on_the_original_command_connection() {
+        let path = test_path();
+        let listener = crate::consts::ipc_bind(&path).unwrap();
+        let server_path = path.clone();
+        let server = thread::spawn(move || {
+            let mut command = listener.accept().unwrap();
+            thread::sleep(Duration::from_millis(100));
+            let replies = crate::consts::ipc_bind_reply(&server_path).unwrap();
+            let mut reply = replies.accept().unwrap();
+            let mut request = [0];
+            read_before(
+                &mut command,
+                &mut request,
+                Instant::now() + Duration::from_secs(5),
+            )
+            .unwrap();
+            // A legacy peer sees only the application byte, never a UUID header.
+            assert_eq!(request, [42]);
+            reply.write_all(&request).unwrap();
+        });
+        exchange(connect(&path).unwrap(), 42);
+        server.join().unwrap();
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
