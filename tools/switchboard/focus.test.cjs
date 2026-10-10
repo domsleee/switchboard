@@ -86,7 +86,7 @@ test('transient discovery and attention failures retain the selected URL until a
   const saved=[];
   const context={location,URL,URLSearchParams,history:{replaceState:(_,title,url)=>saved.push(String(url))},
     hosts:new Map([['mac',{sessions:[{name:'main'}]}],['windows',{error:'Offline'}]]),
-    sessions:new Map(),selected:key('windows',42),restoringTab:true,loading:false,attentionErrors:[]};
+    sessions:new Map(),selected:key('windows',42),restoringTab:true,loading:false,attentionErrors:[],hostsLoaded:true};
   vm.createContext(context);
   vm.runInContext(source.slice(source.indexOf('function requestedTab('),source.indexOf('function tabKey(')),context);
   assert.equal(context.waitingForRequestedTab(),true);context.updateTabUrl(null);assert.deepEqual(saved,[]);
@@ -97,6 +97,28 @@ test('transient discovery and attention failures retain the selected URL until a
   context.hosts.set('windows',{sessions:[]});
   assert.equal(context.waitingForRequestedTab(),false,'Successful discovery can confirm the selected session closed');
   context.updateTabUrl(null);assert.equal(new URL(saved[0]).searchParams.get('tab'),null);
+});
+
+test('restore waits for the first clean scan covering the session, then abandons a proven-closed tab',()=>{
+  const location={href:'https://switchboard.test/?host=windows&session=main&tab=42',search:'?host=windows&session=main&tab=42'};
+  const entry={host:'windows',name:'main',state:{panes:[{pane_id:7,is_plugin:false}]},catalog:[{id:90}],catalogPolls:0};
+  const context={location,URL,URLSearchParams,history:{replaceState(){}},
+    hosts:new Map([['windows',{sessions:[{name:'main'}]}]]),
+    sessions:new Map([[JSON.stringify(['windows','main']),entry]]),
+    selected:key('windows',42),restoringTab:true,loading:false,attentionErrors:[],hostsLoaded:true};
+  vm.createContext(context);
+  vm.runInContext(source.slice(source.indexOf('function requestedTab('),source.indexOf('function tabKey(')),context);
+  assert.equal(context.waitingForRequestedTab(),true,'A seeded catalog waits for its first clean scan');
+  entry.catalogPolls=1;
+  assert.equal(context.waitingForRequestedTab(),false,'A clean covered scan without the tab proves it closed');
+});
+
+test('every attention poll marks the sessions it covered',async()=>{
+  const {context,windows}=monitorContext();
+  await context.poll({tabs:[],errors:[]});
+  assert.equal(windows.catalogPolls,1);
+  await context.poll({tabs:[],errors:[]});
+  assert.equal(windows.catalogPolls,2);
 });
 
 test('reconnect metadata restores the chosen tab instead of following another native active pane',()=>{
