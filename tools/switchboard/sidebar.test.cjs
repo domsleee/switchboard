@@ -254,18 +254,24 @@ test('a host the relay stops listing leaves the sidebar without a reload',async(
 
 test('terminal URLs round-trip names and wait for the requested machine and tab',()=>{
   const location={href:'https://switchboard.localhost/?host=windows&session=work+%3F%23&tab=42',search:'?host=windows&session=work+%3F%23&tab=42'};
-  const saved=[];const context={location,URL,URLSearchParams,history:{replaceState:(_,title,url)=>saved.push(String(url))},hosts:new Map(),sessions:new Map(),attentionErrors:[],loading:true,restoringTab:true};
+  const saved=[];const context={location,URL,URLSearchParams,history:{replaceState:(_,title,url)=>saved.push(String(url))},hosts:new Map(),sessions:new Map(),attentionErrors:[],loading:true,restoringTab:true,hostsLoaded:false};
   vm.createContext(context);vm.runInContext(source.slice(source.indexOf('function requestedTab('),source.indexOf('function tabKey(')),context);
   context.selected=context.requestedTab();assert.equal(context.selected,JSON.stringify(['windows','work ?#','tab',42]));assert.equal(context.waitingForRequestedTab(),true);
   context.hosts.set('mac',{name:'Mac'});context.hosts.set('windows',{name:'Windows',connecting:true});assert.equal(context.waitingForRequestedTab(),true);
   context.updateTabUrl(null);assert.deepEqual(saved,[]);
-  const entry={host:'windows',name:'work ?#',state:null,catalog:[]};context.sessions.set(JSON.stringify(['windows','work ?#']),entry);context.hosts.set('windows',{name:'Windows'});context.loading=false;
+  const entry={host:'windows',name:'work ?#',state:null,catalog:[],catalogPolls:0};context.sessions.set(JSON.stringify(['windows','work ?#']),entry);context.hosts.set('windows',{name:'Windows'});context.loading=false;
   assert.equal(context.waitingForRequestedTab(),true);entry.state={panes:[]};assert.equal(context.waitingForRequestedTab(),true);
+  entry.catalog=[{id:90}];assert.equal(context.waitingForRequestedTab(),true,'A catalog seeded before the first scan is not proof the tab closed');
+  entry.catalogPolls=1;assert.equal(context.waitingForRequestedTab(),false);
   entry.catalog=[{id:42}];assert.equal(context.waitingForRequestedTab(),false);
   context.updateTabUrl({entry,tab:{id:42}});assert.deepEqual(saved,[]);
   context.updateTabUrl({entry,tab:{id:90}});assert.equal(new URL(saved[0]).searchParams.get('tab'),'90');assert.equal(new URL(saved[0]).searchParams.get('session'),'work ?#');
   context.hosts.set('windows',{error:'Offline'});assert.equal(context.waitingForRequestedTab(),true);
   context.hosts.set('windows',{sessions:[]});assert.equal(context.waitingForRequestedTab(),false);
+  context.hosts.delete('windows');context.hostsLoaded=false;context.loading=true;
+  assert.equal(context.waitingForRequestedTab(),true);
+  context.hostsLoaded=true;assert.equal(context.waitingForRequestedTab(),true,'A refresh in flight may still list the machine');
+  context.loading=false;assert.equal(context.waitingForRequestedTab(),false,'Completed discovery without the machine abandons an unknown host');
   location.search='?host=windows&session=main&tab=-1';assert.equal(context.requestedTab(),null);
   location.search='?host=windows&session=main&tab=4294967296';assert.equal(context.requestedTab(),null);
 });

@@ -7,7 +7,8 @@
   let latest;
   let escapeQueue = Promise.resolve();
   let escapeStatus;
-  let pendingFocus, desiredFocus, focusInputState, focusId, focusTimeout;
+  let pendingFocus, desiredFocus, focusInputState, focusId, focusTimeout, focusAttempts=0;
+  const focusMaxAttempts=3, focusTimeoutMs=5000;
   let pendingNewTab;
   let focusOrigin, preserveFocus = false;
   function restoreTerminalFocus(origin = focusOrigin) {
@@ -125,15 +126,28 @@
   }
   function dispatchFocus() {
     clearTimeout(focusTimeout);
+    // A superseding click restarts the attempt budget for the newest target.
+    if(pendingFocus!==desiredFocus)focusAttempts=0;
     pendingFocus=desiredFocus;
+    focusAttempts++;
     // Control sends can be dropped during reconnect, and a no-op focus may
     // produce no MobileState. Never leave input disabled waiting forever.
-    focusTimeout=setTimeout(()=>failFocus('Terminal switch timed out. Try selecting the tab again.'),5000);
+    focusTimeout=setTimeout(focusTimedOut,focusTimeoutMs);
     try {
       window.__zjSendControl({type:'FocusPane',pane_id:pendingFocus.pane_id,is_plugin:pendingFocus.is_plugin});
     } catch (_) {
       failFocus('Terminal switch failed. Check the connection and try again.');
     }
+  }
+  function focusTimedOut(){
+    // A newer click supersedes the unconfirmed target instead of failing it,
+    // so rapid switches never stall on an acknowledgement that will not come.
+    if(pendingFocus!==desiredFocus){dispatchFocus();return;}
+    if(focusAttempts<focusMaxAttempts){
+      showEscapeStatus(`Switching terminal… (attempt ${focusAttempts+1} of ${focusMaxAttempts})`);
+      dispatchFocus();return;
+    }
+    failFocus('Terminal switch timed out. Try selecting the tab again.');
   }
   function releaseFocus() {
     if(focusTimeout)clearTimeout(focusTimeout);

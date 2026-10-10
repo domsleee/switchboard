@@ -18,7 +18,7 @@ const startedHosts = new Set();
 const tabButtons=new Map();
 const mobileSidebar=matchMedia("(max-width:700px)");
 let sidebarCollapsed=localStorage.getItem("switchboard-sidebar-collapsed")==="true",sidebarOpen=false;
-let filter = 'all', selected = requestedTab(), restoringTab=!!selected, loading = false, dragging = false;
+let filter = 'all', selected = requestedTab(), restoringTab=!!selected, loading = false, dragging = false, hostsLoaded = false;
 const dragType='application/x-zellij-switchboard-tab';
 let dragState=null, dragScrollFrame=0, suppressTabClickUntil=0;
 function load(key) { try { return JSON.parse(localStorage.getItem(key)) || {}; } catch (_) { return {}; } }
@@ -54,8 +54,10 @@ function waitingForRequestedTab(){
   if(machine?.sessions&&!machine.sessions.some(session=>session.name===name))return false;
   if(catalogUnavailable(host,name))return true;
   if(!restoringTab)return false;
-  if(!machine)return hosts.size===0&&loading;
-  return machine.connecting||!!entry&&(!entry.state||!entry.catalog?.length);
+  // A missing machine or an unscanned session is not evidence either. Only a
+  // completed discovery or a clean scan covering the session proves closure.
+  if(!machine)return !hostsLoaded||loading;
+  return machine.connecting||!!entry&&(!entry.state||!entry.catalog?.length||!entry.catalogPolls);
 }
 function catalogUnavailable(host,session){
   return attentionErrors.some(error=>(error.host==='Switchboard'||error.host===host)&&(!error.session||error.session===session));
@@ -507,7 +509,7 @@ async function refresh() {
   if(loading)return;loading=true;
   try {
     const response=await fetch('/api/hosts?summary=1');if(!response.ok)throw Error('Cannot reach local relay');
-    const data=await response.json();
+    const data=await response.json();hostsLoaded=true;
     for(const host of data)hosts.set(host.id,{...hosts.get(host.id),...host,connecting:true});
     // A host the relay stops listing must not linger until reload.
     const listed=new Set(data.map(host=>host.id));
@@ -922,6 +924,7 @@ async function refreshAttention(immediate=false){
     tabCatalog=[...incoming,...tabCatalog.filter(tab=>catalogUnavailable(tab.host,tab.session)&&!supplied.has(identity(tab)))];
     for(const entry of sessions.values()){
       entry.catalogUnavailable=catalogUnavailable(entry.host,entry.name);
+      entry.catalogPolls=(entry.catalogPolls||0)+1;
       setCatalog(entry,tabCatalog.filter(tab=>tab.host===entry.host&&tab.session===entry.name));
       updateCreatedTabs(entry);
     }

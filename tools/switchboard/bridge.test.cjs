@@ -278,21 +278,43 @@ test('plain Ctrl+T cannot open native Tab mode, including repeats, and preserves
   h.setFocus(true);h.setModal(true);assert.equal(h.key('KeyT',{altKey:false,ctrlKey:true}).prevented,undefined);
 });
 
-test('lost focus acknowledgement times out, releases input and permits another switch',()=>{
+test('lost focus acknowledgement retries the newest target, then fails and permits another switch',()=>{
   const h=harness(),sent=[];h.window.__zjSendControl=message=>sent.push(message);
   const focus=(pane_id,focus_id)=>h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-focus',pane_id,is_plugin:false,focus_id}});
+  const fire=()=>[...h.timers.values()][0]();
   h.state({active_pane:{pane_id:1,is_plugin:false}});
   focus(2,1);focus(3,2);
   assert.equal(h.timers.size,1,'Queued clicks must not extend the deadline');
-  [...h.timers.values()][0]();
+  fire();
+  assert.deepEqual(sent.map(command=>command.pane_id),[2,3],'An unconfirmed target yields to the newest click instead of failing it');
+  assert.equal(h.window.term.options.disableStdin,true);
+  assert.equal(h.messages.some(message=>message.type==='zellij-focus-failed'),false);
+  fire();fire();
+  assert.deepEqual(sent.map(command=>command.pane_id),[2,3,3,3]);
+  assert.equal(h.window.term.options.disableStdin,true);
+  assert.equal(h.messages.some(message=>message.type==='zellij-focus-failed'),false);
+  fire();
   assert.equal(h.window.term.options.disableStdin,false);
   assert.equal(h.window.term.element.style.pointerEvents,'');
   const failure=h.messages.at(-1);
   assert.equal(failure.type,'zellij-focus-failed');assert.equal(failure.focus_id,2);
   assert.match(failure.message,/timed out/);assert.equal(h.timers.size,0);
-  focus(3,3);assert.deepEqual(sent.map(command=>command.pane_id),[2,3]);
+  focus(3,3);assert.deepEqual(sent.map(command=>command.pane_id),[2,3,3,3,3]);
   h.state({active_pane:{pane_id:3,is_plugin:false}});
   assert.equal(h.window.term.options.disableStdin,false);assert.equal(h.timers.size,0);
+});
+
+test('a late acknowledgement during retry completes without failing',()=>{
+  const h=harness(),sent=[];h.window.__zjSendControl=message=>sent.push(message);
+  h.state({active_pane:{pane_id:1,is_plugin:false}});
+  h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-focus',pane_id:2,is_plugin:false,focus_id:1}});
+  [...h.timers.values()][0]();
+  assert.deepEqual(sent.map(command=>command.pane_id),[2,2]);
+  assert.equal(h.window.term.options.disableStdin,true);
+  h.state({active_pane:{pane_id:2,is_plugin:false}});
+  assert.equal(h.window.term.options.disableStdin,false);assert.equal(h.window.term.element.style.pointerEvents,'');
+  assert.equal(h.messages.some(message=>message.type==='zellij-focus-failed'),false);
+  assert.equal(h.messages.at(-1).focus_pending,false);assert.equal(h.timers.size,0);
 });
 
 test('focus send exceptions restore existing input settings and report failure',()=>{
