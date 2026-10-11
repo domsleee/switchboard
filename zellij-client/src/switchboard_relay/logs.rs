@@ -208,6 +208,8 @@ struct SwitchDiagnostic {
     max_xterm_rows: u16,
     #[serde(default)]
     clipped_bottom_rows: u16,
+    #[serde(default)]
+    max_clipped_bottom_rows: u16,
 }
 
 impl SwitchDiagnostic {
@@ -280,12 +282,12 @@ impl SwitchDiagnostic {
 
     fn scroll_message(&self) -> String {
         format!(
-            "Terminal scrolling pane={}{} focus={} buffer_scrolls={} line_feeds={} wheel={} xterm={}x{}->{}x{} range={}x{}..{}x{} changes={} native={}x{} clipped_rows={}",
+            "Terminal scrolling pane={}{} focus={} buffer_scrolls={} line_feeds={} wheel={} xterm={}x{}->{}x{} range={}x{}..{}x{} changes={} native={}x{} clipped_rows={}/{}",
             if self.is_plugin { "plugin:" } else { "" }, self.pane_id, self.focus_id,
             self.buffer_scroll_events, self.line_feed_events, self.wheel_events,
             self.first_xterm_cols, self.first_xterm_rows,self.xterm_cols, self.xterm_rows,
             self.min_xterm_cols,self.min_xterm_rows,self.max_xterm_cols,self.max_xterm_rows,self.xterm_size_changes,
-            self.native_cols, self.native_rows,self.clipped_bottom_rows,
+            self.native_cols, self.native_rows,self.clipped_bottom_rows,self.max_clipped_bottom_rows,
         )
     }
 }

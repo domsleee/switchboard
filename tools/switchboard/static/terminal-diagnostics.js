@@ -3,6 +3,11 @@ window.SwitchboardTerminalDiagnostics = function (report, dimensions) {
   const now = () => performance.now();
   let span, quietTimer, deadlineTimer, hookedTerm, renderListener, scrollListener, lineFeedListener, resizeListener, animationProbe;
   let queued = 0, renderStarted = null, quiet = false;
+  function geometry() {
+    const result = dimensions();
+    if (span) span.max_clipped_bottom_rows = Math.max(span.max_clipped_bottom_rows,result.clipped_bottom_rows || 0);
+    return result;
+  }
   function size(term) {
     if (!span || !(term?.cols > 0 && term.rows > 0)) return;
     if (!span.first_xterm_cols) {
@@ -16,7 +21,8 @@ window.SwitchboardTerminalDiagnostics = function (report, dimensions) {
   function finish(outcome) {
     if (!span) return;
     clearTimeout(quietTimer);clearTimeout(deadlineTimer);
-    const result = {...span, ...dimensions(), outcome, elapsed_ms:Math.round(now()-span.started), writes_pending:queued,
+    const measured = geometry();
+    const result = {...span, ...measured, outcome, elapsed_ms:Math.round(now()-span.started), writes_pending:queued,
       render_pending:renderStarted !== null, animation_pending:!!animationProbe};
     delete result.started;delete result.last_native_cols;delete result.last_native_rows;
     delete result.last_xterm_cols;delete result.last_xterm_rows;
@@ -48,10 +54,12 @@ window.SwitchboardTerminalDiagnostics = function (report, dimensions) {
         render_tracking:typeof term?.onRender === 'function', first_render_ms:null,last_render_ms:null,render_events:0,max_render_lag_ms:0,
         first_animation_ms:null,last_animation_ms:null,max_animation_lag_ms:0,first_quiet_ms:null,late_frames:0,
         buffer_scroll_events:0,line_feed_events:0,wheel_events:0,
+        max_clipped_bottom_rows:0,
         xterm_size_changes:0,first_xterm_cols:0,first_xterm_rows:0,min_xterm_cols:0,min_xterm_rows:0,max_xterm_cols:0,max_xterm_rows:0,
         hidden_at_start:!!dimensions().document_hidden,viewport_size_changes:0,
         first_native_cols:0,first_native_rows:0,min_native_cols:0,min_native_rows:0,max_native_cols:0,max_native_rows:0};
       size(term);
+      geometry();
       quiet = false;
       deadlineTimer = setTimeout(() => finish('timeout'), 16000);
     },
@@ -70,6 +78,7 @@ window.SwitchboardTerminalDiagnostics = function (report, dimensions) {
         if (term !== hookedTerm) return;
         const started = renderStarted;renderStarted = null;
         if (!span) return;
+        geometry();
         const elapsed = Math.round(now()-span.started);
         span.render_events++;span.last_render_ms = elapsed;
         if (span.first_parse_ms !== null || started !== null) span.first_render_ms ??= elapsed;
@@ -82,6 +91,7 @@ window.SwitchboardTerminalDiagnostics = function (report, dimensions) {
           if (animationProbe !== probe) return;
           animationProbe = null;
           if (span !== tracked) return;
+          geometry();
           const elapsed = Math.round(now()-tracked.started);
           tracked.first_animation_ms ??= elapsed;tracked.last_animation_ms = elapsed;
           tracked.max_animation_lag_ms = Math.max(tracked.max_animation_lag_ms,Math.round(now()-requested));

@@ -99,6 +99,14 @@ test('redraws without new output remain visible throughout the observation windo
   const report=h.reports[0];assert.equal(report.frames,1);assert.equal(report.last_frame_ms,0);
   assert.equal(report.render_events,6);assert.equal(report.last_render_ms,3000);assert.equal(report.last_animation_ms,3016);
 });
+test('temporary clipping remains recorded after the screen returns to its full height',()=>{
+  const dimensions={clipped_bottom_rows:0},h=harness(dimensions,true);h.start(1);h.diagnostics.ack();
+  h.diagnostics.frame('screen');h.term.write('screen');h.writes[0].callback();h.render();
+  // The crop updates after onRender; the next animation sample must see it.
+  dimensions.clipped_bottom_rows=35;h.advance(16);
+  dimensions.clipped_bottom_rows=0;h.render();h.advance(10000);
+  assert.equal(h.reports[0].clipped_bottom_rows,0);assert.equal(h.reports[0].max_clipped_bottom_rows,35);
+});
 test('native size transitions are tracked only for the requested pane',()=>{
   const h=harness();h.start(1);h.diagnostics.ack();
   const state=(pane,cols,rows)=>h.diagnostics.state({active_pane:{pane_id:pane,is_plugin:false},tab_viewport:{cols,rows}});
