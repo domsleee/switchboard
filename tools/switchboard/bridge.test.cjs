@@ -3,9 +3,9 @@ const assert=require('node:assert/strict');
 const vm=require('node:vm');
 const fs=require('node:fs');
 const source=fs.readFileSync(__dirname+'/static/bridge.js','utf8');
-function harness(){
+function harness(withDiagnostics=false){
   const handlers={},messages=[],properties=new Map(),classes=new Set(),frames=[],resizes=[],timers=new Map();let timerId=0;
-  let modal=false,focused=false,browserFocused=false,frameActive=true,bottomRows=2,firstRow='Zellij (main)';
+  let modal=false,focused=false,browserFocused=false,frameActive=true,bottomRows=2,firstRow='Zellij (main)',now=0;
   class Socket{constructor(){this.handlers={};this.readyState=1;this.sent=[];}addEventListener(type,fn){this.handlers[type]=fn;}send(data){this.sent.push(data);}}
   const parent={postMessage:data=>messages.push(data)};
   const window={WebSocket:Socket,addEventListener:(type,fn)=>handlers[type]=fn,dispatchEvent:()=>resizes.push(1),innerWidth:800,innerHeight:600,
@@ -17,12 +17,39 @@ function harness(){
     body:{append(){},classList:{contains:c=>classes.has(c),toggle:(c,on)=>on?classes.add(c):classes.delete(c)}},
     documentElement:{style:{getPropertyValue:key=>properties.get(key)||'',setProperty:(key,val)=>properties.set(key,val)}}};
   parent.document=document;
-  vm.runInNewContext(source,{window,document,parent,location:{pathname:'/hosts/windows/main',origin:'http://localhost:8090'},localStorage:{getItem:()=>null},MutationObserver:class{observe(){}},requestAnimationFrame:fn=>frames.push(fn),setTimeout:fn=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id),Event:class{},TextEncoder});
+  const diagnosticsSource=withDiagnostics?fs.readFileSync(__dirname+'/static/terminal-diagnostics.js','utf8'):'';
+  vm.runInNewContext(diagnosticsSource+source,{window,document,parent,performance:{now:()=>now},location:{pathname:'/hosts/windows/main',origin:'http://localhost:8090'},localStorage:{getItem:()=>null},MutationObserver:class{observe(){}},requestAnimationFrame:fn=>frames.push(fn),setTimeout:fn=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id),Event:class{},TextEncoder});
   const key=(code,extra={})=>{const event={code,altKey:true,ctrlKey:false,metaKey:false,shiftKey:false,preventDefault(){this.prevented=true;},stopImmediatePropagation(){this.stopped=true;},...extra};handlers.keydown(event);return event;};
   const state=(payload={})=>{const socket=new window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');socket.handlers.message({data:JSON.stringify({type:'MobileState',payload})});while(frames.length)frames.shift()();};
   const error=(...lines)=>{const socket=new window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');socket.handlers.message({data:JSON.stringify({type:'LogError',lines})});};
-  return{window,handlers,parent,messages,properties,classes,key,state,error,setFocus:v=>focused=v,setBodyFocus:()=>{focused=false;document.activeElement=document.body;},setBrowserFocus:v=>browserFocused=v,setFrameActive:v=>frameActive=v,setModal:v=>modal=v,setBottomRows:v=>bottomRows=v,setFirstRow:v=>firstRow=v,frames,resizes,timers};
+  return{window,handlers,parent,messages,properties,classes,key,state,error,setTime:v=>now=v,setFocus:v=>focused=v,setBodyFocus:()=>{focused=false;document.activeElement=document.body;},setBrowserFocus:v=>browserFocused=v,setFrameActive:v=>frameActive=v,setModal:v=>modal=v,setBottomRows:v=>bottomRows=v,setFirstRow:v=>firstRow=v,frames,resizes,timers};
 }
+test('Shift+Enter reports only modifier timing and never retains Shift for later Enter',()=>{
+  const h=harness();h.setFocus(true);h.state({active_pane:{pane_id:30,is_plugin:false,tab_position:5}});
+  h.setTime(100);h.key('ShiftLeft',{key:'Shift',altKey:false,shiftKey:true});
+  h.setTime(150);h.key('Enter',{key:'Enter',altKey:false,shiftKey:true});
+  const first=h.messages.find(m=>m.type==='zellij-key-diagnostic');assert.equal(first.diagnostic.held_ms,50);assert.equal(first.diagnostic.released_ms,null);
+  h.setTime(160);h.handlers.keyup({key:'Shift'});
+  h.setTime(170);h.key('Enter',{key:'Enter',altKey:false});
+  assert.equal(h.messages.filter(m=>m.type==='zellij-key-diagnostic').length,1);
+  h.key('Enter',{key:'Enter',altKey:false,shiftKey:true});
+  const last=h.messages.at(-1);assert.equal(last.diagnostic.held_ms,null);assert.equal(last.diagnostic.released_ms,10);
+  assert.equal(last.diagnostic.pane_id,30);assert.equal('key' in last.diagnostic,false);
+});
+test('bridge forwards one focus span with socket bytes and ACK timing without changing input',()=>{
+  const h=harness(true),written=[];h.window.term.write=data=>written.push(data);
+  h.state({active_pane:{pane_id:1,is_plugin:false,tab_position:0}});
+  const terminal=new h.window.WebSocket('ws://localhost:8090/hosts/windows/ws/terminal');
+  h.window.__zjSendControl=()=>{};
+  h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-focus',pane_id:30,is_plugin:false,focus_id:10}});
+  h.setTime(600);terminal.handlers.message({data:'private ANSI screen'});h.window.term.write('private ANSI screen');
+  h.state({active_pane:{pane_id:30,is_plugin:false,tab_position:5}});
+  assert.equal(h.window.term.options.disableStdin,false);
+  h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-focus',pane_id:1,is_plugin:false,focus_id:11}});
+  const report=h.messages.find(m=>m.type==='zellij-switch-diagnostic').diagnostic;
+  assert.equal(report.ack_ms,600);assert.equal(report.bytes,19);assert.equal(report.focus_id,10);assert.equal(report.slow,true);
+  assert.deepEqual(written,['private ANSI screen']);assert.doesNotMatch(JSON.stringify(report),/private ANSI/);
+});
 test('last focused browser claims once, background metadata and hidden sessions never reclaim',()=>{
   const h=harness(),sent=[];h.window.__zjSupportsTabViewport=true;h.window.__zjSendControl=message=>sent.push(message);
   const payload=tab=>({active_pane:{pane_id:tab+1,is_plugin:false,tab_position:tab},tab_viewport:{owner_active:false}});

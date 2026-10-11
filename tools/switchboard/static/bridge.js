@@ -23,6 +23,13 @@
   let terminalSocket, controlSocket;
   let scrollport, lastViewport, viewportTab, bottomButton, claimedViewportTab;
   let chromeKey, nativeTopBar=false, nativeBottomRows=0;
+  const diagnostics=window.SwitchboardTerminalDiagnostics?.(
+    diagnostic=>parent.postMessage({type:'zellij-switch-diagnostic',diagnostic},location.origin),
+    ()=>{const size=physicalViewport();return {physical_cols:size?.cols??window.term?.cols??0,physical_rows:size?.rows??window.term?.rows??0,
+      native_cols:latest?.tab_viewport?.cols??0,native_rows:latest?.tab_viewport?.rows??0};});
+  let shiftPressedAt=null,shiftReleasedAt=null;
+  window.addEventListener('keyup',event=>{if(event.key==='Shift'){shiftPressedAt=null;shiftReleasedAt=performance.now();}},true);
+  window.addEventListener('blur',()=>{shiftPressedAt=null;shiftReleasedAt=null;});
   function viewportSupported(){return !!window.__zjSupportsTabViewport && !!latest?.tab_viewport;}
   function physicalViewport(){
     if(!viewportSupported())return;
@@ -172,6 +179,7 @@
     pendingFocus=null;desiredFocus=null;focusInputState=null;
   }
   function failFocus(message) {
+    diagnostics?.finish('timeout');
     releaseFocus();
     parent.postMessage({type:'zellij-focus-failed',host,focus_id:focusId,payload:latest,message},location.origin);
     showEscapeStatus(message,true);
@@ -180,6 +188,7 @@
   function rejectFocus() {
     if(desiredFocus.pane_id!==pendingFocus.pane_id || desiredFocus.is_plugin!==pendingFocus.is_plugin){
       if(latest?.active_pane?.pane_id===desiredFocus.pane_id && latest.active_pane.is_plugin===desiredFocus.is_plugin){
+        diagnostics?.ack();
         releaseFocus();restoreTerminalFocus();
         parent.postMessage({type:'zellij-state',host,payload:latest,focus_id:focusId,focus_pending:false},location.origin);
         return;
@@ -232,6 +241,13 @@
       });
   }
   window.addEventListener('keydown',event=>{
+    if(event.key==='Shift'&&!event.repeat)shiftPressedAt=performance.now();
+    if(event.key==='Enter'&&event.shiftKey&&!event.isComposing&&terminalFocused()&&!pendingFocus&&!pendingNewTab){
+      const now=performance.now(),pane=latest?.active_pane;
+      if(pane)parent.postMessage({type:'zellij-key-diagnostic',diagnostic:{pane_id:pane.pane_id,is_plugin:!!pane.is_plugin,
+        shift:true,ctrl:!!event.ctrlKey,alt:!!event.altKey,meta:!!event.metaKey,repeat:!!event.repeat,
+        held_ms:shiftPressedAt===null?null:Math.round(now-shiftPressedAt),released_ms:shiftReleasedAt===null?null:Math.round(now-shiftReleasedAt)}},location.origin);
+    }
     if(hasDialog())return;
     if(event.code==='KeyT'&&event.ctrlKey&&!event.metaKey&&!event.altKey&&!event.shiftKey
         &&!event.isComposing&&terminalFocused()){
@@ -323,6 +339,7 @@
     const term = window.term;
     if (!term || !document.body) return;
     if (hookedTerm !== term) {
+      diagnostics?.hook(term);
       hookedTerm = term;
       term.onRender(updateChrome);
       term.onResize(updateChrome);
@@ -371,7 +388,7 @@
     if(missingFocus)rejectFocus();
     if(!missingFocus && pendingFocus && latest.active_pane?.pane_id===pendingFocus.pane_id && latest.active_pane?.is_plugin===pendingFocus.is_plugin){
       if(desiredFocus.pane_id!==pendingFocus.pane_id || desiredFocus.is_plugin!==pendingFocus.is_plugin)dispatchFocus();
-      else{releaseFocus();restoreTerminalFocus();}
+      else{diagnostics?.ack();releaseFocus();restoreTerminalFocus();}
     }
     parent.postMessage({type: 'zellij-state', host, payload, focus_id:focusId, focus_pending:!!pendingFocus}, location.origin);
     requestAnimationFrame(updateChrome);
@@ -381,6 +398,7 @@
       super(...args);
       if(String(args[0]).includes('/ws/terminal')){
         terminalSocket=this;
+        this.addEventListener('message',event=>{if(terminalSocket===this)diagnostics?.frame(event.data);});
         this.addEventListener('close',()=>{if(terminalSocket===this)terminalSocket=null;});
       }
       if (String(args[0]).includes('/ws/control')) {
@@ -404,6 +422,7 @@
         this.addEventListener('close', () => {
           if(controlSocket!==this)return;
           latest = undefined;
+          diagnostics?.finish('disconnected');
           lastViewport=null;claimedViewportTab=null;updateViewport();
           releaseFocus();
           releaseNewTab();
@@ -411,18 +430,23 @@
         });
       }
     }
+    send(data) {
+      if(controlSocket===this)diagnostics?.sent(data);
+      return super.send(data);
+    }
   };
   window.addEventListener('message', event => {
     if (event.origin !== location.origin || event.source !== parent) return;
     const message = event.data;
     if (message?.type === 'zellij-focus') {
+      diagnostics?.start(message,window.term,!!pendingFocus||latest?.active_pane?.pane_id!==message.pane_id||latest?.active_pane?.is_plugin!==message.is_plugin);
       focusId=message.focus_id;
       focusOrigin=parent.document.activeElement;preserveFocus=!!message.preserve_focus;
       if (pendingFocus || latest?.active_pane?.pane_id !== message.pane_id || latest?.active_pane?.is_plugin !== message.is_plugin){
         desiredFocus={pane_id:message.pane_id,is_plugin:message.is_plugin};
         holdFocusInput();
         if(!pendingFocus)dispatchFocus();
-      }else{releaseFocus();restoreTerminalFocus();if(latest)sendState(latest);}
+      }else{diagnostics?.ack();releaseFocus();restoreTerminalFocus();if(latest)sendState(latest);}
     } else if (message?.type === 'zellij-escape' && !hasDialog()) {
       window.term?.focus();
       if(!latest?.active_pane?.is_plugin)sendEscape();
