@@ -400,7 +400,7 @@
       super(...args);
       if(String(args[0]).includes('/ws/terminal')){
         terminalSocket=this;
-        this.addEventListener('message',event=>{if(terminalSocket===this)diagnostics?.frame(event.data);});
+        this.addEventListener('message',event=>{if(terminalSocket!==this)return;diagnostics?.hook(window.term);diagnostics?.frame(event.data);});
         this.addEventListener('close',()=>{if(terminalSocket===this)terminalSocket=null;});
       }
       if (String(args[0]).includes('/ws/control')) {

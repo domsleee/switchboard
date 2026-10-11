@@ -50,6 +50,18 @@ test('bridge forwards one focus span with socket bytes and ACK timing without ch
   assert.equal(report.ack_ms,600);assert.equal(report.bytes,19);assert.equal(report.focus_id,10);assert.equal(report.slow,true);
   assert.deepEqual(written,['private ANSI screen']);assert.doesNotMatch(JSON.stringify(report),/private ANSI/);
 });
+test('terminal output queued while its iframe is hidden is measured before the first chrome render',()=>{
+  const h=harness(true),callbacks=[];h.window.term.write=(_,callback)=>callbacks.push(callback);
+  const terminal=new h.window.WebSocket('ws://localhost:8090/hosts/windows/ws/terminal');
+  terminal.handlers.message({data:'old screen'});h.window.term.write('old screen');
+  h.setTime(1000);h.window.__zjSendControl=()=>{};
+  h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-focus',pane_id:30,is_plugin:false,focus_id:1}});
+  h.state({active_pane:{pane_id:30,is_plugin:false,tab_position:5}});
+  h.setTime(1100);callbacks[0]();
+  h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-focus',pane_id:1,is_plugin:false,focus_id:2}});
+  const report=h.messages.find(m=>m.type==='zellij-switch-diagnostic').diagnostic;
+  assert.equal(report.max_parse_lag_ms,1100);assert.equal(report.slow,true);assert.equal(report.writes_pending,0);
+});
 test('last focused browser claims once, background metadata and hidden sessions never reclaim',()=>{
   const h=harness(),sent=[];h.window.__zjSupportsTabViewport=true;h.window.__zjSendControl=message=>sent.push(message);
   const payload=tab=>({active_pane:{pane_id:tab+1,is_plugin:false,tab_position:tab},tab_viewport:{owner_active:false}});

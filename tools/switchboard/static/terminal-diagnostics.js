@@ -72,7 +72,7 @@ window.SwitchboardTerminalDiagnostics = function (report, dimensions) {
       if (!span || span.ack_ms !== null) return;
       span.ack_ms = Math.round(now()-span.started);
       clearTimeout(deadlineTimer);
-      deadlineTimer = setTimeout(() => finish(queued || span?.expected_render && span.first_parse_ms === null?'timeout':'settled'), 2000);
+      deadlineTimer = setTimeout(() => finish(queued || span?.expected_render && span.first_parse_ms === null?'timeout':'sampled'), 2000);
       settle();
     },
     finish,

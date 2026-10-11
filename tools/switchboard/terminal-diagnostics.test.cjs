@@ -73,4 +73,6 @@ test('parent persists slow metadata only from its own same-origin terminal frame
   handler({...event,data:{...data,diagnostic:{...data.diagnostic,slow:false}}});assert.equal(sent.length,0);
   handler(event);assert.equal(sent.length,1);assert.equal(sent[0].path,'/api/diagnostics/terminal-switch');
   assert.deepEqual(sent[0].body,{host:'windows',pane_id:30,outcome:'settled',frames:3,bytes:100});
+  handler({...event,data:{...data,diagnostic:{...data.diagnostic,slow:false,expected_render:true}}});
+  assert.equal(sent.length,2);assert.equal(sent[1].body.expected_render,true,'A fast ACK can still precede a server output replay');
 });

@@ -146,7 +146,7 @@ impl SwitchDiagnostic {
     fn message(&self) -> Option<String> {
         if !matches!(
             self.outcome.as_str(),
-            "settled" | "timeout" | "superseded" | "disconnected"
+            "settled" | "sampled" | "timeout" | "superseded" | "disconnected"
         ) || self.elapsed_ms > 86_400_000
             || self.max_parse_lag_ms > 86_400_000
             || [
@@ -172,7 +172,7 @@ impl SwitchDiagnostic {
                     || self.expected_render && self.first_parse_ms.is_none()));
         let oversized = self.client_height_px > 0
             && u64::from(self.scroll_height_px) > u64::from(self.client_height_px) * 8;
-        if !slow && !oversized {
+        if !slow && !oversized && !self.expected_render {
             return Some(String::new());
         }
         let timing = |t: Option<u32>| t.map_or_else(|| "-".into(), |t| t.to_string());
@@ -282,6 +282,7 @@ mod tests {
         assert!(message.contains("resize=3"));
         sample["first_parse_ms"] = json!(400);
         sample["max_parse_lag_ms"] = json!(380);
+        sample["expected_render"] = json!(false);
         let diagnostic: SwitchDiagnostic = serde_json::from_value(sample.clone()).unwrap();
         assert_eq!(diagnostic.message(), Some(String::new()));
         sample["scroll_height_px"] = json!(180000);
