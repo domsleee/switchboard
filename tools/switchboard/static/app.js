@@ -540,8 +540,8 @@ async function refresh() {
   }catch(error){setStatus(error.message,true);}finally{loading=false;}
 }
 function recordTerminalDiagnostic(entry,type,diagnostic){
-  if(!diagnostic || type==='terminal-switch' && diagnostic.slow!==true)return;
-  const fields=type==='terminal-switch'?['focus_id','pane_id','is_plugin','expected_render','outcome','elapsed_ms','ack_ms','first_frame_ms','first_parse_ms','last_frame_ms','last_parse_ms','frames','bytes','writes_pending','max_parse_lag_ms','physical_cols','physical_rows','native_cols','native_rows','viewport_claims','terminal_resizes']:
+  if(!diagnostic || type==='terminal-switch' && diagnostic.expected_render!==true && diagnostic.slow!==true && diagnostic.oversized_viewport!==true)return;
+  const fields=type==='terminal-switch'?['focus_id','pane_id','is_plugin','expected_render','outcome','elapsed_ms','ack_ms','first_frame_ms','first_parse_ms','last_frame_ms','last_parse_ms','frames','bytes','writes_pending','max_parse_lag_ms','physical_cols','physical_rows','native_cols','native_rows','viewport_claims','terminal_resizes','scroll_height_px','client_height_px','scroll_top_px','xterm_rows','buffer_rows']:
     ['pane_id','is_plugin','shift','ctrl','alt','meta','repeat','held_ms','released_ms'];
   const body={host:entry.host};
   for(const field of fields){const value=diagnostic[field];if(value===null||typeof value==='boolean'||typeof value==='string'&&field==='outcome'||typeof value==='number'&&Number.isFinite(value)&&value>=0)body[field]=value;}

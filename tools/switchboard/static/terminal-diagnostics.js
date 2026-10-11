@@ -10,6 +10,7 @@ window.SwitchboardTerminalDiagnostics = function (report, dimensions) {
     result.slow = result.ack_ms > 500 || result.first_parse_ms > 500 || result.max_parse_lag_ms > 500 ||
       (result.ack_ms === null && result.elapsed_ms > 500) || (queued > 0 && result.elapsed_ms > 500) ||
       (result.expected_render && result.first_parse_ms === null && result.elapsed_ms > 500);
+    result.oversized_viewport = result.client_height_px > 0 && result.scroll_height_px > result.client_height_px * 8;
     span = null;
     report(result);
   }
@@ -61,7 +62,8 @@ window.SwitchboardTerminalDiagnostics = function (report, dimensions) {
     sent(data) {
       if (!span || typeof data !== 'string') return;
       try {
-        const message = JSON.parse(data);
+        const envelope = JSON.parse(data);
+        const message = envelope.payload || envelope;
         if (message.type === 'SetTabViewport') span.viewport_claims++;
         if (message.type === 'TerminalResize') span.terminal_resizes++;
       } catch (_) {}
@@ -70,7 +72,7 @@ window.SwitchboardTerminalDiagnostics = function (report, dimensions) {
       if (!span || span.ack_ms !== null) return;
       span.ack_ms = Math.round(now()-span.started);
       clearTimeout(deadlineTimer);
-      deadlineTimer = setTimeout(() => finish(queued || span?.expected_render && span.first_parse_ms === null?'timeout':'settled'), 2000);
+      deadlineTimer = setTimeout(() => finish(queued || span?.expected_render && span.first_parse_ms === null?'timeout':'sampled'), 2000);
       settle();
     },
     finish,
