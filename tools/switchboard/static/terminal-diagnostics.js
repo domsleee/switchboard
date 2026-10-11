@@ -1,14 +1,31 @@
 // Counts and timings only. Terminal contents and keystrokes never enter a report.
 window.SwitchboardTerminalDiagnostics = function (report, dimensions) {
   const now = () => performance.now();
-  let span, quietTimer, deadlineTimer, hookedTerm, renderListener, animationProbe;
+  let span, quietTimer, deadlineTimer, hookedTerm, renderListener, scrollListener, lineFeedListener, resizeListener, animationProbe;
   let queued = 0, renderStarted = null, quiet = false;
+  function geometry() {
+    const result = dimensions();
+    if (span) span.max_clipped_bottom_rows = Math.max(span.max_clipped_bottom_rows,result.clipped_bottom_rows || 0);
+    return result;
+  }
+  function size(term) {
+    if (!span || !(term?.cols > 0 && term.rows > 0)) return;
+    if (!span.first_xterm_cols) {
+      span.first_xterm_cols = span.min_xterm_cols = term.cols;
+      span.first_xterm_rows = span.min_xterm_rows = term.rows;
+    } else if (span.last_xterm_cols !== term.cols || span.last_xterm_rows !== term.rows) span.xterm_size_changes++;
+    span.last_xterm_cols = term.cols;span.last_xterm_rows = term.rows;
+    span.min_xterm_cols = Math.min(span.min_xterm_cols,term.cols);span.min_xterm_rows = Math.min(span.min_xterm_rows,term.rows);
+    span.max_xterm_cols = Math.max(span.max_xterm_cols,term.cols);span.max_xterm_rows = Math.max(span.max_xterm_rows,term.rows);
+  }
   function finish(outcome) {
     if (!span) return;
     clearTimeout(quietTimer);clearTimeout(deadlineTimer);
-    const result = {...span, ...dimensions(), outcome, elapsed_ms:Math.round(now()-span.started), writes_pending:queued,
+    const measured = geometry();
+    const result = {...span, ...measured, outcome, elapsed_ms:Math.round(now()-span.started), writes_pending:queued,
       render_pending:renderStarted !== null, animation_pending:!!animationProbe};
     delete result.started;delete result.last_native_cols;delete result.last_native_rows;
+    delete result.last_xterm_cols;delete result.last_xterm_rows;
     result.slow = result.ack_ms > 500 || result.first_parse_ms > 500 || result.max_parse_lag_ms > 500 ||
       (result.ack_ms === null && result.elapsed_ms > 500) || (queued > 0 && result.elapsed_ms > 500) ||
       (result.expected_render && result.first_parse_ms === null && result.elapsed_ms > 500) ||
@@ -36,19 +53,32 @@ window.SwitchboardTerminalDiagnostics = function (report, dimensions) {
         frames:0, bytes:0, max_parse_lag_ms:0, viewport_claims:0, terminal_resizes:0,
         render_tracking:typeof term?.onRender === 'function', first_render_ms:null,last_render_ms:null,render_events:0,max_render_lag_ms:0,
         first_animation_ms:null,last_animation_ms:null,max_animation_lag_ms:0,first_quiet_ms:null,late_frames:0,
+        buffer_scroll_events:0,line_feed_events:0,wheel_events:0,
+        max_clipped_bottom_rows:0,
+        xterm_size_changes:0,first_xterm_cols:0,first_xterm_rows:0,min_xterm_cols:0,min_xterm_rows:0,max_xterm_cols:0,max_xterm_rows:0,
         hidden_at_start:!!dimensions().document_hidden,viewport_size_changes:0,
         first_native_cols:0,first_native_rows:0,min_native_cols:0,min_native_rows:0,max_native_cols:0,max_native_rows:0};
+      size(term);
+      geometry();
       quiet = false;
       deadlineTimer = setTimeout(() => finish('timeout'), 16000);
     },
     hook(term) {
       if (!term?.write || term === hookedTerm) return;
       renderListener?.dispose();
+      scrollListener?.dispose();lineFeedListener?.dispose();resizeListener?.dispose();
       hookedTerm = term;queued = 0;renderStarted = null;animationProbe = null;
+      size(term);
+      // With scrollback=0, wrapping the bottom row still emits onScroll(0).
+      // A normal-height DOM viewport therefore cannot rule out screen movement.
+      scrollListener = term.onScroll?.(() => {if (term === hookedTerm && span) span.buffer_scroll_events++;});
+      lineFeedListener = term.onLineFeed?.(() => {if (term === hookedTerm && span) span.line_feed_events++;});
+      resizeListener = term.onResize?.(() => {if (term === hookedTerm) size(term);});
       renderListener = term.onRender?.(() => {
         if (term !== hookedTerm) return;
         const started = renderStarted;renderStarted = null;
         if (!span) return;
+        geometry();
         const elapsed = Math.round(now()-span.started);
         span.render_events++;span.last_render_ms = elapsed;
         if (span.first_parse_ms !== null || started !== null) span.first_render_ms ??= elapsed;
@@ -61,6 +91,7 @@ window.SwitchboardTerminalDiagnostics = function (report, dimensions) {
           if (animationProbe !== probe) return;
           animationProbe = null;
           if (span !== tracked) return;
+          geometry();
           const elapsed = Math.round(now()-tracked.started);
           tracked.first_animation_ms ??= elapsed;tracked.last_animation_ms = elapsed;
           tracked.max_animation_lag_ms = Math.max(tracked.max_animation_lag_ms,Math.round(now()-requested));
@@ -77,6 +108,7 @@ window.SwitchboardTerminalDiagnostics = function (report, dimensions) {
             queued--;
             if (typeof term.onRender === 'function') renderStarted ??= now();
             if (span) {
+              size(term);
               const parsed = Math.round(now()-span.started);
               span.first_parse_ms ??= parsed;
               span.last_parse_ms = parsed;
@@ -92,12 +124,14 @@ window.SwitchboardTerminalDiagnostics = function (report, dimensions) {
     },
     frame(data) {
       if (!span) return;
+      size(hookedTerm);
       const elapsed = Math.round(now()-span.started);
       span.frames++;span.first_frame_ms ??= elapsed;span.last_frame_ms = elapsed;
       if (span.first_quiet_ms !== null) span.late_frames++;
       span.bytes += typeof data === 'string' ? new TextEncoder().encode(data).length : data?.byteLength ?? data?.size ?? 0;
       clearTimeout(quietTimer);quiet = false;
     },
+    wheel() {if (span) span.wheel_events++;},
     state(state) {
       if (!span || state?.active_pane?.pane_id !== span.pane_id || !!state.active_pane.is_plugin !== span.is_plugin) return;
       const cols = state.tab_viewport?.cols, rows = state.tab_viewport?.rows;

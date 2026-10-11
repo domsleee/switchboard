@@ -400,6 +400,9 @@ test('headless browser completes a sidebar switch after catalog metadata catches
     await page.waitForFunction(()=>selected===JSON.stringify(['mac','main','tab',42])&&sessions.get(JSON.stringify(['mac','main'])).needsFocus);
     assert.equal(await page.evaluate(()=>document.activeElement===document.querySelector('#tabs .selected')),true,'The clicked button owns focus while native metadata is stale');
     assert.deepEqual(await input.evaluate(()=>controlMessages),[],'A missing pane cannot receive a focus command');
+    // The click starts its own scan. Wait for it before publishing a fresh
+    // catalog; this fixture disables the normal polling retry.
+    await page.waitForFunction(()=>!attentionLoading);
     setMismatch(null);await page.evaluate(()=>refreshAttention());
     await page.waitForFunction(()=>document.activeElement===document.querySelector('iframe.active')&&document.querySelector('iframe.active').contentDocument.activeElement.id==='terminal-input',null,{timeout:3000});
     assert.equal(new URL(page.url()).searchParams.get('tab'),'42');

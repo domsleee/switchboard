@@ -25,11 +25,16 @@
   let chromeKey, nativeTopBar=false, nativeBottomRows=0;
   const diagnostics=window.SwitchboardTerminalDiagnostics?.(
     diagnostic=>parent.postMessage({type:'zellij-switch-diagnostic',diagnostic},location.origin),
-    ()=>{const size=physicalViewport();return {physical_cols:size?.cols??window.term?.cols??0,physical_rows:size?.rows??window.term?.rows??0,
+    ()=>{const size=physicalViewport(),term=window.term,cellHeight=term?._core?._renderService?.dimensions?.css?.cell?.height;
+      // CSSOM normalizes zero lengths and omits a repeated fourth inset.
+      const clip=term?._core?.screenElement?.style?.clipPath?.match(/^inset\(0(?:px)? 0(?:px)? ([\d.]+)px(?: 0(?:px)?)?\)$/);
+      return {physical_cols:size?.cols??term?.cols??0,physical_rows:size?.rows??term?.rows??0,
       native_cols:latest?.tab_viewport?.cols??0,native_rows:latest?.tab_viewport?.rows??0,
       scroll_height_px:Math.round(scrollport?.scrollHeight??0),client_height_px:Math.round(scrollport?.clientHeight??0),scroll_top_px:Math.round(scrollport?.scrollTop??0),
-      xterm_rows:window.term?.rows??0,buffer_rows:window.term?.buffer?.active?.length??0,
+      xterm_cols:window.term?.cols??0,xterm_rows:window.term?.rows??0,buffer_rows:window.term?.buffer?.active?.length??0,
+      clipped_bottom_rows:clip&&cellHeight?Math.round(Number(clip[1])/cellHeight):0,
       document_hidden:document.visibilityState==='hidden',browser_focused:parent.document.hasFocus()};});
+  window.addEventListener('wheel',()=>diagnostics?.wheel(),{capture:true,passive:true});
   let shiftPressedAt=null,shiftReleasedAt=null;
   window.addEventListener('keyup',event=>{if(event.key==='Shift'){shiftPressedAt=null;shiftReleasedAt=performance.now();}},true);
   window.addEventListener('blur',()=>{shiftPressedAt=null;shiftReleasedAt=null;});

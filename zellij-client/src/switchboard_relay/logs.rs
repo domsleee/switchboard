@@ -184,6 +184,32 @@ struct SwitchDiagnostic {
     max_native_cols: u16,
     #[serde(default)]
     max_native_rows: u16,
+    #[serde(default)]
+    xterm_cols: u16,
+    #[serde(default)]
+    buffer_scroll_events: u32,
+    #[serde(default)]
+    line_feed_events: u32,
+    #[serde(default)]
+    wheel_events: u32,
+    #[serde(default)]
+    xterm_size_changes: u32,
+    #[serde(default)]
+    first_xterm_cols: u16,
+    #[serde(default)]
+    first_xterm_rows: u16,
+    #[serde(default)]
+    min_xterm_cols: u16,
+    #[serde(default)]
+    min_xterm_rows: u16,
+    #[serde(default)]
+    max_xterm_cols: u16,
+    #[serde(default)]
+    max_xterm_rows: u16,
+    #[serde(default)]
+    clipped_bottom_rows: u16,
+    #[serde(default)]
+    max_clipped_bottom_rows: u16,
 }
 
 impl SwitchDiagnostic {
@@ -253,6 +279,17 @@ impl SwitchDiagnostic {
             self.physical_cols,self.physical_rows,self.hidden_at_start,self.document_hidden,self.browser_focused,self.render_events,self.render_pending,self.animation_pending,
         )
     }
+
+    fn scroll_message(&self) -> String {
+        format!(
+            "Terminal scrolling pane={}{} focus={} buffer_scrolls={} line_feeds={} wheel={} xterm={}x{}->{}x{} range={}x{}..{}x{} changes={} native={}x{} clipped_rows={}/{}",
+            if self.is_plugin { "plugin:" } else { "" }, self.pane_id, self.focus_id,
+            self.buffer_scroll_events, self.line_feed_events, self.wheel_events,
+            self.first_xterm_cols, self.first_xterm_rows,self.xterm_cols, self.xterm_rows,
+            self.min_xterm_cols,self.min_xterm_rows,self.max_xterm_cols,self.max_xterm_rows,self.xterm_size_changes,
+            self.native_cols, self.native_rows,self.clipped_bottom_rows,self.max_clipped_bottom_rows,
+        )
+    }
 }
 
 #[derive(Deserialize)]
@@ -296,6 +333,7 @@ pub(super) async fn terminal_switch(
     if !message.is_empty() {
         record(&host.config.name, &message);
         record(&host.config.name, &diagnostic.viewport_message());
+        record(&host.config.name, &diagnostic.scroll_message());
     }
     StatusCode::NO_CONTENT
 }
@@ -398,6 +436,35 @@ mod tests {
             .unwrap()
             .message()
             .is_none());
+    }
+
+    #[test]
+    fn switch_diagnostics_preserve_scrolling_and_transient_terminal_sizes() {
+        let mut sample = switch_sample();
+        // Old clients omit these fields and remain valid.
+        let old: SwitchDiagnostic = serde_json::from_value(sample.clone()).unwrap();
+        assert!(old
+            .scroll_message()
+            .contains("buffer_scrolls=0 line_feeds=0 wheel=0"));
+        sample["buffer_scroll_events"] = json!(17);
+        sample["line_feed_events"] = json!(0);
+        sample["wheel_events"] = json!(3);
+        sample["first_xterm_cols"] = json!(80);
+        sample["first_xterm_rows"] = json!(40);
+        sample["xterm_cols"] = json!(120);
+        sample["xterm_rows"] = json!(40);
+        sample["min_xterm_cols"] = json!(80);
+        sample["min_xterm_rows"] = json!(40);
+        sample["max_xterm_cols"] = json!(120);
+        sample["max_xterm_rows"] = json!(40);
+        sample["xterm_size_changes"] = json!(1);
+        sample["clipped_bottom_rows"] = json!(35);
+        let diagnostic: SwitchDiagnostic = serde_json::from_value(sample).unwrap();
+        let message = diagnostic.scroll_message();
+        assert!(message.contains("buffer_scrolls=17 line_feeds=0 wheel=3"));
+        assert!(message.contains("xterm=80x40->120x40 range=80x40..120x40 changes=1"));
+        assert!(message.contains("clipped_rows=35"));
+        assert_eq!(message, redact(&message));
     }
 
     #[test]
