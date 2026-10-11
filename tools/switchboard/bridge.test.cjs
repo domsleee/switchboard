@@ -21,7 +21,7 @@ function harness(){
   const key=(code,extra={})=>{const event={code,altKey:true,ctrlKey:false,metaKey:false,shiftKey:false,preventDefault(){this.prevented=true;},stopImmediatePropagation(){this.stopped=true;},...extra};handlers.keydown(event);return event;};
   const state=(payload={})=>{const socket=new window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');socket.handlers.message({data:JSON.stringify({type:'MobileState',payload})});while(frames.length)frames.shift()();};
   const error=(...lines)=>{const socket=new window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');socket.handlers.message({data:JSON.stringify({type:'LogError',lines})});};
-  return{window,handlers,parent,messages,properties,classes,key,state,error,setFocus:v=>focused=v,setBrowserFocus:v=>browserFocused=v,setFrameActive:v=>frameActive=v,setModal:v=>modal=v,setBottomRows:v=>bottomRows=v,setFirstRow:v=>firstRow=v,frames,resizes,timers};
+  return{window,handlers,parent,messages,properties,classes,key,state,error,setFocus:v=>focused=v,setBodyFocus:()=>{focused=false;document.activeElement=document.body;},setBrowserFocus:v=>browserFocused=v,setFrameActive:v=>frameActive=v,setModal:v=>modal=v,setBottomRows:v=>bottomRows=v,setFirstRow:v=>firstRow=v,frames,resizes,timers};
 }
 test('last focused browser claims once, background metadata and hidden sessions never reclaim',()=>{
   const h=harness(),sent=[];h.window.__zjSupportsTabViewport=true;h.window.__zjSendControl=message=>sent.push(message);
@@ -226,7 +226,7 @@ test('Cmd/Ctrl+K opens sidebar search from the terminal and respects dialogs',()
   h.setModal(true);assert.equal(h.key('KeyK',{altKey:false,metaKey:true}).prevented,undefined);
 });
 
-test('Ctrl+D requests Close once from the focused terminal, preserving modifiers, dialogs and unfinished focus',()=>{
+test('Ctrl+D requests Close once from the focused terminal, preserving modifiers and dialogs',()=>{
   const h=harness();h.setFocus(true);h.messages.length=0;
   const key=h.key('KeyD',{altKey:false,ctrlKey:true});
   assert.equal(key.prevented,true);assert.equal(key.stopped,true);
@@ -241,7 +241,66 @@ test('Ctrl+D requests Close once from the focused terminal, preserving modifiers
   h.state({active_pane:{pane_id:1,is_plugin:false}});
   h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-focus',pane_id:2,is_plugin:false}});
   h.messages.length=0;h.key('KeyD',{altKey:false,ctrlKey:true});
-  assert.equal(h.messages.length,0);
+  assert.equal(h.messages.length,1);assert.equal(h.messages[0].type,'zellij-close-tab');
+});
+
+test('Ctrl+D still requests the selected tab while a switch has blurred the terminal',()=>{
+  const h=harness();h.window.__zjSendControl=()=>{};
+  h.state({active_pane:{pane_id:1,is_plugin:false}});
+  h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-focus',pane_id:2,is_plugin:false,focus_id:1}});
+  h.setBodyFocus();h.messages.length=0;
+  const key=h.key('KeyD',{altKey:false,ctrlKey:true});
+  assert.equal(key.prevented,true);assert.equal(key.stopped,true);
+  assert.equal(h.messages.length,1);assert.equal(h.messages[0].type,'zellij-close-tab');
+  h.key('KeyD',{altKey:false,ctrlKey:true,repeat:true});assert.equal(h.messages.length,1);
+  h.setFocus(false);h.parent.document.activeElement={};
+  assert.equal(h.key('KeyD',{altKey:false,ctrlKey:true}).prevented,undefined,'Unrelated focus retains its own shortcut');
+});
+
+test('a focus request before client startup waits for the control connection',()=>{
+  const h=harness(),sent=[],term=h.window.term;
+  h.window.term=undefined;
+  h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-focus',pane_id:2,is_plugin:false,focus_id:1}});
+  assert.equal(h.timers.size,1,'Startup requests must also have a recovery deadline');
+  h.window.term=term;
+  const socket=new h.window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');socket.readyState=0;
+  h.window.__zjSendControl=message=>sent.push(message);
+  assert.equal(sent.length,0);
+  socket.readyState=1;socket.handlers.open();
+  assert.deepEqual(sent.map(command=>command.pane_id),[2]);
+  assert.equal(h.window.term.options.disableStdin,true,'A terminal created after the request is held until focus acknowledgement');
+  h.state({active_pane:{pane_id:2,is_plugin:false}});
+  assert.equal(h.window.term.options.disableStdin,false);assert.equal(h.timers.size,0);
+  assert.equal(h.messages.at(-1).focus_id,1);assert.equal(h.messages.at(-1).focus_pending,false);
+});
+
+test('a switch during control reconnect sends the newest queued target as soon as it opens',()=>{
+  const h=harness(),sent=[];h.window.__zjSendControl=message=>sent.push(message);
+  h.state({active_pane:{pane_id:1,is_plugin:false}});
+  const socket=new h.window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');socket.readyState=0;
+  const focus=(pane_id,focus_id)=>h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-focus',pane_id,is_plugin:false,focus_id}});
+  focus(2,1);focus(3,2);assert.equal(sent.length,0,'A connecting stock sender would silently discard these commands');
+  socket.readyState=1;socket.handlers.open();
+  assert.deepEqual(sent.map(command=>command.pane_id),[3]);
+  h.state({active_pane:{pane_id:3,is_plugin:false}});
+  assert.equal(h.window.term.options.disableStdin,false);assert.equal(h.timers.size,0);
+  assert.equal(h.messages.at(-1).focus_id,2);assert.equal(h.messages.at(-1).focus_pending,false);
+});
+
+test('a superseded control connection cannot acknowledge or cancel a new switch',()=>{
+  const h=harness(),sent=[];h.window.__zjSendControl=message=>sent.push(message);
+  h.state({active_pane:{pane_id:1,is_plugin:false}});
+  const oldSocket=new h.window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');
+  const socket=new h.window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');socket.readyState=0;
+  h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-focus',pane_id:2,is_plugin:false,focus_id:1}});
+  oldSocket.handlers.open();
+  oldSocket.handlers.message({data:JSON.stringify({type:'MobileState',payload:{active_pane:{pane_id:2,is_plugin:false}}})});
+  oldSocket.handlers.close();
+  assert.equal(sent.length,0);assert.equal(h.window.term.options.disableStdin,true);
+  assert.equal(h.timers.size,1);assert.equal(h.messages.some(message=>message.type==='zellij-disconnected'),false);
+  socket.readyState=1;socket.handlers.open();assert.deepEqual(sent.map(command=>command.pane_id),[2]);
+  h.state({active_pane:{pane_id:2,is_plugin:false}});
+  assert.equal(h.window.term.options.disableStdin,false);assert.equal(h.timers.size,0);
 });
 
 test('Cmd/Ctrl+Alt+T opens New tab once only from terminal focus',()=>{

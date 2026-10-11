@@ -346,3 +346,99 @@ test('headless browser returns focus to the same terminal after a reconnect relo
     assert.deepEqual(pageErrors,[]);
   }finally{await browser.close();}
 });
+
+// Real DOM focus and keyboard events, with synthetic native metadata and control
+// acknowledgements. Stable tab IDs deliberately differ from pane IDs.
+async function browserFocusFixture({mismatch=null,acknowledge=true}={}){
+  const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
+  const browser=await chromium.launch({headless:true});
+  const context=await browser.newContext({viewport:{width:1280,height:900}});
+  const page=await context.newPage(),pageErrors=[],closes=[];
+  page.on('pageerror',error=>pageErrors.push(error.message));
+  await page.addInitScript(()=>{if(window===top)window.setInterval=()=>0;});
+  await context.route('**/*',async route=>{
+    const pathname=new URL(route.request().url()).pathname;
+    const json=value=>route.fulfill({contentType:'application/json',body:JSON.stringify(value)});
+    if(pathname==='/api/hosts')return json([{id:'mac',name:'Mac'}]);
+    if(pathname==='/api/hosts/mac')return json({id:'mac',name:'Mac',sessions:[{name:'main',web_clients_allowed:true}]});
+    if(pathname==='/api/attention')return json({tabs:[41,42].map((id,position)=>({host:'mac',session:'main',id,position,name:'Terminal '+id,
+      panes:[{pane_id:id===mismatch?9:position+7,is_plugin:false,tab_position:position}]})),panes:[],errors:[]});
+    if(pathname==='/api/hosts/mac/close-tab'){
+      closes.push(route.request().postDataJSON());
+      return json({ok:true});
+    }
+    if(pathname.startsWith('/hosts/'))return route.fulfill({contentType:'text/html',body:`<div id="terminal"><input id="terminal-input"></div><script>
+      const input=document.querySelector('input');
+      window.controlMessages=[];window.acknowledge=${JSON.stringify(acknowledge)};
+      window.WebSocket=class extends EventTarget {constructor(){super();this.readyState=1;}send(){}};
+      window.term={element:document.querySelector('#terminal'),options:{disableStdin:false},focus(){input.focus();},blur(){input.blur();},
+        _core:{_renderService:{dimensions:{css:{cell:{width:8,height:16}}}}},buffer:{active:{viewportY:0,getLine:()=>({translateToString:()=>''})}},onRender(){},onResize(){}};
+    </script><script src="/bridge.js"></script><script>
+      const socket=new WebSocket('wss://switchboard.test/ws/control');
+      const panes=[7,8].map((pane_id,tab_position)=>({pane_id,is_plugin:false,tab_position}));
+      window.sendState=paneId=>socket.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'MobileState',payload:{session_name:'main',panes,active_pane:panes.find(p=>p.pane_id===paneId)}})}));
+      window.__zjSendControl=message=>{controlMessages.push(message);if(acknowledge&&message.type==='FocusPane')queueMicrotask(()=>sendState(message.pane_id));};
+      sendState(7);
+    </script>`});
+    const file=pathname==='/'?'index.html':pathname.slice(1);
+    if(!['index.html','app.js','bridge.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
+    return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
+  });
+  await page.goto('https://switchboard.test/?host=mac&session=main&tab=41');
+  await page.waitForFunction(()=>document.querySelector('iframe.active')?.contentDocument.activeElement.id==='terminal-input');
+  const input=page.frameLocator('iframe[title="Mac: main"]').locator('#terminal-input');
+  return {browser,page,input,pageErrors,closes,setMismatch(id){mismatch=id;},
+    button(id){return page.locator('#tabs .tab-select').filter({hasText:'Terminal '+id});}};
+}
+
+test('headless browser completes a sidebar switch after catalog metadata catches up without taking search or dialog focus',
+  {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE to run the isolated browser focus check'},async()=>{
+  const {browser,page,input,pageErrors,setMismatch,button}=await browserFocusFixture({mismatch:42});
+  try{
+    await button(42).click();
+    await page.waitForFunction(()=>selected===JSON.stringify(['mac','main','tab',42])&&sessions.get(JSON.stringify(['mac','main'])).needsFocus);
+    assert.equal(await page.evaluate(()=>document.activeElement===document.querySelector('#tabs .selected')),true,'The clicked button owns focus while native metadata is stale');
+    assert.deepEqual(await input.evaluate(()=>controlMessages),[],'A missing pane cannot receive a focus command');
+    setMismatch(null);await page.evaluate(()=>refreshAttention());
+    await page.waitForFunction(()=>document.activeElement===document.querySelector('iframe.active')&&document.querySelector('iframe.active').contentDocument.activeElement.id==='terminal-input',null,{timeout:3000});
+    assert.equal(new URL(page.url()).searchParams.get('tab'),'42');
+    assert.equal(await page.evaluate(()=>sessions.get(JSON.stringify(['mac','main'])).state.active_pane.pane_id),8);
+    await page.keyboard.type('switched');assert.equal(await input.inputValue(),'switched');
+
+    // A deliberate move away during the same metadata wait must remain respected.
+    setMismatch(41);await page.evaluate(()=>refreshAttention());await button(41).click();
+    await page.waitForFunction(()=>sessions.get(JSON.stringify(['mac','main'])).needsFocus);
+    await page.locator('#tab-search').focus();
+    setMismatch(null);await page.evaluate(()=>refreshAttention());
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'tab-search');
+    assert.equal(await page.evaluate(()=>sessions.get(JSON.stringify(['mac','main'])).needsFocus),true);
+    await page.locator('#settings').click();await page.evaluate(()=>refreshAttention());
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'panel-tab-settings');
+    await page.locator('#close-panel').click();await button(41).click();
+    await page.waitForFunction(()=>document.querySelector('iframe.active').contentDocument.activeElement.id==='terminal-input');
+    assert.equal(await page.evaluate(()=>sessions.get(JSON.stringify(['mac','main'])).state.active_pane.pane_id),7);
+    assert.deepEqual(pageErrors,[]);
+  }finally{await browser.close();}
+});
+
+test('headless browser Ctrl+D closes the selected stable tab exactly once while switching has blurred terminal input',
+  {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE to run the isolated browser focus check'},async()=>{
+  const {browser,page,input,pageErrors,closes}=await browserFocusFixture({acknowledge:false});
+  try{
+    await page.keyboard.press('Control+Digit2');
+    await page.waitForFunction(()=>{const frame=document.querySelector('iframe.active'),entry=sessions.get(JSON.stringify(['mac','main']));
+      return selected===JSON.stringify(['mac','main','tab',42])&&entry.requestedPane?.pane_id===8&&document.activeElement===frame&&frame.contentDocument.activeElement===frame.contentDocument.body&&frame.contentWindow.term.options.disableStdin;});
+    assert.equal(await page.evaluate(()=>sessions.get(JSON.stringify(['mac','main'])).state.active_pane.pane_id),7,'Native focus still belongs to the previous tab');
+    await page.keyboard.down('Control');await page.keyboard.down('KeyD');await page.keyboard.down('KeyD');
+    await page.keyboard.up('KeyD');await page.keyboard.up('Control');
+    await page.waitForFunction(()=>!document.querySelector('#tabs .tab-select[aria-label^="Terminal 42,"]'),null,{timeout:3000});
+    await page.evaluate(()=>refreshAttention());
+    assert.deepEqual(closes,[{session:'main',tab_id:42}],'Held Ctrl+D closes the selected tab, never the previous active pane or next tab');
+    assert.equal(await page.locator('#tabs .tab-select').count(),1,'A stale catalog cannot bring a confirmed close back');
+    await page.locator('#tab-search').focus();await page.keyboard.press('Control+d');
+    await page.locator('#settings').click();await page.keyboard.press('Control+d');
+    await page.evaluate(()=>new Promise(requestAnimationFrame));
+    assert.equal(closes.length,1,'Search and dialog keys do not close terminals');
+    assert.deepEqual(pageErrors,[]);
+  }finally{await browser.close();}
+});

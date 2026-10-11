@@ -4088,6 +4088,66 @@ pub fn send_cli_toggle_floating_panes() {
 }
 
 #[test]
+fn natural_pane_exit_after_final_render_closes_last_tab() {
+    let size = Size { cols: 80, rows: 10 };
+    let mut mock_screen = MockScreen::new(size);
+    mock_screen.drop_all_pty_messages();
+
+    // Control render delivery so the PTY EOF render finishes before the child-exit
+    // callback closes the pane. No later input or plugin render should be needed.
+    mock_screen
+        .to_background_jobs
+        .send(BackgroundJob::Exit)
+        .unwrap();
+    let (to_background_jobs, background_jobs_receiver) = channels::unbounded();
+    mock_screen.to_background_jobs = SenderWithContext::new(to_background_jobs);
+    let screen_thread = mock_screen.run(None, vec![]);
+    let server_receiver = mock_screen.server_receiver.take().unwrap();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::RenderToClients)
+        .unwrap();
+    let (final_render, _) = server_receiver
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .unwrap();
+    assert!(matches!(final_render, ServerInstruction::Render(Some(_))));
+    // Discard jobs from startup; all of those renders precede the pane exit.
+    background_jobs_receiver.try_iter().for_each(drop);
+
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::ClosePane(
+            PaneId::Terminal(0),
+            None,
+            None,
+            Some(0),
+        ))
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    let mut closed_last_tab = false;
+    while let Ok((job, _)) = background_jobs_receiver.recv_deadline(deadline) {
+        if matches!(job, BackgroundJob::RenderToClients) {
+            mock_screen
+                .to_screen
+                .send(ScreenInstruction::RenderToClients)
+                .unwrap();
+            while let Ok((instruction, _)) = server_receiver.recv_deadline(deadline) {
+                if matches!(instruction, ServerInstruction::Render(None)) {
+                    closed_last_tab = true;
+                    break;
+                }
+            }
+            break;
+        }
+    }
+    mock_screen.teardown(vec![screen_thread]);
+    assert!(
+        closed_last_tab,
+        "a natural pane exit after the final PTY render must close the empty last tab"
+    );
+}
+
+#[test]
 pub fn send_cli_close_pane_action() {
     let size = Size { cols: 80, rows: 10 };
     let client_id = 10; // fake client id should not appear in the screen's state
