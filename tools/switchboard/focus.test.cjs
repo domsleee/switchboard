@@ -385,6 +385,7 @@ async function browserFocusFixture({mismatch=null,acknowledge=true}={}){
     return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
   });
   await page.goto('https://switchboard.test/?host=mac&session=main&tab=41');
+  await page.bringToFront();
   await page.waitForFunction(()=>document.querySelector('iframe.active')?.contentDocument.activeElement.id==='terminal-input');
   const input=page.frameLocator('iframe[title="Mac: main"]').locator('#terminal-input');
   return {browser,page,input,pageErrors,closes,setMismatch(id){mismatch=id;},
