@@ -130,6 +130,16 @@ struct SwitchDiagnostic {
     native_rows: u16,
     viewport_claims: u32,
     terminal_resizes: u32,
+    #[serde(default)]
+    scroll_height_px: u32,
+    #[serde(default)]
+    client_height_px: u32,
+    #[serde(default)]
+    scroll_top_px: u32,
+    #[serde(default)]
+    xterm_rows: u16,
+    #[serde(default)]
+    buffer_rows: u32,
 }
 
 impl SwitchDiagnostic {
@@ -160,16 +170,19 @@ impl SwitchDiagnostic {
                 && (self.ack_ms.is_none()
                     || self.writes_pending > 0
                     || self.expected_render && self.first_parse_ms.is_none()));
-        if !slow {
+        let oversized = self.client_height_px > 0
+            && u64::from(self.scroll_height_px) > u64::from(self.client_height_px) * 8;
+        if !slow && !oversized {
             return Some(String::new());
         }
         let timing = |t: Option<u32>| t.map_or_else(|| "-".into(), |t| t.to_string());
         Some(format!(
-            "Terminal switch {} pane={}{} focus={} t={}ms ack={} first={} parse={} lag={}ms frames={} bytes={} queue={} resize={} claims={} view={}x{} native={}x{}",
+            "Terminal switch {} pane={}{} focus={} t={}ms ack={} first={} parse={} lag={}ms frames={} bytes={} queue={} resize={} claims={} scroll={}/{}/{} rows={}/{} view={}x{} native={}x{}",
             self.outcome, if self.is_plugin { "plugin:" } else { "" }, self.pane_id, self.focus_id,
             self.elapsed_ms, timing(self.ack_ms), timing(self.first_frame_ms), timing(self.first_parse_ms),
             self.max_parse_lag_ms, self.frames, self.bytes, self.writes_pending, self.terminal_resizes,
-            self.viewport_claims, self.physical_cols, self.physical_rows, self.native_cols, self.native_rows,
+            self.viewport_claims, self.scroll_height_px,self.client_height_px,self.scroll_top_px,self.xterm_rows,self.buffer_rows,
+            self.physical_cols, self.physical_rows, self.native_cols, self.native_rows,
         ))
     }
 }
@@ -271,6 +284,12 @@ mod tests {
         sample["max_parse_lag_ms"] = json!(380);
         let diagnostic: SwitchDiagnostic = serde_json::from_value(sample.clone()).unwrap();
         assert_eq!(diagnostic.message(), Some(String::new()));
+        sample["scroll_height_px"] = json!(180000);
+        sample["client_height_px"] = json!(800);
+        sample["xterm_rows"] = json!(10000);
+        sample["buffer_rows"] = json!(10000);
+        let diagnostic: SwitchDiagnostic = serde_json::from_value(sample.clone()).unwrap();
+        assert!(diagnostic.message().unwrap().contains("scroll=180000/800"));
         sample["outcome"] = json!("token=private terminal output");
         let diagnostic: SwitchDiagnostic = serde_json::from_value(sample.clone()).unwrap();
         assert_eq!(diagnostic.message(), None);
