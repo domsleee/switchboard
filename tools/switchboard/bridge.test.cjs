@@ -65,7 +65,7 @@ test('terminal output queued while its iframe is hidden is measured before the f
 test('scroll reports capture actual clipping and wheel events without terminal content',()=>{
   const h=harness(true),term=h.window.term;term.write=(_,callback)=>callback();term.cols=162;term.rows=65;
   term._core._renderService.dimensions.css.cell.height=14;
-  term._core.screenElement={style:{clipPath:'inset(0 0 490px 0)'}};
+  term._core.screenElement={style:{clipPath:'inset(0px 0px 490px)'}};
   h.window.__zjSendControl=()=>{};
   h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-focus',pane_id:30,is_plugin:false,focus_id:1}});
   h.handlers.wheel();h.handlers.wheel();

@@ -26,7 +26,8 @@
   const diagnostics=window.SwitchboardTerminalDiagnostics?.(
     diagnostic=>parent.postMessage({type:'zellij-switch-diagnostic',diagnostic},location.origin),
     ()=>{const size=physicalViewport(),term=window.term,cellHeight=term?._core?._renderService?.dimensions?.css?.cell?.height;
-      const clip=term?._core?.screenElement?.style?.clipPath?.match(/^inset\(0 0 ([\d.]+)px 0\)$/);
+      // CSSOM normalizes zero lengths and omits a repeated fourth inset.
+      const clip=term?._core?.screenElement?.style?.clipPath?.match(/^inset\(0(?:px)? 0(?:px)? ([\d.]+)px(?: 0(?:px)?)?\)$/);
       return {physical_cols:size?.cols??term?.cols??0,physical_rows:size?.rows??term?.rows??0,
       native_cols:latest?.tab_viewport?.cols??0,native_rows:latest?.tab_viewport?.rows??0,
       scroll_height_px:Math.round(scrollport?.scrollHeight??0),client_height_px:Math.round(scrollport?.clientHeight??0),scroll_top_px:Math.round(scrollport?.scrollTop??0),
