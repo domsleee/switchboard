@@ -9725,6 +9725,9 @@ pub(crate) fn screen_thread_main(
                 for connected_client_id in connected_client_ids {
                     screen.sync_scroll_mode_on_focus(connected_client_id)?;
                 }
+                // The PTY EOF render can finish before the child-exit callback closes
+                // the pane. Render again so quiet tabs redraw and empty tabs retire.
+                screen.render(None)?;
                 screen.log_and_report_session_state().non_fatal();
                 screen.retain_only_existing_panes_in_pane_groups();
             },

@@ -20,7 +20,7 @@
     const stray = !!window.frameElement && active === window.frameElement && (!document.activeElement || document.activeElement === document.body);
     if (stray || (!preserveFocus && active === origin)) window.term?.focus();
   }
-  let terminalSocket;
+  let terminalSocket, controlSocket;
   let scrollport, lastViewport, viewportTab, bottomButton, claimedViewportTab;
   let chromeKey, nativeTopBar=false, nativeBottomRows=0;
   function viewportSupported(){return !!window.__zjSupportsTabViewport && !!latest?.tab_viewport;}
@@ -124,6 +124,12 @@
     if(window.term)window.term.options.disableStdin=pendingNewTab.disabled;
     pendingNewTab=null;
   }
+  function holdFocusInput() {
+    if(!window.term?.element)return;
+    focusInputState ||= {disabled:window.term.options.disableStdin,pointer:window.term.element.style.pointerEvents};
+    window.term.options.disableStdin=true;window.term.element.style.pointerEvents='none';window.term.blur();
+    showEscapeStatus('Switching terminal…');
+  }
   function dispatchFocus() {
     clearTimeout(focusTimeout);
     // A superseding click restarts the attempt budget for the newest target.
@@ -133,6 +139,12 @@
     // Control sends can be dropped during reconnect, and a no-op focus may
     // produce no MobileState. Never leave input disabled waiting forever.
     focusTimeout=setTimeout(focusTimedOut,focusTimeoutMs);
+    sendPendingFocus();
+  }
+  function sendPendingFocus() {
+    // The stock sender silently discards messages before its socket is open.
+    // Keep startup/reconnect requests until the connection can deliver them.
+    if(!pendingFocus||!window.__zjSendControl||(controlSocket&&controlSocket.readyState!==1))return;
     try {
       window.__zjSendControl({type:'FocusPane',pane_id:pendingFocus.pane_id,is_plugin:pendingFocus.is_plugin});
     } catch (_) {
@@ -231,10 +243,10 @@
       if(!event.repeat)parent.postMessage({type:'zellij-open-new-tab',host},location.origin);return;
     }
     if(event.code==='KeyD'&&event.ctrlKey&&!event.metaKey&&!event.altKey&&!event.shiftKey
-        &&!event.isComposing&&terminalFocused()){
+        &&!event.isComposing&&(terminalFocused()||(pendingFocus&&document.activeElement===document.body))){
       event.preventDefault();event.stopImmediatePropagation();
       if(event.repeat)return;
-      if(pendingFocus){showEscapeStatus('Waiting for the selected terminal to receive focus.',true);return;}
+      // Closing uses the parent's selected tab ID, independently of native focus.
       parent.postMessage({type:'zellij-close-tab',host},location.origin);return;
     }
     // Ctrl+1–9 selects a Switchboard tab on every platform, before xterm/Zellij; see tabNumber in app.js.
@@ -372,7 +384,14 @@
         this.addEventListener('close',()=>{if(terminalSocket===this)terminalSocket=null;});
       }
       if (String(args[0]).includes('/ws/control')) {
+        controlSocket=this;
+        this.addEventListener('open',()=>{
+          if(controlSocket!==this||!pendingFocus)return;
+          holdFocusInput();
+          if(pendingFocus!==desiredFocus)dispatchFocus();else sendPendingFocus();
+        });
         this.addEventListener('message', event => {
+          if(controlSocket!==this)return;
           try {
             const message = JSON.parse(event.data);
             if (message.type === 'MobileState') sendState(message.payload);
@@ -383,6 +402,7 @@
           } catch (_) {}
         });
         this.addEventListener('close', () => {
+          if(controlSocket!==this)return;
           latest = undefined;
           lastViewport=null;claimedViewportTab=null;updateViewport();
           releaseFocus();
@@ -395,16 +415,12 @@
   window.addEventListener('message', event => {
     if (event.origin !== location.origin || event.source !== parent) return;
     const message = event.data;
-    if (message?.type === 'zellij-focus' && window.__zjSendControl) {
+    if (message?.type === 'zellij-focus') {
       focusId=message.focus_id;
       focusOrigin=parent.document.activeElement;preserveFocus=!!message.preserve_focus;
       if (pendingFocus || latest?.active_pane?.pane_id !== message.pane_id || latest?.active_pane?.is_plugin !== message.is_plugin){
         desiredFocus={pane_id:message.pane_id,is_plugin:message.is_plugin};
-        if(window.term?.element){
-          focusInputState ||= {disabled:window.term.options.disableStdin,pointer:window.term.element.style.pointerEvents};
-          window.term.options.disableStdin=true;window.term.element.style.pointerEvents='none';window.term.blur();
-          showEscapeStatus('Switching terminal…');
-        }
+        holdFocusInput();
         if(!pendingFocus)dispatchFocus();
       }else{releaseFocus();restoreTerminalFocus();if(latest)sendState(latest);}
     } else if (message?.type === 'zellij-escape' && !hasDialog()) {

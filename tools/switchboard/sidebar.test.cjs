@@ -293,3 +293,46 @@ test('failed switch clears pending state and restores the actual active tab, ign
   fail(9);assert.equal(entry.focusPending,false);assert.equal(entry.requestedPane,null);
   assert.equal(context.selected,'actual');assert.equal(focused.tab,tab);assert.match(status,/timed out/);
 });
+
+test('a clicked tab waiting for metadata retries from its button without stealing focus from other controls',()=>{
+  const pane={pane_id:9,is_plugin:false,tab_position:2},active={pane_id:7,is_plugin:false,tab_position:0};
+  const tab={id:90,position:1,name:'B',panes:[{...pane,tab_position:1}]},button={},messages=[];
+  const entry={host:'mac',name:'main',state:{panes:[active,pane],active_pane:active},focusInitialized:true,
+    frame:{contentWindow:{postMessage:message=>messages.push(message)}}};
+  const item={entry,tab,key:JSON.stringify(['mac','main','tab',90])};
+  const preview={hidden:true},artifact={},body={};let scans=0;
+  const context={document:{activeElement:button,body,hidden:false,hasFocus:()=>true,querySelector:()=>null},
+    $:id=>id==='artifact-preview'?preview:artifact,tabButtons:new Map([[item.key,button]]),location:{origin:'http://localhost'},
+    setStatus(){},refreshAttention:()=>scans++};
+  vm.createContext(context);
+  vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function tabTitle(')),context);
+  vm.runInContext(source.slice(source.indexOf('function focus('),source.indexOf('function activate(')),context);
+  context.focus(item);assert.equal(messages.length,0);assert.equal(entry.needsFocus,true);
+  context.focus(item,true);assert.equal(messages.length,0);
+  tab.position=2;tab.panes=[pane];context.focus(item,true);
+  assert.equal(messages.length,1,'Metadata arrival completes the original sidebar click');
+  assert.equal(scans,1,'Missing metadata requests one catalog scan, without a retry loop');
+  assert.equal(messages[0].pane_id,9);assert.equal(messages[0].preserve_focus,false);
+  assert.equal(entry.needsFocus,false);
+  for(const control of [{tagName:'INPUT'},{tagName:'BUTTON'},{}]){
+    context.document.activeElement=control;context.focus(item,true);
+    assert.equal(messages.length,1,'Other focused controls keep their focus');
+  }
+  context.document.activeElement=button;
+  context.document.hidden=true;context.focus(item,true);assert.equal(messages.length,1);
+  context.document.hidden=false;context.document.querySelector=()=>({});context.focus(item,true);assert.equal(messages.length,1);
+});
+
+test('a late native catalog cannot replace a selected tab waiting for focus',()=>{
+  const pane={pane_id:7,is_plugin:false,tab_position:0};
+  const entry={host:'mac',name:'main',state:{panes:[pane],active_pane:pane},needsFocus:true,followActiveTab:true,
+    frame:{classList:{contains:()=>true}}};
+  const key=id=>JSON.stringify(['mac','main','tab',id]);
+  const context={ready:{},archived:{},selected:key(90),tabOrder:[],saveReady(){},localStorage:{setItem(){}}};
+  vm.createContext(context);
+  vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function attentionKey(')),context);
+  context.setCatalog(entry,[{id:42,position:0,panes:[pane]},{id:90,position:1,panes:[]}]);
+  assert.equal(context.selected,key(90));assert.equal(entry.followActiveTab,true);
+  entry.needsFocus=false;context.syncActiveTab(entry);
+  assert.equal(context.selected,key(42));assert.equal(entry.followActiveTab,false);
+});

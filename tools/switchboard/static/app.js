@@ -150,7 +150,7 @@ function syncActiveTab(entry){
     if(entry.pendingNewTab.has(tabKey(entry,tab)))return;
     entry.pendingNewTab=null;entry.followActiveTab=false;
     if(filter!=='all'&&groups[entry.host]!==filter)setFilter('all');$('tab-search').value='';selected=tabKey(entry,tab);entry.needsFocus=true;
-  }else if(entry.followActiveTab&&entry.frame.classList.contains('active')){selected=tabKey(entry,tab);entry.followActiveTab=false;}
+  }else if(entry.followActiveTab&&!entry.needsFocus&&entry.frame.classList.contains('active')){selected=tabKey(entry,tab);entry.followActiveTab=false;}
 }
 function attentionKey(host,session,pane){return JSON.stringify([host,session,pane]);}
 function statesForTab(item){
@@ -389,24 +389,26 @@ window.addEventListener('focus',()=>{
 });
 function focus(item,background=false) {
   const activeElement=document.activeElement;
-  if(background&&(document.hidden||!document.hasFocus()||!$('artifact-preview').hidden||document.querySelector('dialog[open]')||activeElement&&activeElement!==document.body&&activeElement!==item.entry.frame)){
+  // A sidebar click may wait for metadata with its button still focused.
+  const fromTabButton=!!activeElement&&activeElement===tabButtons.get(tabKey(item.entry,item.tab));
+  if(background&&(document.hidden||!document.hasFocus()||!$('artifact-preview').hidden||document.querySelector('dialog[open]')||activeElement&&activeElement!==document.body&&activeElement!==item.entry.frame&&!fromTabButton)){
     item.entry.needsFocus=true;return;
   }
   // A polling retry must not blur/disable a terminal while its control socket
   // lacks current metadata. The next native state performs the reconnect focus.
   if(item.entry.disconnected){item.entry.needsFocus=true;return;}
   if(item.entry.pendingNewTab||item.tab.pending&&!item.tab.panes.length)return;
-  item.entry.needsFocus=false;
   $('artifact-preview').hidden=true;
   $('artifact-frame').src='about:blank';
   const active=item.entry.state.active_pane;
   const panes=tabPanes(item.entry,item.tab);
   const pane=panes.find(p=>p.pane_id===active?.pane_id && p.is_plugin===active?.is_plugin)||panes[0];
-  if(!pane){item.entry.needsFocus=true;setStatus('Waiting for terminal metadata…');return;}
+  if(!pane){const waiting=item.entry.needsFocus;item.entry.needsFocus=true;setStatus('Waiting for terminal metadata…');if(!waiting)refreshAttention(true);return;}
+  item.entry.needsFocus=false;
   if(active?.pane_id!==pane.pane_id||active?.is_plugin!==pane.is_plugin)item.entry.frame.contentWindow.SwitchboardClipboard?.clearSelection();
   const focusId=item.entry.focusId=(item.entry.focusId||0)+1;
   if(item.entry.requestedPane || active?.pane_id!==pane.pane_id||active?.is_plugin!==pane.is_plugin)item.entry.requestedPane={pane_id:pane.pane_id,is_plugin:pane.is_plugin,focus_id:focusId};
-  const preserveFocus=background&&!!item.entry.focusInitialized;
+  const preserveFocus=background&&!!item.entry.focusInitialized&&!fromTabButton;
   item.entry.focusInitialized=true;
   item.entry.frame.contentWindow.postMessage({type:'zellij-focus',pane_id:pane.pane_id,is_plugin:pane.is_plugin,focus_id:focusId,preserve_focus:preserveFocus},location.origin);
 }
@@ -428,7 +430,6 @@ function stepTab(direction) {
 function closeSelectedTab(){
   const item=allTabs().find(item=>item.key===selected);
   if(!item||document.querySelector('dialog[open]')||!$('artifact-preview').hidden)return;
-  if(item.entry.requestedPane||item.entry.focusPending||item.entry.followActiveTab){setStatus('Wait for the selected terminal to receive focus.',true);return;}
   contextItem=item;
   $('close-tab').click();
 }
