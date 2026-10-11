@@ -62,7 +62,9 @@ leaves the relay and terminal sessions running. Swift's compiler and this fork's
 [automatic updates](../../docs/SWITCHBOARD_UPDATES.md#automatic-updates).
 
 Settings → Logs includes terminal tab switches: focus acknowledgment,
-first frame, parser delay, output byte/frame counts, resize counts, and viewport sizes.
+first frame, parser/render/frame scheduling delay, output byte/frame counts,
+resize counts, and viewport size changes. Each switch observes ten seconds after
+acknowledgment, so a short quiet gap cannot hide a later output replay burst.
 Shift+Enter reports include browser modifier flags and Shift press/release timing.
 These diagnostics contain no terminal contents or typed text. Slow native reflows
 and ConPTY resizes also appear in `zellij.log`.
