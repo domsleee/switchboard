@@ -46,12 +46,13 @@ window.SwitchboardTerminalDiagnostics = function (report, dimensions) {
       renderListener?.dispose();
       hookedTerm = term;queued = 0;renderStarted = null;animationProbe = null;
       renderListener = term.onRender?.(() => {
-        if (term !== hookedTerm || renderStarted === null) return;
+        if (term !== hookedTerm) return;
         const started = renderStarted;renderStarted = null;
         if (!span) return;
         const elapsed = Math.round(now()-span.started);
-        span.render_events++;span.first_render_ms ??= elapsed;span.last_render_ms = elapsed;
-        span.max_render_lag_ms = Math.max(span.max_render_lag_ms,Math.round(now()-started));
+        span.render_events++;span.last_render_ms = elapsed;
+        if (span.first_parse_ms !== null || started !== null) span.first_render_ms ??= elapsed;
+        if (started !== null) span.max_render_lag_ms = Math.max(span.max_render_lag_ms,Math.round(now()-started));
         settle();
         if (typeof requestAnimationFrame !== 'function' || animationProbe) return;
         const tracked = span, probe = {}, requested = now();animationProbe = probe;

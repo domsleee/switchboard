@@ -92,6 +92,13 @@ test('missing terminal rendering remains pending despite a completed parse',()=>
   h.advance(10000);
   assert.equal(h.reports[0].outcome,'timeout');assert.equal(h.reports[0].render_pending,true);assert.equal(h.reports[0].slow,true);
 });
+test('redraws without new output remain visible throughout the observation window',()=>{
+  const h=harness({},true);h.start(1);h.diagnostics.ack();h.diagnostics.frame('screen');h.term.write('screen');h.writes[0].callback();h.render();
+  for(let i=0;i<5;i++){h.advance(600);h.render();}
+  h.advance(10000);
+  const report=h.reports[0];assert.equal(report.frames,1);assert.equal(report.last_frame_ms,0);
+  assert.equal(report.render_events,6);assert.equal(report.last_render_ms,3000);assert.equal(report.last_animation_ms,3016);
+});
 test('native size transitions are tracked only for the requested pane',()=>{
   const h=harness();h.start(1);h.diagnostics.ack();
   const state=(pane,cols,rows)=>h.diagnostics.state({active_pane:{pane_id:pane,is_plugin:false},tab_viewport:{cols,rows}});
