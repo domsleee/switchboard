@@ -65,6 +65,9 @@ Settings → Logs includes terminal tab switches: focus acknowledgment,
 first frame, parser/render/frame scheduling delay, output byte/frame counts,
 resize counts, and viewport size changes. Each switch observes ten seconds after
 acknowledgment, so a short quiet gap cannot hide a later output replay burst.
+Scrolling reports count xterm buffer movement, line feeds and wheel events, and
+record actual xterm size changes and cropped rows. Buffer movement without line
+feeds can expose unwanted wrapping even when the browser viewport stays normal.
 Shift+Enter reports include browser modifier flags and Shift press/release timing.
 These diagnostics contain no terminal contents or typed text. Slow native reflows
 and ConPTY resizes also appear in `zellij.log`.
