@@ -28,7 +28,8 @@
     ()=>{const size=physicalViewport();return {physical_cols:size?.cols??window.term?.cols??0,physical_rows:size?.rows??window.term?.rows??0,
       native_cols:latest?.tab_viewport?.cols??0,native_rows:latest?.tab_viewport?.rows??0,
       scroll_height_px:Math.round(scrollport?.scrollHeight??0),client_height_px:Math.round(scrollport?.clientHeight??0),scroll_top_px:Math.round(scrollport?.scrollTop??0),
-      xterm_rows:window.term?.rows??0,buffer_rows:window.term?.buffer?.active?.length??0};});
+      xterm_rows:window.term?.rows??0,buffer_rows:window.term?.buffer?.active?.length??0,
+      document_hidden:document.visibilityState==='hidden',browser_focused:parent.document.hasFocus()};});
   let shiftPressedAt=null,shiftReleasedAt=null;
   window.addEventListener('keyup',event=>{if(event.key==='Shift'){shiftPressedAt=null;shiftReleasedAt=performance.now();}},true);
   window.addEventListener('blur',()=>{shiftPressedAt=null;shiftReleasedAt=null;});
@@ -383,6 +384,7 @@
   }
   function sendState(payload) {
     latest = payload;
+    diagnostics?.state(payload);
     if(viewportSupported())window.dispatchEvent(new Event('zellij:rendering-resize'));
     const created=pendingNewTab&&latest.active_pane&&!latest.active_pane.is_plugin&&!pendingNewTab.panes.has(latest.active_pane.pane_id);
     if(created){const origin=pendingNewTab.focusOrigin;releaseNewTab();restoreTerminalFocus(origin);}

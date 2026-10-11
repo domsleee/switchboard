@@ -140,6 +140,50 @@ struct SwitchDiagnostic {
     xterm_rows: u16,
     #[serde(default)]
     buffer_rows: u32,
+    #[serde(default)]
+    render_tracking: bool,
+    #[serde(default)]
+    first_render_ms: Option<u32>,
+    #[serde(default)]
+    last_render_ms: Option<u32>,
+    #[serde(default)]
+    render_events: u32,
+    #[serde(default)]
+    max_render_lag_ms: u32,
+    #[serde(default)]
+    render_pending: bool,
+    #[serde(default)]
+    first_animation_ms: Option<u32>,
+    #[serde(default)]
+    last_animation_ms: Option<u32>,
+    #[serde(default)]
+    max_animation_lag_ms: u32,
+    #[serde(default)]
+    animation_pending: bool,
+    #[serde(default)]
+    first_quiet_ms: Option<u32>,
+    #[serde(default)]
+    late_frames: u32,
+    #[serde(default)]
+    hidden_at_start: bool,
+    #[serde(default)]
+    document_hidden: bool,
+    #[serde(default)]
+    browser_focused: bool,
+    #[serde(default)]
+    viewport_size_changes: u32,
+    #[serde(default)]
+    first_native_cols: u16,
+    #[serde(default)]
+    first_native_rows: u16,
+    #[serde(default)]
+    min_native_cols: u16,
+    #[serde(default)]
+    min_native_rows: u16,
+    #[serde(default)]
+    max_native_cols: u16,
+    #[serde(default)]
+    max_native_rows: u16,
 }
 
 impl SwitchDiagnostic {
@@ -149,12 +193,19 @@ impl SwitchDiagnostic {
             "settled" | "sampled" | "timeout" | "superseded" | "disconnected"
         ) || self.elapsed_ms > 86_400_000
             || self.max_parse_lag_ms > 86_400_000
+            || self.max_render_lag_ms > 86_400_000
+            || self.max_animation_lag_ms > 86_400_000
             || [
                 self.ack_ms,
                 self.first_frame_ms,
                 self.first_parse_ms,
                 self.last_frame_ms,
                 self.last_parse_ms,
+                self.first_render_ms,
+                self.last_render_ms,
+                self.first_animation_ms,
+                self.last_animation_ms,
+                self.first_quiet_ms,
             ]
             .into_iter()
             .flatten()
@@ -166,10 +217,17 @@ impl SwitchDiagnostic {
         let slow = self.ack_ms.is_some_and(|t| t > 500)
             || self.first_parse_ms.is_some_and(|t| t > 500)
             || self.max_parse_lag_ms > 500
+            || self.first_render_ms.is_some_and(|t| t > 500)
+            || self.first_animation_ms.is_some_and(|t| t > 500)
+            || self.max_render_lag_ms > 500
+            || self.max_animation_lag_ms > 500
             || (self.elapsed_ms > 500
                 && (self.ack_ms.is_none()
                     || self.writes_pending > 0
-                    || self.expected_render && self.first_parse_ms.is_none()));
+                    || self.expected_render && self.first_parse_ms.is_none()
+                    || self.render_tracking
+                        && self.expected_render
+                        && self.first_render_ms.is_none()));
         let oversized = self.client_height_px > 0
             && u64::from(self.scroll_height_px) > u64::from(self.client_height_px) * 8;
         if !slow && !oversized && !self.expected_render {
@@ -177,13 +235,23 @@ impl SwitchDiagnostic {
         }
         let timing = |t: Option<u32>| t.map_or_else(|| "-".into(), |t| t.to_string());
         Some(format!(
-            "Terminal switch {} pane={}{} focus={} t={}ms ack={} first={} parse={} lag={}ms frames={} bytes={} queue={} resize={} claims={} scroll={}/{}/{} rows={}/{} view={}x{} native={}x{}",
+            "Terminal switch {} pane={}{} focus={} t={}ms ack={} frame={}/{} parse={}/{} render={}/{} raf={}/{} lag={}/{}/{}ms frames={} bytes={} queue={} quiet={} late={}",
             self.outcome, if self.is_plugin { "plugin:" } else { "" }, self.pane_id, self.focus_id,
-            self.elapsed_ms, timing(self.ack_ms), timing(self.first_frame_ms), timing(self.first_parse_ms),
-            self.max_parse_lag_ms, self.frames, self.bytes, self.writes_pending, self.terminal_resizes,
-            self.viewport_claims, self.scroll_height_px,self.client_height_px,self.scroll_top_px,self.xterm_rows,self.buffer_rows,
-            self.physical_cols, self.physical_rows, self.native_cols, self.native_rows,
+            self.elapsed_ms, timing(self.ack_ms), timing(self.first_frame_ms),timing(self.last_frame_ms),timing(self.first_parse_ms),timing(self.last_parse_ms),
+            timing(self.first_render_ms),timing(self.last_render_ms),timing(self.first_animation_ms),timing(self.last_animation_ms),
+            self.max_parse_lag_ms,self.max_render_lag_ms,self.max_animation_lag_ms,self.frames,self.bytes,self.writes_pending,timing(self.first_quiet_ms),self.late_frames,
         ))
+    }
+
+    fn viewport_message(&self) -> String {
+        format!(
+            "Terminal viewport pane={}{} focus={} resize={} claims={} changes={} native={}x{}->{}x{} range={}x{}..{}x{} scroll={}/{}/{} rows={}/{} view={}x{} hidden={}/{} focused={} render_events={} pending={}/{}",
+            if self.is_plugin { "plugin:" } else { "" },self.pane_id,self.focus_id,self.terminal_resizes,
+            self.viewport_claims,self.viewport_size_changes,self.first_native_cols,self.first_native_rows,self.native_cols,self.native_rows,
+            self.min_native_cols,self.min_native_rows,self.max_native_cols,self.max_native_rows,
+            self.scroll_height_px,self.client_height_px,self.scroll_top_px,self.xterm_rows,self.buffer_rows,
+            self.physical_cols,self.physical_rows,self.hidden_at_start,self.document_hidden,self.browser_focused,self.render_events,self.render_pending,self.animation_pending,
+        )
     }
 }
 
@@ -227,6 +295,7 @@ pub(super) async fn terminal_switch(
     };
     if !message.is_empty() {
         record(&host.config.name, &message);
+        record(&host.config.name, &diagnostic.viewport_message());
     }
     StatusCode::NO_CONTENT
 }
@@ -278,8 +347,8 @@ mod tests {
         let message = diagnostic.message().unwrap();
         assert!(message.contains("pane=30"));
         assert!(message.contains("ack=15"));
-        assert!(message.contains("lag=730ms"));
-        assert!(message.contains("resize=3"));
+        assert!(message.contains("lag=730/0/0ms"));
+        assert!(diagnostic.viewport_message().contains("resize=3"));
         sample["first_parse_ms"] = json!(400);
         sample["max_parse_lag_ms"] = json!(380);
         sample["expected_render"] = json!(false);
@@ -290,12 +359,45 @@ mod tests {
         sample["xterm_rows"] = json!(10000);
         sample["buffer_rows"] = json!(10000);
         let diagnostic: SwitchDiagnostic = serde_json::from_value(sample.clone()).unwrap();
-        assert!(diagnostic.message().unwrap().contains("scroll=180000/800"));
+        assert!(!diagnostic.message().unwrap().is_empty());
+        assert!(diagnostic.viewport_message().contains("scroll=180000/800"));
         sample["outcome"] = json!("token=private terminal output");
         let diagnostic: SwitchDiagnostic = serde_json::from_value(sample.clone()).unwrap();
         assert_eq!(diagnostic.message(), None);
         sample["contents"] = json!("private terminal output");
         assert!(serde_json::from_value::<SwitchDiagnostic>(sample).is_err());
+    }
+
+    #[test]
+    fn switch_diagnostics_preserve_later_replay_and_render_timings() {
+        let mut sample = switch_sample();
+        sample["elapsed_ms"] = json!(10015);
+        sample["first_parse_ms"] = json!(21);
+        sample["max_parse_lag_ms"] = json!(1);
+        sample["last_frame_ms"] = json!(4200);
+        sample["last_parse_ms"] = json!(4201);
+        sample["first_render_ms"] = json!(820);
+        sample["last_render_ms"] = json!(4210);
+        sample["first_animation_ms"] = json!(836);
+        sample["last_animation_ms"] = json!(4226);
+        sample["max_render_lag_ms"] = json!(799);
+        sample["max_animation_lag_ms"] = json!(16);
+        sample["first_quiet_ms"] = json!(986);
+        sample["late_frames"] = json!(8);
+        sample["viewport_size_changes"] = json!(2);
+        let diagnostic: SwitchDiagnostic = serde_json::from_value(sample.clone()).unwrap();
+        let message = diagnostic.message().unwrap();
+        assert!(message.contains("frame=20/4200"));
+        assert!(message.contains("render=820/4210"));
+        assert!(message.contains("raf=836/4226"));
+        assert!(message.contains("late=8"));
+        assert_eq!(message, redact(&message));
+        assert!(diagnostic.viewport_message().contains("changes=2"));
+        sample["max_animation_lag_ms"] = json!(86_400_001);
+        assert!(serde_json::from_value::<SwitchDiagnostic>(sample)
+            .unwrap()
+            .message()
+            .is_none());
     }
 
     #[test]
