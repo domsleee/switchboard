@@ -35,6 +35,23 @@ use std::{
 
 pub use async_trait::async_trait;
 
+// ConPTY only accepts character dimensions. Repeating an unchanged size can
+// redraw the console and its running TUI; cache only successful updates.
+#[cfg(any(windows, test))]
+pub(super) fn resize_windows_terminal<E>(
+    current: &mut (u16, u16),
+    cols: u16,
+    rows: u16,
+    resize: impl FnOnce(u16, u16) -> Result<(), E>,
+) -> Result<bool, E> {
+    if cols == 0 || rows == 0 || *current == (cols, rows) {
+        return Ok(false);
+    }
+    resize(cols, rows)?;
+    *current = (cols, rows);
+    Ok(true)
+}
+
 // A background Windows server need not inherit a terminal environment, but its
 // ConPTY panes still provide xterm colour support. Keep explicit colour opt-outs.
 /// Panes need a colour-capable TERM even when the server was started without one

@@ -539,6 +539,14 @@ async function refresh() {
     }));
   }catch(error){setStatus(error.message,true);}finally{loading=false;}
 }
+function recordTerminalDiagnostic(entry,type,diagnostic){
+  if(!diagnostic || type==='terminal-switch' && diagnostic.slow!==true)return;
+  const fields=type==='terminal-switch'?['focus_id','pane_id','is_plugin','expected_render','outcome','elapsed_ms','ack_ms','first_frame_ms','first_parse_ms','last_frame_ms','last_parse_ms','frames','bytes','writes_pending','max_parse_lag_ms','physical_cols','physical_rows','native_cols','native_rows','viewport_claims','terminal_resizes']:
+    ['pane_id','is_plugin','shift','ctrl','alt','meta','repeat','held_ms','released_ms'];
+  const body={host:entry.host};
+  for(const field of fields){const value=diagnostic[field];if(value===null||typeof value==='boolean'||typeof value==='string'&&field==='outcome'||typeof value==='number'&&Number.isFinite(value)&&value>=0)body[field]=value;}
+  fetch('/api/diagnostics/'+type,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).catch(()=>{});
+}
 window.addEventListener('message',event=>{
   if(event.origin!==location.origin)return;
   const entry=[...sessions.values()].find(e=>e.frame.contentWindow===event.source);
@@ -587,6 +595,10 @@ window.addEventListener('message',event=>{
     entry.state=state;const tab=activeTab(entry);
     if(tab){selected=tabKey(entry,tab);render();focus({entry,tab},true);}
     setStatus(event.data.message || 'That terminal is unavailable. Choose another tab.',true);
+  }else if(event.data?.type==='zellij-switch-diagnostic'){
+    recordTerminalDiagnostic(entry,'terminal-switch',event.data.diagnostic);
+  }else if(event.data?.type==='zellij-key-diagnostic'){
+    recordTerminalDiagnostic(entry,'modified-enter',event.data.diagnostic);
   }else if(event.data?.type==='zellij-open-new-tab'){
     if(entry.frame.classList.contains('active')&&!document.querySelector('dialog[open]'))$('new-tab').click();
   }else if(event.data?.type==='zellij-close-tab'){

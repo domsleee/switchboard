@@ -21,3 +21,13 @@ test('Shift+Enter keeps its modifier so agent TUIs insert a newline instead of s
 test('plain and Alt Enter stay with xterm.js',()=>{
   for(const mods of [{},{altKey:true}])assert.deepEqual(press('Enter',mods),{xtermHandles:true,sent:[]});
 });
+test('Shift is taken from each Enter event, with no held modifier after uppercase typing or Shift+Enter',()=>{
+  const context={isMac:()=>true};vm.createContext(context);
+  vm.runInContext(slice('function encode_kitty_key(','/**')+slice('function installCustomKeyHandler(','function installMouseHandlers('),context);
+  let handler;const sent=[];context.installCustomKeyHandler({attachCustomKeyEventHandler:h=>handler=h},data=>sent.push(data));
+  const event=(key,type='keydown',shiftKey=false)=>({key,type,shiftKey,ctrlKey:false,altKey:false,metaKey:false,preventDefault(){}});
+  handler(event('Shift','keydown',true));handler(event('A','keydown',true));handler(event('Shift','keyup'));
+  assert.equal(handler(event('Enter')),true);assert.deepEqual(sent,[]);
+  assert.equal(handler(event('Enter','keydown',true)),false);
+  assert.equal(handler(event('Enter')),true);assert.deepEqual(sent,['\x1b[13;2u']);
+});

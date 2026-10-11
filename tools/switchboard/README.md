@@ -61,6 +61,12 @@ leaves the relay and terminal sessions running. Swift's compiler and this fork's
 `zellij switchboard update` (no Python or GitHub CLI); macOS also needs `jq`. See
 [automatic updates](../../docs/SWITCHBOARD_UPDATES.md#automatic-updates).
 
+Settings → Logs includes slow terminal switches (over 500 ms): focus acknowledgment,
+first frame, parser delay, output byte/frame counts, resize counts, and viewport sizes.
+Shift+Enter reports include browser modifier flags and Shift press/release timing.
+These diagnostics contain no terminal contents or typed text. Slow native reflows
+and ConPTY resizes also appear in `zellij.log`.
+
 To update a Mac while keeping open terminals running (requires `jq`):
 
 ```sh

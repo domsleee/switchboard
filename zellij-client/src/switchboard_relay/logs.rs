@@ -105,9 +105,254 @@ pub(super) async fn handler(State(state): State<RelayState>) -> Json<Value> {
     Json(json!({ "computers": computers }))
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SwitchDiagnostic {
+    host: String,
+    focus_id: u32,
+    pane_id: u32,
+    is_plugin: bool,
+    expected_render: bool,
+    outcome: String,
+    elapsed_ms: u32,
+    ack_ms: Option<u32>,
+    first_frame_ms: Option<u32>,
+    first_parse_ms: Option<u32>,
+    last_frame_ms: Option<u32>,
+    last_parse_ms: Option<u32>,
+    frames: u32,
+    bytes: u64,
+    writes_pending: u32,
+    max_parse_lag_ms: u32,
+    physical_cols: u16,
+    physical_rows: u16,
+    native_cols: u16,
+    native_rows: u16,
+    viewport_claims: u32,
+    terminal_resizes: u32,
+}
+
+impl SwitchDiagnostic {
+    fn message(&self) -> Option<String> {
+        if !matches!(
+            self.outcome.as_str(),
+            "settled" | "timeout" | "superseded" | "disconnected"
+        ) || self.elapsed_ms > 86_400_000
+            || self.max_parse_lag_ms > 86_400_000
+            || [
+                self.ack_ms,
+                self.first_frame_ms,
+                self.first_parse_ms,
+                self.last_frame_ms,
+                self.last_parse_ms,
+            ]
+            .into_iter()
+            .flatten()
+            .any(|t| t > 86_400_000)
+        {
+            return None;
+        }
+        // Quiet settling time and a continuously printing TUI are not latency.
+        let slow = self.ack_ms.is_some_and(|t| t > 500)
+            || self.first_parse_ms.is_some_and(|t| t > 500)
+            || self.max_parse_lag_ms > 500
+            || (self.elapsed_ms > 500
+                && (self.ack_ms.is_none()
+                    || self.writes_pending > 0
+                    || self.expected_render && self.first_parse_ms.is_none()));
+        if !slow {
+            return Some(String::new());
+        }
+        let timing = |t: Option<u32>| t.map_or_else(|| "-".into(), |t| t.to_string());
+        Some(format!(
+            "Terminal switch {} pane={}{} focus={} t={}ms ack={} first={} parse={} lag={}ms frames={} bytes={} queue={} resize={} claims={} view={}x{} native={}x{}",
+            self.outcome, if self.is_plugin { "plugin:" } else { "" }, self.pane_id, self.focus_id,
+            self.elapsed_ms, timing(self.ack_ms), timing(self.first_frame_ms), timing(self.first_parse_ms),
+            self.max_parse_lag_ms, self.frames, self.bytes, self.writes_pending, self.terminal_resizes,
+            self.viewport_claims, self.physical_cols, self.physical_rows, self.native_cols, self.native_rows,
+        ))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EnterDiagnostic {
+    host: String,
+    pane_id: u32,
+    is_plugin: bool,
+    shift: bool,
+    ctrl: bool,
+    alt: bool,
+    meta: bool,
+    repeat: bool,
+    held_ms: Option<u32>,
+    released_ms: Option<u32>,
+}
+
+async fn diagnostic_body<T: serde::de::DeserializeOwned>(
+    request: Request,
+) -> Result<T, StatusCode> {
+    let body = to_bytes(request.into_body(), 8192)
+        .await
+        .map_err(|_| StatusCode::PAYLOAD_TOO_LARGE)?;
+    serde_json::from_slice(&body).map_err(|_| StatusCode::BAD_REQUEST)
+}
+
+pub(super) async fn terminal_switch(
+    State(state): State<RelayState>,
+    request: Request,
+) -> StatusCode {
+    let diagnostic: SwitchDiagnostic = match diagnostic_body(request).await {
+        Ok(d) => d,
+        Err(status) => return status,
+    };
+    let Some(host) = state.host(&diagnostic.host) else {
+        return StatusCode::NOT_FOUND;
+    };
+    let Some(message) = diagnostic.message() else {
+        return StatusCode::BAD_REQUEST;
+    };
+    if !message.is_empty() {
+        record(&host.config.name, &message);
+    }
+    StatusCode::NO_CONTENT
+}
+
+pub(super) async fn modified_enter(
+    State(state): State<RelayState>,
+    request: Request,
+) -> StatusCode {
+    let diagnostic: EnterDiagnostic = match diagnostic_body(request).await {
+        Ok(d) => d,
+        Err(status) => return status,
+    };
+    let Some(host) = state.host(&diagnostic.host) else {
+        return StatusCode::NOT_FOUND;
+    };
+    if !diagnostic.shift
+        || [diagnostic.held_ms, diagnostic.released_ms]
+            .into_iter()
+            .flatten()
+            .any(|t| t > 86_400_000)
+    {
+        return StatusCode::BAD_REQUEST;
+    }
+    record(&host.config.name, &format!(
+        "Browser Shift+Enter pane={}{} shift={} ctrl={} alt={} meta={} repeat={} held_ms={:?} released_ms={:?}",
+        if diagnostic.is_plugin { "plugin:" } else { "" }, diagnostic.pane_id,
+        diagnostic.shift, diagnostic.ctrl, diagnostic.alt, diagnostic.meta, diagnostic.repeat,
+        diagnostic.held_ms, diagnostic.released_ms,
+    ));
+    StatusCode::NO_CONTENT
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn switch_sample() -> Value {
+        json!({"host":"mac","focus_id":17,"pane_id":30,"is_plugin":false,"expected_render":true,
+            "outcome":"settled","elapsed_ms":900,"ack_ms":15,"first_frame_ms":20,"first_parse_ms":750,
+            "last_frame_ms":20,"last_parse_ms":750,"frames":1,"bytes":120000,"writes_pending":0,
+            "max_parse_lag_ms":730,"physical_cols":120,"physical_rows":40,"native_cols":120,"native_rows":40,
+            "viewport_claims":2,"terminal_resizes":3})
+    }
+
+    #[test]
+    fn switch_diagnostics_distinguish_parser_latency_from_settle_time_and_reject_contents() {
+        let mut sample = switch_sample();
+        let diagnostic: SwitchDiagnostic = serde_json::from_value(sample.clone()).unwrap();
+        let message = diagnostic.message().unwrap();
+        assert!(message.contains("pane=30"));
+        assert!(message.contains("ack=15"));
+        assert!(message.contains("lag=730ms"));
+        assert!(message.contains("resize=3"));
+        sample["first_parse_ms"] = json!(400);
+        sample["max_parse_lag_ms"] = json!(380);
+        let diagnostic: SwitchDiagnostic = serde_json::from_value(sample.clone()).unwrap();
+        assert_eq!(diagnostic.message(), Some(String::new()));
+        sample["outcome"] = json!("token=private terminal output");
+        let diagnostic: SwitchDiagnostic = serde_json::from_value(sample.clone()).unwrap();
+        assert_eq!(diagnostic.message(), None);
+        sample["contents"] = json!("private terminal output");
+        assert!(serde_json::from_value::<SwitchDiagnostic>(sample).is_err());
+    }
+
+    #[test]
+    fn modified_enter_diagnostics_accept_only_modifier_metadata() {
+        let mut sample = json!({"host":"mac","pane_id":30,"is_plugin":false,"shift":true,
+            "ctrl":false,"alt":false,"meta":false,"repeat":false,"held_ms":null,"released_ms":10});
+        let diagnostic: EnterDiagnostic = serde_json::from_value(sample.clone()).unwrap();
+        assert_eq!(diagnostic.held_ms, None);
+        assert_eq!(diagnostic.released_ms, Some(10));
+        sample["typed_text"] = json!("private prompt");
+        assert!(serde_json::from_value::<EnterDiagnostic>(sample.clone()).is_err());
+        sample.as_object_mut().unwrap().remove("typed_text");
+        sample["held_ms"] = json!(-1);
+        assert!(serde_json::from_value::<EnterDiagnostic>(sample).is_err());
+    }
+
+    #[tokio::test]
+    async fn terminal_diagnostics_require_known_host_origin_and_bounded_metadata() {
+        use tower::ServiceExt;
+        let app = router(
+            RelayConfig {
+                hosts: vec![super::super::tests::config("http://127.0.0.1:8082")],
+                artifact_proxy: None,
+            },
+            8090,
+        )
+        .await
+        .unwrap();
+        let request = |body: Value, origin: &str| {
+            hyper::Request::post("/api/diagnostics/terminal-switch")
+                .header(header::HOST, "127.0.0.1:8090")
+                .header(header::ORIGIN, origin)
+                .body(Body::from(body.to_string()))
+                .unwrap()
+        };
+        let response = app
+            .clone()
+            .oneshot(request(switch_sample(), "https://attacker.example"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let response = app
+            .clone()
+            .oneshot(request(switch_sample(), "http://127.0.0.1:8090"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(local()["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["source"] == "Mac" && e["message"].as_str().unwrap().contains("pane=30")));
+        let mut sample = switch_sample();
+        sample["host"] = json!("unpaired");
+        let response = app
+            .clone()
+            .oneshot(request(sample, "http://127.0.0.1:8090"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let mut sample = switch_sample();
+        sample["contents"] = json!("private transcript");
+        let response = app
+            .clone()
+            .oneshot(request(sample, "http://127.0.0.1:8090"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let response = app
+            .oneshot(request(
+                json!({"contents":"x".repeat(9000)}),
+                "http://127.0.0.1:8090",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
 
     #[test]
     fn ring_buffer_is_bounded_newest_first_and_counts_repeats() {

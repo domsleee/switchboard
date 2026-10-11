@@ -34,7 +34,7 @@ use tokio_tungstenite::{
 
 static ASSETS: Dir = include_dir!("$CARGO_MANIFEST_DIR/../tools/switchboard/static");
 const LIMIT: usize = 16 * 1024 * 1024;
-const BRIDGE: &str = "<head><script src=\"/link-config.js\"></script><script src=\"/links.js\"></script><script src=\"/clipboard.js\"></script><script src=\"/chrome.js\"></script><script src=\"/bridge.js\"></script>";
+const BRIDGE: &str = "<head><script src=\"/link-config.js\"></script><script src=\"/links.js\"></script><script src=\"/clipboard.js\"></script><script src=\"/chrome.js\"></script><script src=\"/terminal-diagnostics.js\"></script><script src=\"/bridge.js\"></script>";
 
 #[derive(Clone, Deserialize)]
 pub struct RelayConfig {
@@ -838,10 +838,17 @@ async fn asset(request: Request) -> Response {
     let mime = match name {
         "index.html" | "computers.html" | "messages.html" => "text/html; charset=utf-8",
         "style.css" | "messages.css" => "text/css; charset=utf-8",
-        "app.js" | "bridge.js" | "chrome.js" | "clipboard.js" | "close.js" | "links.js"
-        | "titles.js" | "computers.js" | "pairing-notice.js" | "messages.js" => {
-            "application/javascript"
-        },
+        "app.js"
+        | "bridge.js"
+        | "chrome.js"
+        | "clipboard.js"
+        | "close.js"
+        | "links.js"
+        | "titles.js"
+        | "computers.js"
+        | "pairing-notice.js"
+        | "messages.js"
+        | "terminal-diagnostics.js" => "application/javascript",
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
     match ASSETS.get_file(name) {
@@ -929,6 +936,14 @@ fn app(state: RelayState) -> Router {
         .route("/api/attention", get(attention::handler))
         .route("/api/attention/ack", post(attention::acknowledge))
         .route("/api/logs", get(logs::handler))
+        .route(
+            "/api/diagnostics/terminal-switch",
+            post(logs::terminal_switch),
+        )
+        .route(
+            "/api/diagnostics/modified-enter",
+            post(logs::modified_enter),
+        )
         .route("/api/message-board/{*path}", any(message_board))
         .route("/api/hosts/{host}/close-tab", post(control::close_tab))
         .route("/api/hosts/{host}/escape", post(control::escape))
@@ -1291,6 +1306,7 @@ mod tests {
             ("/messages.html", "text/html; charset=utf-8"),
             ("/messages.js", "application/javascript"),
             ("/messages.css", "text/css; charset=utf-8"),
+            ("/terminal-diagnostics.js", "application/javascript"),
         ] {
             let response = app
                 .clone()
