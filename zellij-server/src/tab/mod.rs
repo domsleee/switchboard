@@ -6970,7 +6970,9 @@ impl Tab {
             self.floating_panes.unset_fullscreen();
         }
         self.floating_panes.toggle_show_panes(false);
-        self.tiled_panes.focus_all_panes();
+        if were_shown {
+            self.tiled_panes.focus_all_panes();
+        }
         self.set_force_render();
         if were_shown {
             self.notify_floating_plugins_of_visibility(false);

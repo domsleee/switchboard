@@ -131,6 +131,30 @@ struct SwitchDiagnostic {
     viewport_claims: u32,
     terminal_resizes: u32,
     #[serde(default)]
+    control_tracking: bool,
+    #[serde(default)]
+    focus_commands: u32,
+    #[serde(default)]
+    terminal_metrics: u32,
+    #[serde(default)]
+    cell_size_changes: u32,
+    #[serde(default)]
+    first_cell_width_px: u16,
+    #[serde(default)]
+    first_cell_height_px: u16,
+    #[serde(default)]
+    last_cell_width_px: u16,
+    #[serde(default)]
+    last_cell_height_px: u16,
+    #[serde(default)]
+    min_cell_width_px: u16,
+    #[serde(default)]
+    min_cell_height_px: u16,
+    #[serde(default)]
+    max_cell_width_px: u16,
+    #[serde(default)]
+    max_cell_height_px: u16,
+    #[serde(default)]
     scroll_height_px: u32,
     #[serde(default)]
     client_height_px: u32,
@@ -280,6 +304,16 @@ impl SwitchDiagnostic {
         )
     }
 
+    fn control_message(&self) -> String {
+        format!(
+            "Terminal control pane={}{} focus={} tracked={} focus_commands={} metrics={} cell_px={}x{}->{}x{} range={}x{}..{}x{} changes={}",
+            if self.is_plugin { "plugin:" } else { "" }, self.pane_id, self.focus_id,
+            self.control_tracking, self.focus_commands, self.terminal_metrics,
+            self.first_cell_width_px, self.first_cell_height_px, self.last_cell_width_px, self.last_cell_height_px,
+            self.min_cell_width_px, self.min_cell_height_px, self.max_cell_width_px, self.max_cell_height_px, self.cell_size_changes,
+        )
+    }
+
     fn scroll_message(&self) -> String {
         format!(
             "Terminal scrolling pane={}{} focus={} buffer_scrolls={} line_feeds={} wheel={} xterm={}x{}->{}x{} range={}x{}..{}x{} changes={} native={}x{} clipped_rows={}/{}",
@@ -334,6 +368,7 @@ pub(super) async fn terminal_switch(
         record(&host.config.name, &message);
         record(&host.config.name, &diagnostic.viewport_message());
         record(&host.config.name, &diagnostic.scroll_message());
+        record(&host.config.name, &diagnostic.control_message());
     }
     StatusCode::NO_CONTENT
 }
@@ -404,6 +439,46 @@ mod tests {
         assert_eq!(diagnostic.message(), None);
         sample["contents"] = json!("private terminal output");
         assert!(serde_json::from_value::<SwitchDiagnostic>(sample).is_err());
+    }
+
+    #[test]
+    fn switch_diagnostics_keep_numeric_focus_and_cell_metrics_with_old_client_defaults() {
+        let mut sample = switch_sample();
+        let older: SwitchDiagnostic = serde_json::from_value(sample.clone()).unwrap();
+        assert!(!older.control_tracking);
+        assert!(older.control_message().contains("tracked=false"));
+        assert!(older
+            .control_message()
+            .contains("focus_commands=0 metrics=0 cell_px=0x0->0x0"));
+        sample["control_tracking"] = json!(true);
+        let empty: SwitchDiagnostic = serde_json::from_value(sample.clone()).unwrap();
+        assert!(empty
+            .control_message()
+            .contains("tracked=true focus_commands=0 metrics=0"));
+        for (field, value) in [
+            ("focus_commands", 2),
+            ("terminal_metrics", 5),
+            ("cell_size_changes", 3),
+            ("first_cell_width_px", 9),
+            ("first_cell_height_px", 18),
+            ("last_cell_width_px", 9),
+            ("last_cell_height_px", 18),
+            ("min_cell_width_px", 8),
+            ("min_cell_height_px", 16),
+            ("max_cell_width_px", 10),
+            ("max_cell_height_px", 20),
+        ] {
+            sample[field] = json!(value);
+        }
+        let diagnostic: SwitchDiagnostic = serde_json::from_value(sample.clone()).unwrap();
+        let message = diagnostic.control_message();
+        assert!(message
+            .contains("focus_commands=2 metrics=5 cell_px=9x18->9x18 range=8x16..10x20 changes=3"));
+        assert_eq!(message, redact(&message));
+        for value in [json!("private prompt"), json!(-1), json!(65536), json!(1.5)] {
+            sample["first_cell_width_px"] = value;
+            assert!(serde_json::from_value::<SwitchDiagnostic>(sample.clone()).is_err());
+        }
     }
 
     #[test]

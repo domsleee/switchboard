@@ -76,6 +76,11 @@ acknowledgment, so a short quiet gap cannot hide a later output replay burst.
 Scrolling reports count xterm buffer movement, line feeds and wheel events, and
 record actual xterm size changes and cropped rows. Buffer movement without line
 feeds can expose unwanted wrapping even when the browser viewport stays normal.
+Control reports count native focus requests and cell pixel-size changes, including
+changes that leave the terminal's row and column count unchanged. Terminal
+transport reports summarize large upstream bursts and slow forwarding separately,
+so browser parsing delays can be distinguished from screen updates arriving from
+another computer.
 Shift+Enter reports include browser modifier flags and Shift press/release timing.
 These diagnostics contain no terminal contents or typed text. Slow native reflows
 and ConPTY resizes also appear in `zellij.log`.

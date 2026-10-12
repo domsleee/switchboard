@@ -5,6 +5,7 @@ mod control;
 mod hostname;
 mod logs;
 mod mesh;
+mod output_diagnostics;
 pub(crate) mod peer_bridge;
 use axum::{
     body::{to_bytes, Body, Bytes},
@@ -863,10 +864,17 @@ async fn proxy(
             .await
             .map_err(|_| (StatusCode::BAD_GATEWAY, "Host connection timed out"))?
             .map_err(|_| (StatusCode::BAD_GATEWAY, "Host WebSocket unavailable"))?;
+        let terminal = path
+            .split('?')
+            .next()
+            .is_some_and(|path| path == "/ws/terminal" || path.starts_with("/ws/terminal/"));
+        let source = terminal.then(|| host.config.name.clone());
         return Ok(websocket
             .max_message_size(LIMIT)
             .max_frame_size(LIMIT)
-            .on_upgrade(|downstream| pump(downstream, upstream)));
+            .on_upgrade(move |downstream| {
+                pump_with_output_diagnostics(downstream, upstream, source)
+            }));
     }
     let method = request.method().clone();
     let content_type = request
@@ -908,6 +916,14 @@ async fn proxy(
 }
 
 async fn pump(downstream: axum::extract::ws::WebSocket, upstream: WebSocketStream<Stream>) {
+    pump_with_output_diagnostics(downstream, upstream, None).await;
+}
+
+async fn pump_with_output_diagnostics(
+    downstream: axum::extract::ws::WebSocket,
+    upstream: WebSocketStream<Stream>,
+    source: Option<String>,
+) {
     let (mut downstream_tx, mut downstream_rx) = downstream.split();
     let (mut upstream_tx, mut upstream_rx) = upstream.split();
     let from_browser = async {
@@ -936,8 +952,35 @@ async fn pump(downstream: axum::extract::ws::WebSocket, upstream: WebSocketStrea
         }
         let _ = upstream_tx.close().await;
     };
+    let started = std::time::Instant::now();
+    let mut output = output_diagnostics::OutputWindow::default();
     let from_host = async {
-        while let Some(Ok(message)) = upstream_rx.next().await {
+        let mut report_tick = tokio::time::interval_at(
+            tokio::time::Instant::now() + Duration::from_secs(5),
+            Duration::from_secs(5),
+        );
+        report_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            let incoming = tokio::select! {
+                incoming = upstream_rx.next() => incoming,
+                _ = report_tick.tick(), if source.is_some() => {
+                    if let Some(message) = output.report(started.elapsed()) {
+                        logs::record(source.as_deref().unwrap(), &message);
+                    }
+                    continue;
+                },
+            };
+            let Some(Ok(message)) = incoming else { break };
+            let received = started.elapsed();
+            let observation = match &message {
+                Message::Text(value) if source.is_some() => Some((
+                    value.len(),
+                    value.contains("\u{1b}[2J"),
+                    value.contains("\u{1b}[?2026h"),
+                )),
+                Message::Binary(value) if source.is_some() => Some((value.len(), false, false)),
+                _ => None,
+            };
             let message = match message {
                 Message::Text(value) => {
                     axum::extract::ws::Message::Text(value.as_str().to_owned().into())
@@ -955,13 +998,29 @@ async fn pump(downstream: axum::extract::ws::WebSocket, upstream: WebSocketStrea
                 },
                 _ => continue,
             };
-            if downstream_tx.send(message).await.is_err() {
+            let forwarding = std::time::Instant::now();
+            let sent = downstream_tx.send(message).await;
+            if let Some((bytes, full_clear, synchronized)) = observation {
+                output.frame(
+                    received,
+                    bytes,
+                    full_clear,
+                    synchronized,
+                    forwarding.elapsed(),
+                );
+            }
+            if sent.is_err() {
                 break;
             }
         }
         let _ = downstream_tx.close().await;
     };
     tokio::select! { _ = from_browser => {}, _ = from_host => {} }
+    if let Some(source) = source.as_deref() {
+        if let Some(message) = output.report(started.elapsed()) {
+            logs::record(source, &message);
+        }
+    }
 }
 
 async fn asset(request: Request) -> Response {
