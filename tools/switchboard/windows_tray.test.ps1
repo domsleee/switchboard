@@ -16,6 +16,8 @@ try {
     Assert (!$errors.Count) 'Installer has PowerShell syntax errors'
     $startFunction = $ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Start-Servers'},$true)
     Invoke-Expression $startFunction.Extent.Text
+    $updateFunction = $ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Check-ForUpdates'},$true)
+    Invoke-Expression $updateFunction.Extent.Text
     $old = Join-Path $root 'old.exe'; [IO.File]::WriteAllText($old,'old')
     $ReleaseDirectory = Join-Path $root 'releases'
     $oldPath = Initialize-SwitchboardReleaseStore $old $ReleaseDirectory
@@ -24,10 +26,12 @@ try {
     $status = [pscustomobject]@{Text='initial'}
     $script:selectedHash = $null
     $script:relay = $null
+    $script:updater = $null
     $script:probeCalls = @(); $script:starts = @()
     $script:killCalls = 0
     $script:webOnline = $true; $script:webWillStart = $true
     $script:health = 'rust'; $script:relayExits = $false
+    $script:realUpdater = $false
     function Invoke-SwitchboardProbe([string]$Binary, [string[]]$Arguments, [int]$TimeoutSeconds = 15, [switch]$AllowFailure) {
         $script:probeCalls += [pscustomobject]@{Binary=$Binary; Arguments=$Arguments; Timeout=$TimeoutSeconds}
         if ($Arguments -contains '--daemonize') { $script:webOnline = $script:webWillStart }
@@ -40,6 +44,12 @@ try {
     function Start-Process([string]$FilePath, [string]$ArgumentList, [string]$WindowStyle, [switch]$PassThru,
         [string]$RedirectStandardOutput,[string]$RedirectStandardError) {
         $script:starts += [pscustomobject]@{Binary=$FilePath; Arguments=$ArgumentList}
+        if ($script:realUpdater -and $ArgumentList -match '"switchboard" "update"') {
+            # A private child that exits quickly, never an installed updater.
+            return Microsoft.PowerShell.Management\Start-Process -FilePath (Get-Process -Id $PID).Path `
+                -ArgumentList '-NoLogo -NoProfile -NonInteractive -Command "Start-Sleep -Milliseconds 750; exit 7"' `
+                -WindowStyle Hidden -PassThru -RedirectStandardOutput $RedirectStandardOutput -RedirectStandardError $RedirectStandardError
+        }
         $child = [pscustomobject]@{HasExited=$script:relayExits}
         $child | Add-Member ScriptMethod WaitForExit { param($milliseconds) $this.HasExited }
         $child
@@ -89,12 +99,41 @@ try {
     Assert ($status.Text -eq 'Switchboard unavailable (see logs)') 'Foreign HTTP 200/occupied port was reported as healthy'
     Assert ($script:starts.Count -eq 2) 'Exited private relay was not retried'
     Assert ((Get-Content $log -Raw) -match 'Relay exited during startup') 'Failed relay startup was not logged'
+    if ([Environment]::OSVersion.Platform -eq 'Win32NT') {
+        $script:realUpdater = $true
+        $script:updater = $null; $script:nextUpdate = [DateTime]::MinValue
+        $Config = $prefix[1]
+        $startsBefore = $script:starts.Count
+        Check-ForUpdates
+        Assert ($script:updater -and $script:starts.Count -eq $startsBefore + 1) 'Due check did not launch its private updater'
+        $child = $script:updater
+        # Inspect without opening the handle ourselves, which would hide the
+        # original PID-reuse bug in Start-Process's returned Process object.
+        $handleField = $child.GetType().GetFields([Reflection.BindingFlags]'Instance,NonPublic') | Where-Object { $_.Name -match '^_?haveProcessHandle$' }
+        Assert ($handleField -and $handleField.GetValue($child)) 'Updater was tracked by a reusable PID instead of its native process handle'
+        $script:nextUpdate = [DateTime]::MinValue
+        Check-ForUpdates
+        Assert ($script:starts.Count -eq $startsBefore + 1) 'Running updater was duplicated'
+        Assert ($child.WaitForExit(5000)) 'Private updater did not exit'
+        $script:nextUpdate = [DateTime]::UtcNow.AddHours(1)
+        Check-ForUpdates
+        Assert (!$script:updater -and $script:starts.Count -eq $startsBefore + 1) 'Exited updater was retained until the next check or relaunched early'
+        Assert ((Get-Content $log -Raw) -match 'Automatic update exited: 7') 'Updater completion was not recorded'
+        $script:realUpdater = $false
+    }
+    $startsBeforeCorrupt = $script:starts.Count
     [IO.File]::WriteAllText((Join-Path $ReleaseDirectory 'current.json'),'{"schema_version":99,"sha256":"bad","previous_sha256":null}')
     Start-Servers
-    Assert ($status.Text -eq 'Switchboard unavailable (see logs)' -and $script:starts.Count -eq 2) 'Corrupt release selection launched or claimed a service'
+    Assert ($status.Text -eq 'Switchboard unavailable (see logs)' -and $script:starts.Count -eq $startsBeforeCorrupt) 'Corrupt release selection launched or claimed a service'
     Assert ($script:killCalls -eq 0) 'Tray tried to stop a process during recovery or release selection'
     Write-Output "PASS: $checks tray supervision checks; actual tray function/release files, simulated services. No startup configuration was changed."
 } finally {
+    if ($script:updater) {
+        # Finish only the private fixture child, including when an assertion
+        # fails, before removing its redirected output files.
+        $null = $script:updater.WaitForExit(5000)
+        $script:updater.Dispose()
+    }
     Remove-Module $module -Force
     Remove-Item -LiteralPath $root -Recurse -Force
 }
