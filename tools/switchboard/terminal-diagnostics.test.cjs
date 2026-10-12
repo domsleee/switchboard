@@ -32,6 +32,42 @@ test('an oversized scrollable viewport is reported even when parsing and focus a
   assert.equal(h.reports[0].slow,false);assert.equal(h.reports[0].oversized_viewport,true);
   assert.equal(h.reports[0].scroll_height_px,180000);assert.equal(h.reports[0].buffer_rows,10000);
 });
+test('control reports distinguish native focus commands and pixel-only changes from stable viewport size',()=>{
+  const h=harness(),send=payload=>h.diagnostics.sent(JSON.stringify({web_client_id:'fixture',payload}));
+  send({type:'FocusPane',pane_id:30}); // Outside an observed switch.
+  h.start(1,false);h.diagnostics.ack();
+  send({type:'FocusPane',pane_id:30,typed_text:'private prompt'});
+  h.diagnostics.sent(JSON.stringify({type:'FocusPane',pane_id:30}));
+  for(const [width,height] of [[9,18],[9,18],[8,16],[10,20],[9,18]]){
+    send({type:'TerminalMetrics',cell_pixel_width:width,cell_pixel_height:height,text_area_pixel_width:1458,text_area_pixel_height:1170});
+    h.diagnostics.state({active_pane:{pane_id:30,is_plugin:false},tab_viewport:{cols:162,rows:65}});
+  }
+  h.diagnostics.finish('superseded');
+  const report=h.reports[0];
+  assert.equal(report.control_tracking,true);
+  assert.equal(report.focus_commands,2);assert.equal(report.terminal_metrics,5);assert.equal(report.cell_size_changes,3);
+  assert.deepEqual([report.first_cell_width_px,report.first_cell_height_px,report.last_cell_width_px,report.last_cell_height_px],[9,18,9,18]);
+  assert.deepEqual([report.min_cell_width_px,report.min_cell_height_px,report.max_cell_width_px,report.max_cell_height_px],[8,16,10,20]);
+  assert.equal(report.viewport_size_changes,0);assert.doesNotMatch(JSON.stringify(report),/private|prompt|1458|1170/);
+  send({type:'FocusPane',pane_id:30});send({type:'TerminalMetrics',cell_pixel_width:99,cell_pixel_height:99});
+  assert.equal(report.focus_commands,2);assert.equal(report.terminal_metrics,5);
+  h.start(2,false);h.diagnostics.ack();h.advance(10000);
+  assert.equal(h.reports[1].control_tracking,true,'A measured zero differs from an older page without counters');
+  assert.equal(h.reports[1].focus_commands,0,'A browser-local acknowledgement sends no native focus command');
+  assert.equal(h.reports[1].terminal_metrics,0);assert.equal(h.reports[1].first_cell_width_px,0);
+});
+test('malformed cell metrics count sends without retaining nonnumeric values or corrupting valid ranges',()=>{
+  const h=harness();h.start(1,false);h.diagnostics.ack();
+  const send=(width,height)=>h.diagnostics.sent(JSON.stringify({payload:{type:'TerminalMetrics',cell_pixel_width:width,cell_pixel_height:height}}));
+  for(const [width,height] of [['private prompt',18],[9,null],[0,18],[-1,18],[65536,18],[9,1.5],[null,null]])send(width,height);
+  h.diagnostics.sent('not JSON');h.diagnostics.sent('null');h.diagnostics.sent({type:'FocusPane'});
+  send(9,18);send('secret',100);send(9,18);
+  h.diagnostics.finish('superseded');
+  const report=h.reports[0];assert.equal(report.terminal_metrics,10);assert.equal(report.cell_size_changes,0);assert.equal(report.focus_commands,0);
+  assert.deepEqual([report.first_cell_width_px,report.last_cell_width_px,report.min_cell_width_px,report.max_cell_width_px],[9,9,9,9]);
+  assert.deepEqual([report.first_cell_height_px,report.last_cell_height_px,report.min_cell_height_px,report.max_cell_height_px],[18,18,18,18]);
+  assert.doesNotMatch(JSON.stringify(report),/private|prompt|secret/);
+});
 test('quiet settle interval and continuous output are excluded from slow switch threshold',()=>{
   const h=harness();h.start(1);h.advance(400);h.diagnostics.ack();
   h.diagnostics.frame('screen');h.term.write('screen');h.writes[0].callback();h.advance(150);
@@ -142,4 +178,8 @@ test('parent persists slow metadata only from its own same-origin terminal frame
   assert.deepEqual(sent[0].body,{host:'windows',pane_id:30,outcome:'settled',frames:3,bytes:100});
   handler({...event,data:{...data,diagnostic:{...data.diagnostic,slow:false,expected_render:true}}});
   assert.equal(sent.length,2);assert.equal(sent[1].body.expected_render,true,'A fast ACK can still precede a server output replay');
+  const metrics={control_tracking:true,focus_commands:2,terminal_metrics:3,cell_size_changes:2,first_cell_width_px:9,first_cell_height_px:18,
+    last_cell_width_px:9,last_cell_height_px:18,min_cell_width_px:8,min_cell_height_px:16,max_cell_width_px:10,max_cell_height_px:20};
+  handler({...event,data:{...data,diagnostic:{...data.diagnostic,...metrics,cell_metric_contents:'private prompt'}}});
+  assert.deepEqual(sent[2].body,{host:'windows',pane_id:30,outcome:'settled',frames:3,bytes:100,...metrics});
 });

@@ -13118,6 +13118,84 @@ fn focus_events_written_to_pane(tty_stdin_bytes: &TtyStdinBytes, terminal_id: u3
 }
 
 #[test]
+fn redundant_pane_focus_preserves_initial_focus_and_real_transitions() {
+    let fake_os_input = FakeInputOutput::default();
+    let tty_stdin_bytes = fake_os_input.tty_stdin_bytes.clone();
+    let os_api: Box<dyn ServerOsApi> = Box::new(fake_os_input);
+    let mut active_panes = crate::panes::ActivePanes::new(&os_api);
+    let mut panes: BTreeMap<PaneId, Box<dyn Pane>> = BTreeMap::new();
+    for terminal_id in [1, 2] {
+        let mut pane = new_terminal_pane_for_pause_test(terminal_id);
+        pane.handle_pty_bytes(Vec::from("\u{1b}[?1004h".as_bytes()));
+        panes.insert(PaneId::Terminal(terminal_id), Box::new(pane));
+    }
+
+    active_panes.insert(1, PaneId::Terminal(1), &mut panes);
+    assert_eq!(
+        focus_events_written_to_pane(&tty_stdin_bytes, 1),
+        "\u{1b}[I"
+    );
+    for _ in 0..3 {
+        active_panes.insert(1, PaneId::Terminal(1), &mut panes);
+    }
+    assert_eq!(
+        focus_events_written_to_pane(&tty_stdin_bytes, 1),
+        "\u{1b}[I",
+        "reaffirming pane focus must not send synthetic focus loss/gain to the app"
+    );
+
+    active_panes.insert(1, PaneId::Terminal(2), &mut panes);
+    assert_eq!(
+        focus_events_written_to_pane(&tty_stdin_bytes, 1),
+        "\u{1b}[I\u{1b}[O"
+    );
+    assert_eq!(
+        focus_events_written_to_pane(&tty_stdin_bytes, 2),
+        "\u{1b}[I"
+    );
+    active_panes.insert(1, PaneId::Terminal(1), &mut panes);
+    assert_eq!(
+        focus_events_written_to_pane(&tty_stdin_bytes, 1),
+        "\u{1b}[I\u{1b}[O\u{1b}[I"
+    );
+    assert_eq!(
+        focus_events_written_to_pane(&tty_stdin_bytes, 2),
+        "\u{1b}[I\u{1b}[O"
+    );
+    assert_eq!(active_panes.get(&1), Some(&PaneId::Terminal(1)));
+}
+
+#[test]
+fn redundant_pane_focus_requests_do_not_send_app_focus_events() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let (mut screen, tty_stdin_bytes, _server_receiver) =
+        create_new_screen_with_capture(size, true, true, true, true);
+    new_tab(&mut screen, 1, 0);
+    subscribe_pane_to_focus_events(&mut screen, client_id, 1);
+    tty_stdin_bytes.lock().unwrap().clear();
+
+    for _ in 0..3 {
+        screen
+            .focus_pane_with_id(PaneId::Terminal(1), false, false, client_id)
+            .unwrap();
+    }
+
+    assert_eq!(
+        focus_events_written_to_pane(&tty_stdin_bytes, 1),
+        "",
+        "repeated FocusPane requests for the active pane must not send focus loss or gain"
+    );
+    assert_eq!(
+        screen.get_active_pane_id(&client_id),
+        Some(PaneId::Terminal(1))
+    );
+}
+
+#[test]
 fn host_focus_changes_are_forwarded_to_the_active_pane() {
     let size = Size {
         cols: 121,

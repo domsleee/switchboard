@@ -37,6 +37,9 @@ impl ActivePanes {
         pane_id: PaneId,
         panes: &mut BTreeMap<PaneId, Box<dyn Pane>>,
     ) {
+        if self.active_panes.get(&client_id) == Some(&pane_id) {
+            return;
+        }
         self.unfocus_pane_for_client(client_id, panes);
         self.active_panes.insert(client_id, pane_id);
         self.focus_pane(pane_id, panes);

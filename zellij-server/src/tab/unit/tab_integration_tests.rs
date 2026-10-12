@@ -5338,6 +5338,49 @@ fn move_floating_pane_focus_sends_tty_csi_event() {
 }
 
 #[test]
+fn hiding_floating_panes_restores_tiled_pane_focus() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let tty_stdin_bytes = Arc::new(Mutex::new(BTreeMap::new()));
+    let os_api = Box::new(FakeInputOutput {
+        tty_stdin_bytes: tty_stdin_bytes.clone(),
+        ..Default::default()
+    });
+    let mut tab = create_new_tab_with_os_api(size, ModeInfo::default(), &os_api);
+    tab.toggle_floating_panes(Some(client_id), None, None)
+        .unwrap();
+    tab.new_pane(
+        PaneId::Terminal(2),
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(client_id),
+        None,
+    )
+    .unwrap();
+    for terminal_id in [1, 2] {
+        tab.handle_pty_bytes(terminal_id, Vec::from("\u{1b}[?1004h".as_bytes()))
+            .unwrap();
+    }
+    tty_stdin_bytes.lock().unwrap().clear();
+    assert!(tab.floating_panes.panes_are_shown());
+
+    tab.hide_floating_panes();
+
+    assert!(!tab.floating_panes.panes_are_shown());
+    assert_eq!(
+        *tty_stdin_bytes.lock().unwrap(),
+        BTreeMap::from([(1, b"\x1b[I".to_vec()), (2, b"\x1b[O".to_vec())]),
+        "a real floating-to-tiled transition must report focus loss and gain"
+    );
+}
+
+#[test]
 fn toggle_floating_panes_on_sends_tty_csi_event() {
     let size = Size {
         cols: 121,

@@ -51,6 +51,9 @@ window.SwitchboardTerminalDiagnostics = function (report, dimensions) {
       span = {started:now(), focus_id:request.focus_id ?? 0, pane_id:request.pane_id, is_plugin:!!request.is_plugin,expected_render:expectedRender,
         ack_ms:null, first_frame_ms:null, first_parse_ms:null, last_frame_ms:null, last_parse_ms:null,
         frames:0, bytes:0, max_parse_lag_ms:0, viewport_claims:0, terminal_resizes:0,
+        control_tracking:true,focus_commands:0,terminal_metrics:0,cell_size_changes:0,
+        first_cell_width_px:0,first_cell_height_px:0,last_cell_width_px:0,last_cell_height_px:0,
+        min_cell_width_px:0,min_cell_height_px:0,max_cell_width_px:0,max_cell_height_px:0,
         render_tracking:typeof term?.onRender === 'function', first_render_ms:null,last_render_ms:null,render_events:0,max_render_lag_ms:0,
         first_animation_ms:null,last_animation_ms:null,max_animation_lag_ms:0,first_quiet_ms:null,late_frames:0,
         buffer_scroll_events:0,line_feed_events:0,wheel_events:0,
@@ -151,6 +154,19 @@ window.SwitchboardTerminalDiagnostics = function (report, dimensions) {
         const message = envelope.payload || envelope;
         if (message.type === 'SetTabViewport') span.viewport_claims++;
         if (message.type === 'TerminalResize') span.terminal_resizes++;
+        if (message.type === 'FocusPane') span.focus_commands++;
+        if (message.type === 'TerminalMetrics') {
+          span.terminal_metrics++;
+          const width = message.cell_pixel_width, height = message.cell_pixel_height;
+          if (![width,height].every(value => Number.isInteger(value) && value > 0 && value <= 65535)) return;
+          if (!span.first_cell_width_px) {
+            span.first_cell_width_px = span.min_cell_width_px = width;
+            span.first_cell_height_px = span.min_cell_height_px = height;
+          } else if (span.last_cell_width_px !== width || span.last_cell_height_px !== height) span.cell_size_changes++;
+          span.last_cell_width_px = width;span.last_cell_height_px = height;
+          span.min_cell_width_px = Math.min(span.min_cell_width_px,width);span.min_cell_height_px = Math.min(span.min_cell_height_px,height);
+          span.max_cell_width_px = Math.max(span.max_cell_width_px,width);span.max_cell_height_px = Math.max(span.max_cell_height_px,height);
+        }
       } catch (_) {}
     },
     ack() {
