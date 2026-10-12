@@ -352,44 +352,49 @@ test('headless browser returns focus to the same terminal after a reconnect relo
 async function browserFocusFixture({mismatch=null,acknowledge=true}={}){
   const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
   const browser=await chromium.launch({headless:true});
-  const context=await browser.newContext({viewport:{width:1280,height:900}});
-  const page=await context.newPage(),pageErrors=[],closes=[];
-  page.on('pageerror',error=>pageErrors.push(error.message));
-  await page.addInitScript(()=>{if(window===top)window.setInterval=()=>0;});
-  await context.route('**/*',async route=>{
-    const pathname=new URL(route.request().url()).pathname;
-    const json=value=>route.fulfill({contentType:'application/json',body:JSON.stringify(value)});
-    if(pathname==='/api/hosts')return json([{id:'mac',name:'Mac'}]);
-    if(pathname==='/api/hosts/mac')return json({id:'mac',name:'Mac',sessions:[{name:'main',web_clients_allowed:true}]});
-    if(pathname==='/api/attention')return json({tabs:[41,42].map((id,position)=>({host:'mac',session:'main',id,position,name:'Terminal '+id,
-      panes:[{pane_id:id===mismatch?9:position+7,is_plugin:false,tab_position:position}]})),panes:[],errors:[]});
-    if(pathname==='/api/hosts/mac/close-tab'){
-      closes.push(route.request().postDataJSON());
-      return json({ok:true});
-    }
-    if(pathname.startsWith('/hosts/'))return route.fulfill({contentType:'text/html',body:`<div id="terminal"><input id="terminal-input"></div><script>
-      const input=document.querySelector('input');
-      window.controlMessages=[];window.acknowledge=${JSON.stringify(acknowledge)};
-      window.WebSocket=class extends EventTarget {constructor(){super();this.readyState=1;}send(){}};
-      window.term={element:document.querySelector('#terminal'),options:{disableStdin:false},focus(){input.focus();},blur(){input.blur();},
-        _core:{_renderService:{dimensions:{css:{cell:{width:8,height:16}}}}},buffer:{active:{viewportY:0,getLine:()=>({translateToString:()=>''})}},onRender(){},onResize(){}};
-    </script><script src="/bridge.js"></script><script>
-      const socket=new WebSocket('wss://switchboard.test/ws/control');
-      const panes=[7,8].map((pane_id,tab_position)=>({pane_id,is_plugin:false,tab_position}));
-      window.sendState=paneId=>socket.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'MobileState',payload:{session_name:'main',panes,active_pane:panes.find(p=>p.pane_id===paneId)}})}));
-      window.__zjSendControl=message=>{controlMessages.push(message);if(acknowledge&&message.type==='FocusPane')queueMicrotask(()=>sendState(message.pane_id));};
-      sendState(7);
-    </script>`});
-    const file=pathname==='/'?'index.html':pathname.slice(1);
-    if(!['index.html','app.js','bridge.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
-    return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
-  });
-  await page.goto('https://switchboard.test/?host=mac&session=main&tab=41');
-  await page.bringToFront();
-  await page.waitForFunction(()=>document.querySelector('iframe.active')?.contentDocument.activeElement.id==='terminal-input');
-  const input=page.frameLocator('iframe[title="Mac: main"]').locator('#terminal-input');
-  return {browser,page,input,pageErrors,closes,setMismatch(id){mismatch=id;},
-    button(id){return page.locator('#tabs .tab-select').filter({hasText:'Terminal '+id});}};
+  try{
+    const context=await browser.newContext({viewport:{width:1280,height:900}});
+    const page=await context.newPage(),pageErrors=[],closes=[];
+    page.on('pageerror',error=>pageErrors.push(error.message));
+    await page.addInitScript(()=>{if(window===top)window.setInterval=()=>0;});
+    await context.route('**/*',async route=>{
+      const pathname=new URL(route.request().url()).pathname;
+      const json=value=>route.fulfill({contentType:'application/json',body:JSON.stringify(value)});
+      if(pathname==='/api/hosts')return json([{id:'mac',name:'Mac'}]);
+      if(pathname==='/api/hosts/mac')return json({id:'mac',name:'Mac',sessions:[{name:'main',web_clients_allowed:true}]});
+      if(pathname==='/api/attention')return json({tabs:[41,42].map((id,position)=>({host:'mac',session:'main',id,position,name:'Terminal '+id,
+        panes:[{pane_id:id===mismatch?9:position+7,is_plugin:false,tab_position:position}]})),panes:[],errors:[]});
+      if(pathname==='/api/hosts/mac/close-tab'){
+        closes.push(route.request().postDataJSON());
+        return json({ok:true});
+      }
+      if(pathname.startsWith('/hosts/'))return route.fulfill({contentType:'text/html',body:`<div id="terminal"><input id="terminal-input"></div><script>
+        const input=document.querySelector('input');
+        window.controlMessages=[];window.acknowledge=${JSON.stringify(acknowledge)};
+        window.WebSocket=class extends EventTarget {constructor(){super();this.readyState=1;}send(){}};
+        window.term={element:document.querySelector('#terminal'),options:{disableStdin:false},focus(){input.focus();},blur(){input.blur();},
+          _core:{_renderService:{dimensions:{css:{cell:{width:8,height:16}}}}},buffer:{active:{viewportY:0,getLine:()=>({translateToString:()=>''})}},onRender(){},onResize(){}};
+      </script><script src="/bridge.js"></script><script>
+        const socket=new WebSocket('wss://switchboard.test/ws/control');
+        const panes=[7,8].map((pane_id,tab_position)=>({pane_id,is_plugin:false,tab_position}));
+        window.sendState=paneId=>socket.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'MobileState',payload:{session_name:'main',panes,active_pane:panes.find(p=>p.pane_id===paneId)}})}));
+        window.__zjSendControl=message=>{controlMessages.push(message);if(acknowledge&&message.type==='FocusPane')queueMicrotask(()=>sendState(message.pane_id));};
+        sendState(7);
+      </script>`});
+      const file=pathname==='/'?'index.html':pathname.slice(1);
+      if(!['index.html','app.js','bridge.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
+      return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
+    });
+    await page.goto('https://switchboard.test/?host=mac&session=main&tab=41');
+    await page.bringToFront();
+    await page.waitForFunction(()=>document.querySelector('iframe.active')?.contentDocument?.activeElement?.id==='terminal-input');
+    const input=page.frameLocator('iframe[title="Mac: main"]').locator('#terminal-input');
+    return {browser,page,input,pageErrors,closes,setMismatch(id){mismatch=id;},
+      button(id){return page.locator('#tabs .tab-select').filter({hasText:'Terminal '+id});}};
+  }catch(error){
+    await browser.close();
+    throw error;
+  }
 }
 
 test('headless browser completes a sidebar switch after catalog metadata catches up without taking search or dialog focus',
