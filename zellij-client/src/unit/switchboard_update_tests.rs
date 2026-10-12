@@ -67,6 +67,11 @@ fn respond(mut stream: TcpStream, root: &Path) {
     }
     let request = String::from_utf8_lossy(&request).into_owned();
     let path = request.split_whitespace().nth(1).unwrap_or("/");
+    if path == "/api/hosts" {
+        if let Ok(delay) = fs::read_to_string(root.join("catalog-delay-ms")) {
+            std::thread::sleep(Duration::from_millis(delay.trim().parse().unwrap()));
+        }
+    }
     let running = fs::read_to_string(root.join("running"))
         .ok()
         .filter(|binary| !binary.contains("broken"));
@@ -439,6 +444,55 @@ fn automatic_update_lock_acquires_contends_and_releases() {
     );
     drop(lock);
     harness.updater.run().unwrap();
+    assert!(harness.calls().is_empty());
+}
+
+#[test]
+fn preflight_failures_leave_the_published_run_eligible_for_retry() {
+    let harness = Harness::new(true);
+    harness.publish(&full('b'), 5, "");
+    State {
+        run_number: Some(4),
+        commit: Some(OLD.into()),
+        ..State::default()
+    }
+    .save(&harness.updater.state_path())
+    .unwrap();
+    fs::write(
+        harness.root.join("hosts.json"),
+        "catalog temporarily invalid",
+    )
+    .unwrap();
+    for _ in 0..2 {
+        assert!(
+            harness.updater.run().is_err(),
+            "preflight was skipped on retry"
+        );
+        let state = harness.state();
+        assert_eq!(state["run_number"], 4);
+        assert_eq!(state["commit"], OLD);
+        assert!(state.get("pending").is_none());
+        assert!(state["error"]
+            .as_str()
+            .is_some_and(|error| !error.is_empty()));
+        assert!(
+            harness.calls().is_empty(),
+            "preflight failure changed services"
+        );
+    }
+}
+
+#[test]
+fn catalog_waits_for_offline_peers_to_finish_reporting() {
+    let harness = Harness::new(true);
+    fs::write(harness.root.join("catalog-delay-ms"), "10500").unwrap();
+    fs::write(
+        harness.root.join("hosts.json"),
+        r#"[{"id":"mac","sessions":[{"name":"main","web_clients_allowed":true}]},
+            {"id":"offline","sessions":[],"error":"Host unavailable"}]"#,
+    )
+    .unwrap();
+    assert_eq!(harness.updater.catalog().unwrap(), vec![session()]);
     assert!(harness.calls().is_empty());
 }
 

@@ -45,8 +45,16 @@ installed `windows_cli.ps1` launcher to follow the selected release.
 
 A failed handoff restores the retained executable and helpers and restarts
 services on it. Rollback is local: the previous executable and helpers are kept
-in `automatic-updates/rollback-*`. A failed build is recorded and not retried; a
-newer build remains eligible. Download failures leave running services untouched.
+in `automatic-updates/rollback-*`. A build that fails during a handoff is recorded
+and not retried; a newer build remains eligible. Failures before the handoff,
+including unavailable local services or the session catalog, remain eligible for
+the next scheduled check. Catalog requests allow 30 seconds so the relay's
+20-second peer timeout can report an offline computer without blocking updates.
+Download failures leave running services untouched.
+
+The Windows tray retains the updater's native process handle until it exits.
+An unrelated process reusing its PID cannot suppress later checks. Timestamped
+start and completion records are written to `~/.config/switchboard/web.log`.
 
 An interrupted handoff leaves `pending` in `state.json`. The next run settles it
 before checking for builds:

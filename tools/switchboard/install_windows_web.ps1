@@ -91,21 +91,35 @@ $script:selectedHash = $null
 $script:nextUpdate = [DateTime]::MinValue
 $script:updater = $null
 function Check-ForUpdates {
-    if ([DateTime]::UtcNow -lt $script:nextUpdate -or ($script:updater -and !$script:updater.HasExited)) { return }
-    $handoff = Join-Path $HOME '.local/share/switchboard/automatic-updates/handoff.json'
-    if (Test-Path -LiteralPath $handoff) {
-        $owner = Get-Content -LiteralPath $handoff -Raw | ConvertFrom-Json
-        if (Get-Process -Id $owner.pid -ErrorAction SilentlyContinue) { return }
-    }
-    $script:nextUpdate = [DateTime]::UtcNow.AddMinutes(15)
     try {
+        if ($script:updater) {
+            if (!$script:updater.HasExited) { return }
+            Add-Content -LiteralPath $log -Value ("$([DateTime]::UtcNow.ToString('o')) Automatic update exited: $($script:updater.ExitCode)")
+            $script:updater.Dispose()
+            $script:updater = $null
+        }
+        if ([DateTime]::UtcNow -lt $script:nextUpdate) { return }
+        $handoff = Join-Path $HOME '.local/share/switchboard/automatic-updates/handoff.json'
+        if (Test-Path -LiteralPath $handoff) {
+            $owner = Get-Content -LiteralPath $handoff -Raw | ConvertFrom-Json
+            if (Get-Process -Id $owner.pid -ErrorAction SilentlyContinue) { return }
+        }
+        $script:nextUpdate = [DateTime]::UtcNow.AddMinutes(15)
         # The selected release runs the updater; it never replaces its own file.
         $updateArguments = @('switchboard','update','--release-directory',$ReleaseDirectory)
         if ($Config) { $updateArguments += @('--config',$Config) }
         $script:updater = Start-Process -FilePath (Get-SwitchboardCurrentBinary $ReleaseDirectory) -WindowStyle Hidden -PassThru `
             -ArgumentList (($updateArguments | ForEach-Object { ConvertTo-SwitchboardArgument $_ }) -join ' ') `
             -RedirectStandardOutput (Join-Path $directory 'update.log') -RedirectStandardError (Join-Path $directory 'update-error.log')
-    } catch { Add-Content -LiteralPath $log -Value ('Automatic update: ' + $_.Exception.Message) }
+        # Start-Process returns an object identified only by PID. Keep a handle
+        # to this process before it exits: otherwise HasExited can open an
+        # unrelated process that reused the PID during the 15-minute interval.
+        $null = $script:updater.Handle
+        Add-Content -LiteralPath $log -Value ("$([DateTime]::UtcNow.ToString('o')) Automatic update started: $($script:updater.Id)")
+    } catch {
+        if ($script:updater) { $script:updater.Dispose(); $script:updater = $null }
+        Add-Content -LiteralPath $log -Value ("$([DateTime]::UtcNow.ToString('o')) Automatic update: " + $_.Exception.Message)
+    }
 }
 function Start-Servers {
     try {
@@ -156,5 +170,6 @@ try {
     [Windows.Forms.Application]::Run()
 } finally {
     $timer.Stop(); $timer.Dispose(); $icon.Visible = $false; $icon.Dispose()
+    if ($script:updater) { $script:updater.Dispose() }
     $mutex.ReleaseMutex(); $mutex.Dispose()
 }

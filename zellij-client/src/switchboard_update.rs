@@ -472,9 +472,6 @@ impl Updater {
             println!("Verified update {}", manifest.commit);
             return Ok(());
         }
-        // Do not retry a broken build every fifteen minutes. A newer build is
-        // still eligible; state.json records the failure for inspection.
-        state.run_number = Some(manifest.run_number);
         let result = self.with_handoff(|| self.apply(staging.path(), &manifest, state));
         match &result {
             Ok(()) => {
@@ -526,6 +523,10 @@ impl Updater {
             sessions: sessions.clone(),
             processes: serde_json::json!({}),
         };
+        // Preflight failures are local/transient, not evidence of a broken
+        // build. Consume the run only once rollback data is ready and this
+        // transaction is about to change the selected release or services.
+        state.run_number = Some(manifest.run_number);
         state.pending = Some(pending.clone());
         state.save(&self.state_path())?;
         let mut replaced = false;
@@ -694,7 +695,10 @@ impl Updater {
     }
 
     fn catalog(&self) -> Result<Vec<Session>> {
-        let hosts: serde_json::Value = self.local_json("/api/hosts", Duration::from_secs(10))?;
+        // The relay waits up to 20 seconds for each peer, in parallel, before
+        // reporting it unavailable. Let that catalog finish even with an
+        // offline peer, including when talking to an older relay.
+        let hosts: serde_json::Value = self.local_json("/api/hosts", Duration::from_secs(30))?;
         let mut sessions = Vec::new();
         for host in hosts.as_array().context("Invalid host catalog")? {
             let id = host["id"].as_str().context("Invalid host catalog")?;
