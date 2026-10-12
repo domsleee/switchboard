@@ -1,7 +1,7 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs');
 
 // All HTTP is local fixture data; never attach to user sessions.
-test('Settings shows recent errors per computer, newest first, with refresh and empty states',
+test('The Logs section shows recent errors per computer, newest first, with refresh and empty states',
   {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
   const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
   const browser=await chromium.launch({headless:true});
@@ -28,7 +28,7 @@ test('Settings shows recent errors per computer, newest first, with refresh and 
       return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
     });
     await page.goto('https://switchboard.test/');
-    await page.locator('#settings').click();
+    await page.locator('#settings').click();await page.getByRole('tab',{name:'Logs'}).click();
     const groups=page.locator('#logs .log-computer');
     await page.waitForFunction(()=>document.querySelectorAll('#logs .log-computer').length===3);
     assert.deepEqual(await groups.locator('h4').allTextContents(),['Mac','Windows','Old PC']);

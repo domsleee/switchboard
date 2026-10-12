@@ -2,6 +2,7 @@
 mod artifacts;
 mod attention;
 mod control;
+mod hostname;
 mod logs;
 mod mesh;
 pub(crate) mod peer_bridge;
@@ -14,14 +15,16 @@ use axum::{
     routing::{any, get, post},
     Json, Router,
 };
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{stream::FuturesUnordered, SinkExt, StreamExt};
 use http_body_util::Full;
 use hyper_util::rt::TokioIo;
 use include_dir::{include_dir, Dir};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap, future::Future, net::SocketAddr, path::Path, sync::Arc, time::Duration,
+};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
@@ -34,7 +37,11 @@ use tokio_tungstenite::{
 
 static ASSETS: Dir = include_dir!("$CARGO_MANIFEST_DIR/../tools/switchboard/static");
 const LIMIT: usize = 16 * 1024 * 1024;
-const BRIDGE: &str = "<head><script src=\"/link-config.js\"></script><script src=\"/links.js\"></script><script src=\"/clipboard.js\"></script><script src=\"/chrome.js\"></script><script src=\"/bridge.js\"></script>";
+// Leave room inside short control/attention deadlines for a changed DHCP address.
+const ROUTE_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+const ROUTE_CONNECT_TIMEOUT: Duration = Duration::from_millis(1200);
+const ROUTE_CACHE_TTL: Duration = Duration::from_secs(60);
+const BRIDGE: &str = "<head><script src=\"/link-config.js\"></script><script src=\"/links.js\"></script><script src=\"/clipboard.js\"></script><script src=\"/chrome.js\"></script><script src=\"/terminal-diagnostics.js\"></script><script src=\"/bridge.js\"></script>";
 
 #[derive(Clone, Deserialize)]
 pub struct RelayConfig {
@@ -104,6 +111,7 @@ struct Host {
     tls: Option<Arc<rustls::ClientConfig>>,
     cookie: Mutex<Option<String>>,
     idle_http: Mutex<Vec<hyper::client::conn::http1::SendRequest<Full<Bytes>>>>,
+    route_hint: Mutex<Option<(SocketAddr, tokio::time::Instant)>>,
 }
 
 struct UpstreamResponse {
@@ -219,6 +227,7 @@ impl Host {
             tls,
             cookie: Mutex::new(None),
             idle_http: Mutex::new(Vec::new()),
+            route_hint: Mutex::new(None),
         })
     }
 
@@ -226,6 +235,10 @@ impl Host {
     /// Ephemeral UDP binding plus route-selected source checks verify local ownership
     /// without sending traffic, even on systems that allow binding nonlocal addresses.
     fn is_local_engine(&self) -> bool {
+        // A paired peer remains remote even if DHCP reassigns its old address here.
+        if self.is_mesh_peer() {
+            return false;
+        }
         let address = match self.origin.host() {
             Some(url::Host::Domain("localhost")) => return true,
             Some(url::Host::Ipv4(address)) => std::net::IpAddr::V4(address),
@@ -235,39 +248,73 @@ impl Host {
         if address.is_loopback() {
             return true;
         }
-        if self.origin.scheme() != "https"
+        self.origin.scheme() == "https"
+            && self.config.tls_fingerprint.is_some()
+            && hostname::is_local_address(address)
+    }
+
+    fn is_mesh_peer(&self) -> bool {
+        let id = self
+            .config
+            .id
+            .strip_prefix("mesh-")
+            .unwrap_or(&self.config.id);
+        id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit())
+    }
+
+    fn hostname_hint(&self) -> Option<String> {
+        if !self.is_mesh_peer()
+            || self.origin.scheme() != "https"
             || self.config.tls_fingerprint.is_none()
-            || address.is_unspecified()
-            || address.is_multicast()
-            || matches!(address, std::net::IpAddr::V4(ip) if ip.is_broadcast())
         {
-            return false;
+            return None;
         }
-        if std::net::UdpSocket::bind((address, 0)).is_err() {
-            return false;
+        let address = match self.origin.host()? {
+            url::Host::Ipv4(address) => address.into(),
+            url::Host::Ipv6(address) => address.into(),
+            _ => return None,
+        };
+        if !hostname::usable_route_address(address) {
+            return None;
         }
-        let unspecified = match address {
-            std::net::IpAddr::V4(_) => std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
-            std::net::IpAddr::V6(_) => std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),
-        };
-        let Ok(route) = std::net::UdpSocket::bind((unspecified, 0)) else {
-            return false;
-        };
-        route.connect((address, 9)).is_ok()
-            && route
-                .local_addr()
-                .is_ok_and(|source| source.ip() == address)
+        hostname::local_hostname(&self.config.name)
     }
 
     async fn stream(&self) -> anyhow::Result<Stream> {
-        let host = match self.origin.host().unwrap() {
+        let port = self.origin.port_or_known_default().unwrap();
+        if let Some(hint) = self.hostname_hint() {
+            let address = match self.origin.host().unwrap() {
+                url::Host::Ipv4(address) => address.into(),
+                url::Host::Ipv6(address) => address.into(),
+                _ => unreachable!("Hostname routing requires an IP origin"),
+            };
+            return self
+                .stream_with_routes(SocketAddr::new(address, port), async {
+                    hostname::resolve(&hint, port)
+                        .await
+                        .into_iter()
+                        .filter(|address| !hostname::is_local_address(address.ip()))
+                        .collect()
+                })
+                .await;
+        }
+        let host = self.origin_hostname();
+        self.connect_to((host.as_str(), port)).await
+    }
+
+    fn origin_hostname(&self) -> String {
+        match self.origin.host().unwrap() {
             url::Host::Ipv6(address) => address.to_string(),
             other => other.to_string(),
-        };
-        let tcp = TcpStream::connect((host.as_str(), self.origin.port_or_known_default().unwrap()))
-            .await?;
+        }
+    }
+
+    async fn connect_to(&self, address: impl tokio::net::ToSocketAddrs) -> anyhow::Result<Stream> {
+        let tcp = TcpStream::connect(address).await?;
+        tcp.set_nodelay(true)?;
         if let Some(tls) = self.tls.as_ref() {
-            let name = rustls::pki_types::ServerName::try_from(host.to_owned())?;
+            // The DNS hint changes only the TCP destination, never TLS identity.
+            let name = rustls::pki_types::ServerName::try_from(self.origin_hostname())?;
             Ok(Box::new(
                 tokio_rustls::TlsConnector::from(tls.clone())
                     .connect(name, tcp)
@@ -276,6 +323,57 @@ impl Host {
         } else {
             Ok(Box::new(tcp))
         }
+    }
+
+    /// Every attempt ends at TCP/TLS. HTTP and WebSocket handshakes start only
+    /// after this returns, so a command can never be replayed on another route.
+    async fn stream_with_routes(
+        &self,
+        original: SocketAddr,
+        lookup: impl Future<Output = Vec<SocketAddr>>,
+    ) -> anyhow::Result<Stream> {
+        let cached = {
+            let mut hint = self.route_hint.lock().await;
+            if hint.is_some_and(|(_, at)| at.elapsed() >= ROUTE_CACHE_TTL) {
+                *hint = None;
+            }
+            *hint
+        };
+        let primary = cached.map(|(address, _)| address).unwrap_or(original);
+        let primary_error =
+            match tokio::time::timeout(ROUTE_PROBE_TIMEOUT, self.connect_to(primary)).await {
+                Ok(Ok(stream)) => return Ok(stream),
+                Ok(Err(error)) => error,
+                Err(_) => anyhow::anyhow!("Paired host connection timed out"),
+            };
+        if cached.is_some() {
+            let mut hint = self.route_hint.lock().await;
+            if *hint == cached {
+                *hint = None;
+            }
+        }
+        let mut routes = lookup.await;
+        if cached.is_some() && !routes.contains(&original) {
+            routes.push(original);
+        }
+        let mut attempts = FuturesUnordered::new();
+        for address in routes.into_iter().filter(|address| *address != primary) {
+            attempts.push(async move { (address, self.connect_to(address).await) });
+        }
+        let connected = tokio::time::timeout(ROUTE_CONNECT_TIMEOUT, async {
+            while let Some((address, result)) = attempts.next().await {
+                if let Ok(stream) = result {
+                    return Some((address, stream));
+                }
+            }
+            None
+        })
+        .await;
+        if let Ok(Some((address, stream))) = connected {
+            *self.route_hint.lock().await = Some((address, tokio::time::Instant::now()));
+            return Ok(stream);
+        }
+        Err(primary_error.context("Paired host IP and hostname routes failed"))
     }
 
     fn authority(&self) -> String {
@@ -324,6 +422,35 @@ impl Host {
             .await
     }
 
+    /// Local gateway health checks may dial a proven current interface address
+    /// while the gateway still authorizes the immutable signed Host authority.
+    async fn raw_request_on_local_route(
+        &self,
+        address: SocketAddr,
+        method: Method,
+        path: &str,
+        body: Bytes,
+        content_type: &str,
+    ) -> anyhow::Result<UpstreamResponse> {
+        anyhow::ensure!(
+            self.origin.scheme() == "https"
+                && self.config.tls_fingerprint.is_some()
+                && !self.is_mesh_peer()
+                && address.port() == self.origin.port_or_known_default().unwrap()
+                && hostname::is_local_address(address.ip()),
+            "Local gateway routing requires a pinned HTTPS origin and a local address"
+        );
+        let mut sender = Self::connection_on_stream(self.connect_to(address).await?).await?;
+        let response = self
+            .send_request(&mut sender, method, path, body, content_type, None)
+            .await?;
+        Ok(UpstreamResponse {
+            status: response.status(),
+            headers: response.headers().clone(),
+            body: to_bytes(Body::new(response.into_body()), LIMIT).await?,
+        })
+    }
+
     async fn connection(
         &self,
         pooled: bool,
@@ -342,8 +469,14 @@ impl Host {
                 }
             }
         }
+        Self::connection_on_stream(self.stream().await?).await
+    }
+
+    async fn connection_on_stream(
+        stream: Stream,
+    ) -> anyhow::Result<hyper::client::conn::http1::SendRequest<Full<Bytes>>> {
         let (sender, connection) =
-            hyper::client::conn::http1::handshake(TokioIo::new(self.stream().await?)).await?;
+            hyper::client::conn::http1::handshake(TokioIo::new(stream)).await?;
         tokio::spawn(async move {
             let _ = connection.await;
         });
@@ -837,10 +970,17 @@ async fn asset(request: Request) -> Response {
     let mime = match name {
         "index.html" | "computers.html" | "messages.html" => "text/html; charset=utf-8",
         "style.css" | "messages.css" => "text/css; charset=utf-8",
-        "app.js" | "bridge.js" | "chrome.js" | "clipboard.js" | "close.js" | "links.js"
-        | "titles.js" | "computers.js" | "pairing-notice.js" | "messages.js" => {
-            "application/javascript"
-        },
+        "app.js"
+        | "bridge.js"
+        | "chrome.js"
+        | "clipboard.js"
+        | "close.js"
+        | "links.js"
+        | "titles.js"
+        | "computers.js"
+        | "pairing-notice.js"
+        | "messages.js"
+        | "terminal-diagnostics.js" => "application/javascript",
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
     match ASSETS.get_file(name) {
@@ -876,7 +1016,10 @@ async fn state(config: &RelayConfig, port: u16) -> anyhow::Result<RelayState> {
         hosts: Arc::new(hosts),
         order: Arc::new(order),
         port,
-        attention: Arc::new(Mutex::new(json!({"panes": [], "tabs": [], "errors": []}))),
+        // Until the first scan, report every host unavailable rather than tabless.
+        attention: Arc::new(Mutex::new(
+            json!({"panes": [], "tabs": [], "errors": [{"host": "Switchboard", "message": "Status starting"}]}),
+        )),
         poll: Default::default(),
         mesh: None,
         candidates: Arc::new(candidates),
@@ -925,6 +1068,14 @@ fn app(state: RelayState) -> Router {
         .route("/api/attention", get(attention::handler))
         .route("/api/attention/ack", post(attention::acknowledge))
         .route("/api/logs", get(logs::handler))
+        .route(
+            "/api/diagnostics/terminal-switch",
+            post(logs::terminal_switch),
+        )
+        .route(
+            "/api/diagnostics/modified-enter",
+            post(logs::modified_enter),
+        )
         .route("/api/message-board/{*path}", any(message_board))
         .route("/api/hosts/{host}/close-tab", post(control::close_tab))
         .route("/api/hosts/{host}/escape", post(control::escape))
@@ -970,6 +1121,10 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
     let artifact = artifacts::start(config.artifact_proxy).await?;
     let polling =
         attention::start(state.clone(), config_path.with_extension("attention.json")).await;
+    // Keystrokes and echoes are tiny writes; Nagle plus delayed ACK can hold each one back.
+    let listener = axum::serve::ListenerExt::tap_io(listener, |stream| {
+        let _ = stream.set_nodelay(true);
+    });
     let result = axum::serve(listener, app(state.clone()))
         .with_graceful_shutdown(shutdown())
         .await;
@@ -1017,6 +1172,378 @@ mod tests {
             escape_transport: None,
             zellij_binary: None,
         }
+    }
+
+    struct TlsFixture {
+        address: SocketAddr,
+        pin: String,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for TlsFixture {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    async fn tls_fixture(app: Router) -> TlsFixture {
+        let rcgen::CertifiedKey { cert, signing_key } =
+            rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let pin = Sha256::digest(cert.der().as_ref())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let tls = axum_server::tls_rustls::RustlsConfig::from_pem(
+            cert.pem().into_bytes(),
+            signing_key.serialize_pem().into_bytes(),
+        )
+        .await
+        .unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            axum_server::from_tcp_rustls(listener, tls)
+                .unwrap()
+                .serve(app.into_make_service())
+                .await
+                .unwrap();
+        });
+        TlsFixture { address, pin, task }
+    }
+
+    fn paired_config(port: u16, pin: &str) -> HostConfig {
+        let mut configured = config(&format!("https://192.0.2.123:{port}"));
+        configured.id = format!("mesh-{}", "ab".repeat(32));
+        configured.name = "1WN9PD4".into();
+        configured.tls_fingerprint = Some(pin.into());
+        configured
+    }
+
+    #[test]
+    fn hostname_fallback_requires_a_paired_pinned_ip_origin() {
+        let good = paired_config(8082, &"00".repeat(32));
+        for id in [good.id.clone(), "ab".repeat(32)] {
+            let mut configured = good.clone();
+            configured.id = id;
+            assert_eq!(
+                Host::new(configured).unwrap().hostname_hint().as_deref(),
+                Some("1WN9PD4.local")
+            );
+        }
+        let mut variants = Vec::new();
+        let mut unpaired = good.clone();
+        unpaired.id = "windows".into();
+        variants.push(unpaired);
+        let mut unpinned = good.clone();
+        unpinned.tls_fingerprint = None;
+        variants.push(unpinned);
+        let mut http = good.clone();
+        http.url = "http://192.0.2.123:8082".into();
+        http.tls_fingerprint = None;
+        variants.push(http);
+        for url in [
+            "https://127.0.0.1:8082",
+            "https://[::1]:8082",
+            "https://[::ffff:127.0.0.1]:8082",
+            "https://localhost:8082",
+            "https://peer.example:8082",
+            "https://0.0.0.0:8082",
+        ] {
+            let mut configured = good.clone();
+            configured.url = url.into();
+            variants.push(configured);
+        }
+        let mut invalid_name = good;
+        invalid_name.name = "Friendly Windows Computer".into();
+        variants.push(invalid_name);
+        for configured in variants {
+            assert!(Host::new(configured).unwrap().hostname_hint().is_none());
+        }
+    }
+
+    #[test]
+    fn a_paired_peer_stays_remote_when_its_saved_ip_is_now_local() {
+        let route = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+        route.connect("192.0.2.1:9").unwrap();
+        let address = route.local_addr().unwrap().ip();
+        assert!(hostname::is_local_address(address));
+        let mut configured = paired_config(8082, &"00".repeat(32));
+        configured.url = format!("https://{address}:8082");
+        let host = Host::new(configured).unwrap();
+        assert!(!host.is_local_engine());
+        assert_eq!(host_summary(&host, false)["local"], false);
+        if hostname::usable_route_address(address) {
+            assert_eq!(host.hostname_hint().as_deref(), Some("1WN9PD4.local"));
+        }
+    }
+
+    #[tokio::test]
+    async fn hostname_route_rejects_wrong_pin_then_preserves_http_and_websocket_identity() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let wrong_requests = Arc::new(AtomicUsize::new(0));
+        let counter = wrong_requests.clone();
+        let wrong = tls_fixture(Router::new().fallback(any(move || {
+            let counter = counter.clone();
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                "wrong peer"
+            }
+        })))
+        .await;
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let requests = captured.clone();
+        let websocket_requests = captured.clone();
+        let correct = tls_fixture(
+            Router::new()
+                .route(
+                    "/command/test",
+                    post(move |headers: HeaderMap, body: Bytes| {
+                        let requests = requests.clone();
+                        async move {
+                            requests.lock().await.push((headers, body));
+                            "ok"
+                        }
+                    }),
+                )
+                .route(
+                    "/ws",
+                    any(move |headers: HeaderMap, websocket: WebSocketUpgrade| {
+                        let requests = websocket_requests.clone();
+                        async move {
+                            requests.lock().await.push((headers, Bytes::new()));
+                            websocket.on_upgrade(|mut socket| async move {
+                                if let Some(Ok(message)) = socket.next().await {
+                                    let _ = socket.send(message).await;
+                                }
+                            })
+                        }
+                    }),
+                ),
+        )
+        .await;
+        let token = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(token.path(), "synthetic-gateway-token\n").unwrap();
+        let mut configured = paired_config(wrong.address.port(), &correct.pin);
+        configured.gateway_token_file = Some(token.path().to_str().unwrap().into());
+        let host = Host::new(configured).unwrap();
+        let original_origin = host.origin.clone();
+        let stream = host
+            .stream_with_routes(wrong.address, std::future::ready(vec![correct.address]))
+            .await
+            .unwrap();
+        let mut sender = Host::connection_on_stream(stream).await.unwrap();
+        let response = host
+            .send_request(
+                &mut sender,
+                Method::POST,
+                "/command/test",
+                Bytes::from_static(b"synthetic-command"),
+                "text/plain",
+                Some("session_token=synthetic-cookie"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            to_bytes(Body::new(response.into_body()), LIMIT)
+                .await
+                .unwrap(),
+            "ok"
+        );
+        assert_eq!(wrong_requests.load(Ordering::SeqCst), 0);
+        assert_eq!(host.route_hint.lock().await.unwrap().0, correct.address);
+
+        // The ordinary WebSocket path must reuse the authenticated routing hint,
+        // while preserving the original URL and gateway/cookie credentials.
+        let mut socket = host
+            .raw_websocket("/ws", "session_token=synthetic-cookie")
+            .await
+            .unwrap();
+        socket
+            .send(Message::Text("synthetic input".into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            socket.next().await.unwrap().unwrap(),
+            Message::Text("synthetic input".into())
+        );
+        assert_eq!(host.origin, original_origin);
+        assert_eq!(
+            host.config.url,
+            format!("https://192.0.2.123:{}", wrong.address.port())
+        );
+        let requests = captured.lock().await;
+        assert_eq!(requests.len(), 2);
+        for (headers, _) in requests.iter() {
+            assert_eq!(headers[header::HOST], host.authority());
+            assert_eq!(
+                headers[header::AUTHORIZATION],
+                "Bearer synthetic-gateway-token"
+            );
+            assert_eq!(headers[header::COOKIE], "session_token=synthetic-cookie");
+        }
+        assert_eq!(requests[0].1, "synthetic-command");
+        socket.close(None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn hostname_routes_with_wrong_pins_receive_no_application_requests() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let requests = Arc::new(AtomicUsize::new(0));
+        let app = |counter: Arc<AtomicUsize>| {
+            Router::new().fallback(any(move || {
+                let counter = counter.clone();
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    "unexpected"
+                }
+            }))
+        };
+        let first = tls_fixture(app(requests.clone())).await;
+        let second = tls_fixture(app(requests.clone())).await;
+        let host = Host::new(paired_config(first.address.port(), &"00".repeat(32))).unwrap();
+        let error = host
+            .stream_with_routes(first.address, std::future::ready(vec![second.address]))
+            .await
+            .err()
+            .unwrap();
+        assert!(format!("{error:#}").contains("fingerprint mismatch"));
+        assert!(host.route_hint.lock().await.is_none());
+        assert_eq!(requests.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn hostname_cached_route_failure_retries_original_without_dns() {
+        let original = tls_fixture(Router::new()).await;
+        let cached = tls_fixture(Router::new()).await;
+        let host = Host::new(paired_config(original.address.port(), &original.pin)).unwrap();
+        *host.route_hint.lock().await = Some((cached.address, tokio::time::Instant::now()));
+        let stream = host
+            .stream_with_routes(original.address, std::future::ready(Vec::new()))
+            .await
+            .unwrap();
+        assert_eq!(host.route_hint.lock().await.unwrap().0, original.address);
+        drop(stream);
+    }
+
+    #[tokio::test]
+    async fn hostname_dead_ip_tls_probe_leaves_time_for_fallback() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let original = listener.local_addr().unwrap();
+        let stall = tokio::spawn(async move {
+            let (_tcp, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let correct = tls_fixture(Router::new()).await;
+        let host = Host::new(paired_config(original.port(), &correct.pin)).unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_secs(3),
+            host.stream_with_routes(original, std::future::ready(vec![correct.address])),
+        )
+        .await;
+        stall.abort();
+        assert!(result.unwrap().is_ok());
+        assert_eq!(host.route_hint.lock().await.unwrap().0, correct.address);
+    }
+
+    #[tokio::test]
+    async fn hostname_route_never_replays_a_command_after_http_starts() {
+        let rcgen::CertifiedKey { cert, signing_key } =
+            rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let pin: String = Sha256::digest(cert.der().as_ref())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![cert.der().clone()],
+            rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
+        )
+        .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let commands = Arc::new(Mutex::new(Vec::new()));
+        let received = commands.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                let (tcp, _) = listener.accept().await.unwrap();
+                let acceptor = acceptor.clone();
+                let received = received.clone();
+                tokio::spawn(async move {
+                    let stream = acceptor.accept(tcp).await.unwrap();
+                    let service = hyper::service::service_fn(
+                        move |request: hyper::Request<hyper::body::Incoming>| {
+                            let received = received.clone();
+                            async move {
+                                let body = to_bytes(Body::new(request.into_body()), LIMIT)
+                                    .await
+                                    .unwrap();
+                                received.lock().await.push(body);
+                                // Deliberately close after receiving the command, before
+                                // a response; retrying now would perform it twice.
+                                Err::<hyper::Response<Full<Bytes>>, _>(std::io::Error::other(
+                                    "synthetic response lost",
+                                ))
+                            }
+                        },
+                    );
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), service)
+                        .await;
+                });
+            }
+        });
+        let fixture = TlsFixture { address, pin, task };
+        let host = Host::new(paired_config(fixture.address.port(), &fixture.pin)).unwrap();
+        *host.route_hint.lock().await = Some((fixture.address, tokio::time::Instant::now()));
+        let result = tokio::time::timeout(
+            Duration::from_secs(3),
+            host.raw_request(
+                Method::POST,
+                "/command/test",
+                Bytes::from_static(b"execute-once"),
+                "text/plain",
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(result.is_err());
+        assert_eq!(
+            *commands.lock().await,
+            vec![Bytes::from_static(b"execute-once")]
+        );
+    }
+
+    #[tokio::test]
+    async fn local_route_request_rejects_unpinned_remote_or_changed_port_targets() {
+        let host = Host::new(config("http://127.0.0.1:8082")).unwrap();
+        async fn request(host: &Host, address: SocketAddr) -> anyhow::Result<UpstreamResponse> {
+            host.raw_request_on_local_route(address, Method::GET, "/", Bytes::new(), "text/plain")
+                .await
+        }
+        assert!(request(&host, "127.0.0.1:8082".parse().unwrap())
+            .await
+            .is_err());
+        let mut configured = config("https://192.0.2.123:8082");
+        configured.tls_fingerprint = Some("00".repeat(32));
+        let host = Host::new(configured).unwrap();
+        assert!(request(&host, "192.0.2.123:8082".parse().unwrap())
+            .await
+            .is_err());
+        assert!(request(&host, "127.0.0.1:8083".parse().unwrap())
+            .await
+            .is_err());
+        let peer = Host::new(paired_config(8082, &"00".repeat(32))).unwrap();
+        assert!(request(&peer, "127.0.0.1:8082".parse().unwrap())
+            .await
+            .is_err());
     }
 
     #[test]
@@ -1283,6 +1810,7 @@ mod tests {
             ("/messages.html", "text/html; charset=utf-8"),
             ("/messages.js", "application/javascript"),
             ("/messages.css", "text/css; charset=utf-8"),
+            ("/terminal-diagnostics.js", "application/javascript"),
         ] {
             let response = app
                 .clone()
@@ -1567,7 +2095,7 @@ mod tests {
         assert_eq!(attention.status, StatusCode::OK);
         assert_eq!(
             serde_json::from_slice::<Value>(&attention.body).unwrap(),
-            json!({"panes": [], "tabs": [], "errors": []})
+            json!({"panes": [], "tabs": [], "errors": [{"host": "Switchboard", "message": "Status starting"}]})
         );
         assert_eq!(
             client

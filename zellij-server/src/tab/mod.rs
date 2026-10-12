@@ -2285,12 +2285,19 @@ impl Tab {
             .borrow_mut()
             .get_mut(&client_id)
             .map(|c| c.change_to_default_mode()); // TODO: no races?
-        self.connected_clients.borrow_mut().remove(&client_id);
+        let was_connected = self.connected_clients.borrow_mut().remove(&client_id);
         self.mouse_help_text_visible.remove(&client_id);
         self.mouse_last_pane_id.remove(&client_id);
         self.last_mouse_activity_time.remove(&client_id);
-        self.set_client_dimmed(client_id, false);
-        self.set_force_render();
+        // Every `zellij action` CLI call ends with RemoveClient for a client that never
+        // joined a tab; forcing a repaint for it made the next frame (usually a typing
+        // echo) a full-screen redraw for every attached client.
+        if self.dimmed_clients.contains(&client_id) {
+            self.set_client_dimmed(client_id, false);
+        }
+        if was_connected {
+            self.set_force_render();
+        }
     }
     pub fn drain_connected_clients(
         &mut self,

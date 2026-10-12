@@ -2,6 +2,41 @@ use super::*;
 use zellij_utils::input::command::RunCommand;
 
 #[test]
+fn windows_terminal_resize_skips_unchanged_and_invalid_sizes() {
+    let mut current = (80, 24);
+    for (cols, rows) in [(80, 24), (0, 24), (80, 0), (0, 0)] {
+        let changed = resize_windows_terminal(&mut current, cols, rows, |_, _| {
+            panic!("Unchanged and zero dimensions must not resize ConPTY");
+            #[allow(unreachable_code)]
+            Ok::<(), ()>(())
+        });
+        assert_eq!(changed, Ok(false));
+        assert_eq!(current, (80, 24));
+    }
+}
+
+#[test]
+fn windows_terminal_resize_applies_changed_sizes_once_and_retries_failures() {
+    let mut current = (80, 24);
+    let mut applied = vec![];
+    let failed = resize_windows_terminal(&mut current, 120, 40, |cols, rows| {
+        applied.push((cols, rows));
+        Err("Console unavailable")
+    });
+    assert_eq!(failed, Err("Console unavailable"));
+    assert_eq!(current, (80, 24), "A failed update must remain retryable");
+    for size in [(120, 40), (120, 40), (120, 50), (100, 50)] {
+        resize_windows_terminal(&mut current, size.0, size.1, |cols, rows| {
+            applied.push((cols, rows));
+            Ok::<(), &str>(())
+        })
+        .unwrap();
+    }
+    assert_eq!(applied, [(120, 40), (120, 40), (120, 50), (100, 50)]);
+    assert_eq!(current, (100, 50));
+}
+
+#[test]
 fn windows_pane_environment_advertises_colour_without_overriding_preferences() {
     for term in [None, Some(""), Some("dumb"), Some("DUMB")] {
         let mut inherited = vec![

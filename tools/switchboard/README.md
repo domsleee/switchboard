@@ -43,8 +43,16 @@ each) and appear in **Computers** with **Pair this computer**. Pair them, then
 delete the entry. A paired computer gets a new id, so its browser tab order and
 archive state start fresh.
 
-The invitation records the computer's current LAN address. If DHCP gives it a
-new address, pair again, or reserve its address in the router.
+Pairing remembers the computer's LAN address. If that address stops working,
+Switchboard also resolves `<computer-name>.local` and checks the paired computer's
+certificate before connecting. The paired name must match its network hostname;
+for example, `1WN9PD4` uses `1WN9PD4.local`. Names containing spaces cannot supply
+this fallback. The network must support DNS or Bonjour/mDNS name resolution.
+
+The local gateway can recover on its current network address without replacing
+its pairing identity or terminal sessions. Other computers need this update to
+find a moved peer by hostname. A reserved router address remains useful on
+networks that do not resolve computer names.
 
 On macOS, install the menu bar app and keep the relay running independently of a terminal:
 
@@ -60,6 +68,17 @@ leaves the relay and terminal sessions running. Swift's compiler and this fork's
 `zellij` executable must be installed. Automatic updates run
 `zellij switchboard update` (no Python or GitHub CLI); macOS also needs `jq`. See
 [automatic updates](../../docs/SWITCHBOARD_UPDATES.md#automatic-updates).
+
+Settings → Logs includes terminal tab switches: focus acknowledgment,
+first frame, parser/render/frame scheduling delay, output byte/frame counts,
+resize counts, and viewport size changes. Each switch observes ten seconds after
+acknowledgment, so a short quiet gap cannot hide a later output replay burst.
+Scrolling reports count xterm buffer movement, line feeds and wheel events, and
+record actual xterm size changes and cropped rows. Buffer movement without line
+feeds can expose unwanted wrapping even when the browser viewport stays normal.
+Shift+Enter reports include browser modifier flags and Shift press/release timing.
+These diagnostics contain no terminal contents or typed text. Slow native reflows
+and ConPTY resizes also appear in `zellij.log`.
 
 To update a Mac while keeping open terminals running (requires `jq`):
 
@@ -248,6 +267,13 @@ python3 tools/switchboard/install_service.test.py
 Run browser checks with headless Playwright against isolated testing sessions.
 Keep automation clients out of live sessions: their viewport can shrink the
 shared terminal, including when the iframe is hidden.
+
+Measure keystroke echo latency in a private throwaway session (opt-in; never
+types into live sessions) with
+`PLAYWRIGHT_MODULE=/path/to/playwright node tools/switchboard/latency.test.cjs BINARY`.
+`--hammer N` replays the attention scan's CLI calls in N parallel loops and
+`--cpu-load N` adds busy processes; `--probe SESSION` only times the read-only
+`list-panes`/`dump-screen` calls against an existing session.
 
 Run native terminal integration checks with `cargo xtask integration-test`.
 Tests now check terminal output, input, geometry and CLI errors without plugin

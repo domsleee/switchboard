@@ -404,6 +404,13 @@ impl PollState {
                         .unwrap()
                         .extend(snapshot[field].as_array().unwrap().clone());
                 }
+            } else {
+                // Not scanned since this relay started: browsers keep its tabs
+                // instead of reading the absence as every tab having closed.
+                merged["errors"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({"host":host,"message":"Status not scanned yet"}));
             }
         }
         merged
@@ -453,6 +460,7 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
             tokio::spawn(async move {
                 let mut offset = 0;
                 loop {
+                    let started = tokio::time::Instant::now();
                     let result = scan(&host, offset).await;
                     offset = offset.wrapping_add(1);
                     let mut poll = poll.lock().await;
@@ -496,7 +504,10 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
                         .await;
                     }
                     drop(poll);
-                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    // Every CLI call queues on the engine thread that also echoes typing.
+                    // A slow scan (loaded machine, many panes) waits 3x its own duration so
+                    // scanning stays under a quarter of the engine's time.
+                    tokio::time::sleep(Duration::from_secs(3).max(started.elapsed() * 3)).await;
                 }
             })
         })
@@ -672,6 +683,10 @@ esac
         let merged = poll.merged(&["windows".into()]);
         assert!(merged["tabs"].as_array().unwrap().is_empty());
         assert!(merged["errors"].as_array().unwrap().is_empty());
+        // A restarted relay has not scanned yet; that is not an empty catalog.
+        let cold = PollState::default().merged(&["windows".into()]);
+        assert!(cold["tabs"].as_array().unwrap().is_empty());
+        assert_eq!(cold["errors"][0]["host"], "windows");
     }
 
     #[test]

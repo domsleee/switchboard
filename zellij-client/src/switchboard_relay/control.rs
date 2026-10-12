@@ -156,10 +156,25 @@ async fn execute(
         return if response.status == StatusCode::OK {
             Ok(())
         } else {
-            Err((response.status, "Peer rejected terminal control"))
+            Err((response.status, peer_failure(response.status)))
         };
     }
     execute_host(&host, session, target, close).await
+}
+
+// Peers answer with execute_host's fixed statuses; say what each means here.
+fn peer_failure(status: StatusCode) -> &'static str {
+    match status {
+        StatusCode::CONFLICT => "That tab or pane no longer exists on the other computer",
+        StatusCode::NOT_FOUND => "That session is not shared on the other computer",
+        StatusCode::FORBIDDEN | StatusCode::UNAUTHORIZED => {
+            "The other computer refused this computer's access; pair them again"
+        },
+        StatusCode::BAD_GATEWAY => {
+            "The other computer could not read or control its terminal; check its Logs"
+        },
+        _ => "The other computer rejected the terminal command",
+    }
 }
 
 pub(super) async fn execute_host(
@@ -297,6 +312,14 @@ async fn forget_closed_session(binary: PathBuf, session: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn peer_refusals_explain_the_cause() {
+        assert!(peer_failure(StatusCode::CONFLICT).contains("no longer exists"));
+        assert!(peer_failure(StatusCode::NOT_FOUND).contains("not shared"));
+        assert!(peer_failure(StatusCode::FORBIDDEN).contains("pair them again"));
+        assert!(peer_failure(StatusCode::BAD_GATEWAY).contains("Logs"));
+    }
 
     #[test]
     fn session_and_target_boundaries() {

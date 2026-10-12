@@ -7,16 +7,37 @@
   let latest;
   let escapeQueue = Promise.resolve();
   let escapeStatus;
-  let pendingFocus, desiredFocus, focusInputState, focusId, focusTimeout;
+  let pendingFocus, desiredFocus, focusInputState, focusId, focusTimeout, focusAttempts=0;
+  const focusMaxAttempts=3, focusTimeoutMs=5000;
   let pendingNewTab;
   let focusOrigin, preserveFocus = false;
   function restoreTerminalFocus(origin = focusOrigin) {
-    if (!preserveFocus && parent.document.hasFocus() && !parent.document.querySelector('dialog[open]') &&
-      parent.document.activeElement === origin && (!window.frameElement || window.frameElement.classList.contains('active'))) window.term?.focus();
+    if (!parent.document.hasFocus() || parent.document.querySelector('dialog[open]') ||
+      (window.frameElement && !window.frameElement.classList.contains('active'))) return;
+    const active = parent.document.activeElement;
+    // Focus still in this frame but on nothing (a reconnect reload or a pane
+    // switch blurred xterm) belongs to the terminal; it was never elsewhere.
+    const stray = !!window.frameElement && active === window.frameElement && (!document.activeElement || document.activeElement === document.body);
+    if (stray || (!preserveFocus && active === origin)) window.term?.focus();
   }
-  let terminalSocket;
+  let terminalSocket, controlSocket;
   let scrollport, lastViewport, viewportTab, bottomButton, claimedViewportTab;
   let chromeKey, nativeTopBar=false, nativeBottomRows=0;
+  const diagnostics=window.SwitchboardTerminalDiagnostics?.(
+    diagnostic=>parent.postMessage({type:'zellij-switch-diagnostic',diagnostic},location.origin),
+    ()=>{const size=physicalViewport(),term=window.term,cellHeight=term?._core?._renderService?.dimensions?.css?.cell?.height;
+      // CSSOM normalizes zero lengths and omits a repeated fourth inset.
+      const clip=term?._core?.screenElement?.style?.clipPath?.match(/^inset\(0(?:px)? 0(?:px)? ([\d.]+)px(?: 0(?:px)?)?\)$/);
+      return {physical_cols:size?.cols??term?.cols??0,physical_rows:size?.rows??term?.rows??0,
+      native_cols:latest?.tab_viewport?.cols??0,native_rows:latest?.tab_viewport?.rows??0,
+      scroll_height_px:Math.round(scrollport?.scrollHeight??0),client_height_px:Math.round(scrollport?.clientHeight??0),scroll_top_px:Math.round(scrollport?.scrollTop??0),
+      xterm_cols:window.term?.cols??0,xterm_rows:window.term?.rows??0,buffer_rows:window.term?.buffer?.active?.length??0,
+      clipped_bottom_rows:clip&&cellHeight?Math.round(Number(clip[1])/cellHeight):0,
+      document_hidden:document.visibilityState==='hidden',browser_focused:parent.document.hasFocus()};});
+  window.addEventListener('wheel',()=>diagnostics?.wheel(),{capture:true,passive:true});
+  let shiftPressedAt=null,shiftReleasedAt=null;
+  window.addEventListener('keyup',event=>{if(event.key==='Shift'){shiftPressedAt=null;shiftReleasedAt=performance.now();}},true);
+  window.addEventListener('blur',()=>{shiftPressedAt=null;shiftReleasedAt=null;});
   function viewportSupported(){return !!window.__zjSupportsTabViewport && !!latest?.tab_viewport;}
   function physicalViewport(){
     if(!viewportSupported())return;
@@ -58,7 +79,7 @@
     const size=physicalViewport();
     if(size&&window.__zjViewport.report(size,true))claimedViewportTab=tab;
   }
-  window.addEventListener('focus',()=>claimFocusedViewport(true));
+  window.addEventListener('focus',()=>{claimFocusedViewport(true);if(!pendingFocus&&!pendingNewTab)restoreTerminalFocus(null);});
   function moveTerminal(terminal,target,before=null){
     const active=document.activeElement,focused=terminal.contains(active)&&document.hasFocus();
     // Moving a focused textarea with append/before blurs it. Prefer a state
@@ -118,17 +139,42 @@
     if(window.term)window.term.options.disableStdin=pendingNewTab.disabled;
     pendingNewTab=null;
   }
+  function holdFocusInput() {
+    if(!window.term?.element)return;
+    focusInputState ||= {disabled:window.term.options.disableStdin,pointer:window.term.element.style.pointerEvents};
+    window.term.options.disableStdin=true;window.term.element.style.pointerEvents='none';window.term.blur();
+    showEscapeStatus('Switching terminal…');
+  }
   function dispatchFocus() {
     clearTimeout(focusTimeout);
+    // A superseding click restarts the attempt budget for the newest target.
+    if(pendingFocus!==desiredFocus)focusAttempts=0;
     pendingFocus=desiredFocus;
+    focusAttempts++;
     // Control sends can be dropped during reconnect, and a no-op focus may
     // produce no MobileState. Never leave input disabled waiting forever.
-    focusTimeout=setTimeout(()=>failFocus('Terminal switch timed out. Try selecting the tab again.'),5000);
+    focusTimeout=setTimeout(focusTimedOut,focusTimeoutMs);
+    sendPendingFocus();
+  }
+  function sendPendingFocus() {
+    // The stock sender silently discards messages before its socket is open.
+    // Keep startup/reconnect requests until the connection can deliver them.
+    if(!pendingFocus||!window.__zjSendControl||(controlSocket&&controlSocket.readyState!==1))return;
     try {
       window.__zjSendControl({type:'FocusPane',pane_id:pendingFocus.pane_id,is_plugin:pendingFocus.is_plugin});
     } catch (_) {
       failFocus('Terminal switch failed. Check the connection and try again.');
     }
+  }
+  function focusTimedOut(){
+    // A newer click supersedes the unconfirmed target instead of failing it,
+    // so rapid switches never stall on an acknowledgement that will not come.
+    if(pendingFocus!==desiredFocus){dispatchFocus();return;}
+    if(focusAttempts<focusMaxAttempts){
+      showEscapeStatus(`Switching terminal… (attempt ${focusAttempts+1} of ${focusMaxAttempts})`);
+      dispatchFocus();return;
+    }
+    failFocus('Terminal switch timed out. Try selecting the tab again.');
   }
   function releaseFocus() {
     if(focusTimeout)clearTimeout(focusTimeout);
@@ -141,6 +187,7 @@
     pendingFocus=null;desiredFocus=null;focusInputState=null;
   }
   function failFocus(message) {
+    diagnostics?.finish('timeout');
     releaseFocus();
     parent.postMessage({type:'zellij-focus-failed',host,focus_id:focusId,payload:latest,message},location.origin);
     showEscapeStatus(message,true);
@@ -149,6 +196,7 @@
   function rejectFocus() {
     if(desiredFocus.pane_id!==pendingFocus.pane_id || desiredFocus.is_plugin!==pendingFocus.is_plugin){
       if(latest?.active_pane?.pane_id===desiredFocus.pane_id && latest.active_pane.is_plugin===desiredFocus.is_plugin){
+        diagnostics?.ack();
         releaseFocus();restoreTerminalFocus();
         parent.postMessage({type:'zellij-state',host,payload:latest,focus_id:focusId,focus_pending:false},location.origin);
         return;
@@ -206,6 +254,13 @@
     if(event.metaKey&&!event.ctrlKey&&!event.altKey&&!event.shiftKey&&/^Digit[1-9]$/.test(event.code)){
       event.stopImmediatePropagation();return;
     }
+    if(event.key==='Shift'&&!event.repeat)shiftPressedAt=performance.now();
+    if(event.key==='Enter'&&event.shiftKey&&!event.isComposing&&terminalFocused()&&!pendingFocus&&!pendingNewTab){
+      const now=performance.now(),pane=latest?.active_pane;
+      if(pane)parent.postMessage({type:'zellij-key-diagnostic',diagnostic:{pane_id:pane.pane_id,is_plugin:!!pane.is_plugin,
+        shift:true,ctrl:!!event.ctrlKey,alt:!!event.altKey,meta:!!event.metaKey,repeat:!!event.repeat,
+        held_ms:shiftPressedAt===null?null:Math.round(now-shiftPressedAt),released_ms:shiftReleasedAt===null?null:Math.round(now-shiftReleasedAt)}},location.origin);
+    }
     if(hasDialog())return;
     if(event.code==='KeyT'&&event.ctrlKey&&!event.metaKey&&!event.altKey&&!event.shiftKey
         &&!event.isComposing&&terminalFocused()){
@@ -217,10 +272,10 @@
       if(!event.repeat)parent.postMessage({type:'zellij-open-new-tab',host},location.origin);return;
     }
     if(event.code==='KeyD'&&event.ctrlKey&&!event.metaKey&&!event.altKey&&!event.shiftKey
-        &&!event.isComposing&&terminalFocused()){
+        &&!event.isComposing&&(terminalFocused()||(pendingFocus&&document.activeElement===document.body))){
       event.preventDefault();event.stopImmediatePropagation();
       if(event.repeat)return;
-      if(pendingFocus){showEscapeStatus('Waiting for the selected terminal to receive focus.',true);return;}
+      // Closing uses the parent's selected tab ID, independently of native focus.
       parent.postMessage({type:'zellij-close-tab',host},location.origin);return;
     }
     // Ctrl+1–9 selects a Switchboard tab on every platform, before xterm/Zellij; see tabNumber in app.js.
@@ -297,6 +352,7 @@
     const term = window.term;
     if (!term || !document.body) return;
     if (hookedTerm !== term) {
+      diagnostics?.hook(term);
       hookedTerm = term;
       term.onRender(updateChrome);
       term.onResize(updateChrome);
@@ -338,6 +394,7 @@
   }
   function sendState(payload) {
     latest = payload;
+    diagnostics?.state(payload);
     if(viewportSupported())window.dispatchEvent(new Event('zellij:rendering-resize'));
     const created=pendingNewTab&&latest.active_pane&&!latest.active_pane.is_plugin&&!pendingNewTab.panes.has(latest.active_pane.pane_id);
     if(created){const origin=pendingNewTab.focusOrigin;releaseNewTab();restoreTerminalFocus(origin);}
@@ -345,7 +402,7 @@
     if(missingFocus)rejectFocus();
     if(!missingFocus && pendingFocus && latest.active_pane?.pane_id===pendingFocus.pane_id && latest.active_pane?.is_plugin===pendingFocus.is_plugin){
       if(desiredFocus.pane_id!==pendingFocus.pane_id || desiredFocus.is_plugin!==pendingFocus.is_plugin)dispatchFocus();
-      else{releaseFocus();restoreTerminalFocus();}
+      else{diagnostics?.ack();releaseFocus();restoreTerminalFocus();}
     }
     parent.postMessage({type: 'zellij-state', host, payload, focus_id:focusId, focus_pending:!!pendingFocus}, location.origin);
     requestAnimationFrame(updateChrome);
@@ -355,10 +412,18 @@
       super(...args);
       if(String(args[0]).includes('/ws/terminal')){
         terminalSocket=this;
+        this.addEventListener('message',event=>{if(terminalSocket!==this)return;diagnostics?.hook(window.term);diagnostics?.frame(event.data);});
         this.addEventListener('close',()=>{if(terminalSocket===this)terminalSocket=null;});
       }
       if (String(args[0]).includes('/ws/control')) {
+        controlSocket=this;
+        this.addEventListener('open',()=>{
+          if(controlSocket!==this||!pendingFocus)return;
+          holdFocusInput();
+          if(pendingFocus!==desiredFocus)dispatchFocus();else sendPendingFocus();
+        });
         this.addEventListener('message', event => {
+          if(controlSocket!==this)return;
           try {
             const message = JSON.parse(event.data);
             if (message.type === 'MobileState') sendState(message.payload);
@@ -369,7 +434,9 @@
           } catch (_) {}
         });
         this.addEventListener('close', () => {
+          if(controlSocket!==this)return;
           latest = undefined;
+          diagnostics?.finish('disconnected');
           lastViewport=null;claimedViewportTab=null;updateViewport();
           releaseFocus();
           releaseNewTab();
@@ -377,22 +444,23 @@
         });
       }
     }
+    send(data) {
+      if(controlSocket===this)diagnostics?.sent(data);
+      return super.send(data);
+    }
   };
   window.addEventListener('message', event => {
     if (event.origin !== location.origin || event.source !== parent) return;
     const message = event.data;
-    if (message?.type === 'zellij-focus' && window.__zjSendControl) {
+    if (message?.type === 'zellij-focus') {
+      diagnostics?.start(message,window.term,!!pendingFocus||latest?.active_pane?.pane_id!==message.pane_id||latest?.active_pane?.is_plugin!==message.is_plugin);
       focusId=message.focus_id;
       focusOrigin=parent.document.activeElement;preserveFocus=!!message.preserve_focus;
       if (pendingFocus || latest?.active_pane?.pane_id !== message.pane_id || latest?.active_pane?.is_plugin !== message.is_plugin){
         desiredFocus={pane_id:message.pane_id,is_plugin:message.is_plugin};
-        if(window.term?.element){
-          focusInputState ||= {disabled:window.term.options.disableStdin,pointer:window.term.element.style.pointerEvents};
-          window.term.options.disableStdin=true;window.term.element.style.pointerEvents='none';window.term.blur();
-          showEscapeStatus('Switching terminal…');
-        }
+        holdFocusInput();
         if(!pendingFocus)dispatchFocus();
-      }else{releaseFocus();restoreTerminalFocus();if(latest)sendState(latest);}
+      }else{diagnostics?.ack();releaseFocus();restoreTerminalFocus();if(latest)sendState(latest);}
     } else if (message?.type === 'zellij-escape' && !hasDialog()) {
       window.term?.focus();
       if(!latest?.active_pane?.is_plugin)sendEscape();

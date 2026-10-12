@@ -1,4 +1,6 @@
-use crate::os_input_output::{resolve_command, windows_pane_environment, AsyncReader};
+use crate::os_input_output::{
+    resize_windows_terminal, resolve_command, windows_pane_environment, AsyncReader,
+};
 use crate::panes::PaneId;
 
 use std::{
@@ -53,6 +55,7 @@ static PIPE_SEQ: AtomicU64 = AtomicU64::new(0);
 struct ConPtyTerminal {
     hpcon: HPCON,
     input_write_handle: HANDLE,
+    size: (u16, u16),
 }
 
 // HANDLE/HPCON are raw pointers in windows-sys >= 0.59; OS handles are
@@ -469,6 +472,7 @@ impl WindowsPtyBackend {
             Some(ConPtyTerminal {
                 hpcon,
                 input_write_handle: input_write,
+                size: (80, 24),
             }),
         );
 
@@ -539,26 +543,38 @@ impl WindowsPtyBackend {
             )
         };
 
+        let started = std::time::Instant::now();
         match self
             .terminals
             .lock()
             .to_anyhow()
             .with_context(err_context)?
-            .get(&terminal_id)
+            .get_mut(&terminal_id)
         {
             Some(Some(term)) => {
-                if cols > 0 && rows > 0 {
+                let previous = term.size;
+                let hpcon = term.hpcon;
+                let resized = resize_windows_terminal(&mut term.size, cols, rows, |cols, rows| {
                     let size = COORD {
                         X: cols as i16,
                         Y: rows as i16,
                     };
-                    let hr = unsafe { ResizePseudoConsole(term.hpcon, size) };
-                    if hr != S_OK {
+                    let hr = unsafe { ResizePseudoConsole(hpcon, size) };
+                    if hr == S_OK {
+                        Ok(())
+                    } else {
                         Err::<(), _>(anyhow!("ResizePseudoConsole failed: HRESULT 0x{:08x}", hr))
-                            .with_context(err_context)
-                            .non_fatal();
                     }
+                });
+                let elapsed = started.elapsed();
+                if elapsed.as_millis() >= 100 {
+                    log::warn!(
+                        "Slow ConPTY resize: terminal={} old={}x{} new={}x{} elapsed_ms={} applied={}",
+                        terminal_id, previous.0, previous.1, cols, rows, elapsed.as_millis(),
+                        matches!(&resized, Ok(true)),
+                    );
                 }
+                resized.with_context(err_context).non_fatal();
             },
             _ => {
                 Err::<(), _>(anyhow!("no ConPTY terminal found for id {}", terminal_id))

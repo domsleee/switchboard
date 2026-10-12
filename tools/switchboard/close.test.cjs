@@ -24,9 +24,8 @@ test('Close (menu or Ctrl+D) closes the clicked tab immediately and restores it 
   const source=fs.readFileSync(__dirname+'/static/app.js','utf8');
   const start=source.indexOf('function closeSelectedTab(){');
   vm.runInContext(source.slice(start,source.indexOf("window.addEventListener('keydown'",start)),context);
-  entry.focusPending=true;context.closeSelectedTab();assert.equal(calls.length,0);
-  entry.focusPending=false;entry.followActiveTab=true;context.closeSelectedTab();assert.equal(calls.length,0);
-  entry.followActiveTab=false;context.closeSelectedTab();await clicked;
+  entry.focusPending=true;entry.followActiveTab=true;entry.requestedPane={pane_id:99,is_plugin:false};
+  context.closeSelectedTab();await clicked;
   assert.deepEqual(calls[0],['/api/hosts/win/close-tab',{session:'main',tab_id:42}],'no confirmation step');
   assert.equal(context.ready.clicked,undefined);assert.equal(context.archived.clicked,undefined);
   context.contextItem=item;

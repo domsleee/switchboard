@@ -928,6 +928,62 @@ pub fn start_server_impl(
             let socket_path = socket_path.clone();
             move || {
                 drop(std::fs::remove_file(&socket_path));
+                // Publish the correlated endpoint before the session marker. Legacy
+                // clients keep their listener below; new clients never pair by order.
+                #[cfg(windows)]
+                {
+                    let paired = zellij_utils::windows_ipc::bind(&socket_path).unwrap();
+                    let os_input = os_input.clone();
+                    let session_data = session_data.clone();
+                    let session_state = session_state.clone();
+                    let to_server = to_server.clone();
+                    thread::Builder::new()
+                        .name("paired_ipc_listener".into())
+                        .spawn(move || {
+                            for command in paired.incoming() {
+                                let command = match command {
+                                    Ok(command) => command,
+                                    Err(error) => {
+                                        log::warn!("Failed accepting session IPC: {error}");
+                                        continue;
+                                    },
+                                };
+                                let mut os_input = os_input.clone();
+                                let session_data = session_data.clone();
+                                let session_state = session_state.clone();
+                                let to_server = to_server.clone();
+                                thread::Builder::new()
+                                    .name("paired_server_router".into())
+                                    .spawn(move || {
+                                        let (command, reply) =
+                                            match zellij_utils::windows_ipc::accept(command) {
+                                                Ok(pair) => pair,
+                                                Err(error) => {
+                                                    log::warn!(
+                                                        "Incomplete session IPC handshake: {error}"
+                                                    );
+                                                    return;
+                                                },
+                                            };
+                                        let client_id = session_state.write().unwrap().new_client();
+                                        let receiver = os_input
+                                            .new_client_with_reply(client_id, command, reply)
+                                            .unwrap();
+                                        route_thread_main(
+                                            session_data,
+                                            session_state,
+                                            os_input,
+                                            to_server,
+                                            receiver,
+                                            client_id,
+                                        )
+                                        .fatal();
+                                    })
+                                    .unwrap();
+                            }
+                        })
+                        .unwrap();
+                }
                 let listener = ipc_bind(&socket_path).unwrap();
                 // set the sticky bit to avoid the socket file being potentially cleaned up
                 // https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html states that for XDG_RUNTIME_DIR:
@@ -936,8 +992,9 @@ pub fn start_server_impl(
                 #[cfg(unix)]
                 drop(set_permissions(&socket_path, 0o1700));
 
-                // On Windows, named pipes are half-duplex, so we need a separate
-                // reply pipe for server→client messages.
+                // Compatibility listener for older Windows clients. New clients
+                // use the correlated endpoint above, with one private reply pipe
+                // per command connection.
                 #[cfg(windows)]
                 let reply_listener = zellij_utils::consts::ipc_bind_reply(&socket_path).unwrap();
                 #[cfg(windows)]

@@ -132,3 +132,20 @@ reconnects and shells still respond. Preserve logs and label partial recovery
 as failure. The manual Windows updater now selects retained executables and
 supports guarded rollback; it never restarts loaded services or engines. A
 complete production service handoff and automatic Windows updates remain absent.
+
+## Windows command/reply pairing
+
+New clients and engines use a `-paired-v1` command endpoint. The client binds a
+private reply pipe and sends its random ID before any framed protobuf message;
+the engine connects that pipe rather than accepting the next shared reply pipe.
+The session marker and protobuf messages are unchanged. Old clients and running
+engines still use the legacy two-listener transport, so installing an update
+alone does not repair an old engine's crossed replies.
+
+`cargo test -p zellij-utils windows_ipc --lib` exercises concurrent connections,
+reversed handshake order, cancellation before and after the reply listener is
+created, stalled handshakes, and fallback only when the new endpoint is absent.
+These tests run on Windows in the native-binaries checks and on Unix locally.
+For release acceptance, run concurrent `list-panes`, `list-tabs` and
+`list-clients` against a disposable updated Windows session while attaching a
+browser; each must return its own response. Keep existing user engines running.

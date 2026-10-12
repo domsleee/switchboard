@@ -1623,6 +1623,9 @@ impl Grid {
         found_something
     }
     pub fn force_change_size(&mut self, new_rows: usize, new_columns: usize) {
+        let started = std::time::Instant::now();
+        let previous = (self.width, self.height);
+        let history_rows = self.scrollback_buffer_lines + self.lines_below.len();
         // this is an ugly hack - it's here because sometimes we need to change_size to the
         // existing size (eg. when resizing an alternative_grid to the current height/width) and
         // the change_size method is a no-op in that case. Should be fixed by making the
@@ -1639,6 +1642,14 @@ impl Grid {
         };
         self.change_size(intermediate_rows, intermediate_columns);
         self.change_size(new_rows, new_columns);
+        let elapsed = started.elapsed();
+        if elapsed.as_millis() >= 100 {
+            log::warn!(
+                "Slow terminal reflow: old={}x{} new={}x{} history_rows={} elapsed_ms={} alternate_screen={}",
+                previous.0, previous.1, new_columns, new_rows, history_rows,
+                elapsed.as_millis(), self.alternate_screen_state.is_some(),
+            );
+        }
     }
     pub fn change_size(&mut self, new_rows: usize, new_columns: usize) {
         // Do nothing if this pane hasn't been given a proper size yet

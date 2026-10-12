@@ -6,8 +6,6 @@ use async_trait::async_trait;
 
 use std::io;
 use std::io::Write;
-use std::path::Path;
-use zellij_utils::ipc::{IpcReceiverWithContext, IpcSenderWithContext};
 
 /// Whether zellij should use the VT byte path on Windows (raw stdin via
 /// `ReadFile` + termwiz/kitty parsing) instead of the native-console path
@@ -177,35 +175,6 @@ impl Iterator for BlockingSignalIterator {
             }
         }
     }
-}
-
-/// Set up client IPC channels from a connected socket.
-///
-/// On Windows we use two separate named pipes to avoid DuplicateHandle
-/// deadlock: the command pipe (socket) for client→server, and a reply pipe
-/// for server→client.
-pub(crate) fn setup_ipc(
-    socket: interprocess::local_socket::Stream,
-    path: &Path,
-) -> (
-    IpcSenderWithContext<zellij_utils::ipc::ClientToServerMsg>,
-    IpcReceiverWithContext<zellij_utils::ipc::ServerToClientMsg>,
-) {
-    let reply_socket;
-    loop {
-        match zellij_utils::consts::ipc_connect_reply(path) {
-            Ok(sock) => {
-                reply_socket = sock;
-                break;
-            },
-            Err(_) => {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            },
-        }
-    }
-    let sender = IpcSenderWithContext::new(socket);
-    let receiver = IpcReceiverWithContext::new(reply_socket);
-    (sender, receiver)
 }
 
 /// Enable ENABLE_VIRTUAL_TERMINAL_PROCESSING on stdout so that ConPTY enters

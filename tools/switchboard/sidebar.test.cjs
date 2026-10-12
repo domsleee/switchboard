@@ -254,18 +254,24 @@ test('a host the relay stops listing leaves the sidebar without a reload',async(
 
 test('terminal URLs round-trip names and wait for the requested machine and tab',()=>{
   const location={href:'https://switchboard.localhost/?host=windows&session=work+%3F%23&tab=42',search:'?host=windows&session=work+%3F%23&tab=42'};
-  const saved=[];const context={location,URL,URLSearchParams,history:{replaceState:(_,title,url)=>saved.push(String(url))},hosts:new Map(),sessions:new Map(),attentionErrors:[],loading:true,restoringTab:true};
+  const saved=[];const context={location,URL,URLSearchParams,history:{replaceState:(_,title,url)=>saved.push(String(url))},hosts:new Map(),sessions:new Map(),attentionErrors:[],loading:true,restoringTab:true,hostsLoaded:false};
   vm.createContext(context);vm.runInContext(source.slice(source.indexOf('function requestedTab('),source.indexOf('function tabKey(')),context);
   context.selected=context.requestedTab();assert.equal(context.selected,JSON.stringify(['windows','work ?#','tab',42]));assert.equal(context.waitingForRequestedTab(),true);
   context.hosts.set('mac',{name:'Mac'});context.hosts.set('windows',{name:'Windows',connecting:true});assert.equal(context.waitingForRequestedTab(),true);
   context.updateTabUrl(null);assert.deepEqual(saved,[]);
-  const entry={host:'windows',name:'work ?#',state:null,catalog:[]};context.sessions.set(JSON.stringify(['windows','work ?#']),entry);context.hosts.set('windows',{name:'Windows'});context.loading=false;
+  const entry={host:'windows',name:'work ?#',state:null,catalog:[],catalogPolls:0};context.sessions.set(JSON.stringify(['windows','work ?#']),entry);context.hosts.set('windows',{name:'Windows'});context.loading=false;
   assert.equal(context.waitingForRequestedTab(),true);entry.state={panes:[]};assert.equal(context.waitingForRequestedTab(),true);
+  entry.catalog=[{id:90}];assert.equal(context.waitingForRequestedTab(),true,'A catalog seeded before the first scan is not proof the tab closed');
+  entry.catalogPolls=1;assert.equal(context.waitingForRequestedTab(),false);
   entry.catalog=[{id:42}];assert.equal(context.waitingForRequestedTab(),false);
   context.updateTabUrl({entry,tab:{id:42}});assert.deepEqual(saved,[]);
   context.updateTabUrl({entry,tab:{id:90}});assert.equal(new URL(saved[0]).searchParams.get('tab'),'90');assert.equal(new URL(saved[0]).searchParams.get('session'),'work ?#');
   context.hosts.set('windows',{error:'Offline'});assert.equal(context.waitingForRequestedTab(),true);
   context.hosts.set('windows',{sessions:[]});assert.equal(context.waitingForRequestedTab(),false);
+  context.hosts.delete('windows');context.hostsLoaded=false;context.loading=true;
+  assert.equal(context.waitingForRequestedTab(),true);
+  context.hostsLoaded=true;assert.equal(context.waitingForRequestedTab(),true,'A refresh in flight may still list the machine');
+  context.loading=false;assert.equal(context.waitingForRequestedTab(),false,'Completed discovery without the machine abandons an unknown host');
   location.search='?host=windows&session=main&tab=-1';assert.equal(context.requestedTab(),null);
   location.search='?host=windows&session=main&tab=4294967296';assert.equal(context.requestedTab(),null);
 });
@@ -286,4 +292,47 @@ test('failed switch clears pending state and restores the actual active tab, ign
   fail(8);assert.equal(entry.focusPending,true);assert.equal(context.selected,'requested');
   fail(9);assert.equal(entry.focusPending,false);assert.equal(entry.requestedPane,null);
   assert.equal(context.selected,'actual');assert.equal(focused.tab,tab);assert.match(status,/timed out/);
+});
+
+test('a clicked tab waiting for metadata retries from its button without stealing focus from other controls',()=>{
+  const pane={pane_id:9,is_plugin:false,tab_position:2},active={pane_id:7,is_plugin:false,tab_position:0};
+  const tab={id:90,position:1,name:'B',panes:[{...pane,tab_position:1}]},button={},messages=[];
+  const entry={host:'mac',name:'main',state:{panes:[active,pane],active_pane:active},focusInitialized:true,
+    frame:{contentWindow:{postMessage:message=>messages.push(message)}}};
+  const item={entry,tab,key:JSON.stringify(['mac','main','tab',90])};
+  const preview={hidden:true},artifact={},body={};let scans=0;
+  const context={document:{activeElement:button,body,hidden:false,hasFocus:()=>true,querySelector:()=>null},
+    $:id=>id==='artifact-preview'?preview:artifact,tabButtons:new Map([[item.key,button]]),location:{origin:'http://localhost'},
+    setStatus(){},refreshAttention:()=>scans++};
+  vm.createContext(context);
+  vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function tabTitle(')),context);
+  vm.runInContext(source.slice(source.indexOf('function focus('),source.indexOf('function activate(')),context);
+  context.focus(item);assert.equal(messages.length,0);assert.equal(entry.needsFocus,true);
+  context.focus(item,true);assert.equal(messages.length,0);
+  tab.position=2;tab.panes=[pane];context.focus(item,true);
+  assert.equal(messages.length,1,'Metadata arrival completes the original sidebar click');
+  assert.equal(scans,1,'Missing metadata requests one catalog scan, without a retry loop');
+  assert.equal(messages[0].pane_id,9);assert.equal(messages[0].preserve_focus,false);
+  assert.equal(entry.needsFocus,false);
+  for(const control of [{tagName:'INPUT'},{tagName:'BUTTON'},{}]){
+    context.document.activeElement=control;context.focus(item,true);
+    assert.equal(messages.length,1,'Other focused controls keep their focus');
+  }
+  context.document.activeElement=button;
+  context.document.hidden=true;context.focus(item,true);assert.equal(messages.length,1);
+  context.document.hidden=false;context.document.querySelector=()=>({});context.focus(item,true);assert.equal(messages.length,1);
+});
+
+test('a late native catalog cannot replace a selected tab waiting for focus',()=>{
+  const pane={pane_id:7,is_plugin:false,tab_position:0};
+  const entry={host:'mac',name:'main',state:{panes:[pane],active_pane:pane},needsFocus:true,followActiveTab:true,
+    frame:{classList:{contains:()=>true}}};
+  const key=id=>JSON.stringify(['mac','main','tab',id]);
+  const context={ready:{},archived:{},selected:key(90),tabOrder:[],saveReady(){},localStorage:{setItem(){}}};
+  vm.createContext(context);
+  vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function attentionKey(')),context);
+  context.setCatalog(entry,[{id:42,position:0,panes:[pane]},{id:90,position:1,panes:[]}]);
+  assert.equal(context.selected,key(90));assert.equal(entry.followActiveTab,true);
+  entry.needsFocus=false;context.syncActiveTab(entry);
+  assert.equal(context.selected,key(42));assert.equal(entry.followActiveTab,false);
 });

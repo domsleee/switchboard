@@ -369,6 +369,7 @@ impl Updater {
         fs::create_dir_all(&self.state_directory)?;
         let lock = fs::OpenOptions::new()
             .create(true)
+            .read(true)
             .append(true)
             .open(self.state_directory.join("automatic.lock"))?;
         lock.try_lock()
