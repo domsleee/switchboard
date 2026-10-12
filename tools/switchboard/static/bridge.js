@@ -249,6 +249,11 @@
       });
   }
   window.addEventListener('keydown',event=>{
+    // Older peers swallow Command+digits in their terminal key handler. Keep
+    // Chrome's tab shortcuts native even before those peers have updated.
+    if(event.metaKey&&!event.ctrlKey&&!event.altKey&&!event.shiftKey&&/^Digit[1-9]$/.test(event.code)){
+      event.stopImmediatePropagation();return;
+    }
     if(event.key==='Shift'&&!event.repeat)shiftPressedAt=performance.now();
     if(event.key==='Enter'&&event.shiftKey&&!event.isComposing&&terminalFocused()&&!pendingFocus&&!pendingNewTab){
       const now=performance.now(),pane=latest?.active_pane;
