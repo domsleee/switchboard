@@ -666,6 +666,86 @@ fn credentials_reject_public_artifact_storage_and_invalid_endpoints() {
 }
 
 #[tokio::test]
+async fn recovered_gateway_health_keeps_signed_authority_without_locking_gateway() {
+    let route = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    route.connect("192.0.2.1:9").unwrap();
+    let ip = route.local_addr().unwrap().ip();
+    let public_port = std::net::TcpListener::bind((ip, 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let temp = tempfile::tempdir().unwrap();
+    let saved_endpoint = format!("https://192.0.2.254:{public_port}");
+    let mesh = machine(&temp.path().join("mesh"), "Mac", &saved_endpoint).await;
+    mesh.create("Private fixture".into(), 1000).await.unwrap();
+    let member = mesh.database.lock().await.local.clone().unwrap();
+    let before = std::fs::read(mesh.storage.root.join("state.json")).unwrap();
+    let internal_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let internal_port = internal_listener.local_addr().unwrap().port();
+    let registration = peer_bridge::Registration {
+        id: secret(),
+        revision: secret(),
+        port: internal_port,
+        endpoint: saved_endpoint.clone(),
+        hostname: Some(member.name.clone()),
+        certificate: mesh.identity.certificate.clone(),
+        key: mesh.identity.tls_key.clone(),
+    };
+    let storage = storage::Storage::open(&temp.path().join("bridge")).unwrap();
+    storage.write("registration.json", &registration).unwrap();
+    let router = peer_bridge::relay_router(mesh.clone(), registration.id.clone());
+    let internal_task = tokio::spawn(async move {
+        axum::serve(internal_listener, router).await.unwrap();
+    });
+    let mut active = Some(("old-address".into(), axum_server::Handle::new()));
+    let (certificate, current_endpoint) = peer_bridge::prepare_at(
+        &registration,
+        std::net::SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), public_port),
+        None,
+        &mut active,
+        ip,
+        storage.root.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(certificate, member.certificate);
+    // start_gateway holds this lock while checking readiness; middleware must
+    // authorize the saved identity without trying to acquire it again.
+    let gateway = mesh.gateway.lock().await;
+    let health = tokio::time::timeout(
+        Duration::from_secs(3),
+        mesh.check_gateway_at(&member, &current_endpoint),
+    )
+    .await;
+    drop(gateway);
+    let mut wrong_origin = super::super::tests::config(&current_endpoint);
+    wrong_origin.tls_fingerprint = Some(member.certificate.clone());
+    let rejected = Host::new(wrong_origin)
+        .unwrap()
+        .raw_request(
+            Method::GET,
+            "/mesh/health",
+            Bytes::new(),
+            "application/json",
+            None,
+        )
+        .await;
+    active.as_ref().unwrap().1.shutdown();
+    internal_task.abort();
+    health.unwrap().unwrap();
+    assert_eq!(rejected.unwrap().status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        before,
+        std::fs::read(mesh.storage.root.join("state.json")).unwrap()
+    );
+    assert_eq!(
+        mesh.database.lock().await.local.as_ref().unwrap().endpoint,
+        saved_endpoint
+    );
+}
+
+#[tokio::test]
 async fn unavailable_first_gateway_does_not_lock_in_an_incorrect_address() {
     let temp = tempfile::tempdir().unwrap();
     let engine = Arc::new(Host::new(super::super::tests::config("http://127.0.0.1:1")).unwrap());
@@ -819,6 +899,7 @@ async fn gateway_roundtrip(shared: bool) {
             revision: secret(),
             port,
             endpoint: format!("https://{authority}"),
+            hostname: None,
             certificate: mac.identity.certificate.clone(),
             key: mac.identity.tls_key.clone(),
         };

@@ -197,13 +197,21 @@ async fn approve(State(state): State<RelayState>, Json(input): Json<Approve>) ->
 
 impl Mesh {
     pub async fn start_gateway(self: &Arc<Self>) -> anyhow::Result<()> {
+        self.start_gateway_recovering(true).await
+    }
+    pub(super) async fn start_gateway_recovering(
+        self: &Arc<Self>,
+        recover_address: bool,
+    ) -> anyhow::Result<()> {
         let member = match self.database.lock().await.local.clone() {
             Some(member) => member,
             None => return Ok(()),
         };
         let mut gateway = self.gateway.lock().await;
-        if gateway.as_ref() == Some(&member.endpoint) && self.check_gateway(&member).await.is_ok() {
-            return Ok(());
+        if let Some(endpoint) = gateway.as_ref() {
+            if self.check_gateway_at(&member, endpoint).await.is_ok() {
+                return Ok(());
+            }
         }
         *gateway = None;
         let revision = secret();
@@ -219,6 +227,7 @@ impl Mesh {
                     revision: revision.clone(),
                     port: *port,
                     endpoint: member.endpoint.clone(),
+                    hostname: recover_address.then(|| member.name.clone()),
                     certificate: self.identity.certificate.clone(),
                     key: self.identity.tls_key.clone(),
                 },
@@ -242,7 +251,9 @@ impl Mesh {
                 })?;
                 let mut verified = member.clone();
                 verified.certificate = certificate.clone();
-                self.check_gateway(&verified).await?;
+                let connection_address = ready.endpoint.unwrap_or_else(|| member.endpoint.clone());
+                self.check_gateway_at(&verified, &connection_address)
+                    .await?;
                 let mut db = self.database.lock().await;
                 if db.membership.is_some() || db.joining.is_some() {
                     anyhow::ensure!(
@@ -254,13 +265,37 @@ impl Mesh {
                 next.local.as_mut().unwrap().certificate = certificate;
                 self.save(&next)?;
                 *db = next;
-                *gateway = Some(member.endpoint);
+                if connection_address != member.endpoint {
+                    logs::record(
+                        "pairing",
+                        "Pairing gateway recovered through this computer's hostname",
+                    );
+                }
+                *gateway = Some(connection_address);
                 return Ok(());
             }
         }
         anyhow::bail!("Restart the Switchboard web service to enable invitations on port 8082")
     }
-    async fn check_gateway(&self, member: &Member) -> anyhow::Result<()> {
+    pub(super) async fn check_gateway_at(
+        &self,
+        member: &Member,
+        connection_address: &str,
+    ) -> anyhow::Result<()> {
+        let actual = endpoint(connection_address)?;
+        anyhow::ensure!(
+            actual.port() == endpoint(&member.endpoint)?.port(),
+            "Shared gateway port changed"
+        );
+        let address = actual
+            .host_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing gateway address"))?
+            .trim_matches(['[', ']'])
+            .parse()?;
+        anyhow::ensure!(
+            peer_bridge::local_address(address),
+            "Shared address must belong to this computer"
+        );
         let mut config = self.local_engine.config.clone();
         config.url = member.endpoint.clone();
         config.gateway_token_file = None;
@@ -268,12 +303,12 @@ impl Mesh {
         let host = Host::new(config)?;
         let response = tokio::time::timeout(
             Duration::from_secs(2),
-            host.raw_request(
+            host.raw_request_on_local_route(
+                std::net::SocketAddr::new(address, actual.port().unwrap()),
                 Method::GET,
                 "/mesh/health",
                 Bytes::new(),
                 "application/json",
-                None,
             ),
         )
         .await??;
