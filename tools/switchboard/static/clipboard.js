@@ -173,8 +173,13 @@
     const controlCopy = event.ctrlKey && !event.metaKey;
     if (!commandCopy && !controlCopy) return;
     const selected = selectionText();
-    // Preserve Ctrl+C as interrupt when there is no local terminal selection.
-    if (controlCopy && !event.shiftKey && !selected) return;
+    // A cached drag survives TUI redraws for explicit Copy/Ctrl+Shift+C. Plain
+    // Ctrl+C only copies a current visible selection; stale text must not eat
+    // the interrupt after xterm has already cleared its selection.
+    if (controlCopy && !event.shiftKey && !(terminal || window.term)?.getSelection()) {
+      clearSelection();
+      return;
+    }
     event.stopImmediatePropagation();
     if (commandCopy && !selected) {
       event.preventDefault();

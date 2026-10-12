@@ -16,6 +16,16 @@ export function installCustomKeyHandler(term, sendFunction) {
                 ((!ev.shiftKey && /^Digit[1-9]$/.test(ev.code)) || ev.code === 'KeyR')) {
                 return false;
             }
+            // Keep this at the terminal handler as well as the sidebar bridge:
+            // xterm's Ctrl+Backspace is ^H, which enters Zellij's Move mode and
+            // prevents later Backspace/Delete from reaching the shell.
+            if (ev.key === "Backspace" && (ev.ctrlKey !== ev.altKey) &&
+                !ev.metaKey && !ev.shiftKey && !ev.isComposing &&
+                !ev.getModifierState?.("AltGraph")) {
+                ev.preventDefault();
+                sendFunction("\x17");
+                return false;
+            }
             // xterm.js sends a bare CR for Ctrl+Enter, dropping the modifier.
             if (hasModifiersToHandle(ev) || ((ev.ctrlKey || ev.shiftKey) && ev.key == "Enter")) {
                 ev.preventDefault();

@@ -160,13 +160,58 @@ test('Alt arrows move by words without switching tabs or panes',()=>{
   assert.equal(socket.sent.length,2);
   assert.equal(h.key('ArrowLeft',{shiftKey:true}).prevented,undefined);
 });
-test('Ctrl+Backspace deletes a word instead of sending ^H (Zellij Ctrl+H)',()=>{
+test('Ctrl/Alt+Backspace delete a word without entering native Move mode',()=>{
   const h=harness();h.setFocus(true);
   const socket=new h.window.WebSocket('ws://localhost:8090/hosts/windows/ws/terminal/main');
-  assert.equal(h.key('Backspace',{altKey:false,ctrlKey:true}).prevented,true);
-  assert.deepEqual(socket.sent.map(data=>Buffer.from(data).toString()),['\x17']);
-  assert.equal(h.key('Backspace',{altKey:false}).prevented,undefined);
-  assert.equal(h.key('Backspace',{altKey:false,ctrlKey:true,shiftKey:true}).prevented,undefined);
+  for(const mods of [{altKey:false,ctrlKey:true},{altKey:true,ctrlKey:false}]){
+    const key=h.key('Backspace',mods);
+    assert.equal(key.prevented,true);assert.equal(key.stopped,true);
+    for(const extra of [{shiftKey:true},{metaKey:true},{isComposing:true}])assert.equal(h.key('Backspace',{...mods,...extra}).prevented,undefined);
+  }
+  assert.deepEqual(socket.sent.map(data=>Buffer.from(data).toString()),['\x17','\x17']);
+  for(const mods of [{altKey:false,ctrlKey:false},{altKey:true,ctrlKey:true}])assert.equal(h.key('Backspace',mods).prevented,undefined);
+});
+test('Ctrl+L and Ctrl+Alt+L clear the terminal and cancel browser navigation',()=>{
+  const h=harness();h.setFocus(true);
+  const socket=new h.window.WebSocket('ws://localhost:8090/hosts/windows/ws/terminal/main');
+  for(const altKey of [false,true]){
+    const key=h.key('KeyL',{ctrlKey:true,altKey});
+    assert.equal(key.prevented,true);assert.equal(key.stopped,true);
+    for(const extra of [{shiftKey:true},{metaKey:true},{isComposing:true},{getModifierState:modifier=>modifier==='AltGraph'}])assert.equal(h.key('KeyL',{ctrlKey:true,altKey,...extra}).prevented,undefined);
+  }
+  assert.deepEqual(socket.sent,['\x0c','\x0c']);assert.equal(h.messages.length,0);
+  assert.equal(h.key('KeyL',{ctrlKey:false,altKey:false}).prevented,undefined);
+  h.key('KeyL');assert.equal(h.messages[0].type,'zellij-tab-step');
+});
+test('clear and word-delete shortcuts respect focus, dialogs and input suspension',()=>{
+  for(const [code,mods] of [['KeyL',{ctrlKey:true,altKey:false}],['KeyL',{ctrlKey:true}],['Backspace',{altKey:false,ctrlKey:true}],['Backspace',{}]]){
+    const h=harness(),socket=new h.window.WebSocket('ws://localhost:8090/hosts/windows/ws/terminal/main');
+    assert.equal(h.key(code,mods).prevented,undefined);
+    h.setFocus(true);h.setModal(true);assert.equal(h.key(code,mods).prevented,undefined);
+    h.setModal(false);h.parent.document.querySelector=()=>({});assert.equal(h.key(code,mods).prevented,undefined);
+    h.parent.document.querySelector=()=>null;
+    h.window.term.options.disableStdin=true;assert.equal(h.key(code,mods).prevented,true);
+    h.window.term.options.disableStdin=false;socket.readyState=0;assert.equal(h.key(code,mods).prevented,true);
+    assert.equal(socket.sent.length,0);
+  }
+});
+test('clear and word-delete shortcuts cannot reach a pane while New tab is pending',()=>{
+  const h=harness(),sent=[];h.setFocus(true);h.window.__zjSendControl=message=>sent.push(message);
+  const socket=new h.window.WebSocket('ws://localhost:8090/hosts/windows/ws/terminal/main');
+  h.state({active_pane:{pane_id:1,is_plugin:false}});
+  h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-new-tab'}});
+  h.window.term.options.disableStdin=false;
+  h.key('KeyL',{ctrlKey:true,altKey:false});h.key('KeyL',{ctrlKey:true});h.key('Backspace',{altKey:false,ctrlKey:true});h.key('Backspace');
+  assert.equal(socket.sent.length,0);assert.equal(sent[0].type,'NewTab');
+});
+test('clear and word-delete shortcuts cannot reach a pane while focus is pending',()=>{
+  const h=harness();h.setFocus(true);h.window.__zjSendControl=()=>{};
+  const socket=new h.window.WebSocket('ws://localhost:8090/hosts/windows/ws/terminal/main');
+  h.state({active_pane:{pane_id:1,is_plugin:false}});
+  h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-focus',pane_id:2,is_plugin:false,focus_id:1}});
+  h.window.term.options.disableStdin=false;
+  h.key('KeyL',{ctrlKey:true,altKey:false});h.key('KeyL',{ctrlKey:true});h.key('Backspace',{altKey:false,ctrlKey:true});h.key('Backspace');
+  assert.equal(socket.sent.length,0);
 });
 test('iframe modal and unrelated/modified keys keep native behavior',()=>{
   const h=harness();

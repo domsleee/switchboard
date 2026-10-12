@@ -108,6 +108,19 @@ test('selected Ctrl+C, Ctrl+Shift+C and app Copy write the viewing clipboard', a
   assert.equal(h.messages.at(-1).message.source, 'selection');
 });
 
+test('a cached drag after selection disappears cannot swallow Ctrl+C interrupt', async () => {
+  const h=harness();
+  h.event('mousedown',{button:0});h.setSelection('previous output');h.event('mouseup');await settle();
+  h.setSelection('');assert.equal(h.api.getSelectionText(),'previous output');
+  const copy=h.event('keydown',{ctrlKey:true,shiftKey:true});await settle();
+  assert.equal(copy.prevented,true);assert.equal(copy.stopped,true);
+  assert.deepEqual(h.writes,['previous output','previous output']);
+  const interrupt=h.event('keydown',{ctrlKey:true});await settle();
+  assert.equal(interrupt.prevented,undefined);assert.equal(interrupt.stopped,undefined);
+  assert.deepEqual(h.writes,['previous output','previous output']);
+  assert.equal(h.api.getSelectionText(),'');
+});
+
 test('app Copy prefers the focused viewing parent clipboard over the iframe clipboard', async () => {
   const h = harness({write: async () => { throw Error('Unfocused iframe'); }});
   const parentWrites = [];

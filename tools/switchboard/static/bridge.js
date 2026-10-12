@@ -297,10 +297,20 @@
       sendEscape();
       return;
     }
-    if(event.code==='Backspace'&&event.ctrlKey&&!event.altKey&&!event.metaKey&&!event.shiftKey
+    if(event.code==='KeyL'&&event.ctrlKey&&!event.metaKey&&!event.shiftKey
+        &&!event.isComposing&&!event.getModifierState?.('AltGraph')&&terminalFocused()){
+      // Cancel the address-bar action before xterm handles Ctrl+L. Ctrl+Alt+L
+      // sends the same clear-screen input if the browser keeps Ctrl+L itself.
+      event.preventDefault();event.stopImmediatePropagation();
+      if(pendingFocus||pendingNewTab||window.term?.options.disableStdin)return;
+      if(terminalSocket?.readyState===1)terminalSocket.send('\x0c');
+      return;
+    }
+    if(event.code==='Backspace'&&(event.ctrlKey!==event.altKey)&&!event.metaKey&&!event.shiftKey
         &&!event.isComposing&&terminalFocused()){
       // xterm.js sends ^H, which Zellij reads as Ctrl+H (Move mode). Send ^W
-      // (delete word left) instead, as VS Code's terminal does.
+      // (delete word left) for either Ctrl or Alt instead of ambiguous Backspace
+      // sequences, including when the shell runs through Windows ConPTY.
       event.preventDefault();event.stopImmediatePropagation();
       if(pendingFocus||pendingNewTab||window.term?.options.disableStdin)return;
       if(terminalSocket?.readyState===1)terminalSocket.send('\x17');

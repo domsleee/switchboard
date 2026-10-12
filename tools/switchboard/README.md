@@ -165,6 +165,10 @@ including `/rename` updates. Agent spinner prefixes are stripped from labels.
 Plain **Ctrl+T** is disabled inside the terminal so it cannot open Zellij's tab menu.
 Use **+ New tab** or **Ctrl+Alt+T** (Windows) / **Cmd+Alt+T** (Mac) to open a shell in a chosen machine/session. The new tab is
 selected automatically.
+**Ctrl+L** or **Ctrl+Alt+L** clears the focused terminal, and **Ctrl+Backspace** / **Alt+Backspace**
+delete the word to the left. If your browser keeps **Ctrl+L** for its address bar,
+use **Ctrl+Alt+L** or run `clear` at the shell prompt. These terminal shortcuts leave
+dialogs and other text fields alone.
 Shell directory titles retain explicitly named Zellij tabs. If an agent disables
 terminal title updates, Switchboard cannot obtain the chat name through this
 protocol; the agent must emit it as a terminal title.

@@ -398,6 +398,20 @@ function encode_kitty_key(ev, send_ansi_key) {
     if (ev.metaKey) {
         modifier_string += super_value;
     }
+    // Navigation keys use their standard CSI names, not the first letter of
+    // KeyboardEvent.key (eg. Ctrl+Shift+ArrowLeft must not become Ctrl+Shift+A).
+    const cursor = {ArrowUp: "A", ArrowDown: "B", ArrowRight: "C", ArrowLeft: "D",
+        Home: "H", End: "F", F1: "P", F2: "Q", F3: "R", F4: "S"};
+    if (cursor[ev.key]) {
+        send_ansi_key(`\x1b[1;${modifier_string}${cursor[ev.key]}`);
+        return;
+    }
+    const tilde = {Insert: 2, Delete: 3, PageUp: 5, PageDown: 6,
+        F5: 15, F6: 17, F7: 18, F8: 19, F9: 20, F10: 21, F11: 23, F12: 24};
+    if (tilde[ev.key]) {
+        send_ansi_key(`\x1b[${tilde[ev.key]};${modifier_string}~`);
+        return;
+    }
     // Named keys use their C0 code, not the first letter of their name.
     const named = { Enter: 13, Tab: 9, Escape: 27, Backspace: 127 };
     let key_code = named[ev.key] ?? ev.key.charCodeAt(0);
@@ -967,6 +981,16 @@ function installCustomKeyHandler(term, sendFunction) {
             // browser: no preventDefault, no xterm.
             if (ev.metaKey && !ev.ctrlKey && !ev.altKey &&
                 ((!ev.shiftKey && /^Digit[1-9]$/.test(ev.code)) || ev.code === 'KeyR')) {
+                return false;
+            }
+            // Keep this at the terminal handler as well as the sidebar bridge:
+            // xterm's Ctrl+Backspace is ^H, which enters Zellij's Move mode and
+            // prevents later Backspace/Delete from reaching the shell.
+            if (ev.key === "Backspace" && (ev.ctrlKey !== ev.altKey) &&
+                !ev.metaKey && !ev.shiftKey && !ev.isComposing &&
+                !ev.getModifierState?.("AltGraph")) {
+                ev.preventDefault();
+                sendFunction("\x17");
                 return false;
             }
             // xterm.js sends a bare CR for Ctrl+Enter, dropping the modifier.
