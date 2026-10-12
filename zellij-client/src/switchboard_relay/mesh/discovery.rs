@@ -143,6 +143,9 @@ pub(in crate::switchboard_relay) fn start(state: RelayState) -> tokio::task::Joi
         }
         loop {
             tokio::time::sleep(Duration::from_secs(3)).await;
+            // DHCP can move the public sibling while the native engine keeps
+            // its private listener and terminal sessions running.
+            let _ = mesh.start_gateway().await;
             if mesh.database.lock().await.joining.is_some() {
                 let _ = mesh.resume().await;
             }

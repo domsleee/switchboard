@@ -43,8 +43,16 @@ each) and appear in **Computers** with **Pair this computer**. Pair them, then
 delete the entry. A paired computer gets a new id, so its browser tab order and
 archive state start fresh.
 
-The invitation records the computer's current LAN address. If DHCP gives it a
-new address, pair again, or reserve its address in the router.
+Pairing remembers the computer's LAN address. If that address stops working,
+Switchboard also resolves `<computer-name>.local` and checks the paired computer's
+certificate before connecting. The paired name must match its network hostname;
+for example, `1WN9PD4` uses `1WN9PD4.local`. Names containing spaces cannot supply
+this fallback. The network must support DNS or Bonjour/mDNS name resolution.
+
+The local gateway can recover on its current network address without replacing
+its pairing identity or terminal sessions. Other computers need this update to
+find a moved peer by hostname. A reserved router address remains useful on
+networks that do not resolve computer names.
 
 On macOS, install the menu bar app and keep the relay running independently of a terminal:
 
