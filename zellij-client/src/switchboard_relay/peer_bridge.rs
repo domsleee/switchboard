@@ -15,6 +15,8 @@ pub(super) struct Registration {
     pub revision: String,
     pub port: u16,
     pub endpoint: String,
+    #[serde(default)]
+    pub hostname: Option<String>,
     pub certificate: String,
     pub key: String,
 }
@@ -22,7 +24,52 @@ pub(super) struct Registration {
 pub(super) struct Ready {
     pub id: String,
     pub certificate: Option<String>,
+    #[serde(default)]
+    pub endpoint: Option<String>,
     pub error: Option<String>,
+}
+pub(super) fn local_address(ip: std::net::IpAddr) -> bool {
+    hostname::usable_route_address(ip) && hostname::is_local_address(ip)
+}
+
+async fn connection_address(hint: Option<&str>) -> anyhow::Result<std::net::IpAddr> {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let mut names = Vec::new();
+        // The chosen display name can differ from this computer's network name.
+        let output = tokio::time::timeout(
+            Duration::from_secs(1),
+            tokio::process::Command::new("hostname")
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await;
+        if let Ok(Ok(output)) = output {
+            if output.status.success() {
+                names.push(String::from_utf8_lossy(&output.stdout).trim().to_owned());
+            }
+        }
+        if let Some(hint) = hint {
+            if !names.iter().any(|name| name.eq_ignore_ascii_case(hint)) {
+                names.push(hint.to_owned());
+            }
+        }
+        for name in names {
+            if let Some(address) = single_local_address(hostname::resolve(&name, 0).await) {
+                return Ok(address);
+            }
+        }
+        anyhow::bail!("No single local address for this computer's hostname")
+    })
+    .await?
+}
+fn single_local_address(addresses: Vec<SocketAddr>) -> Option<std::net::IpAddr> {
+    let mut local = Vec::new();
+    for address in addresses {
+        if local_address(address.ip()) && !local.contains(&address.ip()) {
+            local.push(address.ip());
+        }
+    }
+    (local.len() == 1).then(|| local[0])
 }
 fn digest(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
@@ -161,8 +208,8 @@ pub(crate) fn start(
             let result =
                 prepare(&registration, listener, certificate.as_deref(), &mut active).await;
             let ready = match result {
-                Ok(certificate) => Ready { id: registration.revision.clone(), certificate: Some(certificate), error: None },
-                Err(_) => Ready { id: registration.revision.clone(), certificate: None, error: Some("Cannot share port 8082. Check this computer's address and web server certificate.".into()) },
+                Ok((certificate, endpoint)) => Ready { id: registration.revision.clone(), certificate: Some(certificate), endpoint: Some(endpoint), error: None },
+                Err(_) => Ready { id: registration.revision.clone(), certificate: None, endpoint: None, error: Some("Cannot share port 8082. Check this computer's address and web server certificate.".into()) },
             };
             if let Ok(bytes) = serde_json::to_vec(&ready) {
                 // No private material in the acknowledgement. Atomic replacement
@@ -183,8 +230,7 @@ async fn prepare(
     listener: SocketAddr,
     certificate: Option<&Path>,
     active: &mut Option<(String, axum_server::Handle<SocketAddr>)>,
-) -> anyhow::Result<String> {
-    use base64::Engine;
+) -> anyhow::Result<(String, String)> {
     let url = url::Url::parse(&registration.endpoint)?;
     let ip: std::net::IpAddr = url
         .host_str()
@@ -199,13 +245,52 @@ async fn prepare(
             && !ip.is_multicast(),
         "Use the native web server port"
     );
+    let ip = if local_address(ip) {
+        ip
+    } else {
+        anyhow::ensure!(
+            registration.hostname.is_some(),
+            "Configured address is not local"
+        );
+        connection_address(registration.hostname.as_deref()).await?
+    };
+    prepare_at(
+        registration,
+        listener,
+        certificate,
+        active,
+        ip,
+        directory(listener.port()),
+    )
+    .await
+}
+
+pub(super) async fn prepare_at(
+    registration: &Registration,
+    listener: SocketAddr,
+    certificate: Option<&Path>,
+    active: &mut Option<(String, axum_server::Handle<SocketAddr>)>,
+    ip: std::net::IpAddr,
+    root: PathBuf,
+) -> anyhow::Result<(String, String)> {
+    use base64::Engine;
+    let configured = url::Url::parse(&registration.endpoint)?;
+    anyhow::ensure!(
+        configured.scheme() == "https" && configured.port() == Some(listener.port()),
+        "Use the native web server port"
+    );
+    anyhow::ensure!(
+        local_address(ip),
+        "Shared address must belong to this computer"
+    );
+    let endpoint = format!("https://{}", SocketAddr::new(ip, listener.port()));
     if listener.ip().is_unspecified() || listener.ip() == ip {
         let pem = std::fs::read(certificate.ok_or_else(|| anyhow::anyhow!("HTTPS required"))?)?;
         let cert = rustls_pki_types::CertificateDer::pem_slice_iter(&pem)
             .next()
             .transpose()?
             .ok_or_else(|| anyhow::anyhow!("Missing certificate"))?;
-        return Ok(digest(cert.as_ref()));
+        return Ok((digest(cert.as_ref()), endpoint));
     }
     anyhow::ensure!(
         listener.ip().is_loopback(),
@@ -214,17 +299,13 @@ async fn prepare(
     let cert =
         base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&registration.certificate)?;
     let fingerprint = digest(&cert);
-    let identity = format!("{}:{fingerprint}", registration.endpoint);
+    let identity = format!("{endpoint}:{fingerprint}");
     if active
         .as_ref()
         .is_some_and(|(existing, _)| existing == &identity)
     {
-        return Ok(fingerprint);
+        return Ok((fingerprint, endpoint));
     }
-    anyhow::ensure!(
-        active.is_none(),
-        "Restart the web service to change the shared address"
-    );
     let socket = std::net::TcpListener::bind((ip, listener.port()))?;
     socket.set_nonblocking(true)?;
     let key = rustls_pki_types::PrivateKeyDer::from_pem_slice(registration.key.as_bytes())?;
@@ -242,7 +323,6 @@ async fn prepare(
     let server = axum_server::from_tcp(socket)?
         .acceptor(acceptor)
         .handle(handle.clone());
-    let root = directory(listener.port());
     tokio::spawn(async move {
         let public = move |request: Request| {
             let root = root.clone();
@@ -258,13 +338,134 @@ async fn prepare(
             .serve(Router::new().fallback(public).into_make_service())
             .await;
     });
-    *active = Some((identity, handle));
-    Ok(fingerprint)
+    if !matches!(
+        tokio::time::timeout(Duration::from_secs(1), handle.listening()).await,
+        Ok(Some(_))
+    ) {
+        handle.shutdown();
+        anyhow::bail!("Replacement shared listener unavailable");
+    }
+    if let Some((_, previous)) = active.replace((identity, handle)) {
+        previous.graceful_shutdown(Some(Duration::from_secs(5)));
+    }
+    Ok((fingerprint, endpoint))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn local_interface() -> std::net::IpAddr {
+        let route = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+        route.connect("192.0.2.1:9").unwrap();
+        route.local_addr().unwrap().ip()
+    }
+    #[test]
+    fn older_bridge_metadata_keeps_working_without_hostname_or_endpoint() {
+        let registration: Registration = serde_json::from_value(json!({
+            "id":"isolated", "revision":"first", "port":8090,
+            "endpoint":"https://192.0.2.1:8082", "certificate":"pin", "key":"key"
+        }))
+        .unwrap();
+        assert!(registration.hostname.is_none());
+        let ready: Ready = serde_json::from_value(json!({
+            "id":"first", "certificate":"pin", "error":null
+        }))
+        .unwrap();
+        assert!(ready.endpoint.is_none());
+    }
+    #[test]
+    fn hostname_candidates_cannot_bind_another_computers_address() {
+        let local = SocketAddr::new(local_interface(), 8082);
+        let remote = "192.0.2.254:8082".parse().unwrap();
+        let loopback = "127.0.0.1:8082".parse().unwrap();
+        assert_eq!(single_local_address(vec![remote, loopback]), None);
+        assert_eq!(
+            single_local_address(vec![remote, local, local]),
+            Some(local.ip())
+        );
+    }
+    #[tokio::test]
+    async fn gateway_rebind_preserves_the_tls_identity_and_rejects_nonlocal_addresses() {
+        use base64::Engine;
+        let temp = tempfile::tempdir().unwrap();
+        let ip = local_interface();
+        let port = std::net::TcpListener::bind((ip, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let cert = rcgen::generate_simple_self_signed(vec!["native.test".into()]).unwrap();
+        let registration = Registration {
+            id: "isolated".into(),
+            revision: "moved".into(),
+            port: 8090,
+            endpoint: format!("https://192.0.2.1:{port}"),
+            hostname: None,
+            certificate: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(cert.cert.der()),
+            key: cert.signing_key.serialize_pem(),
+        };
+        let mut active = Some(("previous-address".into(), axum_server::Handle::new()));
+        let listener = SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), port);
+        assert!(prepare(&registration, listener, None, &mut active)
+            .await
+            .is_err());
+        assert!(prepare_at(
+            &registration,
+            listener,
+            None,
+            &mut active,
+            "192.0.2.254".parse().unwrap(),
+            temp.path().to_path_buf(),
+        )
+        .await
+        .is_err());
+        assert_eq!(active.as_ref().unwrap().0, "previous-address");
+        let occupied = std::net::TcpListener::bind((ip, port)).unwrap();
+        assert!(prepare_at(
+            &registration,
+            listener,
+            None,
+            &mut active,
+            ip,
+            temp.path().to_path_buf()
+        )
+        .await
+        .is_err());
+        assert_eq!(active.as_ref().unwrap().0, "previous-address");
+        drop(occupied);
+        let (fingerprint, endpoint) = prepare_at(
+            &registration,
+            listener,
+            None,
+            &mut active,
+            ip,
+            temp.path().to_path_buf(),
+        )
+        .await
+        .unwrap();
+        let handle = active.as_ref().unwrap().1.clone();
+        assert_eq!(fingerprint, digest(cert.cert.der()));
+        assert_eq!(endpoint, format!("https://{}", SocketAddr::new(ip, port)));
+        tokio::time::timeout(Duration::from_secs(2), handle.listening())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut config = super::super::tests::config(&endpoint);
+        config.tls_fingerprint = Some(fingerprint);
+        let host = Host::new(config).unwrap();
+        let response = host
+            .raw_request(
+                Method::GET,
+                "/private-fixture",
+                Bytes::new(),
+                "text/plain",
+                None,
+            )
+            .await;
+        handle.shutdown();
+        assert_eq!(response.unwrap().status, StatusCode::NOT_FOUND);
+        assert_eq!(registration.endpoint, format!("https://192.0.2.1:{port}"));
+    }
     #[tokio::test]
     async fn existing_tls_listener_keeps_its_certificate_and_port() {
         let temp = tempfile::tempdir().unwrap();
@@ -276,15 +477,18 @@ mod tests {
             revision: "first".into(),
             port: 8090,
             endpoint: "https://192.0.2.1:8082".into(),
+            hostname: None,
             certificate: "must not replace existing TLS".into(),
             key: "unused".into(),
         };
         let mut active = None;
-        let fingerprint = prepare(
+        let (fingerprint, _) = prepare_at(
             &registration,
             "0.0.0.0:8082".parse().unwrap(),
             Some(&path),
             &mut active,
+            local_interface(),
+            temp.path().to_path_buf(),
         )
         .await
         .unwrap();
@@ -293,19 +497,23 @@ mod tests {
             active.is_none(),
             "an existing listener is reused without binding another port"
         );
-        assert!(prepare(
+        assert!(prepare_at(
             &registration,
             "0.0.0.0:8093".parse().unwrap(),
             Some(&path),
-            &mut active
+            &mut active,
+            local_interface(),
+            temp.path().to_path_buf(),
         )
         .await
         .is_err());
-        assert!(prepare(
+        assert!(prepare_at(
             &registration,
             "0.0.0.0:8082".parse().unwrap(),
             None,
-            &mut active
+            &mut active,
+            local_interface(),
+            temp.path().to_path_buf(),
         )
         .await
         .is_err());
