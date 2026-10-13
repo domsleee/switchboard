@@ -3,7 +3,7 @@ const assert=require('node:assert/strict');
 const vm=require('node:vm');
 const fs=require('node:fs');
 const source=fs.readFileSync(__dirname+'/static/bridge.js','utf8');
-function harness(withDiagnostics=false){
+function harness(withDiagnostics=false,platform='MacIntel'){
   const handlers={},messages=[],properties=new Map(),classes=new Set(),frames=[],resizes=[],timers=new Map();let timerId=0;
   let modal=false,focused=false,browserFocused=false,frameActive=true,bottomRows=2,firstRow='Zellij (main)',now=0;
   class Socket{constructor(){this.handlers={};this.readyState=1;this.sent=[];}addEventListener(type,fn){this.handlers[type]=fn;}send(data){this.sent.push(data);}}
@@ -18,7 +18,7 @@ function harness(withDiagnostics=false){
     documentElement:{style:{getPropertyValue:key=>properties.get(key)||'',setProperty:(key,val)=>properties.set(key,val)}}};
   parent.document=document;
   const diagnosticsSource=withDiagnostics?fs.readFileSync(__dirname+'/static/terminal-diagnostics.js','utf8'):'';
-  vm.runInNewContext(diagnosticsSource+source,{window,document,parent,performance:{now:()=>now},location:{pathname:'/hosts/windows/main',origin:'http://localhost:8090'},localStorage:{getItem:()=>null},MutationObserver:class{observe(){}},requestAnimationFrame:fn=>frames.push(fn),setTimeout:fn=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id),Event:class{},TextEncoder});
+  vm.runInNewContext(diagnosticsSource+source,{window,document,parent,navigator:{platform},performance:{now:()=>now},location:{pathname:'/hosts/windows/main',origin:'http://localhost:8090'},localStorage:{getItem:()=>null},MutationObserver:class{observe(){}},requestAnimationFrame:fn=>frames.push(fn),setTimeout:fn=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id),Event:class{},TextEncoder});
   const key=(code,extra={})=>{const event={code,altKey:true,ctrlKey:false,metaKey:false,shiftKey:false,preventDefault(){this.prevented=true;},stopImmediatePropagation(){this.stopped=true;},...extra};handlers.keydown(event);return event;};
   const state=(payload={})=>{const socket=new window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');socket.handlers.message({data:JSON.stringify({type:'MobileState',payload})});while(frames.length)frames.shift()();};
   const error=(...lines)=>{const socket=new window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');socket.handlers.message({data:JSON.stringify({type:'LogError',lines})});};
@@ -122,12 +122,12 @@ test('failed New tab creation restores input on timeout or disconnect',()=>{
     assert.equal(h.window.term.options.disableStdin,false);assert.equal(h.timers.size,0);
   }
 });
-test('Command+digits reach Chrome without reaching old peer terminal handlers',()=>{
-  const h=harness();h.setFocus(true);
+for(const [platform,modifier] of [['MacIntel','metaKey'],['Win32','ctrlKey']])test(`${platform}: browser digits bypass old peer terminal handlers`,()=>{
+  const h=harness(false,platform);h.setFocus(true);
   for(const modal of [false,true]){
     h.setModal(modal);
     for(let n=1;n<=9;n++){
-      const event=h.key(`Digit${n}`,{altKey:false,metaKey:true});
+      const event=h.key(`Digit${n}`,{altKey:false,[modifier]:true});
       // A legacy target listener would preventDefault unless capture stopped it.
       if(!event.stopped)event.preventDefault();
       assert.equal(event.prevented,undefined);
@@ -136,8 +136,8 @@ test('Command+digits reach Chrome without reaching old peer terminal handlers',(
   }
   assert.equal(h.messages.length,0);
   h.setModal(false);
-  for(const extra of [{shiftKey:true},{ctrlKey:true},{altKey:true}]){
-    assert.equal(h.key('Digit2',{altKey:false,metaKey:true,...extra}).stopped,undefined);
+  for(const extra of [{shiftKey:true},{[modifier==='metaKey'?'ctrlKey':'metaKey']:true},{altKey:true}]){
+    assert.equal(h.key('Digit2',{altKey:false,[modifier]:true,...extra}).stopped,undefined);
   }
 });
 test('iframe H/L send one switch/move and stop native/browser navigation',()=>{

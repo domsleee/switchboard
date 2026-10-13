@@ -5,8 +5,8 @@ const handlerSources={
   bundle:slice('function installCustomKeyHandler(','function installMouseHandlers('),
   module:fs.readFileSync(__dirname+'/../../zellij-client/assets/key-handler.js','utf8').replace(/^import .*;\r?\n/gm,'').replace('export function','function'),
 };
-function installHandler(term,send,variant='bundle'){
-  const context={isMac:()=>true};vm.createContext(context);
+function installHandler(term,send,variant='bundle',platform='MacIntel'){
+  const context={isMac:()=>platform.startsWith('Mac'),navigator:{platform}};vm.createContext(context);
   const encoder=variant==='bundle'?slice('function encode_kitty_key(','/**'):fs.readFileSync(__dirname+'/../../zellij-client/assets/keyboard.js','utf8').replace('export function','function');
   vm.runInContext(encoder+handlerSources[variant],context);
   context.installCustomKeyHandler(term,send);
@@ -63,10 +63,14 @@ test('real bundled xterm sends one word-delete then ordinary Backspace/Delete ac
     // and keyboard encoder run without opening or attaching a browser terminal.
     core.browser={...core.browser,isWindows:true};core._compositionHelper={keydown:()=>true};core.textarea={value:''};
     core.updateCursorStyle=()=>{};core._showCursor=()=>{};core.focus=()=>{};
-    term.onData(data=>sent.push(data));installHandler(term,data=>sent.push(data),variant);
+    term.onData(data=>sent.push(data));installHandler(term,data=>sent.push(data),variant,'Win32');
     const event=(key,keyCode,mods={})=>({type:'keydown',key,keyCode,ctrlKey:false,altKey:false,metaKey:false,shiftKey:false,getModifierState:()=>false,preventDefault(){this.prevented=true;},stopPropagation(){},...mods});
     const pressAndRelease=(key,keyCode,mods={})=>{const down=event(key,keyCode,mods);core._keyDown(down);core._keyUp({...down,type:'keyup'});return down;};
     try{
+      for(let digit=1;digit<=9;digit++){
+        assert.equal(pressAndRelease(String(digit),48+digit,{ctrlKey:true,code:'Digit'+digit}).prevented,undefined,'Windows Ctrl+digit stays with Chrome');
+      }
+      assert.deepEqual(sent,[],'Windows browser tab shortcuts never reach the shell');
       assert.equal(pressAndRelease('Backspace',8,{ctrlKey:true}).prevented,true);
       pressAndRelease('Control',17);
       pressAndRelease('Backspace',8);pressAndRelease('Delete',46);

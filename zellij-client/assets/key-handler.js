@@ -16,6 +16,12 @@ export function installCustomKeyHandler(term, sendFunction) {
                 ((!ev.shiftKey && /^Digit[1-9]$/.test(ev.code)) || ev.code === 'KeyR')) {
                 return false;
             }
+            // Windows browser tab switching must also bypass xterm when the
+            // native web client is opened without the sidebar bridge.
+            if (ev.ctrlKey && !ev.metaKey && !ev.altKey && !ev.shiftKey &&
+                /^Digit[1-9]$/.test(ev.code) && navigator.platform.startsWith('Win')) {
+                return false;
+            }
             // Keep this at the terminal handler as well as the sidebar bridge:
             // xterm's Ctrl+Backspace is ^H, which enters Zellij's Move mode and
             // prevents later Backspace/Delete from reaching the shell.
