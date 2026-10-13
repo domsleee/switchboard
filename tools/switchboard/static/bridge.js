@@ -249,9 +249,11 @@
       });
   }
   window.addEventListener('keydown',event=>{
-    // Older peers swallow Command+digits in their terminal key handler. Keep
-    // Chrome's tab shortcuts native even before those peers have updated.
-    if(event.metaKey&&!event.ctrlKey&&!event.altKey&&!event.shiftKey&&/^Digit[1-9]$/.test(event.code)){
+    const digit=/^Digit[1-9]$/.test(event.code),windows=digit&&navigator.platform.startsWith('Win');
+    // Keep browser tab shortcuts away from older peers' terminal handlers:
+    // Command+digits everywhere and Ctrl+digits on Windows, without preventDefault.
+    if(digit&&!event.altKey&&!event.shiftKey&&
+        ((event.metaKey&&!event.ctrlKey)||(windows&&event.ctrlKey&&!event.metaKey))){
       event.stopImmediatePropagation();return;
     }
     if(event.key==='Shift'&&!event.repeat)shiftPressedAt=performance.now();
@@ -278,8 +280,9 @@
       // Closing uses the parent's selected tab ID, independently of native focus.
       parent.postMessage({type:'zellij-close-tab',host},location.origin);return;
     }
-    // Ctrl+1–9 selects a Switchboard tab on every platform, before xterm/Zellij; see tabNumber in app.js.
-    if(event.ctrlKey&&!event.metaKey&&!event.altKey&&!event.shiftKey&&/^Digit[1-9]$/.test(event.code)){
+    // Match the sidebar: Alt+digits on Windows, Ctrl+digits elsewhere, before xterm/Zellij.
+    if(digit&&!event.metaKey&&!event.shiftKey&&
+        (windows?event.altKey&&!event.ctrlKey:event.ctrlKey&&!event.altKey)){
       event.preventDefault();event.stopImmediatePropagation();
       parent.postMessage({type:'zellij-tab-number',host,number:+event.code.slice(5)},location.origin);return;
     }

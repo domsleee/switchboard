@@ -464,10 +464,12 @@ window.addEventListener('keydown',event=>{
   event.preventDefault();event.stopImmediatePropagation();
   if(event.shiftKey)moveSelected(direction);else stepTab(direction);
 },true);
-// Ctrl+1–8 pick that visible sidebar tab and Ctrl+9 the last, like browser tabs, on every
-// platform. preventDefault stops Chrome/Edge/Firefox switching browser tabs; Cmd+digit stays theirs.
+// Windows uses Alt+1–9 so Ctrl+digits stay with the browser. Other platforms use
+// Ctrl+digits; 1–8 pick the visible sidebar tab and 9 picks the last.
 function tabNumber(event){
-  return event.ctrlKey&&!event.metaKey&&!event.altKey&&!event.shiftKey&&/^Digit[1-9]$/.test(event.code)?+event.code.slice(5):0;
+  if(event.metaKey||event.shiftKey||!/^Digit[1-9]$/.test(event.code))return 0;
+  const modifier=navigator.platform.startsWith('Win')?event.altKey&&!event.ctrlKey:event.ctrlKey&&!event.altKey;
+  return modifier?+event.code.slice(5):0;
 }
 function selectTabNumber(number){
   const tabs=allTabs().filter(matchesSearch),item=number===9?tabs.at(-1):tabs[number-1];
