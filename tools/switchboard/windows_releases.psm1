@@ -103,6 +103,19 @@ function Initialize-SwitchboardReleaseStore([string]$Binary, [string]$Directory 
     } finally { $lock.Dispose() }
 }
 
+# First install: create this computer's login token and its host list entry.
+function New-SwitchboardHostConfig([string]$Binary, [string[]]$Prefix, [string]$Path) {
+    if (Test-Path -LiteralPath $Path) { return }
+    $output = (Invoke-SwitchboardProbe $Binary (@($Prefix) + @('web','--create-token'))).Output
+    # Prints "Created token successfully", a blank line, then "<name>: <token>".
+    $lines = @($output -split "`r?`n" | Where-Object { $_ -match '^\S+: \S+' })
+    if (!$lines.Count) { throw 'Could not create a login token for this computer' }
+    $tokenFile = Join-Path (Split-Path -Parent $Path) 'switchboard-token'
+    [IO.File]::WriteAllText($tokenFile, ($lines[-1] -split ': ', 2)[1].Trim())
+    $entry = [ordered]@{id='windows'; name=$env:COMPUTERNAME; url='http://127.0.0.1:8082'; token_file=$tokenFile; escape_transport='local'}
+    [IO.File]::WriteAllText($Path, (ConvertTo-Json -InputObject ([ordered]@{hosts=@($entry)}) -Depth 4))
+}
+
 # Quote arguments for the Windows native command line, including trailing
 # backslashes and quotes. No shell or command interpolation is involved.
 function ConvertTo-SwitchboardArgument([string]$Value) {
@@ -366,4 +379,4 @@ function Invoke-SwitchboardWindowsUpdate {
     } finally { $lock.Dispose() }
 }
 
-Export-ModuleMember -Function Get-SwitchboardTrayScript,Get-SwitchboardTrays,Get-SwitchboardTrayArguments,Get-SwitchboardCommandLineValue,Wait-SwitchboardMutexRelease,Enter-SwitchboardMutex,Get-SwitchboardReleaseDirectory,Get-SwitchboardReleaseState,Get-SwitchboardCurrentBinary,Initialize-SwitchboardReleaseStore,Invoke-SwitchboardWindowsUpdate,Invoke-SwitchboardProbe,ConvertTo-SwitchboardArgument
+Export-ModuleMember -Function New-SwitchboardHostConfig,Get-SwitchboardTrayScript,Get-SwitchboardTrays,Get-SwitchboardTrayArguments,Get-SwitchboardCommandLineValue,Wait-SwitchboardMutexRelease,Enter-SwitchboardMutex,Get-SwitchboardReleaseDirectory,Get-SwitchboardReleaseState,Get-SwitchboardCurrentBinary,Initialize-SwitchboardReleaseStore,Invoke-SwitchboardWindowsUpdate,Invoke-SwitchboardProbe,ConvertTo-SwitchboardArgument

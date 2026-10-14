@@ -35,7 +35,7 @@ $trayArguments = @('-NoLogo','-NoProfile','-NonInteractive','-WindowStyle','Hidd
 if ($Config) { $trayArguments += @('-Config',$Config) }
 $arguments = ($trayArguments | ForEach-Object { ConvertTo-SwitchboardArgument $_ }) -join ' '
 if (!$Tray) {
-    if (!(Test-Path -LiteralPath $relayConfig)) { throw "Configure $relayConfig with your authenticated local host first (see README)." }
+    New-SwitchboardHostConfig $Binary $prefix $relayConfig
     $Binary = Initialize-SwitchboardReleaseStore -Binary $Binary -Directory $ReleaseDirectory
     $source = Split-Path $PSCommandPath
     if ([IO.Path]::GetFullPath($PSCommandPath) -ne $installed) {

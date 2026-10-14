@@ -171,6 +171,22 @@ try {
     $candidate = New-Fixture 'new' 'no-sessions'
     Invoke-SwitchboardWindowsUpdate -Candidate $candidate -Directory $fixture.Directory | Out-Null
     Assert ((Get-SwitchboardReleaseState $fixture.Directory).sha256 -ceq $fixture.NewHash) 'No-session installation failed'
+    $hostsPath = Join-Path $root 'hosts.json'
+    $createHosts = {
+        param($Path)
+        function script:Invoke-SwitchboardProbe([string]$Binary, [string[]]$Arguments, [int]$TimeoutSeconds = 15, [switch]$AllowFailure) {
+            if (($Arguments -join ' ') -ne 'web --create-token') { throw "Unexpected probe: $Arguments" }
+            [pscustomobject]@{Code=0; Output="Created token successfully`r`n`r`ntoken_1: secret-token`r`n"; Error=''}
+        }
+        New-SwitchboardHostConfig 'zellij.exe' @() $Path
+    }
+    & $module $createHosts $hostsPath
+    $entry = (Get-Content -Raw -LiteralPath $hostsPath | ConvertFrom-Json).hosts[0]
+    Assert ($entry.url -eq 'http://127.0.0.1:8082' -and $entry.escape_transport -eq 'local') 'First install wrote the wrong local host'
+    Assert ([IO.File]::ReadAllText($entry.token_file) -ceq 'secret-token') 'First install did not save its login token'
+    [IO.File]::WriteAllText($hostsPath, '{"hosts":[]}')
+    & $module $createHosts $hostsPath
+    Assert ([IO.File]::ReadAllText($hostsPath) -ceq '{"hosts":[]}') 'Reinstall replaced an existing host list'
     Write-Output "PASS: $checks Windows release checks; actual PowerShell/files/subprocesses, simulated Windows process and Zellij responses."
 } finally {
     Remove-Module $module -Force

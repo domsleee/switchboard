@@ -7,6 +7,7 @@ import plistlib
 import pwd
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -37,6 +38,23 @@ def web_start_command(zellij):
     except (OSError, ValueError, KeyError, TypeError):
         pass
     return normal
+
+
+def ensure_host_config(zellij):
+    """First install: create this computer's login token and its host list entry."""
+    config = Path.home() / '.config/zellij/switchboard-hosts.json'
+    if config.exists():
+        return
+    output = subprocess.run([zellij, 'web', '--create-token'], check=True, capture_output=True, text=True).stdout
+    # Prints "Created token successfully", a blank line, then "<name>: <token>".
+    token = output.strip().splitlines()[-1].split(': ', 1)[1].strip()
+    config.parent.mkdir(parents=True, exist_ok=True)
+    token_file = config.with_name('switchboard-token')
+    descriptor = os.open(token_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, 'w') as file:
+        file.write(token + '\n')
+    host = {'id': 'mac', 'name': socket.gethostname().split('.')[0], 'url': 'http://127.0.0.1:8082', 'token_file': str(token_file)}
+    config.write_text(json.dumps({'hosts': [host]}, indent=2) + '\n')
 
 
 def install_job(label, config):
@@ -85,6 +103,7 @@ def main():
     env = {'PATH': f'{Path.home()}/.local/bin:{Path.home()}/.cargo/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin',
            'SHELL': login_shell()}
     if not args.menu_only:
+        ensure_host_config(zellij)
         startup = shlex.join([zellij, 'web', '--status', '--timeout', '2']) + ' >/dev/null 2>&1 || { ' + web_start_command(zellij) + '; }'
         relay = shlex.join([zellij, 'serve', '--host-config', str(Path.home() / '.config/zellij/switchboard-hosts.json'), '--port', '8090'])
         install_job(LABEL, {

@@ -49,7 +49,12 @@ print('Web recovery is retained only for the original socket identity.')
 with tempfile.TemporaryDirectory(prefix='sbs-') as directory:
     home = Path(directory)
     installer.AGENTS, installer.LOGS = home / 'agents', home / 'logs'
-    ok = lambda command, **kwargs: subprocess.CompletedProcess(command, 0)
+    token_calls = []
+    def ok(command, **kwargs):
+        if command[1:] == ['web', '--create-token']:
+            token_calls.append(command)
+            return subprocess.CompletedProcess(command, 0, 'Created token successfully\n\ntoken_1: secret-token\n')
+        return subprocess.CompletedProcess(command, 0)
     with patch.object(installer.Path, 'home', return_value=home), \
             patch.object(installer.subprocess, 'run', side_effect=ok), \
             patch.object(installer.pwd, 'getpwuid', return_value=SimpleNamespace(pw_shell='/opt/login/nu')), \
@@ -61,5 +66,16 @@ with tempfile.TemporaryDirectory(prefix='sbs-') as directory:
         assert job['EnvironmentVariables']['SHELL'] == '/opt/login/nu', (label, job['EnvironmentVariables'])
     update = plistlib.loads((installer.AGENTS / 'dev.switchboard.update.plist').read_bytes())
     assert update['ProgramArguments'] == ['/bin/sh', '-c', 'exec /bin/zellij switchboard update --binary /bin/zellij'], update
+    hosts = json.loads((home / '.config/zellij/switchboard-hosts.json').read_text())['hosts']
+    token_file = Path(hosts[0]['token_file'])
+    assert [h['url'] for h in hosts] == ['http://127.0.0.1:8082'], hosts
+    assert token_file.read_text() == 'secret-token\n' and token_file.stat().st_mode & 0o777 == 0o600
+    # Reinstalling keeps the existing host list and token.
+    with patch.object(installer.Path, 'home', return_value=home), \
+            patch.object(installer.subprocess, 'run', side_effect=ok), \
+            patch.object(installer.sys, 'argv', ['install_service.py', '--binary', '/bin/zellij']):
+        installer.main()
+    assert len(token_calls) == 1, token_calls
+print('First install creates this computer token and host list; reinstalls keep them.')
 print('Services start panes with the login shell, not the installing shell.')
 print('Automatic updates run the installed executable, not Python.')

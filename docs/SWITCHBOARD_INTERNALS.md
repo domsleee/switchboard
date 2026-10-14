@@ -33,17 +33,16 @@ Open https://switchboard.localhost (Portless), or http://127.0.0.1:8090. Use **S
 
 ## Pairing details
 
-Pair it: on one computer open **Settings → Computers → Create invitation**, paste
-the invitation on the other and choose **Join**, then compare the codes and
-approve. Pairing exchanges terminal tokens and certificate pins and adds the
-computer throughout the group. Every paired computer can invite another computer.
-Group membership and encrypted terminal credentials sync in the background,
-including when an offline computer reconnects. Keep Switchboard updated and
-running on each computer.
+Computers pair in **Settings → Computers** (see
+[Connect your computers](../tools/switchboard/README.md#connect-your-computers)).
+Pairing exchanges terminal tokens and certificate pins and adds the computer
+throughout the group. Every paired computer can add another computer. Group
+membership and encrypted terminal credentials sync in the background, including
+when an offline computer reconnects. Keep Switchboard updated and running on
+each computer.
 
-Do not run `zellij web --create-token`, copy token files or add the computer to
-`switchboard-hosts.json` by hand. The host list only holds this computer's own
-entry.
+The host list only holds this computer's own entry. The installers create it,
+with a login token, on first install.
 
 Remote entries left in the host list are ignored (the relay logs a warning for
 each) and appear in **Computers** with **Pair this computer**. Pair them, then
@@ -78,10 +77,10 @@ leaves the relay and terminal sessions running. Swift's compiler and this fork's
 
 ## Windows installer
 
-On Windows, install this fork's `zellij.exe`, then put your local authenticated host
-configuration in `~/.config/switchboard/hosts.json` using the format below. Set
-`escape_transport` to `local` and keep the token file on Windows. Run once in
-PowerShell:
+On Windows, install this fork's `zellij.exe`, then run once in PowerShell. On
+first install it creates `~/.config/switchboard/hosts.json` and a login token in
+`~/.config/switchboard/switchboard-token`; its entry sets `escape_transport` to
+`local`.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools/switchboard/install_windows_web.ps1
@@ -111,18 +110,19 @@ Remove the Startup shortcut to disable automatic startup. Other hosts can use
 The host list lives in `~/.config/zellij/switchboard-hosts.json` and holds this
 computer's own entry: an ID, name, URL, and token file path. HTTPS hosts can
 specify a SHA-256 DER certificate fingerprint using `tls_fingerprint`. Paired
-computers are added separately (see [Pair another computer](../tools/switchboard/README.md#pair-another-computer)).
+computers are added separately (see [Connect your computers](../tools/switchboard/README.md#connect-your-computers)).
 
-Example `~/.config/zellij/switchboard-hosts.json` (create the token file locally):
+The Mac installer writes this on first install, with the token from
+`zellij web --create-token` in `~/.config/zellij/switchboard-token`:
 
 ```json
 {
   "hosts": [
     {
       "id": "mac",
-      "name": "Mac",
+      "name": "Doms-MacBook-Pro",
       "url": "http://127.0.0.1:8082",
-      "token_file": "~/.config/zellij/mac-token"
+      "token_file": "/Users/you/.config/zellij/switchboard-token"
     }
   ]
 }
