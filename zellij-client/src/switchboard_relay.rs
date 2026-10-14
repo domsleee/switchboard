@@ -630,6 +630,7 @@ fn trusted(headers: &HeaderMap, port: u16) -> bool {
     let hosts = [
         format!("127.0.0.1:{port}"),
         format!("localhost:{port}"),
+        format!("switchboard.localhost:{port}"),
         "switchboard.localhost".into(),
         "switchboard.localhost:443".into(),
         "switchboard.localhost:80".into(),
@@ -637,6 +638,7 @@ fn trusted(headers: &HeaderMap, port: u16) -> bool {
     let origins = [
         format!("http://127.0.0.1:{port}"),
         format!("http://localhost:{port}"),
+        format!("http://switchboard.localhost:{port}"),
         "https://switchboard.localhost".into(),
         "https://switchboard.localhost:443".into(),
         "http://switchboard.localhost".into(),
@@ -1810,6 +1812,29 @@ mod tests {
                 "{origin}"
             );
         }
+    }
+
+    #[test]
+    fn named_relay_url_accepts_only_its_configured_port() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, "switchboard.localhost:8123".parse().unwrap());
+        headers.insert(
+            header::ORIGIN,
+            "http://switchboard.localhost:8123".parse().unwrap(),
+        );
+        assert!(trusted(&headers, 8123));
+        assert!(!trusted(&headers, 8090));
+        headers.insert(
+            header::ORIGIN,
+            "http://switchboard.localhost:8124".parse().unwrap(),
+        );
+        assert!(!trusted(&headers, 8123));
+        headers.insert(
+            header::ORIGIN,
+            "http://switchboard.localhost:8123".parse().unwrap(),
+        );
+        headers.insert("sec-fetch-site", "cross-site".parse().unwrap());
+        assert!(!trusted(&headers, 8123));
     }
 
     #[test]
