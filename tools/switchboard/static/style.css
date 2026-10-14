@@ -27,7 +27,10 @@ body.sidebar-collapsed #sidebar-toggle{left:8px}
 #tabs .tab-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:550;line-height:1.35;grid-column:2}
 #tabs small{color:#a3aec0;font-size:10px;grid-column:2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #tabs .star{grid-column:1;grid-row:1 / 3;align-self:center;width:6px;height:6px;border-radius:50%;font-size:0;background:transparent}
-#tabs .star.attention{background:#f0bc63}
+#tabs .star.attention{background:#f0bc63;box-shadow:0 0 0 3px rgb(240 188 99 / .25)}
+/* Needs you: the loudest row state. Working stays a quiet dot. */
+#tabs .tab-select.needs-attention .tab-name{color:#fff;font-weight:700}
+#tabs .tab-select.needs-attention small{color:#f0bc63}
 #tabs .star.working{background:#8cabe9}
 #tabs .star.unavailable{border:1px solid #a3aec0}
 .tab-row{position:relative;flex-shrink:0}
