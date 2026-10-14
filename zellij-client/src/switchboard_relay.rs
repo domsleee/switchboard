@@ -921,6 +921,12 @@ async fn pump(downstream: axum::extract::ws::WebSocket, upstream: WebSocketStrea
     pump_with_output_diagnostics(downstream, upstream, None).await;
 }
 
+/// A network change can leave a TCP connection open but silent. Ping both sides
+/// and close the pair when one stops answering, so the browser reconnects
+/// instead of typing into a dead socket.
+const PING_EVERY: Duration = Duration::from_millis(if cfg!(test) { 100 } else { 10_000 });
+const SILENT_LIMIT: Duration = Duration::from_millis(if cfg!(test) { 300 } else { 30_000 });
+
 async fn pump_with_output_diagnostics(
     downstream: axum::extract::ws::WebSocket,
     upstream: WebSocketStream<Stream>,
@@ -928,8 +934,29 @@ async fn pump_with_output_diagnostics(
 ) {
     let (mut downstream_tx, mut downstream_rx) = downstream.split();
     let (mut upstream_tx, mut upstream_rx) = upstream.split();
+    let started = std::time::Instant::now();
+    let elapsed = || started.elapsed().as_millis() as u64;
+    let silent = |seen: &std::sync::atomic::AtomicU64| {
+        elapsed().saturating_sub(seen.load(std::sync::atomic::Ordering::Relaxed))
+            > SILENT_LIMIT.as_millis() as u64
+    };
+    let browser_seen = std::sync::atomic::AtomicU64::new(0);
+    let host_seen = std::sync::atomic::AtomicU64::new(0);
+    let ping = || tokio::time::interval_at(tokio::time::Instant::now() + PING_EVERY, PING_EVERY);
     let from_browser = async {
-        while let Some(Ok(message)) = downstream_rx.next().await {
+        let mut ping = ping();
+        loop {
+            let incoming = tokio::select! {
+                incoming = downstream_rx.next() => incoming,
+                _ = ping.tick() => {
+                    if silent(&host_seen) || upstream_tx.send(Message::Ping(Bytes::new())).await.is_err() {
+                        break;
+                    }
+                    continue;
+                },
+            };
+            let Some(Ok(message)) = incoming else { break };
+            browser_seen.store(elapsed(), std::sync::atomic::Ordering::Relaxed);
             let message = match message {
                 axum::extract::ws::Message::Text(value) => {
                     Message::Text(value.as_str().to_owned().into())
@@ -954,9 +981,9 @@ async fn pump_with_output_diagnostics(
         }
         let _ = upstream_tx.close().await;
     };
-    let started = std::time::Instant::now();
     let mut output = output_diagnostics::OutputWindow::default();
     let from_host = async {
+        let mut ping = ping();
         let mut report_tick = tokio::time::interval_at(
             tokio::time::Instant::now() + Duration::from_secs(5),
             Duration::from_secs(5),
@@ -965,6 +992,12 @@ async fn pump_with_output_diagnostics(
         loop {
             let incoming = tokio::select! {
                 incoming = upstream_rx.next() => incoming,
+                _ = ping.tick() => {
+                    if silent(&browser_seen) || downstream_tx.send(axum::extract::ws::Message::Ping(Bytes::new())).await.is_err() {
+                        break;
+                    }
+                    continue;
+                },
                 _ = report_tick.tick(), if source.is_some() => {
                     if let Some(message) = output.report(started.elapsed()) {
                         logs::record(source.as_deref().unwrap(), &message);
@@ -973,6 +1006,7 @@ async fn pump_with_output_diagnostics(
                 },
             };
             let Some(Ok(message)) = incoming else { break };
+            host_seen.store(elapsed(), std::sync::atomic::Ordering::Relaxed);
             let received = started.elapsed();
             let observation = match &message {
                 Message::Text(value) if source.is_some() => Some((
@@ -1708,6 +1742,49 @@ mod tests {
         let links = get("/link-config.js").await.unwrap().into_body();
         assert!(
             !String::from_utf8_lossy(&to_bytes(links, 65536).await.unwrap()).contains("windows")
+        );
+    }
+
+    #[tokio::test]
+    async fn silent_upstream_closes_the_browser_socket() {
+        // A host behind a dead route: the handshake completes, then nothing is read or answered.
+        let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let silent_address = silent.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (tcp, _) = silent.accept().await.unwrap();
+            let _socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let relay = Router::new().route(
+            "/ws",
+            any(move |websocket: WebSocketUpgrade| async move {
+                let tcp = TcpStream::connect(silent_address).await.unwrap();
+                let (upstream, _) = tokio_tungstenite::client_async(
+                    format!("ws://{silent_address}/"),
+                    Box::new(tcp) as Stream,
+                )
+                .await
+                .unwrap();
+                websocket.on_upgrade(move |downstream| pump(downstream, upstream))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, relay).await.unwrap() });
+        let (mut browser, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws"))
+            .await
+            .unwrap();
+        let closed = tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(Ok(message)) = browser.next().await {
+                if message.is_close() {
+                    break;
+                }
+            }
+        })
+        .await;
+        assert!(
+            closed.is_ok(),
+            "the browser must see the silent host's socket end"
         );
     }
 
