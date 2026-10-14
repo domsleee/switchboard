@@ -601,14 +601,24 @@ async fn terminal_response(
             })
             .unwrap_or(0);
         // Serve the owner's poll, so every peer shows its generations and reviews.
+        let local = &mesh.local_engine.config.id;
         if let Some(poll) = mesh.attention.get() {
-            if let Some(snapshot) = poll.lock().await.owned(&mesh.local_engine.config.id) {
+            if let Some(snapshot) = poll.lock().await.owned(local) {
                 return Ok(Json(snapshot).into_response());
             }
         }
-        let snapshot = attention::scan(&host, offset)
+        let mut snapshot = attention::scan(&host, offset)
             .await
             .map_err(|_| (StatusCode::BAD_GATEWAY, "Peer snapshots unavailable"))?;
+        // A slow poll still decides results and reviews here: a raw scan would make
+        // each peer count its own results, so reviews would not match across computers.
+        if let Some(poll) = mesh.attention.get() {
+            let mut poll = poll.lock().await;
+            poll.update(local, &mut snapshot);
+            if let Some(owned) = poll.owned(local) {
+                return Ok(Json(owned).into_response());
+            }
+        }
         return Ok(Json(snapshot).into_response());
     }
     if path == "/switchboard/attention/ack" && request.method() == Method::POST {

@@ -98,11 +98,17 @@ pub(super) fn classify(pane: &Value, screen: &str) -> Value {
     if !normal {
         return json!({"state":"unknown","agent":agent});
     }
-    let signature = SPACE.replace_all(completion.map_or("idle", |m| &original[m.range()]), " ");
-    let token: String = Sha256::digest(signature.trim().as_bytes())[..10]
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    // "idle": no completion line on screen, e.g. scrolled away or hidden by a resize.
+    let token = completion.map_or_else(
+        || "idle".to_owned(),
+        |m| {
+            let signature = SPACE.replace_all(&original[m.range()], " ");
+            Sha256::digest(signature.trim().as_bytes())[..10]
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect()
+        },
+    );
     json!({"state":"ready","agent":agent,"token":token})
 }
 
@@ -332,14 +338,28 @@ impl PollState {
                 self.scanned
                     .insert(key.clone(), tokio::time::Instant::now());
             }
+            // The newest completion line seen so far. A screen that no longer
+            // shows one (scrolled, resized by another viewer) is not a new result.
+            let last = previous["token"].as_str().unwrap_or("idle").to_owned();
+            if row["token"] == "idle" {
+                row["token"] = json!(last);
+            }
+            // A quick task can finish between scans; its completion line still counts.
+            let new_line = !previous.is_null() && row["token"] != "idle" && row["token"] != last;
+            // Codex ends every turn with a timed "Worked for" line and briefly looks
+            // ready mid-task, so only that line ends a Codex turn.
+            let finished = previous["state"] == "working" && (row["agent"] != "codex" || new_line);
             let generation = previous["generation"].as_u64().unwrap_or(0)
-                + u64::from(row["state"] == "ready" && previous["state"] == "working");
+                + u64::from(row["state"] == "ready" && (new_line || finished));
             if row["state"] != "unknown" {
                 let mut observed = json!({"state":row["state"],"generation":generation});
                 for field in ["agent", "token"] {
                     if !row[field].is_null() {
                         observed[field] = row[field].clone();
                     }
+                }
+                if row["token"].is_null() && last != "idle" {
+                    observed["token"] = json!(last);
                 }
                 if let Some(seen) = previous.get("seen") {
                     observed["seen"] = seen.clone();
@@ -776,6 +796,52 @@ esac
         assert_eq!(owned["panes"][0]["token"], "result:1");
         assert_eq!(owned["panes"][0]["seen"], false);
         assert!(owned.get("synced").is_none());
+    }
+    #[test]
+    fn hidden_completion_is_not_a_new_result_and_stale_owner_keeps_reviews() {
+        let mut poll = PollState::default();
+        let ready = |token: &str| json!({"panes":[{"session":"main","pane_id":1,"state":"ready","token":token}],"tabs":[],"errors":[]});
+        poll.update("mac", &mut ready("result"));
+        poll.acknowledge("mac", "main", 1, "result:0");
+        // Another viewer's size scrolls the completion line off screen, then back.
+        for token in ["idle", "result", "idle"] {
+            let mut snapshot = ready(token);
+            poll.update("mac", &mut snapshot);
+            assert_eq!(snapshot["panes"][0]["token"], "result:0", "{token}");
+            assert_eq!(snapshot["panes"][0]["seen"], true, "{token}");
+        }
+        // A quick task can finish between scans: a new completion line is a new result.
+        let mut snapshot = ready("other");
+        poll.update("mac", &mut snapshot);
+        assert_eq!(snapshot["panes"][0]["token"], "other:1");
+        assert_eq!(snapshot["panes"][0]["seen"], false);
+        poll.acknowledge("mac", "main", 1, "other:1");
+        // A slow owner poll: the gateway applies the owner's state to a fresh scan.
+        poll.refreshed.insert(
+            "mac".into(),
+            tokio::time::Instant::now() - Duration::from_secs(31),
+        );
+        assert!(poll.owned("mac").is_none());
+        poll.update("mac", &mut ready("other"));
+        let owned = poll.owned("mac").unwrap();
+        assert_eq!(owned["panes"][0]["token"], "other:1");
+        assert_eq!(owned["panes"][0]["seen"], true);
+        // Codex looks ready mid-task; only its "Worked for" line ends the turn.
+        let mut codex = |state: &str, token: Option<&str>| {
+            let mut snapshot = json!({"panes":[{"session":"main","pane_id":2,"state":state,"agent":"codex"}],"tabs":[],"errors":[]});
+            if let Some(token) = token {
+                snapshot["panes"][0]["token"] = json!(token);
+            }
+            poll.update("mac", &mut snapshot);
+            snapshot["panes"][0]["token"].clone()
+        };
+        codex("ready", Some("idle"));
+        for _ in 0..3 {
+            codex("working", None);
+            assert_eq!(codex("ready", Some("idle")), "idle:0", "mid-task flap");
+        }
+        codex("working", None);
+        assert_eq!(codex("ready", Some("worked")), "worked:1");
     }
     #[test]
     fn stable_tabs_and_notification_generations() {

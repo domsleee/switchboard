@@ -172,12 +172,15 @@ function autoLabel(item){
   if(states.some(s=>s.state==='ready'))return states.some(needsAttention)?'Ready to review':'Ready';
   return '';
 }
+const reviewSent=new Map();
 function acknowledgeAttention(item){
   let changed=false;
   // The relay stores the review with the computer running the tab, so other
-  // viewers clear it too. The local copy only hides it until the next scan.
-  for(const state of statesForTab(item))if(state.state==='ready'&&!state.seen&&seenAttention[state.key]!==state.token){
-    seenAttention[state.key]=state.token;changed=true;
+  // viewers clear it too. The local copy only hides it in this browser, so a
+  // review the owner never recorded (it was offline) is sent again later.
+  for(const state of statesForTab(item))if(state.state==='ready'&&!state.seen&&Date.now()-(reviewSent.get(state.key+state.token)||0)>10000){
+    reviewSent.set(state.key+state.token,Date.now());
+    if(seenAttention[state.key]!==state.token){seenAttention[state.key]=state.token;changed=true;}
     fetch('/api/attention/ack',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:state.host,session:state.session,pane_id:state.pane_id,token:state.token})}).catch(()=>{});
   }
   if(changed)localStorage.setItem('switchboard-attention-seen',JSON.stringify(seenAttention));
