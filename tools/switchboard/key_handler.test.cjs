@@ -87,3 +87,68 @@ test('real bundled xterm sends one word-delete then ordinary Backspace/Delete ac
     }finally{term.dispose();}
   }
 });
+
+for(const variant of Object.keys(handlerSources))for(const bridge of [false,true])test(`${variant}, bridge ${bridge}: physical delete keys work through the closed touchscreen input`,
+  {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
+  const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch({headless:true});
+  try{
+    const context=await browser.newContext({viewport:{width:1280,height:900}}),page=await context.newPage(),errors=[];
+    page.on('pageerror',error=>errors.push(error.message));
+    await context.addInitScript(()=>{
+      Object.defineProperty(Navigator.prototype,'platform',{get:()=> 'Win32'});
+      Object.defineProperty(Navigator.prototype,'maxTouchPoints',{get:()=>1});
+    });
+    const bundle=variant==='bundle'?`<script>
+      function isMac(){return false;}
+      ${slice('function encode_kitty_key(','/**')}
+      ${slice('function installImeBypass(','function isCoarsePointerDevice(')}
+      ${slice('function isCoarsePointerDevice(','function installCustomKeyHandler(')}
+      ${handlerSources.bundle}
+    </script>`:'';
+    await context.route('**/*',async route=>{
+      const path=new URL(route.request().url()).pathname;
+      if(path==='/hosts/windows/main')return route.fulfill({contentType:'text/html',body:`<!doctype html>
+        <link rel="stylesheet" href="/assets/xterm.css"><div id="terminal"></div><script src="/assets/xterm.js"></script>
+        <script>window.sent=[];window.WebSocket=class extends EventTarget{constructor(){super();this.readyState=1;}send(data){sent.push(String(data));}};</script>
+        ${bridge?'<script src="/bridge.js"></script>':''}${bundle}<script type="module">
+          ${variant==='module'?`import {installCustomKeyHandler} from '/assets/key-handler.js';
+          import {installImeBypass} from '/assets/ime-bypass.js';
+          import {installSoftKeyboardCapture,suppressSoftKeyboardOnTouch} from '/assets/soft-keyboard.js';`:''}
+          const socket=new WebSocket('wss://fixture/ws/terminal');window.term=new Terminal({cols:80,rows:24,scrollback:0,allowProposedApi:true});
+          term.open(document.querySelector('#terminal'));installImeBypass(term,data=>socket.send(data));
+          installSoftKeyboardCapture(term,data=>socket.send(data));suppressSoftKeyboardOnTouch(term);
+          installCustomKeyHandler(term,data=>socket.send(data));term.onData(data=>socket.send(data));term.focus();window.ready=true;
+        </script>`});
+      if(path==='/bridge.js')return route.fulfill({contentType:'text/javascript',body:fs.readFileSync(__dirname+'/static/bridge.js','utf8')});
+      const name=path.split('/').at(-1);
+      if(!path.startsWith('/assets/')||!['xterm.js','xterm.css','key-handler.js','keyboard.js','utils.js','ime-bypass.js','soft-keyboard.js'].includes(name))return route.fulfill({status:404,body:''});
+      return route.fulfill({contentType:name.endsWith('.css')?'text/css':'text/javascript',body:fs.readFileSync(__dirname+'/../../zellij-client/assets/'+name,'utf8')});
+    });
+    await page.goto('https://switchboard.test/hosts/windows/main');await page.waitForFunction(()=>window.ready);
+    await page.locator('#terminal').click({position:{x:20,y:20}});
+    assert.equal(await page.evaluate(()=>document.activeElement===window.__zjSoftKbdCapture.element),false,'closed shadow root hides the focused input');
+    assert.equal(await page.evaluate(()=>window.__zjSoftKbdCapture.isFocused),true);
+    for(const modifier of ['Control','Alt']){
+      await page.keyboard.type('hello world',{delay:20});
+      assert.equal(await page.evaluate(()=>sent.join('')),'hello world');
+      await page.evaluate(()=>{sent.length=0;});
+      await page.keyboard.press(modifier+'+Backspace');
+      assert.equal(await page.evaluate(()=>sent.join('')),'\x17','word-delete must reach the terminal instead of deleting the hidden field');
+      await page.keyboard.press('Backspace');await page.keyboard.press('Backspace');await page.keyboard.press('Delete');
+      assert.equal(await page.evaluate(()=>sent.join('')),'\x17\x7f\x7f\x1b[3~','Backspace and forward Delete still work after word-delete');
+      await page.evaluate(()=>{sent.length=0;});
+    }
+    await page.evaluate(()=>{term.options.disableStdin=true;});
+    for(const key of ['Control+Backspace','Backspace','Delete'])await page.keyboard.press(key);
+    assert.equal(await page.evaluate(()=>sent.join('')),'','input suspension also applies to touchscreen hardware delete keys');
+    await page.evaluate(()=>{
+      term.options.disableStdin=false;
+      const capture=window.__zjSoftKbdCapture.element;
+      capture.dispatchEvent(new KeyboardEvent('keydown',{key:'Backspace',bubbles:true,cancelable:true}));
+      capture.value=capture.value.slice(1);
+      capture.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'deleteContentBackward'}));
+    });
+    assert.equal(await page.evaluate(()=>sent.join('')),'\x7f','virtual keyboards without physical key codes keep their input-event path');
+    assert.deepEqual(errors,[]);
+  }finally{await browser.close();}
+});
