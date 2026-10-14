@@ -42,9 +42,12 @@ pub(super) fn classify(pane: &Value, screen: &str) -> Value {
     });
     static QUESTION: LazyLock<regex::Regex> =
         LazyLock::new(|| regex::Regex::new(r"[❯›]\s*\d+[.)]").unwrap());
+    // Claude Code no longer prints "esc to interrupt"; its spinner line is
+    // "· Perambulating… (23s · ↓ 1.4k tokens)", or just "· Perambulating…" at
+    // first. Its finished line has no "…". Waiting on background agents is work.
     static BUSY: LazyLock<regex::Regex> = LazyLock::new(|| {
         regex::Regex::new(
-            r"(?:^|\n|[•✻✽✶✳])[^\n]{0,70}\([^\n]{0,160}esc(?:ape)? to interrupt[^\n]{0,60}\)",
+            r"(?:^|\n|[•✻✽✶✳])[^\n]{0,70}\([^\n]{0,160}esc(?:ape)? to interrupt[^\n]{0,60}\)|(?:^|\n)[ \t]*[·✢✳✶✻✽*][ \t]+(?:[^\n(]{1,60}…[ \t]*(?:\(\d+[hms]|\n)|waiting for [1-9]\d* background agents? to finish)",
         )
         .unwrap()
     });
@@ -85,10 +88,10 @@ pub(super) fn classify(pane: &Value, screen: &str) -> Value {
         }
     }
     let busy = BUSY.find_iter(before).last();
-    let spinner = title
-        .chars()
-        .next()
-        .is_some_and(|c| ('\u{2801}'..='\u{28ff}').contains(&c));
+    // Braille spinner in the title; Claude Code 2.1.228+ uses half circles.
+    let spinner = title.chars().next().is_some_and(|c| {
+        ('\u{2801}'..='\u{28ff}').contains(&c) || ('\u{25d0}'..='\u{25d3}').contains(&c)
+    });
     if spinner
         || after.to_lowercase().contains("tab to queue message")
         || busy.is_some_and(|b| completion.is_none_or(|c| b.start() > c.start()))
@@ -722,6 +725,23 @@ esac
             classify(&pane, idle)["token"]
         );
         let claude = json!({"pane_command":"claude.exe --resume","title":"✳ work"});
+        // Current Claude Code spinner, below an earlier turn's finished line.
+        let busy = "✻ Baked for 4m 5s\n❯ next\n⏺ Reading\n· Perambulating… (23s · ↓ 1.4k tokens · thought for 1s)\n─────\n❯ \n─────\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 1 agent";
+        assert_eq!(classify(&claude, busy)["state"], "working");
+        let starting = busy.replace(" (23s · ↓ 1.4k tokens · thought for 1s)", "");
+        assert_eq!(classify(&claude, &starting)["state"], "working");
+        let waiting = busy.replace(
+            "Perambulating… (23s · ↓ 1.4k tokens · thought for 1s)",
+            "Waiting for 2 background agents to finish",
+        );
+        assert_eq!(classify(&claude, &waiting)["state"], "working");
+        let idle = busy.replace(
+            "· Perambulating… (23s · ↓ 1.4k tokens · thought for 1s)\n",
+            "",
+        );
+        assert_eq!(classify(&claude, &idle)["state"], "ready");
+        let titled = json!({"pane_command":"claude","title":"◐ Switchboard logs review"});
+        assert_eq!(classify(&titled, &idle)["state"], "working");
         assert_eq!(
             classify(
                 &claude,
