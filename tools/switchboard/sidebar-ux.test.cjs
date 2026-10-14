@@ -48,6 +48,12 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.equal(await page.locator('#tab-count').textContent(),'3 tabs');
     assert.equal(await page.locator('#selection-tools').isVisible(),false);
     assert.equal(await page.locator('#tabs small').first().textContent(),'Mac · Working');
+    // xterm pauses drawing only when its element is off screen. Hidden sessions must be.
+    const onScreen=title=>page.frameLocator(`iframe[title="${title}"]`).locator('body').evaluate(body=>new Promise(resolve=>
+      new IntersectionObserver(([entry],observer)=>{observer.disconnect();resolve(entry.isIntersecting);}).observe(body)));
+    await page.waitForSelector('iframe.active[title="Mac: main"]');
+    assert.equal(await onScreen('Mac: main'),true);
+    assert.equal(await onScreen('Windows: main'),false);
     const action=page.locator('.tab-actions').nth(1);
     await page.locator('.tab-row').nth(1).hover();await action.click();
     assert.match(await page.locator('#tab-menu-target').textContent(),/Online shopping · Mac · main/);

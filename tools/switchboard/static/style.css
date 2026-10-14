@@ -71,6 +71,9 @@ body.sidebar-collapsed #sidebar,body.sidebar-collapsed #sidebar-resize{display:n
 main{position:relative;flex:1;min-height:0;min-width:0;background:black}
 iframe{position:absolute;inset:0;width:100%;height:100%;border:0;visibility:hidden;pointer-events:none}
 iframe.active{visibility:visible;pointer-events:auto}
+/* xterm stops drawing a terminal that is off screen, not one that is merely hidden.
+   Keep the size so nothing resizes; busy hidden sessions otherwise stall the page. */
+#terminals>iframe:not(.active){transform:translateX(-200vw)}
 #empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:24px;font-size:12px;color:#9ba7bd;text-align:center}
 #empty[hidden]{display:none}
 #empty button{padding:4px 9px}
