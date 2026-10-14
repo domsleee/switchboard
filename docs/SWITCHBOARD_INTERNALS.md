@@ -66,7 +66,7 @@ networks that do not resolve computer names.
 On macOS, install the menu bar app and keep the relay running independently of a terminal:
 
 ```sh
-python3 tools/switchboard/install_service.py
+zellij switchboard install
 ```
 
 This builds `~/Applications/Switchboard.app`, adds a terminal icon to the menu
@@ -78,15 +78,13 @@ leaves the relay and terminal sessions running. Swift's compiler and this fork's
 
 ## Windows installer
 
-On Windows, install this fork's `zellij.exe`, then put your local authenticated host
-configuration in `~/.config/switchboard/hosts.json` using the format below. Set
-`escape_transport` to `local` and keep the token file on Windows. Run once in
-PowerShell:
+On Windows, `zellij switchboard install` creates `~/.config/switchboard/hosts.json`
+(with `escape_transport` set to `local`) and its token on first install, writes the
+PowerShell helpers into `~/.config/switchboard`, and runs `install_windows_web.ps1`.
+For a host-specific configuration, run the installed script directly:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools/switchboard/install_windows_web.ps1
-# With a host-specific configuration:
-powershell -ExecutionPolicy Bypass -File tools/switchboard/install_windows_web.ps1 -Config C:/path/to/host.kdl
+powershell -ExecutionPolicy Bypass -File ~/.config/switchboard/install_windows_web.ps1 -Config C:/path/to/host.kdl
 ```
 
 This installs a current-user **Switchboard** Startup shortcut and a tray icon
@@ -108,12 +106,13 @@ Remove the Startup shortcut to disable automatic startup. Other hosts can use
 
 ## Host list
 
-The host list lives in `~/.config/zellij/switchboard-hosts.json` and holds this
-computer's own entry: an ID, name, URL, and token file path. HTTPS hosts can
+The host list lives in `~/.config/zellij/switchboard-hosts.json` (Windows:
+`~/.config/switchboard/hosts.json`). `zellij switchboard install` creates it on first
+install with this computer's own entry: an ID, name, URL, and token file path. HTTPS hosts can
 specify a SHA-256 DER certificate fingerprint using `tls_fingerprint`. Paired
-computers are added separately (see [Pair another computer](../tools/switchboard/README.md#pair-another-computer)).
+computers are added separately (see [Connect your computers](../tools/switchboard/README.md#connect-your-computers)).
 
-Example `~/.config/zellij/switchboard-hosts.json` (create the token file locally):
+Example `~/.config/zellij/switchboard-hosts.json`:
 
 ```json
 {
@@ -284,7 +283,7 @@ Run the small checks with:
 
 ```sh
 node --test tools/switchboard/*.test.cjs
-python3 tools/switchboard/install_service.test.py
+cargo test -p zellij-client --features web_server_capability switchboard_ --lib
 ```
 
 Run browser checks with headless Playwright against isolated testing sessions.

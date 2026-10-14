@@ -28,8 +28,15 @@ pub const RELEASE_URL: &str =
 /// Session identity and sharing as listed by the relay catalog.
 type Session = (String, String, bool);
 
+#[path = "switchboard_install.rs"]
+mod install;
+
 pub fn run(command: &SwitchboardCommand) -> Result<()> {
     match command {
+        SwitchboardCommand::Install { binary } => match binary {
+            Some(binary) => install::install(binary),
+            None => install::install(&std::env::current_exe()?),
+        },
         SwitchboardCommand::Update(cli) => Updater::from_cli(cli)?.run(),
         SwitchboardCommand::Package {
             platform,
@@ -48,10 +55,10 @@ pub fn run(command: &SwitchboardCommand) -> Result<()> {
     }
 }
 
-/// Files in each platform bundle. `auto_update.py` is a forwarding shim for
-/// installs whose scheduler still runs the retired Python updater; the old
-/// updater also rejects bundles without it.
-// ponytail: drop the shim once every machine schedules `zellij switchboard update`.
+/// Files in each platform bundle. Installed updaters reject a bundle whose
+/// list differs, so retired names stay: `auto_update.py` forwards to
+/// `zellij switchboard update` and `install_service.py` to `zellij switchboard install`.
+// ponytail: drop both once every machine runs an updater that accepts their absence.
 pub fn bundle_files(platform: &str) -> Result<&'static [&'static str]> {
     Ok(match platform {
         "windows" => &[

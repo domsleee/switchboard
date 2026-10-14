@@ -183,6 +183,12 @@ pub enum Command {
 
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum SwitchboardCommand {
+    /// Set up this computer: its login, host list and background services (safe to re-run)
+    Install {
+        /// Executable the services run (default: this one)
+        #[clap(long)]
+        binary: Option<PathBuf>,
+    },
     /// Apply the newest published main build; restarts connection services, never terminal engines
     Update(SwitchboardUpdateCli),
     /// Stage this executable and its helpers as a checksummed update bundle (CI)

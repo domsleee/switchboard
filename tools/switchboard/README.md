@@ -1,93 +1,70 @@
 # Set up Switchboard
 
 Switchboard shows the terminal tabs from all your computers in one browser
-window. Set it up once on each computer, then pair them. After that it runs in
-the background and updates itself.
+window. Install it on each computer, then connect them in Settings. After that
+it runs in the background and updates itself.
 
-## What you need
+## Install on a Mac
 
-- This repository checked out on the computer.
-- Rust, to build the `zellij` executable.
-- On Mac: Xcode command line tools (for `swiftc`) and `jq`.
+You need Rust, the Xcode command line tools and `jq`. From this repository:
 
-## Mac
+```sh
+cargo install --path .
+zellij switchboard install
+```
 
-1. Build and install the executable:
+Then open http://127.0.0.1:8090. A menu bar icon opens Switchboard and shows
+its status. Quitting it leaves your terminals running.
 
-   ```sh
-   cargo install --path .
-   ```
+## Install on Windows
 
-2. Create a login token and save it to a file:
-
-   ```sh
-   zellij web --create-token
-   ```
-
-   It prints `token_1: <token>`. Put just the token in `~/.config/zellij/mac-token`.
-
-3. Create `~/.config/zellij/switchboard-hosts.json` for this computer:
-
-   ```json
-   {
-     "hosts": [
-       {
-         "id": "mac",
-         "name": "Mac",
-         "url": "http://127.0.0.1:8082",
-         "token_file": "~/.config/zellij/mac-token"
-       }
-     ]
-   }
-   ```
-
-4. Install the menu bar app and background service:
-
-   ```sh
-   python3 tools/switchboard/install_service.py
-   ```
-
-5. Open http://127.0.0.1:8090 (or https://switchboard.localhost if you use
-   Portless).
-
-The menu bar icon opens Switchboard and shows its status. Quitting it leaves
-your terminals running.
-
-## Windows
-
-1. Build `zellij.exe` with `cargo install --path .`, or download
-   `switchboard-windows-zellij.exe` from the
-   [latest-main release](https://github.com/domsleee/switchboard/releases/tag/latest-main)
-   and put it on your PATH as `zellij.exe`.
-2. Create a login token with `zellij web --create-token` and save just the token
-   to a file, for example `~/.config/switchboard/windows-token`.
-3. Create `~/.config/switchboard/hosts.json` like the Mac example above, with
-   your own id, name and token file, and add `"escape_transport": "local"` to
-   the entry.
-4. In PowerShell, from the repository:
+1. Get `zellij.exe`: download `switchboard-windows-zellij.exe` from the
+   [latest-main release](https://github.com/domsleee/switchboard/releases/tag/latest-main),
+   rename it to `zellij.exe` and put it on your PATH. Or build it with
+   `cargo install --path .`.
+2. Run:
 
    ```powershell
-   powershell -ExecutionPolicy Bypass -File tools/switchboard/install_windows_web.ps1
+   zellij switchboard install
    ```
 
-5. Open http://switchboard.localhost:8090.
+Then open http://switchboard.localhost:8090. A tray icon starts with Windows.
+Quitting it leaves your terminals running.
 
-A tray icon starts with Windows. Quitting it leaves your terminals running.
+The first install sets up this computer's login on its own. Running it again
+keeps your settings.
 
-## Pair another computer
+## Connect your computers
 
-1. On a computer that's already set up, open **Settings → Computers → Create invitation**.
-2. Paste the invitation on the new computer and choose **Join**.
-3. Check the codes match on both screens, then approve.
+Both computers need Switchboard installed and on the same network.
 
-Every paired computer can invite the next one. Don't copy tokens or add other
-computers to the hosts file by hand.
+1. On the computer you're adding, open **Settings → Computers**. Check its name
+   under **This computer**. If you see **Choose a connection**, pick the network
+   your computers share.
+2. Find the other computer's address: on that computer, open **Settings →
+   Computers → This computer → Advanced connection settings** and copy
+   **Computer address**.
+3. Back on the computer you're adding, enter it under **Add computer → Other
+   computer's address** and choose **Send request**.
+4. On the other computer, under **Connection requests**, check the code matches
+   and choose **Codes match, allow**. If it shows **Receive connection
+   requests**, choose that first.
+5. On the computer you're adding, the other computer's request appears under
+   **Connection requests**. Check the code and choose **Codes match, allow**.
+
+The new computer's tabs now appear on every computer, and the rest of your
+computers learn about it automatically. If connecting fails, check that the
+address hasn't changed and that port 8082 is allowed through the firewall.
+
+You can also connect with a link: choose **Create invitation** on one computer,
+send the link, and paste it under **Have an invitation?** on the other. Choose
+**Join computer**, then approve on the first computer when the codes match.
 
 ## If something is wrong
 
 - **In Switchboard:** **Settings → Logs** shows recent errors from every computer.
-- **Mac:** `~/Library/Logs/zellij-switchboard.log` (service) and `~/Library/Logs/switchboard-update.log` (updates).
-- **Windows:** `~/.config/switchboard/` (`web.log` and `update*.log`).
+- **Mac:** `~/Library/Logs/zellij-switchboard.log` and `~/Library/Logs/switchboard-update.log`.
+- **Windows:** the `web.log` and `update*.log` files in `~/.config/switchboard/`.
 
 How Switchboard works, its shortcuts and its diagnostics are in
 [Switchboard internals](../../docs/SWITCHBOARD_INTERNALS.md).

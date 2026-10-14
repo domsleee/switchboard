@@ -11,7 +11,7 @@ const commands={
   messages:()=>[[node,'--test','tools/switchboard/messages.test.cjs']],
   relay:()=>[['cargo','test','-p','zellij-client','--features','web_server_capability','switchboard_relay','--lib']],
   colours:()=>[['cargo','test','-p','zellij-server','windows_pane_environment_advertises_colour_without_overriding_preferences','--lib']],
-  recovery:()=>['recover_local','browser_readiness','install_service'].map(name=>[process.env.PYTHON_BINARY||'python3','tools/switchboard/'+name+'.test.py']),
+  recovery:()=>['recover_local','browser_readiness'].map(name=>[process.env.PYTHON_BINARY||'python3','tools/switchboard/'+name+'.test.py']),
   browser:()=>{
     if(process.platform!=='darwin'||args.length!==2)throw Error('browser requires macOS and OLD_BINARY NEW_BINARY');
     return [[node,'tools/switchboard/update_browser.test.cjs',...args.map(value=>path.resolve(value))]];

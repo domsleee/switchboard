@@ -86,10 +86,12 @@ binds to loopback. It queries hosts independently and returns host errors
 without stopping healthy session engines. Its control, attention and artifact
 helpers live in [switchboard_relay](../zellij-client/src/switchboard_relay).
 
-On macOS, [install_service.py](../tools/switchboard/install_service.py) installs
+`zellij switchboard install`
+([switchboard_install.rs](../zellij-client/src/switchboard_install.rs)) creates
+this computer's login and host list on first install. On macOS it installs
 LaunchAgents for the background service and builds the
-[Swift menu bar app](../tools/switchboard/menu_bar.swift). On Windows,
-[install_windows_web.ps1](../tools/switchboard/install_windows_web.ps1) installs
+[Swift menu bar app](../tools/switchboard/menu_bar.swift). On Windows it runs
+[install_windows_web.ps1](../tools/switchboard/install_windows_web.ps1), which installs
 a Startup shortcut and a PowerShell tray app that supervises the web daemon and
 relay. Quitting either icon leaves terminal sessions running.
 
