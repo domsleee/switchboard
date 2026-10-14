@@ -169,42 +169,39 @@ fn assert_socket(name: &str) -> bool {
 
 /// On Windows, reads the server PID and checks whether the process is running.
 /// An exited process can still have an open handle, so opening it is insufficient.
+/// `None` means the marker could not be read (or is mid-write), which says nothing
+/// about the server.
 #[cfg(windows)]
-fn windows_session_marker_is_live(path: &Path) -> bool {
+fn windows_session_marker_is_live(path: &Path) -> Option<bool> {
     use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
     use windows_sys::Win32::System::Threading::{
         OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
     };
 
-    let pid_str = match fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-    let pid: u32 = match pid_str.trim().parse() {
-        Ok(p) => p,
-        Err(_) => return false,
-    };
+    let pid: u32 = fs::read_to_string(path).ok()?.trim().parse().ok()?;
     unsafe {
         let handle = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
         if handle.is_null() {
-            false
+            Some(false)
         } else {
             let alive = WaitForSingleObject(handle, 0) == WAIT_TIMEOUT;
             CloseHandle(handle);
-            alive
+            Some(alive)
         }
     }
 }
 
 /// Cleans up stale Windows marker files when explicitly listing session sockets.
+/// Only a marker whose server is known to have exited is removed: deleting a live
+/// one makes clients treat the session as gone and try to recreate it.
 #[cfg(windows)]
 fn assert_socket(name: &str) -> bool {
     let path = ZELLIJ_SOCK_DIR.join(name);
     let alive = windows_session_marker_is_live(&path);
-    if !alive {
+    if alive == Some(false) {
         drop(fs::remove_file(path));
     }
-    alive
+    alive.unwrap_or(false)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -560,7 +557,7 @@ pub fn read_live_session_states(
                         // their server. Query the supplied directory without deleting
                         // markers or changing resurrection data during catalog reads.
                         #[cfg(windows)]
-                        if !windows_session_marker_is_live(&file.path()) {
+                        if windows_session_marker_is_live(&file.path()) != Some(true) {
                             return;
                         }
                         let creation_time = std::fs::metadata(&file.path())
