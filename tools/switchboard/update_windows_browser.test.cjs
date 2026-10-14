@@ -148,7 +148,13 @@ function start(binary,args,label) {
             for(const original of protectedProcesses)assert.ok(current.some(p=>p.pid===original.pid&&p.started===original.started),'Engine/shell/agent PID and creation time survive');
             await wait(()=>Number(fs.readFileSync(heartbeat,'utf8'))>beforeHeartbeat,'Agent output stopped');
             assert.ok((await (await fetch(url+'/api/hosts/test')).json()).sessions.some(s=>s.name===name&&s.web_clients_allowed),'Sharing preference survives');
-            await select(first);await hasOutput('FIRST_'+marker);await hasOutput('HEARTBEAT:');
+            await select(first);
+            // History lives in the native pane; xterm renders only its current viewport.
+            // A failed-candidate timeout lets heartbeats move the saved marker offscreen.
+            cli('-s',name,'action','scroll-to-top','--pane-id',String(first.id));
+            await hasOutput('FIRST_'+marker);
+            cli('-s',name,'action','scroll-to-bottom','--pane-id',String(first.id));
+            await hasOutput('HEARTBEAT:');
             await command(`[Console]::WriteLine(${ps(prefix+'_FIRST_')}+$SB_STATE)`,prefix+'_FIRST_'+marker);
             await select(second);assert.equal(page.url(),selectedURL,'Selecting the original terminal restores its URL');
         };
