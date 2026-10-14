@@ -164,19 +164,92 @@ impl Mesh {
             }
         };
         // One offline computer must not delay updates from every other computer.
-        futures_util::future::join_all(peers.into_iter().map(|peer| async move {
+        let now = std::time::Instant::now();
+        let peers = peers
+            .into_iter()
+            .filter(|peer| self.sync_backoff.ready(&peer.id, now));
+        futures_util::future::join_all(peers.map(|peer| async move {
             let result = async {
                 let update = self.prepare_sync(&peer.id).await?;
                 let response: Update = self.remote(&peer, "/mesh/sync", &update).await?;
                 self.exchange(response).await?;
                 Ok::<_, anyhow::Error>(())
             };
-            match tokio::time::timeout(Duration::from_secs(5), result).await {
+            let result = tokio::time::timeout(Duration::from_secs(5), result).await;
+            let now = std::time::Instant::now();
+            self.sync_backoff
+                .record(&peer.id, matches!(result, Ok(Ok(()))), now);
+            match result {
                 Ok(Ok(())) => {},
-                Ok(Err(_)) => logs::record(&peer.name, "Group sync failed; will retry"),
+                Ok(Err(error)) => logs::record(
+                    &peer.name,
+                    &format!("Group sync failed: {error:#}; will retry"),
+                ),
                 Err(_) => logs::record(&peer.name, "Group sync timed out; will retry"),
             }
         }))
         .await;
+    }
+}
+
+/// Per-computer retry delay, so an offline computer is not contacted every
+/// sync tick. The first failures retry at once: enrollment converges through them.
+#[derive(Default)]
+pub(super) struct Backoff(std::sync::Mutex<BTreeMap<String, (u32, std::time::Instant)>>);
+
+impl Backoff {
+    const FREE_FAILURES: u32 = 3;
+    const MAX_DELAY: Duration = Duration::from_secs(60);
+
+    pub(super) fn ready(&self, peer: &str, now: std::time::Instant) -> bool {
+        self.0
+            .lock()
+            .unwrap()
+            .get(peer)
+            .is_none_or(|(_, next)| now >= *next)
+    }
+
+    pub(super) fn record(&self, peer: &str, succeeded: bool, now: std::time::Instant) {
+        let mut peers = self.0.lock().unwrap();
+        if succeeded {
+            peers.remove(peer);
+            return;
+        }
+        let failures = peers.get(peer).map_or(0, |(failures, _)| *failures) + 1;
+        let doublings = failures.saturating_sub(Self::FREE_FAILURES).min(5);
+        let delay = if failures < Self::FREE_FAILURES {
+            Duration::ZERO
+        } else {
+            (Duration::from_secs(3) * 2u32.pow(doublings)).min(Self::MAX_DELAY)
+        };
+        peers.insert(peer.to_owned(), (failures, now + delay));
+    }
+}
+
+#[cfg(test)]
+mod backoff_tests {
+    use super::*;
+
+    #[test]
+    fn offline_computer_backs_off_and_recovers_on_success() {
+        let backoff = Backoff::default();
+        let start = std::time::Instant::now();
+        for _ in 0..2 {
+            backoff.record("peer", false, start);
+            assert!(backoff.ready("peer", start), "early failures retry at once");
+        }
+        let delays: Vec<_> = (0..6)
+            .map(|_| {
+                backoff.record("peer", false, start);
+                assert!(!backoff.ready("peer", start));
+                let next = backoff.0.lock().unwrap()["peer"].1;
+                next - start
+            })
+            .collect();
+        let secs: Vec<_> = delays.iter().map(Duration::as_secs).collect();
+        assert_eq!(secs, [3, 6, 12, 24, 48, 60]);
+        assert!(backoff.ready("other", start));
+        backoff.record("peer", true, start);
+        assert!(backoff.ready("peer", start));
     }
 }

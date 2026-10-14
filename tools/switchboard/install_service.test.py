@@ -60,6 +60,6 @@ with tempfile.TemporaryDirectory(prefix='sbs-') as directory:
         job = plistlib.loads((installer.AGENTS / (label + '.plist')).read_bytes())
         assert job['EnvironmentVariables']['SHELL'] == '/opt/login/nu', (label, job['EnvironmentVariables'])
     update = plistlib.loads((installer.AGENTS / 'dev.switchboard.update.plist').read_bytes())
-    assert update['ProgramArguments'] == ['/bin/zellij', 'switchboard', 'update', '--binary', '/bin/zellij'], update
+    assert update['ProgramArguments'] == ['/bin/sh', '-c', 'exec /bin/zellij switchboard update --binary /bin/zellij'], update
 print('Services start panes with the login shell, not the installing shell.')
 print('Automatic updates run the installed executable, not Python.')

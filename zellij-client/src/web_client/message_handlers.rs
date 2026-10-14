@@ -182,6 +182,8 @@ pub fn render_to_client(
                 }
                 result = stdout_channel_rx.recv() => {
                     match result {
+                        // Empty renders carry nothing; forwarding them floods every viewer.
+                        Some(rendered_bytes) if rendered_bytes.is_empty() => {},
                         Some(rendered_bytes) => {
                             if client_channel_tx
                                 .send(Message::Text(rendered_bytes.into()))
