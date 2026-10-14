@@ -213,8 +213,9 @@
   }
   function terminalFocused() {
     const active = document.activeElement;
+    // Closed shadow roots expose their host; the capture mirrors its own focus.
     return !!active && (window.term?.element?.contains(active) ||
-      active === window.__zjSoftKbdCapture?.element);
+      active === window.__zjSoftKbdCapture?.element || window.__zjSoftKbdCapture?.isFocused);
   }
   function showEscapeStatus(message, failed = false) {
     if (!message && !escapeStatus) return;
