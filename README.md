@@ -1,19 +1,21 @@
 # Switchboard
 
-A fork of [Zellij](https://github.com/zellij-org/zellij), based on version **0.45.1**.
+All your terminal tabs, on all your computers, in one browser window.
 
-One place for your terminal tabs across Mac and Windows, with a searchable sidebar,
-attention badges for Codex and Claude, and right-click actions to archive or close tabs.
-Tabs stay where you put them.
+- **One sidebar for every computer.** Pair your Mac and Windows machines, then search and switch between all their tabs.
+- **Know when an agent needs you.** Codex and Claude tabs show a badge when they finish or ask a question. Reading it on one computer clears it on all of them.
+- **Tidy up from the sidebar.** Right-click a tab to archive or close it. Tabs stay where you put them.
+- **Runs quietly.** A menu bar icon on Mac and a tray icon on Windows. Updates install themselves without closing your terminals.
 
-Switchboard runs in the background, with a menu bar icon on Mac and a tray icon on Windows.
+## Get started
 
-The terminal engine and web server are native Rust. This fork removes Zellij's
-WASM plugin runtime and bundled plugins. Older layouts still open their terminal
-panes, with plugin bars removed. The same executable includes the Rust sidebar relay.
+[Set up Switchboard](tools/switchboard/README.md) on each computer, then pair them.
 
-[Setup and usage](tools/switchboard/README.md) · [Zellij documentation](https://zellij.dev/documentation/) · [License](LICENSE.md)
+## More
 
-[Update plan](docs/SWITCHBOARD_UPDATES.md): automatic updates that keep running terminals alive.
+- [All docs](docs/README.md): Switchboard guides and inherited Zellij references.
+- [Zellij documentation](https://zellij.dev/documentation/) · [License](LICENSE.md)
 
-[Docs index](docs/README.md): current Switchboard guidance and inherited Zellij references.
+## Under the hood
+
+Switchboard is a fork of [Zellij](https://github.com/zellij-org/zellij) 0.45.1. The terminal engine, web server and sidebar relay are native Rust in a single executable. Zellij's WASM plugin runtime and bundled plugins are removed; older layouts still open, without their plugin bars.
