@@ -88,11 +88,18 @@ pub(super) fn classify(pane: &Value, screen: &str) -> Value {
         }
     }
     let busy = BUSY.find_iter(before).last();
+    // Claude lists running background agents under its prompt with a hollow
+    // circle and a live timer: "◯ fork  Reading files   4m 19s · ↓ 461k tokens".
+    // Its turn has ended, but the work has not.
+    static BACKGROUND: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"(?m)^[ \t]*◯[ \t]+\S[^\n]*\b\d+[hms]\b").unwrap());
+    let background = claude && BACKGROUND.is_match(after);
     // Braille spinner in the title; Claude Code 2.1.228+ uses half circles.
     let spinner = title.chars().next().is_some_and(|c| {
         ('\u{2801}'..='\u{28ff}').contains(&c) || ('\u{25d0}'..='\u{25d3}').contains(&c)
     });
     if spinner
+        || background
         || after.to_lowercase().contains("tab to queue message")
         || busy.is_some_and(|b| completion.is_none_or(|c| b.start() > c.start()))
     {
@@ -774,6 +781,8 @@ esac
             "",
         );
         assert_eq!(classify(&claude, &idle)["state"], "ready");
+        let agents = format!("{idle}\n\n  ⏺ main\n  ◯ fork  Writing measure.cjs freeze/reload experiment     4m 19s · ↓ 461.3k tokens");
+        assert_eq!(classify(&claude, &agents)["state"], "working");
         let titled = json!({"pane_command":"claude","title":"◐ Switchboard logs review"});
         assert_eq!(classify(&titled, &idle)["state"], "working");
         assert_eq!(
