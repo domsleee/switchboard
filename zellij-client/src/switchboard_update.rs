@@ -439,7 +439,10 @@ impl Updater {
             .context("Invalid release manifest")?;
         validate_manifest(&manifest, &self.platform)?;
         if manifest.run_number <= state.run_number.unwrap_or(0) {
-            println!("No newer successful main build.");
+            // Scheduled runs log every 15 minutes; only say so when someone is watching.
+            if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+                println!("No newer successful main build.");
+            }
             return Ok(());
         }
         if !self.check {

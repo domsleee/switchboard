@@ -102,7 +102,9 @@ def main():
             if source.resolve() != (updater / name).resolve():
                 shutil.copy2(source, updater / name)
         install_job('dev.switchboard.update', {
-            'ProgramArguments': [zellij, 'switchboard', 'update', '--binary', zellij],
+            # Through sh like the relay job: launchd pins a directly launched program's
+            # code hash, and this job replaces that program on every update.
+            'ProgramArguments': ['/bin/sh', '-c', f'exec {shlex.quote(zellij)} switchboard update --binary {shlex.quote(zellij)}'],
             'StartInterval': 900,
             'StandardOutPath': str(LOGS / 'switchboard-update.log'),
             'StandardErrorPath': str(LOGS / 'switchboard-update.log'),

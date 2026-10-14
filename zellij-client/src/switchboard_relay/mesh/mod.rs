@@ -238,6 +238,7 @@ pub(super) struct Mesh {
     enrollment: Mutex<()>,
     pub(super) bridge: RwLock<Option<(storage::Storage, u16, String)>>,
     pub(super) attention: std::sync::OnceLock<Arc<Mutex<attention::PollState>>>,
+    sync_backoff: sync::Backoff,
 }
 impl Mesh {
     pub async fn open(root: PathBuf, local_engine: Arc<Host>) -> anyhow::Result<Arc<Self>> {
@@ -274,6 +275,7 @@ impl Mesh {
             enrollment: Mutex::new(()),
             bridge: RwLock::new(None),
             attention: std::sync::OnceLock::new(),
+            sync_backoff: sync::Backoff::default(),
         });
         {
             let db = mesh.database.lock().await;
