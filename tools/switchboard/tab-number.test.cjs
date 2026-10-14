@@ -94,6 +94,10 @@ for(const platform of ['MacIntel','Win32','Linux x86_64'])test(`${platform}: sid
       for(const digit of [1,2,3,4,5,6,7,8,9])await page.keyboard.press('Control+Digit'+digit);
       assert.equal(await selectedName(),'Alpha','Ctrl+digits never select a Switchboard tab from its Windows terminal');
     }
+    // Browser tab shortcuts can move focus. Restore the terminal target before
+    // checking its ordinary modifier handler, independently of digit passthrough.
+    await input.focus();
+    assert.equal(await input.evaluate(i=>document.activeElement===i),true);
     await page.keyboard.press('Meta+KeyA');
     await page.keyboard.press('Meta+KeyR');await page.keyboard.press('Meta+Shift+KeyR');
     await page.keyboard.press(tabModifier+'+Digit1');await settle();
