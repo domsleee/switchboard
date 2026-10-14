@@ -14,7 +14,7 @@ Use `cargo build --release --timings` to write a build report to
 | [Architecture](ARCHITECTURE.md) | Native session workers, tabs, panes, Grid, browser sizing, web daemon, Rust relay and desktop helpers. |
 | [Terminology](TERMINOLOGY.md) | Sessions, clients, PTYs, Windows ConPTY, ANSI/VT sequences and viewport ownership. |
 | [Error handling](ERROR_HANDLING.md) | Current Rust error APIs, recovery boundaries and isolation of relay failures from healthy sessions. |
-| [Updating Switchboard](SWITCHBOARD_UPDATES.md) | How automatic and manual updates preserve running terminals. |
+| [How updates work](SWITCHBOARD_UPDATES.md) | For maintainers: how automatic updates keep terminals running, manual updates and recovery. |
 | [Windows test plan](SWITCHBOARD_WINDOWS_TEST_PLAN.md) | Platform acceptance checklist and known gaps. Record actual Windows results before calling the platform verified. |
 
 Architecture, terminology and error handling have been refreshed against the

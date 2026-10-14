@@ -13,7 +13,6 @@ All your terminal tabs, on all your computers, in one browser window.
 
 ## More
 
-- [Updating Switchboard](docs/SWITCHBOARD_UPDATES.md): how updates keep running terminals alive.
 - [All docs](docs/README.md): Switchboard guides and inherited Zellij references.
 - [Zellij documentation](https://zellij.dev/documentation/) · [License](LICENSE.md)
 

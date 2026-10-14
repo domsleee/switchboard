@@ -65,9 +65,7 @@ bar, installs login LaunchAgents, and starts native Zellij web daemon mode if
 needed. The icon opens Switchboard, shows status, starts servers, and opens logs.
 Logs are in `~/Library/Logs/zellij-switchboard.log`. Quitting the menu bar app
 leaves the relay and terminal sessions running. Swift's compiler and this fork's
-`zellij` executable must be installed. Automatic updates run
-`zellij switchboard update` (no Python or GitHub CLI); macOS also needs `jq`. See
-[automatic updates](../../docs/SWITCHBOARD_UPDATES.md#automatic-updates).
+`zellij` executable must be installed, plus `jq`. Switchboard then updates itself.
 
 Settings → Logs includes terminal tab switches: focus acknowledgment,
 first frame, parser/render/frame scheduling delay, output byte/frame counts,
@@ -84,18 +82,6 @@ another computer.
 Shift+Enter reports include browser modifier flags and Shift press/release timing.
 These diagnostics contain no terminal contents or typed text. Slow native reflows
 and ConPTY resizes also appear in `zellij.log`.
-
-To update a Mac while keeping open terminals running (requires `jq`):
-
-```sh
-bash tools/switchboard/update_local.sh target/release/zellij
-```
-
-This replaces the executable, then restarts the web server and relay on it;
-browsers reconnect. Session servers and their shells keep running on their
-original engine; new sessions use the update. Failed checks restore the previous
-executable and services. `--binary-only` skips the restart.
-See [updating Switchboard](../../docs/SWITCHBOARD_UPDATES.md).
 
 On Windows, install this fork's `zellij.exe`, then put your local authenticated host
 configuration in `~/.config/switchboard/hosts.json` using the format below. Set
@@ -117,13 +103,8 @@ Use `-RelayPort PORT` to choose another port. Reinstalls and updates preserve th
 running tray's port, including older installations whose relay still uses port 80.
 Logs are in `~/.config/switchboard`. Quitting the tray leaves terminals running.
 The installer retains its executable in `~/.local/share/switchboard/windows-releases`.
-Use `update_windows.ps1 -Candidate C:/build/zellij.exe` to select a new retained
-release, or `update_windows.ps1 -Rollback` to select the previous one. Both then
-restart the native web server and relay on the selection (add `-BinaryOnly` to
-only select it); terminal engines keep running and browsers reconnect.
-`~/.config/switchboard/windows_cli.ps1 attach SESSION` uses the selection for
-native clients and new sessions. Existing sessions retain their old engine;
-see the [Windows update checks](../../docs/SWITCHBOARD_UPDATES.md#select-a-windows-release-without-stopping-terminals).
+Switchboard updates itself. `~/.config/switchboard/windows_cli.ps1 attach SESSION`
+attaches a native client to a session.
 The relay port must be available; no administrator access or certificate installation
 is required. Port 8090 avoids Windows services that reserve port 80.
 Windows sees its own host and the computers it has paired with.
@@ -153,8 +134,6 @@ viewers scroll over the same layout and start at the bottom, near the prompt. **
 returns after scrolling up. Background windows never reclaim the size from metadata updates.
 Ownership transfers on focus and releases when the owner leaves the tab or disconnects.
 Smaller plain terminals and older browsers still constrain the layout because they cannot pan.
-Existing sessions need the updated native server; updating the web server alone does not update a running session.
-See [updating Switchboard](../../docs/SWITCHBOARD_UPDATES.md) for how updates preserve running processes.
 
 Machine names stay beneath each tab, and work/home remain optional filters. Search names and
 machines with **Cmd/Ctrl+K**, including from inside the terminal; Enter opens the
