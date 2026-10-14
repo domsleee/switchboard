@@ -119,6 +119,32 @@ test('every computer in a mesh lists unsorted tabs in the same machine order',()
 });
 
 
+test('a new tab goes to the bottom on every computer and stays there after reload',()=>{
+  const stored={};
+  const view=()=>{
+    const context={hosts:new Map([['mac',{name:'Doms-MacBook-Pro'}],['win',{name:'Windows'}]]),sessions:new Map(),tabOrder:[],ready:{},archived:{},selected:null,
+      filter:'all',groups:{},saveReady(){},localStorage:{getItem:key=>stored[key]??null,setItem:(key,value)=>stored[key]=value}};
+    vm.createContext(context);
+    vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function moveSelected(')),context);
+    const catalog=(host,ids)=>{
+      const entry=context.sessions.get(host)??{host,name:'main',state:{panes:[]}};context.sessions.set(host,entry);
+      context.setCatalog(entry,ids.map(id=>({id,name:`${host}-${id}`,position:id,panes:[]})));
+    };
+    return {catalog,names:()=>Array.from(context.allTabs(),item=>item.tab.name)};
+  };
+  const first=view();
+  first.catalog('win',[0,1]);first.catalog('mac',[0,1]);
+  assert.deepEqual(first.names(),['mac-0','mac-1','win-0','win-1'],'first sight keeps the shared machine order');
+  first.catalog('mac',[0,1,2]);first.catalog('win',[0,1,3]);
+  assert.deepEqual(first.names(),['mac-0','mac-1','win-0','win-1','mac-2','win-3']);
+  const reloaded=view();
+  reloaded.catalog('win',[0,1,3]);reloaded.catalog('mac',[0,1,2]);
+  assert.deepEqual(reloaded.names(),['mac-0','mac-1','win-0','win-1','mac-2','win-3']);
+  // A recreated session restarts its IDs; its tabs are not new tabs.
+  reloaded.catalog('win',[0]);
+  assert.deepEqual(reloaded.names(),['mac-0','mac-1','win-0','mac-2']);
+});
+
 test('native tab identity preserves selection, archive and order through pane removal, floating and reordered positions',()=>{
   const entry={host:'win',name:'main',state:{panes:[]}},stored={};
   const context={ready:{},archived:{},selected:null,tabOrder:[],saveReady(){},localStorage:{setItem:(key,val)=>stored[key]=val},SwitchboardTitles:{tabTitle:(_,tab)=>tab.name}};
