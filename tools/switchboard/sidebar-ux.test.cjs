@@ -222,3 +222,72 @@ test('sidebar empty states say why the list is empty and offer the fixing action
     assert.deepEqual(errors,[]);
   }finally{await browser.close();}
 });
+
+test('group URLs restore All, Home and Work on reload, including an empty group',
+  {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
+  const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
+  const browser=await chromium.launch({headless:true});
+  try{
+    const context=await browser.newContext(),page=await context.newPage(),errors=[];
+    page.setDefaultTimeout(5000);page.on('pageerror',error=>errors.push(error.message));
+    const tabs=[{host:'mac',session:'main',id:42,position:0,name:'Home shell',panes:[{pane_id:7,is_plugin:false,tab_position:0}]},
+      {host:'windows',session:'main',id:90,position:0,name:'Work shell',panes:[{pane_id:8,is_plugin:false,tab_position:0}]}];
+    await context.addInitScript(()=>{
+      window.setInterval=()=>0;
+      if(!localStorage.getItem('switchboard-groups'))localStorage.setItem('switchboard-groups',JSON.stringify({mac:'home',windows:'work'}));
+    });
+    await context.route('**/*',async route=>{
+      const path=new URL(route.request().url()).pathname;
+      const json=value=>route.fulfill({contentType:'application/json',body:JSON.stringify(value)});
+      if(path==='/api/hosts')return json([{id:'mac',name:'Mac'},{id:'windows',name:'Windows'}]);
+      if(path.startsWith('/api/hosts/'))return json({id:path.split('/').at(-1),sessions:[{name:'main',web_clients_allowed:true}]});
+      if(path==='/api/attention')return json({tabs,panes:[],errors:[]});
+      if(path.startsWith('/api/'))return json({});
+      if(path.startsWith('/hosts/')){
+        const pane=tabs.find(tab=>tab.host===path.split('/')[2]).panes[0];
+        return route.fulfill({contentType:'text/html',body:`<input id="terminal-input"><script>
+          const pane=${JSON.stringify(pane)},input=document.querySelector('input');
+          window.term={element:document.body,textarea:input,options:{}};
+          function state(focus_id){parent.postMessage({type:'zellij-state',focus_id,payload:{session_name:'main',panes:[pane],active_pane:pane,tab_viewport:{is_owner:true}}},location.origin);}
+          addEventListener('message',event=>{if(event.data.type==='zellij-focus'){input.focus();state(event.data.focus_id)}});state();
+        </script>`});
+      }
+      const file=path==='/'?'index.html':path.slice(1);
+      if(!['index.html','app.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
+      return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
+    });
+    async function shows(group,names){
+      await page.waitForFunction(()=>hostsLoaded&&!loading&&sessions.size===2&&[...sessions.values()].every(entry=>entry.state));
+      await page.evaluate(()=>refreshAttention());
+      await page.waitForFunction(([group,names])=>document.querySelector('#filters .selected').dataset.filter===group&&
+        JSON.stringify([...document.querySelectorAll('#tabs .tab-name')].map(node=>node.textContent))===JSON.stringify(names),[group,names]);
+    }
+    await page.goto('https://switchboard.test/?kept=yes#notes');
+    await shows('all',['Home shell','Work shell']);
+    for(const [group,names,host] of [['home',['Home shell'],'mac'],['work',['Work shell'],'windows'],['all',['Home shell','Work shell'],'windows']]){
+      await page.locator(`#filters [data-filter="${group}"]`).click();await shows(group,names);
+      const selectedUrl=new URL(page.url());
+      assert.equal(selectedUrl.searchParams.get('group'),group==='all'?null:group);
+      assert.equal(selectedUrl.searchParams.get('host'),host);
+      assert.equal(selectedUrl.searchParams.get('kept'),'yes');assert.equal(selectedUrl.hash,'#notes');
+      await page.reload();await shows(group,names);
+      assert.equal(page.url(),selectedUrl.href,'reload preserves the group and terminal URL');
+    }
+    // An empty group must survive reload without falling back to All.
+    await page.evaluate(()=>{groups.mac='work';localStorage.setItem('switchboard-groups',JSON.stringify(groups));});
+    await page.locator('#filters [data-filter="home"]').click();await shows('home',[]);
+    await page.reload();await shows('home',[]);
+    assert.equal(new URL(page.url()).searchParams.get('group'),'home');
+    assert.equal(await page.locator('#tab-empty-text').textContent(),'No tabs in Home');
+    // Unrecognised values use All; unrelated query parameters and fragments survive.
+    await page.goto('https://switchboard.test/?group=invalid&kept=yes#notes');await shows('all',['Home shell','Work shell']);
+    assert.equal(new URL(page.url()).searchParams.has('group'),false);
+    assert.equal(new URL(page.url()).searchParams.get('kept'),'yes');assert.equal(new URL(page.url()).hash,'#notes');
+    // A terminal link outside the requested group must not reset that group.
+    await page.evaluate(()=>{groups.mac='home';localStorage.setItem('switchboard-groups',JSON.stringify(groups));});
+    await page.goto('https://switchboard.test/?group=home&host=windows&session=main&tab=90');await shows('home',['Home shell']);
+    assert.equal(new URL(page.url()).searchParams.get('group'),'home');
+    assert.equal(new URL(page.url()).searchParams.get('host'),'mac');
+    assert.deepEqual(errors,[]);
+  }finally{await browser.close();}
+});

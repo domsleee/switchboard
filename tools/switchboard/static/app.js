@@ -18,7 +18,7 @@ const startedHosts = new Set();
 const tabButtons=new Map();
 const mobileSidebar=matchMedia("(max-width:700px)");
 let sidebarCollapsed=localStorage.getItem("switchboard-sidebar-collapsed")==="true",sidebarOpen=false;
-let filter = 'all', selected = requestedTab(), restoringTab=!!selected, loading = false, dragging = false, hostsLoaded = false;
+let filter = requestedFilter(), selected = requestedTab(), restoringTab=!!selected, loading = false, dragging = false, hostsLoaded = false;
 const dragType='application/x-zellij-switchboard-tab';
 let dragState=null, dragScrollFrame=0, suppressTabClickUntil=0;
 function load(key) { try { return JSON.parse(localStorage.getItem(key)) || {}; } catch (_) { return {}; } }
@@ -41,6 +41,10 @@ function saveReady() { localStorage.setItem('switchboard-ready', JSON.stringify(
 function setStatus(message,isError=false) {
   $('status').textContent=message;$('status').classList.toggle('has-error',isError);
   $('notifications').title=`${$('notifications').textContent}\n${message}`;
+}
+function requestedFilter(){
+  const group=new URLSearchParams(location.search).get('group');
+  return group==='home'||group==='work'?group:'all';
 }
 function requestedTab(){
   const query=new URLSearchParams(location.search),host=query.get('host'),session=query.get('session'),kind=query.has('tab')?'tab':'pane',id=query.get(kind);
@@ -660,8 +664,15 @@ $('copy').onclick=async()=>{
   const result=await api.copySelection();
   setStatus(result.ok?'Copied to this browser.':result.error||'Nothing selected. Select terminal text first.',!result.ok);
 };
-function setFilter(value){filter=value;for(const b of $('filters').children)b.classList.toggle('selected',b.dataset.filter===value);render();}
+function renderFilter(){
+  for(const b of $('filters').children)b.classList.toggle('selected',b.dataset.filter===filter);
+  const url=new URL(location.href);
+  if(filter==='all')url.searchParams.delete('group');else url.searchParams.set('group',filter);
+  if(url.href!==location.href)history.replaceState(null,'',url);
+}
+function setFilter(value){filter=value;renderFilter();render();}
 $('filters').onclick=event=>{const button=event.target.closest('[data-filter]');if(button)setFilter(button.dataset.filter);};
+renderFilter();
 $('new-tab').onclick=()=>{
   const select=$('new-tab-target');select.replaceChildren();
   const current=allTabs().find(t=>t.key===selected)?.entry;
