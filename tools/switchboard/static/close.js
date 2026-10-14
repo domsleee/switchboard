@@ -4,6 +4,7 @@
     const item=contextItem;
     closeTabMenu();
     if(!item)return;
+    if(item.entry.cached){setStatus('This terminal is still connecting. Try Close again shortly.',true);return;}
     if(item.tab.pending){setStatus('This terminal is still connecting its tab actions. Try Close again shortly.',true);return;}
     if(!Number.isInteger(item.tab.id)){setStatus('That tab is no longer available.',true);return;}
     const closing={host:item.entry.host,key:item.key,session:item.entry.name,tab_id:item.tab.id,entry:item.entry};

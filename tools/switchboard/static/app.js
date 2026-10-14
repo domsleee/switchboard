@@ -138,6 +138,7 @@ function tabPanes(entry,tab){
   return (entry.state?.panes||[]).filter(p=>p.tab_position===tab.position && tab.panes.some(native=>native.pane_id===p.pane_id&&native.is_plugin===p.is_plugin));
 }
 function tabTitle(item){
+  if(!item.entry.state&&typeof item.tab.cachedTitle==='string')return item.tab.cachedTitle;
   const live=tabPanes(item.entry,item.tab);
   const panes=item.tab.panes.map(p=>({...p,...live.find(current=>current.pane_id===p.pane_id&&current.is_plugin===p.is_plugin),tab_position:item.tab.position}));
   return SwitchboardTitles.tabTitle({panes,active_pane:item.entry.state?.active_pane},item.tab);
@@ -235,14 +236,14 @@ function applyCategories(){
   }
 }
 function allTabs(ignoreFilter=false, includeArchived=false) {
-  const ranks=new Map(tabOrder.map((key,index)=>[key,index]));
+  const ranks=new Map([...new Set([...tabOrder,...(globalThis.SwitchboardStartup?.order()||[])])].map((key,index)=>[key,index]));
   const late=new Map(lateTabs().keys.map((key,index)=>[key,index]));
   // A tab still being created has no native ID yet; it already belongs at the end.
   const lateness=item=>late.get(item.key)??(item.tab.pending?Infinity:-1);
   // Saved drag positions first; the rest by machine and session, keeping each session's tab order;
   // tabs created since then last.
   const byMachine=(a,b)=>{const x=machineOrder(a),y=machineOrder(b);return x<y?-1:x>y?1:0;};
-  return [...sessions.values()].flatMap(entry => (entry.state ? sessionTabs(entry) : []).map(tab => ({entry,tab,key:tabKey(entry,tab)})))
+  return [...sessions.values()].flatMap(entry => sessionTabs(entry).map(tab => ({entry,tab,key:tabKey(entry,tab)})))
     .filter(({entry,tab,key}) => !entry.closingTabs?.has(tab.id) && (includeArchived || !archived[key]) && (ignoreFilter || filter === 'all' || groups[entry.host] === filter))
     .sort((a,b) => (ranks.get(a.key)??Infinity)-(ranks.get(b.key)??Infinity) || lateness(a)-lateness(b) || byMachine(a,b));
 }
@@ -296,7 +297,8 @@ function render() {
   if(dragging)return;
   const tabs = allTabs();
   const previous = selected,wasRestoring=restoringTab;
-  if(tabs.some(t=>t.key===selected))restoringTab=false;
+  const selection=tabs.find(t=>t.key===selected);
+  if(selection){if(selection.entry.state)restoringTab=false;}
   // Pick the top sidebar tab, not whichever machine's terminal answered first.
   else if(!waitingForRequestedTab()){restoringTab=false;selected=terminalsSettling()?null:tabs[0]?.key||null;}
   const liveKeys=new Set(tabs.map(item=>item.key));
@@ -379,16 +381,17 @@ function render() {
   if(!current){$('artifact-preview').hidden=true;$('artifact-frame').src='about:blank';}
   // The sidebar says why nothing is selected; the main area repeats only its
   // action, which matters on phones where the sidebar is a closed drawer.
-  $('empty').hidden=!!current;
-  if(!current){
+  $('empty').hidden=!!current?.entry.state;
+  if(!current?.entry.state){
     const hint=restoringTab||startingEntry?null:emptyHint,action=$('empty-action');
-    $('empty-text').textContent=restoringTab?'Connecting to the requested terminal…':startingEntry?'Starting a terminal…':terminalsSettling()?'Connecting…':'No terminal selected';
+    $('empty-text').textContent=restoringTab?'Connecting to the requested terminal…':startingEntry?'Starting a terminal…':current||terminalsSettling()?'Connecting…':'No terminal selected';
     action.hidden=!hint?.action;action.textContent=hint?.action||'';action.onclick=hint?.run||null;
   }
   const errors=[...hosts.values()].filter(h=>h.error).map(h=>`${h.name}: ${h.error}`);
   for(const entry of sessions.values())if(entry.closeError)errors.push(entry.closeError);
   for(const error of attentionErrors)errors.push(`${hosts.get(error.host)?.name||error.host}: attention status unavailable`);
   setStatus(errors.length?errors.join(' · '):`${hosts.size} machines · ${tabs.length} tabs${current?' · '+hosts.get(current.entry.host)?.name:''}`,errors.length>0);
+  if(hostsLoaded&&attentionLoaded&&!terminalsSettling())globalThis.SwitchboardStartup?.save([...hosts.values()],allTabs(true,true).map(item=>({...item,title:tabTitle(item)})),groups);
   if ((selected !== previous || wasRestoring&&!restoringTab) && current) focus(current,true);
   if(selected!==previous) $('tabs').querySelector('.selected')?.scrollIntoView({block:'nearest',inline:'nearest'});
 }
@@ -453,7 +456,7 @@ function focus(item,background=false) {
   }
   // A polling retry must not blur/disable a terminal while its control socket
   // lacks current metadata. The next native state performs the reconnect focus.
-  if(item.entry.disconnected){item.entry.needsFocus=true;return;}
+  if(!item.entry.state||item.entry.disconnected){item.entry.needsFocus=true;return;}
   if(item.entry.pendingNewTab||item.tab.pending&&!item.tab.panes.length)return;
   $('artifact-preview').hidden=true;
   $('artifact-frame').src='about:blank';
@@ -552,18 +555,32 @@ function renderMachines() {
   let cursor=container.firstChild;
   for(const label of nodes){if(label!==cursor)container.insertBefore(label,cursor);else cursor=cursor.nextSibling;}
 }
-function connectSession(host,name,starting=false) {
+function connectSession(host,name,starting=false,cached=false) {
   const key=sessionKey(host.id,name);
-  if(sessions.has(key))return sessions.get(key);
+  const existing=sessions.get(key);
+  if(existing){
+    if(existing.cached&&!cached){existing.cached=false;existing.frame.src=`/hosts/${encodeURIComponent(host.id)}/${encodeURIComponent(name)}`;}
+    return existing;
+  }
   const frame=document.createElement('iframe');frame.title=`${host.name}: ${name}`;
-  frame.src=`/hosts/${encodeURIComponent(host.id)}/${encodeURIComponent(name)}`;
+  frame.src=cached?'about:blank':`/hosts/${encodeURIComponent(host.id)}/${encodeURIComponent(name)}`;
   frame.allow='clipboard-read; clipboard-write';
-  const entry={host:host.id,name,frame,state:null,starting,catalogUnavailable:catalogUnavailable(host.id,name)};sessions.set(key,entry);
+  const entry={host:host.id,name,frame,state:null,starting,cached,catalogUnavailable:catalogUnavailable(host.id,name)};sessions.set(key,entry);
   setCatalog(entry,tabCatalog.filter(tab=>tab.host===entry.host&&tab.session===entry.name));$('terminals').append(frame);
   if(starting)entry.startTimeout=setTimeout(()=>{
     if(entry.starting){entry.starting=false;entry.closeError='Terminal did not start. Check the machine connection and use + to try again.';render();}
   },30000);
   return entry;
+}
+function pruneSessions(listed=null,hostId=null){
+  if(globalThis.SwitchboardStartup?.active())return;
+  if(listed)for(const id of [...hosts.keys()])if(!listed.has(id)){hosts.delete(id);startedHosts.delete(id);}
+  for(const [key,entry] of sessions){
+    const host=hosts.get(entry.host);
+    if(!host||entry.host===hostId&&!host.error&&Array.isArray(host.sessions)&&!entry.starting&&!host.sessions.some(session=>session.name===entry.name)){
+      clearTimeout(entry.startTimeout);entry.frame.remove();sessions.delete(key);
+    }
+  }
 }
 async function refresh() {
   if(loading)return;loading=true;
@@ -571,11 +588,11 @@ async function refresh() {
     fetch('/api/mesh',{cache:'no-store'}).then(r=>r.ok?r.json():null).then(mesh=>{meshMembers=mesh?.members||[];localMember=meshMembers.find(m=>m.local)||null;applyCategories();render();}).catch(()=>{});
     const response=await fetch('/api/hosts?summary=1');if(!response.ok)throw Error('Cannot reach local relay');
     const data=await response.json();hostsLoaded=true;
+    globalThis.SwitchboardStartup?.discover(data);
     for(const host of data)hosts.set(host.id,{...hosts.get(host.id),...host,connecting:true});
     // A host the relay stops listing must not linger until reload.
     const listed=new Set(data.map(host=>host.id));
-    for(const id of [...hosts.keys()])if(!listed.has(id)){hosts.delete(id);startedHosts.delete(id);}
-    for(const [key,entry] of sessions)if(!listed.has(entry.host)){clearTimeout(entry.startTimeout);entry.frame.remove();sessions.delete(key);}
+    pruneSessions(listed);
     renderMachines();render();
     await Promise.all(data.map(async summary=>{
       try{
@@ -591,9 +608,7 @@ async function refresh() {
           if(!session.web_clients_allowed)continue;
           connectSession(host,session.name);
         }
-        if(!host.error) for(const [key,entry] of sessions) {
-          if(entry.host===host.id&&!entry.starting&&!host.sessions.some(s=>s.name===entry.name)) {clearTimeout(entry.startTimeout);entry.frame.remove();sessions.delete(key);}
-        }
+        pruneSessions(null,host.id);
       }catch(error){hosts.set(summary.id,{...hosts.get(summary.id),connecting:false,error:error.message});}
       renderMachines();render();
     }));
@@ -888,7 +903,7 @@ async function loadLogs(){
 $('refresh-logs').onclick=loadLogs;
 $('native-tabs').onclick=()=>{nativeTabs=!nativeTabs;localStorage.setItem('switchboard-native-tabs',String(nativeTabs));updateNativeTabs();};
 updateNativeTabs();
-refresh();setInterval(refresh,15000);
+setInterval(refresh,15000);
 
 function closeTabMenu(restore=false){
   $('tab-menu').hidden=true;$('close-tab').disabled=false;contextItem=null;
@@ -903,8 +918,8 @@ function updateTabMenu(){
   $('tab-menu-target').textContent=`${tabTitle(item)} · ${hosts.get(item.entry.host)?.name||item.entry.host} · ${item.entry.name}`;
   $('ready').disabled=!!item.tab.pending&&!Number.isInteger(item.tab.id);
   $('archive-tab').disabled=!!item.tab.pending&&!Number.isInteger(item.tab.id);
-  $('close-tab').disabled=!!item.tab.pending||!Number.isInteger(item.tab.id);
-  $('close-tab').title=item.tab.pending||!Number.isInteger(item.tab.id)?'Waiting for the tab identity to finish connecting':'Close this tab · Ctrl+D';
+  $('close-tab').disabled=!!item.entry.cached||!!item.tab.pending||!Number.isInteger(item.tab.id);
+  $('close-tab').title=item.entry.cached||item.tab.pending||!Number.isInteger(item.tab.id)?'Waiting for the terminal to finish connecting':'Close this tab · Ctrl+D';
   $('select-text').disabled=!item.entry.frame.contentWindow.SwitchboardClipboard;
   $('select-text').setAttribute('aria-pressed',String(!!item.entry.frame.contentWindow.SwitchboardClipboard?.selectionMode));
   const viewport=item.entry.state?.tab_viewport,sizeOwner=$('size-owner');
@@ -1008,6 +1023,25 @@ resizeHandle.onkeydown=event=>{if(['ArrowLeft','ArrowRight'].includes(event.key)
 window.addEventListener('resize',()=>{if(!mobileSidebar.matches)setSidebarWidth(sidebarWidth);});
 setSidebarWidth(sidebarWidth);updateSidebar();
 
+const startup=globalThis.SwitchboardStartup;
+if(startup){
+  tabCatalog=startup.snapshot.tabs;
+  for(const host of startup.snapshot.hosts){hosts.set(host.id,{...host,connecting:true});if(host.group!==undefined)groups[host.id]=host.group;}
+  for(const tab of tabCatalog){const host=hosts.get(tab.host);if(host)connectSession(host,tab.session,false,true);}
+  renderMachines();render();
+  setTimeout(()=>{
+    const fresh=startup.finish();
+    if(fresh.tabs){
+      tabCatalog=fresh.tabs;
+      for(const entry of sessions.values()){setCatalog(entry,tabCatalog.filter(tab=>tab.host===entry.host&&tab.session===entry.name));updateCreatedTabs(entry);}
+    }
+    pruneSessions(fresh.listed);
+    for(const host of hosts.values())pruneSessions(null,host.id);
+    renderMachines();render();
+  },5000);
+}
+refresh();
+
 async function refreshAttention(immediate=false){
   if(attentionLoading){attentionRefreshPending ||= immediate;return;}attentionLoading=true;
   try{
@@ -1019,7 +1053,8 @@ async function refreshAttention(immediate=false){
     // fresh page, and retain browser entries the failed scan could not supply.
     const incoming=data.tabs||[],identity=tab=>JSON.stringify([tab.host,tab.session,tab.id]);
     const supplied=new Set(incoming.map(identity));
-    tabCatalog=[...incoming,...tabCatalog.filter(tab=>catalogUnavailable(tab.host,tab.session)&&!supplied.has(identity(tab)))];
+    const retained=[...incoming,...tabCatalog.filter(tab=>catalogUnavailable(tab.host,tab.session)&&!supplied.has(identity(tab)))];
+    tabCatalog=globalThis.SwitchboardStartup?.merge(retained)||retained;
     for(const entry of sessions.values()){
       entry.catalogUnavailable=catalogUnavailable(entry.host,entry.name);
       entry.catalogPolls=(entry.catalogPolls||0)+1;

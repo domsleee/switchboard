@@ -1066,6 +1066,7 @@ async fn asset(request: Request) -> Response {
         "index.html" | "computers.html" | "messages.html" => "text/html; charset=utf-8",
         "style.css" | "messages.css" => "text/css; charset=utf-8",
         "app.js"
+        | "startup-cache.js"
         | "bridge.js"
         | "chrome.js"
         | "clipboard.js"
