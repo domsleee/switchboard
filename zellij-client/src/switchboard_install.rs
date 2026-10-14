@@ -65,7 +65,9 @@ pub(super) fn install(binary: &Path) -> Result<()> {
     })? {
         println!("Created {}", config.display());
     }
-    platform_install(&home, binary)
+    platform_install(&home, binary)?;
+    println!("Connect your computers in Settings → Computers.");
+    Ok(())
 }
 
 /// First install: a login token for this computer and a host list holding only
