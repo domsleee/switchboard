@@ -96,6 +96,23 @@ test('reordering while Windows connects preserves saved positions through reload
   context.sessions.set('mac',mac);assert.deepEqual(keys(),withNew);
 });
 
+test('every computer in a mesh lists unsorted tabs in the same machine order',()=>{
+  // Each computer calls itself by a local ID and lists itself first; catalogs arrive in any order.
+  const view=(hosts,arrival,self)=>{
+    const sessions=new Map(arrival.map(([host,name])=>[host,{host,name:'main',state:{panes:[]},catalog:[0,1].map(id=>({id,name:`${name}-${id}`,position:id,panes:[]}))}]));
+    const context={hosts:new Map(hosts),sessions,tabOrder:[],archived:{},filter:'all',groups:{}};
+    vm.createContext(context);
+    vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function moveSelected(')),context);
+    vm.runInContext(`localMember=${JSON.stringify(self)}`,context);
+    return Array.from(context.allTabs(),item=>item.tab.name);
+  };
+  const mac={name:'Doms-MacBook-Pro',id:'d1'},win={name:'Windows',id:'24'};
+  const onMac=view([['mac',{name:'Mac',local:true}],['mesh-24',{name:'Windows'}]],[['mesh-24','Windows'],['mac','Doms-MacBook-Pro']],mac);
+  const onWindows=view([['win',{name:'Windows',local:true}],['mesh-d1',{name:'Doms-MacBook-Pro'}]],[['win','Windows'],['mesh-d1','Doms-MacBook-Pro']],win);
+  assert.deepEqual(onMac,['Doms-MacBook-Pro-0','Doms-MacBook-Pro-1','Windows-0','Windows-1']);
+  assert.deepEqual(onWindows,onMac);
+});
+
 
 test('native tab identity preserves selection, archive and order through pane removal, floating and reordered positions',()=>{
   const entry={host:'win',name:'main',state:{panes:[]}},stored={};

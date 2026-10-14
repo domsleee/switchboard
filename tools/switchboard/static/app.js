@@ -187,11 +187,20 @@ function matchesSearch(item){
   const query=$('tab-search').value.trim().toLowerCase();
   return !query || `${tabTitle(item)} ${hosts.get(item.entry.host)?.name || item.entry.host} ${groups[item.entry.host]||''} ${item.entry.name} ${autoLabel(item)}`.toLowerCase().includes(query);
 }
+// This computer as its mesh peers know it, so every computer sorts machines alike
+// instead of listing itself first or by whichever catalog answered first.
+let localMember=null;
+function machineOrder(item){
+  const host=hosts.get(item.entry.host),self=host?.local&&localMember;
+  return [self?localMember.name:host?.name??item.entry.host,self?'mesh-'+localMember.id:item.entry.host,item.entry.name].join('\0');
+}
 function allTabs(ignoreFilter=false, includeArchived=false) {
   const ranks=new Map(tabOrder.map((key,index)=>[key,index]));
+  // Saved drag positions first; the rest by machine and session, keeping each session's tab order.
+  const byMachine=(a,b)=>{const x=machineOrder(a),y=machineOrder(b);return x<y?-1:x>y?1:0;};
   return [...sessions.values()].flatMap(entry => (entry.state ? sessionTabs(entry) : []).map(tab => ({entry,tab,key:tabKey(entry,tab)})))
     .filter(({entry,tab,key}) => !entry.closingTabs?.has(tab.id) && (includeArchived || !archived[key]) && (ignoreFilter || filter === 'all' || groups[entry.host] === filter))
-    .sort((a,b) => (ranks.get(a.key)??Infinity)-(ranks.get(b.key)??Infinity));
+    .sort((a,b) => (ranks.get(a.key)??Infinity)-(ranks.get(b.key)??Infinity) || byMachine(a,b));
 }
 function moveTab(key,targetKey,after=false) {
   if(key===targetKey)return;
@@ -515,6 +524,7 @@ function connectSession(host,name,starting=false) {
 async function refresh() {
   if(loading)return;loading=true;
   try {
+    fetch('/api/mesh',{cache:'no-store'}).then(r=>r.ok?r.json():null).then(mesh=>{localMember=mesh?.members?.find(m=>m.local)||null;render();}).catch(()=>{});
     const response=await fetch('/api/hosts?summary=1');if(!response.ok)throw Error('Cannot reach local relay');
     const data=await response.json();hostsLoaded=true;
     for(const host of data)hosts.set(host.id,{...hosts.get(host.id),...host,connecting:true});
