@@ -297,3 +297,50 @@ test('group URLs restore All, Home and Work on reload, including an empty group'
     assert.deepEqual(errors,[]);
   }finally{await browser.close();}
 });
+
+test('settings pages never paint white while they load',
+  {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
+  const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
+  // The full browser paints mismatched color schemes like Chrome does; the headless shell does not.
+  const browser=await chromium.launch({headless:true,channel:'chromium'}).catch(()=>chromium.launch({headless:true}));
+  try{
+    const page=await browser.newPage({viewport:{width:1200,height:760}});page.setDefaultTimeout(5000);
+    let slow=false;
+    await page.addInitScript(()=>{window.setInterval=()=>0;});
+    await page.route('**/*',async route=>{
+      const path=new URL(route.request().url()).pathname;
+      const json=value=>route.fulfill({contentType:'application/json',body:JSON.stringify(value)});
+      if(path==='/api/hosts')return json([{id:'mac',name:'Mac'}]);
+      if(path==='/api/hosts/mac')return json({id:'mac',name:'Mac',sessions:[]});
+      if(path==='/api/attention')return json({tabs:[],panes:[],errors:[]});
+      if(path.startsWith('/api/'))return json({});
+      if(path==='/computers.html'){
+        if(slow)await new Promise(resolve=>setTimeout(resolve,1500));
+        return route.fulfill({contentType:'text/html',body:'<!doctype html><style>:root{color-scheme:dark;background:#141414}</style><h2>Computers</h2>'});
+      }
+      const file=path==='/'?'index.html':path.slice(1);
+      if(!['index.html','app.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
+      return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
+    });
+    await page.goto('https://switchboard.test/');
+    await page.click('#settings');await page.click('#panel-tab-computers');
+    await page.frameLocator('#computers-frame').locator('h2').waitFor();
+    // Closing resets the page to a blank document; reopening loads it again.
+    await page.keyboard.press('Escape');slow=true;
+    await page.click('#settings');await page.click('#panel-tab-computers');
+    const probe=await browser.newPage();let worst=0;
+    for(let i=0;i<5;i++){
+      await new Promise(resolve=>setTimeout(resolve,150));
+      const shot=(await page.screenshot({clip:{x:240,y:100,width:900,height:600}})).toString('base64');
+      worst=Math.max(worst,await probe.evaluate(async data=>{
+        const image=new Image();image.src='data:image/png;base64,'+data;await image.decode();
+        const canvas=document.createElement('canvas');canvas.width=image.width;canvas.height=image.height;
+        const context=canvas.getContext('2d');context.drawImage(image,0,0);
+        const pixels=context.getImageData(0,0,canvas.width,canvas.height).data;let white=0;
+        for(let i=0;i<pixels.length;i+=4)if(pixels[i]>235&&pixels[i+1]>235&&pixels[i+2]>235)white++;
+        return white/(pixels.length/4);
+      },shot));
+    }
+    assert.ok(worst<0.01,`${(worst*100).toFixed(1)}% of the settings page painted white while loading`);
+  }finally{await browser.close();}
+});

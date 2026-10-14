@@ -118,10 +118,10 @@
         const card = document.createElement('div'); card.className = 'card';
         const title = document.createElement('strong'); title.textContent = member.name;
         const address = document.createElement('p'); address.textContent = member.address;
-        const status = document.createElement('span');
+        const status = document.createElement('p');
         const host = hosts.find(host => host.id === `mesh-${member.id}`);
         status.textContent = member.local ? 'This computer' : member.state === 'paired'
-          ? (host && Array.isArray(host.sessions) && !host.error ? 'Connected' : 'Paired, connection unavailable. Check the address and retry')
+          ? (host && Array.isArray(host.sessions) && !host.error ? 'Connected' : 'Paired, connection unavailable. Check the address and retry.')
           : 'Connecting to this computer. Keep Switchboard running on both computers.';
         card.append(title, address, status);
         if (member.local || (host && !host.error)) card.append(version(host && host.version, member.local));
