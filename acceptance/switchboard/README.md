@@ -66,9 +66,10 @@ tab can be created while those scans are still catching up.
 
 **Tests:** `ui` checks both arrival orders, input gating and delayed tab lists;
 `browser` creates a real tab, types into its shell and refreshes.
-The headless `new-tab.test.cjs` holds discovery stale, creates two tabs, checks
-focus and input, refreshes the new terminal's URL, and verifies promotion to
-native tab IDs without duplicate rows or lost preferences. Close waits for a
+The headless `new-tab.test.cjs` holds discovery stale, creates tabs with
+Ctrl/Cmd+Alt+T then Enter, checks typing without another click and preserves
+search focus during creation. It refreshes the new terminal's URL and verifies
+promotion to native tab IDs without duplicate rows or lost preferences. Close waits for a
 verified native tab ID; a temporary pane ID must never close an unrelated tab.
 **Still to check:** Create through a browser connected to Windows.
 

@@ -285,8 +285,9 @@ let recoveryPanes;
         assert.ok(host.sessions.some(s=>s.name===name&&s.web_clients_allowed),'Sharing survives connection-service restart');
         if(!recoveryMode){
             const previousTabIds=names().map(([id])=>id);
-            await page.locator('#new-tab').click();
-            await page.locator('#new-tab-form button[type=submit]').click();
+            await page.keyboard.press('Control+Alt+KeyT');
+            await page.waitForFunction(()=>document.querySelector('#new-tab-dialog').open);
+            await page.keyboard.press('Enter');
             await page.waitForFunction(previous=>{
                 const button=document.querySelector('#tabs .tab-select.selected'),frame=document.querySelector('#terminals>iframe.active');
                 const w=frame?.contentWindow,active=w?.__zjLastMobileState?.active_pane;
