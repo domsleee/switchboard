@@ -44,6 +44,11 @@ test('attention acknowledgment never moves tabs; search, filters, archive and cr
   context.acknowledgeAttention(item);assert.equal(reviews.length,1);
   context.paneAttention.set(attentionKey,{key:attentionKey,state:'ready',token:'result:2'});assert.equal(context.isReady(item),true);
   context.paneAttention.set(attentionKey,{key:attentionKey,state:'approval'});context.acknowledgeAttention(item);assert.equal(context.isReady(item),true);
+  // Hidden in this browser, but the computer running the tab never recorded it.
+  context.paneAttention.set(attentionKey,{...pane,key:attentionKey,state:'ready',token:'result:1'});
+  assert.equal(context.isReady(item),false);
+  vm.runInContext('Date.now=(now=>()=>now+11000)(Date.now())',context);
+  context.acknowledgeAttention(item);assert.equal(reviews.length,2,'an unrecorded review is sent again');
 
 });
 
