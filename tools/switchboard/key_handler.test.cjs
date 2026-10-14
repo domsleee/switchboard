@@ -88,11 +88,11 @@ test('real bundled xterm sends one word-delete then ordinary Backspace/Delete ac
   }
 });
 
-for(const variant of Object.keys(handlerSources))for(const bridge of [false,true])test(`${variant}, bridge ${bridge}: physical delete keys work through the closed touchscreen input`,
+for(const variant of Object.keys(handlerSources))for(const bridge of [false,true])test(`${variant}, bridge ${bridge}: touchscreen input preserves deletion and clipboard text`,
   {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
   const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch({headless:true});
   try{
-    const context=await browser.newContext({viewport:{width:1280,height:900}}),page=await context.newPage(),errors=[];
+    const context=await browser.newContext({viewport:{width:1280,height:900},permissions:['clipboard-read','clipboard-write']}),page=await context.newPage(),errors=[];
     page.on('pageerror',error=>errors.push(error.message));
     await context.addInitScript(()=>{
       Object.defineProperty(Navigator.prototype,'platform',{get:()=> 'Win32'});
@@ -149,6 +149,36 @@ for(const variant of Object.keys(handlerSources))for(const bridge of [false,true
       capture.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'deleteContentBackward'}));
     });
     assert.equal(await page.evaluate(()=>sent.join('')),'\x7f','virtual keyboards without physical key codes keep their input-event path');
+    for(const bracketed of [false,true]){
+      await page.evaluate(enabled=>{term._core.coreService.decPrivateModes.bracketedPasteMode=enabled;},bracketed);
+      for(const text of ['WI01128808','0011222333','hello\r\nworld\nnext','a\u00a0b','Ω😀']){
+        await page.evaluate(async text=>{sent.length=0;await navigator.clipboard.writeText(text);},text);
+        await page.keyboard.press('Control+V');
+        const normalized=text.replace(/\r?\n/g,'\r');
+        assert.deepEqual(await page.evaluate(()=>[...sent]),[bracketed?'\x1b[200~'+normalized+'\x1b[201~':normalized],'paste uses one xterm input without dropping repeated characters or formatting');
+        assert.deepEqual(await page.evaluate(()=>{const input=window.__zjSoftKbdCapture.element;return [input.value,input.selectionStart];}),['\u00a0'.repeat(8),4],'paste leaves the capture ready for further typing and deletion');
+      }
+    }
+    await page.evaluate(()=>{sent.length=0;});
+    await page.keyboard.insertText('0011222333');
+    assert.equal(await page.evaluate(()=>sent.join('')),'0011222333','an insertion event preserves repeated characters without the virtual Backspace debounce');
+    await page.evaluate(()=>{sent.length=0;});
+    await page.keyboard.type('0011222333');
+    assert.equal(await page.evaluate(()=>sent.join('')),'0011222333','rapid physical typing also preserves repeated characters across input events');
+    await page.evaluate(async()=>{sent.length=0;term.options.disableStdin=true;await navigator.clipboard.writeText('disabled paste');});
+    await page.keyboard.press('Control+V');
+    assert.deepEqual(await page.evaluate(()=>[...sent]),[],'input suspension also blocks a paste into the touchscreen input');
+    await page.keyboard.insertText('disabled text');
+    assert.deepEqual(await page.evaluate(()=>[...sent]),[],'input suspension also blocks ordinary touchscreen text');
+    await page.evaluate(()=>{
+      term.options.disableStdin=false;
+      const capture=window.__zjSoftKbdCapture.element;
+      for(let i=0;i<2;i++){
+        capture.value=capture.value.slice(1);
+        capture.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'deleteContentBackward'}));
+      }
+    });
+    assert.deepEqual(await page.evaluate(()=>[...sent]),['\x7f'],'duplicate virtual Backspace events still produce one deletion');
     assert.deepEqual(errors,[]);
   }finally{await browser.close();}
 });

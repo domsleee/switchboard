@@ -786,19 +786,17 @@ function installSoftKeyboardCapture(term, sendFunction) {
 
     resetBaseline();
 
-    // A single backspace tap fires two deleteContentBackward events ~5 ms apart;
-    // this dedupe window merges them into one \x7f.
-    let lastCh = null;
-    let lastChAt = 0;
+    // Some virtual keyboards fire two deleteContentBackward events ~5 ms apart.
+    // Debounce only deletions: repeated characters in one insertion are real text.
+    let lastDeleteAt = -Infinity;
     const DEDUPE_MS = 8;
-    const dispatchCh = (ch) => {
+    const dispatchBackspace = () => {
         const now = performance.now();
-        if (ch === lastCh && now - lastChAt < DEDUPE_MS) {
+        if (now - lastDeleteAt < DEDUPE_MS) {
             return;
         }
-        lastCh = ch;
-        lastChAt = now;
-        state.sendFn(ch);
+        lastDeleteAt = now;
+        state.sendFn("\x7f");
     };
 
     const diff = (a, b) => {
@@ -825,17 +823,34 @@ function installSoftKeyboardCapture(term, sendFunction) {
 
     let lastText = BASELINE;
 
+    div.addEventListener("paste", (ev) => {
+        if (!ev.clipboardData) return;
+        // Password inputs flatten newlines, and input diffing treats pasted NBSP
+        // as padding. Use xterm's paste path before the browser edits the field.
+        ev.preventDefault();
+        if (!term.options.disableStdin) {
+            term.paste(ev.clipboardData.getData("text/plain"));
+        }
+        resetBaseline();
+        lastText = BASELINE;
+    });
+
     div.addEventListener("input", (ev) => {
+        if (term.options.disableStdin) {
+            resetBaseline();
+            lastText = BASELINE;
+            return;
+        }
         const current = div.value;
         if (current === lastText) {
             return;
         }
         const { deletedCount, inserted } = diff(lastText, current);
         for (let i = 0; i < deletedCount; i++) {
-            dispatchCh("\x7f");
+            dispatchBackspace();
         }
-        for (const ch of inserted) {
-            dispatchCh(ch);
+        if (inserted) {
+            state.sendFn(inserted);
         }
         lastText = current;
 
