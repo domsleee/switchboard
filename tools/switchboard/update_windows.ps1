@@ -9,12 +9,16 @@ param(
     [switch]$Rollback,
     [switch]$BinaryOnly,
     [string]$HostConfig = (Join-Path $HOME '.config/switchboard/hosts.json'),
-    [int]$RelayPort = 80
+    [ValidateRange(0,65535)][int]$RelayPort = 0
 )
 $ErrorActionPreference = 'Stop'
 if ([Environment]::OSVersion.Platform -ne 'Win32NT') { throw 'This updater supports Windows only.' }
 Import-Module (Join-Path $PSScriptRoot 'windows_releases.psm1') -Force
 if (!$ReleaseDirectory) { $ReleaseDirectory = Get-SwitchboardReleaseDirectory }
+if (!$RelayPort) {
+    $RelayPort = (Get-SwitchboardTrayArguments @(Get-CimInstance Win32_Process) -HostConfig $HostConfig).relayPort
+    if (!$RelayPort) { $RelayPort = 8090 }
+}
 # The automatic updater restarts services itself and signals that through the environment.
 if ($BinaryOnly -or $env:SWITCHBOARD_UPDATE_BINARY_ONLY -eq '1') {
     $result = Invoke-SwitchboardWindowsUpdate -Candidate $Candidate -Directory $ReleaseDirectory -Config $Config -TimeoutSeconds $TimeoutSeconds -Rollback:$Rollback

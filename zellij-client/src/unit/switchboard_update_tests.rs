@@ -233,7 +233,9 @@ esac
                      if ($Action -eq 'Stop') {{ Remove-Item -LiteralPath '{root}/running' -ErrorAction SilentlyContinue }}\n\
                      if ($Action -eq 'Start') {{ Copy-Item -LiteralPath $Binary -Destination '{root}/running' }}\n")),
                 ("install_windows_web.ps1", format!(
-                    "param([string]$ReleaseDirectory, [string]$Config)\n{calls} tray\"\n")),
+                    "param([string]$ReleaseDirectory, [string]$Config, [int]$RelayPort)\n\
+                     if ($RelayPort -ne {}) {{ throw 'Replacement tray lost the relay port' }}\n\
+                     {calls} tray\"\n", self.port)),
                 ("windows_releases.psm1", format!("# {version}\n")),
                 ("windows_cli.ps1", format!("# {version}\n")),
                 ("auto_update.py", format!("# {version}\n")),
@@ -494,6 +496,40 @@ fn catalog_waits_for_offline_peers_to_finish_reporting() {
     .unwrap();
     assert_eq!(harness.updater.catalog().unwrap(), vec![session()]);
     assert!(harness.calls().is_empty());
+}
+
+#[cfg(windows)]
+#[test]
+fn updater_preserves_the_windows_relay_port_and_honors_an_override() {
+    let temp = tempfile::tempdir().unwrap();
+    let helper = temp.path().join("update_services_windows.ps1");
+    let cli = SwitchboardUpdateCli {
+        check: true,
+        config: Some(temp.path().join("host.kdl")),
+        host_config: Some(temp.path().join("hosts.json")),
+        port: None,
+        binary: None,
+        release_directory: Some(temp.path().join("releases")),
+        state_directory: Some(temp.path().join("state")),
+        helper_directory: Some(temp.path().to_owned()),
+        source: None,
+    };
+    fs::write(
+        &helper,
+        "param($Action,$HostConfig)\n'{\"relayPort\":8123}'",
+    )
+    .unwrap();
+    assert_eq!(Updater::from_cli(&cli).unwrap().port, 8123);
+    let explicit = SwitchboardUpdateCli {
+        port: Some(9030),
+        ..cli.clone()
+    };
+    assert_eq!(Updater::from_cli(&explicit).unwrap().port, 9030);
+    fs::write(&helper, "param($Action,$HostConfig)\n'{}'").unwrap();
+    assert_eq!(Updater::from_cli(&cli).unwrap().port, 8090);
+    let harness = Harness::new(true);
+    harness.updater.install_tray().unwrap();
+    assert_eq!(harness.calls().trim(), "installed tray");
 }
 
 #[cfg(unix)]

@@ -230,16 +230,30 @@ function Get-SwitchboardTrays($Processes, [string]$TrayScript = (Get-Switchboard
 
 # Settings the running tray (or its web service) uses, so a reinstall or an
 # update started without them keeps the same configuration.
-function Get-SwitchboardTrayArguments($Processes, [string]$TrayScript = (Get-SwitchboardTrayScript)) {
+function Get-SwitchboardTrayArguments($Processes, [string]$TrayScript = (Get-SwitchboardTrayScript),
+    [string]$HostConfig = (Join-Path $HOME '.config/switchboard/hosts.json')) {
     $tray = @(Get-SwitchboardTrays $Processes $TrayScript) | Select-Object -First 1
     $web = @($Processes | Where-Object { $_.Name -ieq 'zellij.exe' -and $_.CommandLine -match '\bweb"?\s+"?--start\b' }) | Select-Object -First 1
-    $config = ''; $releaseDirectory = ''
+    $config = ''; $releaseDirectory = ''; $relayPort = 0
     if ($tray) {
         $config = Get-SwitchboardCommandLineValue $tray.CommandLine '-Config'
         $releaseDirectory = Get-SwitchboardCommandLineValue $tray.CommandLine '-ReleaseDirectory'
+        $port = Get-SwitchboardCommandLineValue $tray.CommandLine '-RelayPort'
+        if ($port -match '^\d+$' -and [int]$port -ge 1 -and [int]$port -le 65535) { $relayPort = [int]$port }
     }
     if (!$config -and $web) { $config = Get-SwitchboardCommandLineValue $web.CommandLine '--config' }
-    [pscustomobject]@{config=$config; releaseDirectory=$releaseDirectory}
+    if (!$relayPort) {
+        # Older trays did not record the port. Recover it from this installation's relay.
+        $relays = @($Processes | Where-Object { $_.Name -ieq 'zellij.exe' -and
+            $_.CommandLine -match '\bserve"?\s' -and
+            (Get-SwitchboardCommandLineValue $_.CommandLine '--host-config').Replace('/','\') -ieq $HostConfig.Replace('/','\') })
+        if ($relays.Count -eq 1) {
+            $port = Get-SwitchboardCommandLineValue $relays[0].CommandLine '--port'
+            if (!$port) { $relayPort = 8090 }
+            elseif ($port -match '^\d+$' -and [int]$port -ge 1 -and [int]$port -le 65535) { $relayPort = [int]$port }
+        }
+    }
+    [pscustomobject]@{config=$config; releaseDirectory=$releaseDirectory; relayPort=$relayPort}
 }
 
 # The tray is single-instance. After stopping it, wait until its lock is gone

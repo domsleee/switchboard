@@ -236,6 +236,64 @@ impl TokenIssuer for FakeIssuer {
 async fn machine(root: &Path, label: &str, address: &str) -> Arc<Mesh> {
     machine_with_engine(root, label, address, "http://127.0.0.1:1").await
 }
+
+#[tokio::test]
+async fn group_sync_keeps_recovered_routes_and_rejects_a_changed_tls_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let peer = machine(
+        &temp.path().join("peer"),
+        "Moved-PC",
+        &format!("https://192.0.2.123:{}", address.port()),
+    )
+    .await;
+    let local = machine(
+        &temp.path().join("local"),
+        "Local",
+        "https://192.0.2.2:8082",
+    )
+    .await;
+    let invitation = invitation(&peer, 1000).await;
+    let (_, approval) = approved(&peer, &local, &invitation, 1000).await;
+    let envelope = local.install(approval, &invitation).await.unwrap();
+    peer.complete(envelope).await.unwrap();
+    let router = transport::gateway_router(peer.clone());
+    let server = axum_server::from_tcp_rustls(
+        listener,
+        axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(peer.tls().unwrap())),
+    )
+    .unwrap();
+    let task = tokio::spawn(async move { server.serve(router.into_make_service()).await.unwrap() });
+    let member = invitation.administrator;
+    let client = local.peer_client(&member).unwrap();
+    *client.route_hint.lock().await = Some((address, tokio::time::Instant::now()));
+    // No DNS fixture exists for Moved-PC: both exchanges must keep the recovered route.
+    for _ in 0..2 {
+        client.idle_http.lock().await.clear();
+        let update = local.prepare_sync(&member.id).await.unwrap();
+        let reply: sync::Update = local.remote(&member, "/mesh/sync", &update).await.unwrap();
+        local.exchange(reply).await.unwrap();
+    }
+    assert!(client.config.gateway_token_file.is_none());
+    assert!(client.config.token_file.is_empty());
+    // Even a cached route must reverify TLS when a new connection is needed.
+    client.idle_http.lock().await.clear();
+    let mut changed = member.clone();
+    changed.certificate = "00".repeat(32);
+    let replacement = local.peer_client(&changed).unwrap();
+    *replacement.route_hint.lock().await = Some((address, tokio::time::Instant::now()));
+    let update = local.prepare_sync(&member.id).await.unwrap();
+    let result = local
+        .remote::<_, sync::Update>(&changed, "/mesh/sync", &update)
+        .await;
+    assert!(
+        result.is_err(),
+        "changing the pin must discard the old client"
+    );
+    task.abort();
+}
 async fn machine_with_engine(root: &Path, label: &str, address: &str, engine: &str) -> Arc<Mesh> {
     let engine = Arc::new(Host::new(super::super::tests::config(engine)).unwrap());
     let mesh = Mesh::with_issuer(root.to_owned(), engine, Arc::new(FakeIssuer::default()))

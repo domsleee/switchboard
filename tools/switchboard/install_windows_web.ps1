@@ -3,17 +3,21 @@ param(
     [string]$Config = '',
     [string]$Binary = '',
     [string]$ReleaseDirectory = '',
+    [ValidateRange(0,65535)][int]$RelayPort = 0,
     [switch]$Tray
 )
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'windows_releases.psm1') -Force
-if (!$Tray -and (!$Config -or !$ReleaseDirectory)) {
+if (!$Config -or !$ReleaseDirectory -or !$RelayPort) {
     # Reinstalling (by hand, from a bundle or by the updater) keeps the running
     # tray's settings, including in the logon shortcut.
     $running = Get-SwitchboardTrayArguments @(Get-CimInstance Win32_Process) (Join-Path $HOME '.config/switchboard/switchboard-tray.ps1')
     if (!$Config) { $Config = $running.config }
     if (!$ReleaseDirectory) { $ReleaseDirectory = $running.releaseDirectory }
+    if (!$RelayPort) { $RelayPort = $running.relayPort }
 }
+if (!$RelayPort) { $RelayPort = 8090 }
+$relayUrl = "http://switchboard.localhost:$RelayPort"
 if (!$ReleaseDirectory) { $ReleaseDirectory = Get-SwitchboardReleaseDirectory }
 if (Test-Path -LiteralPath (Join-Path $ReleaseDirectory 'current.json')) {
     $Binary = Get-SwitchboardCurrentBinary $ReleaseDirectory
@@ -27,7 +31,7 @@ $log = Join-Path $directory 'web.log'
 $relayConfig = Join-Path $directory 'hosts.json'
 $installed = Join-Path $directory 'switchboard-tray.ps1'
 $powerShell = Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe'
-$trayArguments = @('-NoLogo','-NoProfile','-NonInteractive','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',$installed,'-Tray','-ReleaseDirectory',$ReleaseDirectory)
+$trayArguments = @('-NoLogo','-NoProfile','-NonInteractive','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',$installed,'-Tray','-ReleaseDirectory',$ReleaseDirectory,'-RelayPort',$RelayPort)
 if ($Config) { $trayArguments += @('-Config',$Config) }
 $arguments = ($trayArguments | ForEach-Object { ConvertTo-SwitchboardArgument $_ }) -join ' '
 if (!$Tray) {
@@ -53,7 +57,7 @@ if (!$Tray) {
     $started = Start-Process -FilePath $powerShell -ArgumentList $arguments -WindowStyle Hidden -PassThru
     # A tray that cannot take the single-instance lock exits; report it.
     if ($started.WaitForExit(8000)) { throw "The tray app exited during startup (exit $($started.ExitCode)); see $log" }
-    Write-Output 'Switchboard tray app installed: http://switchboard.localhost'
+    Write-Output "Switchboard tray app installed: $relayUrl"
     return
 }
 try { $mutex = Enter-SwitchboardMutex }
@@ -82,8 +86,8 @@ $logs = $menu.Items.Add('Open logs')
 $quit = $menu.Items.Add('Quit tray app (keep terminals running)')
 $icon.ContextMenuStrip = $menu
 $icon.Visible = $true
-$open.Add_Click({ Start-Process 'http://switchboard.localhost/' })
-$icon.Add_DoubleClick({ Start-Process 'http://switchboard.localhost/' })
+$open.Add_Click({ Start-Process $relayUrl })
+$icon.Add_DoubleClick({ Start-Process $relayUrl })
 $logs.Add_Click({ Start-Process explorer.exe $directory })
 $quit.Add_Click({ [Windows.Forms.Application]::ExitThread() })
 $script:relay = $null
@@ -106,7 +110,7 @@ function Check-ForUpdates {
         }
         $script:nextUpdate = [DateTime]::UtcNow.AddMinutes(15)
         # The selected release runs the updater; it never replaces its own file.
-        $updateArguments = @('switchboard','update','--release-directory',$ReleaseDirectory)
+        $updateArguments = @('switchboard','update','--release-directory',$ReleaseDirectory,'--port',$RelayPort)
         if ($Config) { $updateArguments += @('--config',$Config) }
         $script:updater = Start-Process -FilePath (Get-SwitchboardCurrentBinary $ReleaseDirectory) -WindowStyle Hidden -PassThru `
             -ArgumentList (($updateArguments | ForEach-Object { ConvertTo-SwitchboardArgument $_ }) -join ' ') `
@@ -146,11 +150,11 @@ function Start-Servers {
             if ($ready.Code -ne 0) { throw 'Zellij web started but is not ready (see logs)' }
         }
         try {
-            $response = Invoke-WebRequest 'http://127.0.0.1/api/health' -Headers @{Host='switchboard.localhost'} -UseBasicParsing -TimeoutSec 2
+            $response = Invoke-WebRequest "http://127.0.0.1:$RelayPort/api/health" -Headers @{Host="switchboard.localhost:$RelayPort"} -UseBasicParsing -TimeoutSec 2
             if ($response.StatusCode -eq 200 -and ($response.Content | ConvertFrom-Json).relay -eq 'rust') { $status.Text = 'Switchboard running'; return }
         } catch {}
         if ($script:relay -and !$script:relay.HasExited) { $status.Text = 'Switchboard starting...'; return }
-        $relayArgs = 'serve --port 80 --host-config "' + $relayConfig + '"'
+        $relayArgs = 'serve --port ' + $RelayPort + ' --host-config "' + $relayConfig + '"'
         $script:relay = Start-Process -FilePath $Binary -ArgumentList $relayArgs -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $directory 'relay.log') -RedirectStandardError (Join-Path $directory 'relay-error.log')
         if ($script:relay.WaitForExit(200)) { throw 'Relay exited during startup (see relay-error.log)' }
         $status.Text = 'Switchboard starting...'

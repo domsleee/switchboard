@@ -37,6 +37,12 @@ tray that cannot get the lock logs the failure and exits non-zero. An update or
 reinstall started without `--config`/`-Config` reuses the running tray's
 settings, including in the logon shortcut.
 
+Windows uses relay port 8090 for new installations. Updates and reinstalls keep
+the installed tray's `-RelayPort`, or recover it from the running relay for older
+trays. `zellij switchboard update --port PORT` overrides it and carries that port
+into the replacement tray. The tray uses the same port for health checks, browser
+links and scheduled updates; Windows services reserving port 80 do not block it.
+
 Healthy existing sessions retain their engines, shells and agents, including new
 tabs created inside those sessions. A browser reconnect is expected. New sessions
 use the selected release when started through the updated services/launcher.
