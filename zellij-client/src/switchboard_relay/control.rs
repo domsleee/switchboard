@@ -66,6 +66,18 @@ pub(super) async fn run_local(
 }
 
 pub(super) async fn sessions(host: &Host) -> anyhow::Result<Vec<String>> {
+    Ok(shared_sessions(host)
+        .await?
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect())
+}
+
+/// Shared sessions with their creation time in Unix seconds, when the engine reports it.
+pub(super) async fn shared_sessions(host: &Host) -> anyhow::Result<Vec<(String, Option<u64>)>> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
     let response = tokio::time::timeout(
         Duration::from_secs(20),
         host.request(
@@ -89,7 +101,10 @@ pub(super) async fn sessions(host: &Host) -> anyhow::Result<Vec<String>> {
         if session["web_clients_allowed"] == true {
             if let Some(name) = session["name"].as_str() {
                 validate_session(name).map_err(|_| anyhow::anyhow!("Invalid shared session"))?;
-                names.push(name.to_owned());
+                let created = session["creation_secs_ago"]
+                    .as_u64()
+                    .map(|ago| now.saturating_sub(ago));
+                names.push((name.to_owned(), created));
             }
         }
     }

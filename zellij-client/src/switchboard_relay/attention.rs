@@ -188,7 +188,7 @@ pub(super) async fn scan(host: &Host, offset: usize) -> anyhow::Result<Value> {
         }
         return Ok(snapshot);
     }
-    let mut names = control::sessions(host).await?;
+    let mut names = control::shared_sessions(host).await?;
     if !names.is_empty() {
         let count = names.len();
         names.rotate_left(offset % count);
@@ -197,7 +197,7 @@ pub(super) async fn scan(host: &Host, offset: usize) -> anyhow::Result<Value> {
     let mut errors = Vec::new();
     let mut deferred_sessions = Vec::new();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
-    for name in names {
+    for (name, created) in names {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             deferred_sessions.push(name);
@@ -245,12 +245,19 @@ pub(super) async fn scan(host: &Host, offset: usize) -> anyhow::Result<Value> {
                 }
             }
         }
-        results.push(snapshot(
+        let mut session = snapshot(
             &name,
             &panes,
             &screens,
             tokio::time::Instant::now() >= deadline,
-        ));
+        );
+        // Pane IDs restart in a recreated session; its creation time tells them apart.
+        if let Some(created) = created {
+            for row in session["panes"].as_array_mut().unwrap() {
+                row["created"] = json!(created);
+            }
+        }
+        results.push(session);
     }
     Ok(
         json!({"panes":results.iter().flat_map(|v|v["panes"].as_array().unwrap().clone()).collect::<Vec<_>>(),"tabs":results.iter().flat_map(|v|v["tabs"].as_array().unwrap().clone()).collect::<Vec<_>>(),"errors":errors,"deferred_sessions":deferred_sessions}),
@@ -325,7 +332,19 @@ impl PollState {
                 continue;
             }
             let key = json!([host, row["session"], row["pane_id"]]).to_string();
-            let previous = self.observed.get(&key).cloned().unwrap_or(Value::Null);
+            let mut previous = self.observed.get(&key).cloned().unwrap_or(Value::Null);
+            let created = row.as_object_mut().unwrap().remove("created");
+            // A recreated session reuses pane IDs; its panes are new panes. Saved
+            // state from before session times were recorded counts as stale too.
+            if let Some(created) = created.as_ref().and_then(Value::as_u64) {
+                if !previous.is_null()
+                    && previous["created"]
+                        .as_u64()
+                        .is_none_or(|before| before.abs_diff(created) > 60)
+                {
+                    previous = Value::Null;
+                }
+            }
             if row.as_object_mut().unwrap().remove("deferred") == Some(json!(true))
                 && self
                     .scanned
@@ -364,18 +383,33 @@ impl PollState {
                 if row["token"].is_null() && last != "idle" {
                     observed["token"] = json!(last);
                 }
+                if let Some(created) = created.as_ref().filter(|c| c.is_u64()) {
+                    observed["created"] = created.clone();
+                } else if let Some(created) = previous.get("created") {
+                    observed["created"] = created.clone();
+                }
                 if let Some(seen) = previous.get("seen") {
                     observed["seen"] = seen.clone();
+                } else if previous.is_null() && row["state"] == "ready" {
+                    // Only a finish seen happening asks for review. A pane first seen
+                    // already ready (a resumed agent, a new machine) is not news.
+                    observed["seen"] = json!(format!(
+                        "{}:{generation}",
+                        row["token"].as_str().unwrap_or("idle")
+                    ));
                 }
                 changed |= previous != observed;
-                self.observed.insert(key, observed);
+                self.observed.insert(key.clone(), observed);
             }
             if row["state"] == "ready" {
                 row["token"] = json!(format!(
                     "{}:{generation}",
                     row["token"].as_str().unwrap_or("idle")
                 ));
-                row["seen"] = json!(previous["seen"] == row["token"]);
+                row["seen"] = json!(self
+                    .observed
+                    .get(&key)
+                    .is_some_and(|o| o["seen"] == row["token"]));
             }
         }
         for field in ["panes", "tabs"] {
@@ -778,10 +812,11 @@ esac
     fn reviews_persist_per_result_and_owner_snapshots_pass_through() {
         let mut poll = PollState::default();
         let ready = || json!({"panes":[{"session":"main","pane_id":1,"state":"ready","token":"result"}],"tabs":[],"errors":[]});
+        poll.update("windows", &mut json!({"panes":[{"session":"main","pane_id":1,"state":"working"}],"tabs":[],"errors":[]}));
         let mut snapshot = ready();
         poll.update("windows", &mut snapshot);
         assert_eq!(snapshot["panes"][0]["seen"], false);
-        poll.acknowledge("windows", "main", 1, "result:0");
+        poll.acknowledge("windows", "main", 1, "result:1");
         assert!(std::mem::take(&mut poll.dirty), "reviews are saved");
         assert_eq!(poll.merged(&["windows".into()])["panes"][0]["seen"], true);
         let mut restarted = PollState::default();
@@ -796,7 +831,7 @@ esac
         restarted.update("windows", &mut working);
         let mut snapshot = ready();
         restarted.update("windows", &mut snapshot);
-        assert_eq!(snapshot["panes"][0]["token"], "result:1");
+        assert_eq!(snapshot["panes"][0]["token"], "result:2");
         assert_eq!(
             snapshot["panes"][0]["seen"], false,
             "a new result needs review"
@@ -813,9 +848,51 @@ esac
         );
         let mut viewer = PollState::default();
         viewer.update("peer", &mut owned);
-        assert_eq!(owned["panes"][0]["token"], "result:1");
+        assert_eq!(owned["panes"][0]["token"], "result:2");
         assert_eq!(owned["panes"][0]["seen"], false);
         assert!(owned.get("synced").is_none());
+    }
+    #[test]
+    fn only_finishes_seen_happening_ask_for_review() {
+        let mut poll = PollState::default();
+        let pane = |state: &str, token: Option<&str>, created: u64| {
+            let mut row = json!({"session":"main","pane_id":0,"state":state,"created":created});
+            if let Some(token) = token {
+                row["token"] = json!(token);
+            }
+            json!({"panes":[row],"tabs":[],"errors":[]})
+        };
+        // First seen already ready: a resumed agent or a newly paired machine.
+        let mut snapshot = pane("ready", Some("old"), 1_000);
+        poll.update("win", &mut snapshot);
+        assert_eq!(
+            snapshot["panes"][0]["seen"], true,
+            "first sight is not news"
+        );
+        // A real finish in the same session still asks for review.
+        poll.update("win", &mut pane("working", None, 1_001));
+        let mut snapshot = pane("ready", Some("new"), 1_002);
+        poll.update("win", &mut snapshot);
+        assert_eq!(snapshot["panes"][0]["token"], "new:1");
+        assert_eq!(snapshot["panes"][0]["seen"], false);
+        // The session is recreated and reuses pane 0 for a resumed conversation.
+        let mut snapshot = pane("ready", Some("resumed"), 90_000);
+        poll.update("win", &mut snapshot);
+        assert_eq!(snapshot["panes"][0]["token"], "resumed:0");
+        assert_eq!(
+            snapshot["panes"][0]["seen"], true,
+            "a recreated session is not news"
+        );
+        // Saved state from before session times were recorded is stale, not a result.
+        let mut restarted = PollState::default();
+        restarted.observed.insert(
+            json!(["win", "main", 0]).to_string(),
+            json!({"state":"ready","generation":5,"token":"before"}),
+        );
+        let mut snapshot = pane("ready", Some("after"), 90_000);
+        restarted.update("win", &mut snapshot);
+        assert_eq!(snapshot["panes"][0]["seen"], true);
+        assert!(snapshot["panes"][0].get("created").is_none());
     }
     #[test]
     fn hidden_completion_is_not_a_new_result_and_stale_owner_keeps_reviews() {
