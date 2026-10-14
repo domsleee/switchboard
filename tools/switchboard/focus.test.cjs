@@ -434,7 +434,8 @@ test('headless browser Ctrl+D closes the selected stable tab exactly once while 
   {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE to run the isolated browser focus check'},async()=>{
   const {browser,page,input,pageErrors,closes}=await browserFocusFixture({acknowledge:false});
   try{
-    await page.keyboard.press('Control+Digit2');
+    const tabModifier=await page.evaluate(()=>navigator.platform.startsWith('Win')?'Alt':'Control');
+    await page.keyboard.press(tabModifier+'+Digit2');
     await page.waitForFunction(()=>{const frame=document.querySelector('iframe.active'),entry=sessions.get(JSON.stringify(['mac','main']));
       return selected===JSON.stringify(['mac','main','tab',42])&&entry.requestedPane?.pane_id===8&&document.activeElement===frame&&frame.contentDocument.activeElement===frame.contentDocument.body&&frame.contentWindow.term.options.disableStdin;});
     assert.equal(await page.evaluate(()=>sessions.get(JSON.stringify(['mac','main'])).state.active_pane.pane_id),7,'Native focus still belongs to the previous tab');
