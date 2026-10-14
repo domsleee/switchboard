@@ -86,7 +86,7 @@ test('reordering while Windows connects preserves saved positions through reload
   const keys=()=>Array.from(context.allTabs(),item=>item.key);
   assert.deepEqual(keys(),[key('mac',1),key('mac',3),key('mac',2)]);
   context.sessions.set('win',windows);windows.state=null;
-  assert.deepEqual(keys(),[key('mac',1),key('mac',3),key('mac',2)]);
+  assert.deepEqual(keys(),expected,'Known tabs remain visible before the terminal connects');
   windows.state={panes:[]};const catalog=windows.catalog;windows.catalog=[];
   assert.deepEqual(keys(),[key('mac',1),key('mac',3),key('mac',2)]);
   context.setCatalog(windows,catalog);
