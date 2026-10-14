@@ -65,7 +65,9 @@ pub(super) fn install(binary: &Path) -> Result<()> {
     })? {
         println!("Created {}", config.display());
     }
-    platform_install(&home, binary)
+    platform_install(&home, binary)?;
+    println!("Connect your computers in Settings → Computers.");
+    Ok(())
 }
 
 /// First install: a login token for this computer and a host list holding only
@@ -417,7 +419,7 @@ mod tests {
             (Some("windows"), Some("Desk"))
         );
         assert_eq!(host["url"], "http://127.0.0.1:8082");
-        assert_eq!(host["token_file"], token.to_string_lossy().as_ref());
+        assert_eq!(Path::new(host["token_file"].as_str().unwrap()), token);
         assert_eq!(host["escape_transport"], "local");
         // Re-running keeps both files and creates no new token.
         fs::write(&config, "{}").unwrap();
