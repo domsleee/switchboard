@@ -76,6 +76,24 @@ function updateTabUrl(item){
 }
 function sessionKey(host, name) { return JSON.stringify([host, name]); }
 function tabKey(entry, tab) { return JSON.stringify([entry.host, entry.name, tab.pending?'pane':'tab', tab.id]); }
+// Tabs created after this browser first saw their session go last, oldest first.
+// Native tab IDs only grow within a session, so a higher ID is a newer tab.
+let newTabState;
+function lateTabs(){
+  if(!newTabState){try{newTabState=JSON.parse(localStorage.getItem('switchboard-new-tabs'));}catch(_){}newTabState??={keys:[],ids:{}};}
+  return newTabState;
+}
+function markNewTabs(entry,tabs){
+  const state=lateTabs(),session=JSON.stringify([entry.host,entry.name]),ids=tabs.map(tab=>tab.id).filter(Number.isInteger);
+  if(!ids.length)return;
+  const seen=state.ids[session],newest=Math.max(...ids);
+  // A lower newest ID means the session was recreated; start counting again.
+  if(seen!==undefined&&newest>=seen)for(const tab of tabs)if(tab.id>seen&&!state.keys.includes(tabKey(entry,tab)))state.keys.push(tabKey(entry,tab));
+  state.ids[session]=newest;
+  // ponytail: capped list instead of pruning closed tabs; prune if 200 is ever reached in practice.
+  state.keys=state.keys.slice(-200);
+  localStorage.setItem('switchboard-new-tabs',JSON.stringify(state));
+}
 function sessionTabs(entry){return [...(entry.catalog||[]),...(entry.provisionalTabs||[]),...(entry.creatingTab?[entry.creatingTab]:[])];}
 function updateCreatedTabs(entry){
   const state=entry.state,active=state?.active_pane,creating=entry.creatingTab;
@@ -140,6 +158,7 @@ function setCatalog(entry,tabs){
   if(migrations.has(selected)){selected=migrations.get(selected);changed=true;}
   if(tabOrder.some(key=>migrations.has(key))){tabOrder=[...new Set(tabOrder.map(key=>migrations.get(key)||key))];changed=true;}
   if(changed){saveReady();localStorage.setItem('switchboard-archived',JSON.stringify(archived));localStorage.setItem('switchboard-tab-order',JSON.stringify(tabOrder));}
+  markNewTabs(entry,tabs);
   entry.catalog=tabs;
   entry.provisionalTabs=entry.provisionalTabs?.filter(tab=>!migrations.has(tabKey(entry,tab)));
   // Keep confirmed closes hidden through snapshots taken before the close finished.
@@ -199,11 +218,15 @@ function machineOrder(item){
 }
 function allTabs(ignoreFilter=false, includeArchived=false) {
   const ranks=new Map(tabOrder.map((key,index)=>[key,index]));
-  // Saved drag positions first; the rest by machine and session, keeping each session's tab order.
+  const late=new Map(lateTabs().keys.map((key,index)=>[key,index]));
+  // A tab still being created has no native ID yet; it already belongs at the end.
+  const lateness=item=>late.get(item.key)??(item.tab.pending?Infinity:-1);
+  // Saved drag positions first; the rest by machine and session, keeping each session's tab order;
+  // tabs created since then last.
   const byMachine=(a,b)=>{const x=machineOrder(a),y=machineOrder(b);return x<y?-1:x>y?1:0;};
   return [...sessions.values()].flatMap(entry => (entry.state ? sessionTabs(entry) : []).map(tab => ({entry,tab,key:tabKey(entry,tab)})))
     .filter(({entry,tab,key}) => !entry.closingTabs?.has(tab.id) && (includeArchived || !archived[key]) && (ignoreFilter || filter === 'all' || groups[entry.host] === filter))
-    .sort((a,b) => (ranks.get(a.key)??Infinity)-(ranks.get(b.key)??Infinity) || byMachine(a,b));
+    .sort((a,b) => (ranks.get(a.key)??Infinity)-(ranks.get(b.key)??Infinity) || lateness(a)-lateness(b) || byMachine(a,b));
 }
 function moveTab(key,targetKey,after=false) {
   if(key===targetKey)return;
