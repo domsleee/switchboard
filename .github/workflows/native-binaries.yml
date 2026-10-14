@@ -82,7 +82,7 @@ jobs:
         with:
           rustflags: ""
       - name: Check installer
-        run: python3 tools/switchboard/install_service.test.py
+        run: cargo test -p zellij-client --features web_server_capability switchboard_update::install --lib
       - name: Build native server and relay
         run: cargo build --release --features web_server_capability
       - name: Verify and package update bundle

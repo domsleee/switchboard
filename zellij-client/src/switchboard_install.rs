@@ -84,13 +84,14 @@ fn ensure_host_config(
     fs::create_dir_all(directory)?;
     let token_file = directory.join("switchboard-token");
     if !token_file.exists() {
+        let token = create_token()?;
         let mut options = fs::OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
         std::io::Write::write_all(
             &mut options.open(&token_file)?,
-            format!("{}\n", create_token()?).as_bytes(),
+            format!("{token}\n").as_bytes(),
         )?;
     }
     let mut host = serde_json::json!({
@@ -378,6 +379,20 @@ fn install_job(agents: &Path, label: &str, mut job: Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_token_creation_leaves_first_install_retryable() {
+        let home = tempfile::tempdir().unwrap();
+        let config = home.path().join("hosts.json");
+        let token = home.path().join("switchboard-token");
+        assert!(
+            ensure_host_config(&config, "Desk", true, || bail!("token store unavailable")).is_err()
+        );
+        assert!(!config.exists());
+        assert!(!token.exists());
+        assert!(ensure_host_config(&config, "Desk", true, || Ok("t1".into())).unwrap());
+        assert_eq!(fs::read_to_string(&token).unwrap(), "t1\n");
+    }
 
     #[test]
     fn first_install_creates_a_private_token_and_never_overwrites() {
