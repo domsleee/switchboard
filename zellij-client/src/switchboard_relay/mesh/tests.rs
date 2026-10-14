@@ -1669,6 +1669,80 @@ async fn group_sync_merges_concurrent_additions_and_rejects_untrusted_updates() 
 }
 
 #[tokio::test]
+async fn computer_categories_sync_and_the_latest_change_wins() {
+    let temp = tempfile::tempdir().unwrap();
+    let mac = machine(&temp.path().join("mac"), "Mac", "https://192.0.2.1:8091").await;
+    let windows = machine(
+        &temp.path().join("windows"),
+        "Windows",
+        "https://192.0.2.2:8091",
+    )
+    .await;
+    let invite = invitation(&mac, 1000).await;
+    let (_, approval) = approved(&mac, &windows, &invite, 1000).await;
+    mac.complete(windows.install(approval, &invite).await.unwrap())
+        .await
+        .unwrap();
+    let id = |mesh: &Arc<Mesh>| {
+        let mesh = mesh.clone();
+        async move {
+            mesh.database
+                .lock()
+                .await
+                .local
+                .as_ref()
+                .unwrap()
+                .id
+                .clone()
+        }
+    };
+    let (mac_id, windows_id) = (id(&mac).await, id(&windows).await);
+    let category = |mesh: &Arc<Mesh>, member: &str| {
+        let (mesh, member) = (mesh.clone(), member.to_owned());
+        async move {
+            mesh.database
+                .lock()
+                .await
+                .categories
+                .get(&member)
+                .map(|c| c.name.clone())
+        }
+    };
+    assert!(mac.set_category(&windows_id, "games").await.is_err());
+    assert!(mac.set_category("someone-else", "work").await.is_err());
+    // Set on the Mac, seen on Windows.
+    mac.set_category(&windows_id, "work").await.unwrap();
+    let stale = mac.prepare_sync(&windows_id).await.unwrap();
+    mac.exchange(windows.exchange(stale.clone()).await.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        category(&windows, &windows_id).await.as_deref(),
+        Some("work")
+    );
+    // A later change on Windows replaces it everywhere; the older update cannot undo it.
+    windows.set_category(&windows_id, "home").await.unwrap();
+    mac.exchange(windows.prepare_sync(&mac_id).await.unwrap())
+        .await
+        .unwrap();
+    windows.exchange(stale).await.unwrap();
+    assert_eq!(category(&mac, &windows_id).await.as_deref(), Some("home"));
+    assert_eq!(
+        category(&windows, &windows_id).await.as_deref(),
+        Some("home")
+    );
+    assert_eq!(
+        mac.status().await["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == windows_id)
+            .unwrap()["category"],
+        "home"
+    );
+}
+
+#[tokio::test]
 async fn explicit_board_host_is_independent_of_administrator_and_syncs_to_new_members() {
     let temp = tempfile::tempdir().unwrap();
     let mac = machine(&temp.path().join("mac"), "Mac", "https://192.0.2.1:8091").await;

@@ -6,6 +6,8 @@ use super::*;
 pub(super) struct Update {
     #[serde(default)]
     board_hosts: Vec<board_host::Selection>,
+    #[serde(default)]
+    categories: BTreeMap<String, Category>,
     membership: Signed<Membership>,
     credential: Envelope,
 }
@@ -49,6 +51,7 @@ impl Mesh {
         }
         Ok(Update {
             board_hosts: db.board_hosts.clone(),
+            categories: db.categories.clone(),
             // Keep the inviter's signature: an existing peer may not know this
             // newly joined computer yet, but already trusts its inviter.
             membership: membership.clone(),
@@ -137,9 +140,11 @@ impl Mesh {
             db.membership = Some(self.identity.sign(merged)?);
         }
         let board_changed = self.merge_board_hosts(&mut db, &update.board_hosts)?;
+        let categories_changed = Self::merge_categories(&mut db, &update.categories);
         let response = self.sync_payload(&mut db, peer)?;
         if changed
             || board_changed
+            || categories_changed
             || credential_changed
             || db.outgoing.len() != committed.outgoing.len()
         {
@@ -189,6 +194,98 @@ impl Mesh {
             }
         }))
         .await;
+    }
+}
+
+/// A computer's sidebar category, the same on every computer in the group.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct Category {
+    pub(super) name: String,
+    updated: u64,
+}
+
+fn valid_category(name: &str) -> bool {
+    matches!(name, "" | "work" | "home")
+}
+
+impl Mesh {
+    /// The latest change wins; a tie keeps the larger name, so every computer agrees.
+    pub(super) fn merge_categories(
+        db: &mut Database,
+        incoming: &BTreeMap<String, Category>,
+    ) -> bool {
+        let Some(membership) = &db.membership else {
+            return false;
+        };
+        let mut changed = false;
+        for (id, category) in incoming {
+            if !membership.value.members.contains_key(id) || !valid_category(&category.name) {
+                continue;
+            }
+            if db
+                .categories
+                .get(id)
+                .is_none_or(|old| (category.updated, &category.name) > (old.updated, &old.name))
+            {
+                db.categories.insert(id.clone(), category.clone());
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    pub(super) async fn set_category(&self, member: &str, name: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(valid_category(name), "Use work, home or no category");
+        let mut committed = self.database.lock().await;
+        let mut db = committed.clone();
+        anyhow::ensure!(
+            db.membership
+                .as_ref()
+                .is_some_and(|m| m.value.members.contains_key(member)),
+            "Unknown computer"
+        );
+        // Newer than the change it replaces, even one stamped by a computer whose clock runs ahead.
+        let updated = now().max(db.categories.get(member).map_or(0, |c| c.updated + 1));
+        db.categories.insert(
+            member.to_owned(),
+            Category {
+                name: name.to_owned(),
+                updated,
+            },
+        );
+        self.save(&db)?;
+        *committed = db;
+        Ok(())
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SetCategory {
+    member_id: String,
+    name: String,
+}
+pub(super) async fn category(
+    State(state): State<RelayState>,
+    Json(input): Json<SetCategory>,
+) -> Response {
+    let Some(mesh) = state.mesh else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":"Pair computers before sharing categories"})),
+        )
+            .into_response();
+    };
+    match mesh.set_category(&input.member_id, &input.name).await {
+        Ok(()) => {
+            tokio::spawn(async move { mesh.synchronize().await });
+            StatusCode::NO_CONTENT.into_response()
+        },
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":error.to_string()})),
+        )
+            .into_response(),
     }
 }
 

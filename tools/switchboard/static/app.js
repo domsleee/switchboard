@@ -211,10 +211,28 @@ function matchesSearch(item){
 }
 // This computer as its mesh peers know it, so every computer sorts machines alike
 // instead of listing itself first or by whichever catalog answered first.
-let localMember=null;
+let localMember=null,meshMembers=[];
 function machineOrder(item){
   const host=hosts.get(item.entry.host),self=host?.local&&localMember;
   return [self?localMember.name:host?.name??item.entry.host,self?'mesh-'+localMember.id:item.entry.host,item.entry.name].join('\0');
+}
+// Paired computers share their category through the group; other hosts, and
+// relays too old to share it, keep it in this browser.
+function memberFor(hostId){
+  const member=hosts.get(hostId)?.local?localMember:meshMembers.find(m=>'mesh-'+m.id===hostId);
+  return member&&'category' in member?member:null;
+}
+function setCategory(member,name){
+  member.category=name;
+  fetch('/api/mesh/category',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({member_id:member.id,name})}).catch(()=>{});
+}
+function applyCategories(){
+  for(const id of hosts.keys()){
+    const member=memberFor(id);if(!member)continue;
+    if(member.category!=null)groups[id]=member.category;
+    // A category chosen before sharing existed moves to the group once.
+    else if(groups[id])setCategory(member,groups[id]);
+  }
 }
 function allTabs(ignoreFilter=false, includeArchived=false) {
   const ranks=new Map(tabOrder.map((key,index)=>[key,index]));
@@ -522,7 +540,7 @@ function renderMachines() {
       label=document.createElement('label');label.dataset.host=host.id;label.append(document.createTextNode(host.name));
       const select=document.createElement('select');
       for(const [value,text] of [['','Ungrouped'],['work','Work'],['home','Home']]){const option=document.createElement('option');option.value=value;option.textContent=text;select.append(option);}
-      select.onchange=()=>{groups[host.id]=select.value;localStorage.setItem('switchboard-groups',JSON.stringify(groups));render();};label.append(select);
+      select.onchange=()=>{groups[host.id]=select.value;const member=memberFor(host.id);if(member)setCategory(member,select.value);else localStorage.setItem('switchboard-groups',JSON.stringify(groups));render();};label.append(select);
     }
     const select=label.lastElementChild;
     if(label.firstChild.textContent!==host.name)label.firstChild.textContent=host.name;
@@ -550,7 +568,7 @@ function connectSession(host,name,starting=false) {
 async function refresh() {
   if(loading)return;loading=true;
   try {
-    fetch('/api/mesh',{cache:'no-store'}).then(r=>r.ok?r.json():null).then(mesh=>{localMember=mesh?.members?.find(m=>m.local)||null;render();}).catch(()=>{});
+    fetch('/api/mesh',{cache:'no-store'}).then(r=>r.ok?r.json():null).then(mesh=>{meshMembers=mesh?.members||[];localMember=meshMembers.find(m=>m.local)||null;applyCategories();render();}).catch(()=>{});
     const response=await fetch('/api/hosts?summary=1');if(!response.ok)throw Error('Cannot reach local relay');
     const data=await response.json();hostsLoaded=true;
     for(const host of data)hosts.set(host.id,{...hosts.get(host.id),...host,connecting:true});
