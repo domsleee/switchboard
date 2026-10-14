@@ -135,6 +135,8 @@ async fn handle_ws_control(socket: WebSocket, params: ControlParams, state: AppS
             Message::Close(_) => {
                 return;
             },
+            // The relay's keepalive; axum answers pings itself.
+            Message::Ping(_) | Message::Pong(_) => {},
             _ => {
                 log::error!("Unsupported messagetype : {:?}", msg);
             },
@@ -330,6 +332,7 @@ async fn handle_ws_terminal(
             Message::Close(_) => {
                 break;
             },
+            Message::Ping(_) | Message::Pong(_) => {},
             // TODO: support Message::Binary
             _ => {
                 log::error!("Unsupported websocket msg type");
