@@ -164,6 +164,38 @@ test('paired computers share their category; a browser-only category moves to th
   assert.equal(context.memberFor('mesh-24'),null);
 });
 
+test('each group returns to and shows its own last selected tab, even across computers',()=>{
+  const tab=(host,id)=>({id,name:`${host}-${id}`,position:id,panes:[]});
+  const sessions=new Map(['w1','w2','h1','h2'].map(host=>[host,{host,name:'main',state:{panes:[]},catalog:[tab(host,0)]}]));
+  const focused=[];
+  const context={hosts:new Map([...sessions.keys()].map(host=>[host,{name:host}])),sessions,tabOrder:[],archived:{},ready:{},
+    filter:'work',groups:{w1:'work',w2:'work',h1:'home',h2:'home'},selected:null,localStorage:{setItem(){}},renderFilter(){},
+    focus:item=>focused.push(item.key)};
+  vm.createContext(context);
+  vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function moveSelected(')),context);
+  vm.runInContext(source.slice(source.indexOf('function setFilter('),source.indexOf("$('filters').onclick")),context);
+  vm.runInContext(source.slice(source.indexOf('// The tab last used in each group'),source.indexOf('function setFilter(')),context);
+  // render() re-selects the first visible tab when the selection is filtered out.
+  vm.runInContext(`function render(){if(!allTabs().some(t=>t.key===selected))selected=allTabs()[0]?.key??null;}`,context);
+  const key=host=>JSON.stringify([host,'main','tab',0]);
+  const go=group=>{vm.runInContext(`setFilter('${group}')`,context);return context.selected;};
+  context.selected=key('w2');
+  assert.equal(go('home'),key('h1'),'nothing remembered yet: first home tab');
+  context.selected=key('h2');
+  assert.equal(go('work'),key('w2'),'work returns to its second tab');
+  assert.equal(go('home'),key('h2'),'home returns to its second tab');
+  assert.deepEqual(focused,[key('h1'),key('w2'),key('h2')],'every switch shows the highlighted tab');
+  // A remembered tab that has closed falls back to the first visible tab.
+  sessions.delete('h2');
+  go('work');
+  assert.equal(go('home'),key('h1'));
+  assert.equal(focused.at(-1),key('h1'));
+  // Showing every group keeps a visible selection without refocusing.
+  const count=focused.length;
+  assert.equal(go('all'),key('h1'));
+  assert.equal(focused.length,count);
+});
+
 test('native tab identity preserves selection, archive and order through pane removal, floating and reordered positions',()=>{
   const entry={host:'win',name:'main',state:{panes:[]}},stored={};
   const context={ready:{},archived:{},selected:null,tabOrder:[],saveReady(){},localStorage:{setItem:(key,val)=>stored[key]=val},SwitchboardTitles:{tabTitle:(_,tab)=>tab.name}};

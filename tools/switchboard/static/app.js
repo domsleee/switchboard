@@ -724,7 +724,20 @@ function renderFilter(){
   if(filter==='all')url.searchParams.delete('group');else url.searchParams.set('group',filter);
   if(url.href!==location.href)history.replaceState(null,'',url);
 }
-function setFilter(value){filter=value;renderFilter();render();}
+// The tab last used in each group, restored when returning to that group.
+const filterSelection={};
+function setFilter(value){
+  const previous=selected;
+  if(selected)filterSelection[filter]=selected;
+  filter=value;
+  const tabs=allTabs();
+  if(!tabs.some(t=>t.key===selected)&&tabs.some(t=>t.key===filterSelection[value]))selected=filterSelection[value];
+  renderFilter();render();
+  // The clicked filter keeps focus, so render only defers the switch and the
+  // previous terminal stays on screen. Show the newly selected tab now.
+  const current=allTabs().find(t=>t.key===selected);
+  if(selected!==previous&&current)focus(current);
+}
 $('filters').onclick=event=>{const button=event.target.closest('[data-filter]');if(button)setFilter(button.dataset.filter);};
 renderFilter();
 $('new-tab').onclick=()=>{
