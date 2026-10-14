@@ -282,6 +282,7 @@ fn resolve_pending(
 struct TrayArguments {
     config: String,
     release_directory: String,
+    relay_port: Option<u16>,
 }
 
 pub struct Updater {
@@ -315,9 +316,14 @@ impl Updater {
         });
         // Started by hand or from a bundle: keep the running tray's settings.
         let mut running = TrayArguments::default();
-        if windows && (cli.config.is_none() || cli.release_directory.is_none()) {
+        if windows
+            && (cli.config.is_none() || cli.release_directory.is_none() || cli.port.is_none())
+        {
             let script = helpers.join("update_services_windows.ps1");
-            let args = vec!["-Action".into(), "Arguments".into()];
+            let mut args = vec!["-Action".into(), "Arguments".into()];
+            if let Some(host_config) = &cli.host_config {
+                args.extend(["-HostConfig".into(), host_config.clone().into()]);
+            }
             if let Ok(output) = powershell(&script, args, &[tray_script(&helpers)]) {
                 running = serde_json::from_str(&output).unwrap_or_default();
             }
@@ -336,7 +342,10 @@ impl Updater {
                     ".config/zellij/switchboard-hosts.json"
                 })
             }),
-            port: cli.port.unwrap_or(if windows { 80 } else { 8090 }),
+            port: cli
+                .port
+                .or(running.relay_port.filter(|p| *p != 0))
+                .unwrap_or(8090),
             binary: cli
                 .binary
                 .clone()
@@ -854,6 +863,8 @@ impl Updater {
         let args = vec![
             "-ReleaseDirectory".into(),
             self.release_directory.clone().into(),
+            "-RelayPort".into(),
+            self.port.to_string().into(),
         ];
         powershell(
             &self.helpers.join("install_windows_web.ps1"),

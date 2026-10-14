@@ -213,7 +213,7 @@ pub struct SwitchboardUpdateCli {
     /// Relay host configuration JSON
     #[clap(long)]
     pub host_config: Option<PathBuf>,
-    /// Relay port (default 80 on Windows, 8090 on macOS)
+    /// Relay port (keeps the running Windows tray's port; otherwise 8090)
     #[clap(long)]
     pub port: Option<u16>,
     /// Installed executable on macOS (default ~/.cargo/bin/zellij)

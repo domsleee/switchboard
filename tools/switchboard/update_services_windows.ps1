@@ -4,7 +4,7 @@ param(
     [string]$Snapshot,
     [string]$ReleaseDirectory,
     [string]$HostConfig,
-    [int]$RelayPort = 80,
+    [ValidateRange(1,65535)][int]$RelayPort = 8090,
     [string]$Binary = ''
 )
 $ErrorActionPreference = 'Stop'
@@ -44,7 +44,8 @@ function Stop-Captured($Identity, [string]$Pattern) {
 }
 if ($Action -eq 'Arguments') {
     # The running tray's -Config/-ReleaseDirectory, for updates started without them.
-    Get-SwitchboardTrayArguments @(Get-CimInstance Win32_Process) | ConvertTo-Json -Compress
+    if (!$HostConfig) { $HostConfig = Join-Path $HOME '.config/switchboard/hosts.json' }
+    Get-SwitchboardTrayArguments @(Get-CimInstance Win32_Process) -HostConfig $HostConfig | ConvertTo-Json -Compress
     return
 }
 if ($Action -eq 'Snapshot') {

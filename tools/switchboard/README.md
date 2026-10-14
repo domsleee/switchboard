@@ -112,7 +112,9 @@ This installs a current-user **Switchboard** Startup shortcut and a tray icon
 (reinstalling without `-Config` keeps the running tray's `-Config`),
 starts the embedded Rust relay, and starts native daemon mode only
 if the server is offline. The tray supervises the relay and web server and opens
-the actual sidebar at **http://switchboard.localhost** on loopback port 80.
+the actual sidebar at **http://switchboard.localhost:8090** on loopback port 8090.
+Use `-RelayPort PORT` to choose another port. Reinstalls and updates preserve the
+running tray's port, including older installations whose relay still uses port 80.
 Logs are in `~/.config/switchboard`. Quitting the tray leaves terminals running.
 The installer retains its executable in `~/.local/share/switchboard/windows-releases`.
 Use `update_windows.ps1 -Candidate C:/build/zellij.exe` to select a new retained
@@ -122,8 +124,9 @@ only select it); terminal engines keep running and browsers reconnect.
 `~/.config/switchboard/windows_cli.ps1 attach SESSION` uses the selection for
 native clients and new sessions. Existing sessions retain their old engine;
 see the [Windows update checks](../../docs/SWITCHBOARD_UPDATES.md#select-a-windows-release-without-stopping-terminals).
-Port 80 must be available; no administrator access or certificate installation
-is required. Windows sees its own host and the computers it has paired with.
+The relay port must be available; no administrator access or certificate installation
+is required. Port 8090 avoids Windows services that reserve port 80.
+Windows sees its own host and the computers it has paired with.
 Remove the Startup shortcut to disable automatic startup. Other hosts can use
 `zellij web --daemonize` to detach web from their terminal.
 **Alt+H / Alt+L** move to the previous/next visible tab across machines, wrapping

@@ -66,11 +66,28 @@ if ($arguments.config -cne 'C:\hosts\Dom-PC.kdl' -or $arguments.releaseDirectory
 $arguments = Get-SwitchboardTrayArguments @($processes[2], $processes[3])
 if ($arguments.config -cne 'C:\hosts\web.kdl' -or $arguments.releaseDirectory) { throw 'Web service --config was not used without a tray' }
 
+$hostConfig = Join-Path ([IO.Path]::GetTempPath()) 'private-test/hosts.json'
+$relay = [pscustomobject]@{Name='zellij.exe'; CommandLine=('"C:\store\abc\zellij.exe" serve --port 8090 --host-config "' + $hostConfig + '"')}
+$foreign = [pscustomobject]@{Name='zellij.exe'; CommandLine='zellij.exe serve --port 9000 --host-config C:\other\hosts.json'}
+$arguments = Get-SwitchboardTrayArguments @($processes[0], $relay, $foreign) -HostConfig $hostConfig
+if ($arguments.relayPort -ne 8090) { throw 'An older tray did not recover its working relay port' }
+$processes[0].CommandLine += ' "-RelayPort" "8123"'
+$arguments = Get-SwitchboardTrayArguments @($processes[0], $relay) -HostConfig $hostConfig
+if ($arguments.relayPort -ne 8123) { throw 'An explicit tray relay port was not preserved' }
+$arguments = Get-SwitchboardTrayArguments @($foreign) -HostConfig $hostConfig
+if ($arguments.relayPort) { throw 'A foreign installation supplied the relay port' }
+$relay.CommandLine = $relay.CommandLine.Replace('--port 8090','--port 80')
+$arguments = Get-SwitchboardTrayArguments @($relay) -HostConfig $hostConfig
+if ($arguments.relayPort -ne 80) { throw 'An existing port-80 installation changed ports' }
+$relay.CommandLine = $relay.CommandLine.Replace('--port 80 ','')
+$arguments = Get-SwitchboardTrayArguments @($relay) -HostConfig $hostConfig
+if ($arguments.relayPort -ne 8090) { throw 'A relay with an omitted port did not use the CLI default' }
+
 # The replacement tray waits for the old tray's lock and fails loudly without it.
 $name = 'Local\SwitchboardTrayTest' + [Guid]::NewGuid().ToString('N')
 Wait-SwitchboardMutexRelease $name 1
 $pwsh = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
-$holder = Start-Process -FilePath $pwsh -PassThru -ArgumentList @('-NoProfile', '-Command',
+$holder = Start-Process -FilePath $pwsh -WindowStyle Hidden -PassThru -ArgumentList @('-NoProfile', '-Command',
     "`$m = New-Object Threading.Mutex(`$true, '$name'); Start-Sleep 4")
 Start-Sleep 2
 $rejected = $false
@@ -83,4 +100,4 @@ Wait-SwitchboardMutexRelease $name 10
 $holder.WaitForExit()
 $mutex = Enter-SwitchboardMutex $name 1
 $mutex.ReleaseMutex(); $mutex.Dispose()
-Write-Output 'PASS: the installed tray is found wherever the helper runs, its -Config/-ReleaseDirectory are kept, and the tray lock is awaited'
+Write-Output 'PASS: installed tray settings and relay ports are preserved, foreign relays are ignored, and the tray lock is awaited'

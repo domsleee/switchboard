@@ -22,6 +22,7 @@ try {
     $ReleaseDirectory = Join-Path $root 'releases'
     $oldPath = Initialize-SwitchboardReleaseStore $old $ReleaseDirectory
     $directory = $root; $log = Join-Path $root 'web.log'; $relayConfig = Join-Path $root 'hosts.json'
+    $RelayPort = 8123
     $prefix = @('--config',(Join-Path $root 'private config.kdl'))
     $status = [pscustomobject]@{Text='initial'}
     $script:selectedHash = $null
@@ -37,7 +38,9 @@ try {
         if ($Arguments -contains '--daemonize') { $script:webOnline = $script:webWillStart }
         [pscustomobject]@{Code=$(if ($Arguments -contains '--status' -and !$script:webOnline) { 1 } else { 0 }); Output=''; Error=''}
     }
-    function Invoke-WebRequest {
+    function Invoke-WebRequest([string]$Uri, $Headers) {
+        Assert ($Uri -eq "http://127.0.0.1:$RelayPort/api/health") 'Tray health checked the wrong relay port'
+        Assert ($Headers.Host -eq "switchboard.localhost:$RelayPort") 'Tray health used the wrong Host authority'
         if ($script:health -eq 'offline') { throw 'Private HTTP fixture offline' }
         [pscustomobject]@{StatusCode=200; Content=('{"relay":"' + $script:health + '"}')}
     }
@@ -90,7 +93,7 @@ try {
     $script:webOnline = $true; $script:health = 'offline'
     Start-Servers
     Assert ($script:starts.Count -eq 1 -and $script:starts[0].Binary -eq $newPath) 'Offline relay did not start the selected retained release'
-    Assert ($script:starts[0].Arguments -eq ('serve --port 80 --host-config "' + $relayConfig + '"')) 'Tray launch changed relay routing arguments'
+    Assert ($script:starts[0].Arguments -eq ('serve --port 8123 --host-config "' + $relayConfig + '"')) 'Tray did not launch on the configured relay port'
     Start-Servers
     Assert ($script:starts.Count -eq 1) 'A starting owned relay was duplicated'
 
@@ -106,6 +109,7 @@ try {
         $startsBefore = $script:starts.Count
         Check-ForUpdates
         Assert ($script:updater -and $script:starts.Count -eq $startsBefore + 1) 'Due check did not launch its private updater'
+        Assert ($script:starts[-1].Arguments -match '"--port" "8123"') 'Scheduled update lost the relay port'
         $child = $script:updater
         # Inspect without opening the handle ourselves, which would hide the
         # original PID-reuse bug in Start-Process's returned Process object.

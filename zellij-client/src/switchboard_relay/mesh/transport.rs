@@ -399,13 +399,18 @@ impl Mesh {
             },
         }
     }
-    pub(super) async fn remote<T: Serialize, R: serde::de::DeserializeOwned>(
-        &self,
-        member: &Member,
-        path: &str,
-        body: &T,
-    ) -> anyhow::Result<R> {
-        let host = Host::new(HostConfig {
+    pub(super) fn peer_client(&self, member: &Member) -> anyhow::Result<Arc<Host>> {
+        let mut clients = self.peer_clients.write().unwrap();
+        if let Some(host) = clients.get(&member.id).filter(|host| {
+            host.config.name == member.name
+                && host.config.url == member.endpoint
+                && host.config.tls_fingerprint.as_deref() == Some(member.certificate.as_str())
+        }) {
+            return Ok(host.clone());
+        }
+        // Keep recovered hostname routes and pooled connections across sync ticks.
+        // These clients carry no terminal or gateway credential, including during enrollment.
+        let host = Arc::new(Host::new(HostConfig {
             id: member.id.clone(),
             name: member.name.clone(),
             url: member.endpoint.clone(),
@@ -415,10 +420,21 @@ impl Mesh {
             artifact_urls: Value::Null,
             escape_transport: None,
             zellij_binary: None,
-        })?;
+        })?);
+        clients.insert(member.id.clone(), host.clone());
+        Ok(host)
+    }
+
+    pub(super) async fn remote<T: Serialize, R: serde::de::DeserializeOwned>(
+        &self,
+        member: &Member,
+        path: &str,
+        body: &T,
+    ) -> anyhow::Result<R> {
+        let host = self.peer_client(member)?;
         let response = tokio::time::timeout(Duration::from_secs(15), host.raw_request(Method::POST, path, serde_json::to_vec(body)?.into(), "application/json", None)).await
             .map_err(|_| anyhow::anyhow!("Inviter unavailable; check the network and retry"))?
-            .map_err(|_| anyhow::anyhow!("Cannot reach the intended computer; check its address, TLS identity and private network"))?;
+            .map_err(|error| error.context("Cannot reach the intended computer; check its address, TLS identity and private network"))?;
         if response.status == StatusCode::GONE {
             anyhow::bail!("Invitation expired, cancelled or consumed");
         }
