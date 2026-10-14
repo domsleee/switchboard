@@ -45,6 +45,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
     assert.match(await page.locator('#build-version').getAttribute('title'),commitTitle);
     const frame=page.frameLocator('iframe[title="Windows: main"]'),input=frame.locator('#terminal-input');
     await page.waitForFunction(()=>document.querySelector('#tabs .selected')?.textContent.includes('Original'));
+    await page.waitForFunction(()=>document.activeElement===document.querySelector('#terminals>iframe.active'));
     if(emptyMachine){
       assert.equal(frameBoots,1);
       assert.equal(new URL(page.url()).searchParams.get('pane'),'7');
@@ -59,7 +60,9 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
       await page.waitForFunction(()=>new URL(location.href).searchParams.get('tab')==='42');
     }
     async function create(number){
-      await page.locator('#new-tab').click();await page.locator('#new-tab-form button[type="submit"]').click();
+      await page.keyboard.press(number===1?'Control+Alt+KeyT':'Meta+Alt+KeyT');
+      await page.waitForFunction(()=>document.querySelector('#new-tab-dialog').open);
+      await page.keyboard.press('Enter');
       await page.waitForFunction(()=>document.querySelector('#tabs .selected .tab-name')?.textContent==='Creating tab…');
       assert.equal(await page.locator('#tabs .tab-select').count(),number+1);
       // Repeated old scans must not treat the preceding provisional tab as this creation.
@@ -68,8 +71,10 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
       await input.evaluate(()=>window.confirmCreation());created=number;
       await page.waitForFunction(n=>document.querySelector('#tabs .selected .tab-name')?.textContent==='New shell '+n,number);
       assert.equal(new URL(page.url()).searchParams.get('pane'),String(8+number));
+      assert.equal(await page.evaluate(()=>document.activeElement===document.querySelector('#terminals>iframe.active')),true,'New terminal receives keyboard focus after shortcut and Enter');
       assert.equal(await input.evaluate(i=>document.activeElement===i&&!window.term.options.disableStdin),true);
       await page.keyboard.type('draft '+number);
+      assert.ok((await input.inputValue()).endsWith('draft '+number),'Typing reaches the new terminal without an extra click');
     }
     await create(1);
     await page.locator('#tabs .selected').click({button:'right'});
@@ -97,6 +102,16 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
     assert.deepEqual(await page.locator('#tabs .tab-name').allTextContents(),['Original','New shell 1','New shell 2']);
     assert.equal(await page.evaluate(()=>ready[JSON.stringify(['windows','main','tab',90])]!==undefined),true);
     assert.equal(await input.evaluate(i=>document.activeElement===i),true);
+    // A deliberate move to search while creation waits must still win.
+    await page.locator('#new-tab').click();
+    await page.locator('#new-tab-form button[type="submit"]').click();
+    await page.waitForFunction(()=>document.querySelector('iframe.active')?.contentWindow.creationRequested);
+    await page.locator('#tab-search').click();
+    await input.evaluate(()=>window.confirmCreation());
+    await page.waitForFunction(()=>document.querySelector('#tabs .selected .tab-name')?.textContent==='New shell 3');
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'tab-search');
+    await page.keyboard.type('keep searching');
+    assert.equal(await page.locator('#tab-search').inputValue(),'keep searching');
     assert.deepEqual(errors,[]);
   }finally{await browser.close();}
 });

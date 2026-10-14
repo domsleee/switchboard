@@ -719,6 +719,9 @@ $('new-tab-form').onsubmit=event=>{
   if(filter!=='all'&&groups[entry.host]!==filter)setFilter('all');$('tab-search').value='';
   sidebarOpen=false;updateSidebar();$('artifact-preview').hidden=true;$('artifact-frame').src='about:blank';
   $('new-tab-dialog').close();render();
+  // Keyboard dismissal can leave focus on the hidden session selector, then
+  // move it to the body. Hand focus to the frame before creation records it.
+  entry.frame.focus();
   entry.frame.contentWindow.postMessage({type:'zellij-new-tab'},location.origin);
   setStatus(`Creating a tab on ${hosts.get(entry.host)?.name}…`);
   setTimeout(()=>{if(entry.pendingNewTab===pending){const waiting=selected===tabKey(entry,entry.creatingTab);entry.pendingNewTab=null;entry.creatingTab=null;entry.followActiveTab=false;if(waiting){const active=activeTab(entry);selected=active?tabKey(entry,active):null;}render();setStatus('No new tab received. Check the connection and try again.',true);}},30000);
