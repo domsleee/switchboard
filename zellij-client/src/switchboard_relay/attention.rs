@@ -547,25 +547,8 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
                             .collect::<Vec<_>>(),
                     );
                     if changed || std::mem::take(&mut poll.dirty) {
-                        let temp = file.with_extension("attention.json.tmp");
-                        let data = poll.persisted().to_string();
-                        let _ = async {
-                            if let Some(parent) = file.parent() {
-                                tokio::fs::create_dir_all(parent).await?;
-                            }
-                            tokio::fs::write(&temp, data).await?;
-                            #[cfg(unix)]
-                            {
-                                use std::os::unix::fs::PermissionsExt;
-                                tokio::fs::set_permissions(
-                                    &temp,
-                                    std::fs::Permissions::from_mode(0o600),
-                                )
-                                .await?;
-                            }
-                            tokio::fs::rename(&temp, &file).await
-                        }
-                        .await;
+                        let _ = logs::write_private(&file, poll.persisted().to_string().as_bytes())
+                            .await;
                     }
                     drop(poll);
                     // Every CLI call queues on the engine thread that also echoes typing.

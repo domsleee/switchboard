@@ -1,11 +1,27 @@
 //! Recent Switchboard failures, reviewable from Settings instead of zellij.log.
+//! Saved beside the relay config so failures before an update stay visible.
 use super::*;
-use std::{collections::VecDeque, sync::LazyLock};
+use std::{
+    collections::VecDeque,
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        LazyLock,
+    },
+};
 
 const CAPACITY: usize = 200;
-static LOG: Log = Log(std::sync::Mutex::new(VecDeque::new()));
+static LOG: Log = Log(
+    std::sync::Mutex::new(VecDeque::new()),
+    AtomicBool::new(false),
+);
 
-struct Log(std::sync::Mutex<VecDeque<Value>>);
+struct Log(std::sync::Mutex<VecDeque<Value>>, AtomicBool);
+
+/// Terminal reports are numeric samples sent every few seconds, not failures.
+fn diagnostic(message: &str) -> bool {
+    message.starts_with("Terminal ")
+}
 
 impl Log {
     /// Returns true when the entry is new rather than a repeat of a known failure.
@@ -19,10 +35,39 @@ impl Log {
             .and_then(|i| entries.remove(i))
             .map_or(1, |e| e["count"].as_u64().unwrap_or(1) + 1);
         entries.push_back(json!({"time":time,"source":source,"message":message,"count":count}));
+        // Samples give way first, so a busy terminal cannot push failures out.
         while entries.len() > CAPACITY {
-            entries.pop_front();
+            let oldest = entries
+                .iter()
+                .position(|e| e["message"].as_str().is_some_and(diagnostic))
+                .unwrap_or(0);
+            entries.remove(oldest);
         }
+        self.1.store(true, Ordering::Relaxed);
         count == 1
+    }
+    fn load(&self, bytes: &[u8]) {
+        let Ok(Value::Array(saved)) = serde_json::from_slice::<Value>(bytes) else {
+            return;
+        };
+        let mut entries = self.0.lock().unwrap();
+        for entry in saved.into_iter().rev().take(CAPACITY).rev() {
+            if let (Some(source), Some(message), Some(time)) = (
+                entry["source"].as_str(),
+                entry["message"].as_str(),
+                entry["time"].as_u64(),
+            ) {
+                let count = entry["count"].as_u64().unwrap_or(1).max(1);
+                entries.push_back(
+                    json!({"time":time,"source":source,"message":redact(message),"count":count}),
+                );
+            }
+        }
+    }
+    fn saved(&self) -> Option<Vec<u8>> {
+        self.1
+            .swap(false, Ordering::Relaxed)
+            .then(|| serde_json::to_vec(&*self.0.lock().unwrap()).unwrap())
     }
     fn newest_first(&self) -> Vec<Value> {
         self.0.lock().unwrap().iter().rev().cloned().collect()
@@ -50,8 +95,44 @@ pub(super) fn record(source: &str, message: &str) {
     let time = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64);
-    if LOG.push(source, message, time) {
+    if LOG.push(source, message, time) && !diagnostic(message) {
         log::warn!("Switchboard {source}: {}", redact(message));
+    }
+}
+
+/// Write `data` readable only by this user, replacing `path` atomically.
+pub(super) async fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let mut temp = path.as_os_str().to_owned();
+    temp.push(".tmp");
+    tokio::fs::write(&temp, data).await?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600)).await?;
+    }
+    tokio::fs::rename(&temp, path).await
+}
+
+/// Restore saved failures, then save changes every few seconds.
+pub(super) async fn start(file: PathBuf) -> tokio::task::JoinHandle<()> {
+    if let Ok(bytes) = tokio::fs::read(&file).await {
+        LOG.load(&bytes);
+    }
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            save(&file).await;
+        }
+    })
+}
+
+/// Save unsaved failures now, e.g. as an update stops the relay.
+pub(super) async fn save(file: &Path) {
+    if let Some(data) = LOG.saved() {
+        let _ = write_private(file, &data).await;
     }
 }
 
@@ -405,6 +486,46 @@ pub(super) async fn modified_enter(
 mod tests {
     use super::*;
 
+    #[test]
+    fn failures_survive_a_restart_and_samples_never_push_them_out() {
+        let log = Log(
+            std::sync::Mutex::new(VecDeque::new()),
+            AtomicBool::new(false),
+        );
+        log.push("Windows", "Host is down", 1);
+        log.push("Windows", "Host is down", 2);
+        log.push("AP", "Inviter rejected token=abc", 3);
+        for time in 0..CAPACITY as u64 * 2 {
+            log.push(
+                "Mac",
+                &format!("Terminal transport frames={time}"),
+                10 + time,
+            );
+        }
+        let entries = log.newest_first();
+        assert_eq!(entries.len(), CAPACITY);
+        let failure = |e: &&Value| !e["message"].as_str().unwrap().starts_with("Terminal ");
+        assert_eq!(entries.iter().filter(failure).count(), 2);
+        let saved = log.saved().expect("changes are pending");
+        assert!(log.saved().is_none(), "saved once until the next change");
+        let restarted = Log(
+            std::sync::Mutex::new(VecDeque::new()),
+            AtomicBool::new(false),
+        );
+        restarted.load(&saved);
+        assert_eq!(restarted.newest_first(), entries);
+        let down = entries
+            .iter()
+            .find(|e| e["message"] == "Host is down")
+            .unwrap();
+        assert_eq!(down["count"], 2);
+        let rejected = entries.iter().find(|e| e["source"] == "AP").unwrap();
+        assert_eq!(rejected["message"], "Inviter rejected token=[redacted]");
+        assert!(restarted.saved().is_none(), "loading is not a change");
+        restarted.load(b"not json");
+        assert_eq!(restarted.newest_first().len(), CAPACITY);
+    }
+
     fn switch_sample() -> Value {
         json!({"host":"mac","focus_id":17,"pane_id":30,"is_plugin":false,"expected_render":true,
             "outcome":"settled","elapsed_ms":900,"ack_ms":15,"first_frame_ms":20,"first_parse_ms":750,
@@ -620,7 +741,7 @@ mod tests {
 
     #[test]
     fn ring_buffer_is_bounded_newest_first_and_counts_repeats() {
-        let log = Log(Default::default());
+        let log = Log(Default::default(), Default::default());
         for i in 0..CAPACITY + 50 {
             assert!(log.push("windows", &format!("failure {i}"), i as u64));
         }
