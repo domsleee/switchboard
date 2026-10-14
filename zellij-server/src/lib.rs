@@ -927,6 +927,9 @@ pub fn start_server_impl(
             let to_server = to_server.clone();
             let socket_path = socket_path.clone();
             move || {
+                // On Windows the path is a marker file, not the pipe. A live session
+                // still owns it, and a successful bind below rewrites it anyway.
+                #[cfg(unix)]
                 drop(std::fs::remove_file(&socket_path));
                 // Publish the correlated endpoint before the session marker. Legacy
                 // clients keep their listener below; new clients never pair by order.
@@ -1074,6 +1077,8 @@ pub fn start_server_impl(
     loop {
         let (instruction, mut err_ctx) = server_receiver.recv().unwrap();
         err_ctx.add_call(ContextType::IPCServer((&instruction).into()));
+        let instruction =
+            attach_if_session_running(instruction, session_data.read().unwrap().is_some());
         match instruction {
             ServerInstruction::FirstClientConnected(cli_assets, is_web_client, client_id) => {
                 let host_terminal_env = cli_assets.host_terminal_env.clone();
@@ -2243,7 +2248,52 @@ pub fn start_server_impl(
     // Drop cached session data before exit.
     *session_data.write().unwrap() = None;
 
-    drop(std::fs::remove_file(&socket_path));
+    // A server that failed to bind must not remove the marker of the live
+    // server that owns this name.
+    #[cfg(windows)]
+    let owns_marker = std::fs::read_to_string(&socket_path)
+        .is_ok_and(|pid| pid.trim() == std::process::id().to_string());
+    #[cfg(not(windows))]
+    let owns_marker = true;
+    if owns_marker {
+        drop(std::fs::remove_file(&socket_path));
+    }
+}
+
+/// A client that wrongly believes the session is gone (for example because its
+/// marker went missing) sends `FirstClientConnected`. Initializing again would
+/// replace the session and kill every running pane, so attach it instead.
+fn attach_if_session_running(
+    instruction: ServerInstruction,
+    session_running: bool,
+) -> ServerInstruction {
+    match instruction {
+        ServerInstruction::FirstClientConnected(cli_assets, is_web_client, client_id)
+            if session_running =>
+        {
+            log::warn!("Client {client_id} asked to create a running session; attaching it");
+            ServerInstruction::AttachClient(cli_assets, None, None, is_web_client, client_id)
+        },
+        instruction => instruction,
+    }
+}
+
+#[cfg(test)]
+mod first_client_tests {
+    use super::*;
+
+    #[test]
+    fn first_client_of_a_running_session_attaches_instead_of_replacing_it() {
+        let first = || ServerInstruction::FirstClientConnected(CliAssets::default(), true, 7);
+        assert!(matches!(
+            attach_if_session_running(first(), true),
+            ServerInstruction::AttachClient(_, None, None, true, 7)
+        ));
+        assert!(matches!(
+            attach_if_session_running(first(), false),
+            ServerInstruction::FirstClientConnected(_, true, 7)
+        ));
+    }
 }
 
 fn init_session(
