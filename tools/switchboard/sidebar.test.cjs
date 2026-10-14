@@ -145,6 +145,25 @@ test('a new tab goes to the bottom on every computer and stays there after reloa
   assert.deepEqual(reloaded.names(),['mac-0','mac-1','win-0','mac-2']);
 });
 
+test('paired computers share their category; a browser-only category moves to the group once',()=>{
+  const posted=[];
+  const context={hosts:new Map([['mac',{name:'Mac',local:true}],['mesh-24',{name:'Windows'}],['old',{name:'Old'}]]),
+    groups:{mac:'home',old:'work'},fetch:(url,options)=>{posted.push([url,JSON.parse(options.body)]);return Promise.resolve();}};
+  vm.createContext(context);
+  vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function moveSelected(')),context);
+  vm.runInContext(`meshMembers=[{id:'d1',local:true,category:null},{id:'24',category:'work'}];localMember=meshMembers[0];applyCategories()`,context);
+  assert.deepEqual(context.groups,{mac:'home','mesh-24':'work',old:'work'});
+  assert.deepEqual(posted,[['/api/mesh/category',{member_id:'d1',name:'home'}]]);
+  // Already shared: no second migration, and the group's value wins over this browser's.
+  vm.runInContext(`groups.mac='work';applyCategories()`,context);
+  assert.equal(context.groups.mac,'home');
+  assert.equal(posted.length,1);
+  // An unpaired host, or a relay without shared categories, stays in this browser.
+  assert.equal(context.memberFor('old'),null);
+  vm.runInContext(`meshMembers=[{id:'24'}]`,context);
+  assert.equal(context.memberFor('mesh-24'),null);
+});
+
 test('native tab identity preserves selection, archive and order through pane removal, floating and reordered positions',()=>{
   const entry={host:'win',name:'main',state:{panes:[]}},stored={};
   const context={ready:{},archived:{},selected:null,tabOrder:[],saveReady(){},localStorage:{setItem:(key,val)=>stored[key]=val},SwitchboardTitles:{tabTitle:(_,tab)=>tab.name}};
