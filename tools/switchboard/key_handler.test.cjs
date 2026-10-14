@@ -92,6 +92,9 @@ for(const variant of Object.keys(handlerSources))for(const bridge of [false,true
   {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
   const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch({headless:true});
   try{
+    // navigator.platform selects the Windows handlers, but Chrome's native
+    // clipboard accelerator still follows the operating system running the test.
+    const pasteShortcut=process.platform==='darwin'?'Meta+V':'Control+V';
     const context=await browser.newContext({viewport:{width:1280,height:900},permissions:['clipboard-read','clipboard-write']}),page=await context.newPage(),errors=[];
     page.on('pageerror',error=>errors.push(error.message));
     await context.addInitScript(()=>{
@@ -153,7 +156,7 @@ for(const variant of Object.keys(handlerSources))for(const bridge of [false,true
       await page.evaluate(enabled=>{term._core.coreService.decPrivateModes.bracketedPasteMode=enabled;},bracketed);
       for(const text of ['WI01128808','0011222333','hello\r\nworld\nnext','a\u00a0b','Ω😀']){
         await page.evaluate(async text=>{sent.length=0;await navigator.clipboard.writeText(text);},text);
-        await page.keyboard.press('Control+V');
+        await page.keyboard.press(pasteShortcut);
         const normalized=text.replace(/\r?\n/g,'\r');
         assert.deepEqual(await page.evaluate(()=>[...sent]),[bracketed?'\x1b[200~'+normalized+'\x1b[201~':normalized],'paste uses one xterm input without dropping repeated characters or formatting');
         assert.deepEqual(await page.evaluate(()=>{const input=window.__zjSoftKbdCapture.element;return [input.value,input.selectionStart];}),['\u00a0'.repeat(8),4],'paste leaves the capture ready for further typing and deletion');
@@ -166,7 +169,7 @@ for(const variant of Object.keys(handlerSources))for(const bridge of [false,true
     await page.keyboard.type('0011222333');
     assert.equal(await page.evaluate(()=>sent.join('')),'0011222333','rapid physical typing also preserves repeated characters across input events');
     await page.evaluate(async()=>{sent.length=0;term.options.disableStdin=true;await navigator.clipboard.writeText('disabled paste');});
-    await page.keyboard.press('Control+V');
+    await page.keyboard.press(pasteShortcut);
     assert.deepEqual(await page.evaluate(()=>[...sent]),[],'input suspension also blocks a paste into the touchscreen input');
     await page.keyboard.insertText('disabled text');
     assert.deepEqual(await page.evaluate(()=>[...sent]),[],'input suspension also blocks ordinary touchscreen text');

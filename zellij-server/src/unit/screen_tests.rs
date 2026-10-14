@@ -3080,9 +3080,28 @@ pub fn send_cli_scroll_up_action() {
     std::thread::sleep(std::time::Duration::from_millis(100));
     // we send two actions here because only the last line in the pane is empty, so one action
     // won't show in a render
-    send_cli_action_to_server(&session_metadata, cli_action.clone(), client_id);
-    send_cli_action_to_server(&session_metadata, cli_action.clone(), client_id);
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    for scroll_offset in 1..=2 {
+        send_cli_action_to_server(&session_metadata, cli_action.clone(), client_id);
+        // Wait for this frame before the next action; otherwise the renderer can
+        // coalesce both actions and legitimately omit the intermediate snapshot.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
+                received_server_instructions.lock().unwrap().iter(),
+                size,
+            );
+            if snapshots.last().is_some_and(|(_, snapshot)| {
+                snapshot.contains(&format!("SCROLL:  {}/13", scroll_offset))
+            }) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "scroll frame was not rendered"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
     mock_screen.teardown(vec![server_instruction, screen_thread]);
     let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
         received_server_instructions.lock().unwrap().iter(),
