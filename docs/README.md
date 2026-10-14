@@ -1,6 +1,6 @@
 # Switchboard docs
 
-Start with [setup and usage](../tools/switchboard/README.md) and the
+Start with the [setup guide](../tools/switchboard/README.md) and the
 [acceptance criteria](../acceptance/switchboard/README.md).
 
 Local `cargo build --release` and `cargo install --path .` use ThinLTO.
@@ -14,6 +14,7 @@ Use `cargo build --release --timings` to write a build report to
 | [Architecture](ARCHITECTURE.md) | Native session workers, tabs, panes, Grid, browser sizing, web daemon, Rust relay and desktop helpers. |
 | [Terminology](TERMINOLOGY.md) | Sessions, clients, PTYs, Windows ConPTY, ANSI/VT sequences and viewport ownership. |
 | [Error handling](ERROR_HANDLING.md) | Current Rust error APIs, recovery boundaries and isolation of relay failures from healthy sessions. |
+| [Switchboard internals](SWITCHBOARD_INTERNALS.md) | For maintainers: how the relay, sidebar, shortcuts, attention detection and diagnostics work. |
 | [How updates work](SWITCHBOARD_UPDATES.md) | For maintainers: how automatic updates keep terminals running, manual updates and recovery. |
 | [Windows test plan](SWITCHBOARD_WINDOWS_TEST_PLAN.md) | Platform acceptance checklist and known gaps. Record actual Windows results before calling the platform verified. |
 
