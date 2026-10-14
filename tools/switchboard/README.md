@@ -161,7 +161,8 @@ when you select a tab. Width and desktop collapse state persist in this browser.
 Drag tabs across machines to rearrange them, or use **Alt+Shift+H / Alt+Shift+L** to move the
 selected tab left/right. The order is saved in this browser, including across
 work/home filters. Attention changes never reorder tabs. The URL follows the selected machine, session,
-and native tab ID; refreshing reconnects to that terminal. Opening a link to an
+and native tab ID, plus `group=home` or `group=work` for the selected group.
+Choosing All removes the group parameter. Refreshing restores the group and reconnects to that terminal. Opening a link to an
 archived tab restores it in this browser.
 Tab labels and the browser window title follow live Codex/Claude pane titles,
 including `/rename` updates. Agent spinner prefixes are stripped from labels.
