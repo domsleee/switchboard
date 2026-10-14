@@ -1,0 +1,39 @@
+# How Switchboard reads a Codex pane: working, ready, approval or input.
+#
+# When Codex changes its screen and a tab shows the wrong state:
+# 1. Capture the pane: `zellij action dump-screen -p <pane id>` (the id is in
+#    `zellij action list-clients`).
+# 2. Add or change a pattern below. Patterns are regexes matched against the
+#    lowercased screen, so write them in lowercase. Note the Codex version.
+# 3. Add a test in attention.rs that classifies the captured screen.
+#
+# Lists match when any pattern matches. A list of lists matches when every
+# pattern in one inner list matches.
+version = "2026-10-14"
+
+# Which panes are Codex: the running command, its title, or its model footer on screen.
+command = ['\bcodex(?:\.(?:cmd|exe))?\b']
+title = ['^codex\s*[-:]']
+screen = [['gpt-[\w.-]+', 'for shortcuts|enter to send|tab to queue message']]
+
+# Under the idle prompt (›). Without it the screen is a dialog or unknown.
+footer = ['for shortcuts|enter to send|tab to queue message']
+
+# A finished turn, e.g. "Worked for 3m 51s • 8:06 PM". A new one is a new result.
+# Codex briefly looks ready mid-task, so only this line ends a Codex turn.
+completion = ['worked for\s+(?:\d+\s*[hms]\s*)+(?:[•·]\s*(?:done\s+)?\d{1,2}:\d{2}\s*(?:am|pm)?)?']
+
+# Dialogs, checked in the last part of the screen when the prompt is not idle.
+approval = [[
+  'esc(?:ape)? to cancel|enter to (?:submit|select|confirm)|press enter to confirm',
+  '(?:^|\s)[12][.)]\s+(?:yes|no|allow|approve|deny)',
+]]
+input = [['esc(?:ape)? to cancel|enter to (?:submit|select|confirm)|press enter to confirm', '[❯›]\s*\d+[.)]']]
+
+[working]
+# Braille spinner at the start of the terminal title.
+title = ['^[\x{2801}-\x{28ff}]']
+# Above the prompt, newer than the last finished turn: "• Working (3m 26s • esc to interrupt)".
+above_prompt = ['(?:^|\n|[•✻✽✶✳])[^\n]{0,70}\([^\n]{0,160}esc(?:ape)? to interrupt[^\n]{0,60}\)']
+# Below the prompt while a turn runs: "tab to queue message".
+below_prompt = ['tab to queue message']

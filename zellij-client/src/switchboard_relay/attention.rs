@@ -9,48 +9,94 @@ fn tail(text: &str, count: usize) -> &str {
         .map_or(text, |(index, _)| &text[index..])
 }
 
+/// Screen markers for one coding agent, read from `agents/<name>.toml`.
+#[derive(Deserialize)]
+struct Agent {
+    #[serde(skip)]
+    name: &'static str,
+    #[serde(deserialize_with = "patterns")]
+    command: Vec<regex::Regex>,
+    #[serde(default, deserialize_with = "patterns")]
+    title: Vec<regex::Regex>,
+    #[serde(deserialize_with = "groups")]
+    screen: Vec<Vec<regex::Regex>>,
+    #[serde(deserialize_with = "patterns")]
+    footer: Vec<regex::Regex>,
+    #[serde(deserialize_with = "patterns")]
+    completion: Vec<regex::Regex>,
+    working: Working,
+    #[serde(deserialize_with = "groups")]
+    approval: Vec<Vec<regex::Regex>>,
+    #[serde(deserialize_with = "groups")]
+    input: Vec<Vec<regex::Regex>>,
+}
+
+#[derive(Deserialize)]
+struct Working {
+    #[serde(deserialize_with = "patterns")]
+    title: Vec<regex::Regex>,
+    #[serde(deserialize_with = "patterns")]
+    above_prompt: Vec<regex::Regex>,
+    #[serde(deserialize_with = "patterns")]
+    below_prompt: Vec<regex::Regex>,
+}
+
+fn patterns<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<regex::Regex>, D::Error> {
+    Vec::<String>::deserialize(d)?
+        .iter()
+        .map(|p| regex::Regex::new(p).map_err(serde::de::Error::custom))
+        .collect()
+}
+
+fn groups<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Vec<regex::Regex>>, D::Error> {
+    Vec::<Vec<String>>::deserialize(d)?
+        .iter()
+        .map(|group| {
+            group
+                .iter()
+                .map(|p| regex::Regex::new(p).map_err(serde::de::Error::custom))
+                .collect()
+        })
+        .collect()
+}
+
+/// Checked in order: the first agent a pane matches decides its rules.
+static AGENTS: LazyLock<Vec<Agent>> = LazyLock::new(|| {
+    [
+        ("codex", include_str!("agents/codex.toml")),
+        ("claude", include_str!("agents/claude.toml")),
+    ]
+    .into_iter()
+    .map(|(name, source)| Agent {
+        name,
+        ..toml::from_str(source).unwrap_or_else(|e| panic!("agents/{name}.toml: {e}"))
+    })
+    .collect()
+});
+
+fn any(patterns: &[regex::Regex], text: &str) -> bool {
+    patterns.iter().any(|p| p.is_match(text))
+}
+
+fn all_of_one(groups: &[Vec<regex::Regex>], text: &str) -> bool {
+    groups
+        .iter()
+        .any(|group| group.iter().all(|p| p.is_match(text)))
+}
+
+/// The match that starts last among all patterns.
+fn newest<'t>(patterns: &[regex::Regex], text: &'t str) -> Option<regex::Match<'t>> {
+    patterns
+        .iter()
+        .filter_map(|p| p.find_iter(text).last())
+        .max_by_key(|m| m.start())
+}
+
 pub(super) fn classify(pane: &Value, screen: &str) -> Value {
-    static CODEX: LazyLock<regex::Regex> =
-        LazyLock::new(|| regex::Regex::new(r"\bcodex(?:\.(?:cmd|exe))?\b").unwrap());
-    static CODEX_TITLE: LazyLock<regex::Regex> =
-        LazyLock::new(|| regex::Regex::new(r"^codex\s*[-:]").unwrap());
-    static GPT: LazyLock<regex::Regex> =
-        LazyLock::new(|| regex::Regex::new(r"gpt-[\w.-]+").unwrap());
-    static CODEX_FOOTER: LazyLock<regex::Regex> = LazyLock::new(|| {
-        regex::Regex::new(r"for shortcuts|enter to send|tab to queue message").unwrap()
-    });
-    static CLAUDE: LazyLock<regex::Regex> =
-        LazyLock::new(|| regex::Regex::new(r"\bclaude(?:\.exe)?\b").unwrap());
-    static CLAUDE_FOOTER: LazyLock<regex::Regex> = LazyLock::new(|| {
-        regex::Regex::new(r"(?:bypass permissions|accept edits) on|shift\+tab to cycle").unwrap()
-    });
     static PROMPT: LazyLock<regex::Regex> =
         LazyLock::new(|| regex::Regex::new(r"[›❯](?:[ \t\u{a0}]|\r?\n|$)").unwrap());
-    static COMPLETION: LazyLock<regex::Regex> = LazyLock::new(|| {
-        regex::Regex::new(r"(?:worked for|[✻✽✶✳] [a-z]+ for)\s+(?:\d+\s*[hms]\s*)+(?:[•·]\s*(?:done\s+)?\d{1,2}:\d{2}\s*(?:am|pm)?)?").unwrap()
-    });
     static NUMBER: LazyLock<regex::Regex> =
         LazyLock::new(|| regex::Regex::new(r"^\s*\d+[.)]").unwrap());
-    static CONTROLS: LazyLock<regex::Regex> = LazyLock::new(|| {
-        regex::Regex::new(
-            r"esc(?:ape)? to cancel|enter to (?:submit|select|confirm)|press enter to confirm",
-        )
-        .unwrap()
-    });
-    static OPTIONS: LazyLock<regex::Regex> = LazyLock::new(|| {
-        regex::Regex::new(r"(?:^|\s)[12][.)]\s+(?:yes|no|allow|approve|deny)").unwrap()
-    });
-    static QUESTION: LazyLock<regex::Regex> =
-        LazyLock::new(|| regex::Regex::new(r"[❯›]\s*\d+[.)]").unwrap());
-    // Claude Code no longer prints "esc to interrupt"; its spinner line is
-    // "· Perambulating… (23s · ↓ 1.4k tokens)", or just "· Perambulating…" at
-    // first. Its finished line has no "…". Waiting on background agents is work.
-    static BUSY: LazyLock<regex::Regex> = LazyLock::new(|| {
-        regex::Regex::new(
-            r"(?:^|\n|[•✻✽✶✳])[^\n]{0,70}\([^\n]{0,160}esc(?:ape)? to interrupt[^\n]{0,60}\)|(?:^|\n)[ \t]*[·✢✳✶✻✽*][ \t]+(?:[^\n(]{1,60}…[ \t]*(?:\(\d+[hms]|\n)|waiting for [1-9]\d* background agents? to finish)",
-        )
-        .unwrap()
-    });
     static SPACE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\s+").unwrap());
     let original = tail(screen, 8000);
     let text = original.to_ascii_lowercase();
@@ -61,46 +107,28 @@ pub(super) fn classify(pane: &Value, screen: &str) -> Value {
         .to_ascii_lowercase();
     let title = pane["title"].as_str().unwrap_or("").to_ascii_lowercase();
     // ponytail: agent UI markers, replace with public status events if the CLIs expose them.
-    let codex = CODEX.is_match(&command)
-        || CODEX_TITLE.is_match(&title)
-        || GPT.is_match(text) && CODEX_FOOTER.is_match(text);
-    let claude = CLAUDE.is_match(&command) || CLAUDE_FOOTER.is_match(text);
-    if !codex && !claude {
+    let Some(rules) = AGENTS.iter().find(|a| {
+        any(&a.command, &command) || any(&a.title, &title) || all_of_one(&a.screen, text)
+    }) else {
         return json!({"state":"unknown"});
-    }
-    let agent = if codex { "codex" } else { "claude" };
+    };
+    let agent = rules.name;
     let prompt = PROMPT.find_iter(text).last();
     let (before, after) = prompt.map_or((text, ""), |p| (&text[..p.start()], &text[p.end()..]));
-    let completion = COMPLETION.find_iter(before).last();
-    let footer = if codex {
-        CODEX_FOOTER.is_match(after)
-    } else {
-        CLAUDE_FOOTER.is_match(after) || after.contains("for shortcuts")
-    };
-    let normal = prompt.is_some() && footer && !NUMBER.is_match(after);
+    let completion = newest(&rules.completion, before);
+    let normal = prompt.is_some() && any(&rules.footer, after) && !NUMBER.is_match(after);
     if !normal {
         let chooser = tail(text, 1800);
-        if CONTROLS.is_match(chooser) && OPTIONS.is_match(chooser) {
+        if all_of_one(&rules.approval, chooser) {
             return json!({"state":"approval","agent":agent,"token":"approval"});
         }
-        if CONTROLS.is_match(chooser) && QUESTION.is_match(chooser) {
+        if all_of_one(&rules.input, chooser) {
             return json!({"state":"input","agent":agent,"token":"question"});
         }
     }
-    let busy = BUSY.find_iter(before).last();
-    // Claude lists running background agents under its prompt with a hollow
-    // circle and a live timer: "◯ fork  Reading files   4m 19s · ↓ 461k tokens".
-    // Its turn has ended, but the work has not.
-    static BACKGROUND: LazyLock<regex::Regex> =
-        LazyLock::new(|| regex::Regex::new(r"(?m)^[ \t]*◯[ \t]+\S[^\n]*\b\d+[hms]\b").unwrap());
-    let background = claude && BACKGROUND.is_match(after);
-    // Braille spinner in the title; Claude Code 2.1.228+ uses half circles.
-    let spinner = title.chars().next().is_some_and(|c| {
-        ('\u{2801}'..='\u{28ff}').contains(&c) || ('\u{25d0}'..='\u{25d3}').contains(&c)
-    });
-    if spinner
-        || background
-        || after.to_lowercase().contains("tab to queue message")
+    let busy = newest(&rules.working.above_prompt, before);
+    if any(&rules.working.title, &title)
+        || any(&rules.working.below_prompt, after)
         || busy.is_some_and(|b| completion.is_none_or(|c| b.start() > c.start()))
     {
         return json!({"state":"working","agent":agent});
@@ -778,6 +806,17 @@ esac
         assert_eq!(
             classify(&json!({"pane_command":"nu","title":"~"}), "quiet shell")["state"],
             "unknown"
+        );
+        // An MCP server asking for input shows Accept/Decline with only an Esc footer.
+        let elicitation = "⏺ I'll ask the server.\n────────\n MCP server \"github\" requests your input\n\n Allow access to domsleee/switchboard?\n\n ❯ Accept\n   Decline\n\n Esc to cancel";
+        assert_eq!(classify(&claude, elicitation)["state"], "input");
+    }
+
+    #[test]
+    fn agent_rule_files_parse() {
+        assert_eq!(
+            AGENTS.iter().map(|a| a.name).collect::<Vec<_>>(),
+            ["codex", "claude"]
         );
     }
 

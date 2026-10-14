@@ -1,0 +1,50 @@
+# How Switchboard reads a Claude Code pane: working, ready, approval or input.
+#
+# When Claude Code changes its screen and a tab shows the wrong state:
+# 1. Capture the pane: `zellij action dump-screen -p <pane id>` (the id is in
+#    `zellij action list-clients`).
+# 2. Add or change a pattern below. Patterns are regexes matched against the
+#    lowercased screen, so write them in lowercase. Note the Claude version.
+# 3. Add a test in attention.rs that classifies the captured screen.
+#
+# Lists match when any pattern matches. A list of lists matches when every
+# pattern in one inner list matches.
+version = "2026-10-14"
+
+# Which panes are Claude: the running command, or its prompt footer on screen.
+command = ['\bclaude(?:\.exe)?\b']
+screen = [['(?:bypass permissions|accept edits) on|shift\+tab to cycle']]
+
+# Under the idle prompt box (❯). Without it the screen is a dialog or unknown.
+footer = ['(?:bypass permissions|accept edits) on|shift\+tab to cycle', 'for shortcuts']
+
+# A finished turn, e.g. "✻ Baked for 4m 5s". A new one is a new result.
+completion = ['(?:worked for|[✻✽✶✳] [a-z]+ for)\s+(?:\d+\s*[hms]\s*)+(?:[•·]\s*(?:done\s+)?\d{1,2}:\d{2}\s*(?:am|pm)?)?']
+
+# Dialogs, checked in the last part of the screen when the prompt box is not idle.
+approval = [[
+  'esc(?:ape)? to cancel|enter to (?:submit|select|confirm)|press enter to confirm',
+  '(?:^|\s)[12][.)]\s+(?:yes|no|allow|approve|deny)',
+]]
+input = [
+  ['esc(?:ape)? to cancel|enter to (?:submit|select|confirm)|press enter to confirm', '[❯›]\s*\d+[.)]'],
+  # MCP elicitation: Accept/Decline with only an "Esc to cancel" footer.
+  ['esc to cancel', '(?m)^\s*mcp server ["“].+["”] requests your input\s*$', '(?m)^\s*❯?\s*(?:accept|decline)\b'],
+]
+
+[working]
+# Spinner at the start of the terminal title: braille up to 2.1.227,
+# half circles from 2.1.228.
+title = ['^[\x{2801}-\x{28ff}\x{25d0}-\x{25d3}]']
+# Above the prompt, newer than the last finished turn.
+above_prompt = [
+  # Before 2.1: "✻ Thinking… (12s · esc to interrupt)".
+  '(?:^|\n|[•✻✽✶✳])[^\n]{0,70}\([^\n]{0,160}esc(?:ape)? to interrupt[^\n]{0,60}\)',
+  # 2.1+: "· Perambulating… (23s · ↓ 1.4k tokens)", or "· Perambulating…" before
+  # the timer starts. Its finished line has no "…".
+  '(?:^|\n)[ \t]*[·✢✳✶✻✽*][ \t]+[^\n(]{1,60}…[ \t]*(?:\(\d+[hms]|\n)',
+  '(?:^|\n)[ \t]*[·✢✳✶✻✽*][ \t]+waiting for [1-9]\d* background agents? to finish',
+]
+# Below the prompt: a running background agent row with a live timer,
+# "◯ fork  Reading files   4m 19s · ↓ 461k tokens". The turn ended; the work has not.
+below_prompt = ['(?m)^[ \t]*◯[ \t]+\S[^\n]*\b\d+[hms]\b']
