@@ -154,7 +154,7 @@ returns after scrolling up. Background windows never reclaim the size from metad
 Ownership transfers on focus and releases when the owner leaves the tab or disconnects.
 Smaller plain terminals and older browsers still constrain the layout because they cannot pan.
 Existing sessions need the updated native server; updating the web server alone does not update a running session.
-See the [update plan](../../docs/SWITCHBOARD_UPDATES.md) for preserving running processes during future automatic updates.
+See [updating Switchboard](../../docs/SWITCHBOARD_UPDATES.md) for how updates preserve running processes.
 
 Machine names stay beneath each tab, and work/home remain optional filters. Search names and
 machines with **Cmd/Ctrl+K**, including from inside the terminal; Enter opens the

@@ -22,7 +22,7 @@ These are separate processes even though they use the same executable:
 
 Disconnecting a viewer leaves its session running. Replacing the executable
 affects new processes; existing sessions keep their running engine. See the
-[update plan](SWITCHBOARD_UPDATES.md) for service and engine update boundaries.
+[update guide](SWITCHBOARD_UPDATES.md) for service and engine update boundaries.
 
 ## Native session workers
 
