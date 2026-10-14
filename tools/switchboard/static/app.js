@@ -888,12 +888,21 @@ async function loadLogs(){
     const {computers=[]}=await response.json();
     list.replaceChildren(...computers.map(computer=>{
       const group=element('section','log-computer','');group.append(element('h4','',computer.name));
+      const entries=computer.error?[]:computer.entries||[];
+      // Timing samples outnumber failures; list failures and fold the samples away.
+      const timing=entry=>/^(Terminal (transport|switch|viewport|control|scrolling)|Browser Shift\+Enter) /.test(entry.message);
+      const errors=entries.filter(entry=>!timing(entry)),samples=entries.filter(timing);
       if(computer.error)group.append(element('p','log-note',computer.error));
-      else if(!computer.entries?.length)group.append(element('p','log-note','No recent errors'));
-      for(const entry of computer.error?[]:computer.entries||[]){
+      else if(!errors.length)group.append(element('p','log-note','No recent errors'));
+      const row=entry=>{
         const row=element('div','log-entry',''),when=new Date(entry.time);
         const meta=element('small','',[entry.source,when.toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}),entry.count>1?`×${entry.count}`:''].filter(Boolean).join(' · '));
-        meta.title=humanTime(when);row.append(element('span','',entry.message),meta);group.append(row);
+        meta.title=humanTime(when);row.append(element('span','',entry.message),meta);return row;
+      };
+      group.append(...errors.map(row));
+      if(samples.length){
+        const details=element('details','log-timing',''),summary=element('summary','',`${samples.length} performance ${samples.length===1?'sample':'samples'}`);
+        details.append(summary,...samples.map(row));group.append(details);
       }
       return group;
     }));
