@@ -720,8 +720,8 @@ function installSoftKeyboardCapture(term, sendFunction) {
         "overflow:hidden;";
     captureHost.setAttribute("aria-hidden", "true");
     document.body.appendChild(captureHost);
-    // Closed shadow root hides the input from password managers, whose content
-    // scripts query input[type=password] and cannot pierce it.
+    // Closed shadow root hides the input from page scripts. Extensions can still
+    // pierce it (Bitwarden uses chrome.dom.openOrClosedShadowRoot).
     const captureShadow = captureHost.attachShadow({ mode: "closed" });
 
     const div = document.createElement("input");
@@ -729,7 +729,9 @@ function installSoftKeyboardCapture(term, sendFunction) {
     // type="password" disables prediction/autocorrect/composition on every mobile
     // keyboard vendor, turning each tap into one immediate character.
     div.type = "password";
-    div.setAttribute("autocomplete", "new-password");
+    // Bitwarden skips one-time-code fields. "new-password" made it
+    // offer to generate a password, and it honors data-bwignore only when opted in.
+    div.setAttribute("autocomplete", "one-time-code");
     div.setAttribute("autocorrect", "off");
     div.setAttribute("autocapitalize", "off");
     div.setAttribute("spellcheck", "false");
