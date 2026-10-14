@@ -1215,6 +1215,8 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
     }
     let pairing = mesh::discovery::start(state.clone());
     let artifact = artifacts::start(config.artifact_proxy).await?;
+    let failures_file = config_path.with_extension("logs.json");
+    let failures = logs::start(failures_file.clone()).await;
     let polling =
         attention::start(state.clone(), config_path.with_extension("attention.json")).await;
     // Keystrokes and echoes are tiny writes; Nagle plus delayed ACK can hold each one back.
@@ -1225,6 +1227,8 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
         .with_graceful_shutdown(shutdown())
         .await;
     pairing.abort();
+    failures.abort();
+    logs::save(&failures_file).await;
     for task in polling {
         task.abort();
         let _ = task.await;
