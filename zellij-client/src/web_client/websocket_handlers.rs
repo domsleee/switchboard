@@ -333,10 +333,6 @@ async fn handle_ws_terminal(
                 break;
             },
             Message::Ping(_) | Message::Pong(_) => {},
-            // TODO: support Message::Binary
-            _ => {
-                log::error!("Unsupported websocket msg type");
-            },
         }
     }
     state

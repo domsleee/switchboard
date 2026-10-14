@@ -167,7 +167,7 @@ probe "$new_release" --version
 if [[ $binary_only != 1 ]]; then
     # Restart only the job that runs this executable's relay; otherwise change nothing.
     launchctl print "$job" > "$work/job" 2>&1 || {
-        echo "Service job $job is not loaded; install it (install_service.py) or use --binary-only." >&2; exit 1;
+        echo "Service job $job is not loaded; install it (zellij switchboard install) or use --binary-only." >&2; exit 1;
     }
     grep -qF -- "$installed serve " "$work/job" || {
         echo "Service job $job does not run $installed serve; use --binary-only." >&2; exit 1;

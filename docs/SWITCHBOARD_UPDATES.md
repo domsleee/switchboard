@@ -79,8 +79,8 @@ before checking for builds:
 
 The retired `auto_update.py` is now a shim that forwards to
 `zellij switchboard update`, so computers still scheduling the Python updater
-migrate through one normal update. Reinstall (`install_service.py` or
-`install_windows_web.ps1`) to schedule the executable directly.
+migrate through one normal update. Reinstall
+(`zellij switchboard install`) to schedule the executable directly.
 
 Settings, host credentials and attention data are not bundled or replaced. A
 published build updates each online, configured machine on its own schedule, not
