@@ -339,7 +339,10 @@
   let hookedTerm;
   const style = document.createElement('style');
   style.textContent = `
-    #switchboard-viewport { position:fixed;inset:0;overflow:auto;scrollbar-width:thin;overscroll-behavior:contain; }
+    #switchboard-viewport { position:fixed;inset:0;overflow:auto;overscroll-behavior:contain; }
+    /* Keep scrolling without Windows' persistent scrollbar tracks. */
+    #switchboard-viewport, .xterm .xterm-viewport { scrollbar-width:none; }
+    #switchboard-viewport::-webkit-scrollbar, .xterm .xterm-viewport::-webkit-scrollbar { display:none; }
     body.zj-mobile-active #switchboard-viewport { top:var(--zj-chrome-top,0px);bottom:var(--zj-chrome-bottom,0px); }
     body.switchboard-owned-viewport #terminal { height:auto;overflow:hidden; }
     #switchboard-bottom { position:fixed;right:16px;bottom:16px;z-index:10000;padding:6px 10px;border:1px solid #555;border-radius:6px;background:#252525;color:white; }
