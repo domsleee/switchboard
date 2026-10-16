@@ -166,7 +166,7 @@ work/home filters. Attention changes never reorder tabs. The URL follows the sel
 and native tab ID, plus `group=home` or `group=work` for the selected group.
 Choosing All removes the group parameter. Refreshing restores the group and reconnects to that terminal. Opening a link to an
 archived tab restores it in this browser.
-Tab labels and the browser window title follow live Codex/Claude pane titles,
+Tab labels and the browser window title follow live Codex/Claude/Copilot pane titles,
 including `/rename` updates. Agent spinner prefixes are stripped from labels.
 Plain **Ctrl+T** is disabled inside the terminal so it cannot open Zellij's tab menu.
 Use **+ New tab** or **Ctrl+Alt+T** (Windows) / **Cmd+Alt+T** (Mac) to open a shell in a chosen machine/session. The new tab is
@@ -190,7 +190,7 @@ Smaller plain terminals and older browsers still constrain the layout because th
 
 ## Attention detection
 
-The relay automatically checks Codex/Claude panes on each host, including
+The relay automatically checks Codex/Claude/Copilot panes on each host, including
 background tabs, using native `list-panes` and `dump-screen`. It recognizes live
 input and approval prompts and running status. Ready results get an attention badge until you view the tab; pending
 approvals/questions retain their badge until resolved. A new observed working-to-ready transition raises a new notification. Notification
@@ -201,6 +201,12 @@ Archive preserves processes and does not erase attention state.
 Claude tabs stay working while the live prompt footer lists background shells,
 even after Claude finishes its reply. Old task messages in the transcript do not
 keep a tab working after that footer clears.
+
+Copilot tabs stay working while the footer beneath the current boxed input shows
+`esc interrupt`. Its normal `/ commands · ? help` footer marks the tab ready.
+Old interrupt hints in the transcript do not keep a tab working. Copilot has no
+completion line, so a finish must be observed to raise a new notification.
+Unrecognized Copilot dialogs report unknown.
 
 This works with already-running agents, without notification hooks or replacing
 Zellij. Detection follows terminal UI markers; unrecognized screens report

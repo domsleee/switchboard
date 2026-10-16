@@ -20,6 +20,8 @@ struct Agent {
     title: Vec<regex::Regex>,
     #[serde(deserialize_with = "groups")]
     screen: Vec<Vec<regex::Regex>>,
+    #[serde(default, deserialize_with = "patterns")]
+    prompt: Vec<regex::Regex>,
     #[serde(deserialize_with = "patterns")]
     footer: Vec<regex::Regex>,
     #[serde(deserialize_with = "patterns")]
@@ -60,9 +62,10 @@ fn groups<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Vec<regex::Regex
         .collect()
 }
 
-/// Checked in order: the first agent a pane matches decides its rules.
+/// Command/title identity wins over screen markers, which can appear in transcripts.
 static AGENTS: LazyLock<Vec<Agent>> = LazyLock::new(|| {
     [
+        ("copilot", include_str!("agents/copilot.toml")),
         ("codex", include_str!("agents/codex.toml")),
         ("claude", include_str!("agents/claude.toml")),
     ]
@@ -107,13 +110,19 @@ pub(super) fn classify(pane: &Value, screen: &str) -> Value {
         .to_ascii_lowercase();
     let title = pane["title"].as_str().unwrap_or("").to_ascii_lowercase();
     // ponytail: agent UI markers, replace with public status events if the CLIs expose them.
-    let Some(rules) = AGENTS.iter().find(|a| {
-        any(&a.command, &command) || any(&a.title, &title) || all_of_one(&a.screen, text)
-    }) else {
+    let Some(rules) = AGENTS
+        .iter()
+        .find(|a| any(&a.command, &command) || any(&a.title, &title))
+        .or_else(|| AGENTS.iter().find(|a| all_of_one(&a.screen, text)))
+    else {
         return json!({"state":"unknown"});
     };
     let agent = rules.name;
-    let prompt = PROMPT.find_iter(text).last();
+    let prompt = if rules.prompt.is_empty() {
+        PROMPT.find_iter(text).last()
+    } else {
+        newest(&rules.prompt, text)
+    };
     let (before, after) = prompt.map_or((text, ""), |p| (&text[..p.start()], &text[p.end()..]));
     let completion = newest(&rules.completion, before);
     let normal = prompt.is_some() && any(&rules.footer, after) && !NUMBER.is_match(after);
@@ -867,10 +876,121 @@ esac
     }
 
     #[test]
+    fn copilot_uses_the_live_boxed_prompt_not_old_transcript_markers() {
+        let pane = json!({
+            "pane_command":r"cmd.exe /c C:\Users\user\AppData\Roaming\npm\copilot.cmd --yolo",
+            "title":"Diagnose Switchboard 8585 Status - GitHub Copilot"
+        });
+        // Copilot CLI 1.0.98, captured from the working Diagnose Switchboard pane.
+        let working = "❯ Diagnose Switchboard\n\
+            ● Reading the pane\n\
+             C:\\src [⎇ main]                    Session: 195.63 AIC used\n\
+            ╻▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n\
+            ┃\n\
+            ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+             ○ Publishing paste-focus PR · 32.8 KiB esc interrupt       GPT-6.1 Sol";
+        let footer = "v1.0.98 downloaded · next launch or /restart · ← open sidebar · Interactive · Allow All · / commands · ? help · tab next tab       GPT-6.1 Sol";
+        let ready = working.replace(
+            "○ Publishing paste-focus PR · 32.8 KiB esc interrupt       GPT-6.1 Sol",
+            footer,
+        );
+        assert_eq!(
+            classify(&pane, working),
+            json!({"state":"working","agent":"copilot"})
+        );
+        assert_eq!(
+            classify(&pane, &ready),
+            json!({"state":"ready","agent":"copilot","token":"idle"})
+        );
+        // A fresh or resumed pane need not have a previous user-message chevron.
+        let fresh = &working[working.find('╻').unwrap()..];
+        assert_eq!(classify(&pane, fresh)["state"], "working");
+        assert_eq!(
+            classify(&pane, &working.replace('\n', "\r\n"))["state"],
+            "working"
+        );
+        for spinner in ["●", "◉", "◎"] {
+            assert_eq!(
+                classify(&pane, &working.replace('○', spinner))["state"],
+                "working",
+                "{spinner}"
+            );
+        }
+        assert_eq!(
+            classify(&pane, &format!("{working}\n{ready}"))["state"],
+            "ready",
+            "an old interrupt hint in the transcript is not live"
+        );
+        let typed = ready.replace("┃\n", "┃ explain esc interrupt\n");
+        assert_eq!(classify(&pane, &typed)["state"], "ready");
+        let dialog = working.replace(
+            "○ Publishing paste-focus PR · 32.8 KiB esc interrupt       GPT-6.1 Sol",
+            "Choose an option\nEsc to cancel",
+        );
+        assert_eq!(
+            classify(&pane, &dialog)["state"],
+            "unknown",
+            "an unrecognized dialog must not look ready"
+        );
+        let shell = json!({"pane_command":"pwsh","title":"C:\\src"});
+        for screen in [working, &ready] {
+            assert_eq!(classify(&shell, screen)["agent"], "copilot");
+        }
+        let title_only = json!({"pane_command":"node","title":"Diagnose - GitHub Copilot"});
+        assert_eq!(classify(&title_only, working)["agent"], "copilot");
+        assert_eq!(
+            classify(&pane, &format!("GPT-6 for shortcuts\n{working}"))["agent"],
+            "copilot",
+            "Copilot identity takes precedence over old Codex text"
+        );
+        for agent in ["codex", "claude"] {
+            let other = json!({"pane_command":agent,"title":"Task"});
+            assert_eq!(
+                classify(&other, working)["agent"],
+                agent,
+                "Copilot text in another agent's transcript must not change its identity"
+            );
+        }
+    }
+
+    #[test]
+    fn copilot_working_to_ready_notifies_once_without_a_completion_line() {
+        let pane = json!({"pane_command":"copilot","title":"Task - GitHub Copilot"});
+        let ready = "╻▄▄▄▄▄▄▄▄\n┃\n╹▀▀▀▀▀▀▀▀\nInteractive · Allow All · / commands · ? help";
+        let working = ready.replace(
+            "Interactive · Allow All · / commands · ? help",
+            "◉ Working · 14.8 KiB esc interrupt       GPT-6.1 Sol",
+        );
+        let snapshot = |screen: &str| {
+            let mut row = classify(&pane, screen);
+            row["session"] = json!("main");
+            row["pane_id"] = json!(23);
+            json!({"panes":[row],"tabs":[],"errors":[]})
+        };
+        let mut poll = PollState::default();
+        let mut first = snapshot(ready);
+        poll.update("windows", &mut first);
+        assert_eq!(first["panes"][0]["seen"], true);
+        for generation in 1..=2 {
+            poll.update("windows", &mut snapshot(&working));
+            let token = format!("idle:{generation}");
+            let mut finished = snapshot(ready);
+            poll.update("windows", &mut finished);
+            assert_eq!(finished["panes"][0]["token"], token);
+            assert_eq!(finished["panes"][0]["seen"], false);
+            poll.acknowledge("windows", "main", 23, &token);
+            let mut unchanged = snapshot(ready);
+            poll.update("windows", &mut unchanged);
+            assert_eq!(unchanged["panes"][0]["token"], token);
+            assert_eq!(unchanged["panes"][0]["seen"], true);
+        }
+    }
+
+    #[test]
     fn agent_rule_files_parse() {
         assert_eq!(
             AGENTS.iter().map(|a| a.name).collect::<Vec<_>>(),
-            ["codex", "claude"]
+            ["copilot", "codex", "claude"]
         );
     }
 
