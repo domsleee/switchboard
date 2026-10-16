@@ -198,6 +198,10 @@ identities are saved beside the relay configuration as `.attention.json`, so a
 relay restart preserves viewed results.
 Archive preserves processes and does not erase attention state.
 
+Claude tabs stay working while the live prompt footer lists background shells,
+even after Claude finishes its reply. Old task messages in the transcript do not
+keep a tab working after that footer clears.
+
 This works with already-running agents, without notification hooks or replacing
 Zellij. Detection follows terminal UI markers; unrecognized screens report
 unknown, and disconnected hosts lose stale ready status. Very short turns between
