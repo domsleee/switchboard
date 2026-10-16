@@ -1,0 +1,24 @@
+# Copilot CLI 1.0.98. Match the live boxed input, not chevrons in the transcript.
+# Patterns match the lowercased screen, as in the other agent rule files.
+version = "2026-10-16"
+
+command = ['\bcopilot(?:\.(?:cmd|exe))?\b']
+title = [' - github copilot$']
+screen = [[
+  '(?m)^[ \t]*╹▀+[ \t]*\r?$',
+  '\besc interrupt\b|/ commands[ \t]*·[ \t]*\? help\b',
+]]
+
+prompt = ['(?m)^[ \t]*╹▀+[ \t]*\r?$']
+footer = ['/ commands[ \t]*·[ \t]*\? help\b']
+
+# Copilot has no timed completion line. Observed working-to-ready transitions
+# create review notifications instead.
+completion = []
+approval = []
+input = []
+
+[working]
+title = []
+above_prompt = []
+below_prompt = ['(?m)^[^\n]*\besc interrupt\b']
