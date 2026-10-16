@@ -204,6 +204,15 @@ export function installSoftKeyboardCapture(term, sendFunction) {
     });
 
     div.addEventListener("keydown", (ev) => {
+        if ((ev.code === "KeyC" || ev.key?.toLowerCase() === "c") && ev.ctrlKey &&
+            !ev.altKey && !ev.metaKey && !ev.shiftKey && !ev.isComposing &&
+            !ev.getModifierState?.("AltGraph")) {
+            ev.preventDefault();
+            if (!term.options.disableStdin) state.sendFn("\x03");
+            resetBaseline();
+            lastText = BASELINE;
+            return;
+        }
         // Touchscreen PCs also use this closed-shadow input with physical keys.
         // Letting Chrome delete words in the password field can consume its
         // left padding and leave the caret at zero, where Backspace emits no input.

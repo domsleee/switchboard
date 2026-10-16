@@ -156,9 +156,15 @@
     return Promise.resolve(report({ok: false, source: 'osc52', error: 'No pending clipboard text.'}));
   }
 
+  function isSoftKeyboardTarget(event) {
+    const capture = window.__zjSoftKbdCapture;
+    return !!capture?.isFocused && (event.target === capture.element ||
+      event.target === capture.element?.getRootNode?.().host);
+  }
+
   function isTerminalTarget(event) {
     const term = terminal || window.term;
-    return !!term && (event.target === term.textarea || event.target === term.element ||
+    return !!term && (isSoftKeyboardTarget(event) || event.target === term.textarea || event.target === term.element ||
       (term.element?.contains(event.target) && !event.target.closest?.('input,textarea,[contenteditable="true"]')));
   }
 
@@ -181,7 +187,7 @@
       return;
     }
     event.stopImmediatePropagation();
-    if (commandCopy && !selected) {
+    if (commandCopy && (!selected || isSoftKeyboardTarget(event))) {
       event.preventDefault();
       void copySelection();
       return;

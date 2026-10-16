@@ -88,7 +88,7 @@ test('real bundled xterm sends one word-delete then ordinary Backspace/Delete ac
   }
 });
 
-for(const variant of Object.keys(handlerSources))for(const bridge of [false,true])test(`${variant}, bridge ${bridge}: touchscreen input preserves deletion and clipboard text`,
+for(const variant of Object.keys(handlerSources))for(const bridge of [false,true])test(`${variant}, bridge ${bridge}: touchscreen input preserves interruption, deletion and clipboard text`,
   {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
   const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch({headless:true});
   try{
@@ -113,7 +113,7 @@ for(const variant of Object.keys(handlerSources))for(const bridge of [false,true
       if(path==='/hosts/windows/main')return route.fulfill({contentType:'text/html',body:`<!doctype html>
         <link rel="stylesheet" href="/assets/xterm.css"><div id="terminal"></div><script src="/assets/xterm.js"></script>
         <script>window.sent=[];window.WebSocket=class extends EventTarget{constructor(){super();this.readyState=1;}send(data){sent.push(String(data));}};</script>
-        ${bridge?'<script src="/bridge.js"></script>':''}${bundle}<script type="module">
+        ${bridge?'<script src="/clipboard.js"></script><script src="/bridge.js"></script>':''}${bundle}<script type="module">
           ${variant==='module'?`import {installCustomKeyHandler} from '/assets/key-handler.js';
           import {installImeBypass} from '/assets/ime-bypass.js';
           import {installSoftKeyboardCapture,suppressSoftKeyboardOnTouch} from '/assets/soft-keyboard.js';`:''}
@@ -123,6 +123,7 @@ for(const variant of Object.keys(handlerSources))for(const bridge of [false,true
           installCustomKeyHandler(term,data=>socket.send(data));term.onData(data=>socket.send(data));term.focus();window.ready=true;
         </script>`});
       if(path==='/bridge.js')return route.fulfill({contentType:'text/javascript',body:fs.readFileSync(__dirname+'/static/bridge.js','utf8')});
+      if(path==='/clipboard.js')return route.fulfill({contentType:'text/javascript',body:fs.readFileSync(__dirname+'/static/clipboard.js','utf8')});
       const name=path.split('/').at(-1);
       if(!path.startsWith('/assets/')||!['xterm.js','xterm.css','key-handler.js','keyboard.js','utils.js','ime-bypass.js','soft-keyboard.js'].includes(name))return route.fulfill({status:404,body:''});
       return route.fulfill({contentType:name.endsWith('.css')?'text/css':'text/javascript',body:fs.readFileSync(__dirname+'/../../zellij-client/assets/'+name,'utf8')});
@@ -131,6 +132,20 @@ for(const variant of Object.keys(handlerSources))for(const bridge of [false,true
     await page.locator('#terminal').click({position:{x:20,y:20}});
     assert.equal(await page.evaluate(()=>document.activeElement===window.__zjSoftKbdCapture.element),false,'closed shadow root hides the focused input');
     assert.equal(await page.evaluate(()=>window.__zjSoftKbdCapture.isFocused),true);
+    await page.keyboard.press('Control+c');
+    assert.deepEqual(await page.evaluate(()=>[...sent]),['\x03'],'physical Ctrl+C interrupts through the touchscreen input exactly once');
+    assert.deepEqual(await page.evaluate(()=>{const input=window.__zjSoftKbdCapture.element;return [input.value,input.selectionStart];}),['\u00a0'.repeat(8),4],'interrupt leaves the hidden input ready for normal typing');
+    await page.evaluate(()=>{sent.length=0;});
+    if(bridge){
+      await page.evaluate(()=>new Promise(resolve=>term.write('copy this',resolve)));
+      await page.evaluate(()=>term.select(0,0,9));
+      for(const shortcut of ['Control+c','Control+Shift+c']){
+        await page.keyboard.press(shortcut);
+        assert.deepEqual(await page.evaluate(()=>[...sent]),[],'copying a terminal selection must not interrupt the remote process');
+        assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),'copy this');
+      }
+      await page.evaluate(()=>term.clearSelection());
+    }
     for(const modifier of ['Control','Alt']){
       await page.keyboard.type('hello world',{delay:20});
       assert.equal(await page.evaluate(()=>sent.join('')),'hello world');
@@ -142,8 +157,8 @@ for(const variant of Object.keys(handlerSources))for(const bridge of [false,true
       await page.evaluate(()=>{sent.length=0;});
     }
     await page.evaluate(()=>{term.options.disableStdin=true;});
-    for(const key of ['Control+Backspace','Backspace','Delete'])await page.keyboard.press(key);
-    assert.equal(await page.evaluate(()=>sent.join('')),'','input suspension also applies to touchscreen hardware delete keys');
+    for(const key of ['Control+c','Control+Backspace','Backspace','Delete'])await page.keyboard.press(key);
+    assert.equal(await page.evaluate(()=>sent.join('')),'','input suspension also applies to touchscreen hardware shortcuts');
     await page.evaluate(()=>{
       term.options.disableStdin=false;
       const capture=window.__zjSoftKbdCapture.element;

@@ -108,6 +108,27 @@ test('selected Ctrl+C, Ctrl+Shift+C and app Copy write the viewing clipboard', a
   assert.equal(h.messages.at(-1).message.source, 'selection');
 });
 
+test('closed-shadow touchscreen input preserves interrupt and selection copy shortcuts', async () => {
+  const h = harness();
+  const host = h.document.createElement('div');
+  const capture = h.document.createElement('input');
+  capture.getRootNode = () => ({host});
+  h.window.__zjSoftKbdCapture = {element: capture, isFocused: true};
+  assert.equal(h.event('keydown', {target: host, ctrlKey: true}).stopped, undefined);
+  h.setSelection('touchscreen selection');
+  for (const modifiers of [{ctrlKey: true}, {ctrlKey: true, shiftKey: true}, {metaKey: true}]) {
+    const key = h.event('keydown', {target: host, ...modifiers});
+    assert.equal(key.prevented, true);
+    assert.equal(key.stopped, true);
+    await settle();
+  }
+  assert.deepEqual(h.writes, Array(3).fill('touchscreen selection'));
+  assert.deepEqual(h.inputs, []);
+  h.window.__zjSoftKbdCapture.isFocused = false;
+  assert.equal(h.event('keydown', {target: host, ctrlKey: true}).stopped, undefined);
+  assert.equal(h.event('keydown', {target: capture, ctrlKey: true}).stopped, undefined);
+});
+
 test('a cached drag after selection disappears cannot swallow Ctrl+C interrupt', async () => {
   const h=harness();
   h.event('mousedown',{button:0});h.setSelection('previous output');h.event('mouseup');await settle();
