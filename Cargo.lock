@@ -4535,6 +4535,7 @@ dependencies = [
  "nix",
  "png",
  "regex",
+ "serde",
  "serde_json",
  "signal-hook",
  "sixel-image",

@@ -594,7 +594,7 @@ pub fn write_session_state_to_disk(
     }
 }
 
-fn write_session_cache_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_session_cache_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     if !file_content_changed(path, contents) {
         return Ok(());
     }
@@ -929,6 +929,28 @@ fn query_webserver_via_ipc(web_server_base_url: &str) -> Result<WebServerStatus>
     }
 
     Ok(WebServerStatus::Offline)
+}
+
+#[cfg(all(test, windows))]
+mod recovery_file_tests {
+    use super::write_session_cache_file;
+
+    #[test]
+    fn failed_recovery_write_preserves_the_last_complete_file() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("session-layout.kdl");
+        write_session_cache_file(&path, b"previous complete layout").unwrap();
+        let locked = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&path)
+            .unwrap();
+        assert!(write_session_cache_file(&path, b"replacement").is_err());
+        drop(locked);
+        assert_eq!(std::fs::read(&path).unwrap(), b"previous complete layout");
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
 }
 
 #[cfg(test)]

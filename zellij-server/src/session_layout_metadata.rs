@@ -361,6 +361,27 @@ impl SessionLayoutMetadata {
             }
         }
     }
+    pub fn update_agent_resumptions(&mut self, mut commands: HashMap<u32, RunCommand>) {
+        for tab in &mut self.tabs {
+            for pane in tab.tiled_panes.iter_mut().chain(&mut tab.floating_panes) {
+                if let PaneId::Terminal(id) = pane.id {
+                    if let Some(mut command) = commands.remove(&id) {
+                        if let Some(cwd) = command.cwd.as_ref() {
+                            pane.cwd = Some(
+                                self.global_cwd
+                                    .as_ref()
+                                    .and_then(|global| cwd.strip_prefix(global).ok())
+                                    .unwrap_or(cwd)
+                                    .to_path_buf(),
+                            );
+                        }
+                        command.cwd = None;
+                        pane.run = Some(Run::Command(command));
+                    }
+                }
+            }
+        }
+    }
     pub fn update_plugin_cmds(&mut self, mut plugin_ids_to_run_plugins: HashMap<u32, RunPlugin>) {
         let mut update_cmd_in_pane_metadata = |pane_layout_metadata: &mut PaneLayoutMetadata| {
             if let PaneId::Plugin(id) = pane_layout_metadata.id {
@@ -781,6 +802,72 @@ mod tests {
 
     fn get_first_tiled_run(meta: &SessionLayoutMetadata) -> Option<&Run> {
         meta.tabs[0].tiled_panes[0].run.as_ref()
+    }
+
+    #[test]
+    fn agent_resumptions_keep_each_panes_exact_chat_and_folder() {
+        use zellij_utils::agent_resumption::{resume_command, AgentKind};
+        let root = std::env::temp_dir();
+        let folder = root.join("agent project");
+        let mut meta = SessionLayoutMetadata::default();
+        meta.global_cwd = Some(root.clone());
+        meta.add_tab(
+            "work".into(),
+            true,
+            false,
+            vec![
+                make_command_pane(1, "shell", vec![]),
+                make_command_pane(2, "shell", vec![]),
+            ],
+            vec![make_command_pane(3, "shell", vec![])],
+        );
+        let mut commands = HashMap::new();
+        for (id, agent, executable, session) in [
+            (
+                1,
+                AgentKind::Codex,
+                "codex",
+                "11111111-2222-4333-8444-555555555555",
+            ),
+            (
+                2,
+                AgentKind::Claude,
+                "claude",
+                "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            ),
+            (
+                3,
+                AgentKind::Copilot,
+                "copilot",
+                "99999999-8888-4777-8666-555555555555",
+            ),
+        ] {
+            commands.insert(
+                id,
+                resume_command(&[executable.into()], agent, session, folder.clone()).unwrap(),
+            );
+        }
+        meta.update_agent_resumptions(commands);
+        for pane in meta.tabs[0]
+            .tiled_panes
+            .iter()
+            .chain(&meta.tabs[0].floating_panes)
+        {
+            assert_eq!(pane.cwd, Some(PathBuf::from("agent project")));
+            let Some(Run::Command(command)) = &pane.run else {
+                panic!("Expected agent command")
+            };
+            assert!(zellij_utils::agent_resumption::is_exact_resume(command));
+            assert!(command.cwd.is_none());
+        }
+        let Some(Run::Command(first)) = get_first_tiled_run(&meta) else {
+            panic!("Expected Codex")
+        };
+        assert_eq!(
+            first.args.last().unwrap(),
+            "11111111-2222-4333-8444-555555555555"
+        );
+        assert_eq!(meta.global_cwd, Some(root));
     }
 
     #[test]
