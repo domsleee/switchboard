@@ -212,7 +212,7 @@ fn serialize_tiled_pane(
     if has_child_attributes {
         let mut tiled_pane_node_children = KdlDocument::new();
         serialize_args(args, &mut tiled_pane_node_children);
-        serialize_start_suspended(&command, &mut tiled_pane_node_children);
+        serialize_start_suspended(&layout.run, &mut tiled_pane_node_children);
         serialize_plugin(plugin, plugin_config, &mut tiled_pane_node_children);
         if layout.children.is_empty() && layout.external_children_index.is_some() {
             tiled_pane_node_children
@@ -485,13 +485,21 @@ fn serialize_floating_layout_attributes(
     }
 }
 
-fn serialize_start_suspended(command: &Option<String>, pane_node_children: &mut KdlDocument) {
-    if command.is_some() {
+fn serialize_start_suspended(run: &Option<Run>, pane_node_children: &mut KdlDocument) {
+    if let Some(Run::Command(command)) = run {
+        let automatic_resume = command.is_verified_agent_resume
+            && !command.hold_on_start
+            && crate::agent_resumption::is_exact_resume(command);
         let mut start_suspended_node = KdlNode::new("start_suspended");
         start_suspended_node
             .entries_mut()
-            .push(KdlEntry::new(KdlValue::Bool(true)));
+            .push(KdlEntry::new(KdlValue::Bool(!automatic_resume)));
         pane_node_children.nodes_mut().push(start_suspended_node);
+        if automatic_resume {
+            let mut close_on_exit = KdlNode::new("close_on_exit");
+            close_on_exit.push(false);
+            pane_node_children.nodes_mut().push(close_on_exit);
+        }
     }
 }
 
@@ -682,7 +690,7 @@ fn serialize_floating_pane(
             .entries_mut()
             .push(KdlEntry::new_prop("default_bg", bg.to_owned()));
     }
-    serialize_start_suspended(&command, &mut floating_pane_node_children);
+    serialize_start_suspended(&layout.run, &mut floating_pane_node_children);
     serialize_floating_layout_attributes(&layout, &mut floating_pane_node_children);
     serialize_args(args, &mut floating_pane_node_children);
     serialize_plugin(plugin, plugin_config, &mut floating_pane_node_children);
@@ -1140,6 +1148,95 @@ mod tests {
     use insta::assert_snapshot;
     use serde_json::Value;
     use std::collections::HashMap;
+
+    #[test]
+    fn only_verified_agent_chats_restart_in_tiled_and_floating_panes() {
+        use crate::{
+            agent_resumption::{resume_command, AgentKind},
+            input::command::RunCommand,
+        };
+        let id = "11111111-2222-4333-8444-555555555555";
+        for (agent, executable) in [
+            (AgentKind::Codex, "codex"),
+            (AgentKind::Claude, "claude"),
+            (AgentKind::Copilot, "copilot"),
+        ] {
+            for (verified, held, automatic_resume) in [
+                (false, false, false),
+                (true, false, true),
+                (true, true, false),
+            ] {
+                let mut command =
+                    resume_command(&[executable.into()], agent, id, PathBuf::new()).unwrap();
+                command.is_verified_agent_resume = verified;
+                command.hold_on_start = held;
+                let tiled = TiledPaneLayout {
+                    run: Some(Run::Command(command.clone())),
+                    ..Default::default()
+                };
+                let floating = FloatingPaneLayout {
+                    run: Some(Run::Command(command)),
+                    ..Default::default()
+                };
+                let mut contents = BTreeMap::new();
+                for node in [
+                    serialize_tiled_pane(&tiled, false, &mut contents),
+                    serialize_floating_pane(&floating, &mut contents),
+                ] {
+                    let children = node.children().unwrap();
+                    assert_eq!(
+                        children
+                            .get("start_suspended")
+                            .unwrap()
+                            .get(0)
+                            .unwrap()
+                            .value()
+                            .as_bool(),
+                        Some(!automatic_resume)
+                    );
+                    assert_eq!(
+                        children
+                            .get("close_on_exit")
+                            .and_then(|node| node.get(0))
+                            .and_then(|entry| entry.value().as_bool()),
+                        automatic_resume.then_some(false)
+                    );
+                    let layout = format!("layout {{\n{node}\n}}");
+                    assert!(
+                        Layout::from_kdl(&layout, None, None, None).is_ok(),
+                        "{layout}"
+                    );
+                }
+            }
+        }
+        for command in [
+            RunCommand {
+                command: "build-script".into(),
+                is_verified_agent_resume: true,
+                ..Default::default()
+            },
+            RunCommand {
+                command: "codex".into(),
+                args: vec!["resume".into(), "--last".into()],
+                ..Default::default()
+            },
+        ] {
+            let mut children = KdlDocument::new();
+            serialize_start_suspended(&Some(Run::Command(command)), &mut children);
+            assert_eq!(
+                children
+                    .get("start_suspended")
+                    .unwrap()
+                    .get(0)
+                    .unwrap()
+                    .value()
+                    .as_bool(),
+                Some(true)
+            );
+            assert!(children.get("close_on_exit").is_none());
+        }
+    }
+
     const PANEGEOMS_JSON: &[&[&str]] = &[
         &[
             r#"{ "x": 0, "y": 1, "rows": { "constraint": "Percent(100.0)", "inner": 43 }, "cols": { "constraint": "Percent(100.0)", "inner": 211 }, "is_stacked": false }"#,

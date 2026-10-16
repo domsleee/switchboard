@@ -1719,6 +1719,9 @@ impl Layout {
         layout_dir: Option<&PathBuf>,
     ) -> Result<(String, String, Option<(String, String)>), ConfigError> {
         // (path_to_layout as String, stringified_layout, Option<path_to_swap_layout as String, stringified_swap_layout>)
+        if layout.is_absolute() {
+            return Self::stringified_from_path(layout);
+        }
         match layout_dir {
             Some(dir) => {
                 let layout_path = &dir.join(layout);

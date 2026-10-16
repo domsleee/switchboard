@@ -20,6 +20,7 @@ kasuari = { version = "0.4.12", default-features = false }
 log = { workspace = true }
 png = { version = "0.17.16", default-features = false }
 regex = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 sixel-image = { version = "0.2.1", default-features = false }
 sixel-tokenizer = { version = "0.1.0", default-features = false }
