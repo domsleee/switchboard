@@ -9,6 +9,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Debug Clap parsing exceeds the default test-thread stack.
+  RUST_MIN_STACK: 8388608
 
 permissions:
   contents: read
@@ -109,9 +111,6 @@ jobs:
   test-windows:
     name: Test (Windows)
     runs-on: windows-latest
-    env:
-      # Debug Clap parsing exceeds the default Windows test-thread stack.
-      RUST_MIN_STACK: 8388608
 
     steps:
       - name: Enable long Git paths

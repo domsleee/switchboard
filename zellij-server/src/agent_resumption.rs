@@ -38,7 +38,8 @@ fn socket_identity(path: &Path) -> Result<String> {
     {
         use std::os::unix::fs::MetadataExt;
         Ok(format!(
-            "{}:{}:{}",
+            "{}:{}:{}:{}",
+            path.display(),
             metadata.dev(),
             metadata.ino(),
             metadata.ctime()
@@ -47,7 +48,8 @@ fn socket_identity(path: &Path) -> Result<String> {
     #[cfg(not(unix))]
     {
         Ok(format!(
-            "{}:{}",
+            "{}:{}:{}",
+            path.display(),
             fs::read_to_string(path)?.trim(),
             metadata
                 .created()?
@@ -414,6 +416,21 @@ pub fn install_hooks(binary: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_marker_rename_invalidates_agent_recovery_records() {
+        let directory = tempfile::tempdir().unwrap();
+        let original = directory.path().join("original-session");
+        let renamed = directory.path().join("renamed-session");
+        fs::write(&original, "12345").unwrap();
+        let identity = socket_identity(&original).unwrap();
+        assert_eq!(socket_identity(&original).unwrap(), identity);
+
+        fs::rename(&original, &renamed).unwrap();
+
+        assert_ne!(socket_identity(&renamed).unwrap(), identity);
+        assert!(socket_identity(&original).is_err());
+    }
 
     #[test]
     fn installing_hooks_preserves_settings_and_is_idempotent() {
