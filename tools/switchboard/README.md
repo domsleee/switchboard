@@ -55,8 +55,11 @@ are not submitted again. Models and permission flags from the launch command
 are kept. Other terminal commands still wait for confirmation.
 
 Recovery never chooses the latest chat in a folder. Missing or unverified chat
-identities leave the original command suspended. Remote agent servers that do
-not inherit the terminal's Switchboard environment cannot be bound to a pane.
+identities leave the original command suspended, even if it contains a resume
+ID. After renaming a terminal session, restart its agents so their hooks use the
+new session name; old-name records cannot resume automatically. Remote agent
+servers that do not inherit the terminal's Switchboard environment cannot be
+bound to a pane.
 For Codex, use `codex --no-daemon` to keep hooks in the terminal process instead
 of a shared background server. Approve the installed hooks in Codex when asked.
 An agent that cannot reopen its saved chat stays visible with its error instead

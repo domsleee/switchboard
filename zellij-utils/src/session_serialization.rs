@@ -487,7 +487,9 @@ fn serialize_floating_layout_attributes(
 
 fn serialize_start_suspended(run: &Option<Run>, pane_node_children: &mut KdlDocument) {
     if let Some(Run::Command(command)) = run {
-        let automatic_resume = crate::agent_resumption::is_exact_resume(command);
+        let automatic_resume = command.is_verified_agent_resume
+            && !command.hold_on_start
+            && crate::agent_resumption::is_exact_resume(command);
         let mut start_suspended_node = KdlNode::new("start_suspended");
         start_suspended_node
             .entries_mut()
@@ -1148,7 +1150,7 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
-    fn exact_agent_chats_restart_in_tiled_and_floating_panes_without_replaying_other_commands() {
+    fn only_verified_agent_chats_restart_in_tiled_and_floating_panes() {
         use crate::{
             agent_resumption::{resume_command, AgentKind},
             input::command::RunCommand,
@@ -1159,50 +1161,60 @@ mod tests {
             (AgentKind::Claude, "claude"),
             (AgentKind::Copilot, "copilot"),
         ] {
-            let command = resume_command(&[executable.into()], agent, id, PathBuf::new()).unwrap();
-            let tiled = TiledPaneLayout {
-                run: Some(Run::Command(command.clone())),
-                ..Default::default()
-            };
-            let floating = FloatingPaneLayout {
-                run: Some(Run::Command(command)),
-                ..Default::default()
-            };
-            let mut contents = BTreeMap::new();
-            for node in [
-                serialize_tiled_pane(&tiled, false, &mut contents),
-                serialize_floating_pane(&floating, &mut contents),
+            for (verified, held, automatic_resume) in [
+                (false, false, false),
+                (true, false, true),
+                (true, true, false),
             ] {
-                let children = node.children().unwrap();
-                assert_eq!(
-                    children
-                        .get("start_suspended")
-                        .unwrap()
-                        .get(0)
-                        .unwrap()
-                        .value()
-                        .as_bool(),
-                    Some(false)
-                );
-                assert_eq!(
-                    children
-                        .get("close_on_exit")
-                        .unwrap()
-                        .get(0)
-                        .unwrap()
-                        .value()
-                        .as_bool(),
-                    Some(false)
-                );
-                let layout = format!("layout {{\n{node}\n}}");
-                assert!(
-                    Layout::from_kdl(&layout, None, None, None).is_ok(),
-                    "{layout}"
-                );
+                let mut command =
+                    resume_command(&[executable.into()], agent, id, PathBuf::new()).unwrap();
+                command.is_verified_agent_resume = verified;
+                command.hold_on_start = held;
+                let tiled = TiledPaneLayout {
+                    run: Some(Run::Command(command.clone())),
+                    ..Default::default()
+                };
+                let floating = FloatingPaneLayout {
+                    run: Some(Run::Command(command)),
+                    ..Default::default()
+                };
+                let mut contents = BTreeMap::new();
+                for node in [
+                    serialize_tiled_pane(&tiled, false, &mut contents),
+                    serialize_floating_pane(&floating, &mut contents),
+                ] {
+                    let children = node.children().unwrap();
+                    assert_eq!(
+                        children
+                            .get("start_suspended")
+                            .unwrap()
+                            .get(0)
+                            .unwrap()
+                            .value()
+                            .as_bool(),
+                        Some(!automatic_resume)
+                    );
+                    assert_eq!(
+                        children
+                            .get("close_on_exit")
+                            .and_then(|node| node.get(0))
+                            .and_then(|entry| entry.value().as_bool()),
+                        automatic_resume.then_some(false)
+                    );
+                    let layout = format!("layout {{\n{node}\n}}");
+                    assert!(
+                        Layout::from_kdl(&layout, None, None, None).is_ok(),
+                        "{layout}"
+                    );
+                }
             }
         }
         for command in [
-            RunCommand::new("build-script".into()),
+            RunCommand {
+                command: "build-script".into(),
+                is_verified_agent_resume: true,
+                ..Default::default()
+            },
             RunCommand {
                 command: "codex".into(),
                 args: vec!["resume".into(), "--last".into()],

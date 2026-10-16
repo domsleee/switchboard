@@ -334,6 +334,9 @@ impl SessionLayoutMetadata {
         for tab in &mut self.tabs {
             for pane in tab.tiled_panes.iter_mut().chain(&mut tab.floating_panes) {
                 if let PaneId::Terminal(id) = pane.id {
+                    if let Some(Run::Command(command)) = pane.run.as_mut() {
+                        command.is_verified_agent_resume = false;
+                    }
                     if let Some(mut command) = commands.remove(&id) {
                         if let Some(cwd) = command.cwd.as_ref() {
                             pane.cwd = Some(
@@ -345,6 +348,7 @@ impl SessionLayoutMetadata {
                             );
                         }
                         command.cwd = None;
+                        command.is_verified_agent_resume = true;
                         pane.run = Some(Run::Command(command));
                     }
                 }
@@ -706,14 +710,19 @@ impl ClientMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zellij_utils::pane_size::PaneGeom;
+    use zellij_utils::pane_size::{Dimension, PaneGeom};
 
     fn make_command_pane(terminal_id: u32, command: &str, args: Vec<&str>) -> PaneLayoutMetadata {
         let mut run_command = RunCommand::new(PathBuf::from(command));
         run_command.args = args.into_iter().map(|s| s.to_string()).collect();
         PaneLayoutMetadata::new(
             PaneId::Terminal(terminal_id),
-            PaneGeom::default(),
+            PaneGeom {
+                x: terminal_id.saturating_sub(1) as usize * 40,
+                cols: Dimension::fixed(40),
+                rows: Dimension::fixed(20),
+                ..Default::default()
+            },
             false,
             Some(Run::Command(run_command)),
             None,
@@ -809,6 +818,7 @@ mod tests {
                 panic!("Expected agent command")
             };
             assert!(zellij_utils::agent_resumption::is_exact_resume(command));
+            assert!(command.is_verified_agent_resume);
             assert!(command.cwd.is_none());
         }
         let Some(Run::Command(first)) = get_first_tiled_run(&meta) else {
@@ -819,6 +829,43 @@ mod tests {
             "11111111-2222-4333-8444-555555555555"
         );
         assert_eq!(meta.global_cwd, Some(root));
+
+        meta.update_agent_resumptions(HashMap::new());
+        for pane in meta.tabs[0]
+            .tiled_panes
+            .iter()
+            .chain(&meta.tabs[0].floating_panes)
+        {
+            let Some(Run::Command(command)) = &pane.run else {
+                panic!("Expected agent command")
+            };
+            assert!(!command.is_verified_agent_resume);
+        }
+        let (serialized, _) =
+            zellij_utils::session_serialization::serialize_session_layout(meta.into()).unwrap();
+        assert_eq!(serialized.matches("start_suspended true").count(), 3);
+        assert!(!serialized.contains("start_suspended false"));
+    }
+
+    #[test]
+    fn agent_resume_commands_without_verified_records_stay_suspended() {
+        let session = "11111111-2222-4333-8444-555555555555";
+        let mut meta = SessionLayoutMetadata::default();
+        meta.add_tab(
+            "work".into(),
+            true,
+            false,
+            vec![
+                make_command_pane(1, "claude", vec!["--resume", session]),
+                make_command_pane(2, "codex", vec!["resume", session]),
+            ],
+            vec![make_command_pane(3, "copilot", vec!["--resume", session])],
+        );
+        meta.update_agent_resumptions(HashMap::new());
+        let (serialized, _) =
+            zellij_utils::session_serialization::serialize_session_layout(meta.into()).unwrap();
+        assert_eq!(serialized.matches("start_suspended true").count(), 3);
+        assert!(!serialized.contains("start_suspended false"));
     }
 
     #[test]
