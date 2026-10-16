@@ -1,6 +1,28 @@
 use super::super::layout::*;
 use insta::assert_snapshot;
 
+#[test]
+fn absolute_saved_layout_does_not_require_a_default_config_directory() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("session-layout.kdl");
+    let contents = "layout {\n    tab name=\"Recovered chat\" {\n        pane\n    }\n}\n";
+    std::fs::write(&path, contents).unwrap();
+    for layout_dir in [
+        None,
+        Some(directory.path().join("missing-layout-directory")),
+    ] {
+        let (_, loaded, _) = Layout::stringified_from_dir(&path, layout_dir.as_ref()).unwrap();
+        assert_eq!(loaded, contents);
+        let (layout, _) = Layout::from_layout_info_with_config(
+            &layout_dir,
+            &crate::data::LayoutInfo::File(path.display().to_string(), Default::default()),
+            Some(Default::default()),
+        )
+        .unwrap();
+        assert_eq!(layout.tabs()[0].0.as_deref(), Some("Recovered chat"));
+    }
+}
+
 #[cfg(not(windows))]
 fn normalize_layout_debug(s: String) -> String {
     s

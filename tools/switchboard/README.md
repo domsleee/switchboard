@@ -34,6 +34,38 @@ Quitting it leaves your terminals running.
 The first install sets up this computer's login on its own. Running it again
 keeps your settings.
 
+## Resume agent chats after a restart
+
+Run this once with the updated executable on each computer:
+
+```sh
+zellij agent-resume install
+```
+
+This adds session hooks for Codex, Claude Code and GitHub Copilot CLI. Existing
+hooks and settings are kept, and the original files are backed up beside them.
+Custom `CODEX_HOME`, `CLAUDE_CONFIG_DIR` and `COPILOT_HOME` directories are respected.
+Restart an already open agent if it does not reload its hook settings.
+
+The hooks record the exact chat ID, folder and launch options for each terminal
+pane. Starting a chat or submitting a prompt also saves the terminal layout.
+After the terminal session is restored, these chats reopen automatically with
+`codex resume ID`, `claude --resume ID` or `copilot --resume ID`. Original prompts
+are not submitted again. Models and permission flags from the launch command
+are kept. Other terminal commands still wait for confirmation.
+
+Recovery never chooses the latest chat in a folder. Missing or unverified chat
+identities leave the original command suspended. Remote agent servers that do
+not inherit the terminal's Switchboard environment cannot be bound to a pane.
+For Codex, use `codex --no-daemon` to keep hooks in the terminal process instead
+of a shared background server. Approve the installed hooks in Codex when asked.
+An agent that cannot reopen its saved chat stays visible with its error instead
+of closing the tab.
+
+Existing terminal engines keep their loaded version. Agent recovery requires
+a session engine started with the updated executable; installing hooks does not
+restart any running terminals.
+
 ## Connect your computers
 
 Both computers need Switchboard installed and on the same network.
