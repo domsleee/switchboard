@@ -249,6 +249,8 @@ retained through agent redraws and cleared when switching panes.
 Ctrl+C without a local selection still interrupts the terminal process. Remote
 OSC52 copies use this browser’s clipboard; denied permissions show a manual
 copy panel instead of silently failing.
+Physical Ctrl+C also works through the hidden touch-keyboard input on touchscreen
+PCs. Copy shortcuts still copy a terminal selection instead of interrupting.
 
 ## Escape key
 
