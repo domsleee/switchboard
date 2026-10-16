@@ -99,6 +99,22 @@ test('size claim waits for the requested pane and follows the newly focused tab'
   h.state(payload(1));assert.deepEqual(sent.map(m=>m.type),['SetTabViewport','FocusPane','SetTabViewport']);
   assert.equal(sent[2].tab_position,1);
 });
+test('focus handoffs restore the enabled touchscreen input and otherwise use xterm',()=>{
+  for(const [enabled,installed] of [[true,true],[false,true],[true,false]]){
+    const h=harness(),focused=[];let blurred=0;h.setBrowserFocus(true);
+    h.window.__zjSoftKbdEnabled=enabled;
+    if(installed)h.window.__zjSoftKbdCapture={element:{focus:options=>{assert.equal(options.preventScroll,true);focused.push('touch');},blur:()=>blurred++}};
+    h.window.term.focus=()=>focused.push('xterm');h.window.__zjSendControl=()=>{};
+    const panes=[1,2].map(pane_id=>({pane_id,is_plugin:false}));
+    h.state({panes,active_pane:panes[0]});
+    h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-focus',pane_id:2,is_plugin:false}});
+    assert.equal(h.window.term.options.disableStdin,true);
+    assert.equal(blurred,installed?1:0);assert.deepEqual(focused,[]);
+    h.state({panes,active_pane:panes[1]});
+    assert.equal(h.window.term.options.disableStdin,false);
+    assert.deepEqual(focused,[enabled&&installed?'touch':'xterm']);
+  }
+});
 test('New tab holds input until its native pane is active, then focuses without waiting for the catalog',()=>{
   const h=harness(),sent=[];let focused=0;h.setBrowserFocus(true);
   h.window.term.focus=()=>focused++;h.window.__zjSendControl=message=>sent.push(message);
