@@ -9,7 +9,7 @@
 #
 # Lists match when any pattern matches. A list of lists matches when every
 # pattern in one inner list matches.
-version = "2026-10-14"
+version = "2026-10-16"
 
 # Which panes are Claude: the running command, or its prompt footer on screen.
 command = ['\bclaude(?:\.exe)?\b']
@@ -45,6 +45,10 @@ above_prompt = [
   '(?:^|\n)[ \t]*[·✢✳✶✻✽*][ \t]+[^\n(]{1,60}…[ \t]*(?:\(\d+[hms]|\n)',
   '(?:^|\n)[ \t]*[·✢✳✶✻✽*][ \t]+waiting for [1-9]\d* background agents? to finish',
 ]
-# Below the prompt: a running background agent row with a live timer,
-# "◯ fork  Reading files   4m 19s · ↓ 461k tokens". The turn ended; the work has not.
-below_prompt = ['(?m)^[ \t]*◯[ \t]+\S[^\n]*\b\d+[hms]\b']
+# Below the prompt: the turn ended, but background work is still running.
+below_prompt = [
+  # A background agent row with a live timer: "◯ fork  Reading files   4m 19s · ↓ 461k tokens".
+  '(?m)^[ \t]*◯[ \t]+\S[^\n]*\b\d+[hms]\b',
+  # 2.1.301: "⏵⏵ bypass permissions on · 1 shell · ← for agents · ↓ to manage".
+  '(?:^|\n|·)[ \t]*[1-9]\d* shells?[ \t]*·[^\n]*↓ to manage\b',
+]

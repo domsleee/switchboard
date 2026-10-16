@@ -813,6 +813,60 @@ esac
     }
 
     #[test]
+    fn claude_background_shells_remain_working_after_the_reply_finishes() {
+        let pane = json!({"pane_command":"claude.exe --dangerously-skip-permissions","title":"✳ background build"});
+        // Claude Code 2.1.301: the reply is done, but its build is still running.
+        let screen = "● The build is running in the background.\n\
+            ✻ Baked for 1m 40s · done 12:34 PM · 1 shell still running\n\
+            ─────\n❯ \n─────\n\
+              ⏵⏵ bypass permissions on · 1 shell · ← for agents · ↓ to manage";
+        assert_eq!(classify(&pane, screen)["state"], "working");
+        for count in ["2 shells", "12 shells"] {
+            let screen = screen.replace("1 shell ·", &format!("{count} ·"));
+            assert_eq!(classify(&pane, &screen)["state"], "working", "{count}");
+        }
+        let default_permissions = screen.replace("⏵⏵ bypass permissions on", "? for shortcuts");
+        assert_eq!(classify(&pane, &default_permissions)["state"], "working");
+        let idle = screen.replace(" · 1 shell · ← for agents · ↓ to manage", " · ← for agents");
+        assert_eq!(
+            classify(&pane, &idle)["state"],
+            "ready",
+            "the old completion line does not keep the tab working"
+        );
+        assert_eq!(
+            classify(&pane, &format!("{screen}\n{idle}"))["state"],
+            "ready",
+            "an old task footer above the current prompt is not live"
+        );
+        for count in ["0 shells", "1 shell finished"] {
+            let screen = screen.replace("1 shell ·", &format!("{count} ·"));
+            assert_eq!(classify(&pane, &screen)["state"], "ready", "{count}");
+        }
+
+        let mut poll = PollState::default();
+        let snapshot = |screen| {
+            let mut row = classify(&pane, screen);
+            row["session"] = json!("main");
+            row["pane_id"] = json!(10);
+            json!({"panes":[row],"tabs":[],"errors":[]})
+        };
+        poll.update("windows", &mut snapshot(&idle));
+        for _ in 0..2 {
+            let mut working = snapshot(screen);
+            poll.update("windows", &mut working);
+            assert_eq!(working["panes"][0]["state"], "working");
+            assert!(working["panes"][0].get("token").is_none());
+        }
+        let mut finished = snapshot(&idle);
+        poll.update("windows", &mut finished);
+        assert!(finished["panes"][0]["token"]
+            .as_str()
+            .unwrap()
+            .ends_with(":1"));
+        assert_eq!(finished["panes"][0]["seen"], false);
+    }
+
+    #[test]
     fn agent_rule_files_parse() {
         assert_eq!(
             AGENTS.iter().map(|a| a.name).collect::<Vec<_>>(),
