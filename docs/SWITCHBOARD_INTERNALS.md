@@ -261,6 +261,8 @@ OSC52 copies use this browser’s clipboard; denied permissions show a manual
 copy panel instead of silently failing.
 Physical Ctrl+C also works through the hidden touch-keyboard input on touchscreen
 PCs. Copy shortcuts still copy a terminal selection instead of interrupting.
+Sidebar selection restores that same input, so Ctrl+V works without another
+terminal click. Input stays suspended until the selected pane is confirmed.
 
 ## Escape key
 

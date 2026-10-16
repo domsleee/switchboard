@@ -11,6 +11,11 @@
   const focusMaxAttempts=3, focusTimeoutMs=5000;
   let pendingNewTab;
   let focusOrigin, preserveFocus = false;
+  function focusTerminalInput() {
+    const capture=window.__zjSoftKbdEnabled&&window.__zjSoftKbdCapture?.element;
+    if(capture)capture.focus({preventScroll:true});
+    else window.term?.focus();
+  }
   function restoreTerminalFocus(origin = focusOrigin) {
     if (!parent.document.hasFocus() || parent.document.querySelector('dialog[open]') ||
       (window.frameElement && !window.frameElement.classList.contains('active'))) return;
@@ -18,7 +23,7 @@
     // Focus still in this frame but on nothing (a reconnect reload or a pane
     // switch blurred xterm) belongs to the terminal; it was never elsewhere.
     const stray = !!window.frameElement && active === window.frameElement && (!document.activeElement || document.activeElement === document.body);
-    if (stray || (!preserveFocus && active === origin)) window.term?.focus();
+    if (stray || (!preserveFocus && active === origin)) focusTerminalInput();
   }
   let terminalSocket, controlSocket;
   let scrollport, lastViewport, viewportTab, bottomButton, claimedViewportTab;
@@ -110,7 +115,7 @@
       scrollport=document.createElement('div');scrollport.id='switchboard-viewport';
       terminal.before(scrollport);moveTerminal(terminal,scrollport);
       bottomButton=document.createElement('button');bottomButton.id='switchboard-bottom';bottomButton.textContent='Back to bottom';
-      bottomButton.onclick=()=>{scrollport.scrollTop=scrollport.scrollHeight;window.term?.focus();};
+      bottomButton.onclick=()=>{scrollport.scrollTop=scrollport.scrollHeight;focusTerminalInput();};
       document.body.append(bottomButton);
       scrollport.addEventListener('scroll',()=>{bottomButton.hidden=scrollport.scrollHeight-scrollport.clientHeight-scrollport.scrollTop<cell.height;});
       // Follower scrolling pans the viewport instead of sending wheel input into the TUI.
@@ -142,7 +147,8 @@
   function holdFocusInput() {
     if(!window.term?.element)return;
     focusInputState ||= {disabled:window.term.options.disableStdin,pointer:window.term.element.style.pointerEvents};
-    window.term.options.disableStdin=true;window.term.element.style.pointerEvents='none';window.term.blur();
+    window.term.options.disableStdin=true;window.term.element.style.pointerEvents='none';
+    window.__zjSoftKbdCapture?.element?.blur();window.term.blur();
     showEscapeStatus('Switching terminal…');
   }
   function dispatchFocus() {
@@ -479,7 +485,7 @@
         if(!pendingFocus)dispatchFocus();
       }else{diagnostics?.ack();releaseFocus();restoreTerminalFocus();if(latest)sendState(latest);}
     } else if (message?.type === 'zellij-escape' && !hasDialog()) {
-      window.term?.focus();
+      focusTerminalInput();
       if(!latest?.active_pane?.is_plugin)sendEscape();
     } else if (message?.type === 'zellij-native-tabs') {
       showNativeTabs = !!message.visible;

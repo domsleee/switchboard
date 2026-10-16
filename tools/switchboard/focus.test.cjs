@@ -349,6 +349,89 @@ test('headless browser returns focus to the same terminal after a reconnect relo
 
 // Real DOM focus and keyboard events, with synthetic native metadata and control
 // acknowledgements. Stable tab IDs deliberately differ from pane IDs.
+for(const touchscreen of [false,true])test(`sidebar selection supports immediate native paste with touchscreen ${touchscreen}`,
+  {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE to run the isolated browser focus check'},async()=>{
+  const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch({headless:true});
+  try{
+    const context=await browser.newContext({viewport:{width:1280,height:900},permissions:['clipboard-read','clipboard-write']});
+    const page=await context.newPage(),errors=[];
+    page.on('pageerror',error=>errors.push(error.message));
+    await context.addInitScript(touchscreen=>{
+      Object.defineProperty(Navigator.prototype,'maxTouchPoints',{get:()=>touchscreen?1:0});
+      if(!touchscreen)delete window.ontouchstart;
+      if(window===top)window.setInterval=()=>0;
+    },touchscreen);
+    await context.route('**/*',async route=>{
+      const pathname=new URL(route.request().url()).pathname;
+      const json=value=>route.fulfill({contentType:'application/json',body:JSON.stringify(value)});
+      if(pathname==='/api/hosts')return json([{id:'windows',name:'Windows'}]);
+      if(pathname==='/api/hosts/windows')return json({id:'windows',name:'Windows',sessions:[{name:'main',web_clients_allowed:true}]});
+      if(pathname==='/api/attention')return json({tabs:[41,42].map((id,position)=>({...tab('windows',id),position,name:'Terminal '+id,panes:[{pane_id:position+7,is_plugin:false,tab_position:position}]})),panes:[],errors:[]});
+      if(pathname==='/hosts/windows/main')return route.fulfill({contentType:'text/html',body:`<!doctype html>
+        <link rel="stylesheet" href="/assets/xterm.css"><div id="terminal" tabindex="0"></div><script src="/assets/xterm.js"></script>
+        <script>window.sent=[];window.WebSocket=class extends EventTarget{constructor(){super();this.readyState=1;}send(){}};</script>
+        <script src="/clipboard.js"></script><script src="/bridge.js"></script><script type="module">
+          import {installCustomKeyHandler} from '/assets/key-handler.js';
+          import {installImeBypass} from '/assets/ime-bypass.js';
+          import {installSoftKeyboardCapture,suppressSoftKeyboardOnTouch} from '/assets/soft-keyboard.js';
+          window.term=new Terminal({cols:80,rows:24,scrollback:0,allowProposedApi:true});
+          term.open(document.querySelector('#terminal'));
+          const send=data=>sent.push(data);
+          installImeBypass(term,send);installSoftKeyboardCapture(term,send);suppressSoftKeyboardOnTouch(term);
+          installCustomKeyHandler(term,send);term.onData(send);
+          const socket=new WebSocket('wss://switchboard.test/ws/control');
+          const panes=[7,8].map((pane_id,tab_position)=>({pane_id,is_plugin:false,tab_position}));
+          window.sendState=paneId=>socket.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'MobileState',payload:{session_name:'main',panes,active_pane:panes.find(p=>p.pane_id===paneId)}})}));
+          window.acknowledge=true;
+          window.__zjSendControl=message=>{if(acknowledge&&message.type==='FocusPane')queueMicrotask(()=>sendState(message.pane_id));};
+          sendState(7);
+        </script>`});
+      const file=pathname==='/'?'index.html':pathname.slice(1);
+      const asset=pathname.startsWith('/assets/');
+      const name=asset?pathname.split('/').at(-1):file;
+      if(!/^[a-z-]+\.(html|css|js)$/.test(name))return route.fulfill({status:404,body:''});
+      const source=asset?__dirname+'/../../zellij-client/assets/'+name:__dirname+'/static/'+name;
+      if(!fs.existsSync(source))return route.fulfill({status:404,body:''});
+      return route.fulfill({contentType:name.endsWith('.js')?'text/javascript':name.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(source,'utf8')});
+    });
+    await page.goto('https://switchboard.test/?host=windows&session=main&tab=41');
+    await page.waitForFunction(()=>document.activeElement===document.querySelector('iframe.active'));
+    const terminal=page.frameLocator('iframe[title="Windows: main"]').locator('#terminal');
+    await terminal.click({position:{x:20,y:20}});
+    const shortcut=process.platform==='darwin'?'Meta+v':touchscreen?'Control+v':'Control+Shift+V';
+    const paste=async text=>{
+      await terminal.evaluate(async(_,text)=>{sent.length=0;await navigator.clipboard.writeText(text);},text);
+      await page.keyboard.press(shortcut);
+      assert.deepEqual(await terminal.evaluate(()=>[...sent]),[text]);
+    };
+    await paste('direct terminal paste');
+    const button=id=>page.locator('#tabs .tab-select').filter({hasText:'Terminal '+id});
+    for(const id of [42,42,41]){
+      await button(id).click();
+      await page.waitForFunction(id=>{
+        const entry=sessions.get(JSON.stringify(['windows','main']));
+        return !entry.requestedPane&&!entry.focusPending&&entry.state.active_pane.pane_id===(id===41?7:8)&&document.activeElement===entry.frame;
+      },id);
+      await terminal.evaluate(()=>{sent.length=0;});
+      await page.keyboard.type('typed');
+      assert.equal(await terminal.evaluate(()=>sent.join('')),'typed');
+      await paste('paste after sidebar selection');
+    }
+    if(touchscreen){
+      await terminal.evaluate(()=>{acknowledge=false;sent.length=0;});
+      await page.keyboard.press('Alt+l');
+      await page.waitForFunction(()=>sessions.get(JSON.stringify(['windows','main'])).requestedPane?.pane_id===8);
+      assert.equal(await terminal.evaluate(()=>window.__zjSoftKbdCapture.isFocused),false,'switching suspends the actual focused input');
+      await page.keyboard.press('Enter');
+      assert.deepEqual(await terminal.evaluate(()=>[...sent]),[],'input cannot reach the old pane while focus is pending');
+      await terminal.evaluate(()=>sendState(8));
+      await page.waitForFunction(()=>!sessions.get(JSON.stringify(['windows','main'])).requestedPane);
+      await paste('paste after focus acknowledgement');
+    }
+    assert.deepEqual(errors,[]);
+  }finally{await browser.close();}
+});
+
 async function browserFocusFixture({mismatch=null,acknowledge=true}={}){
   const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
   const browser=await chromium.launch({headless:true});
