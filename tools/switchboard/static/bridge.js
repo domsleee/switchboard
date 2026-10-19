@@ -492,6 +492,13 @@
       updateChrome();
     } else if(message?.type==='zellij-window-focus'){
       claimFocusedViewport(true);
+    } else if(message?.type==='zellij-browser-resume'&&Number.isInteger(message.id)&&message.id>=0){
+      requestAnimationFrame(()=>{
+        const pending=diagnostics?.pending();
+        parent.postMessage({type:'zellij-browser-resume-diagnostic',diagnostic:{id:message.id,
+          terminal_socket:terminalSocket?.readyState??null,control_socket:controlSocket?.readyState??null,
+          writes_pending:pending?.writes_pending??null,render_pending:pending?.render_pending??null}},location.origin);
+      });
     } else if(message?.type==='zellij-size-owner' && viewportSupported() && !pendingFocus && !pendingNewTab && message.tab_position===latest.active_pane?.tab_position){
       const size=physicalViewport();
       if(size)window.__zjViewport.report(size,!!message.owned);

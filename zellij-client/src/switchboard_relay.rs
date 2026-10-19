@@ -1165,6 +1165,10 @@ fn app(state: RelayState) -> Router {
         .route("/api/attention/ack", post(attention::acknowledge))
         .route("/api/logs", get(logs::handler))
         .route(
+            "/api/diagnostics/browser-resume",
+            post(logs::browser_resume),
+        )
+        .route(
             "/api/diagnostics/terminal-switch",
             post(logs::terminal_switch),
         )

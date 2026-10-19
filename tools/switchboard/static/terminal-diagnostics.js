@@ -179,6 +179,65 @@ window.SwitchboardTerminalDiagnostics = function (report, dimensions) {
         'timeout':quiet?'settled':'sampled'), 10000);
       settle();
     },
+    pending() {return {writes_pending:queued,render_pending:renderStarted !== null};},
     finish,
+  };
+};
+
+window.SwitchboardBrowserDiagnostics = function (report, probe) {
+  const now=()=>performance.now(),rounded=value=>Math.max(0,Math.round(value));
+  let hiddenAt=document.hidden?now():null,span,sequence=0,deadline,animation,frozen=false;
+  function tasks(entries) {
+    if(!span)return;
+    for(const entry of entries)if(entry.startTime>=span.started){
+      span.long_tasks++;span.total_long_task_ms+=rounded(entry.duration);
+      span.max_long_task_ms=Math.max(span.max_long_task_ms,rounded(entry.duration));
+    }
+  }
+  const observer=typeof PerformanceObserver==='function'&&PerformanceObserver.supportedEntryTypes?.includes('longtask')?
+    new PerformanceObserver(list=>tasks(list.getEntries())):null;
+  observer?.observe({entryTypes:['longtask']});
+  function finish(outcome) {
+    if(!span)return;
+    clearTimeout(deadline);cancelAnimationFrame(animation);
+    tasks(observer?.takeRecords()||[]);
+    const result={...span,outcome,elapsed_ms:rounded(now()-span.started)};
+    delete result.started;span=null;
+    report(result);
+  }
+  function start(reason,event) {
+    finish('superseded');
+    const started=now();
+    span={id:++sequence,started,reason,hidden_ms:hiddenAt===null?null:rounded(started-hiddenAt),frozen,
+      load_ms:reason==='discarded'?rounded(started):null,
+      event_delay_ms:event?.timeStamp>0&&event.timeStamp<=started?rounded(started-event.timeStamp):null,
+      first_animation_ms:null,terminal_animation_ms:null,terminal_probe:false,
+      terminal_socket:null,control_socket:null,writes_pending:null,render_pending:null,
+      long_task_tracking:!!observer,long_tasks:0,max_long_task_ms:0,total_long_task_ms:0};
+    hiddenAt=null;frozen=false;
+    const tracked=span;
+    span.terminal_probe=probe(span.id);
+    animation=requestAnimationFrame(()=>{if(span===tracked)span.first_animation_ms=rounded(now()-started);});
+    deadline=setTimeout(()=>finish('sampled'),5000);
+  }
+  document.addEventListener('visibilitychange',event=>{
+    if(document.hidden){finish('hidden');hiddenAt=now();}
+    else if(hiddenAt!==null)start('visible',event);
+  });
+  document.addEventListener('freeze',()=>{finish('hidden');frozen=true;});
+  document.addEventListener('resume',event=>{if(!document.hidden&&!span)start('resumed',event);});
+  window.addEventListener('pageshow',event=>{
+    if(event.persisted){if(span)span.reason='restored';else start('restored',event);}
+  });
+  window.addEventListener('pagehide',()=>finish('hidden'));
+  if(document.wasDiscarded&&!document.hidden)start('discarded');
+  return {
+    terminal(sample) {
+      if(!span||sample?.id!==span.id||span.terminal_animation_ms!==null)return;
+      span.terminal_animation_ms=rounded(now()-span.started);
+      for(const field of ['terminal_socket','control_socket'])if(Number.isInteger(sample[field])&&sample[field]>=0&&sample[field]<=3)span[field]=sample[field];
+      if(Number.isInteger(sample.writes_pending)&&sample.writes_pending>=0)span.writes_pending=sample.writes_pending;
+      if(typeof sample.render_pending==='boolean')span.render_pending=sample.render_pending;
+    },
   };
 };

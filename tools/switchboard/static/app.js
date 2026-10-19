@@ -676,6 +676,8 @@ window.addEventListener('message',event=>{
     recordTerminalDiagnostic(entry,'terminal-switch',event.data.diagnostic);
   }else if(event.data?.type==='zellij-key-diagnostic'){
     recordTerminalDiagnostic(entry,'modified-enter',event.data.diagnostic);
+  }else if(event.data?.type==='zellij-browser-resume-diagnostic'){
+    browserDiagnostics?.terminal(event.data.diagnostic);
   }else if(event.data?.type==='zellij-open-new-tab'){
     if(entry.frame.classList.contains('active')&&!document.querySelector('dialog[open]'))$('new-tab').click();
   }else if(event.data?.type==='zellij-close-tab'){
@@ -890,7 +892,7 @@ async function loadLogs(){
       const group=element('section','log-computer','');group.append(element('h4','',computer.name));
       const entries=computer.error?[]:computer.entries||[];
       // Timing samples outnumber failures; list failures and fold the samples away.
-      const timing=entry=>/^(Terminal (transport|switch|viewport|control|scrolling)|Browser Shift\+Enter) /.test(entry.message);
+      const timing=entry=>/^(Terminal (transport|switch|viewport|control|scrolling)|Browser Shift\+Enter|Browser tab resumed) /.test(entry.message);
       const errors=entries.filter(entry=>!timing(entry)),samples=entries.filter(timing);
       if(computer.error)group.append(element('p','log-note',computer.error));
       else if(!errors.length)group.append(element('p','log-note','No recent errors'));
@@ -1078,3 +1080,14 @@ async function refreshAttention(immediate=false){
   finally{attentionLoading=false;if(attentionRefreshPending){attentionRefreshPending=false;refreshAttention();}}
 }
 refreshAttention();setInterval(refreshAttention,2000);
+
+const browserDiagnostics=window.SwitchboardBrowserDiagnostics?.(diagnostic=>{
+  fetch('/api/diagnostics/browser-resume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(diagnostic),keepalive:true})
+    .then(response=>{if(!response.ok)throw Error(`HTTP ${response.status}`);})
+    .catch(error=>console.warn('Browser resume diagnostics unavailable:',error));
+},id=>{
+  const current=allTabs().find(item=>item.key===selected);
+  if(!current||!$('artifact-preview').hidden||document.querySelector('dialog[open]'))return false;
+  current.entry.frame.contentWindow.postMessage({type:'zellij-browser-resume',id},location.origin);
+  return true;
+});

@@ -39,6 +39,14 @@ test('The Logs section shows recent errors per computer, newest first, with refr
     assert.doesNotMatch(await mac.nth(1).locator('small').textContent(),/×/);
     assert.equal(await groups.nth(1).locator('.log-note').textContent(),'No recent errors');
     assert.equal(await groups.nth(2).locator('.log-note').textContent(),"Logs unavailable on this computer's version");
+    logs={computers:[{name:'Mac',entries:[
+      {time:now,source:'Browser',message:'Browser tab slow reason=visible raf=700/720ms',count:1},
+      {time:now,source:'Browser',message:'Browser tab resumed reason=visible raf=16/20ms',count:1}]}]};
+    await page.locator('#refresh-logs').click();
+    await page.waitForFunction(()=>document.querySelector('#logs .log-entry span')?.textContent.startsWith('Browser tab slow'));
+    assert.equal(await page.locator('#logs .log-computer > .log-entry').count(),1,'A slow Chrome-tab return stays visible');
+    assert.match(await page.locator('#logs details .log-entry').textContent(),/Browser tab resumed/);
+    assert.equal(await page.locator('#logs details').getAttribute('open'),null,'Fast returns stay folded away');
     logs={computers:[{name:'Mac',local:true,entries:[]}]};
     await page.locator('#refresh-logs').click();
     await page.waitForFunction(()=>document.querySelectorAll('#logs .log-computer').length===1);
