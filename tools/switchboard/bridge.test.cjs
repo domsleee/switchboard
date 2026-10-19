@@ -18,12 +18,33 @@ function harness(withDiagnostics=false,platform='MacIntel'){
     documentElement:{style:{getPropertyValue:key=>properties.get(key)||'',setProperty:(key,val)=>properties.set(key,val)}}};
   parent.document=document;
   const diagnosticsSource=withDiagnostics?fs.readFileSync(__dirname+'/static/terminal-diagnostics.js','utf8'):'';
-  vm.runInNewContext(diagnosticsSource+source,{window,document,parent,navigator:{platform},performance:{now:()=>now},location:{pathname:'/hosts/windows/main',origin:'http://localhost:8090'},localStorage:{getItem:()=>null},MutationObserver:class{observe(){}},requestAnimationFrame:fn=>frames.push(fn),setTimeout:fn=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id),Event:class{},TextEncoder});
+  vm.runInNewContext(diagnosticsSource+source,{window,document,parent,navigator:{platform},performance:{now:()=>now,timeOrigin:1000000},location:{pathname:'/hosts/windows/main',origin:'http://localhost:8090'},localStorage:{getItem:()=>null},MutationObserver:class{observe(){}},requestAnimationFrame:fn=>frames.push(fn),setTimeout:fn=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id),Event:class{},TextEncoder});
   const key=(code,extra={})=>{const event={code,altKey:true,ctrlKey:false,metaKey:false,shiftKey:false,preventDefault(){this.prevented=true;},stopImmediatePropagation(){this.stopped=true;},...extra};handlers.keydown(event);return event;};
   const state=(payload={})=>{const socket=new window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');socket.handlers.message({data:JSON.stringify({type:'MobileState',payload})});while(frames.length)frames.shift()();};
   const error=(...lines)=>{const socket=new window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');socket.handlers.message({data:JSON.stringify({type:'LogError',lines})});};
   return{window,handlers,parent,messages,properties,classes,key,state,error,setTime:v=>now=v,setFocus:v=>focused=v,setBodyFocus:()=>{focused=false;document.activeElement=document.body;},setBrowserFocus:v=>browserFocused=v,setFrameActive:v=>frameActive=v,setModal:v=>modal=v,setBottomRows:v=>bottomRows=v,setFirstRow:v=>firstRow=v,frames,resizes,timers};
 }
+test('browser-resume receipt is immediate and keeps the initial queue when it drains before animation',()=>{
+  const h=harness(true),callbacks=[];h.window.term.write=(_,done)=>callbacks.push(done);
+  const socket=new h.window.WebSocket('ws://localhost:8090/hosts/windows/ws/terminal');
+  socket.handlers.message({data:'private terminal text'});h.window.term.write('private terminal text');
+  h.setTime(100);
+  const request={type:'zellij-browser-resume',id:3,started_at:1000050};
+  h.handlers.message({origin:'https://untrusted.test',source:h.parent,data:request});
+  h.handlers.message({origin:'http://localhost:8090',source:{},data:request});
+  assert.equal(h.messages.length,0);
+  h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:request});
+  assert.equal(h.messages.length,1);assert.equal(h.messages[0].type,'zellij-browser-resume-received');
+  assert.equal(h.messages[0].diagnostic.received_at,1000100);
+  assert.equal(h.messages[0].diagnostic.initial_writes_pending,1);
+  callbacks[0]();h.setTime(800);h.frames.shift()();
+  const final=h.messages.at(-1);
+  assert.equal(final.type,'zellij-browser-resume-diagnostic');assert.equal(final.diagnostic.received_at,1000100);
+  assert.equal(final.diagnostic.animation_at,1000800);assert.equal(final.diagnostic.initial_writes_pending,1);
+  assert.equal(final.diagnostic.writes_pending,0);assert.equal(final.diagnostic.terminal_active,true);
+  assert.doesNotMatch(JSON.stringify(h.messages),/private|terminal text/);
+  assert.equal(h.resizes.length,0,'A diagnostic must not resize or focus native terminals');
+});
 test('Shift+Enter reports only modifier timing and never retains Shift for later Enter',()=>{
   const h=harness();h.setFocus(true);h.state({active_pane:{pane_id:30,is_plugin:false,tab_position:5}});
   h.setTime(100);h.key('ShiftLeft',{key:'Shift',altKey:false,shiftKey:true});

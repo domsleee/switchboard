@@ -1,17 +1,45 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const source=fs.readFileSync(__dirname+'/static/terminal-diagnostics.js','utf8');
-function harness(extraDimensions={},trackRender=false){
-  let now=0,id=0,animationDelay=16;const timers=new Map(),reports=[],writes=[],window={},renderListeners=new Set();
+function harness(extraDimensions={},trackRender=false,trackTasks=false){
+  let now=0,id=0,animationDelay=16;const timers=new Map(),reports=[],writes=[],window={},renderListeners=new Set(),pendingTasks=[];
   const timeout=(fn,delay)=>{timers.set(++id,{fn,due:now+delay});return id;};
-  vm.runInNewContext(source,{window,performance:{now:()=>now},TextEncoder,
+  class Observer{
+    static supportedEntryTypes=trackTasks?['longtask']:[];
+    constructor(fn){this.callback=fn;}observe(){}takeRecords(){return pendingTasks.splice(0);}
+  }
+  vm.runInNewContext(source,{window,performance:{now:()=>now,timeOrigin:1000000},PerformanceObserver:Observer,TextEncoder,
     setTimeout:timeout,clearTimeout:id=>timers.delete(id),requestAnimationFrame:fn=>timeout(fn,animationDelay)});
   const term={write(data,callback){assert.equal(this,term);writes.push({data,callback});return 'preserved';}};
   if(trackRender)term.onRender=fn=>{renderListeners.add(fn);return {dispose:()=>renderListeners.delete(fn)};};
   const diagnostics=window.SwitchboardTerminalDiagnostics(report=>reports.push(report),()=>({physical_cols:120,physical_rows:40,native_cols:120,native_rows:40,...extraDimensions}));
   const advance=ms=>{const end=now+ms;for(;;){const next=[...timers.entries()].sort((a,b)=>a[1].due-b[1].due)[0];if(!next||next[1].due>end)break;now=next[1].due;timers.delete(next[0]);next[1].fn();}now=end;};
   const start=(id,expected=true)=>diagnostics.start({focus_id:id,pane_id:30,is_plugin:false},term,expected);
-  return {diagnostics,term,reports,writes,advance,start,render:()=>renderListeners.forEach(fn=>fn()),setAnimationDelay:ms=>animationDelay=ms};
+  return {diagnostics,term,reports,writes,advance,start,render:()=>renderListeners.forEach(fn=>fn()),setAnimationDelay:ms=>animationDelay=ms,
+    task:(startTime,duration)=>pendingTasks.push({startTime,duration,name:'private URL',attribution:['secret terminal text']})};
 }
+test('resume samples include queued writes and overlapping iframe tasks, without retaining contents',()=>{
+  const h=harness({},true,true);h.diagnostics.hook(h.term);
+  h.term.write('private terminal text');h.advance(700);
+  h.task(0,650);h.task(0,20);
+  const before=h.diagnostics.pending(1000100);
+  assert.equal(before.writes_pending,1);assert.equal(before.render_pending,false);
+  assert.equal(before.long_task_tracking,true);assert.equal(before.long_tasks,1);
+  assert.equal(before.max_long_task_ms,650);assert.equal(before.total_long_task_ms,650);
+  h.writes[0].callback();h.render();
+  assert.equal(h.diagnostics.pending(1000100).writes_pending,0);
+  assert.equal(h.diagnostics.pending(1000100).long_tasks,1,'Taking observer records must not consume the retained numeric sample');
+  assert.doesNotMatch(JSON.stringify(before),/private|secret|attribution|startTime|timeOrigin/);
+  h.advance(10001);assert.equal(h.diagnostics.pending(1000100).long_tasks,0);
+});
+test('iframe long-task history is bounded, and unsupported observers differ from measured zeroes',()=>{
+  const h=harness({},false,true);
+  for(let i=0;i<300;i++)h.task(0,60);
+  h.advance(60);
+  assert.equal(h.diagnostics.pending(1000000).long_tasks,256);
+  const unsupported=harness().diagnostics.pending(1000000);
+  assert.equal(unsupported.long_task_tracking,false);assert.equal(unsupported.long_tasks,0);
+  assert.equal(Object.keys(h.diagnostics.pending()).length,2,'Existing pending-write callers keep their original shape');
+});
 test('slow parser report counts UTF8 bytes and preserves original ANSI, callbacks, return value and receiver',()=>{
   const h=harness();h.start(1);h.advance(10);h.diagnostics.ack();
   const secret='\x1b[2Jprivate terminal transcript 😃';h.diagnostics.frame(secret);

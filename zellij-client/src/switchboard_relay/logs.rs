@@ -424,6 +424,17 @@ struct BrowserDiagnostic {
     control_socket: Option<u8>,
     writes_pending: Option<u32>,
     render_pending: Option<bool>,
+    terminal_message_ms: Option<u32>,
+    terminal_frame_ms: Option<u32>,
+    terminal_reply_ms: Option<u32>,
+    initial_writes_pending: Option<u32>,
+    initial_render_pending: Option<bool>,
+    terminal_hidden: Option<bool>,
+    terminal_active: Option<bool>,
+    terminal_long_task_tracking: Option<bool>,
+    terminal_long_tasks: Option<u32>,
+    terminal_max_long_task_ms: Option<u32>,
+    terminal_total_long_task_ms: Option<u32>,
     long_task_tracking: bool,
     long_tasks: u32,
     max_long_task_ms: u32,
@@ -432,6 +443,18 @@ struct BrowserDiagnostic {
 }
 
 impl BrowserDiagnostic {
+    fn slow(&self) -> bool {
+        self.event_delay_ms.is_some_and(|t| t > 500)
+            || self.load_ms.is_some_and(|t| t > 500)
+            || self.first_animation_ms.is_some_and(|t| t > 500)
+            || self.terminal_animation_ms.is_some_and(|t| t > 500)
+            || self.terminal_max_long_task_ms.is_some_and(|t| t > 500)
+            || self.max_long_task_ms > 500
+            || self.elapsed_ms > 500
+                && (self.first_animation_ms.is_none()
+                    || self.terminal_probe && self.terminal_animation_ms.is_none())
+    }
+
     fn message(&self) -> Option<String> {
         if !matches!(
             self.reason.as_str(),
@@ -444,18 +467,10 @@ impl BrowserDiagnostic {
         {
             return None;
         }
-        let slow = self.event_delay_ms.is_some_and(|t| t > 500)
-            || self.load_ms.is_some_and(|t| t > 500)
-            || self.first_animation_ms.is_some_and(|t| t > 500)
-            || self.terminal_animation_ms.is_some_and(|t| t > 500)
-            || self.max_long_task_ms > 500
-            || self.elapsed_ms > 500
-                && (self.first_animation_ms.is_none()
-                    || self.terminal_probe && self.terminal_animation_ms.is_none());
         let timing = |t: Option<u32>| t.map_or_else(|| "-".into(), |t| t.to_string());
         Some(format!(
             "Browser tab {} reason={} {} id={} hidden={}ms load={}ms event={}ms raf={}/{}ms tasks={}/{}/{}ms queue={}/{} ws={}/{} frozen={} observed={}ms",
-            if slow { "slow" } else { "resumed" }, self.reason, self.outcome, self.id,
+            if self.slow() { "slow" } else { "resumed" }, self.reason, self.outcome, self.id,
             self.hidden_ms.map_or_else(|| "-".into(), |t| t.to_string()), timing(self.load_ms), timing(self.event_delay_ms),
             timing(self.first_animation_ms), timing(self.terminal_animation_ms),
             if self.long_task_tracking { self.long_tasks.to_string() } else { "-".into() },
@@ -463,6 +478,23 @@ impl BrowserDiagnostic {
             self.render_pending.map_or_else(|| "-".into(), |pending| pending.to_string()),
             self.terminal_socket.map_or_else(|| "-".into(), |s| s.to_string()),
             self.control_socket.map_or_else(|| "-".into(), |s| s.to_string()), self.frozen, self.elapsed_ms,
+        ))
+    }
+
+    fn stages_message(&self) -> Option<String> {
+        if self.terminal_message_ms.is_none() && self.initial_writes_pending.is_none() {
+            return None;
+        }
+        let timing = |t: Option<u32>| t.map_or_else(|| "-".into(), |t| t.to_string());
+        let flag = |b: Option<bool>| b.map_or_else(|| "-".into(), |b| b.to_string());
+        Some(format!(
+            "Browser tab {} stages id={} delivery={}ms frame={}ms reply={}ms queue={}/{}->{}/{} hidden={} active={} tasks={}/{}/{}ms",
+            if self.slow() { "slow" } else { "resumed" }, self.id,
+            timing(self.terminal_message_ms), timing(self.terminal_frame_ms), timing(self.terminal_reply_ms),
+            timing(self.initial_writes_pending), flag(self.initial_render_pending), timing(self.writes_pending), flag(self.render_pending),
+            flag(self.terminal_hidden), flag(self.terminal_active),
+            if self.terminal_long_task_tracking == Some(true) { timing(self.terminal_long_tasks) } else { "-".into() },
+            timing(self.terminal_max_long_task_ms), timing(self.terminal_total_long_task_ms),
         ))
     }
 }
@@ -476,6 +508,9 @@ pub(super) async fn browser_resume(request: Request) -> StatusCode {
         return StatusCode::BAD_REQUEST;
     };
     record("Browser", &message);
+    if let Some(stages) = diagnostic.stages_message() {
+        record("Browser", &stages);
+    }
     StatusCode::NO_CONTENT
 }
 
@@ -819,6 +854,86 @@ mod tests {
             "elapsed_ms":5000})
     }
 
+    fn browser_stages_sample() -> Value {
+        let mut sample = browser_sample();
+        for (field, value) in json!({
+            "terminal_message_ms":4,"terminal_frame_ms":23,"terminal_reply_ms":3,
+            "initial_writes_pending":7,"initial_render_pending":true,
+            "terminal_hidden":false,"terminal_active":true,"terminal_long_task_tracking":true,
+            "terminal_long_tasks":0,"terminal_max_long_task_ms":0,"terminal_total_long_task_ms":0
+        })
+        .as_object()
+        .unwrap()
+        {
+            sample[field] = value.clone();
+        }
+        sample
+    }
+
+    #[test]
+    fn browser_stages_keep_delivery_animation_reply_and_initial_backlog_separate() {
+        let sample = browser_stages_sample();
+        let diagnostic: BrowserDiagnostic = serde_json::from_value(sample.clone()).unwrap();
+        let message = diagnostic.stages_message().unwrap();
+        assert!(message.starts_with("Browser tab resumed stages id=1"));
+        assert!(message.contains("delivery=4ms frame=23ms reply=3ms"));
+        assert!(message.contains("queue=7/true->0/false hidden=false active=true tasks=0/0/0ms"));
+        assert_eq!(
+            message,
+            redact(&message),
+            "The persisted line must not lose its tail"
+        );
+        let legacy: BrowserDiagnostic = serde_json::from_value(browser_sample()).unwrap();
+        assert!(legacy.stages_message().is_none());
+
+        let mut missing = sample.clone();
+        missing["terminal_animation_ms"] = Value::Null;
+        missing["terminal_frame_ms"] = Value::Null;
+        missing["terminal_reply_ms"] = Value::Null;
+        missing["writes_pending"] = Value::Null;
+        missing["render_pending"] = Value::Null;
+        let diagnostic: BrowserDiagnostic = serde_json::from_value(missing).unwrap();
+        let message = diagnostic.stages_message().unwrap();
+        assert!(message.starts_with("Browser tab slow stages"));
+        assert!(message.contains("delivery=4ms frame=-ms reply=-ms queue=7/true->-/-"));
+
+        let mut busy = sample;
+        busy["terminal_max_long_task_ms"] = json!(700);
+        busy["terminal_long_tasks"] = json!(1);
+        busy["terminal_total_long_task_ms"] = json!(700);
+        let diagnostic: BrowserDiagnostic = serde_json::from_value(busy).unwrap();
+        assert!(diagnostic
+            .message()
+            .unwrap()
+            .starts_with("Browser tab slow"));
+        assert!(diagnostic
+            .stages_message()
+            .unwrap()
+            .contains("tasks=1/700/700ms"));
+    }
+
+    #[test]
+    fn browser_stage_line_is_bounded_even_for_maximum_numeric_metadata() {
+        let mut sample = browser_stages_sample();
+        for field in [
+            "id",
+            "terminal_message_ms",
+            "terminal_frame_ms",
+            "terminal_reply_ms",
+            "initial_writes_pending",
+            "writes_pending",
+            "terminal_long_tasks",
+            "terminal_max_long_task_ms",
+            "terminal_total_long_task_ms",
+        ] {
+            sample[field] = json!(u32::MAX);
+        }
+        let diagnostic: BrowserDiagnostic = serde_json::from_value(sample).unwrap();
+        let message = diagnostic.stages_message().unwrap();
+        assert_eq!(message, redact(&message));
+        assert!(message.chars().count() <= 240);
+    }
+
     #[test]
     fn browser_resume_distinguishes_observation_time_from_delayed_animation_and_missing_terminal() {
         let mut sample = browser_sample();
@@ -886,7 +1001,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         let response = app
             .clone()
-            .oneshot(request(browser_sample(), "http://127.0.0.1:8090"))
+            .oneshot(request(browser_stages_sample(), "http://127.0.0.1:8090"))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
@@ -899,11 +1014,25 @@ mod tests {
                     .as_str()
                     .unwrap()
                     .starts_with("Browser tab resumed")));
+        assert!(local()["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("Browser tab resumed stages")));
         for (field, value) in [
             ("reason", json!("private URL")),
             ("terminal_socket", json!(4)),
             ("first_animation_ms", json!(-1)),
             ("first_animation_ms", json!(u64::MAX)),
+            ("terminal_message_ms", json!(-1)),
+            ("terminal_frame_ms", json!(u64::MAX)),
+            ("initial_writes_pending", json!(-1)),
+            ("terminal_hidden", json!("private URL")),
+            ("terminal_long_tasks", json!(-1)),
+            ("received_at", json!(1000000)),
             ("contents", json!("private transcript")),
         ] {
             let mut invalid = browser_sample();

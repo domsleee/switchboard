@@ -3,6 +3,17 @@ window.SwitchboardTerminalDiagnostics = function (report, dimensions) {
   const now = () => performance.now();
   let span, quietTimer, deadlineTimer, hookedTerm, renderListener, scrollListener, lineFeedListener, resizeListener, animationProbe;
   let queued = 0, renderStarted = null, quiet = false;
+  let recentTasks=[];
+  function rememberTasks(entries) {
+    const cutoff=now()-10000;
+    recentTasks=recentTasks.filter(task=>task.end>=cutoff);
+    for(const entry of entries)if(entry.startTime+entry.duration>=cutoff)
+      recentTasks.push({end:entry.startTime+entry.duration,duration:entry.duration});
+    recentTasks=recentTasks.slice(-256);
+  }
+  const taskObserver=typeof PerformanceObserver==='function'&&PerformanceObserver.supportedEntryTypes?.includes('longtask')?
+    new PerformanceObserver(list=>rememberTasks(list.getEntries())):null;
+  taskObserver?.observe({entryTypes:['longtask']});
   function geometry() {
     const result = dimensions();
     if (span) span.max_clipped_bottom_rows = Math.max(span.max_clipped_bottom_rows,result.clipped_bottom_rows || 0);
@@ -179,7 +190,15 @@ window.SwitchboardTerminalDiagnostics = function (report, dimensions) {
         'timeout':quiet?'settled':'sampled'), 10000);
       settle();
     },
-    pending() {return {writes_pending:queued,render_pending:renderStarted !== null};},
+    pending(since) {
+      const result={writes_pending:queued,render_pending:renderStarted !== null};
+      if(!Number.isFinite(since))return result;
+      rememberTasks(taskObserver?.takeRecords()||[]);
+      const tasks=recentTasks.filter(task=>performance.timeOrigin+task.end>since);
+      return {...result,long_task_tracking:!!taskObserver,long_tasks:tasks.length,
+        max_long_task_ms:Math.round(Math.max(0,...tasks.map(task=>task.duration))),
+        total_long_task_ms:Math.round(tasks.reduce((total,task)=>total+task.duration,0))};
+    },
     finish,
   };
 };
@@ -189,7 +208,7 @@ window.SwitchboardBrowserDiagnostics = function (report, probe) {
   let hiddenAt=document.hidden?now():null,span,sequence=0,deadline,animation,frozen=false;
   function tasks(entries) {
     if(!span)return;
-    for(const entry of entries)if(entry.startTime>=span.started){
+    for(const entry of entries)if(entry.startTime+entry.duration>span.started){
       span.long_tasks++;span.total_long_task_ms+=rounded(entry.duration);
       span.max_long_task_ms=Math.max(span.max_long_task_ms,rounded(entry.duration));
     }
@@ -213,10 +232,13 @@ window.SwitchboardBrowserDiagnostics = function (report, probe) {
       event_delay_ms:event?.timeStamp>0&&event.timeStamp<=started?rounded(started-event.timeStamp):null,
       first_animation_ms:null,terminal_animation_ms:null,terminal_probe:false,
       terminal_socket:null,control_socket:null,writes_pending:null,render_pending:null,
+      terminal_message_ms:null,terminal_frame_ms:null,terminal_reply_ms:null,
+      initial_writes_pending:null,initial_render_pending:null,terminal_hidden:null,terminal_active:null,
+      terminal_long_task_tracking:null,terminal_long_tasks:null,terminal_max_long_task_ms:null,terminal_total_long_task_ms:null,
       long_task_tracking:!!observer,long_tasks:0,max_long_task_ms:0,total_long_task_ms:0};
     hiddenAt=null;frozen=false;
     const tracked=span;
-    span.terminal_probe=probe(span.id);
+    span.terminal_probe=probe(span.id,performance.timeOrigin+started);
     animation=requestAnimationFrame(()=>{if(span===tracked)span.first_animation_ms=rounded(now()-started);});
     deadline=setTimeout(()=>finish('sampled'),5000);
   }
@@ -234,10 +256,27 @@ window.SwitchboardBrowserDiagnostics = function (report, probe) {
   return {
     terminal(sample) {
       if(!span||sample?.id!==span.id||span.terminal_animation_ms!==null)return;
-      span.terminal_animation_ms=rounded(now()-span.started);
+      const receivedOnly=sample.phase==='received';
+      if(receivedOnly&&span.terminal_message_ms!==null)return;
+      const received=performance.timeOrigin+now(),started=performance.timeOrigin+span.started;
+      if(Number.isFinite(sample.received_at)&&sample.received_at>=started&&sample.received_at<=received){
+        span.terminal_message_ms=rounded(sample.received_at-started);
+        if(!receivedOnly&&Number.isFinite(sample.animation_at)&&sample.animation_at>=sample.received_at&&sample.animation_at<=received){
+          span.terminal_frame_ms=rounded(sample.animation_at-sample.received_at);
+          span.terminal_reply_ms=rounded(received-sample.animation_at);
+        }
+      }
+      for(const field of ['initial_writes_pending','long_tasks','max_long_task_ms','total_long_task_ms'])
+        if(Number.isInteger(sample[field])&&sample[field]>=0)
+          span[field==='initial_writes_pending'?field:`terminal_${field}`]=sample[field];
+      for(const field of ['initial_render_pending','terminal_hidden','terminal_active','long_task_tracking'])
+        if(typeof sample[field]==='boolean')span[field==='long_task_tracking'?'terminal_long_task_tracking':field]=sample[field];
       for(const field of ['terminal_socket','control_socket'])if(Number.isInteger(sample[field])&&sample[field]>=0&&sample[field]<=3)span[field]=sample[field];
-      if(Number.isInteger(sample.writes_pending)&&sample.writes_pending>=0)span.writes_pending=sample.writes_pending;
-      if(typeof sample.render_pending==='boolean')span.render_pending=sample.render_pending;
+      if(!receivedOnly){
+        span.terminal_animation_ms=rounded(now()-span.started);
+        if(Number.isInteger(sample.writes_pending)&&sample.writes_pending>=0)span.writes_pending=sample.writes_pending;
+        if(typeof sample.render_pending==='boolean')span.render_pending=sample.render_pending;
+      }
     },
   };
 };
