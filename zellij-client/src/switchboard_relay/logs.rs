@@ -18,9 +18,9 @@ static LOG: Log = Log(
 
 struct Log(std::sync::Mutex<VecDeque<Value>>, AtomicBool);
 
-/// Terminal reports are numeric samples sent every few seconds, not failures.
+/// Browser and terminal timing reports are samples rather than failures.
 fn diagnostic(message: &str) -> bool {
-    message.starts_with("Terminal ")
+    message.starts_with("Terminal ") || message.starts_with("Browser tab ")
 }
 
 impl Log {
@@ -409,6 +409,78 @@ impl SwitchDiagnostic {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct BrowserDiagnostic {
+    id: u32,
+    reason: String,
+    outcome: String,
+    hidden_ms: Option<u64>,
+    load_ms: Option<u32>,
+    frozen: bool,
+    event_delay_ms: Option<u32>,
+    first_animation_ms: Option<u32>,
+    terminal_animation_ms: Option<u32>,
+    terminal_probe: bool,
+    terminal_socket: Option<u8>,
+    control_socket: Option<u8>,
+    writes_pending: Option<u32>,
+    render_pending: Option<bool>,
+    long_task_tracking: bool,
+    long_tasks: u32,
+    max_long_task_ms: u32,
+    total_long_task_ms: u32,
+    elapsed_ms: u32,
+}
+
+impl BrowserDiagnostic {
+    fn message(&self) -> Option<String> {
+        if !matches!(
+            self.reason.as_str(),
+            "visible" | "resumed" | "restored" | "discarded"
+        ) || !matches!(self.outcome.as_str(), "sampled" | "hidden" | "superseded")
+            || [self.terminal_socket, self.control_socket]
+                .into_iter()
+                .flatten()
+                .any(|s| s > 3)
+        {
+            return None;
+        }
+        let slow = self.event_delay_ms.is_some_and(|t| t > 500)
+            || self.load_ms.is_some_and(|t| t > 500)
+            || self.first_animation_ms.is_some_and(|t| t > 500)
+            || self.terminal_animation_ms.is_some_and(|t| t > 500)
+            || self.max_long_task_ms > 500
+            || self.elapsed_ms > 500
+                && (self.first_animation_ms.is_none()
+                    || self.terminal_probe && self.terminal_animation_ms.is_none());
+        let timing = |t: Option<u32>| t.map_or_else(|| "-".into(), |t| t.to_string());
+        Some(format!(
+            "Browser tab {} reason={} {} id={} hidden={}ms load={}ms event={}ms raf={}/{}ms tasks={}/{}/{}ms queue={}/{} ws={}/{} frozen={} observed={}ms",
+            if slow { "slow" } else { "resumed" }, self.reason, self.outcome, self.id,
+            self.hidden_ms.map_or_else(|| "-".into(), |t| t.to_string()), timing(self.load_ms), timing(self.event_delay_ms),
+            timing(self.first_animation_ms), timing(self.terminal_animation_ms),
+            if self.long_task_tracking { self.long_tasks.to_string() } else { "-".into() },
+            self.max_long_task_ms, self.total_long_task_ms, timing(self.writes_pending),
+            self.render_pending.map_or_else(|| "-".into(), |pending| pending.to_string()),
+            self.terminal_socket.map_or_else(|| "-".into(), |s| s.to_string()),
+            self.control_socket.map_or_else(|| "-".into(), |s| s.to_string()), self.frozen, self.elapsed_ms,
+        ))
+    }
+}
+
+pub(super) async fn browser_resume(request: Request) -> StatusCode {
+    let diagnostic: BrowserDiagnostic = match diagnostic_body(request).await {
+        Ok(d) => d,
+        Err(status) => return status,
+    };
+    let Some(message) = diagnostic.message() else {
+        return StatusCode::BAD_REQUEST;
+    };
+    record("Browser", &message);
+    StatusCode::NO_CONTENT
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct EnterDiagnostic {
     host: String,
     pane_id: u32,
@@ -729,6 +801,120 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let response = app
+            .oneshot(request(
+                json!({"contents":"x".repeat(9000)}),
+                "http://127.0.0.1:8090",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    fn browser_sample() -> Value {
+        json!({"id":1,"reason":"visible","outcome":"sampled","hidden_ms":60000,"frozen":false,
+            "event_delay_ms":5,"first_animation_ms":16,"terminal_animation_ms":30,"terminal_probe":true,
+            "terminal_socket":1,"control_socket":1,"writes_pending":0,"render_pending":false,
+            "long_task_tracking":true,"long_tasks":0,"max_long_task_ms":0,"total_long_task_ms":0,
+            "elapsed_ms":5000})
+    }
+
+    #[test]
+    fn browser_resume_distinguishes_observation_time_from_delayed_animation_and_missing_terminal() {
+        let mut sample = browser_sample();
+        let message = serde_json::from_value::<BrowserDiagnostic>(sample.clone())
+            .unwrap()
+            .message()
+            .unwrap();
+        assert!(message.starts_with("Browser tab resumed"));
+        assert!(message.contains("hidden=60000ms load=-ms event=5ms raf=16/30ms"));
+        assert!(diagnostic(&message));
+        assert_eq!(message, redact(&message));
+        for field in [
+            "load_ms",
+            "event_delay_ms",
+            "first_animation_ms",
+            "terminal_animation_ms",
+            "max_long_task_ms",
+        ] {
+            let mut slow = sample.clone();
+            slow[field] = json!(700);
+            assert!(serde_json::from_value::<BrowserDiagnostic>(slow)
+                .unwrap()
+                .message()
+                .unwrap()
+                .starts_with("Browser tab slow"));
+        }
+        sample["terminal_animation_ms"] = Value::Null;
+        assert!(serde_json::from_value::<BrowserDiagnostic>(sample.clone())
+            .unwrap()
+            .message()
+            .unwrap()
+            .starts_with("Browser tab slow"));
+        sample["terminal_probe"] = json!(false);
+        assert!(serde_json::from_value::<BrowserDiagnostic>(sample)
+            .unwrap()
+            .message()
+            .unwrap()
+            .starts_with("Browser tab resumed"));
+    }
+
+    #[tokio::test]
+    async fn browser_resume_requires_same_origin_bounded_metadata_and_no_terminal_contents() {
+        use tower::ServiceExt;
+        let app = router(
+            RelayConfig {
+                hosts: vec![],
+                artifact_proxy: None,
+            },
+            8090,
+        )
+        .await
+        .unwrap();
+        let request = |body: Value, origin: &str| {
+            hyper::Request::post("/api/diagnostics/browser-resume")
+                .header(header::HOST, "127.0.0.1:8090")
+                .header(header::ORIGIN, origin)
+                .body(Body::from(body.to_string()))
+                .unwrap()
+        };
+        let response = app
+            .clone()
+            .oneshot(request(browser_sample(), "https://attacker.example"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let response = app
+            .clone()
+            .oneshot(request(browser_sample(), "http://127.0.0.1:8090"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(local()["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["source"] == "Browser"
+                && entry["message"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("Browser tab resumed")));
+        for (field, value) in [
+            ("reason", json!("private URL")),
+            ("terminal_socket", json!(4)),
+            ("first_animation_ms", json!(-1)),
+            ("first_animation_ms", json!(u64::MAX)),
+            ("contents", json!("private transcript")),
+        ] {
+            let mut invalid = browser_sample();
+            invalid[field] = value;
+            let response = app
+                .clone()
+                .oneshot(request(invalid, "http://127.0.0.1:8090"))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{field}");
+        }
         let response = app
             .oneshot(request(
                 json!({"contents":"x".repeat(9000)}),

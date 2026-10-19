@@ -291,6 +291,16 @@ Shift+Enter reports include browser modifier flags and Shift press/release timin
 These diagnostics contain no terminal contents or typed text. Slow native reflows
 and ConPTY resizes also appear in `zellij.log`.
 
+Returning to a Chrome browser tab has its own `Browser tab` report. It records
+time hidden, lifecycle freeze/discard recovery, discarded-page startup time,
+visibility-event delay, the first animation callback in the page and selected
+terminal iframe, long main-thread
+tasks, queued terminal writes, and terminal/control WebSocket states (0 connecting,
+1 open, 2 closing, 3 closed). `-` means the measurement was unavailable.
+The five-second observation window is not a measured freeze. Slow returns stay
+visible in Logs; fast samples are folded under performance samples. These reports
+do not force a native focus, terminal resize, or repaint.
+
 ## Tests
 
 Run the small checks with:
