@@ -822,25 +822,70 @@ esac
     }
 
     #[test]
-    fn claude_background_shells_remain_working_after_the_reply_finishes() {
+    fn claude_idle_prompt_is_ready_with_a_persistent_background_shell() {
+        let pane = json!({"pane_command":"claude.exe --dangerously-skip-permissions","title":"✳ Example task"});
+        // Claude Code 2.1.301, sanitized from an idle pane with a dev server still running.
+        let screen = "● The requested change is ready.\n\
+            ✻ Sautéed for 26s · done 5:58 PM · 1 shell still running\n\
+            ─────\n❯\u{a0}rename the field\n─────\n\
+              ⏵⏵ bypass permissions on · 1 shell · ← for agents · ↓ to manage\
+              ✔ Update installed · Restart to update\n\
+              new task? /clear to save 154.6k tokens";
+        assert_eq!(classify(&pane, screen)["state"], "ready");
+        assert_eq!(
+            classify(&json!({"title":"✳ Example task"}), screen),
+            classify(&pane, screen),
+            "the native pane has no command metadata, so its footer must identify Claude"
+        );
+        assert_ne!(
+            classify(&pane, screen)["token"],
+            "idle",
+            "the accented finished verb must identify the completed turn"
+        );
+        for count in ["2 shells", "12 shells"] {
+            assert_eq!(
+                classify(&pane, &screen.replace("1 shell ·", &format!("{count} ·")))["state"],
+                "ready",
+                "{count}"
+            );
+        }
+        for screen in [screen.to_owned(), screen.replace('\n', "\r\n")] {
+            let busy = screen.replace(
+                "✻ Sautéed for 26s",
+                "· Perambulating… (23s · ↓ 1.4k tokens)\n✻ Sautéed for 26s",
+            );
+            assert_eq!(
+                classify(&pane, &busy)["state"],
+                "ready",
+                "an older spinner cannot override the completed turn"
+            );
+        }
+    }
+
+    #[test]
+    fn claude_background_shell_counts_do_not_override_real_agent_state() {
         let pane = json!({"pane_command":"claude.exe --dangerously-skip-permissions","title":"✳ background build"});
-        // Claude Code 2.1.301: the reply is done, but its build is still running.
+        // Claude Code 2.1.301: a background shell may be a long-lived dev server.
         let screen = "● The build is running in the background.\n\
             ✻ Baked for 1m 40s · done 12:34 PM · 1 shell still running\n\
             ─────\n❯ \n─────\n\
               ⏵⏵ bypass permissions on · 1 shell · ← for agents · ↓ to manage";
-        assert_eq!(classify(&pane, screen)["state"], "working");
+        assert_eq!(classify(&pane, screen)["state"], "ready");
         for count in ["2 shells", "12 shells"] {
             let screen = screen.replace("1 shell ·", &format!("{count} ·"));
-            assert_eq!(classify(&pane, &screen)["state"], "working", "{count}");
+            assert_eq!(classify(&pane, &screen)["state"], "ready", "{count}");
         }
         let default_permissions = screen.replace("⏵⏵ bypass permissions on", "? for shortcuts");
-        assert_eq!(classify(&pane, &default_permissions)["state"], "working");
+        assert_eq!(classify(&pane, &default_permissions)["state"], "ready");
         let idle = screen.replace(" · 1 shell · ← for agents · ↓ to manage", " · ← for agents");
         assert_eq!(
             classify(&pane, &idle)["state"],
             "ready",
-            "the old completion line does not keep the tab working"
+            "clearing a shell count does not change the completed turn"
+        );
+        assert_eq!(
+            classify(&pane, screen)["token"],
+            classify(&pane, &idle)["token"]
         );
         assert_eq!(
             classify(&pane, &format!("{screen}\n{idle}"))["state"],
@@ -852,6 +897,16 @@ esac
             assert_eq!(classify(&pane, &screen)["state"], "ready", "{count}");
         }
 
+        let working = screen.replace(
+            "✻ Baked for 1m 40s · done 12:34 PM · 1 shell still running",
+            "· Perambulating… (23s · ↓ 1.4k tokens)",
+        );
+        assert_eq!(classify(&pane, &working)["state"], "working");
+        let agents = format!("{screen}\n  ◯ fork  Reading files  4m 19s · ↓ 461k tokens");
+        assert_eq!(classify(&pane, &agents)["state"], "working");
+        let titled = json!({"pane_command":"claude.exe","title":"◐ Example task"});
+        assert_eq!(classify(&titled, screen)["state"], "working");
+
         let mut poll = PollState::default();
         let snapshot = |screen| {
             let mut row = classify(&pane, screen);
@@ -861,12 +916,12 @@ esac
         };
         poll.update("windows", &mut snapshot(&idle));
         for _ in 0..2 {
-            let mut working = snapshot(screen);
-            poll.update("windows", &mut working);
-            assert_eq!(working["panes"][0]["state"], "working");
-            assert!(working["panes"][0].get("token").is_none());
+            let mut running = snapshot(&working);
+            poll.update("windows", &mut running);
+            assert_eq!(running["panes"][0]["state"], "working");
+            assert!(running["panes"][0].get("token").is_none());
         }
-        let mut finished = snapshot(&idle);
+        let mut finished = snapshot(screen);
         poll.update("windows", &mut finished);
         assert!(finished["panes"][0]["token"]
             .as_str()

@@ -199,9 +199,10 @@ identities are saved beside the relay configuration as `.attention.json`, so a
 relay restart preserves viewed results.
 Archive preserves processes and does not erase attention state.
 
-Claude tabs stay working while the live prompt footer lists background shells,
-even after Claude finishes its reply. Old task messages in the transcript do not
-keep a tab working after that footer clears.
+Claude tabs use live spinners and active background-agent rows to indicate work.
+A background-shell count alone does not keep a finished reply working: that shell
+may be a persistent dev server. Finished-turn markers also recognize accented
+verbs such as `Sautéed`, so an older spinner cannot override the latest completion.
 
 Copilot tabs stay working while the footer beneath the current boxed input shows
 `esc interrupt`. Its normal `/ commands · ? help` footer marks the tab ready.
