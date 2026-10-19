@@ -493,12 +493,17 @@
     } else if(message?.type==='zellij-window-focus'){
       claimFocusedViewport(true);
     } else if(message?.type==='zellij-browser-resume'&&Number.isInteger(message.id)&&message.id>=0){
-      requestAnimationFrame(()=>{
-        const pending=diagnostics?.pending();
-        parent.postMessage({type:'zellij-browser-resume-diagnostic',diagnostic:{id:message.id,
-          terminal_socket:terminalSocket?.readyState??null,control_socket:controlSocket?.readyState??null,
-          writes_pending:pending?.writes_pending??null,render_pending:pending?.render_pending??null}},location.origin);
-      });
+      const receivedAt=performance.timeOrigin+performance.now();
+      const pending=diagnostics?.pending(message.started_at);
+      const received={id:message.id,received_at:receivedAt,
+        initial_writes_pending:pending?.writes_pending??null,initial_render_pending:pending?.render_pending??null,
+        terminal_hidden:document.visibilityState==='hidden',
+        terminal_active:window.frameElement?window.frameElement.classList.contains('active'):null};
+      const reply=(type,phase,animationAt=null)=>parent.postMessage({type,diagnostic:{...received,phase,animation_at:animationAt,
+        ...diagnostics?.pending(message.started_at),terminal_socket:terminalSocket?.readyState??null,
+        control_socket:controlSocket?.readyState??null}},location.origin);
+      reply('zellij-browser-resume-received','received');
+      requestAnimationFrame(()=>reply('zellij-browser-resume-diagnostic','animation',performance.timeOrigin+performance.now()));
     } else if(message?.type==='zellij-size-owner' && viewportSupported() && !pendingFocus && !pendingNewTab && message.tab_position===latest.active_pane?.tab_position){
       const size=physicalViewport();
       if(size)window.__zjViewport.report(size,!!message.owned);

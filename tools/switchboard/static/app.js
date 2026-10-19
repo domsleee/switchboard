@@ -683,7 +683,7 @@ window.addEventListener('message',event=>{
     recordTerminalDiagnostic(entry,'terminal-switch',event.data.diagnostic);
   }else if(event.data?.type==='zellij-key-diagnostic'){
     recordTerminalDiagnostic(entry,'modified-enter',event.data.diagnostic);
-  }else if(event.data?.type==='zellij-browser-resume-diagnostic'){
+  }else if(event.data?.type==='zellij-browser-resume-diagnostic'||event.data?.type==='zellij-browser-resume-received'){
     browserDiagnostics?.terminal(event.data.diagnostic);
   }else if(event.data?.type==='zellij-open-new-tab'){
     if(entry.frame.classList.contains('active')&&!document.querySelector('dialog[open]'))$('new-tab').click();
@@ -1092,9 +1092,9 @@ const browserDiagnostics=window.SwitchboardBrowserDiagnostics?.(diagnostic=>{
   fetch('/api/diagnostics/browser-resume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(diagnostic),keepalive:true})
     .then(response=>{if(!response.ok)throw Error(`HTTP ${response.status}`);})
     .catch(error=>console.warn('Browser resume diagnostics unavailable:',error));
-},id=>{
+},(id,started_at)=>{
   const current=allTabs().find(item=>item.key===selected);
   if(!current||!$('artifact-preview').hidden||document.querySelector('dialog[open]'))return false;
-  current.entry.frame.contentWindow.postMessage({type:'zellij-browser-resume',id},location.origin);
+  current.entry.frame.contentWindow.postMessage({type:'zellij-browser-resume',id,started_at},location.origin);
   return true;
 });

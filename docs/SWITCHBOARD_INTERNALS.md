@@ -302,6 +302,25 @@ The five-second observation window is not a measured freeze. Slow returns stay
 visible in Logs; fast samples are folded under performance samples. These reports
 do not force a native focus, terminal resize, or repaint.
 
+The matching `Browser tab ... stages id=...` line splits the terminal probe into
+`delivery` (page to iframe message handler), `frame` (handler to its animation
+callback), and `reply` (callback to the page receiving the reply). These use
+`performance.timeOrigin + performance.now()` so different document time origins
+do not distort the comparison. An immediate receipt message preserves delivery
+and initial queue measurements even if the animation callback never runs.
+`queue=writes/render_pending->writes/render_pending` samples the iframe at receipt
+and at the callback; an empty final queue does not rule out earlier queued work.
+`hidden` and `active` describe the iframe at receipt. `tasks=count/max/totalms` on
+this line counts iframe long tasks overlapping the probe, including tasks that
+began before receipt. The iframe keeps only numeric timings, with a ten-second
+lookback and a 256-task limit. It does not retain task attribution, URLs, or contents.
+These animation callbacks measure scheduling, not completed terminal painting.
+
+For a real background-tab check, set `PLAYWRIGHT_MODULE` and
+`SWITCHBOARD_HEADFUL_RESUME=1`, then run `node tools/switchboard/browser-resume.test.cjs`.
+This uses isolated fixture terminals, disables Playwright's forced-focus
+emulation, and verifies that Chrome actually hides the tab before returning.
+
 ## Tests
 
 Run the small checks with:
