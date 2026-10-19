@@ -146,8 +146,9 @@ the last, following the current order, filter and search, also from inside the t
 Mac and Linux use **Ctrl+1…Ctrl+8** and **Ctrl+9** for the same Switchboard navigation.
 On Mac, **Cmd+1…9** stay with the browser's own tab switching.
 **Right-click a sidebar tab → Archive** hides it without closing its terminal.
-**Right-click → Close…**, or **Ctrl+D then Enter**, confirms closing every pane in that
-tab and stops its processes. It targets the tab by its native stable ID, even
+**Middle-click a sidebar tab**, **Right-click → Close**, or **Ctrl+D** immediately
+closes every pane in that tab and stops its processes. Middle-click targets the
+clicked tab without selecting it first. Close uses its native stable ID, even
 when another tab is focused.
 Use **Archive** to search archived tabs across machines and restore one. Archive
 state is saved in this browser; archived ready tabs still count as notifications.

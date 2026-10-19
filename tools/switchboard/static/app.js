@@ -311,6 +311,13 @@ function render() {
     if(!button){
       button=document.createElement('button');button.draggable=true;
       const row=document.createElement('div');row.className='tab-row';
+      row.onmousedown=event=>{if(event.button===1)event.preventDefault();};
+      row.onauxclick=event=>{
+        if(event.button!==1)return;
+        event.preventDefault();
+        if(dragging||Date.now()<suppressTabClickUntil||document.querySelector('dialog[open]'))return;
+        contextItem=button._item;$('close-tab').click();
+      };
       const actions=document.createElement('button');actions.className='tab-actions';actions.textContent='⋯';
       actions.setAttribute('aria-haspopup','menu');actions.setAttribute('aria-controls','tab-menu');
       actions.onclick=()=>{const bounds=actions.getBoundingClientRect();openTabMenu(button._item,bounds.right,bounds.top,actions);};
@@ -341,7 +348,7 @@ function render() {
     const status=unavailable?'Status unavailable':stateLabel==='Ready'?'':stateLabel;
     const duplicate=titleCounts.get(JSON.stringify([item.entry.host,title]))>1;
     const subtitle=`${machine}${duplicate?' · '+item.entry.name:''}${status?' · '+status:''}${flagged?' · For review':''}`;
-    button.title=`${title} · ${machine} · ${item.entry.name}\n${status||'No pending attention'}${flagged?' · Flagged for review':''}\nDrag to reorder · Alt+Shift+H/L moves this tab · Right-click for actions`;
+    button.title=`${title} · ${machine} · ${item.entry.name}\n${status||'No pending attention'}${flagged?' · Flagged for review':''}\nDrag to reorder · Alt+Shift+H/L moves this tab · Middle-click to close · Right-click for actions`;
     button.className='tab-select'+(item.key===selected?' selected':'')+(starred?' needs-attention':'');
     button.setAttribute('aria-pressed',String(item.key===selected));
     button.setAttribute('aria-label',`${title}, ${machine}, ${item.entry.name}${status?', '+status:''}${flagged?', Flagged for review':''}`);
