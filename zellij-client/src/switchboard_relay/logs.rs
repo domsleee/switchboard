@@ -516,6 +516,54 @@ pub(super) async fn browser_resume(request: Request) -> StatusCode {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct NewTabDiagnostic {
+    host: String,
+    request_id: u32,
+    outcome: String,
+    elapsed_ms: u32,
+    delivery_ms: u32,
+    sent_ms: Option<u32>,
+    pane_id: Option<u32>,
+    control_socket: Option<u8>,
+}
+
+impl NewTabDiagnostic {
+    fn message(&self) -> Option<String> {
+        if !matches!(
+            self.outcome.as_str(),
+            "ready" | "timeout" | "disconnected" | "send-failed"
+        ) || self.elapsed_ms > 86_400_000
+            || self.delivery_ms > self.elapsed_ms
+            || self
+                .sent_ms
+                .is_some_and(|sent| sent < self.delivery_ms || sent > self.elapsed_ms)
+            || self.control_socket.is_some_and(|state| state > 3)
+            || self.outcome == "ready" && (self.sent_ms.is_none() || self.pane_id.is_none())
+        {
+            return None;
+        }
+        let timing = |value: Option<u32>| value.map_or_else(|| "-".into(), |v| v.to_string());
+        let outcome = if self.outcome == "ready" && self.elapsed_ms > 500 {
+            "slow"
+        } else {
+            &self.outcome
+        };
+        Some(format!(
+            "Terminal new tab {} request={} pane={} t={}ms delivery={}ms send={}ms control={}",
+            outcome,
+            self.request_id,
+            timing(self.pane_id),
+            self.elapsed_ms,
+            self.delivery_ms,
+            timing(self.sent_ms),
+            self.control_socket
+                .map_or_else(|| "-".into(), |v| v.to_string()),
+        ))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct EnterDiagnostic {
     host: String,
     pane_id: u32,
@@ -558,6 +606,21 @@ pub(super) async fn terminal_switch(
         record(&host.config.name, &diagnostic.scroll_message());
         record(&host.config.name, &diagnostic.control_message());
     }
+    StatusCode::NO_CONTENT
+}
+
+pub(super) async fn new_tab(State(state): State<RelayState>, request: Request) -> StatusCode {
+    let diagnostic: NewTabDiagnostic = match diagnostic_body(request).await {
+        Ok(d) => d,
+        Err(status) => return status,
+    };
+    let Some(host) = state.host(&diagnostic.host) else {
+        return StatusCode::NOT_FOUND;
+    };
+    let Some(message) = diagnostic.message() else {
+        return StatusCode::BAD_REQUEST;
+    };
+    record(&host.config.name, &message);
     StatusCode::NO_CONTENT
 }
 
@@ -639,6 +702,82 @@ mod tests {
             "last_frame_ms":20,"last_parse_ms":750,"frames":1,"bytes":120000,"writes_pending":0,
             "max_parse_lag_ms":730,"physical_cols":120,"physical_rows":40,"native_cols":120,"native_rows":40,
             "viewport_claims":2,"terminal_resizes":3})
+    }
+
+    #[tokio::test]
+    async fn new_tab_diagnostics_report_connection_wait_and_reject_untrusted_metadata() {
+        use tower::ServiceExt;
+        let app = router(
+            RelayConfig {
+                hosts: vec![super::super::tests::config("http://127.0.0.1:8082")],
+                artifact_proxy: None,
+            },
+            8090,
+        )
+        .await
+        .unwrap();
+        let sample = json!({"host":"mac","request_id":7,"outcome":"ready",
+            "elapsed_ms":1800,"delivery_ms":2,"sent_ms":700,"pane_id":9,"control_socket":1});
+        let diagnostic: NewTabDiagnostic = serde_json::from_value(sample.clone()).unwrap();
+        assert_eq!(
+            diagnostic.message().unwrap(),
+            "Terminal new tab slow request=7 pane=9 t=1800ms delivery=2ms send=700ms control=1"
+        );
+        let request = |body: &Value, origin: &str| {
+            hyper::Request::post("/api/diagnostics/new-tab")
+                .header(header::HOST, "127.0.0.1:8090")
+                .header(header::ORIGIN, origin)
+                .body(Body::from(body.to_string()))
+                .unwrap()
+        };
+        for (origin, expected) in [
+            ("https://attacker.example", StatusCode::FORBIDDEN),
+            ("http://127.0.0.1:8090", StatusCode::NO_CONTENT),
+        ] {
+            assert_eq!(
+                app.clone()
+                    .oneshot(request(&sample, origin))
+                    .await
+                    .unwrap()
+                    .status(),
+                expected
+            );
+        }
+        for (field, value, expected) in [
+            ("host", json!("unknown"), StatusCode::NOT_FOUND),
+            ("contents", json!("private screen"), StatusCode::BAD_REQUEST),
+            ("elapsed_ms", json!(86_400_001), StatusCode::BAD_REQUEST),
+            ("delivery_ms", json!(1801), StatusCode::BAD_REQUEST),
+            ("sent_ms", json!(1), StatusCode::BAD_REQUEST),
+            ("sent_ms", json!(1801), StatusCode::BAD_REQUEST),
+            ("sent_ms", Value::Null, StatusCode::BAD_REQUEST),
+            ("pane_id", Value::Null, StatusCode::BAD_REQUEST),
+            ("control_socket", json!(4), StatusCode::BAD_REQUEST),
+            ("outcome", json!("private title"), StatusCode::BAD_REQUEST),
+        ] {
+            let mut invalid = sample.clone();
+            invalid[field] = value;
+            assert_eq!(
+                app.clone()
+                    .oneshot(request(&invalid, "http://127.0.0.1:8090"))
+                    .await
+                    .unwrap()
+                    .status(),
+                expected,
+                "{field}"
+            );
+        }
+        for outcome in ["timeout", "disconnected", "send-failed"] {
+            let mut failed = sample.clone();
+            failed["outcome"] = json!(outcome);
+            failed["sent_ms"] = Value::Null;
+            failed["pane_id"] = Value::Null;
+            assert!(serde_json::from_value::<NewTabDiagnostic>(failed)
+                .unwrap()
+                .message()
+                .unwrap()
+                .starts_with(&format!("Terminal new tab {outcome} ")));
+        }
     }
 
     #[test]

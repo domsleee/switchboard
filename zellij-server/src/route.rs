@@ -1076,6 +1076,7 @@ pub(crate) fn route_action(
             initial_panes,
             first_pane_unblock_condition,
         } => {
+            log::info!("New tab requested: client={}", client_id);
             let shell = default_shell.clone();
             let is_web_client = false; // actions cannot be initiated directly from the web
 

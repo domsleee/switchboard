@@ -9867,6 +9867,7 @@ pub(crate) fn screen_thread_main(
                 completion_tx,
             ) => {
                 let tab_index = screen.get_new_tab_id();
+                log::info!("New tab allocated: client={} tab={}", client_id, tab_index);
                 pending_tab_ids.insert(tab_index);
                 let client_id_for_new_tab = if should_change_focus_to_new_tab {
                     Some(client_id)
@@ -9921,6 +9922,7 @@ pub(crate) fn screen_thread_main(
                 mut completion_tx,
                 blocking_terminal,
             ) => {
+                let started = std::time::Instant::now();
                 log::info!(
                     "ScreenInstruction::ApplyLayout: applying layout for tab {}",
                     tab_id
@@ -9998,6 +10000,12 @@ pub(crate) fn screen_thread_main(
                 }
 
                 screen.render(None)?;
+                log::info!(
+                    "New tab layout ready: tab={} client={} elapsed_ms={}",
+                    tab_id,
+                    client_id,
+                    started.elapsed().as_millis()
+                );
             },
             ScreenInstruction::GoToTab(
                 tab_index,

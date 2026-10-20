@@ -149,6 +149,63 @@ test('New tab holds input until its native pane is active, then focuses without 
   assert.equal(focused,1);assert.equal(h.window.term.options.disableStdin,false);assert.equal(h.timers.size,0);
   h.state({active_pane:pane(3),panes:[pane(1),pane(2),pane(3)]});assert.equal(focused,1);
 });
+test('New tab waits for a connecting control socket and sends exactly once when it opens',()=>{
+  const h=harness(),sent=[];
+  h.state({active_pane:{pane_id:1,is_plugin:false},panes:[{pane_id:1,is_plugin:false}]});
+  const socket=new h.window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');socket.readyState=0;
+  h.window.__zjSendControl=message=>{if(socket.readyState===1)sent.push(message);};
+  h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-new-tab'}});
+  assert.equal(sent.length,0);assert.equal(h.window.term.options.disableStdin,true);
+  socket.readyState=1;socket.handlers.open();socket.handlers.open();
+  assert.deepEqual(sent.map(message=>message.type),['NewTab']);
+  assert.equal(h.window.term.options.disableStdin,true,'Sending is not confirmation of creation');
+  h.state({active_pane:{pane_id:2,is_plugin:false},panes:[{pane_id:1,is_plugin:false},{pane_id:2,is_plugin:false}]});
+  assert.equal(h.window.term.options.disableStdin,false);
+});
+test('New tab reports delivery, connection wait and native confirmation without terminal contents',()=>{
+  const h=harness(),socket=new h.window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');
+  h.window.__zjSendControl=()=>{};
+  socket.handlers.message({data:JSON.stringify({type:'MobileState',payload:{active_pane:{pane_id:1,is_plugin:false},panes:[{pane_id:1,is_plugin:false,title:'private prompt'}]}})});
+  socket.readyState=0;h.setTime(50);
+  h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-new-tab',request_id:7,started_at:1000000}});
+  h.setTime(200);socket.readyState=1;socket.handlers.open();
+  h.setTime(800);socket.handlers.message({data:JSON.stringify({type:'MobileState',payload:{active_pane:{pane_id:2,is_plugin:false},panes:[{pane_id:2,is_plugin:false,title:'private prompt'}]}})});
+  const reports=h.messages.filter(message=>message.type==='zellij-new-tab-diagnostic');
+  assert.equal(reports.length,1);
+  assert.deepEqual(JSON.parse(JSON.stringify(reports[0].diagnostic)),{
+    request_id:7,outcome:'ready',elapsed_ms:800,delivery_ms:50,sent_ms:200,pane_id:2,control_socket:1,
+  });
+  assert.doesNotMatch(JSON.stringify(reports),/private prompt/);
+  assert.equal(h.messages.some(message=>message.type==='zellij-new-tab-failed'),false);
+});
+test('failed queued creations report immediately and are never sent after timeout or disconnect',()=>{
+  for(const failure of ['timeout','disconnected','send-failed']){
+    const h=harness(),sent=[];
+    h.state({active_pane:{pane_id:1,is_plugin:false},panes:[{pane_id:1,is_plugin:false}]});
+    const socket=new h.window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');socket.readyState=0;
+    h.window.__zjSendControl=message=>{if(failure==='send-failed')throw Error('Socket is closed');sent.push(message);};
+    h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-new-tab',request_id:8}});
+    if(failure==='timeout')[...h.timers.values()][0]();
+    else if(failure==='disconnected')socket.handlers.close();
+    else{socket.readyState=1;socket.handlers.open();}
+    socket.readyState=1;socket.handlers.open();
+    assert.equal(sent.length,0);
+    assert.equal(h.window.term.options.disableStdin,false);
+    assert.equal(h.timers.size,0);
+    const report=h.messages.find(message=>message.type==='zellij-new-tab-diagnostic').diagnostic;
+    assert.equal(report.outcome,failure);assert.equal(report.pane_id,null);
+    assert.equal(report.sent_ms===null,failure!=='send-failed');
+    const failed=h.messages.filter(message=>message.type==='zellij-new-tab-failed');
+    assert.equal(failed.length,1);assert.equal(failed[0].request_id,8);
+  }
+});
+test('New tab surfaces a terminal that lost its state instead of silently waiting for thirty seconds',()=>{
+  const h=harness();h.window.__zjSendControl=()=>{throw Error('Must not send without native state');};
+  h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-new-tab',request_id:9}});
+  const failure=h.messages.find(message=>message.type==='zellij-new-tab-failed');
+  assert.equal(failure.request_id,9);assert.match(failure.message,/reconnecting/);
+  assert.equal(h.window.term.options.disableStdin,false);assert.equal(h.timers.size,0);
+});
 test('failed New tab creation restores input on timeout or disconnect',()=>{
   for(const failure of ['timeout','disconnect']){
     const h=harness();h.window.__zjSendControl=()=>{};

@@ -138,11 +138,36 @@
     viewportTab=tab;
     bottomButton.hidden=scrollport.scrollHeight-scrollport.clientHeight-scrollport.scrollTop<cell.height;
   }
-  function releaseNewTab() {
+  function releaseNewTab(outcome) {
     if(!pendingNewTab)return;
-    clearTimeout(pendingNewTab.timeout);
-    if(window.term)window.term.options.disableStdin=pendingNewTab.disabled;
+    const pending=pendingNewTab,now=performance.timeOrigin+performance.now();
+    clearTimeout(pending.timeout);
+    if(window.term)window.term.options.disableStdin=pending.disabled;
     pendingNewTab=null;
+    parent.postMessage({type:'zellij-new-tab-diagnostic',diagnostic:{
+      request_id:pending.requestId,outcome,elapsed_ms:Math.round(now-pending.startedAt),
+      delivery_ms:Math.round(pending.receivedAt-pending.startedAt),
+      sent_ms:pending.sentAt===null?null:Math.round(pending.sentAt-pending.startedAt),
+      pane_id:outcome==='ready'?latest.active_pane.pane_id:null,
+      control_socket:controlSocket?.readyState??null,
+    }},location.origin);
+    if(outcome!=='ready'){
+      const message=outcome==='timeout'?'No new tab received. Check the connection and try again.':
+        'Tab creation interrupted by a connection change. Check the connection and try again.';
+      showEscapeStatus(message,true);
+      parent.postMessage({type:'zellij-new-tab-failed',request_id:pending.requestId,message},location.origin);
+    }
+  }
+  function sendPendingNewTab(){
+    if(!pendingNewTab||pendingNewTab.sentAt!==null||!window.__zjSendControl)return;
+    if(controlSocket&&controlSocket.readyState!==1){
+      if(controlSocket.readyState!==0)releaseNewTab('disconnected');
+      return;
+    }
+    // Unlike focus, creation is not idempotent. Retry only an unsent request.
+    pendingNewTab.sentAt=performance.timeOrigin+performance.now();
+    try{window.__zjSendControl({type:'NewTab'});}
+    catch(_){releaseNewTab('send-failed');}
   }
   function holdFocusInput() {
     if(!window.term?.element)return;
@@ -419,8 +444,8 @@
     latest = payload;
     diagnostics?.state(payload);
     if(viewportSupported())window.dispatchEvent(new Event('zellij:rendering-resize'));
-    const created=pendingNewTab&&latest.active_pane&&!latest.active_pane.is_plugin&&!pendingNewTab.panes.has(latest.active_pane.pane_id);
-    if(created){const origin=pendingNewTab.focusOrigin;releaseNewTab();restoreTerminalFocus(origin);}
+    const created=pendingNewTab&&pendingNewTab.sentAt!==null&&latest.active_pane&&!latest.active_pane.is_plugin&&!pendingNewTab.panes.has(latest.active_pane.pane_id);
+    if(created){const origin=pendingNewTab.focusOrigin;releaseNewTab('ready');restoreTerminalFocus(origin);}
     const missingFocus=pendingFocus && Array.isArray(latest.panes) && !latest.panes.some(pane=>pane.pane_id===pendingFocus.pane_id && pane.is_plugin===pendingFocus.is_plugin);
     if(missingFocus)rejectFocus();
     if(!missingFocus && pendingFocus && latest.active_pane?.pane_id===pendingFocus.pane_id && latest.active_pane?.is_plugin===pendingFocus.is_plugin){
@@ -441,7 +466,9 @@
       if (String(args[0]).includes('/ws/control')) {
         controlSocket=this;
         this.addEventListener('open',()=>{
-          if(controlSocket!==this||!pendingFocus)return;
+          if(controlSocket!==this)return;
+          sendPendingNewTab();
+          if(!pendingFocus)return;
           holdFocusInput();
           if(pendingFocus!==desiredFocus)dispatchFocus();else sendPendingFocus();
         });
@@ -462,8 +489,8 @@
           diagnostics?.finish('disconnected');
           lastViewport=null;claimedViewportTab=null;updateViewport();
           releaseFocus();
-          releaseNewTab();
           parent.postMessage({type:'zellij-disconnected',host},location.origin);
+          releaseNewTab('disconnected');
         });
       }
     }
@@ -507,14 +534,20 @@
     } else if(message?.type==='zellij-size-owner' && viewportSupported() && !pendingFocus && !pendingNewTab && message.tab_position===latest.active_pane?.tab_position){
       const size=physicalViewport();
       if(size)window.__zjViewport.report(size,!!message.owned);
-    } else if (message?.type === 'zellij-new-tab' && window.__zjSendControl) {
-      if(pendingFocus||pendingNewTab||!latest?.active_pane||!window.term)return;
+    } else if (message?.type === 'zellij-new-tab') {
+      if(pendingNewTab)return;
+      if(pendingFocus||!latest?.active_pane||!window.term||!window.__zjSendControl){
+        parent.postMessage({type:'zellij-new-tab-failed',request_id:message.request_id,message:'The terminal is reconnecting. Wait for it to connect and try again.'},location.origin);
+        return;
+      }
       preserveFocus=false;
-      pendingNewTab={focusOrigin:parent.document.activeElement,panes:new Set((latest.panes||[]).filter(pane=>!pane.is_plugin).map(pane=>pane.pane_id)),disabled:window.term.options.disableStdin};
+      const receivedAt=performance.timeOrigin+performance.now();
+      pendingNewTab={requestId:message.request_id??0,startedAt:Number.isFinite(message.started_at)&&message.started_at<=receivedAt?message.started_at:receivedAt,
+        receivedAt,sentAt:null,focusOrigin:parent.document.activeElement,panes:new Set((latest.panes||[]).filter(pane=>!pane.is_plugin).map(pane=>pane.pane_id)),disabled:window.term.options.disableStdin};
       pendingNewTab.panes.add(latest.active_pane.pane_id);
       window.term.options.disableStdin=true;
-      pendingNewTab.timeout=setTimeout(()=>{releaseNewTab();showEscapeStatus('No new tab received. Check the connection and try again.',true);},30000);
-      window.__zjSendControl({type:'NewTab'});
+      pendingNewTab.timeout=setTimeout(()=>releaseNewTab('timeout'),30000);
+      sendPendingNewTab();
     }
   });
 })();

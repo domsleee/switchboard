@@ -11,6 +11,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
     const page=await context.newPage(),errors=[];
     page.on('pageerror',error=>errors.push(error.message));
     let created=0,catalog=0,failed=false,closes=0,frameBoots=0,connected=!emptyMachine,catalogReady=!emptyMachine;
+    const diagnostics=[];
     const nativeTabs=()=>Array.from({length:catalog+1},(_,i)=>({host:'windows',session:'main',id:i?89+i:42,position:i,name:i?'New shell '+i:'Original',panes:[{pane_id:i?8+i:7,is_plugin:false,tab_position:i}]}));
     await page.addInitScript(()=>{window.setInterval=()=>0;});
     await context.route('**/*',async route=>{
@@ -20,15 +21,16 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
       if(path==='/api/hosts')return json([{id:'windows',name:'Windows'}]);
       if(path==='/api/hosts/windows')return json({id:'windows',name:'Windows',sessions:connected?[{name:'main',web_clients_allowed:true}]:[]});
       if(path==='/api/attention')return json({tabs:failed||!catalogReady?[]:nativeTabs(),panes:[],errors:failed?[{host:'windows',message:'Unavailable'}]:[]});
+      if(path==='/api/diagnostics/new-tab'){diagnostics.push(route.request().postDataJSON());return route.fulfill({status:204});}
       if(path==='/api/hosts/windows/close-tab'){closes++;return json({ok:true});}
       if(path.startsWith('/hosts/')){connected=true;frameBoots++;return route.fulfill({contentType:'text/html',body:`<div id="terminal"><input id="terminal-input"></div><script>
         window.WebSocket=class extends EventTarget {constructor(){super();this.readyState=1;}send(){}};
         const input=document.querySelector('input');let count=${created},active=count;
         window.term={element:document.querySelector('#terminal'),options:{disableStdin:false},focus(){input.focus()},blur(){input.blur()},
           _core:{_renderService:{dimensions:{css:{cell:{width:8,height:16}}}}},buffer:{active:{viewportY:0,getLine:()=>({translateToString:()=>''})}},onRender(){},onResize(){}};
-        window.__zjSendControl=message=>{if(message.type==='NewTab')window.creationRequested=true;};
+        window.__zjSendControl=message=>{if(message.type==='NewTab'&&window.controlSocket.readyState===1)window.creationRequested=true;};
       </script><script src="/bridge.js"></script><script>
-        const socket=new WebSocket('wss://switchboard.test/ws/control');
+        const socket=window.controlSocket=new WebSocket('wss://switchboard.test/ws/control');
         function state(){const panes=Array.from({length:count+1},(_,i)=>({pane_id:i?8+i:7,is_plugin:false,tab_position:i,title:'~'}));socket.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'MobileState',payload:{session_name:'main',panes,active_pane:panes[active],tabs:panes.map((p,i)=>({position:i,name:i?'New shell '+i:'Original',active:i===active}))}})}));}
         window.confirmCreation=()=>{count++;active=count;window.creationRequested=false;state()};state();
       </script>`});}
@@ -60,6 +62,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
       await page.waitForFunction(()=>new URL(location.href).searchParams.get('tab')==='42');
     }
     async function create(number){
+      if(number===1)await input.evaluate(()=>{window.controlSocket.readyState=0;});
       await page.keyboard.press(number===1?'Control+Alt+KeyT':'Meta+Alt+KeyT');
       await page.waitForFunction(()=>document.querySelector('#new-tab-dialog').open);
       assert.equal(await page.locator('#new-tab-form button[type="submit"]').evaluate(button=>document.activeElement===button),true,'Create tab is focused so Enter confirms the default target');
@@ -68,6 +71,11 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
       }),true,'The default action is visibly highlighted');
       await page.keyboard.press('Enter');
       await page.waitForFunction(()=>document.querySelector('#tabs .selected .tab-name')?.textContent==='Creating tab…');
+      if(number===1){
+        assert.equal(await input.evaluate(()=>!!window.creationRequested),false);
+        await input.evaluate(()=>{window.controlSocket.readyState=1;window.controlSocket.dispatchEvent(new Event('open'));});
+        await page.waitForFunction(()=>document.querySelector('iframe.active')?.contentWindow.creationRequested===true);
+      }
       assert.equal(await page.locator('#tabs .tab-select').count(),number+1);
       // Repeated old scans must not treat the preceding provisional tab as this creation.
       await page.evaluate(()=>refreshAttention());
@@ -116,6 +124,19 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
     assert.equal(await page.evaluate(()=>document.activeElement.id),'tab-search');
     await page.keyboard.type('keep searching');
     assert.equal(await page.locator('#tab-search').inputValue(),'keep searching');
+    await page.locator('#tab-search').fill('');
+    await page.locator('#new-tab').click();
+    await page.locator('#new-tab-form button[type="submit"]').click();
+    await page.waitForFunction(()=>document.querySelector('iframe.active')?.contentWindow.creationRequested);
+    const failureReport=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/diagnostics/new-tab'&&response.request().postDataJSON().outcome==='disconnected');
+    await input.evaluate(()=>{window.controlSocket.readyState=3;window.controlSocket.dispatchEvent(new Event('close'));});
+    await failureReport;
+    await page.waitForFunction(()=>![...document.querySelectorAll('#tabs .tab-name')].some(name=>name.textContent.includes('Creating tab'))&&document.querySelector('#status').textContent.includes('connection change'));
+    assert.equal(await page.locator('#tabs .selected .tab-name').textContent(),'New shell 3');
+    assert.equal(await input.evaluate(()=>window.term.options.disableStdin),false);
+    await page.waitForFunction(()=>document.querySelector('#status').classList.contains('has-error'));
+    assert.ok(diagnostics.some(diagnostic=>diagnostic.outcome==='ready'&&diagnostic.pane_id===9&&diagnostic.sent_ms>=diagnostic.delivery_ms));
+    assert.ok(diagnostics.some(diagnostic=>diagnostic.outcome==='disconnected'));
     assert.deepEqual(errors,[]);
   }finally{await browser.close();}
 });

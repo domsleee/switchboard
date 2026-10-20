@@ -499,9 +499,11 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 completion_tx,
             ) => {
                 let err_context = || "failed to open new tab";
+                let started = std::time::Instant::now();
                 log::info!(
-                    "PtyInstruction::NewTab: spawning terminals for tab {}",
-                    tab_index
+                    "PtyInstruction::NewTab: spawning terminals for tab {} client={}",
+                    tab_index,
+                    client_id_and_is_web_client.0
                 );
 
                 let floating_panes_layout = if floating_panes_layout.is_empty() {
@@ -523,6 +525,12 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     completion_tx,
                 )
                 .with_context(err_context)?;
+                log::info!(
+                    "New tab terminals ready: tab={} client={} elapsed_ms={}",
+                    tab_index,
+                    client_id_and_is_web_client.0,
+                    started.elapsed().as_millis()
+                );
             },
             PtyInstruction::OverrideLayout(
                 cwd,
