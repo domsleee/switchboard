@@ -281,6 +281,15 @@ Uncertain delivery is never automatically retried. Input waits for focus acknowl
 remote panes; Back to terminal preserves the focused pane. Dialogs and plugin
 focus retain their native behavior.
 
+## Windows terminal input
+
+The shared PTY writer keeps a separate pending-input queue for each terminal.
+Windows uses a nonblocking byte pipe on the writer side, while ConPTY keeps a
+synchronous reader. A full pipe returns zero bytes so the writer can service
+other terminals and retry later. Writes are limited to 4 KiB because Windows can
+reject an oversized nonblocking write even when some pipe space is available.
+Queued input keeps its original order; a disconnected pipe remains an error.
+
 ## Diagnostics
 
 Settings → Logs includes terminal tab switches: focus acknowledgment,
