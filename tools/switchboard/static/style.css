@@ -4,7 +4,7 @@ body{margin:0;height:100dvh;display:flex;flex-direction:column}
 strong{font-size:13px}
 button,select{font:inherit;font-size:11px;border:1px solid #363e4d;background:#222732;color:inherit;border-radius:4px;padding:3px 7px;cursor:pointer}
 button:hover{background:#303949}
-button:focus-visible{outline:2px solid #9dc2fa;outline-offset:1px}
+button:focus-visible,#new-tab-form button[type="submit"]:focus{outline:2px solid #9dc2fa;outline-offset:1px}
 button.selected{background:#30466b;border-color:#6f9cdd}
 button:disabled{opacity:.5;cursor:default}
 #filters{display:flex;gap:4px}
