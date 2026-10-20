@@ -655,7 +655,8 @@ async fn terminal_response(
         #[serde(deny_unknown_fields)]
         struct Control {
             session: String,
-            target: u32,
+            target: Option<u32>,
+            pane_id: Option<u32>,
             close: bool,
         }
         let bytes = to_bytes(request.into_body(), 2048)
@@ -663,7 +664,13 @@ async fn terminal_response(
             .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid peer control request"))?;
         let target: Control = serde_json::from_slice(&bytes)
             .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid peer control request"))?;
-        control::execute_host(&host, &target.session, target.target, target.close).await?;
+        let action = match (target.target, target.pane_id, target.close) {
+            (Some(id), None, false) => control::ControlAction::Escape(id),
+            (Some(id), None, true) => control::ControlAction::CloseTab(id),
+            (None, Some(id), true) => control::ControlAction::ClosePaneTab(id),
+            _ => return Err((StatusCode::BAD_REQUEST, "Invalid peer control target")),
+        };
+        control::execute_host(&host, &target.session, action).await?;
         return Ok(Json(json!({"ok":true})).into_response());
     }
     // Login replies contain only native session cookies. Native peer tokens never leave storage.

@@ -95,6 +95,11 @@ function markNewTabs(entry,tabs){
   localStorage.setItem('switchboard-new-tabs',JSON.stringify(state));
 }
 function sessionTabs(entry){return [...(entry.catalog||[]),...(entry.provisionalTabs||[]),...(entry.creatingTab?[entry.creatingTab]:[])];}
+function matchesClosingTab(tab,closing){
+  return Number.isInteger(closing.pane_id)
+    ? tab.panes.some(pane=>!pane.is_plugin&&pane.pane_id===closing.pane_id)
+    : !tab.pending&&tab.id===closing.tab_id;
+}
 function updateCreatedTabs(entry){
   const state=entry.state,active=state?.active_pane,creating=entry.creatingTab;
   if(state?.session_name!==entry.name)return;
@@ -163,7 +168,12 @@ function setCatalog(entry,tabs){
   entry.catalog=tabs;
   entry.provisionalTabs=entry.provisionalTabs?.filter(tab=>!migrations.has(tabKey(entry,tab)));
   // Keep confirmed closes hidden through snapshots taken before the close finished.
-  for(const [id,closing] of entry.closingTabs||[])if(closing.session!==entry.name||!closing.pending&&!tabs.some(tab=>tab.id===id))entry.closingTabs.delete(id);
+  for(const [key,closing] of [...(entry.closingTabs||[])]){
+    if(closing.session!==entry.name||!closing.pending&&!sessionTabs(entry).some(tab=>matchesClosingTab(tab,closing)))entry.closingTabs.delete(key);
+    else if(migrations.has(key)){
+      entry.closingTabs.delete(key);closing.key=migrations.get(key);entry.closingTabs.set(closing.key,closing);
+    }
+  }
   syncActiveTab(entry);
 }
 function syncActiveTab(entry){
@@ -244,7 +254,7 @@ function allTabs(ignoreFilter=false, includeArchived=false) {
   // tabs created since then last.
   const byMachine=(a,b)=>{const x=machineOrder(a),y=machineOrder(b);return x<y?-1:x>y?1:0;};
   return [...sessions.values()].flatMap(entry => sessionTabs(entry).map(tab => ({entry,tab,key:tabKey(entry,tab)})))
-    .filter(({entry,tab,key}) => !entry.closingTabs?.has(tab.id) && (includeArchived || !archived[key]) && (ignoreFilter || filter === 'all' || groups[entry.host] === filter))
+    .filter(({entry,tab,key}) => ![...(entry.closingTabs?.values()||[])].some(closing=>matchesClosingTab(tab,closing)) && (includeArchived || !archived[key]) && (ignoreFilter || filter === 'all' || groups[entry.host] === filter))
     .sort((a,b) => (ranks.get(a.key)??Infinity)-(ranks.get(b.key)??Infinity) || lateness(a)-lateness(b) || byMachine(a,b));
 }
 function moveTab(key,targetKey,after=false) {
@@ -951,8 +961,8 @@ function updateTabMenu(){
   $('tab-menu-target').textContent=`${tabTitle(item)} · ${hosts.get(item.entry.host)?.name||item.entry.host} · ${item.entry.name}`;
   $('ready').disabled=!!item.tab.pending&&!Number.isInteger(item.tab.id);
   $('archive-tab').disabled=!!item.tab.pending&&!Number.isInteger(item.tab.id);
-  $('close-tab').disabled=!!item.entry.cached||!!item.tab.pending||!Number.isInteger(item.tab.id);
-  $('close-tab').title=item.entry.cached||item.tab.pending||!Number.isInteger(item.tab.id)?'Waiting for the terminal to finish connecting':'Close this tab · Ctrl+D';
+  $('close-tab').disabled=!closeTabTarget(item);
+  $('close-tab').title=$('close-tab').disabled?'Waiting for the terminal to finish connecting':'Close this tab · Ctrl+D';
   $('select-text').disabled=!item.entry.frame.contentWindow.SwitchboardClipboard;
   $('select-text').setAttribute('aria-pressed',String(!!item.entry.frame.contentWindow.SwitchboardClipboard?.selectionMode));
   const viewport=item.entry.state?.tab_viewport,sizeOwner=$('size-owner');
