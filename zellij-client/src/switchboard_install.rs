@@ -246,6 +246,8 @@ fn mac_jobs(
             serde_json::json!({
                 "ProgramArguments": ["/bin/sh", "-c", format!("{startup}; exec {relay}")],
                 "WorkingDirectory": helpers, "KeepAlive": true,
+                // Unset means launchd throttles CPU and I/O, so keystroke echo stalls under load.
+                "ProcessType": "Interactive",
                 "StandardOutPath": log("zellij-switchboard.log"),
                 "StandardErrorPath": log("zellij-switchboard.log"),
                 "EnvironmentVariables": env,
@@ -477,6 +479,7 @@ mod tests {
              exec /bin/zellij serve --host-config /Users/me/.config/zellij/switchboard-hosts.json --port 8090"
         );
         assert_eq!(job("dev.zellij.switchboard")["KeepAlive"], true);
+        assert_eq!(job("dev.zellij.switchboard")["ProcessType"], "Interactive");
         assert_eq!(job("dev.switchboard.menu")["KeepAlive"], false);
         assert_eq!(
             job("dev.switchboard.menu")["StandardOutPath"],
