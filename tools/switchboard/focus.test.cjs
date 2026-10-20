@@ -245,7 +245,7 @@ test('headless browser keeps iframe, selection, URL and input focus through fail
     await fallback.click();
     await page.waitForFunction(()=>document.activeElement===document.querySelector('iframe[title="Windows: main"]'));
     assert.equal(new URL(page.url()).searchParams.get('pane'),'42');
-    await fallback.evaluate(e=>e.nextSibling.click());assert.equal(await page.locator('#close-tab').isDisabled(),true);
+    await fallback.evaluate(e=>e.nextSibling.click());assert.equal(await page.locator('#close-tab').isDisabled(),false);
     await page.keyboard.press('Escape');
     attentionError=false;await page.evaluate(()=>refreshAttention());
     assert.equal(page.url(),requested);assert.equal(await page.locator('#tabs .tab-select').count(),2);

@@ -9,10 +9,17 @@ pub(super) struct EscapeTarget {
     pane_id: u32,
 }
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct CloseTarget {
-    session: String,
-    tab_id: u32,
+#[serde(untagged, deny_unknown_fields)]
+pub(super) enum CloseTarget {
+    Tab { session: String, tab_id: u32 },
+    Pane { session: String, pane_id: u32 },
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum ControlAction {
+    Escape(u32),
+    CloseTab(u32),
+    ClosePaneTab(u32),
 }
 
 pub(super) fn validate_session(session: &str) -> Result<(), Error> {
@@ -116,9 +123,14 @@ pub(super) async fn escape(
     RoutePath(id): RoutePath<String>,
     Json(target): Json<EscapeTarget>,
 ) -> Result<Json<Value>, Error> {
-    execute(&state, &id, &target.session, target.pane_id, false)
-        .await
-        .inspect_err(|e| failed(&state, &id, "Escape", e))?;
+    execute(
+        &state,
+        &id,
+        &target.session,
+        ControlAction::Escape(target.pane_id),
+    )
+    .await
+    .inspect_err(|e| failed(&state, &id, "Escape", e))?;
     Ok(Json(json!({"ok":true})))
 }
 pub(super) async fn close_tab(
@@ -126,7 +138,11 @@ pub(super) async fn close_tab(
     RoutePath(id): RoutePath<String>,
     Json(target): Json<CloseTarget>,
 ) -> Result<Json<Value>, Error> {
-    execute(&state, &id, &target.session, target.tab_id, true)
+    let (session, action) = match target {
+        CloseTarget::Tab { session, tab_id } => (session, ControlAction::CloseTab(tab_id)),
+        CloseTarget::Pane { session, pane_id } => (session, ControlAction::ClosePaneTab(pane_id)),
+    };
+    execute(&state, &id, &session, action)
         .await
         .inspect_err(|e| failed(&state, &id, "Close tab", e))?;
     Ok(Json(json!({"ok":true})))
@@ -149,21 +165,30 @@ async fn execute(
     state: &RelayState,
     id: &str,
     session: &str,
-    target: u32,
-    close: bool,
+    action: ControlAction,
 ) -> Result<(), Error> {
     validate_session(session)?;
     let host = state
         .host(id)
         .ok_or((StatusCode::NOT_FOUND, "Unknown host"))?;
     if host.config.escape_transport.as_deref() == Some("gateway") {
+        let body = match action {
+            ControlAction::Escape(target) => {
+                json!({"session":session,"target":target,"close":false})
+            },
+            ControlAction::CloseTab(target) => {
+                json!({"session":session,"target":target,"close":true})
+            },
+            // Omit target so older peers reject this instead of treating a pane ID as a tab ID.
+            ControlAction::ClosePaneTab(pane_id) => {
+                json!({"session":session,"pane_id":pane_id,"close":true})
+            },
+        };
         let response = host
             .request(
                 Method::POST,
                 "/switchboard/control",
-                json!({"session":session,"target":target,"close":close})
-                    .to_string()
-                    .into(),
+                body.to_string().into(),
                 "application/json",
             )
             .await
@@ -174,12 +199,15 @@ async fn execute(
             Err((response.status, peer_failure(response.status)))
         };
     }
-    execute_host(&host, session, target, close).await
+    execute_host(&host, session, action).await
 }
 
 // Peers answer with execute_host's fixed statuses; say what each means here.
 fn peer_failure(status: StatusCode) -> &'static str {
     match status {
+        StatusCode::BAD_REQUEST => {
+            "The other computer does not support this tab action; update Switchboard there"
+        },
         StatusCode::CONFLICT => "That tab or pane no longer exists on the other computer",
         StatusCode::NOT_FOUND => "That session is not shared on the other computer",
         StatusCode::FORBIDDEN | StatusCode::UNAUTHORIZED => {
@@ -195,8 +223,7 @@ fn peer_failure(status: StatusCode) -> &'static str {
 pub(super) async fn execute_host(
     host: &Host,
     session: &str,
-    target: u32,
-    close: bool,
+    action: ControlAction,
 ) -> Result<(), Error> {
     validate_session(session)?;
     // Only local engines reach here: configured hosts are local and peers use their gateway.
@@ -228,6 +255,7 @@ pub(super) async fn execute_host(
             "Writable host authentication is required",
         ));
     }
+    let close = !matches!(action, ControlAction::Escape(_));
     let all = if close {
         vec!["list-panes", "--json", "--all"]
     } else {
@@ -238,19 +266,7 @@ pub(super) async fn execute_host(
         .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot identify target"))?;
     let panes: Vec<Value> = serde_json::from_str(&panes)
         .map_err(|_| (StatusCode::BAD_GATEWAY, "Invalid pane catalog"))?;
-    let available = panes.iter().any(|pane| {
-        if close {
-            pane["tab_id"] == target
-        } else {
-            pane["id"] == target
-                && pane["is_plugin"] == false
-                && pane["exited"] != true
-                && pane["is_held"] != true
-        }
-    });
-    if !available {
-        return Err((StatusCode::CONFLICT, "Target is no longer available"));
-    }
+    let target = resolve_target(&panes, action)?;
     let final_tab = close && panes.iter().all(|pane| pane["tab_id"] == target);
     let target = target.to_string();
     let args = if close {
@@ -287,6 +303,27 @@ pub(super) async fn execute_host(
         }
     }
     Ok(())
+}
+
+fn resolve_target(panes: &[Value], action: ControlAction) -> Result<u32, Error> {
+    let target = match action {
+        ControlAction::ClosePaneTab(id) => panes
+            .iter()
+            .find(|pane| pane["id"] == id && pane["is_plugin"] == false)
+            .and_then(|pane| pane["tab_id"].as_u64())
+            .and_then(|id| u32::try_from(id).ok()),
+        ControlAction::CloseTab(id) => panes.iter().any(|pane| pane["tab_id"] == id).then_some(id),
+        ControlAction::Escape(id) => panes
+            .iter()
+            .any(|pane| {
+                pane["id"] == id
+                    && pane["is_plugin"] == false
+                    && pane["exited"] != true
+                    && pane["is_held"] != true
+            })
+            .then_some(id),
+    };
+    target.ok_or((StatusCode::CONFLICT, "Target is no longer available"))
 }
 
 async fn session_ended(host: &Host, session: &str) -> bool {
@@ -349,6 +386,30 @@ mod tests {
             json!({"session":"main","tab_id":1,"extra":true})
         )
         .is_err());
+        for target in [
+            json!({"session":"main"}),
+            json!({"session":"main","pane_id":-1}),
+            json!({"session":"main","tab_id":1,"pane_id":2}),
+        ] {
+            assert!(serde_json::from_value::<CloseTarget>(target).is_err());
+        }
+    }
+
+    #[test]
+    fn provisional_close_resolves_the_pane_to_its_tab_not_the_matching_tab_id() {
+        let panes = vec![
+            json!({"id":17,"tab_id":42,"is_plugin":false,"is_held":true}),
+            json!({"id":90,"tab_id":17,"is_plugin":false}),
+            json!({"id":18,"tab_id":99,"is_plugin":true}),
+        ];
+        assert_eq!(
+            resolve_target(&panes, ControlAction::ClosePaneTab(17)),
+            Ok(42)
+        );
+        assert_eq!(resolve_target(&panes, ControlAction::CloseTab(17)), Ok(17));
+        assert!(resolve_target(&panes, ControlAction::ClosePaneTab(18)).is_err());
+        assert!(resolve_target(&panes, ControlAction::ClosePaneTab(42)).is_err());
+        assert!(resolve_target(&panes, ControlAction::Escape(17)).is_err());
     }
 
     #[cfg(unix)]

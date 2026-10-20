@@ -1840,15 +1840,25 @@ mod tests {
         .unwrap();
         relay.hosts = Arc::new([("mesh-peer".into(), Arc::new(Host::new(peer).unwrap()))].into());
         let response = control::close_tab(
-            State(relay),
+            State(relay.clone()),
             RoutePath("mesh-peer".into()),
             Json(serde_json::from_value(json!({"session":"main","tab_id":7})).unwrap()),
         )
         .await;
         assert!(response.is_ok());
+        let response = control::close_tab(
+            State(relay),
+            RoutePath("mesh-peer".into()),
+            Json(serde_json::from_value(json!({"session":"main","pane_id":17})).unwrap()),
+        )
+        .await;
+        assert!(response.is_ok());
         assert_eq!(
             *received.lock().await,
-            [json!({"session":"main","target":7,"close":true})]
+            [
+                json!({"session":"main","target":7,"close":true}),
+                json!({"session":"main","pane_id":17,"close":true}),
+            ]
         );
         server.abort();
     }

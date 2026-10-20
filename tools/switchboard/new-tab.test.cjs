@@ -88,9 +88,9 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
     assert.equal(await page.locator('#tabs .selected .tab-name').textContent(),'New shell 1');
     assert.equal(await input.inputValue(),'draft 1');
     assert.equal(await input.evaluate(i=>document.activeElement===i),true);
-    // Pending pane IDs must never be sent as native tab IDs to Close.
+    // Pending panes can close through their own target, not a native tab ID.
     await page.locator('#tabs .selected').click({button:'right'});
-    assert.equal(await page.locator('#close-tab').isDisabled(),true);assert.equal(closes,0);
+    assert.equal(await page.locator('#close-tab').isDisabled(),false);assert.equal(closes,0);
     await page.keyboard.press('Escape');
     failed=false;await page.evaluate(()=>refreshAttention());
     await create(2);
