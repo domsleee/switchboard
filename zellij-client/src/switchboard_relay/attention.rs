@@ -251,7 +251,7 @@ pub(super) async fn scan(host: &Host, offset: usize) -> anyhow::Result<Value> {
             host,
             &name,
             &["list-panes", "--json", "--all"],
-            remaining.min(Duration::from_secs(2)),
+            remaining.min(Duration::from_secs(5)),
         )
         .await;
         let panes: Vec<Value> = match panes.ok().and_then(|text| serde_json::from_str(&text).ok()) {
@@ -698,10 +698,8 @@ pub(super) async fn acknowledge(
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn local_hosts_scan_with_the_cli_and_paired_hosts_through_their_gateway() {
-        use std::os::unix::fs::PermissionsExt;
         let upstream = Router::new()
             .route(
                 "/command/login",
@@ -723,18 +721,37 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let token = dir.path().join("token");
         std::fs::write(&token, "t").unwrap();
-        let cli = dir.path().join("zellij");
+        let cli = dir.path().join(if cfg!(windows) {
+            "zellij.cmd"
+        } else {
+            "zellij"
+        });
+        #[cfg(unix)]
         std::fs::write(&cli, r#"#!/bin/sh
 case "$*" in
-*list-panes*) echo '[{"id":1,"tab_id":4,"tab_position":0,"tab_name":"T","title":"x","pane_command":"codex","is_plugin":false}]';;
+*list-panes*) sleep 2.2; echo '[{"id":1,"tab_id":4,"tab_position":0,"tab_name":"T","title":"x","pane_command":"codex","is_plugin":false}]';;
 *dump-screen*) printf '(3s esc to interrupt)\n> x\ngpt-5 tab to queue message\n';;
 esac
 "#).unwrap();
-        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+        #[cfg(windows)]
+        std::fs::write(&cli, r#"@echo off
+if "%~4"=="list-panes" goto catalog
+echo (3s esc to interrupt)
+exit /b 0
+:catalog
+ping -n 4 127.0.0.1 >nul
+echo [{"id":1,"tab_id":4,"tab_position":0,"tab_name":"T","title":"x","pane_command":"codex","is_plugin":false}]
+"#).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
         let mut local = super::super::tests::config(&url);
         local.token_file = token.to_str().unwrap().into();
         local.zellij_binary = Some(cli.to_str().unwrap().into());
         let snapshot = scan(&Host::new(local.clone()).unwrap(), 0).await.unwrap();
+        assert_eq!(snapshot["errors"], json!([]), "{snapshot}");
         assert_eq!(snapshot["tabs"][0]["id"], 4);
         assert_eq!(snapshot["panes"][0]["state"], "working");
         local.id = "mesh-peer".into();
@@ -1006,6 +1023,24 @@ esac
                 "Copilot text in another agent's transcript must not change its identity"
             );
         }
+    }
+
+    #[test]
+    fn copilot_queued_input_does_not_hide_working_status() {
+        let pane = json!({
+            "pane_command":r"cmd.exe /c C:\Users\user\AppData\Roaming\npm\copilot.cmd --yolo",
+            "title":"Diagnose Switchboard 8585 Status - Merging typing fix after checks pass - GitHub Copilot"
+        });
+        // Captured from Diagnose Switchboard with text queued during a running tool.
+        let screen = "C:\\src [⎇ main]                    Session: 1446.98 AIC used\n\
+            ╻▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄\n\
+            ┃ df\n\
+            ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+             ◎ Merging typing fix after checks pass · 4.7 KiB esc esc interrupt · ctrl+q enqueue       GPT-6.1 Sol";
+        assert_eq!(
+            classify(&pane, screen),
+            json!({"state":"working","agent":"copilot"})
+        );
     }
 
     #[test]
