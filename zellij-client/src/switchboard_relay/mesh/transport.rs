@@ -32,6 +32,24 @@ fn rejected(error: anyhow::Error) -> Error {
     logs::record("pairing", message);
     (status, message)
 }
+/// Sync, board and pairing calls all share this, so name the call and status.
+pub(super) fn reply_error(
+    member: &str,
+    path: &str,
+    status: StatusCode,
+    body: &[u8],
+) -> anyhow::Error {
+    if status == StatusCode::GONE {
+        return anyhow::anyhow!("Invitation expired, cancelled or consumed");
+    }
+    if status == StatusCode::SERVICE_UNAVAILABLE {
+        // The peer's web server answers 503 when its relay is not running.
+        return anyhow::anyhow!("Cannot reach Switchboard on {member}; its relay is not running");
+    }
+    let body = String::from_utf8_lossy(&body[..body.len().min(200)]);
+    let message = format!("{member} answered {path} with {status} {body}");
+    anyhow::anyhow!(message.trim_end().to_owned())
+}
 fn rejection(error: anyhow::Error) -> Error {
     // Error chains can contain a request URI or TLS diagnostic. Return only the bounded operation error.
     let reason = error.to_string();
@@ -436,14 +454,14 @@ impl Mesh {
         let response = tokio::time::timeout(Duration::from_secs(15), host.raw_request(Method::POST, path, serde_json::to_vec(body)?.into(), "application/json", None)).await
             .map_err(|_| anyhow::anyhow!("Inviter unavailable; check the network and retry"))?
             .map_err(|error| error.context("Cannot reach the intended computer; check its address, TLS identity and private network"))?;
-        if response.status == StatusCode::GONE {
-            anyhow::bail!("Invitation expired, cancelled or consumed");
+        if response.status != StatusCode::OK {
+            return Err(reply_error(
+                &member.name,
+                path,
+                response.status,
+                &response.body,
+            ));
         }
-        anyhow::ensure!(
-            response.status == StatusCode::OK,
-            "Inviter rejected pairing; check expiry or request a new invitation ({})",
-            String::from_utf8_lossy(&response.body[..response.body.len().min(200)])
-        );
         Ok(serde_json::from_slice(&response.body)?)
     }
     pub(super) async fn authorized(&self, authorization: &str) -> Option<(String, Arc<Host>)> {
