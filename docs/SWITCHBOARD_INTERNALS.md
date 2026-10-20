@@ -145,6 +145,11 @@ the last, following the current order, filter and search, also from inside the t
 **Ctrl+1…9** stay with the browser's own tab switching.
 Mac and Linux use **Ctrl+1…Ctrl+8** and **Ctrl+9** for the same Switchboard navigation.
 On Mac, **Cmd+1…9** stay with the browser's own tab switching.
+Sidebar shortcuts also work inside blank or failed terminal pages, even before
+the terminal bridge loads. Native dialogs keep their shortcuts, and **Ctrl+D**
+does not close a tab while a form input is focused.
+Selecting an offline tab releases the previous terminal's keyboard focus, so
+sidebar shortcuts still work while the selected tab reconnects.
 **Right-click a sidebar tab → Archive** hides it without closing its terminal.
 **Middle-click a sidebar tab**, **Right-click → Close**, or **Ctrl+D** immediately
 closes every pane in that tab and stops its processes. Middle-click targets the
@@ -170,8 +175,9 @@ archived tab restores it in this browser.
 Tab labels and the browser window title follow live Codex/Claude/Copilot pane titles,
 including `/rename` updates. Agent spinner prefixes are stripped from labels.
 Plain **Ctrl+T** is disabled inside the terminal so it cannot open Zellij's tab menu.
-Use **+ New tab** or **Ctrl+Alt+T** (Windows) / **Cmd+Alt+T** (Mac) to open a shell in a chosen machine/session. The new tab is
-selected automatically.
+Use **+ New tab** or **Ctrl+Alt+T** (Windows) / **Cmd+Alt+T** (Mac) to open a shell in a chosen machine/session.
+**Create tab** is focused by default, so **Enter** creates a tab in the selected
+machine/session. The new tab is selected automatically.
 **Ctrl+L** or **Ctrl+Alt+L** clears the focused terminal, and **Ctrl+Backspace** / **Alt+Backspace**
 delete the word to the left. If your browser keeps **Ctrl+L** for its address bar,
 use **Ctrl+Alt+L** or run `clear` at the shell prompt. These terminal shortcuts leave

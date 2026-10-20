@@ -463,7 +463,12 @@ function focus(item,background=false) {
   }
   // A polling retry must not blur/disable a terminal while its control socket
   // lacks current metadata. The next native state performs the reconnect focus.
-  if(!item.entry.state||item.entry.disconnected){item.entry.needsFocus=true;return;}
+  if(!item.entry.state||item.entry.disconnected){
+    item.entry.needsFocus=true;
+    // Do not strand sidebar shortcuts in the previous, now hidden terminal.
+    if(!background&&activeElement?.tagName==='IFRAME')activeElement.blur();
+    return;
+  }
   if(item.entry.pendingNewTab||item.tab.pending&&!item.tab.panes.length)return;
   $('artifact-preview').hidden=true;
   $('artifact-frame').src='about:blank';
@@ -500,7 +505,8 @@ function closeSelectedTab(){
   contextItem=item;
   $('close-tab').click();
 }
-window.addEventListener('keydown',event=>{
+window.addEventListener('keydown',sidebarKeydown,true);
+function sidebarKeydown(event){
   if((event.metaKey||event.ctrlKey)&&!event.altKey&&!event.shiftKey&&event.code==='KeyK'&&!document.querySelector('dialog[open]')){event.preventDefault();showTabSearch();return;}
   const number=tabNumber(event);
   if(number&&!document.querySelector('dialog[open]')){event.preventDefault();event.stopImmediatePropagation();selectTabNumber(number);return;}
@@ -530,7 +536,7 @@ window.addEventListener('keydown',event=>{
   if(!direction)return;
   event.preventDefault();event.stopImmediatePropagation();
   if(event.shiftKey)moveSelected(direction);else stepTab(direction);
-},true);
+}
 // Windows uses Alt+1–9 so Ctrl+digits stay with the browser. Other platforms use
 // Ctrl+digits; 1–8 pick the visible sidebar tab and 9 picks the last.
 function tabNumber(event){
@@ -570,6 +576,15 @@ function connectSession(host,name,starting=false,cached=false) {
     return existing;
   }
   const frame=document.createElement('iframe');frame.title=`${host.name}: ${name}`;
+  frame.onload=()=>{
+    const doc=frame.contentDocument;
+    if(!doc){setStatus('Terminal page unavailable. Use the sidebar to choose another tab.',true);return;}
+    // Blank and failed terminal pages have no bridge to forward sidebar shortcuts.
+    doc.addEventListener('keydown',event=>{
+      if(!frame.classList.contains('active')||doc.querySelector('dialog[open], .security-modal, [aria-modal="true"]'))return;
+      sidebarKeydown(event);
+    },true);
+  };
   frame.src=cached?'about:blank':`/hosts/${encodeURIComponent(host.id)}/${encodeURIComponent(name)}`;
   frame.allow='clipboard-read; clipboard-write';
   const entry={host:host.id,name,frame,state:null,starting,cached,catalogUnavailable:catalogUnavailable(host.id,name)};sessions.set(key,entry);

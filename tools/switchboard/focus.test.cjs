@@ -432,14 +432,17 @@ for(const touchscreen of [false,true])test(`sidebar selection supports immediate
   }finally{await browser.close();}
 });
 
-async function browserFocusFixture({mismatch=null,acknowledge=true}={}){
+async function browserFocusFixture({mismatch=null,acknowledge=true,platform}={}){
   const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
   const browser=await chromium.launch({headless:true});
   try{
     const context=await browser.newContext({viewport:{width:1280,height:900}});
     const page=await context.newPage(),pageErrors=[],closes=[];
     page.on('pageerror',error=>pageErrors.push(error.message));
-    await page.addInitScript(()=>{if(window===top)window.setInterval=()=>0;});
+    await page.addInitScript(platform=>{
+      if(platform)Object.defineProperty(Navigator.prototype,'platform',{get:()=>platform});
+      if(window===top)window.setInterval=()=>0;
+    },platform);
     await context.route('**/*',async route=>{
       const pathname=new URL(route.request().url()).pathname;
       const json=value=>route.fulfill({contentType:'application/json',body:JSON.stringify(value)});
@@ -532,6 +535,94 @@ test('headless browser Ctrl+D closes the selected stable tab exactly once while 
     await page.locator('#settings').click();await page.keyboard.press('Control+d');
     await page.evaluate(()=>new Promise(requestAnimationFrame));
     assert.equal(closes.length,1,'Search and dialog keys do not close terminals');
+    assert.deepEqual(pageErrors,[]);
+  }finally{await browser.close();}
+});
+
+for(const platform of ['Win32','MacIntel','Linux x86_64'])test(`${platform}: unavailable terminal pages retain sidebar shortcuts`,
+  {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE to run the isolated browser focus check'},async()=>{
+  const {browser,page,input,pageErrors}=await browserFocusFixture({platform});
+  try{
+    const frame=page.frames().find(frame=>frame.url().includes('/hosts/mac/main')),closes=[];
+    const modifier=platform==='Win32'?'Alt':'Control';
+    const key=id=>JSON.stringify(['mac','main','tab',id]);
+    await page.bringToFront();
+    await page.route('**/hosts/mac/main*',route=>new URL(route.request().url()).searchParams.has('unbridged')
+      ? route.fulfill({contentType:'text/html',body:'<p>Terminal client unavailable</p>'})
+      : route.fulfill({status:502,contentType:'text/plain',body:'Host HTTP unavailable'}));
+    await page.route('**/api/hosts/mac/close-tab',route=>{
+      closes.push(route.request().postDataJSON());
+      return route.fulfill({status:503,contentType:'text/plain',body:'Fixture host unavailable'});
+    });
+    const offlineKey=JSON.stringify(['offline','main','tab',0]);
+    await page.evaluate(()=>{
+      const host={id:'offline',name:'Offline',error:'Host unavailable'};
+      hosts.set(host.id,host);
+      const entry=connectSession(host,'main',false,true);
+      setCatalog(entry,[{id:0,position:0,name:'Tab #1',panes:[]}]);render();
+    });
+    for(const collapsed of [false,true]){
+      if(collapsed)await page.locator('#sidebar-toggle').click();
+      await input.focus();await page.keyboard.press(modifier+'+Digit3');
+      await page.waitForFunction(key=>selected===key,offlineKey);
+      assert.equal(await page.evaluate(()=>document.activeElement===document.body),true,'Selecting an offline tab must release the hidden previous terminal');
+      await page.keyboard.press('Control+d');
+      await page.waitForFunction(()=>document.querySelector('#status').textContent.includes('still connecting'));
+      assert.equal(closes.length,0,'Cached tabs show a connection error instead of pretending to close');
+      await page.keyboard.press(modifier+'+Digit1');
+      await page.waitForFunction(key=>selected===key,key(41));
+    }
+    await page.evaluate(()=>{
+      const id=sessionKey('offline','main');sessions.get(id).frame.remove();sessions.delete(id);hosts.delete('offline');render();
+    });
+    for(const unavailable of ['error','blank','unbridged']){
+      await page.evaluate(cached=>{
+        const entry=sessions.get(JSON.stringify(['mac','main']));
+        if(cached)entry.state=null;
+        entry.cached=cached;entry.disconnected=true;entry.requestedPane=null;entry.focusPending=false;entry.needsFocus=false;
+        selected=tabKey(entry,entry.catalog[0]);render();
+      },unavailable==='blank');
+      if(unavailable==='error')await frame.goto('https://switchboard.test/hosts/mac/main');
+      else if(unavailable==='blank')await Promise.all([
+        frame.waitForURL('about:blank'),
+        page.evaluate(()=>{sessions.get(JSON.stringify(['mac','main'])).frame.src='about:blank';}),
+      ]);
+      else await frame.goto('https://switchboard.test/hosts/mac/main?unbridged=1');
+      await frame.evaluate(()=>{document.body.style.minHeight='100vh';});
+      await frame.evaluate(()=>window.focus());
+      assert.equal(await frame.evaluate(()=>document.hasFocus()),true);
+      await page.keyboard.press(modifier+'+Digit2');
+      assert.equal(await page.evaluate(()=>selected),key(42),`${unavailable}: sidebar navigation must work from the focused terminal page`);
+      await page.keyboard.press(modifier+'+Digit1');
+      await page.waitForFunction(key=>selected===key,key(41),{timeout:1500});
+      await page.keyboard.press(modifier+'+Digit9');
+      await page.waitForFunction(key=>selected===key,key(42),{timeout:1500});
+      await page.keyboard.press(modifier+'+Digit1');
+      await page.waitForFunction(key=>selected===key,key(41),{timeout:1500});
+      await page.keyboard.press(modifier+'+Digit5');
+      assert.equal(await page.evaluate(()=>selected),key(41),'Out-of-range shortcuts do not switch tabs');
+
+      const before=closes.length;
+      await frame.evaluate(()=>document.body.insertAdjacentHTML('beforeend','<dialog open>Terminal security prompt</dialog>'));
+      await frame.evaluate(()=>window.focus());
+      await page.keyboard.press(modifier+'+Digit2');
+      await page.keyboard.press('Control+d');
+      assert.equal(await page.evaluate(()=>selected),key(41),'Native dialogs keep their shortcuts');
+      assert.equal(closes.length,before);
+      await frame.locator('dialog').evaluate(dialog=>dialog.remove());
+      await frame.evaluate(()=>document.body.insertAdjacentHTML('beforeend','<input id="login">'));
+      await frame.locator('#login').focus();await page.keyboard.press('Control+d');
+      assert.equal(closes.length,before,'Form inputs must not close a terminal');
+      await frame.locator('#login').evaluate(input=>input.blur());
+
+      await page.keyboard.down('Control');await page.keyboard.down('KeyD');await page.keyboard.down('KeyD');
+      await page.keyboard.up('KeyD');await page.keyboard.up('Control');
+      const status=unavailable==='blank'?'still connecting':'Fixture host unavailable';
+      await page.waitForFunction(text=>document.querySelector('#status').textContent.includes(text),status);
+      assert.equal(closes.length,before+(unavailable==='blank'?0:1),'A held shortcut sends at most one close request');
+      if(unavailable!=='blank')assert.deepEqual(closes.at(-1),{session:'main',tab_id:41});
+      assert.equal(await page.locator('#tabs .tab-select').count(),2,'An unavailable host must not look successfully closed');
+    }
     assert.deepEqual(pageErrors,[]);
   }finally{await browser.close();}
 });

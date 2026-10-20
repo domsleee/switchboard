@@ -62,6 +62,10 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
     async function create(number){
       await page.keyboard.press(number===1?'Control+Alt+KeyT':'Meta+Alt+KeyT');
       await page.waitForFunction(()=>document.querySelector('#new-tab-dialog').open);
+      assert.equal(await page.locator('#new-tab-form button[type="submit"]').evaluate(button=>document.activeElement===button),true,'Create tab is focused so Enter confirms the default target');
+      assert.equal(await page.locator('#new-tab-form button[type="submit"]').evaluate(button=>{
+        const style=getComputedStyle(button);return style.outlineStyle==='solid'&&style.outlineWidth==='2px';
+      }),true,'The default action is visibly highlighted');
       await page.keyboard.press('Enter');
       await page.waitForFunction(()=>document.querySelector('#tabs .selected .tab-name')?.textContent==='Creating tab…');
       assert.equal(await page.locator('#tabs .tab-select').count(),number+1);
