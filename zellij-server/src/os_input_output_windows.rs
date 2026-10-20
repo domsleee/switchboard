@@ -26,7 +26,7 @@ use windows_sys::Win32::System::Console::{
     ClosePseudoConsole, CreatePseudoConsole, GenerateConsoleCtrlEvent, ResizePseudoConsole, COORD,
     CTRL_C_EVENT, HPCON,
 };
-use windows_sys::Win32::System::Pipes::{CreateNamedPipeW, CreatePipe};
+use windows_sys::Win32::System::Pipes::CreateNamedPipeW;
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess,
     InitializeProcThreadAttributeList, OpenProcess, TerminateProcess, UpdateProcThreadAttribute,
@@ -42,11 +42,14 @@ pub use async_trait::async_trait;
 const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x00020016;
 const FILE_FLAG_FIRST_PIPE_INSTANCE: u32 = 0x00080000;
 const PIPE_ACCESS_INBOUND: u32 = 0x00000001;
+const PIPE_ACCESS_OUTBOUND: u32 = 0x00000002;
 const PIPE_TYPE_BYTE: u32 = 0;
 const PIPE_WAIT: u32 = 0;
+const PIPE_NOWAIT: u32 = 0x00000001;
+const GENERIC_READ: u32 = 0x80000000;
 const GENERIC_WRITE: u32 = 0x40000000;
 
-/// Monotonic counter so each ConPTY output pipe gets a unique name, even when
+/// Monotonic counter so each ConPTY pipe gets a unique name, even when
 /// re-spawning on the same `terminal_id` (the old async reader may still hold
 /// the previous pipe handle).
 static PIPE_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -252,6 +255,70 @@ fn create_overlapped_output_pipe(terminal_id: u32) -> io::Result<(HANDLE, HANDLE
     Ok((server, client))
 }
 
+/// ConPTY reads synchronously; the shared writer must return partial writes or
+/// zero when full, so one busy terminal cannot stall input to every other pane.
+fn create_input_pipe(terminal_id: u32) -> io::Result<(HANDLE, HANDLE)> {
+    let seq = PIPE_SEQ.fetch_add(1, Ordering::Relaxed);
+    let name = to_wide(&format!(
+        r"\\.\pipe\zellij-pty-input-{}-{}-{}",
+        std::process::id(),
+        terminal_id,
+        seq
+    ));
+    let write = unsafe {
+        CreateNamedPipeW(
+            name.as_ptr(),
+            PIPE_ACCESS_OUTBOUND | FILE_FLAG_FIRST_PIPE_INSTANCE,
+            PIPE_TYPE_BYTE | PIPE_NOWAIT,
+            1,
+            65536,
+            0,
+            0,
+            std::ptr::null(),
+        )
+    };
+    if write == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    let read = unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            GENERIC_READ,
+            0,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
+        )
+    };
+    if read == INVALID_HANDLE_VALUE {
+        let error = io::Error::last_os_error();
+        unsafe { CloseHandle(write) };
+        return Err(error);
+    }
+    Ok((read, write))
+}
+
+fn try_write_input(handle: HANDLE, buf: &[u8]) -> io::Result<usize> {
+    // Windows can reject an oversized nonblocking write even when the pipe has space.
+    let buf = &buf[..buf.len().min(4096)];
+    let mut written = 0;
+    let ok = unsafe {
+        WriteFile(
+            handle,
+            buf.as_ptr(),
+            buf.len() as u32,
+            &mut written,
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(written as usize)
+    }
+}
+
 /// Create a ConPTY pseudo console of the given size attached to the provided
 /// pipes.
 fn create_conpty(
@@ -418,16 +485,17 @@ impl WindowsPtyBackend {
         let (output_read, output_write) =
             create_overlapped_output_pipe(terminal_id).with_context(|| err_context(&cmd))?;
 
-        // 2. Input pipe pair (anonymous, both synchronous)
-        let mut input_read: HANDLE = std::ptr::null_mut();
-        let mut input_write: HANDLE = std::ptr::null_mut();
-        if unsafe { CreatePipe(&mut input_read, &mut input_write, std::ptr::null(), 0) } == 0 {
-            unsafe {
-                CloseHandle(output_read);
-                CloseHandle(output_write);
-            }
-            return Err(io::Error::last_os_error()).with_context(|| err_context(&cmd));
-        }
+        // 2. Input pipe pair
+        let (input_read, input_write) = match create_input_pipe(terminal_id) {
+            Ok(pipe) => pipe,
+            Err(error) => {
+                unsafe {
+                    CloseHandle(output_read);
+                    CloseHandle(output_write);
+                }
+                return Err(error).with_context(|| err_context(&cmd));
+            },
+        };
 
         // 3. Create pseudo console
         let hpcon = match create_conpty(80, 24, input_read, output_write) {
@@ -596,21 +664,7 @@ impl WindowsPtyBackend {
             .get(&terminal_id)
         {
             Some(Some(term)) => {
-                let mut written: u32 = 0;
-                let ok = unsafe {
-                    WriteFile(
-                        term.input_write_handle,
-                        buf.as_ptr(),
-                        buf.len() as u32,
-                        &mut written,
-                        std::ptr::null_mut(),
-                    )
-                };
-                if ok == 0 {
-                    Err(io::Error::last_os_error()).with_context(err_context)
-                } else {
-                    Ok(written as usize)
-                }
+                try_write_input(term.input_write_handle, buf).with_context(err_context)
             },
             _ => Err(anyhow!("no ConPTY terminal found for id {}", terminal_id))
                 .with_context(err_context),
@@ -682,7 +736,156 @@ impl WindowsPtyBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
+    use std::os::windows::io::AsRawHandle;
     use std::path::PathBuf;
+    use std::time::Duration;
+
+    fn input_pipe() -> (std::fs::File, std::fs::File) {
+        let (read, write) = create_input_pipe(0).unwrap();
+        unsafe {
+            (
+                std::fs::File::from_raw_handle(read),
+                std::fs::File::from_raw_handle(write),
+            )
+        }
+    }
+
+    #[test]
+    fn stalled_input_does_not_block_other_terminals() {
+        let (stalled_reader, stalled_writer) = input_pipe();
+        let (mut healthy_reader, healthy_writer) = input_pipe();
+        let (sent, received) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = (|| -> io::Result<usize> {
+                let input = vec![b'x'; 1024 * 1024];
+                let mut accepted = 0;
+                loop {
+                    let written =
+                        try_write_input(stalled_writer.as_raw_handle(), &input[accepted..])?;
+                    if written == 0 {
+                        break;
+                    }
+                    accepted += written;
+                    assert!(accepted < input.len(), "the fixture must fill the pipe");
+                }
+                assert_eq!(
+                    try_write_input(healthy_writer.as_raw_handle(), b"typed")?,
+                    5
+                );
+                Ok(accepted)
+            })();
+            sent.send(result).unwrap();
+        });
+        let progress = received.recv_timeout(Duration::from_secs(2));
+        // Release a synchronous writer before asserting so the regression cannot hang the suite.
+        drop(stalled_reader);
+        worker.join().unwrap();
+        let accepted = progress
+            .expect("a full input pipe blocked typing in another terminal")
+            .unwrap();
+        assert!(accepted > 0);
+        let mut typed = [0; 5];
+        healthy_reader.read_exact(&mut typed).unwrap();
+        assert_eq!(&typed, b"typed");
+    }
+
+    #[test]
+    fn input_resumes_without_losing_or_reordering_bytes() {
+        let (mut reader, writer) = input_pipe();
+        let input: Vec<u8> = (0..256 * 1024).map(|i| (i % 251) as u8).collect();
+        let mut output = Vec::new();
+        let mut offset = 0;
+        while offset < input.len() {
+            let start = offset;
+            while offset < input.len() {
+                let written = try_write_input(writer.as_raw_handle(), &input[offset..]).unwrap();
+                if written == 0 {
+                    break;
+                }
+                offset += written;
+            }
+            assert!(offset > start);
+            let mut chunk = vec![0; offset - start];
+            reader.read_exact(&mut chunk).unwrap();
+            output.extend(chunk);
+        }
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn closed_input_reports_an_error_instead_of_backpressure() {
+        let (reader, writer) = input_pipe();
+        drop(reader);
+        assert!(try_write_input(writer.as_raw_handle(), b"typed").is_err());
+    }
+
+    #[test]
+    fn typed_input_reaches_a_real_conpty_child() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let backend = WindowsPtyBackend::new().unwrap();
+        let shell = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join("System32")
+            .join("cmd.exe");
+        let command = RunCommand {
+            command: shell,
+            args: [
+                "/d",
+                "/q",
+                "/v:on",
+                "/c",
+                "set /p value= & echo received:!value! & set /p finish=",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+            ..Default::default()
+        };
+        let (exited, exit) = std::sync::mpsc::channel();
+        let (mut reader, pid) = backend
+            .do_spawn(
+                command,
+                Box::new(move |_, _, _| {
+                    let _ = exited.send(());
+                }),
+                0,
+            )
+            .unwrap();
+        let received = runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                let input = b"fixture\r";
+                anyhow::ensure!(backend.write_to_tty_stdin(0, input)? == input.len());
+                let mut output = Vec::new();
+                let mut buffer = [0; 4096];
+                loop {
+                    let count = reader.read(&mut buffer).await?;
+                    anyhow::ensure!(count > 0, "ConPTY exited before echoing the input");
+                    output.extend_from_slice(&buffer[..count]);
+                    if output
+                        .windows(b"received:fixture".len())
+                        .any(|part| part == b"received:fixture")
+                    {
+                        break;
+                    }
+                }
+                Ok::<(), anyhow::Error>(())
+            })
+            .await
+        });
+        let stopped = if exit.try_recv().is_err() {
+            backend.kill(pid)
+        } else {
+            Ok(())
+        };
+        backend.clear_terminal_id(0);
+        stopped.unwrap();
+        received
+            .expect("typed input did not reach the isolated ConPTY child")
+            .unwrap();
+    }
 
     fn cmd(exe: &str, args: &[&str]) -> RunCommand {
         RunCommand {
