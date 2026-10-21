@@ -1,0 +1,14 @@
+{
+  "name": "switchboard",
+  "description": "Claude Code plugins for Switchboard.",
+  "owner": {
+    "name": "Dom Slee"
+  },
+  "plugins": [
+    {
+      "name": "switchboard",
+      "source": "./tools/switchboard/claude-plugin",
+      "description": "Publish files through Switchboard so they open in the browser on every paired computer."
+    }
+  ]
+}
