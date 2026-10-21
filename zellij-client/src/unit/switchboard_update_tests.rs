@@ -580,22 +580,63 @@ mod orchestration {
     fn failed_health_rolls_back_and_backs_off_from_the_broken_build() {
         let harness = Harness::new(false);
         harness.publish(&full('b'), 5, "broken");
-        assert!(harness.updater.run().is_err());
-        let state = harness.state();
-        assert!(state.get("pending").is_none());
-        assert!(state["error"].as_str().unwrap().contains("did not recover"));
-        assert_eq!(state["run_number"], 5);
-        assert!(harness.read("installed/zellij").contains(OLD));
-        assert!(harness.read("running").contains(OLD));
-        assert!(harness
-            .read("helpers/update_local.sh")
-            .contains("installed"));
-        // Rollback used the retained copy of the previous helpers.
-        let calls = harness.calls();
-        let rollback = calls.lines().nth(1).unwrap();
-        assert!(rollback.starts_with("installed ") && rollback.contains("/rollback-"));
+        for attempt in 1..=3 {
+            assert!(harness.updater.run().is_err(), "attempt {attempt} skipped");
+            let state = harness.state();
+            assert!(state.get("pending").is_none());
+            assert!(state["error"].as_str().unwrap().contains("did not recover"));
+            assert_eq!(state["run_number"], 5);
+            assert_eq!(state["attempts"], attempt);
+            assert!(harness.read("installed/zellij").contains(OLD));
+            assert!(harness.read("running").contains(OLD));
+            assert!(harness
+                .read("helpers/update_local.sh")
+                .contains("installed"));
+            // Each attempt hands off, then rolls back with the retained helpers.
+            let calls = harness.calls();
+            assert_eq!(calls.lines().count(), 2 * attempt);
+            let rollback = calls.lines().last().unwrap();
+            assert!(rollback.starts_with("installed ") && rollback.contains("/rollback-"));
+        }
         harness.updater.run().unwrap();
-        assert_eq!(harness.calls().lines().count(), 2, "broken build retried");
+        assert_eq!(harness.calls().lines().count(), 6, "broken build retried");
+        // A newer build is tried afresh, and success clears the count.
+        harness.publish(&full('c'), 6, "");
+        harness.updater.run().unwrap();
+        let state = harness.state();
+        assert_eq!(state["commit"], full('c'));
+        assert!(state.get("attempts").is_none());
+    }
+
+    #[serial]
+    #[test]
+    fn transient_handoff_failure_is_retried_and_success_clears_the_count() {
+        let harness = Harness::new(false);
+        harness.publish(&full('b'), 5, "");
+        // Fails before changing anything, like services slow to come back.
+        let helper = harness.root.join("helpers/update_local.sh");
+        let flaky = harness.read("helpers/update_local.sh").replacen(
+            "\n",
+            &format!(
+                "\n[ -e '{}/flaky' ] && {{ echo 'slow to come back' >&2; exit 1; }}\n",
+                harness.root.display()
+            ),
+            1,
+        );
+        write_executable(&helper, &flaky);
+        fs::write(harness.root.join("flaky"), "").unwrap();
+        let error = harness.updater.run().unwrap_err();
+        assert!(error.to_string().contains("slow to come back"), "{error:#}");
+        let state = harness.state();
+        assert_eq!(state["run_number"], 5);
+        assert_eq!(state["attempts"], 1);
+        assert!(state.get("commit").is_none());
+        fs::remove_file(harness.root.join("flaky")).unwrap();
+        harness.updater.run().unwrap();
+        let state = harness.state();
+        assert_eq!(state["commit"], full('b'));
+        assert_eq!(state["run_number"], 5);
+        assert!(state.get("attempts").is_none() && state.get("error").is_none());
     }
 
     #[serial]
