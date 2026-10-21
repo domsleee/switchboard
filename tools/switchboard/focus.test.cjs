@@ -421,6 +421,8 @@ for(const touchscreen of [false,true])test(`sidebar selection supports immediate
       await terminal.evaluate(()=>{acknowledge=false;sent.length=0;});
       await page.keyboard.press('Alt+l');
       await page.waitForFunction(()=>sessions.get(JSON.stringify(['windows','main'])).requestedPane?.pane_id===8);
+      // The frame applies the switch when the parent's zellij-focus message arrives, a task after requestedPane is set.
+      await page.frame({url:/\/hosts\/windows\/main$/}).waitForFunction(()=>term.options.disableStdin);
       assert.equal(await terminal.evaluate(()=>window.__zjSoftKbdCapture.isFocused),false,'switching suspends the actual focused input');
       await page.keyboard.press('Enter');
       assert.deepEqual(await terminal.evaluate(()=>[...sent]),[],'input cannot reach the old pane while focus is pending');
