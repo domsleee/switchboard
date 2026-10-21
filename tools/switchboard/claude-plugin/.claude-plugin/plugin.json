@@ -1,0 +1,10 @@
+{
+  "name": "switchboard",
+  "version": "0.1.0",
+  "description": "Teaches Claude Code to publish files through Switchboard so they open in the browser on every paired computer.",
+  "author": {
+    "name": "Dom Slee"
+  },
+  "repository": "https://github.com/domsleee/switchboard",
+  "license": "MIT"
+}
