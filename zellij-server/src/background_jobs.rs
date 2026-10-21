@@ -1,7 +1,7 @@
 #[allow(unused_imports)] // some imports used only with web_server_capability feature
 use zellij_utils::consts::{
     session_info_cache_file_name, session_info_folder_for_session, session_layout_cache_file_name,
-    VERSION, ZELLIJ_SESSION_INFO_CACHE_DIR, ZELLIJ_SOCK_DIR,
+    session_sock_dirs, VERSION, ZELLIJ_SESSION_INFO_CACHE_DIR,
 };
 #[allow(unused_imports)]
 use zellij_utils::data::{Event, LayoutInfo, SessionInfo, WebServerStatus};
@@ -595,12 +595,12 @@ pub fn scan_session_list(
     current_session_name: &str,
     available_layouts: &[LayoutInfo],
     current_session_plugin_list: &BTreeMap<PluginId, RunPlugin>,
-    sock_dir: &Path,
+    sock_dirs: &[&Path],
     session_info_cache_dir: &Path,
 ) -> (BTreeMap<String, SessionInfo>, BTreeMap<String, Duration>) {
     let mut session_infos_on_machine = zellij_utils::sessions::read_live_session_states(
         current_session_name,
-        sock_dir,
+        sock_dirs,
         session_info_cache_dir,
     );
     for (name, info) in session_infos_on_machine.iter_mut() {
@@ -623,7 +623,7 @@ pub fn scan_session_list_default_dirs(
         current_session_name,
         available_layouts,
         current_session_plugin_list,
-        &*ZELLIJ_SOCK_DIR,
+        &session_sock_dirs(),
         &*ZELLIJ_SESSION_INFO_CACHE_DIR,
     )
 }
@@ -744,7 +744,7 @@ mod tests {
             "me",
             &[],
             &BTreeMap::new(),
-            sock_dir.path(),
+            &[sock_dir.path()],
             info_dir.path(),
         );
         assert!(live.is_empty());
@@ -763,7 +763,7 @@ mod tests {
             "me",
             &[],
             &BTreeMap::new(),
-            sock_dir.path(),
+            &[sock_dir.path()],
             info_dir.path(),
         );
         assert_eq!(live.len(), 1);
@@ -781,7 +781,7 @@ mod tests {
             "me",
             &[],
             &BTreeMap::new(),
-            sock_dir.path(),
+            &[sock_dir.path()],
             info_dir.path(),
         );
         assert!(live.is_empty());
@@ -806,7 +806,7 @@ mod tests {
             "me",
             &[],
             &BTreeMap::new(),
-            sock_dir.path(),
+            &[sock_dir.path()],
             info_dir.path(),
         );
         assert_eq!(live.len(), 3);
