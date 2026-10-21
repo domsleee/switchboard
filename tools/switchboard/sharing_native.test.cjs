@@ -108,7 +108,7 @@ const created = [];
             await page.waitForFunction(()=>window.term?.buffer?.active);
             return {context,page,sockets};
         }
-        const writable=await viewer(authToken), watcher=await viewer(readOnlyToken);
+        let writable=await viewer(authToken), watcher=await viewer(readOnlyToken);
         async function terminalContains(page,text){
             await page.waitForFunction(expected=>{
                 const term=window.term;
@@ -134,10 +134,12 @@ const created = [];
             return current.size===originalClients.size&&[...current].every(id=>originalClients.has(id));
         },'Screen/session clients were not cleaned up after sharing was disabled');
         assert.deepEqual(paneIds(0),snapshots[0].panes,'Evicting browsers preserves terminal panes');
+        // Evicted pages retry by reloading themselves, so a test reload could
+        // collide with theirs. Fresh pages show that an explicit load reattaches after On.
+        await writable.context.close();await watcher.context.close();
         action(0,'set-web-sharing','on');
         await waitFor(async()=>await allowed(0)===true,'Sharing could not reenable');
-        // Off intentionally disconnects viewers; an explicit reload reattaches after On.
-        await writable.page.reload();await watcher.page.reload();
+        writable=await viewer(authToken);watcher=await viewer(readOnlyToken);
         await waitFor(()=>[writable,watcher].every(view=>['terminal','control'].every(type=>view.sockets.some(socket=>socket.url().includes('/ws/'+type)&&!socket.isClosed()))),'Browsers did not reattach after sharing was enabled');
         await browserCommand('WEB_REATTACHED_');
         await writable.context.close();await watcher.context.close();

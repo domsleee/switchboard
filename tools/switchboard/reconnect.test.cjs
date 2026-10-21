@@ -7,11 +7,12 @@ const fs=require('node:fs');
 const assets=__dirname+'/../../zellij-client/assets/';
 const read=name=>fs.readFileSync(assets+name,'utf8');
 
-function connection(serverUpAt){
+function connection(serverUpAt,storage=new Map()){
   const context={now:0,delays:[],reloadedAt:null,checks:0};
   const sandbox={
     getBaseUrl:()=>'/hosts/mac',
-    AbortSignal,
+    AbortSignal,Date,JSON,
+    sessionStorage:{getItem:key=>storage.get(key)??null,setItem:(key,value)=>storage.set(key,value)},
     fetch:async()=>{context.checks++;if(context.now<serverUpAt)throw TypeError('Failed to fetch');return{ok:true};},
     window:{location:{reload:()=>{context.reloadedAt=context.now;}},addEventListener(){}},
     // The modal waits delaySeconds, then asks to reconnect.
@@ -45,6 +46,22 @@ test('a long outage stops polling quickly',async()=>{
   // 40 quick checks over 10 s, then 1+2+4+8+16 s.
   assert.equal(c.reloadedAt,41);
   assert.equal(c.checks,45);
+});
+
+test('a page that keeps losing its connection right after reloading backs off across reloads',async()=>{
+  // Sharing Off: the server stays up but closes each new attachment.
+  const storage=new Map(),reloads=[];
+  for(let n=0;n<4;n++){
+    const c=connection(0,storage);
+    c.markConnectionEstablished();
+    await c.handleReconnection();
+    reloads.push(c.reloadedAt);
+  }
+  assert.deepEqual(reloads,[0.25,1,2,4]);
+  // A drop long after the last reload (the next upgrade) retries quickly again.
+  storage.set('zellij-reconnect-reload',JSON.stringify({at:Date.now()-60000,attempt:43}));
+  const later=connection(0,storage);later.markConnectionEstablished();await later.handleReconnection();
+  assert.equal(later.reloadedAt,0.25);
 });
 
 function modal(){

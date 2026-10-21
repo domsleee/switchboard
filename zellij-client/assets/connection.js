@@ -29,6 +29,20 @@ export function getReconnectionDelay(attempt) {
     return delays[Math.min(attempt - QUICK_ATTEMPTS - 1, delays.length - 1)];
 }
 
+// A page that reloaded itself and soon lost its connection again (the session
+// refuses web clients, for example) resumes the backoff instead of reloading
+// every 250 ms.
+const RELOAD_KEY = "zellij-reconnect-reload";
+
+function resumedAttempts() {
+    try {
+        const saved = JSON.parse(sessionStorage.getItem(RELOAD_KEY));
+        return Date.now() - saved.at < 30000 ? Math.max(saved.attempt, QUICK_ATTEMPTS) : 0;
+    } catch (_) {
+        return 0;
+    }
+}
+
 /**
  * Check if the server connection is available
  * @returns {Promise<boolean>} true if connection is OK, false otherwise
@@ -69,6 +83,7 @@ export async function handleReconnection() {
     }
 
     isReconnecting = true;
+    reconnectionAttempt = resumedAttempts();
     let currentModal = null;
 
     while (isReconnecting) {
@@ -94,6 +109,9 @@ export async function handleReconnection() {
             if (connectionOk) {
                 if (result.cleanup) result.cleanup();
                 isReconnecting = false;
+                try {
+                    sessionStorage.setItem(RELOAD_KEY, JSON.stringify({ at: Date.now(), attempt: reconnectionAttempt }));
+                } catch (_) {}
                 reconnectionAttempt = 0;
                 window.location.reload();
                 return;
