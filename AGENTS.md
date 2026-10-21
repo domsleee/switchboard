@@ -35,6 +35,9 @@ a focused browser viewer claims the terminal size of the user's real sessions.
 - Relay tests: `cargo test -p zellij-client --features web_server_capability switchboard_ --lib`.
   Sidebar tests: `node tools/switchboard/<name>.test.cjs` (some need Playwright).
 - After editing `zellij-client/assets/`, run `cargo xtask assets`. CI rejects a stale bundle.
+- After changing `zellij switchboard artifact` or artifact serving, update the `switchboard-artifact`
+  skill in `tools/switchboard/claude-plugin/` to match and rerun its eval (see that plugin's README).
+  Claude Code and Codex both load this skill.
 - Agent state comes from reading pane screens and titles. When Claude Code or Codex changes its
   UI, capture the new screen with `dump-screen` and add it as a `classify` test before changing
   the rule.
