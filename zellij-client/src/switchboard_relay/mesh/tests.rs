@@ -294,6 +294,67 @@ async fn group_sync_keeps_recovered_routes_and_rejects_a_changed_tls_identity() 
     );
     task.abort();
 }
+#[tokio::test]
+async fn verified_routes_and_advertised_hostnames_persist_across_restart() {
+    let temp = tempfile::tempdir().unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let peer = machine(
+        &temp.path().join("peer"),
+        "Moved-PC",
+        &format!("https://192.0.2.123:{}", address.port()),
+    )
+    .await;
+    let local = machine(
+        &temp.path().join("local"),
+        "Local",
+        "https://192.0.2.2:8082",
+    )
+    .await;
+    let invitation = invitation(&peer, 1000).await;
+    let (_, approval) = approved(&peer, &local, &invitation, 1000).await;
+    peer.complete(local.install(approval, &invitation).await.unwrap())
+        .await
+        .unwrap();
+    let router = transport::gateway_router(peer.clone());
+    let server = axum_server::from_tcp_rustls(
+        listener,
+        axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(peer.tls().unwrap())),
+    )
+    .unwrap();
+    let task = tokio::spawn(async move { server.serve(router.into_make_service()).await.unwrap() });
+    let member = invitation.administrator;
+    let id = format!("mesh-{}", member.id);
+    // Only a route whose pinned TLS handshake succeeded is ever cached.
+    *local.peer_client(&member).unwrap().route_hint.lock().await =
+        Some((address, tokio::time::Instant::now()));
+    local.synchronize().await;
+    task.abort();
+    let host = local.host(&id).unwrap();
+    assert_eq!(host.config.address, Some(address));
+    // The reply came over the peer's pinned TLS, so its hostname is kept.
+    let advertised = hostname::system().await;
+    assert_eq!(host.config.hostname, advertised);
+    // Display names that are not DNS labels are never learned as hostnames.
+    local
+        .learn_route(&member.id, Some("My PC"), None)
+        .await
+        .unwrap();
+    assert_eq!(local.host(&id).unwrap().config.hostname, advertised);
+    drop(local);
+    let engine = Arc::new(Host::new(super::super::tests::config("http://127.0.0.1:1")).unwrap());
+    let restarted = Mesh::with_issuer(
+        temp.path().join("local"),
+        engine,
+        Arc::new(FakeIssuer::default()),
+    )
+    .await
+    .unwrap();
+    let host = restarted.host(&id).unwrap();
+    assert_eq!(host.config.address, Some(address));
+    assert_eq!(host.config.hostname, advertised);
+}
 async fn machine_with_engine(root: &Path, label: &str, address: &str, engine: &str) -> Arc<Mesh> {
     let engine = Arc::new(Host::new(super::super::tests::config(engine)).unwrap());
     let mesh = Mesh::with_issuer(root.to_owned(), engine, Arc::new(FakeIssuer::default()))

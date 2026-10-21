@@ -186,6 +186,11 @@ struct Database {
     direct_incoming: BTreeMap<String, direct::Offer>,
     #[serde(default)]
     direct_sent: BTreeMap<String, direct::Sent>,
+    // Unsigned per-member routing hints. The TLS pin stays the peer's identity.
+    #[serde(default)]
+    hostnames: BTreeMap<String, String>,
+    #[serde(default)]
+    addresses: BTreeMap<String, SocketAddr>,
 }
 
 impl Database {
@@ -359,6 +364,8 @@ impl Mesh {
                     artifact_urls: Value::Null,
                     escape_transport: Some("gateway".into()),
                     zellij_binary: None,
+                    hostname: db.hostnames.get(id).cloned(),
+                    address: db.addresses.get(id).copied(),
                 };
                 let current = self.catalog.read().unwrap().get(&config.id).cloned();
                 let host = match current {
@@ -366,7 +373,9 @@ impl Mesh {
                         if host.config.url == config.url
                             && host.config.token_file == config.token_file
                             && host.config.name == config.name
-                            && host.config.tls_fingerprint == config.tls_fingerprint =>
+                            && host.config.tls_fingerprint == config.tls_fingerprint
+                            && host.config.hostname == config.hostname
+                            && host.config.address == config.address =>
                     {
                         host
                     },
