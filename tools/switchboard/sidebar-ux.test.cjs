@@ -57,8 +57,11 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     const action=page.locator('.tab-actions').nth(1);
     await page.locator('.tab-row').nth(1).hover();await action.click();
     assert.match(await page.locator('#tab-menu-target').textContent(),/Online shopping · Mac · main/);
+    assert.equal(await page.locator('#archive-tab').isVisible(),false);
+    assert.equal(await page.locator('#archive').isVisible(),false);
     if(process.env.SWITCHBOARD_UX_SCREENSHOTS)await page.screenshot({path:process.env.SWITCHBOARD_UX_SCREENSHOTS+'/tab-menu.png'});
     await page.keyboard.press('End');assert.equal(await page.evaluate(()=>document.activeElement.id),'close-tab');
+    await page.keyboard.press('ArrowUp');assert.equal(await page.evaluate(()=>document.activeElement.id),'select-text');
     await page.keyboard.press('Home');assert.equal(await page.evaluate(()=>document.activeElement.id),'ready');
     await page.keyboard.press('Escape');assert.equal(await action.evaluate(e=>document.activeElement===e),true);
     await action.click();await page.locator('#copy-title').click();
@@ -76,9 +79,9 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.equal(await page.locator('#tabs .selected .tab-name').textContent(),'switchboard');
     assert.match(await page.locator('#tabs small').nth(1).textContent(),/For review/);
     assert.deepEqual(await order(),names);
-    await action.click();await page.locator('#archive-tab').click();
+    await page.evaluate(()=>archiveTab(allTabs().find(item=>tabTitle(item)==='Online shopping')));
     assert.deepEqual(await order(),['switchboard','ssb orchestrator']);
-    await page.locator('#archive').click();await page.getByRole('button',{name:'Restore Online shopping',exact:true}).click();
+    await page.evaluate(()=>openPanel('archive'));await page.getByRole('button',{name:'Restore Online shopping',exact:true}).click();
     assert.deepEqual(await order(),names);
     // Copy toolbar works with the actual clipboard adapter, and Done clears it.
     await page.locator('.tab-row.active .tab-actions').click();await page.locator('#select-text').click();
@@ -120,6 +123,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.equal(await page.locator('#sidebar').isVisible(),false);
     assert.equal(await page.evaluate(()=>document.activeElement.id),'sidebar-toggle');
     await page.locator('#sidebar-toggle').click();
+    assert.equal(await page.locator('#archive').isVisible(),false);
     if(process.env.SWITCHBOARD_UX_SCREENSHOTS)await page.screenshot({path:process.env.SWITCHBOARD_UX_SCREENSHOTS+'/mobile.png'});
     // A background tab changing attention must never insert a summary row,
     // move scrolled tab rows, resize the terminal, or steal keyboard focus.

@@ -895,16 +895,17 @@ function openPanel(name){
   if(name==='archive')$('archive-search').value='';
   showSection(name);
   if(!panel.open)panel.showModal();
-  panelTabs.find(tab=>tab.dataset.section===name).focus();
+  if(name==='archive')$('archive-search').focus();
+  else panelTabs.find(tab=>tab.dataset.section===name).focus();
 }
 document.addEventListener('click',event=>{const name=sectionLink(event);if(name)openPanel(name);});
 $('panel-tabs').onclick=event=>{const tab=event.target.closest('[role=tab]');if(tab)showSection(tab.dataset.section,true);};
 $('panel-tabs').onkeydown=event=>{
-  const index=panelTabs.indexOf(document.activeElement),last=panelTabs.length-1;
+  const tabs=panelTabs.filter(tab=>!tab.hidden),index=tabs.indexOf(document.activeElement),last=tabs.length-1;
   const next={ArrowDown:index+1,ArrowRight:index+1,ArrowUp:index-1,ArrowLeft:index-1,Home:0,End:last}[event.key];
   if(next===undefined||index<0)return;
   event.preventDefault();
-  showSection(panelTabs[(next+last+1)%(last+1)].dataset.section,true);
+  showSection(tabs[(next+last+1)%(last+1)].dataset.section,true);
 };
 for(const frame of panel.querySelectorAll('iframe'))frame.onload=()=>{
   const doc=frame.contentDocument;
@@ -991,10 +992,10 @@ function openTabMenu(item,x,y,trigger=tabButtons.get(item.key)){
   trigger?.setAttribute('aria-expanded','true');
   menu.style.left=`${Math.max(4,Math.min(x,innerWidth-menu.offsetWidth-4))}px`;
   menu.style.top=`${Math.max(4,Math.min(y,innerHeight-menu.offsetHeight-4))}px`;
-  menu.querySelector('button:not(:disabled)')?.focus();
+  menu.querySelector('button:not(:disabled):not([hidden])')?.focus();
 }
 $('tab-menu').onkeydown=event=>{
-  const items=[...$('tab-menu').querySelectorAll('button:not(:disabled)')],index=items.indexOf(document.activeElement);
+  const items=[...$('tab-menu').querySelectorAll('button:not(:disabled):not([hidden])')],index=items.indexOf(document.activeElement);
   if(['ArrowDown','ArrowUp','Home','End'].includes(event.key)){
     event.preventDefault();
     const next=event.key==='Home'?0:event.key==='End'?items.length-1:(index+(event.key==='ArrowDown'?1:-1)+items.length)%items.length;

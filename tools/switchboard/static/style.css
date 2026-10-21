@@ -146,6 +146,7 @@ body.sidebar-collapsed #artifact-preview header{padding-left:42px}
 #tab-menu{position:fixed;z-index:10;width:250px;max-width:calc(100vw - 8px);max-height:calc(100dvh - 8px);overflow:auto;padding:5px;background:#181b22;border:1px solid #363e4d;border-radius:5px;box-shadow:0 4px 16px #0008}
 #tab-menu[hidden]{display:none}
 #tab-menu button{display:block;width:100%;text-align:left;padding:8px 10px;border-color:transparent;background:transparent;font-size:12px}
+#tab-menu button[hidden]{display:none}
 #tab-menu button:hover{background:#303949}
 #tab-menu small{display:block;font-size:10px;color:#a3aec0;margin-top:2px}
 #tab-menu-target{padding:8px 10px;color:#a3aec0;font-size:11px;overflow-wrap:anywhere}
