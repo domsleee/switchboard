@@ -675,6 +675,22 @@ async fn terminal_response(
         );
         return Ok(StatusCode::NO_CONTENT.into_response());
     }
+    // Paired computers read this computer's artifacts with the same credential as its terminals.
+    if let Some(file) = path
+        .split('?')
+        .next()
+        .and_then(|p| p.strip_prefix("/switchboard/artifacts/"))
+    {
+        if matches!(*request.method(), Method::GET | Method::HEAD) {
+            let file = urlencoding::decode(file)
+                .map_err(|_| (StatusCode::NOT_FOUND, "Artifact not found"))?;
+            let root =
+                artifacts::root().map_err(|_| (StatusCode::NOT_FOUND, "Artifact not found"))?;
+            return Ok(
+                artifacts::serve_file(&root, &file, request.headers().get(header::RANGE)).await,
+            );
+        }
+    }
     if path == "/switchboard/logs" && request.method() == Method::GET {
         return Ok(Json(logs::local()).into_response());
     }

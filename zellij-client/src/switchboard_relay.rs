@@ -1,5 +1,5 @@
 //! Loopback Switchboard relay. Terminal engines remain independent processes.
-mod artifacts;
+pub(crate) mod artifacts;
 mod attention;
 mod control;
 mod hostname;
@@ -431,9 +431,10 @@ impl Host {
         body: Bytes,
         content_type: &str,
         cookie: Option<&str>,
+        extra: HeaderMap,
     ) -> anyhow::Result<hyper::Response<hyper::body::Incoming>> {
         let mut sender = self.connection(false).await?;
-        self.send_request(&mut sender, method, path, body, content_type, cookie)
+        self.send_request_with(&mut sender, method, path, body, content_type, cookie, extra)
             .await
     }
 
@@ -507,6 +508,22 @@ impl Host {
         content_type: &str,
         cookie: Option<&str>,
     ) -> anyhow::Result<hyper::Response<hyper::body::Incoming>> {
+        let extra = HeaderMap::new();
+        self.send_request_with(sender, method, path, body, content_type, cookie, extra)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn send_request_with(
+        &self,
+        sender: &mut hyper::client::conn::http1::SendRequest<Full<Bytes>>,
+        method: Method,
+        path: &str,
+        body: Bytes,
+        content_type: &str,
+        cookie: Option<&str>,
+        extra: HeaderMap,
+    ) -> anyhow::Result<hyper::Response<hyper::body::Incoming>> {
         anyhow::ensure!(
             path.starts_with('/') && !path.starts_with("//"),
             "Invalid upstream path"
@@ -518,6 +535,9 @@ impl Host {
             .header(header::CONTENT_TYPE, content_type);
         if let Some(cookie) = cookie {
             request = request.header(header::COOKIE, cookie);
+        }
+        for (name, value) in &extra {
+            request = request.header(name, value);
         }
         if let Some(path) = &self.config.gateway_token_file {
             let token = tokio::fs::read_to_string(control::expand_path(path)?).await?;
@@ -1233,7 +1253,7 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
         }
     }
     let pairing = mesh::discovery::start(state.clone());
-    let artifact = artifacts::start(config.artifact_proxy).await?;
+    let artifact = artifacts::start(config.artifact_proxy, state.clone()).await?;
     let failures_file = config_path.with_extension("logs.json");
     let failures = logs::start(failures_file.clone()).await;
     let polling =

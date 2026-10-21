@@ -171,6 +171,7 @@ async fn proxy(root: PathBuf, request: Request) -> anyhow::Result<Response> {
         header::ORIGIN,
         header::CONTENT_TYPE,
         header::ACCEPT,
+        header::RANGE,
     ] {
         if let Some(value) = parts.headers.get(&name) {
             upstream.headers_mut().insert(name, value.clone());

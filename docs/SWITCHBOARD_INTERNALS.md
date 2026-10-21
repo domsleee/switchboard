@@ -258,6 +258,13 @@ artifacts or multiple artifact servers need a proper host tunnel when required.
 Portless aliases `switchboard -> 8090` and `zellij-gallery -> 8091` persist; exact
 `.local` would require changing the existing proxy/DNS setup. Each relay remains local to its own machine.
 
+`zellij switchboard artifact FILE` publishes a file to `~/.switchboard/artifacts/`
+and prints `http://127.0.0.1:8091/artifacts/COMPUTER/ID/FILE`. The same URL works
+on every paired computer: the 8091 listener serves this computer's files directly
+and reads another computer's through its paired gateway. Video seeks with byte
+ranges and Markdown renders as a page. Artifact pages run on the 8091 origin,
+which the terminal relay rejects. See [ARTIFACT_SERVING_PLAN.md](ARTIFACT_SERVING_PLAN.md).
+
 ## Copying text
 
 Click **Select text**, drag over terminal text, then use **Copy**, Cmd+C on Mac,
