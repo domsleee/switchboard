@@ -86,14 +86,21 @@ let reconnectionTimeout = null;
 let hasConnectedBefore = false;
 let isPageUnloading = false;
 
+// An upgrade restarts the web server and relay for about a second, so retry
+// every 250 ms for the first 10 seconds before backing off.
+const QUICK_ATTEMPTS = 40;
+
 /**
- * Get the delay for reconnection attempts using exponential backoff
+ * Get the delay for reconnection attempts: quick retries, then exponential backoff
  * @param {number} attempt - The current attempt number (1-based)
  * @returns {number} The delay in seconds
  */
 function getReconnectionDelay(attempt) {
+    if (attempt <= QUICK_ATTEMPTS) {
+        return 0.25;
+    }
     const delays = [1, 2, 4, 8, 16];
-    return delays[Math.min(attempt - 1, delays.length - 1)];
+    return delays[Math.min(attempt - QUICK_ATTEMPTS - 1, delays.length - 1)];
 }
 
 /**
@@ -105,7 +112,7 @@ async function checkConnection() {
         const baseUrl = getBaseUrl();
         const response = await fetch(`${baseUrl}/info/version`, {
             method: "GET",
-            timeout: 5000,
+            signal: AbortSignal.timeout?.(5000),
         });
         return response.ok;
     } catch (error) {

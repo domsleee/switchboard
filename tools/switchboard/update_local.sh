@@ -76,9 +76,11 @@ previous_gone() {
         [[ -n ${1:-} && $kind != "$1" ]] || ! alive "$pid" "$work/service-$pid" || return 1
     done < "$work/services-before"
 }
+# Browsers are offline while this waits for the old web server, which exits in
+# about 50 ms; a coarse poll adds up to its interval to every update's outage.
 wait_for() {
     local deadline=$((SECONDS + $1)); shift
-    until "$@"; do (( SECONDS < deadline )) || return 1; sleep 0.5; done
+    until "$@"; do (( SECONDS < deadline )) || return 1; sleep 0.1; done
 }
 restart_services() {
     restarted=true

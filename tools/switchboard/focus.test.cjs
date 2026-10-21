@@ -14,7 +14,8 @@ function monitorContext(){
     tabCatalog:[...windows.catalog,...other.catalog,...mac.catalog],sessions:new Map([['windows',windows],['other',other],['mac',mac]]),
     selected:key('windows',42),allTabs:()=>[],render(){},focus(){assert.fail('Background scanning must not request focus');},
     attentionKey:(host,session,pane)=>JSON.stringify([host,session,pane]),
-    updateCreatedTabs(){},setCatalog(entry,tabs){entry.catalog=tabs;}};
+    updateCreatedTabs(){},setCatalog(entry,tabs){entry.catalog=tabs;},
+    timers:[],setTimeout(fn,ms){context.timers.push({fn,ms});},refreshes:0,refresh(){context.refreshes++;},Date:{now:()=>context.now},now:0};
   vm.createContext(context);
   vm.runInContext(source.slice(source.indexOf('function catalogUnavailable('),source.indexOf('function updateTabUrl(')),context);
   vm.runInContext(source.slice(source.indexOf('async function refreshAttention('),source.indexOf('refreshAttention();setInterval')),context);
@@ -37,6 +38,21 @@ test('failed attention scans preserve known catalogs, scoped to the failed host 
   await context.poll({tabs:[tab('mac',2)],errors:[]});
   assert.equal(windows.catalog.length,0);assert.equal(other.catalog.length,0);
   assert.deepEqual(Array.from(context.tabCatalog,t=>t.id),[2]);
+});
+
+test('a relay restart is retried every 250 ms for 10 s, then reloads hosts once',async()=>{
+  const {context}=monitorContext();
+  context.now=1000;context.fetch=async()=>{throw TypeError('Failed to fetch');};
+  await context.refreshAttention();
+  assert.deepEqual(context.timers.map(t=>t.ms),[250]);
+  context.now=10900;await context.timers.pop().fn();
+  assert.deepEqual(context.timers.map(t=>t.ms),[250]);
+  context.now=11000;await context.timers.pop().fn();
+  assert.equal(context.timers.length,0,'Back to the 2 s poll after 10 s');
+  await context.poll({tabs:[],errors:[]});
+  assert.equal(context.refreshes,1,'Hosts reload as soon as the relay answers');
+  await context.poll({tabs:[],errors:[]});
+  assert.equal(context.refreshes,1);
 });
 
 test('a fresh page uses the relay catalog when a host scan is unavailable',async()=>{
