@@ -14,7 +14,6 @@ fetch('/api/health',{cache:'no-store'}).then(response=>response.ok?response.json
   }
 }).catch(()=>{});
 const hosts = new Map(), sessions = new Map();
-const startedHosts = new Set();
 const tabButtons=new Map();
 const mobileSidebar=matchMedia("(max-width:700px)");
 let sidebarCollapsed=localStorage.getItem("switchboard-sidebar-collapsed")==="true",sidebarOpen=false;
@@ -646,7 +645,7 @@ function connectSession(host,name,starting=false,cached=false) {
 }
 function pruneSessions(listed=null,hostId=null){
   if(globalThis.SwitchboardStartup?.active())return;
-  if(listed)for(const id of [...hosts.keys()])if(!listed.has(id)){hosts.delete(id);startedHosts.delete(id);}
+  if(listed)for(const id of [...hosts.keys()])if(!listed.has(id))hosts.delete(id);
   for(const [key,entry] of sessions){
     const host=hosts.get(entry.host);
     if(!host||entry.host===hostId&&!host.error&&Array.isArray(host.sessions)&&!entry.starting&&!host.sessions.some(session=>session.name===entry.name)){
@@ -670,12 +669,6 @@ async function refresh() {
       try{
         const response=await fetch(`/api/hosts/${encodeURIComponent(summary.id)}`);if(!response.ok)throw Error('Cannot list sessions');
         const host=await response.json();hosts.set(host.id,host);
-        // Only the first successful catalog on this page can start a session.
-        // Closing the last tab must not make the next poll recreate it.
-        if(!host.error&&Array.isArray(host.sessions)&&!startedHosts.has(host.id)){
-          startedHosts.add(host.id);
-          if(host.sessions.length===0)connectSession(host,'main',true);
-        }
         for(const session of host.sessions||[]) {
           if(!session.web_clients_allowed)continue;
           connectSession(host,session.name);
@@ -872,9 +865,10 @@ $('new-tab-form').onsubmit=event=>{
     const [id,name]=JSON.parse(key),host=hosts.get(id);
     if(!host||host.error||host.sessions?.length!==0)return;
     if(entry&&!entry.starting){entry.frame.remove();sessions.delete(key);}
-    connectSession(host,name,true).selectOnStart=true;
+    const created=connectSession(host,name,true);created.selectOnStart=true;
     if(filter!=='all'&&groups[id]!==filter)setFilter('all');$('tab-search').value='';
-    $('new-tab-dialog').close();render();return;
+    // Closing the dialog returns focus to +; give it to the new terminal instead.
+    $('new-tab-dialog').close();render();created.frame.focus();return;
   }
   if(!sessionTabs(entry).length)return;
   if(entry.pendingNewTab||entry.requestedPane||entry.focusPending){setStatus('Wait for the terminal to receive focus before creating a tab.',true);return;}
