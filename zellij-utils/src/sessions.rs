@@ -191,6 +191,22 @@ fn windows_session_marker_is_live(path: &Path) -> Option<bool> {
     }
 }
 
+/// Restores a running server's marker after something deleted it (e.g. temp
+/// cleanup), so the session stays listed. Only the server holding the session's
+/// pipe should call this. A marker naming any live process, this one or another,
+/// is left alone. Returns whether the marker was rewritten.
+#[cfg(windows)]
+pub fn republish_windows_session_marker(path: &Path) -> io::Result<bool> {
+    if windows_session_marker_is_live(path) == Some(true) {
+        return Ok(false);
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    crate::consts::write_session_marker(path)?;
+    Ok(true)
+}
+
 /// Cleans up stale Windows marker files when explicitly listing session sockets.
 /// Only a marker whose server is known to have exited is removed: deleting a live
 /// one makes clients treat the session as gone and try to recreate it.
@@ -649,6 +665,37 @@ mod windows_session_catalog_tests {
             assert!(metadata.join(name).join("session-metadata.kdl").exists());
         }
         drop(exited);
+    }
+
+    #[test]
+    fn republish_restores_a_deleted_marker_but_keeps_a_live_one() {
+        let directory = tempfile::tempdir().unwrap();
+        // Temp cleanup removes the whole socket directory, not just the marker.
+        let marker = directory.path().join("contract_version_1").join("main");
+        assert!(republish_windows_session_marker(&marker).unwrap());
+        assert_eq!(
+            fs::read_to_string(&marker).unwrap(),
+            process::id().to_string()
+        );
+        assert!(!republish_windows_session_marker(&marker).unwrap());
+
+        // cmd.exe waits on its open stdin pipe, so it stays alive until killed.
+        let mut other = process::Command::new("cmd.exe")
+            .stdin(process::Stdio::piped())
+            .stdout(process::Stdio::null())
+            .spawn()
+            .unwrap();
+        fs::write(&marker, other.id().to_string()).unwrap();
+        assert!(!republish_windows_session_marker(&marker).unwrap());
+        assert_eq!(fs::read_to_string(&marker).unwrap(), other.id().to_string());
+
+        other.kill().unwrap();
+        other.wait().unwrap();
+        assert!(republish_windows_session_marker(&marker).unwrap());
+        assert_eq!(
+            fs::read_to_string(&marker).unwrap(),
+            process::id().to_string()
+        );
     }
 }
 
