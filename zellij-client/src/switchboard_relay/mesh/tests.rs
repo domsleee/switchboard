@@ -1804,6 +1804,65 @@ async fn computer_categories_sync_and_the_latest_change_wins() {
 }
 
 #[tokio::test]
+async fn tab_order_syncs_and_the_latest_change_wins() {
+    let temp = tempfile::tempdir().unwrap();
+    let mac = machine(&temp.path().join("mac"), "Mac", "https://192.0.2.1:8091").await;
+    let windows = machine(
+        &temp.path().join("windows"),
+        "Windows",
+        "https://192.0.2.2:8091",
+    )
+    .await;
+    let invite = invitation(&mac, 1000).await;
+    let (_, approval) = approved(&mac, &windows, &invite, 1000).await;
+    mac.complete(windows.install(approval, &invite).await.unwrap())
+        .await
+        .unwrap();
+    let id = |mesh: &Arc<Mesh>| {
+        let mesh = mesh.clone();
+        async move {
+            mesh.database
+                .lock()
+                .await
+                .local
+                .as_ref()
+                .unwrap()
+                .id
+                .clone()
+        }
+    };
+    let (mac_id, windows_id) = (id(&mac).await, id(&windows).await);
+    let order = |mesh: &Arc<Mesh>| {
+        let mesh = mesh.clone();
+        async move { mesh.status().await["tab_order"]["keys"].clone() }
+    };
+    assert!(mac.set_tab_order(vec!["x".repeat(513)]).await.is_err());
+    assert!(mac.set_tab_order(vec![String::new(); 2001]).await.is_err());
+    // Set on the Mac, seen on Windows.
+    let first = mac
+        .set_tab_order(vec!["a".into(), "b".into()])
+        .await
+        .unwrap();
+    let stale = mac.prepare_sync(&windows_id).await.unwrap();
+    mac.exchange(windows.exchange(stale.clone()).await.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(order(&windows).await, json!(["a", "b"]));
+    // A later change on Windows replaces it everywhere; the older update cannot undo it.
+    let second = windows
+        .set_tab_order(vec!["b".into(), "a".into()])
+        .await
+        .unwrap();
+    assert!(second > first, "a change outranks the order it replaces");
+    mac.exchange(windows.prepare_sync(&mac_id).await.unwrap())
+        .await
+        .unwrap();
+    windows.exchange(stale).await.unwrap();
+    assert_eq!(order(&mac).await, json!(["b", "a"]));
+    assert_eq!(order(&windows).await, json!(["b", "a"]));
+}
+
+#[tokio::test]
 async fn explicit_board_host_is_independent_of_administrator_and_syncs_to_new_members() {
     let temp = tempfile::tempdir().unwrap();
     let mac = machine(&temp.path().join("mac"), "Mac", "https://192.0.2.1:8091").await;

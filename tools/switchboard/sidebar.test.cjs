@@ -132,6 +132,57 @@ test('reordering while Windows connects preserves saved positions through reload
   context.sessions.set('mac',mac);assert.deepEqual(keys(),withNew);
 });
 
+test('every browser on every paired computer shares one tab order, including new tabs',async()=>{
+  // The Mac calls itself mac; Windows knows it as mesh-d1. Both reach Windows as a mesh peer or locally.
+  const view=(hosts,self,local)=>{
+    const sessions=new Map(hosts.map(([host,{name}])=>[host,{host,name:'main',state:{panes:[]},catalogPolls:1,catalog:[0,1].map(id=>({id,name:`${name}-${id}`,position:id,panes:[]}))}]));
+    const posted=[],stored={'switchboard-tab-order':JSON.stringify(local)};
+    const context={hosts:new Map(hosts),sessions,archived:{},ready:{},selected:null,saveReady(){},filter:'all',groups:{},render(){},tabButtons:new Map(),
+      localStorage:{getItem:key=>stored[key]??null,setItem:(key,value)=>stored[key]=value},
+      fetch:(url,options)=>{posted.push(JSON.parse(options.body).keys);return Promise.resolve({ok:true,json:()=>({updated:posted.length+100})});}};
+    vm.createContext(context);context.tabOrder=local;
+    vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function moveSelected(')),context);
+    vm.runInContext(`localMember=${JSON.stringify(self)}`,context);
+    const names=()=>Array.from(context.allTabs(),item=>item.tab.name);
+    return {context,sessions,posted,stored,names};
+  };
+  const mac={name:'Mac',id:'d1',local:true},win={name:'Windows',id:'24',local:true};
+  const onMac=view([['mac',{name:'Mac',local:true}],['mesh-24',{name:'Windows'}]],mac,[JSON.stringify(['mesh-24','main','tab',1]),JSON.stringify(['mac','main','tab',1])]);
+  const onWindows=view([['win',{name:'Windows',local:true}],['mesh-d1',{name:'Mac'}]],win,[]);
+  // The Mac's order, saved before sharing, moves to the group once with its own tabs keyed by member.
+  onMac.context.applyTabOrder({tab_order:null},mac);
+  assert.deepEqual(onMac.posted[0].slice(0,2),[JSON.stringify(['mesh-24','main','tab',1]),JSON.stringify(['mesh-d1','main','tab',1])]);
+  onWindows.context.applyTabOrder({tab_order:{keys:onMac.posted[0],updated:1}},win);
+  assert.deepEqual(onWindows.names(),onMac.names());
+  assert.deepEqual(onMac.names(),['Windows-1','Mac-1','Mac-0','Windows-0']);
+  // A drag on Windows reaches the Mac; a poll older than a save in flight cannot undo it.
+  onWindows.context.moveTab(JSON.stringify(['mesh-d1','main','tab',0]),JSON.stringify(['win','main','tab',1]));
+  await new Promise(setImmediate);
+  onMac.context.applyTabOrder({tab_order:{keys:onWindows.posted[0],updated:150}},mac);
+  assert.deepEqual(onMac.names(),onWindows.names());
+  assert.deepEqual(onMac.names(),['Mac-0','Windows-1','Mac-1','Windows-0']);
+  onMac.context.moveTab(JSON.stringify(['mac','main','tab',1]),JSON.stringify(['mac','main','tab',0]));
+  onMac.context.applyTabOrder({tab_order:{keys:onWindows.posted[0],updated:160}},mac);
+  assert.deepEqual(onMac.names(),['Mac-1','Mac-0','Windows-1','Windows-0'],'the stale poll is ignored');
+  // A new Windows tab goes last in every browser, wherever its machine sorts.
+  const entry=onWindows.sessions.get('win'),catalog=[...entry.catalog,{id:2,name:'Windows-2',position:2,panes:[]}];
+  onWindows.context.setCatalog(entry,entry.catalog);onWindows.context.setCatalog(entry,catalog);
+  const shared=onWindows.posted.at(-1);
+  assert.equal(shared.at(-1),JSON.stringify(['mesh-24','main','tab',2]));
+  onMac.sessions.get('mesh-24').catalog.push({id:2,name:'Windows-2',position:2,panes:[]});
+  await new Promise(setImmediate);
+  onMac.context.applyTabOrder({tab_order:{keys:shared,updated:200}},mac);
+  assert.deepEqual(onMac.names(),onWindows.names());
+  assert.equal(onMac.names().at(-1),'Windows-2');
+  assert.deepEqual(JSON.parse(onMac.stored['switchboard-tab-order']),shared,'this browser keeps a copy');
+  // A browser that has not heard the shared order yet holds new tabs back instead of replacing it.
+  const later=view([['win',{name:'Windows',local:true}],['mesh-d1',{name:'Mac'}]],win,[]),own=later.sessions.get('win');
+  later.context.setCatalog(own,own.catalog);later.context.setCatalog(own,catalog);
+  assert.equal(later.posted.length,0);
+  later.context.applyTabOrder({tab_order:{keys:shared,updated:300}},win);
+  assert.deepEqual(later.names(),onWindows.names());
+});
+
 test('every computer in a mesh lists unsorted tabs in the same machine order',()=>{
   // Each computer calls itself by a local ID and lists itself first; catalogs arrive in any order.
   const view=(hosts,arrival,self)=>{

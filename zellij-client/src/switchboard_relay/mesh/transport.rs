@@ -11,6 +11,7 @@ pub(in crate::switchboard_relay) fn routes() -> Router<RelayState> {
             get(super::board_host::status).post(super::board_host::select),
         )
         .route("/api/mesh/category", post(super::sync::category))
+        .route("/api/mesh/tab-order", post(super::sync::tab_order))
         .route("/api/mesh/defaults", get(super::discovery::defaults))
         .route("/api/mesh/invitations", post(create))
         .route("/api/mesh/cancel", post(cancel))
