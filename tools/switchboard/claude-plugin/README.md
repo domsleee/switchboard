@@ -22,6 +22,17 @@ claude plugin install switchboard@switchboard
 For one session without installing: `claude --plugin-dir tools/switchboard/claude-plugin`.
 Claude picks the skill on its own; `/switchboard:switchboard-artifact` invokes it by hand.
 
+Codex reads the same skill through `.codex-plugin/plugin.json` and the repository's
+`.agents/plugins/marketplace.json`:
+
+```sh
+codex plugin marketplace add domsleee/switchboard
+codex plugin add switchboard@switchboard
+```
+
+Codex keeps a snapshot, so pick up skill changes with `codex plugin marketplace upgrade switchboard`
+followed by the `add` again.
+
 ## Evals
 
 `evals/` holds five cases for `claude plugin eval`: three that should publish and two that
