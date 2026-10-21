@@ -427,6 +427,13 @@ struct BrowserDiagnostic {
     terminal_message_ms: Option<u32>,
     terminal_frame_ms: Option<u32>,
     terminal_reply_ms: Option<u32>,
+    terminal_render_cycle_ms: Option<u32>,
+    long_frame_tracking: Option<bool>,
+    long_frames: Option<u32>,
+    max_frame_ms: Option<u32>,
+    max_render_ms: Option<u32>,
+    max_layout_ms: Option<u32>,
+    max_script_ms: Option<u32>,
     initial_writes_pending: Option<u32>,
     initial_render_pending: Option<bool>,
     terminal_hidden: Option<bool>,
@@ -448,6 +455,8 @@ impl BrowserDiagnostic {
             || self.load_ms.is_some_and(|t| t > 500)
             || self.first_animation_ms.is_some_and(|t| t > 500)
             || self.terminal_animation_ms.is_some_and(|t| t > 500)
+            || self.max_frame_ms.is_some_and(|t| t > 500)
+            || self.terminal_render_cycle_ms.is_some_and(|t| t > 500)
             || self.terminal_max_long_task_ms.is_some_and(|t| t > 500)
             || self.max_long_task_ms > 500
             || self.elapsed_ms > 500
@@ -497,6 +506,20 @@ impl BrowserDiagnostic {
             timing(self.terminal_max_long_task_ms), timing(self.terminal_total_long_task_ms),
         ))
     }
+
+    fn rendering_message(&self) -> Option<String> {
+        if self.long_frame_tracking.is_none() && self.terminal_render_cycle_ms.is_none() {
+            return None;
+        }
+        let timing = |t: Option<u32>| t.map_or_else(|| "-".into(), |t| t.to_string());
+        Some(format!(
+            "Browser tab {} render id={} tracked={} frames={} longest={}ms render={}ms layout={}ms scripts={}ms terminal_cycle={}ms",
+            if self.slow() { "slow" } else { "resumed" }, self.id,
+            self.long_frame_tracking.map_or_else(|| "-".into(), |t| t.to_string()), timing(self.long_frames),
+            timing(self.max_frame_ms), timing(self.max_render_ms), timing(self.max_layout_ms),
+            timing(self.max_script_ms), timing(self.terminal_render_cycle_ms),
+        ))
+    }
 }
 
 pub(super) async fn browser_resume(request: Request) -> StatusCode {
@@ -510,6 +533,9 @@ pub(super) async fn browser_resume(request: Request) -> StatusCode {
     record("Browser", &message);
     if let Some(stages) = diagnostic.stages_message() {
         record("Browser", &stages);
+    }
+    if let Some(rendering) = diagnostic.rendering_message() {
+        record("Browser", &rendering);
     }
     StatusCode::NO_CONTENT
 }
@@ -935,6 +961,56 @@ mod tests {
     }
 
     #[test]
+    fn browser_rendering_distinguishes_slow_frames_from_fast_scripts_and_legacy_clients() {
+        let legacy: BrowserDiagnostic = serde_json::from_value(browser_sample()).unwrap();
+        assert!(legacy.rendering_message().is_none());
+        let mut sample = browser_sample();
+        sample["long_frame_tracking"] = json!(true);
+        sample["long_frames"] = json!(1);
+        sample["max_frame_ms"] = json!(700);
+        sample["max_render_ms"] = json!(680);
+        sample["max_layout_ms"] = json!(650);
+        sample["max_script_ms"] = json!(5);
+        sample["terminal_render_cycle_ms"] = json!(600);
+        let diagnostic: BrowserDiagnostic = serde_json::from_value(sample).unwrap();
+        assert!(diagnostic.slow());
+        let message = diagnostic.rendering_message().unwrap();
+        assert!(message.contains(
+            "tracked=true frames=1 longest=700ms render=680ms layout=650ms scripts=5ms terminal_cycle=600ms"
+        ));
+        assert_eq!(message, redact(&message));
+        let mut terminal = browser_sample();
+        terminal["terminal_render_cycle_ms"] = json!(700);
+        let terminal: BrowserDiagnostic = serde_json::from_value(terminal).unwrap();
+        assert!(terminal.slow());
+        assert!(terminal
+            .rendering_message()
+            .unwrap()
+            .contains("tracked=- frames=- longest=-ms"));
+    }
+
+    #[test]
+    fn browser_rendering_lines_keep_all_maximum_numeric_metadata() {
+        let mut sample = browser_sample();
+        sample["long_frame_tracking"] = json!(true);
+        for field in [
+            "long_frames",
+            "max_frame_ms",
+            "max_render_ms",
+            "max_layout_ms",
+            "max_script_ms",
+        ] {
+            sample[field] = json!(u32::MAX);
+        }
+        sample["id"] = json!(u32::MAX);
+        sample["terminal_render_cycle_ms"] = json!(u32::MAX);
+        let diagnostic: BrowserDiagnostic = serde_json::from_value(sample).unwrap();
+        let message = diagnostic.rendering_message().unwrap();
+        assert_eq!(message, redact(&message));
+        assert!(message.chars().count() <= 240);
+    }
+
+    #[test]
     fn browser_resume_distinguishes_observation_time_from_delayed_animation_and_missing_terminal() {
         let mut sample = browser_sample();
         let message = serde_json::from_value::<BrowserDiagnostic>(sample.clone())
@@ -999,6 +1075,28 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let mut rendered = browser_stages_sample();
+        rendered["long_frame_tracking"] = json!(true);
+        rendered["long_frames"] = json!(1);
+        rendered["max_frame_ms"] = json!(700);
+        rendered["max_render_ms"] = json!(650);
+        rendered["max_layout_ms"] = json!(600);
+        rendered["max_script_ms"] = json!(5);
+        rendered["terminal_render_cycle_ms"] = json!(700);
+        let response = app
+            .clone()
+            .oneshot(request(rendered, "http://127.0.0.1:8090"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(local()["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["message"]
+                .as_str()
+                .unwrap()
+                .contains("tracked=true frames=1 longest=700ms render=650ms layout=600ms scripts=5ms terminal_cycle=700ms")));
         let response = app
             .clone()
             .oneshot(request(browser_stages_sample(), "http://127.0.0.1:8090"))
@@ -1032,6 +1130,12 @@ mod tests {
             ("initial_writes_pending", json!(-1)),
             ("terminal_hidden", json!("private URL")),
             ("terminal_long_tasks", json!(-1)),
+            ("terminal_render_cycle_ms", json!(-1)),
+            ("max_frame_ms", json!(u64::MAX)),
+            ("max_render_ms", json!("private URL")),
+            ("long_frame_tracking", json!("private URL")),
+            ("scripts", json!([])),
+            ("sourceURL", json!("private URL")),
             ("received_at", json!(1000000)),
             ("contents", json!("private transcript")),
         ] {
