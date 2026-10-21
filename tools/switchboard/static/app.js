@@ -679,11 +679,19 @@ async function refresh() {
     }));
   }catch(error){setStatus(error.message,true);}finally{loading=false;}
 }
+function failNewTab(entry,requestId,message){
+  if(!entry.pendingNewTab||entry.pendingNewTab.requestId!==requestId)return;
+  const waiting=entry.creatingTab&&selected===tabKey(entry,entry.creatingTab);
+  entry.pendingNewTab=null;entry.creatingTab=null;entry.followActiveTab=false;
+  if(waiting){const active=activeTab(entry);selected=active?tabKey(entry,active):null;}
+  render();setStatus(message,true);
+}
 function recordTerminalDiagnostic(entry,type,diagnostic){
   if(!diagnostic || type==='terminal-switch' && diagnostic.expected_render!==true && diagnostic.slow!==true && diagnostic.oversized_viewport!==true)return;
   const fields=type==='terminal-switch'?['focus_id','pane_id','is_plugin','expected_render','outcome','elapsed_ms','ack_ms','first_frame_ms','first_parse_ms','last_frame_ms','last_parse_ms','frames','bytes','writes_pending','max_parse_lag_ms','physical_cols','physical_rows','native_cols','native_rows','viewport_claims','terminal_resizes','scroll_height_px','client_height_px','scroll_top_px','xterm_rows','buffer_rows',
     'render_tracking','first_render_ms','last_render_ms','render_events','max_render_lag_ms','render_pending','first_animation_ms','last_animation_ms','max_animation_lag_ms','animation_pending','first_quiet_ms','late_frames','hidden_at_start','document_hidden','browser_focused','viewport_size_changes','first_native_cols','first_native_rows','min_native_cols','min_native_rows','max_native_cols','max_native_rows','xterm_cols','buffer_scroll_events','line_feed_events','wheel_events','xterm_size_changes','first_xterm_cols','first_xterm_rows','min_xterm_cols','min_xterm_rows','max_xterm_cols','max_xterm_rows','clipped_bottom_rows','max_clipped_bottom_rows',
     'control_tracking','focus_commands','terminal_metrics','cell_size_changes','first_cell_width_px','first_cell_height_px','last_cell_width_px','last_cell_height_px','min_cell_width_px','min_cell_height_px','max_cell_width_px','max_cell_height_px']:
+    type==='new-tab'?['request_id','outcome','elapsed_ms','delivery_ms','sent_ms','pane_id','control_socket']:
     ['pane_id','is_plugin','shift','ctrl','alt','meta','repeat','held_ms','released_ms'];
   const body={host:entry.host};
   for(const field of fields){const value=diagnostic[field];if(value===null||typeof value==='boolean'||typeof value==='string'&&field==='outcome'||typeof value==='number'&&Number.isFinite(value)&&value>=0)body[field]=value;}
@@ -737,6 +745,10 @@ window.addEventListener('message',event=>{
     entry.state=state;const tab=activeTab(entry);
     if(tab){selected=tabKey(entry,tab);render();focus({entry,tab},true);}
     setStatus(event.data.message || 'That terminal is unavailable. Choose another tab.',true);
+  }else if(event.data?.type==='zellij-new-tab-failed'){
+    failNewTab(entry,event.data.request_id,event.data.message);
+  }else if(event.data?.type==='zellij-new-tab-diagnostic'){
+    recordTerminalDiagnostic(entry,'new-tab',event.data.diagnostic);
   }else if(event.data?.type==='zellij-switch-diagnostic'){
     recordTerminalDiagnostic(entry,'terminal-switch',event.data.diagnostic);
   }else if(event.data?.type==='zellij-key-diagnostic'){
@@ -873,6 +885,8 @@ $('new-tab-form').onsubmit=event=>{
   if(!sessionTabs(entry).length)return;
   if(entry.pendingNewTab||entry.requestedPane||entry.focusPending){setStatus('Wait for the terminal to receive focus before creating a tab.',true);return;}
   const pending=entry.pendingNewTab=new Set(sessionTabs(entry).map(tab=>tabKey(entry,tab)));
+  pending.requestId=entry.newTabRequestId=(entry.newTabRequestId||0)+1;
+  pending.startedAt=performance.timeOrigin+performance.now();
   pending.paneIds=new Set((entry.state.panes||[]).filter(p=>!p.is_plugin).map(p=>p.pane_id));
   if(entry.state.active_pane&&!entry.state.active_pane.is_plugin)pending.paneIds.add(entry.state.active_pane.pane_id);
   entry.creatingTab={id:'creating',pending:true,name:'Creating tab…',position:Infinity,panes:[]};
@@ -884,9 +898,9 @@ $('new-tab-form').onsubmit=event=>{
   // Keyboard dismissal can leave focus on the hidden session selector, then
   // move it to the body. Hand focus to the frame before creation records it.
   entry.frame.focus();
-  entry.frame.contentWindow.postMessage({type:'zellij-new-tab'},location.origin);
+  entry.frame.contentWindow.postMessage({type:'zellij-new-tab',request_id:pending.requestId,started_at:pending.startedAt},location.origin);
   setStatus(`Creating a tab on ${hosts.get(entry.host)?.name}…`);
-  setTimeout(()=>{if(entry.pendingNewTab===pending){const waiting=selected===tabKey(entry,entry.creatingTab);entry.pendingNewTab=null;entry.creatingTab=null;entry.followActiveTab=false;if(waiting){const active=activeTab(entry);selected=active?tabKey(entry,active):null;}render();setStatus('No new tab received. Check the connection and try again.',true);}},30000);
+  setTimeout(()=>failNewTab(entry,pending.requestId,'No new tab received. Check the connection and try again.'),30000);
 };
 $('ready').onclick=()=>{
   const item=contextItem;if(!item)return;
@@ -971,7 +985,7 @@ async function loadLogs(){
       const group=element('section','log-computer','');group.append(element('h4','',computer.name));
       const entries=computer.error?[]:computer.entries||[];
       // Timing samples outnumber failures; list failures and fold the samples away.
-      const timing=entry=>/^(Terminal (transport|switch|viewport|control|scrolling)|Browser Shift\+Enter|Browser tab resumed) /.test(entry.message);
+      const timing=entry=>/^(Terminal (transport|switch|viewport|control|scrolling|new tab ready)|Browser Shift\+Enter|Browser tab resumed) /.test(entry.message);
       const errors=entries.filter(entry=>!timing(entry)),samples=entries.filter(timing);
       if(computer.error)group.append(element('p','log-note',computer.error));
       else if(!errors.length)group.append(element('p','log-note','No recent errors'));

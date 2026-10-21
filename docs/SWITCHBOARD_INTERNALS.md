@@ -293,6 +293,15 @@ Queued input keeps its original order; a disconnected pipe remains an error.
 
 ## Diagnostics
 
+Settings → Logs records each new-tab request's time to reach the terminal iframe,
+time to send on its control connection, and total time until the new pane becomes
+active. Slow creations and failures stay visible; fast creations are folded under
+performance samples. A request waits for a connecting control socket, but a sent
+creation is never retried automatically, to avoid duplicate tabs.
+The engine's `zellij.log` also records request receipt, tab allocation, shell
+startup duration, and layout duration, with client and tab IDs to locate native
+queue delays. These timings do not measure when a shell finishes loading its profile.
+
 Settings → Logs includes terminal tab switches: focus acknowledgment,
 first frame, parser/render/frame scheduling delay, output byte/frame counts,
 resize counts, and viewport size changes. Each switch observes ten seconds after

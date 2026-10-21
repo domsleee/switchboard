@@ -475,6 +475,29 @@ test('failed switch clears pending state and restores the actual active tab, ign
   assert.equal(context.selected,'actual');assert.equal(focused.tab,tab);assert.match(status,/timed out/);
 });
 
+test('failed creation restores the active tab immediately without clearing newer requests or a deliberate selection',()=>{
+  const tab={id:42,position:0},creating={id:'creating',pending:true},entry={pendingNewTab:{requestId:9},creatingTab:creating,followActiveTab:true};
+  const statuses=[],context={selected:'creating',activeTab:()=>tab,tabKey:(_,tab)=>String(tab.id),render(){},setStatus:(...args)=>statuses.push(args)};
+  vm.createContext(context);
+  vm.runInContext(source.slice(source.indexOf('function failNewTab('),source.indexOf('function recordTerminalDiagnostic(')),context);
+  context.failNewTab(entry,8,'Old failure');
+  assert.equal(entry.pendingNewTab.requestId,9);assert.equal(context.selected,'creating');assert.equal(statuses.length,0);
+  context.failNewTab(entry,9,'Connection lost');
+  assert.equal(entry.pendingNewTab,null);assert.equal(entry.creatingTab,null);assert.equal(entry.followActiveTab,false);
+  assert.equal(context.selected,'42');assert.deepEqual(statuses,[['Connection lost',true]]);
+  entry.pendingNewTab={requestId:10};entry.creatingTab=creating;context.selected='another tab';
+  context.failNewTab(entry,10,'Disconnected');
+  assert.equal(context.selected,'another tab');
+});
+
+test('new-tab diagnostic forwarding sends only bounded metadata fields',()=>{
+  const requests=[],context={fetch:(url,options)=>{requests.push([url,JSON.parse(options.body)]);return Promise.resolve();}};
+  vm.createContext(context);
+  vm.runInContext(source.slice(source.indexOf('function recordTerminalDiagnostic('),source.indexOf("window.addEventListener('message'")),context);
+  context.recordTerminalDiagnostic({host:'windows'},'new-tab',{request_id:4,outcome:'ready',elapsed_ms:300,delivery_ms:2,sent_ms:20,pane_id:7,control_socket:1,contents:'private screen',title:'private title'});
+  assert.deepEqual(requests,[['/api/diagnostics/new-tab',{host:'windows',request_id:4,outcome:'ready',elapsed_ms:300,delivery_ms:2,sent_ms:20,pane_id:7,control_socket:1}]]);
+});
+
 test('a clicked tab waiting for metadata retries from its button without stealing focus from other controls',()=>{
   const pane={pane_id:9,is_plugin:false,tab_position:2},active={pane_id:7,is_plugin:false,tab_position:0};
   const tab={id:90,position:1,name:'B',panes:[{...pane,tab_position:1}]},button={},messages=[];

@@ -42,12 +42,15 @@ test('The Logs section shows recent errors per computer, newest first, with refr
     logs={computers:[{name:'Mac',entries:[
       {time:now,source:'Browser',message:'Browser tab slow reason=visible raf=700/720ms',count:1},
       {time:now,source:'Browser',message:'Browser tab slow stages id=3 delivery=2ms frame=715ms reply=3ms',count:1},
+      {time:now,source:'Mac',message:'Terminal new tab slow request=7 pane=9 t=1800ms delivery=1ms send=700ms control=1',count:1},
+      {time:now,source:'Mac',message:'Terminal new tab disconnected request=8 pane=- t=20ms delivery=1ms send=2ms control=3',count:1},
+      {time:now,source:'Mac',message:'Terminal new tab ready request=9 pane=10 t=80ms delivery=1ms send=2ms control=1',count:1},
       {time:now,source:'Browser',message:'Browser tab resumed reason=visible raf=16/20ms',count:1},
       {time:now,source:'Browser',message:'Browser tab resumed stages id=4 delivery=1ms frame=16ms reply=3ms',count:1}]}]};
     await page.locator('#refresh-logs').click();
     await page.waitForFunction(()=>document.querySelector('#logs .log-entry span')?.textContent.startsWith('Browser tab slow'));
-    assert.equal(await page.locator('#logs .log-computer > .log-entry').count(),2,'A slow Chrome-tab return and its stages stay visible');
-    assert.equal(await page.locator('#logs details .log-entry').count(),2);
+    assert.equal(await page.locator('#logs .log-computer > .log-entry').count(),4,'Slow returns, slow creations and failed creations stay visible');
+    assert.equal(await page.locator('#logs details .log-entry').count(),3);
     assert.match((await page.locator('#logs details .log-entry').allTextContents()).join(' '),/Browser tab resumed stages/);
     assert.equal(await page.locator('#logs details').getAttribute('open'),null,'Fast returns stay folded away');
     logs={computers:[{name:'Mac',local:true,entries:[]}]};
