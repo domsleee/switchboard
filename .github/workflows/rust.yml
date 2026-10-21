@@ -17,6 +17,9 @@ concurrency:
   group: rust-${{ github.ref }}
   cancel-in-progress: true
 
+# Rust caches: only main saves them; PRs restore main's. A cache whose key already
+# exists is never re-saved, so a failed run must not save a partial one.
+
 jobs:
   build:
     name: Build
@@ -24,7 +27,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # macOS compiles the same code in Test (macos-latest).
+        os: [ubuntu-latest]
 
     runs-on: ${{ matrix.os }}
 
@@ -40,6 +44,8 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           rustflags: ""
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: false
 
       - name: Build
         run: cargo xtask build
@@ -63,15 +69,14 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           rustflags: ""
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: false
 
       - name: Install NASM
         uses: ilammy/setup-nasm@v1
 
       - name: Build
         run: cargo xtask build
-
-      - name: Check Switchboard installer
-        run: cargo test -p zellij-client --features web_server_capability switchboard_update::install --lib
 
   test:
     name: Test
@@ -95,6 +100,8 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           rustflags: ""
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: false
 
       - name: Test
         run: cargo xtask test
@@ -121,6 +128,8 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           rustflags: ""
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: false
 
       - name: Test zellij-utils
         run: cargo test --no-default-features -p zellij-utils --lib
@@ -130,6 +139,14 @@ jobs:
 
       - name: Test zellij-client
         run: cargo test --no-default-features -p zellij-client --lib
+
+      # Lives here rather than in Build (Windows): it needs the test profile,
+      # which this job has already compiled, not Build's dev-opt profile.
+      - name: Install NASM
+        uses: ilammy/setup-nasm@v1
+
+      - name: Check Switchboard installer
+        run: cargo test -p zellij-client --features web_server_capability switchboard_update::install --lib
 
   integration-test:
     name: Integration Test
@@ -153,6 +170,8 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           rustflags: ""
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: false
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
@@ -178,10 +197,14 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           rustflags: ""
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: false
 
       - name: Test without web support
         run: cargo xtask test --no-web
 
+  # Assets and formatting only compile xtask (about 30s cold) and finish long
+  # before the other jobs, so they don't spend the shared 10 GB cache budget.
   assets:
     name: Check Bundled Assets
     runs-on: ubuntu-latest
@@ -193,6 +216,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           rustflags: ""
+          cache: false
 
       - name: Test xtask
         run: cargo test -p xtask
@@ -211,6 +235,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           rustflags: ""
+          cache: false
 
       - name: Check Format
         run: cargo xtask format --check
