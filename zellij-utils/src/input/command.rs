@@ -72,6 +72,8 @@ pub struct RunCommand {
     pub originating_plugin: Option<OriginatingPlugin>,
     #[serde(default)]
     pub use_terminal_title: bool,
+    #[serde(skip)]
+    pub is_verified_agent_resume: bool,
 }
 
 impl std::fmt::Display for RunCommand {
@@ -121,6 +123,7 @@ impl From<RunCommandAction> for RunCommand {
             hold_on_start: action.hold_on_start,
             originating_plugin: action.originating_plugin,
             use_terminal_title: action.use_terminal_title,
+            is_verified_agent_resume: false,
         }
     }
 }
@@ -164,8 +167,38 @@ impl RunCommand {
             ..Default::default()
         }
     }
+
     pub fn with_cwd(mut self, cwd: PathBuf) -> Self {
         self.cwd = Some(cwd);
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_resume_verification_cannot_be_persisted_or_supplied_by_clients() {
+        let command = RunCommand {
+            command: "claude".into(),
+            is_verified_agent_resume: true,
+            ..Default::default()
+        };
+        let serialized = serde_json::to_value(&command).unwrap();
+        assert!(serialized.get("is_verified_agent_resume").is_none());
+        let restored: RunCommand = serde_json::from_value(serialized).unwrap();
+        assert!(!restored.is_verified_agent_resume);
+
+        let supplied: RunCommand = serde_json::from_value(serde_json::json!({
+            "command": "claude",
+            "is_verified_agent_resume": true
+        }))
+        .unwrap();
+        assert!(!supplied.is_verified_agent_resume);
+
+        let action: RunCommandAction = command.into();
+        let restored: RunCommand = action.into();
+        assert!(!restored.is_verified_agent_resume);
     }
 }

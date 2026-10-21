@@ -552,6 +552,21 @@ fn file_content_changed(path: &std::path::Path, new_content: &[u8]) -> bool {
     }
 }
 
+pub(crate) fn atomic_write(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let directory = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Recovery file has no parent directory",
+        )
+    })?;
+    fs::create_dir_all(directory)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
+    temporary.write_all(contents)?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    Ok(())
+}
+
 pub fn write_session_state_to_disk(
     current_session_name: String,
     current_session_info: SessionInfo,
@@ -561,31 +576,39 @@ pub fn write_session_state_to_disk(
     let (current_session_layout, layout_files_to_write) = current_session_layout;
     let new_metadata = current_session_info.to_string();
     if file_content_changed(&metadata_cache_file_name, new_metadata.as_bytes()) {
-        let _wrote_metadata_file = std::fs::create_dir_all(
-            session_info_folder_for_session(&current_session_name).as_path(),
-        )
-        .and_then(|_| std::fs::File::create(&metadata_cache_file_name))
-        .and_then(|mut f| write!(f, "{}", new_metadata));
+        if let Err(error) = atomic_write(&metadata_cache_file_name, new_metadata.as_bytes()) {
+            log::error!(
+                "Failed to save session metadata {}: {error}",
+                metadata_cache_file_name.display()
+            );
+        }
     }
 
     if !current_session_layout.is_empty() {
-        let layout_cache_file_name = session_layout_cache_file_name(&current_session_name);
-        if file_content_changed(&layout_cache_file_name, current_session_layout.as_bytes()) {
-            let _wrote_layout_file = std::fs::create_dir_all(
-                session_info_folder_for_session(&current_session_name).as_path(),
-            )
-            .and_then(|_| std::fs::File::create(&layout_cache_file_name))
-            .and_then(|mut f| write!(f, "{}", current_session_layout));
-        }
         let session_info_folder = session_info_folder_for_session(&current_session_name);
         for (external_file_name, external_file_contents) in layout_files_to_write {
             let external_file_path = session_info_folder.join(&external_file_name);
             if file_content_changed(&external_file_path, external_file_contents.as_bytes()) {
-                std::fs::File::create(&external_file_path)
-                    .and_then(|mut f| write!(f, "{}", external_file_contents))
-                    .unwrap_or_else(|e| {
-                        log::error!("Failed to write layout metadata file: {:?}", e);
-                    });
+                if let Err(error) =
+                    atomic_write(&external_file_path, external_file_contents.as_bytes())
+                {
+                    log::error!(
+                        "Failed to save layout content {}: {error}",
+                        external_file_path.display()
+                    );
+                    return;
+                }
+            }
+        }
+        let layout_cache_file_name = session_layout_cache_file_name(&current_session_name);
+        if file_content_changed(&layout_cache_file_name, current_session_layout.as_bytes()) {
+            if let Err(error) =
+                atomic_write(&layout_cache_file_name, current_session_layout.as_bytes())
+            {
+                log::error!(
+                    "Failed to save session layout {}: {error}",
+                    layout_cache_file_name.display()
+                );
             }
         }
     }
@@ -713,7 +736,42 @@ fn query_webserver_via_ipc(web_server_base_url: &str) -> Result<WebServerStatus>
 }
 
 #[cfg(test)]
-#[cfg(unix)]
+mod recovery_file_tests {
+    use super::atomic_write;
+
+    #[test]
+    fn atomic_recovery_writes_replace_the_complete_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("session").join("session-layout.kdl");
+        atomic_write(&path, b"previous complete layout").unwrap();
+        atomic_write(&path, b"new layout").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new layout");
+        assert_eq!(
+            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+            1
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_atomic_recovery_write_preserves_the_last_complete_layout() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("session-layout.kdl");
+        atomic_write(&path, b"previous complete layout").unwrap();
+        let locked = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&path)
+            .unwrap();
+        assert!(atomic_write(&path, b"replacement").is_err());
+        drop(locked);
+        assert_eq!(std::fs::read(&path).unwrap(), b"previous complete layout");
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;

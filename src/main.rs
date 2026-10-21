@@ -4,7 +4,7 @@ mod tests;
 
 use clap::Parser;
 use zellij_utils::{
-    cli::{CliAction, CliArgs, Command, Sessions},
+    cli::{AgentResumeCommand, CliAction, CliArgs, Command, Sessions},
     consts::{create_config_and_cache_folders, VERSION},
     data::UnblockCondition,
     envs,
@@ -16,6 +16,30 @@ use zellij_utils::{
 
 fn main() {
     let opts = CliArgs::parse();
+
+    if let Some(Command::AgentResume(command)) = &opts.command {
+        configure_logger();
+        let result = match command {
+            AgentResumeCommand::Install => std::env::current_exe()
+                .map_err(anyhow::Error::from)
+                .and_then(|binary| zellij_server::agent_resumption::install_hooks(&binary)),
+            AgentResumeCommand::Record { agent } => zellij_server::agent_resumption::record_hook(
+                *agent,
+                std::io::stdin(),
+            )
+            .map(|session| {
+                if let Some(session) = session {
+                    commands::send_action_to_session(CliAction::SaveSession, Some(session), None);
+                }
+            }),
+        };
+        if let Err(error) = result {
+            log::error!("Agent recovery: {error:#}");
+            eprintln!("Agent recovery: {error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     if let Some(Command::Message(message)) = &opts.command {
         #[cfg(feature = "web_server_capability")]
