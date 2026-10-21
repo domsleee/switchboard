@@ -935,7 +935,12 @@ pub fn start_server_impl(
                 // clients keep their listener below; new clients never pair by order.
                 #[cfg(windows)]
                 {
-                    let paired = zellij_utils::windows_ipc::bind(&socket_path).unwrap();
+                    let paired = match zellij_utils::windows_ipc::bind(&socket_path) {
+                        Ok(paired) => paired,
+                        Err(error) => {
+                            return exit_if_already_served(error, &socket_path, &to_server)
+                        },
+                    };
                     let os_input = os_input.clone();
                     let session_data = session_data.clone();
                     let session_state = session_state.clone();
@@ -987,7 +992,40 @@ pub fn start_server_impl(
                         })
                         .unwrap();
                 }
-                let listener = ipc_bind(&socket_path).unwrap();
+                let listener = match ipc_bind(&socket_path) {
+                    Ok(listener) => listener,
+                    Err(error) => return exit_if_already_served(error, &socket_path, &to_server),
+                };
+                // Temp cleanup can delete the marker (or its whole directory) while the
+                // server runs, which hides the session from every client. Restore it.
+                #[cfg(windows)]
+                {
+                    let socket_path = socket_path.clone();
+                    thread::Builder::new()
+                        .name("session_marker".into())
+                        .spawn(move || loop {
+                            thread::sleep(std::time::Duration::from_secs(5));
+                            // A rename moves the marker; never bring back the old name.
+                            if envs::get_session_name()
+                                .is_ok_and(|name| socket_path.file_name() != Some(name.as_ref()))
+                            {
+                                break;
+                            }
+                            match zellij_utils::sessions::republish_windows_session_marker(
+                                &socket_path,
+                            ) {
+                                Ok(true) => log::warn!(
+                                    "Restored missing session marker {}",
+                                    socket_path.display()
+                                ),
+                                Ok(false) => {},
+                                Err(error) => {
+                                    log::debug!("Failed to restore session marker: {error}")
+                                },
+                            }
+                        })
+                        .unwrap();
+                }
                 // set the sticky bit to avoid the socket file being potentially cleaned up
                 // https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html states that for XDG_RUNTIME_DIR:
                 // "To ensure that your files are not removed, they should have their access time timestamp modified at least once every 6 hours of monotonic time or the 'sticky' bit should be set on the file. "
@@ -2260,6 +2298,24 @@ pub fn start_server_impl(
     }
 }
 
+/// On Windows, a second server for a running session (spawned by a client that
+/// missed its marker) gets "access denied" binding the pipe the first server holds.
+/// Shut down instead of panicking and leave the session to that server.
+fn exit_if_already_served(
+    error: std::io::Error,
+    socket_path: &Path,
+    to_server: &SenderWithContext<ServerInstruction>,
+) {
+    if !cfg!(windows) || error.kind() != std::io::ErrorKind::PermissionDenied {
+        panic!("Failed to bind {}: {error}", socket_path.display());
+    }
+    log::error!(
+        "Session {} is already served by another process; exiting",
+        socket_path.display()
+    );
+    let _ = to_server.send(ServerInstruction::KillSession);
+}
+
 /// A client that wrongly believes the session is gone (for example because its
 /// marker went missing) sends `FirstClientConnected`. Initializing again would
 /// replace the session and kill every running pane, so attach it instead.
@@ -2292,6 +2348,21 @@ mod first_client_tests {
         assert!(matches!(
             attach_if_session_running(first(), false),
             ServerInstruction::FirstClientConnected(_, true, 7)
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn second_server_for_a_held_pipe_shuts_down_instead_of_panicking() {
+        let directory = tempfile::tempdir().unwrap();
+        let socket_path = directory.path().join("main");
+        let _held = zellij_utils::windows_ipc::bind(&socket_path).unwrap();
+        let error = zellij_utils::windows_ipc::bind(&socket_path).err().unwrap();
+        let (sender, receiver): ChannelWithContext<ServerInstruction> = channels::bounded(1);
+        exit_if_already_served(error, &socket_path, &SenderWithContext::new(sender));
+        assert!(matches!(
+            receiver.recv().unwrap().0,
+            ServerInstruction::KillSession
         ));
     }
 }

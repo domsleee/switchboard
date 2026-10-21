@@ -160,8 +160,15 @@ pub fn ipc_bind(path: &std::path::Path) -> std::io::Result<interprocess::local_s
     let name = path.to_string_lossy().to_string();
     let ns_name = name.to_ns_name::<GenericNamespaced>()?;
     let listener = ListenerOptions::new().name(ns_name).create_sync()?;
-    std::fs::write(path, std::process::id().to_string())?;
+    write_session_marker(path)?;
     Ok(listener)
+}
+
+/// Windows pipes have no file, so a listener publishes its PID (no trailing
+/// newline) at the socket path for clients to discover and probe.
+#[cfg(windows)]
+pub fn write_session_marker(path: &std::path::Path) -> std::io::Result<()> {
+    std::fs::write(path, std::process::id().to_string())
 }
 
 #[cfg(unix)]
@@ -181,7 +188,7 @@ pub fn ipc_bind_async(
     let name = path.to_string_lossy().to_string();
     let ns_name = name.to_ns_name::<GenericNamespaced>()?;
     let listener = ListenerOptions::new().name(ns_name).create_tokio()?;
-    std::fs::write(path, std::process::id().to_string())?;
+    write_session_marker(path)?;
     Ok(listener)
 }
 
