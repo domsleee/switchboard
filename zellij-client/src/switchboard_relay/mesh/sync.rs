@@ -8,6 +8,8 @@ pub(super) struct Update {
     board_hosts: Vec<board_host::Selection>,
     #[serde(default)]
     categories: BTreeMap<String, Category>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tab_order: Option<TabOrder>,
     membership: Signed<Membership>,
     credential: Envelope,
     /// The sender's network name, trusted only from a reply over its pinned TLS.
@@ -55,6 +57,7 @@ impl Mesh {
         Ok(Update {
             board_hosts: db.board_hosts.clone(),
             categories: db.categories.clone(),
+            tab_order: db.tab_order.clone(),
             // Keep the inviter's signature: an existing peer may not know this
             // newly joined computer yet, but already trusts its inviter.
             membership: membership.clone(),
@@ -148,11 +151,13 @@ impl Mesh {
         }
         let board_changed = self.merge_board_hosts(&mut db, &update.board_hosts)?;
         let categories_changed = Self::merge_categories(&mut db, &update.categories);
+        let order_changed = Self::merge_tab_order(&mut db, update.tab_order.as_ref());
         let mut response = self.sync_payload(&mut db, peer)?;
         response.hostname = system_hostname;
         if changed
             || board_changed
             || categories_changed
+            || order_changed
             || credential_changed
             || db.outgoing.len() != committed.outgoing.len()
         {
@@ -337,6 +342,78 @@ pub(super) async fn category(
         Ok(()) => {
             tokio::spawn(async move { mesh.synchronize().await });
             StatusCode::NO_CONTENT.into_response()
+        },
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// The sidebar's manual tab order, the same in every browser on every computer in the group.
+/// Keys name a tab by its computer's group member ID, so they mean the same tab everywhere.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct TabOrder {
+    keys: Vec<String>,
+    updated: u64,
+}
+
+fn valid_tab_order(keys: &[String]) -> bool {
+    keys.len() <= 2000 && keys.iter().all(|key| key.len() <= 512)
+}
+
+impl Mesh {
+    /// The latest change wins; a tie keeps the larger order, so every computer agrees.
+    pub(super) fn merge_tab_order(db: &mut Database, incoming: Option<&TabOrder>) -> bool {
+        let Some(order) = incoming.filter(|order| valid_tab_order(&order.keys)) else {
+            return false;
+        };
+        if db.membership.is_none()
+            || db
+                .tab_order
+                .as_ref()
+                .is_some_and(|old| (old.updated, &old.keys) >= (order.updated, &order.keys))
+        {
+            return false;
+        }
+        db.tab_order = Some(order.clone());
+        true
+    }
+
+    pub(super) async fn set_tab_order(&self, keys: Vec<String>) -> anyhow::Result<u64> {
+        anyhow::ensure!(valid_tab_order(&keys), "Too many tabs to share their order");
+        let mut committed = self.database.lock().await;
+        let mut db = committed.clone();
+        anyhow::ensure!(db.membership.is_some(), "Group unavailable");
+        let updated = now().max(db.tab_order.as_ref().map_or(0, |o| o.updated + 1));
+        db.tab_order = Some(TabOrder { keys, updated });
+        self.save(&db)?;
+        *committed = db;
+        Ok(updated)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SetTabOrder {
+    keys: Vec<String>,
+}
+pub(super) async fn tab_order(
+    State(state): State<RelayState>,
+    Json(input): Json<SetTabOrder>,
+) -> Response {
+    let Some(mesh) = state.mesh else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":"Pair computers before sharing tab order"})),
+        )
+            .into_response();
+    };
+    match mesh.set_tab_order(input.keys).await {
+        Ok(updated) => {
+            tokio::spawn(async move { mesh.synchronize().await });
+            Json(json!({ "updated": updated })).into_response()
         },
         Err(error) => (
             StatusCode::BAD_REQUEST,

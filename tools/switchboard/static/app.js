@@ -94,6 +94,45 @@ function markNewTabs(entry,tabs){
   state.keys=state.keys.slice(-200);
   localStorage.setItem('switchboard-new-tabs',JSON.stringify(state));
 }
+// The group shares one tab order, keyed alike in every browser; this browser keeps a
+// copy for when no group or relay shares it. A save in flight outranks older polls.
+let localHost=null,orderUpdated=0,savingOrder=0,orderReady=false,orderShared=false;
+try{localHost=JSON.parse(localStorage.getItem('switchboard-local-host'));}catch(_){}
+// Peers know this computer as mesh-<member id>, so its tabs get that key everywhere.
+function canonKey(key){const [host,...rest]=JSON.parse(key);return host===localHost?.id?JSON.stringify(['mesh-'+localHost.member,...rest]):key;}
+function saveOrder(order){
+  const live=new Set([...sessions.values()].flatMap(entry=>sessionTabs(entry).map(tab=>canonKey(tabKey(entry,tab)))));
+  const scanned=new Set([...sessions.values()].filter(entry=>entry.catalogPolls&&!entry.catalogUnavailable).map(entry=>canonKey(JSON.stringify([entry.host,entry.name]))));
+  // Forget tabs a clean scan no longer lists; tabs on unreachable hosts keep their positions.
+  // ponytail: tabs of whole closed sessions stay listed; prune by host session lists if the order grows large.
+  tabOrder=order.filter(key=>live.has(key)||!scanned.has(JSON.stringify(JSON.parse(key).slice(0,2))));
+  localStorage.setItem('switchboard-tab-order',JSON.stringify(tabOrder));
+  if(!orderShared)return;
+  savingOrder++;
+  fetch('/api/mesh/tab-order',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keys:tabOrder})})
+    .then(r=>r.ok?r.json():null).then(saved=>{if(saved)orderUpdated=Math.max(orderUpdated,saved.updated);}).catch(()=>{}).finally(()=>savingOrder--);
+}
+function applyTabOrder(mesh,member){
+  const shared=mesh?.tab_order;
+  const host=[...hosts.keys()].find(id=>hosts.get(id).local);
+  if(member&&host){localHost={id:host,member:member.id};localStorage.setItem('switchboard-local-host',JSON.stringify(localHost));}
+  orderShared=!!member&&shared!==undefined;
+  if(shared&&!savingOrder&&shared.updated>orderUpdated){
+    orderUpdated=shared.updated;tabOrder=shared.keys;localStorage.setItem('switchboard-tab-order',JSON.stringify(tabOrder));
+  }
+  // An order saved before sharing existed moves to the group once this computer's tabs can be keyed.
+  else if(orderShared&&shared===null&&!savingOrder&&tabOrder.length&&localHost)saveOrder([...new Set(tabOrder.map(canonKey))]);
+  orderReady=true;flushNewTabs();
+}
+// New tabs join the end of the shared order, so they land in the same place in every browser.
+// Wait for the shared order first, or a stale local copy would replace it.
+function flushNewTabs(){
+  const state=lateTabs();
+  if(!orderReady||!state.keys.length)return;
+  const order=[...new Set([...tabOrder,...allTabs(true,true).map(item=>item.key),...state.keys].map(canonKey))];
+  state.keys=[];localStorage.setItem('switchboard-new-tabs',JSON.stringify(state));
+  saveOrder(order);
+}
 function sessionTabs(entry){return [...(entry.catalog||[]),...(entry.provisionalTabs||[]),...(entry.creatingTab?[entry.creatingTab]:[])];}
 function matchesClosingTab(tab,closing){
   return Number.isInteger(closing.pane_id)
@@ -162,7 +201,8 @@ function setCatalog(entry,tabs){
   let changed=false;
   for(const store of [ready,archived])for(const [old,key] of migrations)if(old in store){store[key]=store[old];delete store[old];changed=true;}
   if(migrations.has(selected)){selected=migrations.get(selected);changed=true;}
-  if(tabOrder.some(key=>migrations.has(key))){tabOrder=[...new Set(tabOrder.map(key=>migrations.get(key)||key))];changed=true;}
+  const order=tabOrder.map(canonKey),moved=new Map([...migrations].map(([old,key])=>[canonKey(old),canonKey(key)]));
+  if(order.some(key=>moved.has(key))){tabOrder=[...new Set(order.map(key=>moved.get(key)||key))];changed=true;}
   if(changed){saveReady();localStorage.setItem('switchboard-archived',JSON.stringify(archived));localStorage.setItem('switchboard-tab-order',JSON.stringify(tabOrder));}
   markNewTabs(entry,tabs);
   entry.catalog=tabs;
@@ -174,7 +214,7 @@ function setCatalog(entry,tabs){
       entry.closingTabs.delete(key);closing.key=migrations.get(key);entry.closingTabs.set(closing.key,closing);
     }
   }
-  syncActiveTab(entry);
+  syncActiveTab(entry);flushNewTabs();
 }
 function syncActiveTab(entry){
   const tab=activeTab(entry);
@@ -246,26 +286,26 @@ function applyCategories(){
   }
 }
 function allTabs(ignoreFilter=false, includeArchived=false) {
-  const ranks=new Map([...new Set([...tabOrder,...(globalThis.SwitchboardStartup?.order()||[])])].map((key,index)=>[key,index]));
+  const ranks=new Map([...new Set([...tabOrder,...(globalThis.SwitchboardStartup?.order()||[])].map(canonKey))].map((key,index)=>[key,index]));
   const late=new Map(lateTabs().keys.map((key,index)=>[key,index]));
   // A tab still being created has no native ID yet; it already belongs at the end.
   const lateness=item=>late.get(item.key)??(item.tab.pending?Infinity:-1);
   // Saved drag positions first; the rest by machine and session, keeping each session's tab order;
   // tabs created since then last.
   const byMachine=(a,b)=>{const x=machineOrder(a),y=machineOrder(b);return x<y?-1:x>y?1:0;};
-  return [...sessions.values()].flatMap(entry => sessionTabs(entry).map(tab => ({entry,tab,key:tabKey(entry,tab)})))
+  return [...sessions.values()].flatMap(entry => sessionTabs(entry).map(tab => {const key=tabKey(entry,tab);return {entry,tab,key,rank:ranks.get(canonKey(key))??Infinity};}))
     .filter(({entry,tab,key}) => ![...(entry.closingTabs?.values()||[])].some(closing=>matchesClosingTab(tab,closing)) && (includeArchived || !archived[key]) && (ignoreFilter || filter === 'all' || groups[entry.host] === filter))
-    .sort((a,b) => (ranks.get(a.key)??Infinity)-(ranks.get(b.key)??Infinity) || lateness(a)-lateness(b) || byMachine(a,b));
+    .sort((a,b) => a.rank-b.rank || lateness(a)-lateness(b) || byMachine(a,b));
 }
 function moveTab(key,targetKey,after=false) {
   if(key===targetKey)return;
   const tabs=allTabs(true,true),source=tabs.find(t=>t.key===key),target=tabs.find(t=>t.key===targetKey);
   if(!source||!target)return;
   // A missing host or catalog is temporary; retain its saved positions when another tab moves.
-  const order=[...new Set([...tabOrder,...tabs.map(t=>t.key)])];
-  order.splice(order.indexOf(key),1);
-  order.splice(order.indexOf(targetKey)+(after?1:0),0,key);
-  tabOrder=order;localStorage.setItem('switchboard-tab-order',JSON.stringify(tabOrder));render();
+  const order=[...new Set([...tabOrder,...tabs.map(t=>t.key)].map(canonKey))];
+  order.splice(order.indexOf(canonKey(key)),1);
+  order.splice(order.indexOf(canonKey(targetKey))+(after?1:0),0,canonKey(key));
+  saveOrder(order);render();
   tabButtons.get(key)?.scrollIntoView({block:'nearest',inline:'nearest'});
 }
 function moveSelected(direction) {
@@ -617,7 +657,7 @@ function pruneSessions(listed=null,hostId=null){
 async function refresh() {
   if(loading)return;loading=true;
   try {
-    fetch('/api/mesh',{cache:'no-store'}).then(r=>r.ok?r.json():null).then(mesh=>{meshMembers=mesh?.members||[];localMember=meshMembers.find(m=>m.local)||null;applyCategories();render();}).catch(()=>{});
+    fetch('/api/mesh',{cache:'no-store'}).then(r=>r.ok?r.json():null).then(mesh=>{meshMembers=mesh?.members||[];localMember=meshMembers.find(m=>m.local)||null;applyCategories();applyTabOrder(mesh,localMember);render();}).catch(()=>{});
     const response=await fetch('/api/hosts?summary=1');if(!response.ok)throw Error('Cannot reach local relay');
     const data=await response.json();hostsLoaded=true;
     globalThis.SwitchboardStartup?.discover(data);
