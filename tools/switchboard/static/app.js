@@ -674,10 +674,10 @@ async function refresh() {
           connectSession(host,session.name);
         }
         pruneSessions(null,host.id);
-      }catch(error){hosts.set(summary.id,{...hosts.get(summary.id),connecting:false,error:error.message});}
+      }catch(error){hosts.set(summary.id,{...hosts.get(summary.id),connecting:false,error:error.message});if(error instanceof TypeError)relayLost();}
       renderMachines();render();
     }));
-  }catch(error){setStatus(error.message,true);}finally{loading=false;}
+  }catch(error){setStatus(error.message,true);relayLost();}finally{loading=false;}
 }
 function failNewTab(entry,requestId,message){
   if(!entry.pendingNewTab||entry.pendingNewTab.requestId!==requestId)return;
@@ -1151,6 +1151,7 @@ async function refreshAttention(immediate=false){
   try{
     const response=await fetch('/api/attention');if(!response.ok)throw Error('Attention monitor unavailable');
     const data=await response.json();attentionLoaded=true;
+    if(relayLostAt){relayLostAt=0;refresh();}
     paneAttention=new Map((data.panes||[]).map(state=>{const key=attentionKey(state.host,state.session,state.pane_id);return [key,{...state,key}];}));
     attentionErrors=data.errors||[];
     // The relay also preserves catalogs during failed scans. Use those on a
@@ -1169,8 +1170,15 @@ async function refreshAttention(immediate=false){
     if(current && document.hasFocus() && !document.hidden && $('artifact-preview').hidden && !document.querySelector('dialog[open]') && !current.entry.requestedPane && !current.entry.focusPending && activeTab(current.entry)?.id===current.tab.id)acknowledgeAttention(current);
     render();
     const selectedTab=allTabs().find(item=>item.key===selected);if(selectedTab?.entry.needsFocus)focus(selectedTab,true);
-  }catch(_){attentionLoaded=true;paneAttention.clear();attentionErrors=[{host:'Switchboard'}];render();}
+  }catch(_){attentionLoaded=true;paneAttention.clear();attentionErrors=[{host:'Switchboard'}];render();relayLost();}
   finally{attentionLoading=false;if(attentionRefreshPending){attentionRefreshPending=false;refreshAttention();}}
+}
+// An upgrade restarts the relay for about a second. Retry every 250 ms for 10 s
+// instead of waiting for the next poll, and reload hosts once it answers.
+let relayLostAt=0;
+function relayLost(){
+  relayLostAt||=Date.now();
+  if(Date.now()-relayLostAt<10000)setTimeout(refreshAttention,250);
 }
 refreshAttention();setInterval(refreshAttention,2000);
 

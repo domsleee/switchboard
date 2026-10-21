@@ -12,14 +12,35 @@ let reconnectionTimeout = null;
 let hasConnectedBefore = false;
 let isPageUnloading = false;
 
+// An upgrade restarts the web server and relay for about a second, so retry
+// every 250 ms for the first 10 seconds before backing off.
+const QUICK_ATTEMPTS = 40;
+
 /**
- * Get the delay for reconnection attempts using exponential backoff
+ * Get the delay for reconnection attempts: quick retries, then exponential backoff
  * @param {number} attempt - The current attempt number (1-based)
  * @returns {number} The delay in seconds
  */
 export function getReconnectionDelay(attempt) {
+    if (attempt <= QUICK_ATTEMPTS) {
+        return 0.25;
+    }
     const delays = [1, 2, 4, 8, 16];
-    return delays[Math.min(attempt - 1, delays.length - 1)];
+    return delays[Math.min(attempt - QUICK_ATTEMPTS - 1, delays.length - 1)];
+}
+
+// A page that reloaded itself and soon lost its connection again (the session
+// refuses web clients, for example) resumes the backoff instead of reloading
+// every 250 ms.
+const RELOAD_KEY = "zellij-reconnect-reload";
+
+function resumedAttempts() {
+    try {
+        const saved = JSON.parse(sessionStorage.getItem(RELOAD_KEY));
+        return Date.now() - saved.at < 30000 ? Math.max(saved.attempt, QUICK_ATTEMPTS) : 0;
+    } catch (_) {
+        return 0;
+    }
 }
 
 /**
@@ -31,7 +52,7 @@ export async function checkConnection() {
         const baseUrl = getBaseUrl();
         const response = await fetch(`${baseUrl}/info/version`, {
             method: "GET",
-            timeout: 5000,
+            signal: AbortSignal.timeout?.(5000),
         });
         return response.ok;
     } catch (error) {
@@ -62,6 +83,7 @@ export async function handleReconnection() {
     }
 
     isReconnecting = true;
+    reconnectionAttempt = resumedAttempts();
     let currentModal = null;
 
     while (isReconnecting) {
@@ -87,6 +109,9 @@ export async function handleReconnection() {
             if (connectionOk) {
                 if (result.cleanup) result.cleanup();
                 isReconnecting = false;
+                try {
+                    sessionStorage.setItem(RELOAD_KEY, JSON.stringify({ at: Date.now(), attempt: reconnectionAttempt }));
+                } catch (_) {}
                 reconnectionAttempt = 0;
                 window.location.reload();
                 return;

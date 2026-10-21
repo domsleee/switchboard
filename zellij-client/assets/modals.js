@@ -475,7 +475,9 @@ function showReconnectionModal(attemptNumber, delaySeconds) {
     modal.className = 'security-modal';
     modal.style.background = 'rgba(28, 28, 28, 0.85)'; // More transparent to show terminal
     
-    const isFirstAttempt = attemptNumber === 1;
+    // Sub-second retries during a service restart: no countdown or attempt count.
+    const quick = delaySeconds < 1;
+    const isFirstAttempt = attemptNumber === 1 || quick;
     const titleText = isFirstAttempt ? 'Connection Lost' : 'Reconnection Failed';
 
     const contentDiv = document.createElement('div');
@@ -490,7 +492,9 @@ function showReconnectionModal(attemptNumber, delaySeconds) {
     messageEl.className = 'error-description';
     messageEl.id = 'modal-message';
 
-    if (isFirstAttempt) {
+    if (quick) {
+        messageEl.textContent = 'Reconnecting...';
+    } else if (isFirstAttempt) {
         messageEl.appendChild(document.createTextNode('Reconnecting in '));
         const countdown = document.createElement('span');
         countdown.id = 'countdown';
@@ -537,33 +541,31 @@ function showReconnectionModal(attemptNumber, delaySeconds) {
     if (!window.__switchboardManagedFocus) reconnectBtn.focus();
     
     let countdownInterval;
+    let reconnectTimeout;
     let remainingSeconds = delaySeconds;
     let isCheckingConnection = false;
     
     const updateCountdown = () => {
-      const countdownElement = modal.querySelector('#countdown');
-      if (countdownElement && !isCheckingConnection) {
-        countdownElement.textContent = remainingSeconds;
-      }
       remainingSeconds--;
-      
-      if (remainingSeconds < 0 && !isCheckingConnection) {
-        clearInterval(countdownInterval);
-        handleReconnect();
+      const countdownElement = modal.querySelector('#countdown');
+      if (countdownElement && !isCheckingConnection && remainingSeconds > 0) {
+        countdownElement.textContent = remainingSeconds;
       }
     };
     
     const showConnectionCheck = () => {
       isCheckingConnection = true;
-      if (countdownInterval) {
-        clearInterval(countdownInterval);
-      }
+      clearInterval(countdownInterval);
+      clearTimeout(reconnectTimeout);
       
-      const messageElement = modal.querySelector('#modal-message');
-      messageElement.textContent = 'Connecting...';
+      if (!quick) {
+        const messageElement = modal.querySelector('#modal-message');
+        messageElement.textContent = 'Connecting...';
+      }
     };
     
     countdownInterval = setInterval(updateCountdown, 1000);
+    reconnectTimeout = setTimeout(() => handleReconnect(), delaySeconds * 1000);
     
     const handleKeydown = (e) => {
       if (isCheckingConnection) return;
@@ -580,9 +582,8 @@ function showReconnectionModal(attemptNumber, delaySeconds) {
     modal.addEventListener('keydown', handleKeydown);
     
     const cleanup = () => {
-      if (countdownInterval) {
-        clearInterval(countdownInterval);
-      }
+      clearInterval(countdownInterval);
+      clearTimeout(reconnectTimeout);
       modal.removeEventListener('keydown', handleKeydown);
       if (document.body.contains(modal)) {
         document.body.removeChild(modal);
