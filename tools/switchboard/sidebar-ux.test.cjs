@@ -57,9 +57,21 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     const action=page.locator('.tab-actions').nth(1);
     await page.locator('.tab-row').nth(1).hover();await action.click();
     assert.match(await page.locator('#tab-menu-target').textContent(),/Online shopping · Mac · main/);
+    if(process.env.SWITCHBOARD_UX_SCREENSHOTS)await page.screenshot({path:process.env.SWITCHBOARD_UX_SCREENSHOTS+'/tab-menu.png'});
     await page.keyboard.press('End');assert.equal(await page.evaluate(()=>document.activeElement.id),'close-tab');
     await page.keyboard.press('Home');assert.equal(await page.evaluate(()=>document.activeElement.id),'ready');
     await page.keyboard.press('Escape');assert.equal(await action.evaluate(e=>document.activeElement===e),true);
+    await action.click();await page.locator('#copy-title').click();
+    assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),'Online shopping');
+    assert.equal(await page.locator('#tab-menu').isVisible(),false);
+    assert.equal(await action.evaluate(e=>document.activeElement===e),true);
+    assert.equal(await page.locator('#tabs .selected .tab-name').textContent(),'switchboard');
+    await page.evaluate(()=>Object.defineProperty(navigator.clipboard,'writeText',{configurable:true,value:async()=>{
+      throw new DOMException('Write permission denied.','NotAllowedError');
+    }}));
+    await action.click();await page.locator('#copy-title').click();
+    assert.match(await page.locator('#status').textContent(),/Could not copy the tab title: Write permission denied/);
+    await page.evaluate(()=>delete navigator.clipboard.writeText);
     await action.click();await page.locator('#ready').click();
     assert.equal(await page.locator('#tabs .selected .tab-name').textContent(),'switchboard');
     assert.match(await page.locator('#tabs small').nth(1).textContent(),/For review/);

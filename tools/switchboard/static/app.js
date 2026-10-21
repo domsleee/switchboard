@@ -754,6 +754,18 @@ $('select-text').onclick=()=>{
   api.setSelectionMode(true);updateSelectionTools();
   sidebarOpen=false;updateSidebar();item.entry.frame.focus();
 };
+$('copy-title').onclick=async()=>{
+  const item=contextItem;if(!item)return;
+  const title=tabTitle(item);
+  closeTabMenu(true);
+  if(!navigator.clipboard?.writeText){setStatus('Copy title is unavailable in this browser.',true);return;}
+  try{
+    await navigator.clipboard.writeText(title);
+    setStatus('Tab title copied.');
+  }catch(error){
+    setStatus(`Could not copy the tab title: ${error.message||'Clipboard access was denied.'}`,true);
+  }
+};
 $('exit-selection').onclick=()=>{
   const current=allTabs().find(item=>item.key===selected),api=current?.entry.frame.contentWindow.SwitchboardClipboard;
   api?.setSelectionMode(false);api?.clearSelection();updateSelectionTools();current?.entry.frame.focus();

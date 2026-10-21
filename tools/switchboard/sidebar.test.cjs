@@ -3,6 +3,37 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const vm=require('node:vm');
 const source=fs.readFileSync(__dirname+'/static/app.js','utf8');
+test('Copy title uses the menu tab display title, including cached offline titles, without switching tabs',async()=>{
+  const pane={pane_id:8,is_plugin:false,tab_position:2,title:'\u2733 caf\u00e9 task'};
+  for(const item of [
+    {key:'other',entry:{state:{panes:[pane],active_pane:{pane_id:1,tab_position:0}}},tab:{name:'Tab #3',position:2,panes:[pane]}},
+    {key:'offline',entry:{state:null},tab:{cachedTitle:'caf\u00e9 task',panes:[]}},
+  ]){
+    const button={},writes=[],statuses=[];
+    const context={contextItem:item,selected:'current',SwitchboardTitles:require('./static/titles.js'),
+      $:()=>button,navigator:{clipboard:{writeText:async text=>writes.push(text)}},
+      closeTabMenu(restore){assert.equal(restore,true);context.contextItem=null;},
+      setStatus:(...args)=>statuses.push(args),activate(){assert.fail('Copying a title must not activate its tab');}};
+    vm.createContext(context);
+    vm.runInContext(source.slice(source.indexOf('function tabPanes('),source.indexOf('function activeTab(')),context);
+    vm.runInContext(source.slice(source.indexOf("$('copy-title').onclick="),source.indexOf("$('exit-selection').onclick=")),context);
+    await button.onclick();
+    assert.deepEqual(writes,['caf\u00e9 task']);assert.deepEqual(statuses,[['Tab title copied.']]);
+    assert.equal(context.selected,'current');assert.equal(context.contextItem,null);
+  }
+});
+test('Copy title reports denied or unavailable clipboard access instead of claiming success',async()=>{
+  for(const clipboard of [undefined,{writeText:async()=>{throw Error('Write permission denied.');}}]){
+    const button={},statuses=[];
+    const context={contextItem:{},tabTitle:()=> 'Title',navigator:{clipboard},$:()=>button,closeTabMenu(){},
+      setStatus:(...args)=>statuses.push(args)};
+    vm.createContext(context);
+    vm.runInContext(source.slice(source.indexOf("$('copy-title').onclick="),source.indexOf("$('exit-selection').onclick=")),context);
+    await button.onclick();
+    assert.equal(statuses.length,1);assert.equal(statuses[0][1],true);
+    assert.match(statuses[0][0],clipboard?/Write permission denied/:/unavailable/);
+  }
+});
 // Exercise stable order and attention acknowledgment without connecting terminals.
 test('attention acknowledgment never moves tabs; search, filters, archive and cross-machine reorder preserve order',()=>{
   const hosts=new Map([['mac',{name:'Mac'}],['win',{name:'Windows'}]]);
