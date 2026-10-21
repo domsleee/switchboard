@@ -5,7 +5,7 @@ const tab=(host,id)=>({host,session:'main',id,position:0,name:host+' terminal',p
 const statics=['index.html','app.js','bridge.js','close.js','titles.js','pairing-notice.js','style.css','messages.html','messages.js','messages.css','computers.html','computers.js'];
 
 // Synthetic hosts and fixture terminals only; never a live relay.
-test('One panel holds Messages, Computers, Archive, Logs and Settings over live terminals',
+test('Panel navigation skips hidden Archive and keeps terminals connected',
   {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE to run the isolated browser overlay check'},async()=>{
   const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
   const browser=await chromium.launch({headless:true});
@@ -77,6 +77,8 @@ test('One panel holds Messages, Computers, Archive, Logs and Settings over live 
     assert.equal(await messages.getAttribute('href'),'/messages.html');
     await messages.click();
     assert.deepEqual(await section(),at('Messages'));
+    assert.equal(await page.locator('#archive').isVisible(),false);
+    assert.equal(await page.locator('#panel-tab-archive').isVisible(),false);
     await messagesFrame.locator('button[data-key="computer:windows"]').waitFor();
     for(const selector of ['a[href="/"]','h1','a[href="/computers.html"]'])assert.equal(await messagesFrame.locator(selector).isHidden(),true,selector+' hidden in panel');
     await page.keyboard.press('Escape');
@@ -92,7 +94,8 @@ test('One panel holds Messages, Computers, Archive, Logs and Settings over live 
     assert.equal(await page.locator('#messages-frame').evaluate(frame=>frame.contentWindow.location.pathname),'/messages.html');
 
     // Arrow keys move between sections with roving focus; Home/End and wrapping work.
-    await page.keyboard.press('ArrowDown');assert.deepEqual(await section(),at('Archive'));
+    await page.keyboard.press('ArrowDown');assert.deepEqual(await section(),at('Logs'));
+    await page.keyboard.press('ArrowUp');assert.deepEqual(await section(),at('Computers'));
     await page.keyboard.press('End');assert.deepEqual(await section(),at('Settings'));
     await page.keyboard.press('ArrowDown');assert.deepEqual(await section(),at('Messages'));
     await page.keyboard.press('ArrowUp');assert.deepEqual(await section(),at('Settings'));
@@ -111,11 +114,12 @@ test('One panel holds Messages, Computers, Archive, Logs and Settings over live 
     await page.keyboard.press('Escape');
     await terminalsIntact();
 
-    // Settings, Archive and the pairing notice each open their own section; Close restores focus.
+    // Archive recovery still works without exposing its navigation tab.
     await page.locator('#settings').click();assert.deepEqual(await section(),at('Settings'));
     assert.equal(await page.locator('#native-tabs').isVisible(),true);
     await page.locator('#close-panel').click();await terminalsIntact();
-    await page.locator('#archive').click();assert.deepEqual(await section(),at('Archive'));
+    await page.evaluate(()=>openPanel('archive'));assert.deepEqual(await section(),at('Archive',''));
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'archive-search');
     assert.equal(await page.locator('#archive-list').textContent(),'No archived tabs.');
     await page.locator('#close-panel').click();await terminalsIntact();
     await page.evaluate(()=>document.querySelector('#pairing-notice').click());assert.deepEqual(await section(),at('Computers'));
@@ -139,8 +143,9 @@ test('One panel holds Messages, Computers, Archive, Logs and Settings over live 
     const box=await page.locator('#panel').boundingBox();
     assert.deepEqual([box.x,box.y,box.width,box.height],[0,0,390,844]);
     await page.waitForFunction(()=>matchMedia('(max-width:700px)').matches);
+    assert.equal(await page.locator('#panel-tab-archive').isVisible(),false);
     const layout=await page.evaluate(()=>{
-      const tabs=[...document.querySelectorAll('#panel [role=tab]')].map(tab=>tab.getBoundingClientRect());
+      const tabs=[...document.querySelectorAll('#panel [role=tab]:not([hidden])')].map(tab=>tab.getBoundingClientRect());
       return {row:new Set(tabs.map(tab=>tab.top)).size,within:tabs.every(tab=>tab.left>=0&&tab.right<=390),
         headerAbove:document.querySelector('#panel-body>header').getBoundingClientRect().bottom<=tabs[0].top,
         orientation:document.querySelector('#panel-tabs').getAttribute('aria-orientation'),
