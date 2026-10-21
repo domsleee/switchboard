@@ -72,7 +72,10 @@ for(const platform of ['MacIntel','Win32','Linux x86_64'])test(`${platform}: sid
     await page.keyboard.press(tabModifier+'+Digit9');await settle();assert.equal(await selectedName(),'Charlie','9 selects the last tab');
     await page.keyboard.press(tabModifier+'+Digit5');await settle();assert.equal(await selectedName(),'Charlie','beyond the last tab is ignored');
     // Search narrows the numbering to what is shown, even while typing in the search box.
-    await page.keyboard.press('Meta+k');await page.keyboard.type('r');
+    // From the terminal frame, Cmd+K reaches the page by postMessage; typing before
+    // the search box takes focus would send the key to the terminal.
+    await page.keyboard.press('Meta+k');await page.waitForFunction(()=>document.activeElement?.id==='tab-search');
+    await page.keyboard.type('r');
     assert.deepEqual(await page.locator('#tabs .tab-row:not([hidden]) .tab-name').allTextContents(),['Bravo','Charlie']);
     await page.keyboard.press(tabModifier+'+Digit1');await settle();assert.equal(await selectedName(),'Bravo');
     await page.locator('#tab-search').fill('');await page.keyboard.press('Escape');
