@@ -191,6 +191,22 @@ pub enum SwitchboardCommand {
     },
     /// Apply the newest published main build; restarts connection services, never terminal engines
     Update(SwitchboardUpdateCli),
+    /// Copy files into ~/.switchboard/artifacts/<id>/ and print a URL every paired computer can open
+    Artifact {
+        /// The file to open; further files keep their paths relative to its directory
+        #[clap(required = true)]
+        files: Vec<PathBuf>,
+        /// Artifact directory name (default: the first file's name without its extension)
+        #[clap(long)]
+        id: Option<String>,
+        /// Local relay that names this computer in the URL
+        #[clap(
+            long,
+            env = "SWITCHBOARD_RELAY_URL",
+            default_value = "http://127.0.0.1:8090"
+        )]
+        relay_url: String,
+    },
     /// Stage this executable and its helpers as a checksummed update bundle (CI)
     #[clap(hide = true)]
     Package {

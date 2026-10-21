@@ -1217,6 +1217,34 @@ async fn gateway_roundtrip(shared: bool) {
         .await,
         StatusCode::UNAUTHORIZED
     );
+    // Artifacts need the same peer credential as terminals and never leave the artifact root.
+    for (bearer, path, status) in [
+        (
+            None,
+            "/switchboard/artifacts/a/b.txt",
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            Some(bearer.as_str()),
+            "/switchboard/artifacts/..%2f..%2fetc/passwd",
+            StatusCode::NOT_FOUND,
+        ),
+    ] {
+        assert_eq!(
+            request(
+                &client,
+                &authority,
+                bearer,
+                false,
+                Method::GET,
+                path,
+                Bytes::new()
+            )
+            .await,
+            status,
+            "{path}"
+        );
+    }
     assert_eq!(
         request(
             &client,

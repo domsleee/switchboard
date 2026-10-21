@@ -45,7 +45,7 @@ uuid = { workspace = true }
 include_dir = { workspace = true, optional = true }
 zellij-utils = { workspace = true }
 tokio = { workspace = true }
-tokio-util = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true, features = ["io"] }
 isahc = { workspace = true, optional = true }
 tokio-tungstenite = { version = "0.28", optional = true }
 rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12", "logging"], optional = true }
@@ -54,6 +54,7 @@ rustls-native-certs = { version = "0.8", optional = true }
 rustls-pki-types = { version = "1", optional = true }
 futures-util = { version = "0.3", optional = true }
 urlencoding = { version = "2.1", optional = true }
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"], optional = true }
 
 [target.'cfg(not(windows))'.dependencies]
 signal-hook = { workspace = true }
@@ -89,6 +90,7 @@ web_server_capability = [
     "dep:rustls-pki-types",
     "dep:futures-util",
     "dep:urlencoding",
+    "dep:pulldown-cmark",
     "dep:dialoguer",
     "dep:base64",
     "dep:include_dir",

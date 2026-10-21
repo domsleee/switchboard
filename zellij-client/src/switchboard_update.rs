@@ -38,6 +38,11 @@ pub fn run(command: &SwitchboardCommand) -> Result<()> {
             None => install::install(&std::env::current_exe()?),
         },
         SwitchboardCommand::Update(cli) => Updater::from_cli(cli)?.run(),
+        SwitchboardCommand::Artifact {
+            files,
+            id,
+            relay_url,
+        } => crate::switchboard_relay::artifacts::publish(files, id.as_deref(), relay_url),
         SwitchboardCommand::Package {
             platform,
             commit,
