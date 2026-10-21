@@ -419,11 +419,18 @@ impl Mesh {
         }
     }
     pub(super) fn peer_client(&self, member: &Member) -> anyhow::Result<Arc<Host>> {
+        // Share the paired host's learned routes so group sync follows a moved peer.
+        let (hostname, address) = self
+            .host(&format!("mesh-{}", member.id))
+            .map(|host| (host.config.hostname.clone(), host.config.address))
+            .unwrap_or_default();
         let mut clients = self.peer_clients.write().unwrap();
         if let Some(host) = clients.get(&member.id).filter(|host| {
             host.config.name == member.name
                 && host.config.url == member.endpoint
                 && host.config.tls_fingerprint.as_deref() == Some(member.certificate.as_str())
+                && host.config.hostname == hostname
+                && host.config.address == address
         }) {
             return Ok(host.clone());
         }
@@ -439,6 +446,8 @@ impl Mesh {
             artifact_urls: Value::Null,
             escape_transport: None,
             zellij_binary: None,
+            hostname,
+            address,
         })?);
         clients.insert(member.id.clone(), host.clone());
         Ok(host)

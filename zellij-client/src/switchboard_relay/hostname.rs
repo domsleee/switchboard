@@ -25,6 +25,30 @@ pub(super) fn local_hostname(name: &str) -> Option<String> {
     Some(format!("{label}.local"))
 }
 
+/// This computer's network name, advertised to peers whose display name for it differs.
+pub(super) async fn system() -> Option<String> {
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    if let Some(name) = NAME.get() {
+        return Some(name.clone());
+    }
+    let output = tokio::time::timeout(
+        Duration::from_secs(1),
+        tokio::process::Command::new("hostname")
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await;
+    let output = output.ok()?.ok().filter(|output| output.status.success())?;
+    // A Linux FQDN still answers mDNS by its first label.
+    let name = local_hostname(
+        String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .split('.')
+            .next()?,
+    )?;
+    Some(NAME.get_or_init(|| name).clone())
+}
+
 pub(super) fn usable_route_address(address: IpAddr) -> bool {
     !address.is_loopback()
         && !address.is_unspecified()

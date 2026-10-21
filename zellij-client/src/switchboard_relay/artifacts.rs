@@ -111,6 +111,8 @@ fn router(config: ArtifactConfig, port: u16) -> anyhow::Result<Router> {
         artifact_urls: Value::Null,
         escape_transport: None,
         zellij_binary: None,
+        hostname: None,
+        address: None,
     })?);
     Ok(Router::new()
         .fallback(get(proxy))

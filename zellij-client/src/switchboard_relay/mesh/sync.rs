@@ -10,6 +10,9 @@ pub(super) struct Update {
     categories: BTreeMap<String, Category>,
     membership: Signed<Membership>,
     credential: Envelope,
+    /// The sender's network name, trusted only from a reply over its pinned TLS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hostname: Option<String>,
 }
 
 pub(super) async fn exchange(
@@ -56,13 +59,16 @@ impl Mesh {
             // newly joined computer yet, but already trusts its inviter.
             membership: membership.clone(),
             credential: self.identity.seal(local, member, 1, &db.outgoing[peer])?,
+            hostname: None,
         })
     }
 
     pub(super) async fn prepare_sync(&self, peer: &str) -> anyhow::Result<Update> {
+        let system_hostname = hostname::system().await;
         let mut committed = self.database.lock().await;
         let mut db = committed.clone();
-        let update = self.sync_payload(&mut db, peer)?;
+        let mut update = self.sync_payload(&mut db, peer)?;
+        update.hostname = system_hostname;
         if db.outgoing.len() != committed.outgoing.len() {
             self.save(&db)?;
             *committed = db;
@@ -71,6 +77,7 @@ impl Mesh {
     }
 
     pub(super) async fn exchange(&self, update: Update) -> anyhow::Result<Update> {
+        let system_hostname = hostname::system().await;
         let mut committed = self.database.lock().await;
         let mut db = committed.clone();
         let current = &db
@@ -141,7 +148,8 @@ impl Mesh {
         }
         let board_changed = self.merge_board_hosts(&mut db, &update.board_hosts)?;
         let categories_changed = Self::merge_categories(&mut db, &update.categories);
-        let response = self.sync_payload(&mut db, peer)?;
+        let mut response = self.sync_payload(&mut db, peer)?;
+        response.hostname = system_hostname;
         if changed
             || board_changed
             || categories_changed
@@ -154,7 +162,54 @@ impl Mesh {
         Ok(response)
     }
 
+    /// Persist routing hints. An address is learned only after the peer's pinned TLS
+    /// handshake succeeded there, so an unauthenticated DNS answer never sticks.
+    pub(super) async fn learn_route(
+        &self,
+        peer: &str,
+        name: Option<&str>,
+        address: Option<SocketAddr>,
+    ) -> anyhow::Result<()> {
+        let mut committed = self.database.lock().await;
+        let mut db = committed.clone();
+        if let Some(name) = name.and_then(hostname::local_hostname) {
+            db.hostnames.insert(peer.to_owned(), name);
+        }
+        if let Some(address) = address {
+            db.addresses.insert(peer.to_owned(), address);
+        }
+        if db.hostnames != committed.hostnames || db.addresses != committed.addresses {
+            self.save(&db)?;
+            *committed = db;
+        }
+        Ok(())
+    }
+
+    async fn learn_routes(&self) {
+        let clients: Vec<_> = self
+            .peer_clients
+            .read()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect();
+        for host in self.hosts().into_iter().chain(clients) {
+            let route = *host.route_hint.lock().await;
+            if let Some((address, _)) =
+                route.filter(|(address, _)| host.config.address != Some(*address))
+            {
+                let id = host
+                    .config
+                    .id
+                    .strip_prefix("mesh-")
+                    .unwrap_or(&host.config.id);
+                let _ = self.learn_route(id, None, Some(address)).await;
+            }
+        }
+    }
+
     pub(super) async fn synchronize(&self) {
+        self.learn_routes().await;
         let peers = {
             let db = self.database.lock().await;
             match (&db.membership, &db.local) {
@@ -177,7 +232,9 @@ impl Mesh {
             let result = async {
                 let update = self.prepare_sync(&peer.id).await?;
                 let response: Update = self.remote(&peer, "/mesh/sync", &update).await?;
+                let name = response.hostname.clone();
                 self.exchange(response).await?;
+                self.learn_route(&peer.id, name.as_deref(), None).await?;
                 Ok::<_, anyhow::Error>(())
             };
             let result = tokio::time::timeout(Duration::from_secs(5), result).await;
