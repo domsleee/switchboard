@@ -32,7 +32,7 @@ test('Close (menu or Ctrl+D) closes the clicked tab immediately and restores it 
   context.fetch=async()=>({ok:false,text:async()=>'That tab is no longer available'});
   await $('close-tab').onclick();
   assert.match(context.statuses.at(-1),/no longer available/);
-  assert.equal(entry.closingTabs.has(42),false);
+  assert.equal(entry.closingTabs.has('clicked'),false);
 });
 
 test('close removes the selected tab before the request finishes, keeps stale catalogs hidden, and rolls back errors',async()=>{
@@ -63,6 +63,99 @@ test('close removes the selected tab before the request finishes, keeps stale ca
   finish({ok:true});await success;
   context.setCatalog(entry,original);assert.equal(context.allTabs().length,1,'stale snapshots after acknowledgment stay hidden');
   context.setCatalog(entry,original.slice(1));assert.equal(entry.closingTabs.size,0,'fresh snapshots clear the close marker');
+});
+
+test('close resolves a provisional tab by its live pane, without closing a tab whose ID matches the pane ID',async()=>{
+  const elements=new Map(),$=id=>{
+    if(!elements.has(id))elements.set(id,{textContent:'',disabled:false,open:false});
+    return elements.get(id);
+  };
+  const pane={pane_id:17,is_plugin:false,tab_position:0};
+  const other={id:17,position:1,name:'Other',panes:[{pane_id:90,is_plugin:false}]};
+  const provisional={id:17,position:0,name:'Connecting',pending:true,panes:[pane]};
+  const entry={host:'win',name:'main',state:{panes:[pane]},catalog:[other],provisionalTabs:[provisional]};
+  let finish;
+  const calls=[],source=fs.readFileSync(__dirname+'/static/app.js','utf8');
+  const context={$,sessions:new Map([['main',entry]]),hosts:new Map(),selected:null,tabOrder:[],filter:'all',groups:{},archived:{},ready:{},
+    saveReady(){},localStorage:{setItem(){}},closeTabMenu(){context.contextItem=null;},render(){},
+    activate(item){context.selected=item.key;},setStatus(message){context.status=message;},
+    fetch:(url,options)=>{calls.push([url,JSON.parse(options.body)]);return new Promise(resolve=>finish=resolve);},AbortSignal};
+  vm.createContext(context);
+  vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function moveSelected(')),context);
+  vm.runInContext(fs.readFileSync(__dirname+'/static/close.js','utf8'),context);
+  context.selected=context.tabKey(entry,provisional);
+  context.contextItem=context.allTabs().find(item=>item.tab.pending);
+  const pending=$('close-tab').onclick();
+  const provisionalKey=context.tabKey(entry,provisional),resolvedKey=JSON.stringify(['win','main','tab',42]);
+  context.ready[provisionalKey]=1;context.archived[provisionalKey]=1;
+  assert.deepEqual(calls,[['/api/hosts/win/close-tab',{session:'main',pane_id:17}]]);
+  assert.deepEqual(Array.from(context.allTabs(),item=>item.tab.name),['Other'],'Pane IDs and tab IDs are separate identities');
+  const resolved={id:42,position:0,name:'Resolved',panes:[pane]};
+  context.setCatalog(entry,[resolved,other]);
+  assert.deepEqual(Array.from(context.allTabs(),item=>item.tab.name),['Other'],'Resolving a tab ID cannot undo its pending close');
+  assert.equal(context.ready[resolvedKey],1);
+  finish({ok:true});await pending;
+  assert.equal(context.ready[resolvedKey],undefined);assert.equal(context.archived[resolvedKey],undefined);
+  context.setCatalog(entry,[resolved,other]);
+  assert.equal(context.allTabs().length,1,'Stale catalogs cannot restore a confirmed close');
+  context.setCatalog(entry,[other]);
+  assert.equal(entry.closingTabs.size,0);
+
+  entry.catalog=[];entry.provisionalTabs=[provisional];
+  context.contextItem=context.allTabs()[0];
+  const failure=$('close-tab').onclick();
+  finish({ok:false,text:async()=>'Cannot identify target'});await failure;
+  assert.equal(context.allTabs().length,1,'A failed close restores the provisional tab');
+  assert.match(context.status,/Cannot identify target/);
+  entry.state.panes=[];
+  context.contextItem=context.allTabs()[0];
+  await $('close-tab').onclick();
+  assert.equal(calls.length,2,'A pane that is no longer live must not be submitted');
+  assert.match(context.status,/still connecting/);
+});
+
+test('unavailable status does not disable menu Close or Ctrl+D for live provisional tabs',
+  {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
+  const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch({headless:true});
+  try{
+    const page=await browser.newPage(),calls=[],errors=[];
+    page.setDefaultTimeout(5000);page.on('pageerror',error=>errors.push(error.message));
+    await page.addInitScript(()=>{window.setInterval=()=>0;});
+    await page.route('**/*',async route=>{
+      const path=new URL(route.request().url()).pathname;
+      const json=value=>route.fulfill({contentType:'application/json',body:JSON.stringify(value)});
+      if(path.endsWith('/close-tab')){calls.push(route.request().postDataJSON());return json({ok:true});}
+      if(path==='/api/hosts')return json([{id:'windows',name:'Windows'}]);
+      if(path==='/api/hosts/windows')return json({id:'windows',name:'Windows',sessions:[{name:'main',web_clients_allowed:true}]});
+      if(path==='/api/attention')return json({tabs:[],panes:[],errors:[{host:'windows',session:'main',message:'Session snapshots unavailable'}]});
+      if(path.startsWith('/api/'))return json({});
+      if(path.startsWith('/hosts/'))return route.fulfill({contentType:'text/html',body:`<input><script>
+        const panes=[{pane_id:17,is_plugin:false,tab_position:0,title:'First'},{pane_id:23,is_plugin:false,tab_position:1,title:'Second'}];
+        let active=panes[0];
+        function state(focus_id){parent.postMessage({type:'zellij-state',focus_id,payload:{session_name:'main',panes,tabs:[{position:0,name:'First'},{position:1,name:'Second'}],active_pane:active}},location.origin);}
+        addEventListener('message',event=>{
+          if(event.data.type==='zellij-focus'){active=panes.find(pane=>pane.pane_id===event.data.pane_id);document.querySelector('input').focus();state(event.data.focus_id);}
+        });state();
+      </script>`});
+      const file=path==='/'?'index.html':path.slice(1);
+      if(!['index.html','app.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
+      return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
+    });
+    await page.goto('https://switchboard.test/?host=windows&session=main&pane=17');
+    await page.waitForFunction(()=>document.querySelectorAll('#tabs .tab-select').length===2&&[...document.querySelectorAll('#tabs .tab-select')].every(button=>button.dataset.agentState==='Status unavailable'));
+    await page.locator('#tabs .tab-select').filter({hasText:'Second'}).click({button:'right'});
+    assert.equal(await page.locator('#close-tab').isEnabled(),true);
+    await page.locator('#close-tab').click();
+    await page.waitForFunction(()=>document.querySelectorAll('#tabs .tab-select').length===1);
+    assert.deepEqual(calls,[{session:'main',pane_id:23}]);
+    await page.evaluate(()=>refreshAttention());
+    assert.equal(await page.locator('#tabs .tab-select').count(),1,'A failed status poll must not bring the closed tab back');
+    await page.locator('#tabs .tab-select').focus();
+    await page.keyboard.press('Control+d');
+    await page.waitForFunction(()=>document.querySelectorAll('#tabs .tab-select').length===0);
+    assert.deepEqual(calls,[{session:'main',pane_id:23},{session:'main',pane_id:17}]);
+    assert.deepEqual(errors,[]);
+  }finally{await browser.close();}
 });
 
 test('middle-click closes the clicked sidebar tab without selecting it, preserving guards and other mouse actions',

@@ -294,6 +294,67 @@ async fn group_sync_keeps_recovered_routes_and_rejects_a_changed_tls_identity() 
     );
     task.abort();
 }
+#[tokio::test]
+async fn verified_routes_and_advertised_hostnames_persist_across_restart() {
+    let temp = tempfile::tempdir().unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let peer = machine(
+        &temp.path().join("peer"),
+        "Moved-PC",
+        &format!("https://192.0.2.123:{}", address.port()),
+    )
+    .await;
+    let local = machine(
+        &temp.path().join("local"),
+        "Local",
+        "https://192.0.2.2:8082",
+    )
+    .await;
+    let invitation = invitation(&peer, 1000).await;
+    let (_, approval) = approved(&peer, &local, &invitation, 1000).await;
+    peer.complete(local.install(approval, &invitation).await.unwrap())
+        .await
+        .unwrap();
+    let router = transport::gateway_router(peer.clone());
+    let server = axum_server::from_tcp_rustls(
+        listener,
+        axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(peer.tls().unwrap())),
+    )
+    .unwrap();
+    let task = tokio::spawn(async move { server.serve(router.into_make_service()).await.unwrap() });
+    let member = invitation.administrator;
+    let id = format!("mesh-{}", member.id);
+    // Only a route whose pinned TLS handshake succeeded is ever cached.
+    *local.peer_client(&member).unwrap().route_hint.lock().await =
+        Some((address, tokio::time::Instant::now()));
+    local.synchronize().await;
+    task.abort();
+    let host = local.host(&id).unwrap();
+    assert_eq!(host.config.address, Some(address));
+    // The reply came over the peer's pinned TLS, so its hostname is kept.
+    let advertised = hostname::system().await;
+    assert_eq!(host.config.hostname, advertised);
+    // Display names that are not DNS labels are never learned as hostnames.
+    local
+        .learn_route(&member.id, Some("My PC"), None)
+        .await
+        .unwrap();
+    assert_eq!(local.host(&id).unwrap().config.hostname, advertised);
+    drop(local);
+    let engine = Arc::new(Host::new(super::super::tests::config("http://127.0.0.1:1")).unwrap());
+    let restarted = Mesh::with_issuer(
+        temp.path().join("local"),
+        engine,
+        Arc::new(FakeIssuer::default()),
+    )
+    .await
+    .unwrap();
+    let host = restarted.host(&id).unwrap();
+    assert_eq!(host.config.address, Some(address));
+    assert_eq!(host.config.hostname, advertised);
+}
 async fn machine_with_engine(root: &Path, label: &str, address: &str, engine: &str) -> Arc<Mesh> {
     let engine = Arc::new(Host::new(super::super::tests::config(engine)).unwrap());
     let mesh = Mesh::with_issuer(root.to_owned(), engine, Arc::new(FakeIssuer::default()))
@@ -1743,6 +1804,65 @@ async fn computer_categories_sync_and_the_latest_change_wins() {
 }
 
 #[tokio::test]
+async fn tab_order_syncs_and_the_latest_change_wins() {
+    let temp = tempfile::tempdir().unwrap();
+    let mac = machine(&temp.path().join("mac"), "Mac", "https://192.0.2.1:8091").await;
+    let windows = machine(
+        &temp.path().join("windows"),
+        "Windows",
+        "https://192.0.2.2:8091",
+    )
+    .await;
+    let invite = invitation(&mac, 1000).await;
+    let (_, approval) = approved(&mac, &windows, &invite, 1000).await;
+    mac.complete(windows.install(approval, &invite).await.unwrap())
+        .await
+        .unwrap();
+    let id = |mesh: &Arc<Mesh>| {
+        let mesh = mesh.clone();
+        async move {
+            mesh.database
+                .lock()
+                .await
+                .local
+                .as_ref()
+                .unwrap()
+                .id
+                .clone()
+        }
+    };
+    let (mac_id, windows_id) = (id(&mac).await, id(&windows).await);
+    let order = |mesh: &Arc<Mesh>| {
+        let mesh = mesh.clone();
+        async move { mesh.status().await["tab_order"]["keys"].clone() }
+    };
+    assert!(mac.set_tab_order(vec!["x".repeat(513)]).await.is_err());
+    assert!(mac.set_tab_order(vec![String::new(); 2001]).await.is_err());
+    // Set on the Mac, seen on Windows.
+    let first = mac
+        .set_tab_order(vec!["a".into(), "b".into()])
+        .await
+        .unwrap();
+    let stale = mac.prepare_sync(&windows_id).await.unwrap();
+    mac.exchange(windows.exchange(stale.clone()).await.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(order(&windows).await, json!(["a", "b"]));
+    // A later change on Windows replaces it everywhere; the older update cannot undo it.
+    let second = windows
+        .set_tab_order(vec!["b".into(), "a".into()])
+        .await
+        .unwrap();
+    assert!(second > first, "a change outranks the order it replaces");
+    mac.exchange(windows.prepare_sync(&mac_id).await.unwrap())
+        .await
+        .unwrap();
+    windows.exchange(stale).await.unwrap();
+    assert_eq!(order(&mac).await, json!(["b", "a"]));
+    assert_eq!(order(&windows).await, json!(["b", "a"]));
+}
+
+#[tokio::test]
 async fn explicit_board_host_is_independent_of_administrator_and_syncs_to_new_members() {
     let temp = tempfile::tempdir().unwrap();
     let mac = machine(&temp.path().join("mac"), "Mac", "https://192.0.2.1:8091").await;
@@ -2158,4 +2278,28 @@ async fn attention_reviews_live_with_the_owner_and_every_peer_sees_them() {
         "an offline owner never fails the review"
     );
     native_task.abort();
+}
+
+#[test]
+fn peer_replies_name_the_failure_instead_of_blaming_the_invitation() {
+    let down = transport::reply_error(
+        "Mac",
+        "/mesh/sync",
+        StatusCode::SERVICE_UNAVAILABLE,
+        b"Switchboard pairing service unavailable",
+    );
+    assert_eq!(
+        down.to_string(),
+        "Cannot reach Switchboard on Mac; its relay is not running"
+    );
+    let denied = transport::reply_error("Mac", "/mesh/sync", StatusCode::UNAUTHORIZED, b"");
+    assert_eq!(
+        denied.to_string(),
+        "Mac answered /mesh/sync with 401 Unauthorized"
+    );
+    let gone = transport::reply_error("Mac", "/mesh/request", StatusCode::GONE, b"");
+    assert_eq!(
+        gone.to_string(),
+        "Invitation expired, cancelled or consumed"
+    );
 }

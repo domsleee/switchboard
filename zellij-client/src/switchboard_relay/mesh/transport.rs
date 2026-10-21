@@ -11,6 +11,7 @@ pub(in crate::switchboard_relay) fn routes() -> Router<RelayState> {
             get(super::board_host::status).post(super::board_host::select),
         )
         .route("/api/mesh/category", post(super::sync::category))
+        .route("/api/mesh/tab-order", post(super::sync::tab_order))
         .route("/api/mesh/defaults", get(super::discovery::defaults))
         .route("/api/mesh/invitations", post(create))
         .route("/api/mesh/cancel", post(cancel))
@@ -31,6 +32,24 @@ fn rejected(error: anyhow::Error) -> Error {
     let (status, message) = rejection(error);
     logs::record("pairing", message);
     (status, message)
+}
+/// Sync, board and pairing calls all share this, so name the call and status.
+pub(super) fn reply_error(
+    member: &str,
+    path: &str,
+    status: StatusCode,
+    body: &[u8],
+) -> anyhow::Error {
+    if status == StatusCode::GONE {
+        return anyhow::anyhow!("Invitation expired, cancelled or consumed");
+    }
+    if status == StatusCode::SERVICE_UNAVAILABLE {
+        // The peer's web server answers 503 when its relay is not running.
+        return anyhow::anyhow!("Cannot reach Switchboard on {member}; its relay is not running");
+    }
+    let body = String::from_utf8_lossy(&body[..body.len().min(200)]);
+    let message = format!("{member} answered {path} with {status} {body}");
+    anyhow::anyhow!(message.trim_end().to_owned())
 }
 fn rejection(error: anyhow::Error) -> Error {
     // Error chains can contain a request URI or TLS diagnostic. Return only the bounded operation error.
@@ -401,11 +420,18 @@ impl Mesh {
         }
     }
     pub(super) fn peer_client(&self, member: &Member) -> anyhow::Result<Arc<Host>> {
+        // Share the paired host's learned routes so group sync follows a moved peer.
+        let (hostname, address) = self
+            .host(&format!("mesh-{}", member.id))
+            .map(|host| (host.config.hostname.clone(), host.config.address))
+            .unwrap_or_default();
         let mut clients = self.peer_clients.write().unwrap();
         if let Some(host) = clients.get(&member.id).filter(|host| {
             host.config.name == member.name
                 && host.config.url == member.endpoint
                 && host.config.tls_fingerprint.as_deref() == Some(member.certificate.as_str())
+                && host.config.hostname == hostname
+                && host.config.address == address
         }) {
             return Ok(host.clone());
         }
@@ -421,6 +447,8 @@ impl Mesh {
             artifact_urls: Value::Null,
             escape_transport: None,
             zellij_binary: None,
+            hostname,
+            address,
         })?);
         clients.insert(member.id.clone(), host.clone());
         Ok(host)
@@ -436,14 +464,14 @@ impl Mesh {
         let response = tokio::time::timeout(Duration::from_secs(15), host.raw_request(Method::POST, path, serde_json::to_vec(body)?.into(), "application/json", None)).await
             .map_err(|_| anyhow::anyhow!("Inviter unavailable; check the network and retry"))?
             .map_err(|error| error.context("Cannot reach the intended computer; check its address, TLS identity and private network"))?;
-        if response.status == StatusCode::GONE {
-            anyhow::bail!("Invitation expired, cancelled or consumed");
+        if response.status != StatusCode::OK {
+            return Err(reply_error(
+                &member.name,
+                path,
+                response.status,
+                &response.body,
+            ));
         }
-        anyhow::ensure!(
-            response.status == StatusCode::OK,
-            "Inviter rejected pairing; check expiry or request a new invitation ({})",
-            String::from_utf8_lossy(&response.body[..response.body.len().min(200)])
-        );
         Ok(serde_json::from_slice(&response.body)?)
     }
     pub(super) async fn authorized(&self, authorization: &str) -> Option<(String, Arc<Host>)> {
@@ -655,7 +683,8 @@ async fn terminal_response(
         #[serde(deny_unknown_fields)]
         struct Control {
             session: String,
-            target: u32,
+            target: Option<u32>,
+            pane_id: Option<u32>,
             close: bool,
         }
         let bytes = to_bytes(request.into_body(), 2048)
@@ -663,7 +692,13 @@ async fn terminal_response(
             .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid peer control request"))?;
         let target: Control = serde_json::from_slice(&bytes)
             .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid peer control request"))?;
-        control::execute_host(&host, &target.session, target.target, target.close).await?;
+        let action = match (target.target, target.pane_id, target.close) {
+            (Some(id), None, false) => control::ControlAction::Escape(id),
+            (Some(id), None, true) => control::ControlAction::CloseTab(id),
+            (None, Some(id), true) => control::ControlAction::ClosePaneTab(id),
+            _ => return Err((StatusCode::BAD_REQUEST, "Invalid peer control target")),
+        };
+        control::execute_host(&host, &target.session, action).await?;
         return Ok(Json(json!({"ok":true})).into_response());
     }
     // Login replies contain only native session cookies. Native peer tokens never leave storage.

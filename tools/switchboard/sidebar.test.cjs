@@ -3,6 +3,37 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const vm=require('node:vm');
 const source=fs.readFileSync(__dirname+'/static/app.js','utf8');
+test('Copy title uses the menu tab display title, including cached offline titles, without switching tabs',async()=>{
+  const pane={pane_id:8,is_plugin:false,tab_position:2,title:'\u2733 caf\u00e9 task'};
+  for(const item of [
+    {key:'other',entry:{state:{panes:[pane],active_pane:{pane_id:1,tab_position:0}}},tab:{name:'Tab #3',position:2,panes:[pane]}},
+    {key:'offline',entry:{state:null},tab:{cachedTitle:'caf\u00e9 task',panes:[]}},
+  ]){
+    const button={},writes=[],statuses=[];
+    const context={contextItem:item,selected:'current',SwitchboardTitles:require('./static/titles.js'),
+      $:()=>button,navigator:{clipboard:{writeText:async text=>writes.push(text)}},
+      closeTabMenu(restore){assert.equal(restore,true);context.contextItem=null;},
+      setStatus:(...args)=>statuses.push(args),activate(){assert.fail('Copying a title must not activate its tab');}};
+    vm.createContext(context);
+    vm.runInContext(source.slice(source.indexOf('function tabPanes('),source.indexOf('function activeTab(')),context);
+    vm.runInContext(source.slice(source.indexOf("$('copy-title').onclick="),source.indexOf("$('exit-selection').onclick=")),context);
+    await button.onclick();
+    assert.deepEqual(writes,['caf\u00e9 task']);assert.deepEqual(statuses,[['Tab title copied.']]);
+    assert.equal(context.selected,'current');assert.equal(context.contextItem,null);
+  }
+});
+test('Copy title reports denied or unavailable clipboard access instead of claiming success',async()=>{
+  for(const clipboard of [undefined,{writeText:async()=>{throw Error('Write permission denied.');}}]){
+    const button={},statuses=[];
+    const context={contextItem:{},tabTitle:()=> 'Title',navigator:{clipboard},$:()=>button,closeTabMenu(){},
+      setStatus:(...args)=>statuses.push(args)};
+    vm.createContext(context);
+    vm.runInContext(source.slice(source.indexOf("$('copy-title').onclick="),source.indexOf("$('exit-selection').onclick=")),context);
+    await button.onclick();
+    assert.equal(statuses.length,1);assert.equal(statuses[0][1],true);
+    assert.match(statuses[0][0],clipboard?/Write permission denied/:/unavailable/);
+  }
+});
 // Exercise stable order and attention acknowledgment without connecting terminals.
 test('attention acknowledgment never moves tabs; search, filters, archive and cross-machine reorder preserve order',()=>{
   const hosts=new Map([['mac',{name:'Mac'}],['win',{name:'Windows'}]]);
@@ -99,6 +130,57 @@ test('reordering while Windows connects preserves saved positions through reload
   context.sessions.set('win',windows);assert.deepEqual(keys(),withNew);
   context.sessions.delete('mac');assert.deepEqual(keys(),[key('win',4),key('win',5)]);
   context.sessions.set('mac',mac);assert.deepEqual(keys(),withNew);
+});
+
+test('every browser on every paired computer shares one tab order, including new tabs',async()=>{
+  // The Mac calls itself mac; Windows knows it as mesh-d1. Both reach Windows as a mesh peer or locally.
+  const view=(hosts,self,local)=>{
+    const sessions=new Map(hosts.map(([host,{name}])=>[host,{host,name:'main',state:{panes:[]},catalogPolls:1,catalog:[0,1].map(id=>({id,name:`${name}-${id}`,position:id,panes:[]}))}]));
+    const posted=[],stored={'switchboard-tab-order':JSON.stringify(local)};
+    const context={hosts:new Map(hosts),sessions,archived:{},ready:{},selected:null,saveReady(){},filter:'all',groups:{},render(){},tabButtons:new Map(),
+      localStorage:{getItem:key=>stored[key]??null,setItem:(key,value)=>stored[key]=value},
+      fetch:(url,options)=>{posted.push(JSON.parse(options.body).keys);return Promise.resolve({ok:true,json:()=>({updated:posted.length+100})});}};
+    vm.createContext(context);context.tabOrder=local;
+    vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function moveSelected(')),context);
+    vm.runInContext(`localMember=${JSON.stringify(self)}`,context);
+    const names=()=>Array.from(context.allTabs(),item=>item.tab.name);
+    return {context,sessions,posted,stored,names};
+  };
+  const mac={name:'Mac',id:'d1',local:true},win={name:'Windows',id:'24',local:true};
+  const onMac=view([['mac',{name:'Mac',local:true}],['mesh-24',{name:'Windows'}]],mac,[JSON.stringify(['mesh-24','main','tab',1]),JSON.stringify(['mac','main','tab',1])]);
+  const onWindows=view([['win',{name:'Windows',local:true}],['mesh-d1',{name:'Mac'}]],win,[]);
+  // The Mac's order, saved before sharing, moves to the group once with its own tabs keyed by member.
+  onMac.context.applyTabOrder({tab_order:null},mac);
+  assert.deepEqual(onMac.posted[0].slice(0,2),[JSON.stringify(['mesh-24','main','tab',1]),JSON.stringify(['mesh-d1','main','tab',1])]);
+  onWindows.context.applyTabOrder({tab_order:{keys:onMac.posted[0],updated:1}},win);
+  assert.deepEqual(onWindows.names(),onMac.names());
+  assert.deepEqual(onMac.names(),['Windows-1','Mac-1','Mac-0','Windows-0']);
+  // A drag on Windows reaches the Mac; a poll older than a save in flight cannot undo it.
+  onWindows.context.moveTab(JSON.stringify(['mesh-d1','main','tab',0]),JSON.stringify(['win','main','tab',1]));
+  await new Promise(setImmediate);
+  onMac.context.applyTabOrder({tab_order:{keys:onWindows.posted[0],updated:150}},mac);
+  assert.deepEqual(onMac.names(),onWindows.names());
+  assert.deepEqual(onMac.names(),['Mac-0','Windows-1','Mac-1','Windows-0']);
+  onMac.context.moveTab(JSON.stringify(['mac','main','tab',1]),JSON.stringify(['mac','main','tab',0]));
+  onMac.context.applyTabOrder({tab_order:{keys:onWindows.posted[0],updated:160}},mac);
+  assert.deepEqual(onMac.names(),['Mac-1','Mac-0','Windows-1','Windows-0'],'the stale poll is ignored');
+  // A new Windows tab goes last in every browser, wherever its machine sorts.
+  const entry=onWindows.sessions.get('win'),catalog=[...entry.catalog,{id:2,name:'Windows-2',position:2,panes:[]}];
+  onWindows.context.setCatalog(entry,entry.catalog);onWindows.context.setCatalog(entry,catalog);
+  const shared=onWindows.posted.at(-1);
+  assert.equal(shared.at(-1),JSON.stringify(['mesh-24','main','tab',2]));
+  onMac.sessions.get('mesh-24').catalog.push({id:2,name:'Windows-2',position:2,panes:[]});
+  await new Promise(setImmediate);
+  onMac.context.applyTabOrder({tab_order:{keys:shared,updated:200}},mac);
+  assert.deepEqual(onMac.names(),onWindows.names());
+  assert.equal(onMac.names().at(-1),'Windows-2');
+  assert.deepEqual(JSON.parse(onMac.stored['switchboard-tab-order']),shared,'this browser keeps a copy');
+  // A browser that has not heard the shared order yet holds new tabs back instead of replacing it.
+  const later=view([['win',{name:'Windows',local:true}],['mesh-d1',{name:'Mac'}]],win,[]),own=later.sessions.get('win');
+  later.context.setCatalog(own,own.catalog);later.context.setCatalog(own,catalog);
+  assert.equal(later.posted.length,0);
+  later.context.applyTabOrder({tab_order:{keys:shared,updated:300}},win);
+  assert.deepEqual(later.names(),onWindows.names());
 });
 
 test('every computer in a mesh lists unsorted tabs in the same machine order',()=>{

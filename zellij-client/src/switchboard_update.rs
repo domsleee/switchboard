@@ -185,12 +185,19 @@ pub fn package(
     Ok(())
 }
 
+/// Handoffs of one build before it is skipped until a newer build appears.
+const ATTEMPTS: u32 = 3;
+
 /// `state.json`, shared with the retired Python updater. Unknown keys are kept.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 struct State {
+    /// The last build handed off (or found running).
     #[serde(skip_serializing_if = "Option::is_none")]
     run_number: Option<u64>,
+    /// Handoffs of `run_number` started without succeeding; absent once it succeeds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    attempts: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     commit: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -454,7 +461,9 @@ impl Updater {
         let manifest: Manifest = serde_json::from_slice(&self.fetch(&asset("bundle.json"))?)
             .context("Invalid release manifest")?;
         validate_manifest(&manifest, &self.platform)?;
-        if manifest.run_number <= state.run_number.unwrap_or(0) {
+        let last = state.run_number.unwrap_or(0);
+        let retry = manifest.run_number == last && state.attempts.is_some_and(|a| a < ATTEMPTS);
+        if manifest.run_number <= last && !retry {
             // Scheduled runs log every 15 minutes; only say so when someone is watching.
             if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
                 println!("No newer successful main build.");
@@ -467,6 +476,7 @@ impl Updater {
                     && same_commit(health.commit.as_deref().unwrap_or(""), &manifest.commit)
                 {
                     state.run_number = Some(manifest.run_number);
+                    state.attempts = None;
                     state.commit = Some(manifest.commit.clone());
                     state.error = None;
                     println!("Already running {}", manifest.commit);
@@ -491,6 +501,7 @@ impl Updater {
             println!("Verified update {}", manifest.commit);
             return Ok(());
         }
+        let before = (state.run_number, state.attempts);
         let result = self.with_handoff(|| self.apply(staging.path(), &manifest, state));
         match &result {
             Ok(()) => {
@@ -498,7 +509,24 @@ impl Updater {
                 state.notice = None;
                 println!("Updated connection services to {}", manifest.commit);
             },
-            Err(error) => state.error = Some(format!("{error:#}")),
+            Err(error) => {
+                state.error = Some(format!("{error:#}"));
+                // Preflight failures happen before an attempt is counted.
+                if let Some(attempt) = state
+                    .attempts
+                    .filter(|_| (state.run_number, state.attempts) != before)
+                {
+                    let next = if attempt < ATTEMPTS {
+                        "retrying on the next run"
+                    } else {
+                        "skipping it until a newer build is published"
+                    };
+                    println!(
+                        "Update to {} failed (attempt {attempt} of {ATTEMPTS}); {next}.",
+                        manifest.commit
+                    );
+                }
+            },
         }
         state.save(&self.state_path())?;
         result
@@ -543,9 +571,16 @@ impl Updater {
             processes: serde_json::json!({}),
         };
         // Preflight failures are local/transient, not evidence of a broken
-        // build. Consume the run only once rollback data is ready and this
-        // transaction is about to change the selected release or services.
+        // build. Count an attempt only once rollback data is ready and this
+        // transaction is about to change the selected release or services, so
+        // a build that kills the updater mid-handoff is still given up on.
+        let earlier = if state.run_number == Some(manifest.run_number) {
+            state.attempts.unwrap_or(0)
+        } else {
+            0
+        };
         state.run_number = Some(manifest.run_number);
+        state.attempts = Some(earlier + 1);
         state.pending = Some(pending.clone());
         state.save(&self.state_path())?;
         let mut replaced = false;
@@ -566,6 +601,7 @@ impl Updater {
             return Err(error);
         }
         state.pending = None;
+        state.attempts = None;
         state.commit = Some(manifest.commit.clone());
         state.save(&self.state_path())
     }

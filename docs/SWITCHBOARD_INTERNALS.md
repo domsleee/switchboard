@@ -167,8 +167,9 @@ first result. Searching does not change the current terminal until you choose a
 result. The **☰** button collapses the sidebar; on mobile it opens a drawer that closes
 when you select a tab. Width and desktop collapse state persist in this browser.
 Drag tabs across machines to rearrange them, or use **Alt+Shift+H / Alt+Shift+L** to move the
-selected tab left/right. The order is saved in this browser, including across
-work/home filters. Attention changes never reorder tabs. The URL follows the selected machine, session,
+selected tab left/right. Paired computers share the order, so every browser on every
+computer lists tabs alike, including across work/home filters; new tabs go last everywhere.
+Without pairing, the order is saved in this browser. Attention changes never reorder tabs. The URL follows the selected machine, session,
 and native tab ID, plus `group=home` or `group=work` for the selected group.
 Choosing All removes the group parameter. Refreshing restores the group and reconnects to that terminal. Opening a link to an
 archived tab restores it in this browser.
@@ -281,6 +282,15 @@ Uncertain delivery is never automatically retried. Input waits for focus acknowl
 remote panes; Back to terminal preserves the focused pane. Dialogs and plugin
 focus retain their native behavior.
 
+## Windows terminal input
+
+The shared PTY writer keeps a separate pending-input queue for each terminal.
+Windows uses a nonblocking byte pipe on the writer side, while ConPTY keeps a
+synchronous reader. A full pipe returns zero bytes so the writer can service
+other terminals and retry later. Writes are limited to 4 KiB because Windows can
+reject an oversized nonblocking write even when some pipe space is available.
+Queued input keeps its original order; a disconnected pipe remains an error.
+
 ## Diagnostics
 
 Settings → Logs records each new-tab request's time to reach the terminal iframe,
@@ -307,6 +317,12 @@ another computer.
 Shift+Enter reports include browser modifier flags and Shift press/release timing.
 These diagnostics contain no terminal contents or typed text. Slow native reflows
 and ConPTY resizes also appear in `zellij.log`.
+Browser-return reports include page-wide long animation frames, rendering,
+style/layout and script time, where supported.
+The terminal probe samples again after its rendering cycle, separating that work
+from the time its reply waits to reach the sidebar. Zero long JavaScript tasks
+alone does not rule out expensive rendering. These samples do not measure GPU
+presentation time.
 
 Returning to a Chrome browser tab has its own `Browser tab` report. It records
 time hidden, lifecycle freeze/discard recovery, discarded-page startup time,

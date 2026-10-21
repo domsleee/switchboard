@@ -245,7 +245,7 @@ test('headless browser keeps iframe, selection, URL and input focus through fail
     await fallback.click();
     await page.waitForFunction(()=>document.activeElement===document.querySelector('iframe[title="Windows: main"]'));
     assert.equal(new URL(page.url()).searchParams.get('pane'),'42');
-    await fallback.evaluate(e=>e.nextSibling.click());assert.equal(await page.locator('#close-tab').isDisabled(),true);
+    await fallback.evaluate(e=>e.nextSibling.click());assert.equal(await page.locator('#close-tab').isDisabled(),false);
     await page.keyboard.press('Escape');
     attentionError=false;await page.evaluate(()=>refreshAttention());
     assert.equal(page.url(),requested);assert.equal(await page.locator('#tabs .tab-select').count(),2);
@@ -421,6 +421,8 @@ for(const touchscreen of [false,true])test(`sidebar selection supports immediate
       await terminal.evaluate(()=>{acknowledge=false;sent.length=0;});
       await page.keyboard.press('Alt+l');
       await page.waitForFunction(()=>sessions.get(JSON.stringify(['windows','main'])).requestedPane?.pane_id===8);
+      // The frame applies the switch when the parent's zellij-focus message arrives, a task after requestedPane is set.
+      await page.frame({url:/\/hosts\/windows\/main$/}).waitForFunction(()=>term.options.disableStdin);
       assert.equal(await terminal.evaluate(()=>window.__zjSoftKbdCapture.isFocused),false,'switching suspends the actual focused input');
       await page.keyboard.press('Enter');
       assert.deepEqual(await terminal.evaluate(()=>[...sent]),[],'input cannot reach the old pane while focus is pending');

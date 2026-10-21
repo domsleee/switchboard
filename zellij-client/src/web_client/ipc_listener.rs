@@ -89,9 +89,58 @@ pub async fn listen_to_web_server_instructions(
                 },
             },
             Err(e) => {
-                log::error!("Failed to listen to ipc channel: {}", e);
-                break;
+                // Binding can fail transiently (e.g. a full disk). Giving up would leave the
+                // server running with no control socket, so `zellij web --stop` could not reach it.
+                log::error!("Failed to listen to ipc channel, retrying: {}", e);
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zellij_utils::web_server_commands::query_webserver_with_response;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn listener_recovers_after_bind_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing");
+        // An absolute id replaces WEBSERVER_SOCKET_PATH in `join`, so the socket lands in our
+        // temp dir; its parent does not exist yet, so the first binds fail.
+        let socket = missing.join("ws").to_string_lossy().to_string();
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+        let listener = tokio::spawn({
+            let socket = socket.clone();
+            async move { listen_to_web_server_instructions(Handle::new(), &socket, ip, 1).await }
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        std::fs::create_dir(&missing).unwrap();
+
+        let query = |instruction| {
+            let socket = socket.clone();
+            tokio::task::spawn_blocking(move || {
+                query_webserver_with_response(&socket, instruction, 0)
+            })
+        };
+        let mut response = None;
+        for _ in 0..50 {
+            if let Ok(Ok(r)) = query(InstructionForWebServer::QueryVersion).await {
+                response = Some(r);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let WebServerResponse::Version(info) = response.expect("listener never recovered");
+        assert_eq!(info.port, 1);
+
+        let _ = query(InstructionForWebServer::ShutdownWebServer).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), listener)
+            .await
+            .expect("listener did not stop")
+            .unwrap();
     }
 }

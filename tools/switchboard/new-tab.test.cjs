@@ -2,7 +2,7 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
 
-for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine starts its first terminal automatically; ':''}new terminals appear before attention discovery, remain focused, and acquire stable tab IDs without duplicates`,
+for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine starts nothing until + creates its first terminal; ':''}new terminals appear before attention discovery, remain focused, and acquire stable tab IDs without duplicates`,
   {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
   const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
   const browser=await chromium.launch({headless:true});
@@ -45,6 +45,16 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
     const commitTitle=emptyMachine?/^Commit abc123def · \S+ .*2026.*\d:24.* \(.+\)$/:/^Commit abc123def · 2026-10-04$/;
     assert.match(await page.locator('#settings').getAttribute('title'),commitTitle);
     assert.match(await page.locator('#build-version').getAttribute('title'),commitTitle);
+    if(emptyMachine){
+      // Switchboard never starts a session on its own, not even on another page load.
+      const idle=()=>page.waitForFunction(()=>document.querySelector('#tab-empty-text')?.textContent==='No terminals yet');
+      await idle();await page.evaluate(()=>refresh());
+      await page.reload();await idle();
+      assert.equal(frameBoots,0);assert.equal(await page.locator('#terminals>iframe').count(),0);
+      // The + dialog offers the empty machine and creates its session.
+      await page.locator('#new-tab').click();assert.equal(await page.locator('#new-tab-target option').count(),1);
+      await page.locator('#new-tab-form button[type="submit"]').click();
+    }
     const frame=page.frameLocator('iframe[title="Windows: main"]'),input=frame.locator('#terminal-input');
     await page.waitForFunction(()=>document.querySelector('#tabs .selected')?.textContent.includes('Original'));
     await page.waitForFunction(()=>document.activeElement===document.querySelector('#terminals>iframe.active'));
@@ -96,9 +106,9 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
     assert.equal(await page.locator('#tabs .selected .tab-name').textContent(),'New shell 1');
     assert.equal(await input.inputValue(),'draft 1');
     assert.equal(await input.evaluate(i=>document.activeElement===i),true);
-    // Pending pane IDs must never be sent as native tab IDs to Close.
+    // Pending panes can close through their own target, not a native tab ID.
     await page.locator('#tabs .selected').click({button:'right'});
-    assert.equal(await page.locator('#close-tab').isDisabled(),true);assert.equal(closes,0);
+    assert.equal(await page.locator('#close-tab').isDisabled(),false);assert.equal(closes,0);
     await page.keyboard.press('Escape');
     failed=false;await page.evaluate(()=>refreshAttention());
     await create(2);

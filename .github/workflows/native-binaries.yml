@@ -22,6 +22,9 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           rustflags: ""
+          # A manual run on another branch must not evict main's caches.
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: false
       - uses: ilammy/setup-nasm@v1
       - name: Check Windows session discovery and colours
         run: |
@@ -52,6 +55,9 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           rustflags: ""
+          # A manual run on another branch must not evict main's caches.
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: false
       - uses: ilammy/setup-nasm@v1
       - name: Build native server and relay
         run: cargo build --release --features web_server_capability
@@ -81,6 +87,9 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           rustflags: ""
+          # A manual run on another branch must not evict main's caches.
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: false
       - name: Check installer
         run: cargo test -p zellij-client --features web_server_capability switchboard_update::install --lib
       - name: Build native server and relay

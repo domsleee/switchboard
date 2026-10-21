@@ -66,6 +66,12 @@ pub struct HostConfig {
     pub escape_transport: Option<String>,
     #[serde(default)]
     pub zellij_binary: Option<String>,
+    /// Mesh peers only: the system hostname the peer advertised, for `.local` fallback.
+    #[serde(skip)]
+    pub hostname: Option<String>,
+    /// Mesh peers only: the last address where the peer's pinned TLS identity verified.
+    #[serde(skip)]
+    pub address: Option<SocketAddr>,
 }
 
 trait RelayIo: AsyncRead + AsyncWrite + Send + Unpin {}
@@ -278,7 +284,8 @@ impl Host {
         if !hostname::usable_route_address(address) {
             return None;
         }
-        hostname::local_hostname(&self.config.name)
+        // Older peers do not advertise a hostname; their display name may match it.
+        hostname::local_hostname(self.config.hostname.as_deref().unwrap_or(&self.config.name))
     }
 
     async fn stream(&self) -> anyhow::Result<Stream> {
@@ -289,13 +296,20 @@ impl Host {
                 url::Host::Ipv6(address) => address.into(),
                 _ => unreachable!("Hostname routing requires an IP origin"),
             };
+            let original = SocketAddr::new(address, port);
+            // A learned address replaces the dead pairing IP as the first try.
+            let saved = self.config.address.unwrap_or(original);
             return self
-                .stream_with_routes(SocketAddr::new(address, port), async {
-                    hostname::resolve(&hint, port)
+                .stream_with_routes(saved, async {
+                    let mut routes: Vec<_> = hostname::resolve(&hint, port)
                         .await
                         .into_iter()
                         .filter(|address| !hostname::is_local_address(address.ip()))
-                        .collect()
+                        .collect();
+                    if !routes.contains(&original) {
+                        routes.push(original);
+                    }
+                    routes
                 })
                 .await;
         }
@@ -1276,6 +1290,8 @@ mod tests {
             artifact_urls: json!({}),
             escape_transport: None,
             zellij_binary: None,
+            hostname: None,
+            address: None,
         }
     }
 
@@ -1529,6 +1545,37 @@ mod tests {
             .unwrap();
         assert_eq!(host.route_hint.lock().await.unwrap().0, original.address);
         drop(stream);
+    }
+
+    #[test]
+    fn hostname_hint_prefers_the_advertised_hostname_over_the_display_name() {
+        let mut configured = paired_config(8082, &"00".repeat(32));
+        configured.name = "Windows".into();
+        let host = Host::new(configured.clone()).unwrap();
+        assert_eq!(host.hostname_hint().as_deref(), Some("Windows.local"));
+        configured.hostname = Some("DESKTOP-ABC123.local".into());
+        let host = Host::new(configured).unwrap();
+        assert_eq!(
+            host.hostname_hint().as_deref(),
+            Some("DESKTOP-ABC123.local")
+        );
+    }
+
+    #[tokio::test]
+    async fn learned_address_replaces_the_dead_pairing_ip_but_keeps_the_pin() {
+        let correct = tls_fixture(Router::new()).await;
+        let wrong = tls_fixture(Router::new()).await;
+        // The pairing IP is unroutable and the name never resolves.
+        let mut configured = paired_config(correct.address.port(), &correct.pin);
+        configured.name = "switchboard-test-unresolvable".into();
+        configured.address = Some(correct.address);
+        let host = Host::new(configured.clone()).unwrap();
+        assert!(host.stream().await.is_ok());
+        assert!(host.route_hint.lock().await.is_none());
+        configured.address = Some(wrong.address);
+        let host = Host::new(configured).unwrap();
+        assert!(host.stream().await.is_err());
+        assert!(host.route_hint.lock().await.is_none());
     }
 
     #[tokio::test]
@@ -1841,15 +1888,25 @@ mod tests {
         .unwrap();
         relay.hosts = Arc::new([("mesh-peer".into(), Arc::new(Host::new(peer).unwrap()))].into());
         let response = control::close_tab(
-            State(relay),
+            State(relay.clone()),
             RoutePath("mesh-peer".into()),
             Json(serde_json::from_value(json!({"session":"main","tab_id":7})).unwrap()),
         )
         .await;
         assert!(response.is_ok());
+        let response = control::close_tab(
+            State(relay),
+            RoutePath("mesh-peer".into()),
+            Json(serde_json::from_value(json!({"session":"main","pane_id":17})).unwrap()),
+        )
+        .await;
+        assert!(response.is_ok());
         assert_eq!(
             *received.lock().await,
-            [json!({"session":"main","target":7,"close":true})]
+            [
+                json!({"session":"main","target":7,"close":true}),
+                json!({"session":"main","pane_id":17,"close":true}),
+            ]
         );
         server.abort();
     }

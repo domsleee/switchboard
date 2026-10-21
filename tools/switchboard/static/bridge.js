@@ -526,11 +526,15 @@
         initial_writes_pending:pending?.writes_pending??null,initial_render_pending:pending?.render_pending??null,
         terminal_hidden:document.visibilityState==='hidden',
         terminal_active:window.frameElement?window.frameElement.classList.contains('active'):null};
-      const reply=(type,phase,animationAt=null)=>parent.postMessage({type,diagnostic:{...received,phase,animation_at:animationAt,
+      const reply=(type,phase,animationAt=null,renderCycleMs=null)=>parent.postMessage({type,diagnostic:{...received,phase,animation_at:animationAt,render_cycle_ms:renderCycleMs,
         ...diagnostics?.pending(message.started_at),terminal_socket:terminalSocket?.readyState??null,
         control_socket:controlSocket?.readyState??null}},location.origin);
       reply('zellij-browser-resume-received','received');
-      requestAnimationFrame(()=>reply('zellij-browser-resume-diagnostic','animation',performance.timeOrigin+performance.now()));
+      requestAnimationFrame(()=>{
+        const animationStarted=performance.now(),animationAt=performance.timeOrigin+animationStarted;
+        // Rendering runs after animation callbacks; sample in the following task.
+        setTimeout(()=>reply('zellij-browser-resume-diagnostic','animation',animationAt,Math.round(performance.now()-animationStarted)),0);
+      });
     } else if(message?.type==='zellij-size-owner' && viewportSupported() && !pendingFocus && !pendingNewTab && message.tab_position===latest.active_pane?.tab_position){
       const size=physicalViewport();
       if(size)window.__zjViewport.report(size,!!message.owned);

@@ -14,7 +14,6 @@ fetch('/api/health',{cache:'no-store'}).then(response=>response.ok?response.json
   }
 }).catch(()=>{});
 const hosts = new Map(), sessions = new Map();
-const startedHosts = new Set();
 const tabButtons=new Map();
 const mobileSidebar=matchMedia("(max-width:700px)");
 let sidebarCollapsed=localStorage.getItem("switchboard-sidebar-collapsed")==="true",sidebarOpen=false;
@@ -94,7 +93,51 @@ function markNewTabs(entry,tabs){
   state.keys=state.keys.slice(-200);
   localStorage.setItem('switchboard-new-tabs',JSON.stringify(state));
 }
+// The group shares one tab order, keyed alike in every browser; this browser keeps a
+// copy for when no group or relay shares it. A save in flight outranks older polls.
+let localHost=null,orderUpdated=0,savingOrder=0,orderReady=false,orderShared=false;
+try{localHost=JSON.parse(localStorage.getItem('switchboard-local-host'));}catch(_){}
+// Peers know this computer as mesh-<member id>, so its tabs get that key everywhere.
+function canonKey(key){const [host,...rest]=JSON.parse(key);return host===localHost?.id?JSON.stringify(['mesh-'+localHost.member,...rest]):key;}
+function saveOrder(order){
+  const live=new Set([...sessions.values()].flatMap(entry=>sessionTabs(entry).map(tab=>canonKey(tabKey(entry,tab)))));
+  const scanned=new Set([...sessions.values()].filter(entry=>entry.catalogPolls&&!entry.catalogUnavailable).map(entry=>canonKey(JSON.stringify([entry.host,entry.name]))));
+  // Forget tabs a clean scan no longer lists; tabs on unreachable hosts keep their positions.
+  // ponytail: tabs of whole closed sessions stay listed; prune by host session lists if the order grows large.
+  tabOrder=order.filter(key=>live.has(key)||!scanned.has(JSON.stringify(JSON.parse(key).slice(0,2))));
+  localStorage.setItem('switchboard-tab-order',JSON.stringify(tabOrder));
+  if(!orderShared)return;
+  savingOrder++;
+  fetch('/api/mesh/tab-order',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keys:tabOrder})})
+    .then(r=>r.ok?r.json():null).then(saved=>{if(saved)orderUpdated=Math.max(orderUpdated,saved.updated);}).catch(()=>{}).finally(()=>savingOrder--);
+}
+function applyTabOrder(mesh,member){
+  const shared=mesh?.tab_order;
+  const host=[...hosts.keys()].find(id=>hosts.get(id).local);
+  if(member&&host){localHost={id:host,member:member.id};localStorage.setItem('switchboard-local-host',JSON.stringify(localHost));}
+  orderShared=!!member&&shared!==undefined;
+  if(shared&&!savingOrder&&shared.updated>orderUpdated){
+    orderUpdated=shared.updated;tabOrder=shared.keys;localStorage.setItem('switchboard-tab-order',JSON.stringify(tabOrder));
+  }
+  // An order saved before sharing existed moves to the group once this computer's tabs can be keyed.
+  else if(orderShared&&shared===null&&!savingOrder&&tabOrder.length&&localHost)saveOrder([...new Set(tabOrder.map(canonKey))]);
+  orderReady=true;flushNewTabs();
+}
+// New tabs join the end of the shared order, so they land in the same place in every browser.
+// Wait for the shared order first, or a stale local copy would replace it.
+function flushNewTabs(){
+  const state=lateTabs();
+  if(!orderReady||!state.keys.length)return;
+  const order=[...new Set([...tabOrder,...allTabs(true,true).map(item=>item.key),...state.keys].map(canonKey))];
+  state.keys=[];localStorage.setItem('switchboard-new-tabs',JSON.stringify(state));
+  saveOrder(order);
+}
 function sessionTabs(entry){return [...(entry.catalog||[]),...(entry.provisionalTabs||[]),...(entry.creatingTab?[entry.creatingTab]:[])];}
+function matchesClosingTab(tab,closing){
+  return Number.isInteger(closing.pane_id)
+    ? tab.panes.some(pane=>!pane.is_plugin&&pane.pane_id===closing.pane_id)
+    : !tab.pending&&tab.id===closing.tab_id;
+}
 function updateCreatedTabs(entry){
   const state=entry.state,active=state?.active_pane,creating=entry.creatingTab;
   if(state?.session_name!==entry.name)return;
@@ -157,14 +200,20 @@ function setCatalog(entry,tabs){
   let changed=false;
   for(const store of [ready,archived])for(const [old,key] of migrations)if(old in store){store[key]=store[old];delete store[old];changed=true;}
   if(migrations.has(selected)){selected=migrations.get(selected);changed=true;}
-  if(tabOrder.some(key=>migrations.has(key))){tabOrder=[...new Set(tabOrder.map(key=>migrations.get(key)||key))];changed=true;}
+  const order=tabOrder.map(canonKey),moved=new Map([...migrations].map(([old,key])=>[canonKey(old),canonKey(key)]));
+  if(order.some(key=>moved.has(key))){tabOrder=[...new Set(order.map(key=>moved.get(key)||key))];changed=true;}
   if(changed){saveReady();localStorage.setItem('switchboard-archived',JSON.stringify(archived));localStorage.setItem('switchboard-tab-order',JSON.stringify(tabOrder));}
   markNewTabs(entry,tabs);
   entry.catalog=tabs;
   entry.provisionalTabs=entry.provisionalTabs?.filter(tab=>!migrations.has(tabKey(entry,tab)));
   // Keep confirmed closes hidden through snapshots taken before the close finished.
-  for(const [id,closing] of entry.closingTabs||[])if(closing.session!==entry.name||!closing.pending&&!tabs.some(tab=>tab.id===id))entry.closingTabs.delete(id);
-  syncActiveTab(entry);
+  for(const [key,closing] of [...(entry.closingTabs||[])]){
+    if(closing.session!==entry.name||!closing.pending&&!sessionTabs(entry).some(tab=>matchesClosingTab(tab,closing)))entry.closingTabs.delete(key);
+    else if(migrations.has(key)){
+      entry.closingTabs.delete(key);closing.key=migrations.get(key);entry.closingTabs.set(closing.key,closing);
+    }
+  }
+  syncActiveTab(entry);flushNewTabs();
 }
 function syncActiveTab(entry){
   const tab=activeTab(entry);
@@ -236,26 +285,26 @@ function applyCategories(){
   }
 }
 function allTabs(ignoreFilter=false, includeArchived=false) {
-  const ranks=new Map([...new Set([...tabOrder,...(globalThis.SwitchboardStartup?.order()||[])])].map((key,index)=>[key,index]));
+  const ranks=new Map([...new Set([...tabOrder,...(globalThis.SwitchboardStartup?.order()||[])].map(canonKey))].map((key,index)=>[key,index]));
   const late=new Map(lateTabs().keys.map((key,index)=>[key,index]));
   // A tab still being created has no native ID yet; it already belongs at the end.
   const lateness=item=>late.get(item.key)??(item.tab.pending?Infinity:-1);
   // Saved drag positions first; the rest by machine and session, keeping each session's tab order;
   // tabs created since then last.
   const byMachine=(a,b)=>{const x=machineOrder(a),y=machineOrder(b);return x<y?-1:x>y?1:0;};
-  return [...sessions.values()].flatMap(entry => sessionTabs(entry).map(tab => ({entry,tab,key:tabKey(entry,tab)})))
-    .filter(({entry,tab,key}) => !entry.closingTabs?.has(tab.id) && (includeArchived || !archived[key]) && (ignoreFilter || filter === 'all' || groups[entry.host] === filter))
-    .sort((a,b) => (ranks.get(a.key)??Infinity)-(ranks.get(b.key)??Infinity) || lateness(a)-lateness(b) || byMachine(a,b));
+  return [...sessions.values()].flatMap(entry => sessionTabs(entry).map(tab => {const key=tabKey(entry,tab);return {entry,tab,key,rank:ranks.get(canonKey(key))??Infinity};}))
+    .filter(({entry,tab,key}) => ![...(entry.closingTabs?.values()||[])].some(closing=>matchesClosingTab(tab,closing)) && (includeArchived || !archived[key]) && (ignoreFilter || filter === 'all' || groups[entry.host] === filter))
+    .sort((a,b) => a.rank-b.rank || lateness(a)-lateness(b) || byMachine(a,b));
 }
 function moveTab(key,targetKey,after=false) {
   if(key===targetKey)return;
   const tabs=allTabs(true,true),source=tabs.find(t=>t.key===key),target=tabs.find(t=>t.key===targetKey);
   if(!source||!target)return;
   // A missing host or catalog is temporary; retain its saved positions when another tab moves.
-  const order=[...new Set([...tabOrder,...tabs.map(t=>t.key)])];
-  order.splice(order.indexOf(key),1);
-  order.splice(order.indexOf(targetKey)+(after?1:0),0,key);
-  tabOrder=order;localStorage.setItem('switchboard-tab-order',JSON.stringify(tabOrder));render();
+  const order=[...new Set([...tabOrder,...tabs.map(t=>t.key)].map(canonKey))];
+  order.splice(order.indexOf(canonKey(key)),1);
+  order.splice(order.indexOf(canonKey(targetKey))+(after?1:0),0,canonKey(key));
+  saveOrder(order);render();
   tabButtons.get(key)?.scrollIntoView({block:'nearest',inline:'nearest'});
 }
 function moveSelected(direction) {
@@ -596,7 +645,7 @@ function connectSession(host,name,starting=false,cached=false) {
 }
 function pruneSessions(listed=null,hostId=null){
   if(globalThis.SwitchboardStartup?.active())return;
-  if(listed)for(const id of [...hosts.keys()])if(!listed.has(id)){hosts.delete(id);startedHosts.delete(id);}
+  if(listed)for(const id of [...hosts.keys()])if(!listed.has(id))hosts.delete(id);
   for(const [key,entry] of sessions){
     const host=hosts.get(entry.host);
     if(!host||entry.host===hostId&&!host.error&&Array.isArray(host.sessions)&&!entry.starting&&!host.sessions.some(session=>session.name===entry.name)){
@@ -607,7 +656,7 @@ function pruneSessions(listed=null,hostId=null){
 async function refresh() {
   if(loading)return;loading=true;
   try {
-    fetch('/api/mesh',{cache:'no-store'}).then(r=>r.ok?r.json():null).then(mesh=>{meshMembers=mesh?.members||[];localMember=meshMembers.find(m=>m.local)||null;applyCategories();render();}).catch(()=>{});
+    fetch('/api/mesh',{cache:'no-store'}).then(r=>r.ok?r.json():null).then(mesh=>{meshMembers=mesh?.members||[];localMember=meshMembers.find(m=>m.local)||null;applyCategories();applyTabOrder(mesh,localMember);render();}).catch(()=>{});
     const response=await fetch('/api/hosts?summary=1');if(!response.ok)throw Error('Cannot reach local relay');
     const data=await response.json();hostsLoaded=true;
     globalThis.SwitchboardStartup?.discover(data);
@@ -620,12 +669,6 @@ async function refresh() {
       try{
         const response=await fetch(`/api/hosts/${encodeURIComponent(summary.id)}`);if(!response.ok)throw Error('Cannot list sessions');
         const host=await response.json();hosts.set(host.id,host);
-        // Only the first successful catalog on this page can start a session.
-        // Closing the last tab must not make the next poll recreate it.
-        if(!host.error&&Array.isArray(host.sessions)&&!startedHosts.has(host.id)){
-          startedHosts.add(host.id);
-          if(host.sessions.length===0)connectSession(host,'main',true);
-        }
         for(const session of host.sessions||[]) {
           if(!session.web_clients_allowed)continue;
           connectSession(host,session.name);
@@ -756,6 +799,18 @@ $('select-text').onclick=()=>{
   api.setSelectionMode(true);updateSelectionTools();
   sidebarOpen=false;updateSidebar();item.entry.frame.focus();
 };
+$('copy-title').onclick=async()=>{
+  const item=contextItem;if(!item)return;
+  const title=tabTitle(item);
+  closeTabMenu(true);
+  if(!navigator.clipboard?.writeText){setStatus('Copy title is unavailable in this browser.',true);return;}
+  try{
+    await navigator.clipboard.writeText(title);
+    setStatus('Tab title copied.');
+  }catch(error){
+    setStatus(`Could not copy the tab title: ${error.message||'Clipboard access was denied.'}`,true);
+  }
+};
 $('exit-selection').onclick=()=>{
   const current=allTabs().find(item=>item.key===selected),api=current?.entry.frame.contentWindow.SwitchboardClipboard;
   api?.setSelectionMode(false);api?.clearSelection();updateSelectionTools();current?.entry.frame.focus();
@@ -822,9 +877,10 @@ $('new-tab-form').onsubmit=event=>{
     const [id,name]=JSON.parse(key),host=hosts.get(id);
     if(!host||host.error||host.sessions?.length!==0)return;
     if(entry&&!entry.starting){entry.frame.remove();sessions.delete(key);}
-    connectSession(host,name,true).selectOnStart=true;
+    const created=connectSession(host,name,true);created.selectOnStart=true;
     if(filter!=='all'&&groups[id]!==filter)setFilter('all');$('tab-search').value='';
-    $('new-tab-dialog').close();render();return;
+    // Closing the dialog returns focus to +; give it to the new terminal instead.
+    $('new-tab-dialog').close();render();created.frame.focus();return;
   }
   if(!sessionTabs(entry).length)return;
   if(entry.pendingNewTab||entry.requestedPane||entry.focusPending){setStatus('Wait for the terminal to receive focus before creating a tab.',true);return;}
@@ -887,16 +943,17 @@ function openPanel(name){
   if(name==='archive')$('archive-search').value='';
   showSection(name);
   if(!panel.open)panel.showModal();
-  panelTabs.find(tab=>tab.dataset.section===name).focus();
+  if(name==='archive')$('archive-search').focus();
+  else panelTabs.find(tab=>tab.dataset.section===name).focus();
 }
 document.addEventListener('click',event=>{const name=sectionLink(event);if(name)openPanel(name);});
 $('panel-tabs').onclick=event=>{const tab=event.target.closest('[role=tab]');if(tab)showSection(tab.dataset.section,true);};
 $('panel-tabs').onkeydown=event=>{
-  const index=panelTabs.indexOf(document.activeElement),last=panelTabs.length-1;
+  const tabs=panelTabs.filter(tab=>!tab.hidden),index=tabs.indexOf(document.activeElement),last=tabs.length-1;
   const next={ArrowDown:index+1,ArrowRight:index+1,ArrowUp:index-1,ArrowLeft:index-1,Home:0,End:last}[event.key];
   if(next===undefined||index<0)return;
   event.preventDefault();
-  showSection(panelTabs[(next+last+1)%(last+1)].dataset.section,true);
+  showSection(tabs[(next+last+1)%(last+1)].dataset.section,true);
 };
 for(const frame of panel.querySelectorAll('iframe'))frame.onload=()=>{
   const doc=frame.contentDocument;
@@ -965,8 +1022,8 @@ function updateTabMenu(){
   $('tab-menu-target').textContent=`${tabTitle(item)} · ${hosts.get(item.entry.host)?.name||item.entry.host} · ${item.entry.name}`;
   $('ready').disabled=!!item.tab.pending&&!Number.isInteger(item.tab.id);
   $('archive-tab').disabled=!!item.tab.pending&&!Number.isInteger(item.tab.id);
-  $('close-tab').disabled=!!item.entry.cached||!!item.tab.pending||!Number.isInteger(item.tab.id);
-  $('close-tab').title=item.entry.cached||item.tab.pending||!Number.isInteger(item.tab.id)?'Waiting for the terminal to finish connecting':'Close this tab · Ctrl+D';
+  $('close-tab').disabled=!closeTabTarget(item);
+  $('close-tab').title=$('close-tab').disabled?'Waiting for the terminal to finish connecting':'Close this tab · Ctrl+D';
   $('select-text').disabled=!item.entry.frame.contentWindow.SwitchboardClipboard;
   $('select-text').setAttribute('aria-pressed',String(!!item.entry.frame.contentWindow.SwitchboardClipboard?.selectionMode));
   const viewport=item.entry.state?.tab_viewport,sizeOwner=$('size-owner');
@@ -983,10 +1040,10 @@ function openTabMenu(item,x,y,trigger=tabButtons.get(item.key)){
   trigger?.setAttribute('aria-expanded','true');
   menu.style.left=`${Math.max(4,Math.min(x,innerWidth-menu.offsetWidth-4))}px`;
   menu.style.top=`${Math.max(4,Math.min(y,innerHeight-menu.offsetHeight-4))}px`;
-  menu.querySelector('button:not(:disabled)')?.focus();
+  menu.querySelector('button:not(:disabled):not([hidden])')?.focus();
 }
 $('tab-menu').onkeydown=event=>{
-  const items=[...$('tab-menu').querySelectorAll('button:not(:disabled)')],index=items.indexOf(document.activeElement);
+  const items=[...$('tab-menu').querySelectorAll('button:not(:disabled):not([hidden])')],index=items.indexOf(document.activeElement);
   if(['ArrowDown','ArrowUp','Home','End'].includes(event.key)){
     event.preventDefault();
     const next=event.key==='Home'?0:event.key==='End'?items.length-1:(index+(event.key==='ArrowDown'?1:-1)+items.length)%items.length;
