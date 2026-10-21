@@ -2159,3 +2159,27 @@ async fn attention_reviews_live_with_the_owner_and_every_peer_sees_them() {
     );
     native_task.abort();
 }
+
+#[test]
+fn peer_replies_name_the_failure_instead_of_blaming_the_invitation() {
+    let down = transport::reply_error(
+        "Mac",
+        "/mesh/sync",
+        StatusCode::SERVICE_UNAVAILABLE,
+        b"Switchboard pairing service unavailable",
+    );
+    assert_eq!(
+        down.to_string(),
+        "Cannot reach Switchboard on Mac; its relay is not running"
+    );
+    let denied = transport::reply_error("Mac", "/mesh/sync", StatusCode::UNAUTHORIZED, b"");
+    assert_eq!(
+        denied.to_string(),
+        "Mac answered /mesh/sync with 401 Unauthorized"
+    );
+    let gone = transport::reply_error("Mac", "/mesh/request", StatusCode::GONE, b"");
+    assert_eq!(
+        gone.to_string(),
+        "Invitation expired, cancelled or consumed"
+    );
+}
