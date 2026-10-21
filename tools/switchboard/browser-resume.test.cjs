@@ -1,18 +1,18 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const source=fs.readFileSync(__dirname+'/static/terminal-diagnostics.js','utf8');
 
-function harness({tracking=true,discarded=false,probe=true,initialNow=0}={}){
+function harness({tracking=true,frameTracking=tracking,discarded=false,probe=true,initialNow=0}={}){
   let now=initialNow,id=0,animationDelay=16;
-  const timers=new Map(),listeners=new Map(),reports=[],probes=[],pendingTasks=[];
+  const timers=new Map(),listeners=new Map(),reports=[],probes=[],pendingTasks=[],pendingFrames=[];
   const listen=(type,fn)=>{if(!listeners.has(type))listeners.set(type,[]);listeners.get(type).push(fn);};
   const document={hidden:false,wasDiscarded:discarded,addEventListener:listen};
   const window={addEventListener:listen};
   const timeout=(fn,delay)=>{timers.set(++id,{fn,due:now+delay});return id;};
   class Observer{
-    static supportedEntryTypes=tracking?['longtask']:[];
+    static supportedEntryTypes=[...(tracking?['longtask']:[]),...(frameTracking?['long-animation-frame']:[])];
     constructor(fn){this.callback=fn;}
-    observe(){}
-    takeRecords(){return pendingTasks.splice(0);}
+    observe(options){this.type=options.entryTypes[0];}
+    takeRecords(){return (this.type==='longtask'?pendingTasks:pendingFrames).splice(0);}
   }
   vm.runInNewContext(source,{window,document,performance:{now:()=>now,timeOrigin:1000000},PerformanceObserver:Observer,
     setTimeout:timeout,clearTimeout:id=>timers.delete(id),requestAnimationFrame:fn=>timeout(fn,animationDelay),
@@ -31,6 +31,7 @@ function harness({tracking=true,discarded=false,probe=true,initialNow=0}={}){
   return {diagnostics,reports,probes,advance,event,
     visibility(hidden,extra={}){document.hidden=hidden;event('visibilitychange',extra);},
     task(duration,startTime=now){pendingTasks.push({startTime,duration,name:'private page URL',attribution:['secret terminal text']});},
+    frame(entry){pendingFrames.push({...entry,name:'private page URL',attribution:['secret terminal text']});},
     setAnimationDelay(ms){animationDelay=ms;}};
 }
 
@@ -146,6 +147,45 @@ test('long tasks starting before the observation are counted when they overlap i
   assert.equal(h.reports[0].long_tasks,1);assert.equal(h.reports[0].max_long_task_ms,700);
 });
 
+test('rendering work is measured without a long task and clips time before the tab return',()=>{
+  const h=harness();h.visibility(true);h.advance(1000);h.visibility(false);h.advance(800);
+  h.frame({startTime:900,duration:800,renderStart:1100,styleAndLayoutStart:1400,scripts:[
+    {startTime:950,duration:100,sourceURL:'private source URL'},{startTime:1100,duration:200,invoker:'secret function'}]});
+  h.frame({startTime:100,duration:200,renderStart:150,styleAndLayoutStart:200,scripts:[]});
+  h.advance(5000);
+  const sample=h.reports[0];
+  assert.equal(sample.long_tasks,0);assert.equal(sample.long_frame_tracking,true);assert.equal(sample.long_frames,1);
+  assert.equal(sample.max_frame_ms,700);assert.equal(sample.max_render_ms,600);assert.equal(sample.max_layout_ms,300);
+  assert.equal(sample.max_script_ms,250);assert.doesNotMatch(JSON.stringify(sample),/private|secret|sourceURL|invoker|attribution/);
+});
+
+test('missing rendering support is not a measured zero and old frames do not affect later returns',()=>{
+  const missing=harness({frameTracking:false});missing.visibility(true);missing.visibility(false);missing.advance(5000);
+  assert.equal(missing.reports[0].long_frame_tracking,false);assert.equal(missing.reports[0].long_frames,null);
+  assert.equal(missing.reports[0].max_render_ms,null);
+  const h=harness();h.visibility(true);h.visibility(false);h.advance(800);
+  h.frame({startTime:0,duration:700,renderStart:10,styleAndLayoutStart:20,scripts:[]});
+  h.advance(5000);assert.equal(h.reports[0].max_frame_ms,700);
+  h.visibility(true);h.advance(1000);h.visibility(false);h.advance(5000);
+  assert.equal(h.reports[1].long_frames,0);assert.equal(h.reports[1].max_frame_ms,0);
+});
+
+test('terminal rendering completion is separate from reply delivery and accepts only numeric frame summaries',()=>{
+  const h=harness();h.visibility(true);h.visibility(false);h.advance(750);
+  h.diagnostics.terminal({id:h.probes[0],phase:'animation',received_at:1000005,animation_at:1000010,render_cycle_ms:700,
+    scripts:['private terminal text'],sourceURL:'secret URL'});
+  h.advance(5000);
+  const sample=h.reports[0];
+  assert.deepEqual([sample.terminal_message_ms,sample.terminal_frame_ms,sample.terminal_render_cycle_ms,sample.terminal_reply_ms],[5,5,700,40]);
+  assert.doesNotMatch(JSON.stringify(sample),/private|secret|sourceURL|scripts/);
+  for(const render_cycle_ms of [-1,1.5,4294967296,'secret URL',NaN,Infinity]){
+    const invalid=harness();invalid.visibility(true);invalid.visibility(false);invalid.advance(750);
+    invalid.diagnostics.terminal({id:invalid.probes[0],received_at:1000005,animation_at:1000010,render_cycle_ms});
+    invalid.advance(5000);
+    assert.equal(invalid.reports[0].terminal_render_cycle_ms,null);assert.equal(invalid.reports[0].terminal_reply_ms,740);
+  }
+});
+
 // Synthetic lifecycle events and native sockets, but real Chrome, xterm and the
 // production parent/iframe bridge. Never attach to a live terminal.
 test('a Chrome-tab wake-up persists browser and terminal timings without native focus or resize commands',
@@ -197,6 +237,16 @@ test('a Chrome-tab wake-up persists browser and terminal timings without native 
                 }),fixtureFrameDelay);
               };
             }
+            if(window.fixtureRenderDelay){
+              const animation=window.requestAnimationFrame;
+              window.requestAnimationFrame=callback=>{
+                window.requestAnimationFrame=animation;
+                return animation(time=>{
+                  callback(time);
+                  const until=performance.now()+fixtureRenderDelay;while(performance.now()<until){}
+                });
+              };
+            }
           });
         </script><script src="/terminal-diagnostics.js"></script><script src="/bridge.js"></script><script>
           new WebSocket('wss://switchboard.test/ws/terminal');
@@ -230,13 +280,14 @@ test('a Chrome-tab wake-up persists browser and terminal timings without native 
     assert.equal(sample.writes_pending,0);assert.equal(sample.render_pending,false);
     assert.ok(sample.terminal_message_ms>=600);
     assert.ok(sample.terminal_frame_ms>=0);assert.ok(sample.terminal_reply_ms>=0);
-    assert.ok(Math.abs(sample.terminal_animation_ms-sample.terminal_message_ms-sample.terminal_frame_ms-sample.terminal_reply_ms)<=2);
+    assert.ok(Math.abs(sample.terminal_animation_ms-sample.terminal_message_ms-sample.terminal_frame_ms-sample.terminal_render_cycle_ms-sample.terminal_reply_ms)<=2);
 
-    for(const [stage,field] of [['Delivery','terminal_message_ms'],['Frame','terminal_frame_ms'],['Reply','terminal_reply_ms']]){
+    for(const [stage,field] of [['Delivery','terminal_message_ms'],['Frame','terminal_frame_ms'],['Render','terminal_render_cycle_ms'],['Reply','terminal_reply_ms']]){
       await page.evaluate(stage=>{window.fixtureReplyDelay=stage==='Reply'?650:0;},stage);
       await terminal.evaluate((_,stage)=>{
         window.fixtureDeliveryDelay=stage==='Delivery'?650:0;
         window.fixtureFrameDelay=stage==='Frame'?650:0;
+        window.fixtureRenderDelay=stage==='Render'?650:0;
         window.holdWrites=stage==='Frame';
         if(holdWrites)term.write('private fixture terminal text');
       },stage);
@@ -254,12 +305,17 @@ test('a Chrome-tab wake-up persists browser and terminal timings without native 
         assert.equal(staged.initial_writes_pending,1);assert.equal(staged.writes_pending,0);
         assert.equal(staged.terminal_long_tasks,0,'Scheduling delay must not be reported as busy JavaScript');
       }
+      if(stage==='Render'){
+        assert.equal(staged.long_frame_tracking,true);
+        assert.ok(staged.max_render_ms>=600,'Page-wide rendering diagnostics must include work in its terminal iframe');
+        if(headed)console.log('Rendering-only stall:',JSON.stringify(staged));
+      }
       assert.equal(staged.terminal_hidden,false);assert.equal(staged.terminal_active,true);
-      assert.doesNotMatch(JSON.stringify(staged),/private|fixture terminal text|received_at|animation_at/);
+      assert.doesNotMatch(JSON.stringify(staged),/private|fixture terminal text|received_at|animation_at|settled_at/);
     }
     if(headed){
       await page.evaluate(()=>{delete document.hidden;window.fixtureReplyDelay=0;});
-      await terminal.evaluate(()=>{window.fixtureDeliveryDelay=0;window.fixtureFrameDelay=0;window.holdWrites=false;});
+      await terminal.evaluate(()=>{window.fixtureDeliveryDelay=0;window.fixtureFrameDelay=0;window.fixtureRenderDelay=0;window.holdWrites=false;});
       // Focus emulation is per CDP client. A new session cannot undo Playwright's own override.
       const disableFocus=page=>require(process.env.PLAYWRIGHT_MODULE)._toImpl(page)._delegate._mainFrameSession._client
         .send('Emulation.setFocusEmulationEnabled',{enabled:false});

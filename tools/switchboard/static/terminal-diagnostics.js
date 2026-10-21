@@ -1,4 +1,37 @@
 // Counts and timings only. Terminal contents and keystrokes never enter a report.
+window.SwitchboardRenderingDiagnostics = function () {
+  const supported=typeof PerformanceObserver==='function'&&PerformanceObserver.supportedEntryTypes?.includes('long-animation-frame');
+  let frames=[];
+  function remember(entries) {
+    const cutoff=performance.now()-10000;
+    frames=frames.filter(frame=>frame.end>=cutoff);
+    for(const entry of entries){
+      const end=entry.startTime+entry.duration;
+      if(end>=cutoff)frames.push({start:entry.startTime,end,render:entry.renderStart,layout:entry.styleAndLayoutStart,
+        scripts:(entry.scripts||[]).map(script=>({start:script.startTime,end:script.startTime+script.duration}))});
+    }
+    frames=frames.slice(-256);
+  }
+  const observer=supported?new PerformanceObserver(list=>remember(list.getEntries())):null;
+  observer?.observe({entryTypes:['long-animation-frame']});
+  return since=>{
+    const result={long_frame_tracking:!!observer,long_frames:null,max_frame_ms:null,max_render_ms:null,max_layout_ms:null,max_script_ms:null};
+    if(!observer)return result;
+    remember(observer.takeRecords());
+    const started=since-performance.timeOrigin,overlap=(start,end)=>Math.max(0,end-Math.max(start,started));
+    result.long_frames=0;result.max_frame_ms=0;result.max_render_ms=0;result.max_layout_ms=0;result.max_script_ms=0;
+    for(const frame of frames){
+      if(frame.end<=started)continue;
+      result.long_frames++;
+      result.max_frame_ms=Math.max(result.max_frame_ms,Math.round(overlap(frame.start,frame.end)));
+      if(frame.render>0)result.max_render_ms=Math.max(result.max_render_ms,Math.round(overlap(frame.render,frame.end)));
+      if(frame.layout>0)result.max_layout_ms=Math.max(result.max_layout_ms,Math.round(overlap(frame.layout,frame.end)));
+      result.max_script_ms=Math.max(result.max_script_ms,Math.round(frame.scripts.reduce((total,script)=>total+overlap(script.start,script.end),0)));
+    }
+    return result;
+  };
+};
+
 window.SwitchboardTerminalDiagnostics = function (report, dimensions) {
   const now = () => performance.now();
   let span, quietTimer, deadlineTimer, hookedTerm, renderListener, scrollListener, lineFeedListener, resizeListener, animationProbe;
@@ -205,6 +238,7 @@ window.SwitchboardTerminalDiagnostics = function (report, dimensions) {
 
 window.SwitchboardBrowserDiagnostics = function (report, probe) {
   const now=()=>performance.now(),rounded=value=>Math.max(0,Math.round(value));
+  const rendering=window.SwitchboardRenderingDiagnostics();
   let hiddenAt=document.hidden?now():null,span,sequence=0,deadline,animation,frozen=false;
   function tasks(entries) {
     if(!span)return;
@@ -220,7 +254,7 @@ window.SwitchboardBrowserDiagnostics = function (report, probe) {
     if(!span)return;
     clearTimeout(deadline);cancelAnimationFrame(animation);
     tasks(observer?.takeRecords()||[]);
-    const result={...span,outcome,elapsed_ms:rounded(now()-span.started)};
+    const result={...span,...rendering(performance.timeOrigin+span.started),outcome,elapsed_ms:rounded(now()-span.started)};
     delete result.started;span=null;
     report(result);
   }
@@ -233,6 +267,7 @@ window.SwitchboardBrowserDiagnostics = function (report, probe) {
       first_animation_ms:null,terminal_animation_ms:null,terminal_probe:false,
       terminal_socket:null,control_socket:null,writes_pending:null,render_pending:null,
       terminal_message_ms:null,terminal_frame_ms:null,terminal_reply_ms:null,
+      terminal_render_cycle_ms:null,
       initial_writes_pending:null,initial_render_pending:null,terminal_hidden:null,terminal_active:null,
       terminal_long_task_tracking:null,terminal_long_tasks:null,terminal_max_long_task_ms:null,terminal_total_long_task_ms:null,
       long_task_tracking:!!observer,long_tasks:0,max_long_task_ms:0,total_long_task_ms:0};
@@ -263,7 +298,9 @@ window.SwitchboardBrowserDiagnostics = function (report, probe) {
         span.terminal_message_ms=rounded(sample.received_at-started);
         if(!receivedOnly&&Number.isFinite(sample.animation_at)&&sample.animation_at>=sample.received_at&&sample.animation_at<=received){
           span.terminal_frame_ms=rounded(sample.animation_at-sample.received_at);
-          span.terminal_reply_ms=rounded(received-sample.animation_at);
+          if(Number.isInteger(sample.render_cycle_ms)&&sample.render_cycle_ms>=0&&sample.render_cycle_ms<=4294967295)
+            span.terminal_render_cycle_ms=sample.render_cycle_ms;
+          span.terminal_reply_ms=rounded(received-sample.animation_at-(span.terminal_render_cycle_ms??0));
         }
       }
       for(const field of ['initial_writes_pending','long_tasks','max_long_task_ms','total_long_task_ms'])

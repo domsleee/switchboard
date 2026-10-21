@@ -24,7 +24,7 @@ function harness(withDiagnostics=false,platform='MacIntel'){
   const error=(...lines)=>{const socket=new window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');socket.handlers.message({data:JSON.stringify({type:'LogError',lines})});};
   return{window,handlers,parent,messages,properties,classes,key,state,error,setTime:v=>now=v,setFocus:v=>focused=v,setBodyFocus:()=>{focused=false;document.activeElement=document.body;},setBrowserFocus:v=>browserFocused=v,setFrameActive:v=>frameActive=v,setModal:v=>modal=v,setBottomRows:v=>bottomRows=v,setFirstRow:v=>firstRow=v,frames,resizes,timers};
 }
-test('browser-resume receipt is immediate and keeps the initial queue when it drains before animation',()=>{
+test('browser-resume receipt is immediate and its final sample waits until after rendering',()=>{
   const h=harness(true),callbacks=[];h.window.term.write=(_,done)=>callbacks.push(done);
   const socket=new h.window.WebSocket('ws://localhost:8090/hosts/windows/ws/terminal');
   socket.handlers.message({data:'private terminal text'});h.window.term.write('private terminal text');
@@ -38,9 +38,12 @@ test('browser-resume receipt is immediate and keeps the initial queue when it dr
   assert.equal(h.messages[0].diagnostic.received_at,1000100);
   assert.equal(h.messages[0].diagnostic.initial_writes_pending,1);
   callbacks[0]();h.setTime(800);h.frames.shift()();
+  assert.equal(h.messages.length,1,'The animation callback runs before the rendering cycle completes');
+  h.setTime(900);assert.equal(h.timers.size,1);[...h.timers.values()][0]();
   const final=h.messages.at(-1);
   assert.equal(final.type,'zellij-browser-resume-diagnostic');assert.equal(final.diagnostic.received_at,1000100);
   assert.equal(final.diagnostic.animation_at,1000800);assert.equal(final.diagnostic.initial_writes_pending,1);
+  assert.equal(final.diagnostic.render_cycle_ms,100);
   assert.equal(final.diagnostic.writes_pending,0);assert.equal(final.diagnostic.terminal_active,true);
   assert.doesNotMatch(JSON.stringify(h.messages),/private|terminal text/);
   assert.equal(h.resizes.length,0,'A diagnostic must not resize or focus native terminals');

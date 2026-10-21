@@ -307,6 +307,12 @@ another computer.
 Shift+Enter reports include browser modifier flags and Shift press/release timing.
 These diagnostics contain no terminal contents or typed text. Slow native reflows
 and ConPTY resizes also appear in `zellij.log`.
+Browser-return reports include page-wide long animation frames, rendering,
+style/layout and script time, where supported.
+The terminal probe samples again after its rendering cycle, separating that work
+from the time its reply waits to reach the sidebar. Zero long JavaScript tasks
+alone does not rule out expensive rendering. These samples do not measure GPU
+presentation time.
 
 Returning to a Chrome browser tab has its own `Browser tab` report. It records
 time hidden, lifecycle freeze/discard recovery, discarded-page startup time,
