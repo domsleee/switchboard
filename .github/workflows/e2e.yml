@@ -26,6 +26,12 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           rustflags: ""
+          # Only main saves; PRs restore main's dev-opt build. An existing key
+          # is never re-saved, so a run that failed before the build must not
+          # save (the previous key was stuck without the build that way).
+          cache-shared-key: e2e-dev-opt
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: false
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
