@@ -33,7 +33,7 @@ impl SharingRecovery {
         Self::validate_configuration(ip, config, options)?;
         zellij_utils::sessions::validate_session_name(&session)
             .map_err(|error| error.to_string())?;
-        let socket_path = zellij_utils::consts::ZELLIJ_SOCK_DIR.join(&session);
+        let socket_path = zellij_utils::consts::session_socket_path(&session);
         let recovery = Self::pin(session, socket_path)?;
         if let Some(expected) = std::env::var_os("SWITCHBOARD_RECOVER_UNSHARED_SOCKET_IDENTITY") {
             let expected = expected

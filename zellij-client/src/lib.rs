@@ -163,7 +163,7 @@ use crate::{
 use zellij_utils::cli::CliArgs;
 use zellij_utils::{
     channels::{self, ChannelWithContext, SenderWithContext},
-    consts::{set_permissions, ZELLIJ_SOCK_DIR},
+    consts::{session_socket_path, set_permissions, ZELLIJ_SOCK_DIR},
     data::{
         ClientId, CommandOrPlugin, ConnectToSession, KeyWithModifier, LayoutInfo, LayoutMetadata,
     },
@@ -427,7 +427,7 @@ fn spawn_server_error_message(e: io::Error) -> String {
 }
 
 fn create_ipc_pipe(teardown: Option<TerminalTeardown>) -> PathBuf {
-    let mut sock_dir = ZELLIJ_SOCK_DIR.clone();
+    let sock_dir = ZELLIJ_SOCK_DIR.clone();
     if let Err(e) = std::fs::create_dir_all(&sock_dir) {
         exit_after_startup_error(
             teardown,
@@ -458,9 +458,10 @@ fn create_ipc_pipe(teardown: Option<TerminalTeardown>) -> PathBuf {
             ),
         );
     }
-    sock_dir.push(envs::get_session_name().unwrap());
-    check_ipc_pipe_length(&sock_dir);
-    sock_dir
+    // Sessions of servers started before the socket dir moved live in the legacy dir.
+    let ipc_pipe = session_socket_path(&envs::get_session_name().unwrap());
+    check_ipc_pipe_length(&ipc_pipe);
+    ipc_pipe
 }
 
 /// Spawn the Zellij server process.
