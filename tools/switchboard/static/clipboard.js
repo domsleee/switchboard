@@ -169,12 +169,19 @@
   }
 
   window.addEventListener('keydown', event => {
-    if (isTerminalTarget(event) && !event.isComposing && !['Meta','Control','Alt','Shift'].includes(event.key)
+    const target = isTerminalTarget(event);
+    if (target && !event.isComposing && !['Meta','Control','Alt','Shift'].includes(event.key)
         && !((event.metaKey || event.ctrlKey) && (event.code === 'KeyC' || event.key?.toLowerCase() === 'c'))) {
       selectedText = '';
     }
-    if (!isTerminalTarget(event) || event.altKey || event.isComposing ||
-      !(event.code === 'KeyC' || event.key?.toLowerCase() === 'c')) return;
+    if (!target || event.altKey || event.isComposing) return;
+    if (event.ctrlKey && !event.metaKey && !event.getModifierState?.('AltGraph') && !navigator.platform?.startsWith('Mac') &&
+        (event.code === 'KeyV' || event.key?.toLowerCase() === 'v')) {
+      // Keep the browser's paste event; xterm would send Ctrl+V to the terminal app.
+      event.stopImmediatePropagation();
+      return;
+    }
+    if (!(event.code === 'KeyC' || event.key?.toLowerCase() === 'c')) return;
     const commandCopy = event.metaKey && !event.ctrlKey && !event.shiftKey;
     const controlCopy = event.ctrlKey && !event.metaKey;
     if (!commandCopy && !controlCopy) return;
