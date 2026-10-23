@@ -73,7 +73,7 @@ jobs:
           cache-on-failure: false
 
       - name: Install NASM
-        uses: ilammy/setup-nasm@v1
+        uses: ilammy/setup-nasm@v1.5.2
 
       - name: Build
         run: cargo xtask build
@@ -143,7 +143,7 @@ jobs:
       # Lives here rather than in Build (Windows): it needs the test profile,
       # which this job has already compiled, not Build's dev-opt profile.
       - name: Install NASM
-        uses: ilammy/setup-nasm@v1
+        uses: ilammy/setup-nasm@v1.5.2
 
       - name: Check Switchboard installer
         run: cargo test -p zellij-client --features web_server_capability switchboard_update::install --lib

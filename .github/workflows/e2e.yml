@@ -32,7 +32,7 @@ jobs:
           cache-shared-key: e2e-dev-opt
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - name: Install headless Chromium
@@ -52,7 +52,7 @@ jobs:
         run: node acceptance/switchboard/run.cjs browser target/dev-opt/zellij target/dev-opt/zellij
       - name: Save private acceptance diagnostics on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: browser-failure-logs
           path: |
