@@ -414,11 +414,15 @@ for(const touchscreen of [false,true])test(`sidebar selection supports immediate
     await page.waitForFunction(()=>document.activeElement===document.querySelector('iframe.active'));
     const terminal=page.frameLocator('iframe[title="Windows: main"]').locator('#terminal');
     await terminal.click({position:{x:20,y:20}});
-    const shortcut=process.platform==='darwin'?'Meta+v':touchscreen?'Control+v':'Control+Shift+V';
-    const paste=async text=>{
+    const shortcut=process.platform==='darwin'?'Meta+v':'Control+v';
+    const paste=async(text,bracketed=false,key=shortcut)=>{
       await terminal.evaluate(async(_,text)=>{sent.length=0;await navigator.clipboard.writeText(text);},text);
-      await page.keyboard.press(shortcut);
-      assert.deepEqual(await terminal.evaluate(()=>[...sent]),[text]);
+      await page.keyboard.press(key);
+      const normalized=text.replace(/\r?\n/g,'\r'),expected=bracketed?'\x1b[200~'+normalized+'\x1b[201~':normalized;
+      assert.deepEqual(await terminal.evaluate(()=>[...sent]),[expected]);
+      await terminal.click({button:'right',position:{x:20,y:20}});
+      await page.frame({url:/\/hosts\/windows\/main$/}).waitForFunction(()=>sent.length>=2);
+      assert.deepEqual(await terminal.evaluate(()=>[...sent]),[expected,expected],'each explicit paste is delivered exactly once');
     };
     await paste('direct terminal paste');
     const button=id=>page.locator('#tabs .tab-select').filter({hasText:'Terminal '+id});
@@ -446,6 +450,9 @@ for(const touchscreen of [false,true])test(`sidebar selection supports immediate
       await page.waitForFunction(()=>!sessions.get(JSON.stringify(['windows','main'])).requestedPane);
       await paste('paste after focus acknowledgement');
     }
+    if(process.platform!=='darwin')await paste('plain text paste shortcut',false,'Control+Shift+V');
+    await terminal.evaluate(()=>new Promise(resolve=>term.write('\x1b[?2004h',resolve)));
+    await paste('001122\r\nnext\ncaf\u00e9\u00a0\u03a9',true);
     assert.deepEqual(errors,[]);
   }finally{await browser.close();}
 });

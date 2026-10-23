@@ -94,6 +94,24 @@ test('Ctrl+C interrupt, composing keys, unrelated modifiers and manual fields ar
   }
 });
 
+test('Ctrl+V uses native browser paste without intercepting other fields, modifiers or Mac Ctrl+V', () => {
+  const h = harness();
+  for (const platform of ['Win32', 'Linux x86_64']) {
+    h.context.navigator.platform = platform;
+    for (const shiftKey of [false, true]) {
+      const event = h.event('keydown', {code: 'KeyV', key: shiftKey ? 'V' : 'v', ctrlKey: true, shiftKey});
+      assert.equal(event.stopped, true);
+      assert.equal(event.prevented, undefined);
+    }
+  }
+  for (const extra of [{altKey: true}, {metaKey: true}, {isComposing: true}, {getModifierState: key => key === 'AltGraph'},
+    {target: h.document.createElement('textarea')}]) {
+    assert.equal(h.event('keydown', {code: 'KeyV', key: 'v', ctrlKey: true, ...extra}).stopped, undefined);
+  }
+  h.context.navigator.platform = 'MacIntel';
+  assert.equal(h.event('keydown', {code: 'KeyV', key: 'v', ctrlKey: true}).stopped, undefined);
+});
+
 test('selected Ctrl+C, Ctrl+Shift+C and app Copy write the viewing clipboard', async () => {
   const h = harness(); h.setSelection('selected Ω');
   const key = h.event('keydown', {ctrlKey: true, shiftKey: true});
