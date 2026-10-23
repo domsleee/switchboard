@@ -371,14 +371,23 @@ impl Host {
         if cached.is_some() && !routes.contains(&original) {
             routes.push(original);
         }
+        let mut failures = std::collections::BTreeMap::new();
+        let mut pending: std::collections::BTreeSet<_> = routes
+            .into_iter()
+            .filter(|address| *address != primary)
+            .collect();
         let mut attempts = FuturesUnordered::new();
-        for address in routes.into_iter().filter(|address| *address != primary) {
+        for address in pending.iter().copied() {
             attempts.push(async move { (address, self.connect_to(address).await) });
         }
         let connected = tokio::time::timeout(ROUTE_CONNECT_TIMEOUT, async {
             while let Some((address, result)) = attempts.next().await {
-                if let Ok(stream) = result {
-                    return Some((address, stream));
+                pending.remove(&address);
+                match result {
+                    Ok(stream) => return Some((address, stream)),
+                    Err(error) => {
+                        failures.insert(address, format!("{address}: {error:#}"));
+                    },
                 }
             }
             None
@@ -388,7 +397,20 @@ impl Host {
             *self.route_hint.lock().await = Some((address, tokio::time::Instant::now()));
             return Ok(stream);
         }
-        Err(primary_error.context("Paired host IP and hostname routes failed"))
+        for address in pending {
+            failures.insert(address, format!("{address}: connection timed out"));
+        }
+        // Logs keep only 240 characters. Put the hostname result before the
+        // already-known stale-address failure so the useful cause survives.
+        let fallback = if failures.is_empty() {
+            "No alternate hostname addresses were available".into()
+        } else {
+            failures.into_values().collect::<Vec<_>>().join("; ")
+        };
+        let hint = self.hostname_hint().unwrap_or_default();
+        Err(anyhow::anyhow!(
+            "Hostname {hint} fallback failed: {fallback}; initial address {primary}: {primary_error:#}"
+        ))
     }
 
     fn authority(&self) -> String {
@@ -1551,6 +1573,53 @@ mod tests {
         assert!(format!("{error:#}").contains("fingerprint mismatch"));
         assert!(host.route_hint.lock().await.is_none());
         assert_eq!(requests.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn hostname_route_errors_report_the_resolved_address_and_its_failure() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let original = listener.local_addr().unwrap();
+        let stall = tokio::spawn(async move {
+            let (_tcp, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let resolved = closed.local_addr().unwrap();
+        drop(closed);
+        let host = Host::new(paired_config(original.port(), &"00".repeat(32))).unwrap();
+        let error = host
+            .stream_with_routes(original, std::future::ready(vec![resolved]))
+            .await
+            .err()
+            .unwrap();
+        stall.abort();
+        let message = format!("{error:#}");
+        assert!(message.contains("1WN9PD4.local"), "{message}");
+        assert!(message.contains(&original.to_string()), "{message}");
+        assert!(message.contains(&resolved.to_string()), "{message}");
+        assert!(message.contains("timed out"), "{message}");
+        assert!(
+            message.to_ascii_lowercase().contains("refused"),
+            "{message}"
+        );
+        assert!(host.route_hint.lock().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn hostname_route_errors_distinguish_missing_alternate_addresses() {
+        let original = tls_fixture(Router::new()).await;
+        let host = Host::new(paired_config(original.address.port(), &"00".repeat(32))).unwrap();
+        let error = host
+            .stream_with_routes(original.address, std::future::ready(Vec::new()))
+            .await
+            .err()
+            .unwrap();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("No alternate hostname addresses"),
+            "{message}"
+        );
+        assert!(message.contains("fingerprint mismatch"), "{message}");
     }
 
     #[tokio::test]
