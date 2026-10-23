@@ -10,6 +10,8 @@ permissions:
 
 env:
   # Thin LTO with parallel codegen; dependencies already come from rust-cache.
+  # CARGO_PROFILE_RELEASE_LTO overrides `lto = true` (fat) in Cargo.toml.
+  CARGO_PROFILE_RELEASE_LTO: thin
   CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
 
 jobs:
@@ -25,7 +27,7 @@ jobs:
           # A manual run on another branch must not evict main's caches.
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: false
-      - uses: ilammy/setup-nasm@v1
+      - uses: ilammy/setup-nasm@v1.5.2
       - name: Check Windows session discovery and colours
         run: |
           cargo test -p zellij-utils windows_session_catalog_tests --lib
@@ -58,14 +60,14 @@ jobs:
           # A manual run on another branch must not evict main's caches.
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: false
-      - uses: ilammy/setup-nasm@v1
+      - uses: ilammy/setup-nasm@v1.5.2
       - name: Build native server and relay
         run: cargo build --release --features web_server_capability
       - name: Verify packaged relay command
         run: .\target\release\zellij.exe serve --help
       - name: Package verified update bundle
         run: .\target\release\zellij.exe switchboard package --platform windows --commit $env:GITHUB_SHA --run-number $env:GITHUB_RUN_NUMBER --helpers tools/switchboard --output dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: switchboard-windows
           path: dist/*
@@ -77,28 +79,44 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Both targets build on the ARM runner; the Intel binary is
+          # cross-compiled (native clang, no emulation) and only executed
+          # through Rosetta 2, which the runner image preinstalls.
           - runner: macos-latest
             platform: macos-arm64
-          - runner: macos-15-intel
+            target: aarch64-apple-darwin
+            arch: arm64
+          - runner: macos-latest
             platform: macos-x86_64
+            target: x86_64-apple-darwin
+            arch: x86_64
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
+          target: ${{ matrix.target }}
           rustflags: ""
+          # Both macOS legs now share one runner image; keep their caches apart.
+          cache-key: ${{ matrix.target }}
           # A manual run on another branch must not evict main's caches.
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: false
+      # The installer test only compiles for the host; running it again in
+      # the cross leg would just repeat the ARM leg's work.
       - name: Check installer
+        if: matrix.platform == 'macos-arm64'
         run: cargo test -p zellij-client --features web_server_capability switchboard_update::install --lib
       - name: Build native server and relay
-        run: cargo build --release --features web_server_capability
+        run: cargo build --release --features web_server_capability --target ${{ matrix.target }}
       - name: Verify and package update bundle
         run: |
-          target/release/zellij serve --help
-          target/release/zellij switchboard package --platform ${{ matrix.platform }} --commit $GITHUB_SHA --run-number $GITHUB_RUN_NUMBER --helpers tools/switchboard --output dist
-      - uses: actions/upload-artifact@v4
+          target/${{ matrix.target }}/release/zellij serve --help
+          target/${{ matrix.target }}/release/zellij switchboard package --platform ${{ matrix.platform }} --commit $GITHUB_SHA --run-number $GITHUB_RUN_NUMBER --helpers tools/switchboard --output dist
+          # The packager copies its own executable, so prove the bundle
+          # really contains the architecture its platform claims.
+          file dist/zellij | grep -q '${{ matrix.arch }}'
+      - uses: actions/upload-artifact@v7
         with:
           name: switchboard-${{ matrix.platform }}
           path: dist/*
@@ -107,8 +125,11 @@ jobs:
 
   # Updaters download from one rolling prerelease. Its assets are replaced on
   # each build; the release is never recreated, so followers are not notified.
-  publish:
-    needs: [checks, windows, macos]
+  # Publishing is split per platform: a failing Windows check must not strand
+  # finished macOS bundles (and vice versa). The two jobs share one
+  # concurrency group so their uploads to the same release never interleave.
+  publish-windows:
+    needs: [checks, windows]
     # Only this repository's main branch feeds automatic updates.
     if: github.ref == 'refs/heads/main' && github.repository == 'domsleee/switchboard'
     runs-on: ubuntu-latest
@@ -120,11 +141,51 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
+      ARTIFACT_PATTERN: switchboard-windows
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
-          pattern: switchboard-*
+          pattern: ${{ env.ARTIFACT_PATTERN }}
+          path: artifacts
+      - name: Replace rolling release assets
+        run: |
+          set -euo pipefail
+          gh release view latest-main >/dev/null 2>&1 ||
+            gh release create latest-main --prerelease --latest=false --target "$GITHUB_SHA" \
+              --title 'Latest main build' --notes 'Rolling build used by Switchboard automatic updates.'
+          mkdir release
+          for directory in artifacts/switchboard-*; do
+            platform=${directory#artifacts/switchboard-}
+            for file in "$directory"/*; do cp "$file" "release/switchboard-$platform-$(basename "$file")"; done
+          done
+          # Manifests last: updaters verify every asset against them and retry
+          # on a mismatch while a newer upload is in progress.
+          gh release upload latest-main --clobber $(ls release/* | grep -v -- '-bundle.json$')
+          gh release upload latest-main --clobber release/*-bundle.json
+          # The manifest's commit is authoritative; the tag follows for readers.
+          git tag -f latest-main "$GITHUB_SHA"
+          git push -f origin refs/tags/latest-main
+
+  publish-macos:
+    needs: [macos]
+    # Only this repository's main branch feeds automatic updates.
+    if: github.ref == 'refs/heads/main' && github.repository == 'domsleee/switchboard'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: latest-main-release
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      ARTIFACT_PATTERN: switchboard-macos-*
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: ${{ env.ARTIFACT_PATTERN }}
           path: artifacts
       - name: Replace rolling release assets
         run: |
