@@ -6,8 +6,9 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
   const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
   const browser=await chromium.launch({headless:true});
   try{
-    const context=await browser.newContext({viewport:{width:1440,height:900},permissions:['clipboard-read','clipboard-write']});
+    const context=await browser.newContext({viewport:{width:1440,height:900},timezoneId:'Australia/Sydney',permissions:['clipboard-read','clipboard-write']});
     const page=await context.newPage(),errors=[];page.setDefaultTimeout(5000);
+    await page.clock.setFixedTime(new Date('2026-10-27T23:59:00+11:00'));
     page.on('pageerror',e=>errors.push(e.message));
     let unavailable=false,working=true,hostUnavailable=false;
     const names=['switchboard','Online shopping','ssb orchestrator'];
@@ -106,12 +107,18 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.equal(await frame.locator('#terminal-input').inputValue(),'keep typing');
     assert.match(await page.locator('#tabs .tab-select').nth(2).getAttribute('aria-label'),/Status unavailable/);
     assert.equal(await page.locator('#tabs .star.unavailable').count(),1);
-    // Dismissed outages stay quiet through polls and partial recovery, without hiding new errors.
+    // Daily dismissal survives recovery and reloads without hiding other errors.
     hostUnavailable=true;await page.evaluate(()=>refresh());
-    const status=page.locator('#status'),dismiss=page.getByRole('button',{name:'Dismiss notification',exact:true});
+    const status=page.locator('#status'),dismiss=page.locator('#dismiss-status');
     assert.equal(await status.isVisible(),true);
     assert.match(await status.textContent(),/Windows: Host unavailable/);
     assert.match(await status.textContent(),/Windows: attention status unavailable/);
+    if(process.env.SWITCHBOARD_DISMISS_SCREENSHOTS){
+      await page.screenshot({path:process.env.SWITCHBOARD_DISMISS_SCREENSHOTS+'/warning.png'});
+      fs.writeFileSync(process.env.SWITCHBOARD_DISMISS_SCREENSHOTS+'/warning.json',JSON.stringify({
+        status:await status.boundingBox(),button:await dismiss.boundingBox(),viewport:page.viewportSize()
+      }));
+    }
     await dismiss.click();assert.equal(await status.isHidden(),true);
     assert.equal(await frame.locator('#terminal-input').evaluate(e=>document.activeElement===e),true);
     assert.equal(await page.locator('iframe.active').evaluate(e=>document.activeElement===e),true);
@@ -123,11 +130,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     unavailable=false;await page.evaluate(()=>refreshAttention());
     assert.equal(await status.isHidden(),true);
     unavailable=true;await page.evaluate(()=>refreshAttention());
-    assert.equal(await status.isVisible(),true,'A new warning is not hidden by the dismissed host warning');
-    assert.match(await status.textContent(),/attention status unavailable/);
-    assert.doesNotMatch(await status.textContent(),/Host unavailable/);
-    await dismiss.click();await page.evaluate(()=>refreshAttention());
-    assert.equal(await status.isHidden(),true);
+    assert.equal(await status.isHidden(),true,'A dismissed computer stays quiet when its attention warning returns');
     await page.evaluate(()=>setStatus('Fixture new error',true));
     assert.equal(await status.isVisible(),true);assert.match(await status.textContent(),/Fixture new error/);
     assert.doesNotMatch(await status.textContent(),/Host unavailable/);
@@ -135,8 +138,38 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.equal(await status.isHidden(),true);
     hostUnavailable=false;await page.evaluate(()=>refresh());
     hostUnavailable=true;await page.evaluate(()=>refresh());
-    assert.equal(await status.isVisible(),true,'A new outage after recovery is shown again');
-    unavailable=true;await page.evaluate(()=>refreshAttention());
+    assert.equal(await status.isHidden(),true,'A brief recovery does not reset daily dismissal');
+    await page.reload();await page.waitForFunction(()=>hosts.get('windows')?.error&&attentionErrors.length&&sessions.get(JSON.stringify(['mac','main']))?.state);
+    assert.equal(await status.isHidden(),true,'Daily dismissal survives a page reload');
+    await page.evaluate(()=>{hosts.get('mac').error='Host unavailable';render();});
+    assert.equal(await status.isVisible(),true,'Dismissal does not hide another computer');
+    assert.match(await status.textContent(),/Mac: Host unavailable/);
+    assert.doesNotMatch(await status.textContent(),/Windows:/);
+    await page.evaluate(()=>{delete hosts.get('mac').error;render();});
+    await page.evaluate(()=>{hosts.get('windows').error='Connection timed out';render();});
+    assert.equal(await status.isHidden(),true,'Dismissal follows the computer, not the error text');
+    hostUnavailable=false;unavailable=false;await page.evaluate(async()=>{await refresh();await refreshAttention();});
+    const windows=page.frameLocator('iframe[title="Windows: main"]').locator('#terminal-input');
+    await windows.evaluate(()=>parent.postMessage({type:'zellij-disconnected'},location.origin));
+    await page.waitForFunction(()=>sessions.get(JSON.stringify(['windows','main']))?.disconnected);
+    assert.equal(await status.isHidden(),true,'A dismissed background terminal does not interrupt');
+    await windows.evaluate(()=>state());
+    await page.waitForFunction(()=>!sessions.get(JSON.stringify(['windows','main']))?.disconnected);
+    await page.locator('#tabs .tab-select').nth(2).click();
+    await windows.evaluate(()=>parent.postMessage({type:'zellij-disconnected'},location.origin));
+    await page.waitForFunction(()=>document.querySelector('#status').classList.contains('has-error'));
+    assert.match(await status.textContent(),/Windows: reconnecting/);
+    assert.equal(await dismiss.getAttribute('aria-label'),'Dismiss notification');
+    await page.evaluate(()=>render());assert.equal(await status.isVisible(),true,'An active disconnect stays visible through refreshes');
+    await windows.evaluate(()=>state());
+    await page.waitForFunction(()=>!sessions.get(JSON.stringify(['windows','main']))?.disconnected);
+    await page.locator('#tabs .tab-select').first().click();
+    assert.equal(await status.isHidden(),true,'Reconnection does not clear daily dismissal');
+    hostUnavailable=true;unavailable=true;await page.evaluate(async()=>{await refresh();await refreshAttention();});
+    await page.clock.setFixedTime(new Date('2026-10-28T00:01:00+11:00'));
+    await page.evaluate(()=>refreshAttention());
+    assert.equal(await status.isVisible(),true,'Dismissal expires at the viewer’s local midnight');
+    assert.equal(await dismiss.textContent(),'Dismiss for today');
     await dismiss.focus();await page.keyboard.press('Enter');
     assert.equal(await status.isHidden(),true);
     await page.locator('#tab-search').fill('orchestrator');assert.equal(await page.locator('#tabs .tab-select').count(),1);
@@ -159,6 +192,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.equal(await page.evaluate(()=>document.activeElement.id),'sidebar-toggle');
     await page.locator('#sidebar-toggle').click();
     assert.equal(await page.locator('#archive').isVisible(),false);
+    await page.clock.setFixedTime(new Date('2026-10-29T00:01:00+11:00'));
     hostUnavailable=true;unavailable=true;await page.evaluate(async()=>{await refresh();await refreshAttention();});
     const bounds=await status.boundingBox();
     assert.ok(bounds&&bounds.x>=0&&bounds.x+bounds.width<=390,'The warning and dismiss button fit on mobile');

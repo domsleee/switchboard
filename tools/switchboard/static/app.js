@@ -38,18 +38,28 @@ function updateNativeTabs() {
 }
 function saveReady() { localStorage.setItem('switchboard-ready', JSON.stringify(ready)); }
 const dismissedStatus=new Set();
+const dismissedOffline=load('switchboard-dismissed-offline');
 let statusErrors=[];
 function setStatus(message,isError=false,errors=null) {
   // Only the full error list can confirm that a dismissed outage ended.
-  if(errors)for(const error of dismissedStatus)if(!errors.includes(error))dismissedStatus.delete(error);
-  statusErrors=errors||(isError?[message]:[]);
-  const visible=statusErrors.filter(error=>!dismissedStatus.has(error));
-  $('status-message').textContent=isError?visible.join(' · '):message;
-  $('status').classList.toggle('has-error',isError&&visible.length>0);
+  if(errors)for(const message of dismissedStatus)if(!errors.some(error=>error.message===message))dismissedStatus.delete(message);
+  statusErrors=(errors||(isError?[{message}]:[])).filter(error=>!dismissedStatus.has(error.message)&&!(error.host&&dismissedOffline[error.host]>Date.now()));
+  const daily=statusErrors.some(error=>error.host),dismiss=$('dismiss-status');
+  dismiss.textContent=daily?'Dismiss for today':'×';
+  dismiss.classList.toggle('for-today',daily);
+  dismiss.setAttribute('aria-label',daily?'Dismiss offline warnings for today':'Dismiss notification');
+  dismiss.title=daily?'Hide offline warnings for these computers until tomorrow':'Dismiss notification';
+  $('status-message').textContent=isError?statusErrors.map(error=>error.message).join(' · '):message;
+  $('status').classList.toggle('has-error',isError&&statusErrors.length>0);
   $('notifications').title=`${$('notifications').textContent}\n${message}`;
 }
 $('dismiss-status').onclick=()=>{
-  for(const error of statusErrors)dismissedStatus.add(error);
+  const until=new Date();until.setHours(24,0,0,0);
+  for(const error of statusErrors){
+    if(error.host)dismissedOffline[error.host]=until.getTime();
+    else dismissedStatus.add(error.message);
+  }
+  if(statusErrors.some(error=>error.host))localStorage.setItem('switchboard-dismissed-offline',JSON.stringify(dismissedOffline));
   $('status').classList.remove('has-error');
   if($('artifact-preview').hidden)$('terminals').querySelector('iframe.active')?.focus();
 };
@@ -455,10 +465,11 @@ function render() {
     $('empty-text').textContent=restoringTab?'Connecting to the requested terminal…':startingEntry?'Starting a terminal…':current||terminalsSettling()?'Connecting…':'No terminal selected';
     action.hidden=!hint?.action;action.textContent=hint?.action||'';action.onclick=hint?.run||null;
   }
-  const errors=[...hosts.values()].filter(h=>h.error).map(h=>`${h.name}: ${h.error}`);
-  for(const entry of sessions.values())if(entry.closeError)errors.push(entry.closeError);
-  for(const error of attentionErrors)errors.push(`${hosts.get(error.host)?.name||error.host}: attention status unavailable`);
-  setStatus(errors.length?errors.join(' · '):`${hosts.size} machines · ${tabs.length} tabs${current?' · '+hosts.get(current.entry.host)?.name:''}`,errors.length>0,errors);
+  const errors=[...hosts.values()].filter(h=>h.error).map(h=>({host:h.id,message:`${h.name}: ${h.error}`}));
+  for(const entry of sessions.values())if(entry.closeError)errors.push({message:entry.closeError});
+  for(const error of attentionErrors)errors.push({host:hosts.has(error.host)?error.host:null,message:`${hosts.get(error.host)?.name||error.host}: attention status unavailable`});
+  if(currentEntry?.disconnected)errors.push({message:`${hosts.get(currentEntry.host)?.name||currentEntry.host}: reconnecting…`});
+  setStatus(errors.length?errors.map(error=>error.message).join(' · '):`${hosts.size} machines · ${tabs.length} tabs${current?' · '+hosts.get(current.entry.host)?.name:''}`,errors.length>0,errors);
   if(hostsLoaded&&attentionLoaded&&!terminalsSettling())globalThis.SwitchboardStartup?.save([...hosts.values()],allTabs(true,true).map(item=>({...item,title:tabTitle(item)})),groups);
   if ((selected !== previous || wasRestoring&&!restoringTab) && current) focus(current,true);
   if(selected!==previous) $('tabs').querySelector('.selected')?.scrollIntoView({block:'nearest',inline:'nearest'});
@@ -791,7 +802,7 @@ window.addEventListener('message',event=>{
     if(entry.frame.classList.contains('active'))updateSelectionTools();
   }else if(event.data?.type==='zellij-clipboard'){
     setStatus(event.data.ok?'Copied to this browser.':event.data.error||'Copy failed; use the terminal’s clipboard panel.',!event.data.ok);
-  }else if(event.data?.type==='zellij-disconnected'){entry.disconnected=true;entry.needsFocus=true;setStatus(`${hosts.get(entry.host)?.name}: reconnecting…`,true);}
+  }else if(event.data?.type==='zellij-disconnected'){entry.disconnected=true;entry.needsFocus=true;render();}
 });
 $('artifact-back').onclick=()=>{const current=allTabs().find(item=>item.key===selected);if(current)focus(current);else $('artifact-preview').hidden=true;};
 function updateSelectionTools(current=allTabs().find(item=>item.key===selected)){
