@@ -85,6 +85,7 @@ iframe.active{visibility:visible;pointer-events:auto}
 #status.has-error{display:flex;align-items:flex-start;gap:8px}
 #status-message{min-width:0}
 #dismiss-status{flex-shrink:0;width:24px;height:24px;padding:0;border-color:transparent;background:transparent;color:#a3aec0;font-size:18px;line-height:1}
+#dismiss-status.for-today{width:auto;padding:0 6px;font-size:11px;white-space:nowrap}
 #dismiss-status:hover{background:#303949;color:#e5e7eb}
 #notifications{font-size:10px;color:#9ba7bd;white-space:nowrap}
 #notifications.has-notifications{color:#ffd57a}
