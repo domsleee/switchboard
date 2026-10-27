@@ -1583,9 +1583,8 @@ mod tests {
             let (_tcp, _) = listener.accept().await.unwrap();
             std::future::pending::<()>().await;
         });
-        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let resolved = closed.local_addr().unwrap();
-        drop(closed);
+        let alternate = tls_fixture(Router::new()).await;
+        let resolved = alternate.address;
         let host = Host::new(paired_config(original.port(), &"00".repeat(32))).unwrap();
         let error = host
             .stream_with_routes(original, std::future::ready(vec![resolved]))
@@ -1598,10 +1597,7 @@ mod tests {
         assert!(message.contains(&original.to_string()), "{message}");
         assert!(message.contains(&resolved.to_string()), "{message}");
         assert!(message.contains("timed out"), "{message}");
-        assert!(
-            message.to_ascii_lowercase().contains("refused"),
-            "{message}"
-        );
+        assert!(message.contains("fingerprint mismatch"), "{message}");
         assert!(host.route_hint.lock().await.is_none());
     }
 
