@@ -37,10 +37,22 @@ function updateNativeTabs() {
   for (const entry of sessions.values()) entry.frame.contentWindow.postMessage({type:'zellij-native-tabs',visible:nativeTabs},location.origin);
 }
 function saveReady() { localStorage.setItem('switchboard-ready', JSON.stringify(ready)); }
-function setStatus(message,isError=false) {
-  $('status').textContent=message;$('status').classList.toggle('has-error',isError);
+const dismissedStatus=new Set();
+let statusErrors=[];
+function setStatus(message,isError=false,errors=null) {
+  // Only the full error list can confirm that a dismissed outage ended.
+  if(errors)for(const error of dismissedStatus)if(!errors.includes(error))dismissedStatus.delete(error);
+  statusErrors=errors||(isError?[message]:[]);
+  const visible=statusErrors.filter(error=>!dismissedStatus.has(error));
+  $('status-message').textContent=isError?visible.join(' · '):message;
+  $('status').classList.toggle('has-error',isError&&visible.length>0);
   $('notifications').title=`${$('notifications').textContent}\n${message}`;
 }
+$('dismiss-status').onclick=()=>{
+  for(const error of statusErrors)dismissedStatus.add(error);
+  $('status').classList.remove('has-error');
+  if($('artifact-preview').hidden)$('terminals').querySelector('iframe.active')?.focus();
+};
 function requestedFilter(){
   const group=new URLSearchParams(location.search).get('group');
   return group==='home'||group==='work'?group:'all';
@@ -446,7 +458,7 @@ function render() {
   const errors=[...hosts.values()].filter(h=>h.error).map(h=>`${h.name}: ${h.error}`);
   for(const entry of sessions.values())if(entry.closeError)errors.push(entry.closeError);
   for(const error of attentionErrors)errors.push(`${hosts.get(error.host)?.name||error.host}: attention status unavailable`);
-  setStatus(errors.length?errors.join(' · '):`${hosts.size} machines · ${tabs.length} tabs${current?' · '+hosts.get(current.entry.host)?.name:''}`,errors.length>0);
+  setStatus(errors.length?errors.join(' · '):`${hosts.size} machines · ${tabs.length} tabs${current?' · '+hosts.get(current.entry.host)?.name:''}`,errors.length>0,errors);
   if(hostsLoaded&&attentionLoaded&&!terminalsSettling())globalThis.SwitchboardStartup?.save([...hosts.values()],allTabs(true,true).map(item=>({...item,title:tabTitle(item)})),groups);
   if ((selected !== previous || wasRestoring&&!restoringTab) && current) focus(current,true);
   if(selected!==previous) $('tabs').querySelector('.selected')?.scrollIntoView({block:'nearest',inline:'nearest'});
