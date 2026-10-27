@@ -141,13 +141,12 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      ARTIFACT_PATTERN: switchboard-windows
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
-          pattern: ${{ env.ARTIFACT_PATTERN }}
-          path: artifacts
+          name: switchboard-windows
+          path: artifacts/switchboard-windows
       - name: Replace rolling release assets
         run: |
           set -euo pipefail
