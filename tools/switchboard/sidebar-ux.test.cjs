@@ -35,10 +35,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
           window.ClipboardAddon={ClipboardAddon:class{}};
           window.__zjSupportsTabViewport=true;
           window.state=(focus_id)=>parent.postMessage({type:'zellij-state',focus_id,payload:{session_name:'main',panes,active_pane:active,tab_viewport:{is_owner:true}}},location.origin);
-          addEventListener('message',event=>{if(event.data.type==='zellij-focus'){
-            const reply=()=>{active=panes.find(p=>p.pane_id===event.data.pane_id);input.focus();state(event.data.focus_id)};
-            if(${path.split('/')[2]==='windows'})setTimeout(reply,100);else reply();
-          }});
+          addEventListener('message',event=>{if(event.data.type==='zellij-focus'){active=panes.find(p=>p.pane_id===event.data.pane_id);input.focus();state(event.data.focus_id)}});
           window.selectFixture=text=>{selection=text;selectionCallback?.()};
         </script><script src="/clipboard.js"></script><script>new ClipboardAddon.ClipboardAddon().activate(term);state();</script>`});
       }
@@ -188,6 +185,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     const reordered=['ssb orchestrator','switchboard','Online shopping'];
     assert.deepEqual(await order(),reordered);
     unavailable=false;hostUnavailable=false;await page.reload();await page.waitForFunction(()=>document.querySelectorAll('#tabs .tab-select').length===3);
+    await page.waitForFunction(()=>document.querySelector('iframe.active')?.contentDocument?.activeElement?.id==='terminal-input');
     assert.equal(await page.locator('#sidebar-resize').getAttribute('aria-valuenow'),'222');
     assert.deepEqual(await order(),reordered);
     await page.setViewportSize({width:390,height:844});
