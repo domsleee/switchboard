@@ -35,7 +35,10 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
           window.ClipboardAddon={ClipboardAddon:class{}};
           window.__zjSupportsTabViewport=true;
           window.state=(focus_id)=>parent.postMessage({type:'zellij-state',focus_id,payload:{session_name:'main',panes,active_pane:active,tab_viewport:{is_owner:true}}},location.origin);
-          addEventListener('message',event=>{if(event.data.type==='zellij-focus'){active=panes.find(p=>p.pane_id===event.data.pane_id);input.focus();state(event.data.focus_id)}});
+          addEventListener('message',event=>{if(event.data.type==='zellij-focus'){
+            const reply=()=>{active=panes.find(p=>p.pane_id===event.data.pane_id);input.focus();state(event.data.focus_id)};
+            if(${path.split('/')[2]==='windows'})setTimeout(reply,100);else reply();
+          }});
           window.selectFixture=text=>{selection=text;selectionCallback?.()};
         </script><script src="/clipboard.js"></script><script>new ClipboardAddon.ClipboardAddon().activate(term);state();</script>`});
       }
@@ -156,6 +159,10 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     await windows.evaluate(()=>state());
     await page.waitForFunction(()=>!sessions.get(JSON.stringify(['windows','main']))?.disconnected);
     await page.locator('#tabs .tab-select').nth(2).click();
+    await page.waitForFunction(()=>{
+      const entry=sessions.get(JSON.stringify(['windows','main']));
+      return document.activeElement===entry.frame&&entry.frame.contentDocument.activeElement?.id==='terminal-input';
+    });
     await windows.evaluate(()=>parent.postMessage({type:'zellij-disconnected'},location.origin));
     await page.waitForFunction(()=>document.querySelector('#status').classList.contains('has-error'));
     assert.match(await status.textContent(),/Windows: reconnecting/);
