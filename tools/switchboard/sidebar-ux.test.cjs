@@ -9,7 +9,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     const context=await browser.newContext({viewport:{width:1440,height:900},permissions:['clipboard-read','clipboard-write']});
     const page=await context.newPage(),errors=[];page.setDefaultTimeout(5000);
     page.on('pageerror',e=>errors.push(e.message));
-    let unavailable=false,working=true;
+    let unavailable=false,working=true,hostUnavailable=false;
     const names=['switchboard','Online shopping','ssb orchestrator'];
     const tabs=names.map((name,i)=>({host:i===2?'windows':'mac',session:'main',id:i+1,position:i===2?0:i,name,panes:[{pane_id:i+1,is_plugin:false,tab_position:i===2?0:i}]}));
     await page.addInitScript(()=>{window.setInterval=()=>0;});
@@ -18,7 +18,8 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
       const json=value=>route.fulfill({contentType:'application/json',body:JSON.stringify(value)});
       if(path==='/api/health')return json({commit:'abc123def',commit_date:'2026-10-04'});
       if(path==='/api/hosts')return json([{id:'mac',name:'Mac'},{id:'windows',name:'Windows'}]);
-      if(path.startsWith('/api/hosts/'))return json({id:path.split('/').at(-1),name:path.endsWith('/mac')?'Mac':'Windows',sessions:[{name:'main',web_clients_allowed:true}]});
+      if(path.startsWith('/api/hosts/'))return json({id:path.split('/').at(-1),name:path.endsWith('/mac')?'Mac':'Windows',
+        ...(hostUnavailable&&path.endsWith('/windows')?{error:'Host unavailable'}:{sessions:[{name:'main',web_clients_allowed:true}]})});
       if(path==='/api/attention')return json({tabs,panes:working?[{host:'mac',session:'main',pane_id:1,state:'working'}]:[],errors:unavailable?[{host:'windows',session:'main'}]:[]});
       if(path.startsWith('/hosts/')){
         // The top machine's terminal answers last; the first tab must still be selected.
@@ -27,6 +28,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
         return route.fulfill({contentType:'text/html',body:`<style>body{background:#0e1117;color:#d2dbeb;font:14px/1.7 monospace;padding:20px}input{margin-top:40px;background:#202633;color:inherit;border:1px solid #3d4b60;padding:14px;width:90%}</style><div id="terminal"><p>Switchboard terminal fixture</p><p>Working on the selected task…</p><input id="terminal-input" aria-label="Terminal input"></div><script>
           const panes=${JSON.stringify(panes)};let active=panes[0],selection='',selectionCallback;
           const input=document.querySelector('input');
+          addEventListener('focus',()=>input.focus());
           window.term={element:document.querySelector('#terminal'),textarea:input,options:{},getSelection:()=>selection,clearSelection(){selection='';selectionCallback?.()},
             _core:{_selectionService:{shouldForceSelection:()=>false}},onSelectionChange(fn){selectionCallback=fn;return{dispose(){}}},parser:{registerOscHandler(){return{dispose(){}}}}};
           window.ClipboardAddon={ClipboardAddon:class{}};
@@ -104,6 +106,39 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.equal(await frame.locator('#terminal-input').inputValue(),'keep typing');
     assert.match(await page.locator('#tabs .tab-select').nth(2).getAttribute('aria-label'),/Status unavailable/);
     assert.equal(await page.locator('#tabs .star.unavailable').count(),1);
+    // Dismissed outages stay quiet through polls and partial recovery, without hiding new errors.
+    hostUnavailable=true;await page.evaluate(()=>refresh());
+    const status=page.locator('#status'),dismiss=page.getByRole('button',{name:'Dismiss notification',exact:true});
+    assert.equal(await status.isVisible(),true);
+    assert.match(await status.textContent(),/Windows: Host unavailable/);
+    assert.match(await status.textContent(),/Windows: attention status unavailable/);
+    await dismiss.click();assert.equal(await status.isHidden(),true);
+    assert.equal(await frame.locator('#terminal-input').evaluate(e=>document.activeElement===e),true);
+    assert.equal(await page.locator('iframe.active').evaluate(e=>document.activeElement===e),true);
+    await page.keyboard.type(' after dismiss');
+    assert.equal(await frame.locator('#terminal-input').inputValue(),'keep typing after dismiss');
+    await page.evaluate(async()=>{await refresh();await refreshAttention();});
+    assert.equal(await status.isHidden(),true);
+    assert.equal(await page.locator('#tabs .star.unavailable').count(),1);
+    unavailable=false;await page.evaluate(()=>refreshAttention());
+    assert.equal(await status.isHidden(),true);
+    unavailable=true;await page.evaluate(()=>refreshAttention());
+    assert.equal(await status.isVisible(),true,'A new warning is not hidden by the dismissed host warning');
+    assert.match(await status.textContent(),/attention status unavailable/);
+    assert.doesNotMatch(await status.textContent(),/Host unavailable/);
+    await dismiss.click();await page.evaluate(()=>refreshAttention());
+    assert.equal(await status.isHidden(),true);
+    await page.evaluate(()=>setStatus('Fixture new error',true));
+    assert.equal(await status.isVisible(),true);assert.match(await status.textContent(),/Fixture new error/);
+    assert.doesNotMatch(await status.textContent(),/Host unavailable/);
+    await dismiss.click();await page.evaluate(()=>render());
+    assert.equal(await status.isHidden(),true);
+    hostUnavailable=false;await page.evaluate(()=>refresh());
+    hostUnavailable=true;await page.evaluate(()=>refresh());
+    assert.equal(await status.isVisible(),true,'A new outage after recovery is shown again');
+    unavailable=true;await page.evaluate(()=>refreshAttention());
+    await dismiss.focus();await page.keyboard.press('Enter');
+    assert.equal(await status.isHidden(),true);
     await page.locator('#tab-search').fill('orchestrator');assert.equal(await page.locator('#tabs .tab-select').count(),1);
     await page.locator('#tab-search').fill('');assert.deepEqual(await order(),names);
     await page.locator('#sidebar-resize').focus();await page.keyboard.press('ArrowLeft');
@@ -112,7 +147,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     await page.locator('#tabs .tab-select').nth(2).dragTo(page.locator('#tabs .tab-select').nth(0),{targetPosition:{x:20,y:5}});
     const reordered=['ssb orchestrator','switchboard','Online shopping'];
     assert.deepEqual(await order(),reordered);
-    unavailable=false;await page.reload();await page.waitForFunction(()=>document.querySelectorAll('#tabs .tab-select').length===3);
+    unavailable=false;hostUnavailable=false;await page.reload();await page.waitForFunction(()=>document.querySelectorAll('#tabs .tab-select').length===3);
     assert.equal(await page.locator('#sidebar-resize').getAttribute('aria-valuenow'),'222');
     assert.deepEqual(await order(),reordered);
     await page.setViewportSize({width:390,height:844});
@@ -124,6 +159,12 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.equal(await page.evaluate(()=>document.activeElement.id),'sidebar-toggle');
     await page.locator('#sidebar-toggle').click();
     assert.equal(await page.locator('#archive').isVisible(),false);
+    hostUnavailable=true;unavailable=true;await page.evaluate(async()=>{await refresh();await refreshAttention();});
+    const bounds=await status.boundingBox();
+    assert.ok(bounds&&bounds.x>=0&&bounds.x+bounds.width<=390,'The warning and dismiss button fit on mobile');
+    await dismiss.click();await page.evaluate(()=>refreshAttention());
+    assert.equal(await status.isHidden(),true);
+    hostUnavailable=false;unavailable=false;await page.evaluate(async()=>{await refresh();await refreshAttention();});
     if(process.env.SWITCHBOARD_UX_SCREENSHOTS)await page.screenshot({path:process.env.SWITCHBOARD_UX_SCREENSHOTS+'/mobile.png'});
     // A background tab changing attention must never insert a summary row,
     // move scrolled tab rows, resize the terminal, or steal keyboard focus.
