@@ -715,6 +715,7 @@ function recordTerminalDiagnostic(entry,type,diagnostic){
     'render_tracking','first_render_ms','last_render_ms','render_events','max_render_lag_ms','render_pending','first_animation_ms','last_animation_ms','max_animation_lag_ms','animation_pending','first_quiet_ms','late_frames','hidden_at_start','document_hidden','browser_focused','viewport_size_changes','first_native_cols','first_native_rows','min_native_cols','min_native_rows','max_native_cols','max_native_rows','xterm_cols','buffer_scroll_events','line_feed_events','wheel_events','xterm_size_changes','first_xterm_cols','first_xterm_rows','min_xterm_cols','min_xterm_rows','max_xterm_cols','max_xterm_rows','clipped_bottom_rows','max_clipped_bottom_rows',
     'control_tracking','focus_commands','terminal_metrics','cell_size_changes','first_cell_width_px','first_cell_height_px','last_cell_width_px','last_cell_height_px','min_cell_width_px','min_cell_height_px','max_cell_width_px','max_cell_height_px']:
     type==='new-tab'?['request_id','outcome','elapsed_ms','delivery_ms','sent_ms','pane_id','control_socket']:
+    type==='terminal-load'?['outcome','elapsed_ms','page_ms','socket_ms','frame_ms','render_ms','visible']:
     ['pane_id','is_plugin','shift','ctrl','alt','meta','repeat','held_ms','released_ms'];
   const body={host:entry.host};
   for(const field of fields){const value=diagnostic[field];if(value===null||typeof value==='boolean'||typeof value==='string'&&field==='outcome'||typeof value==='number'&&Number.isFinite(value)&&value>=0)body[field]=value;}
@@ -770,6 +771,8 @@ window.addEventListener('message',event=>{
     setStatus(event.data.message || 'That terminal is unavailable. Choose another tab.',true);
   }else if(event.data?.type==='zellij-new-tab-failed'){
     failNewTab(entry,event.data.request_id,event.data.message);
+  }else if(event.data?.type==='zellij-load-diagnostic'){
+    recordTerminalDiagnostic(entry,'terminal-load',event.data.diagnostic);
   }else if(event.data?.type==='zellij-new-tab-diagnostic'){
     recordTerminalDiagnostic(entry,'new-tab',event.data.diagnostic);
   }else if(event.data?.type==='zellij-switch-diagnostic'){
@@ -1008,7 +1011,7 @@ async function loadLogs(){
       const group=element('section','log-computer','');group.append(element('h4','',computer.name));
       const entries=computer.error?[]:computer.entries||[];
       // Timing samples outnumber failures; list failures and fold the samples away.
-      const timing=entry=>/^(Terminal (transport|switch|viewport|control|scrolling|new tab ready)|Browser Shift\+Enter|Browser tab resumed) /.test(entry.message);
+      const timing=entry=>/^(Terminal (transport|switch(?! slow)|viewport|control|scrolling|new tab ready|load ready)|Browser Shift\+Enter|Browser tab resumed) /.test(entry.message);
       const errors=entries.filter(entry=>!timing(entry)),samples=entries.filter(timing);
       if(computer.error)group.append(element('p','log-note',computer.error));
       else if(!errors.length)group.append(element('p','log-note','No recent errors'));
