@@ -1,6 +1,7 @@
-# Copilot CLI 1.0.98. Match the live boxed input, not chevrons in the transcript.
+# Copilot CLI 1.0.98 (prompt) and 1.0.105 (question form).
+# Match the live boxed input, not chevrons in the transcript.
 # Patterns match the lowercased screen, as in the other agent rule files.
-version = "2026-10-16"
+version = "2026-10-28"
 
 command = ['\bcopilot(?:\.(?:cmd|exe))?\b']
 title = [' - github copilot$']
@@ -16,7 +17,10 @@ footer = ['/ commands[ \t]*·[ \t]*\? help\b']
 # create review notifications instead.
 completion = []
 approval = []
-input = []
+input = [[
+  '(?m)^[ \t]*copilot needs information\.[ \t]*\r?$',
+  '\benter accept\b[\s·]+(?:tab next[\s·]+)?ctrl\+d decline[\s·]+esc cancel\b[\s─]*\z',
+]]
 
 [working]
 title = []

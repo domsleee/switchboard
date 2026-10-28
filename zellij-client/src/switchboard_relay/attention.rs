@@ -1044,6 +1044,61 @@ echo [{"id":1,"tab_id":4,"tab_position":0,"tab_name":"T","title":"x","pane_comma
     }
 
     #[test]
+    fn copilot_question_form_needs_input_until_answered() {
+        let pane = json!({
+            "pane_command":r"cmd.exe /c C:\Users\user\AppData\Roaming\npm\copilot.cmd --yolo",
+            "title":"switchboard - Tracing the update downtime - GitHub Copilot"
+        });
+        // Copilot CLI 1.0.105, captured from the tracing pane.
+        let screen = "○ Asking user Waiting for response\n\
+            ────────────────────────────────────────────────────────────────\n\
+             Copilot needs information.\n\
+             The private checks recovered in about 1 second for the services and 3 seconds for a working terminal. I haven’t reproduced the 15-second pause. What stops working during it?\n\
+            \n\
+              What you see   Which computer is updating?\n\
+            \n\
+             What you see:\n\
+             ❯ The terminal stops responding\n\
+               A computer says Offline, but the terminal still works\n\
+               The whole Switchboard page is unavailable\n\
+               Not sure\n\
+               Other (type your answer)\n\
+            \n\
+             ↑/↓ select · enter accept · tab next · ctrl+d decline · esc cancel\n\
+            ────────────────────────────────────────────────────────────────";
+        for form in [
+            screen.to_owned(),
+            screen.replace('\n', "\r\n"),
+            screen.replace(" · tab next · ", "\n tab next · "),
+        ] {
+            assert_eq!(
+                classify(&pane, &form),
+                json!({"state":"input","agent":"copilot","token":"question"})
+            );
+        }
+        for incomplete in [
+            screen.replace("Copilot needs information.", "Question answered."),
+            screen.replace("enter accept", "answer accepted"),
+        ] {
+            assert_eq!(classify(&pane, &incomplete)["state"], "unknown");
+        }
+        let ready = "╻▄▄▄▄▄▄▄▄\n┃\n╹▀▀▀▀▀▀▀▀\nInteractive · Allow All · / commands · ? help";
+        assert_eq!(
+            classify(&pane, &format!("{screen}\n{ready}"))["state"],
+            "ready",
+            "an answered question in the transcript is not live"
+        );
+        let working = ready.replace(
+            "Interactive · Allow All · / commands · ? help",
+            "◉ Working · 14.8 KiB esc interrupt       GPT-6.1 Sol",
+        );
+        assert_eq!(
+            classify(&pane, &format!("{screen}\n{working}"))["state"],
+            "working"
+        );
+    }
+
+    #[test]
     fn copilot_working_to_ready_notifies_once_without_a_completion_line() {
         let pane = json!({"pane_command":"copilot","title":"Task - GitHub Copilot"});
         let ready = "╻▄▄▄▄▄▄▄▄\n┃\n╹▀▀▀▀▀▀▀▀\nInteractive · Allow All · / commands · ? help";
