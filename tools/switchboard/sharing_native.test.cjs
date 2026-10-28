@@ -27,8 +27,17 @@ function processes() {
         return match && {pid:Number(match[1]), ppid:Number(match[2]), started:match[3], command:match[4]};
     }).filter(Boolean);
 }
+// list-panes can fail transiently while clients are evicted; log why, then retry.
 function paneIds(index) {
-    return JSON.parse(action(index, 'list-panes','--json','--all')).map(pane => [pane.is_plugin,pane.id,pane.tab_id]).sort();
+    for (let attempt = 1; ; attempt++) {
+        try {
+            return JSON.parse(action(index, 'list-panes','--json','--all')).map(pane => [pane.is_plugin,pane.id,pane.tab_id]).sort();
+        } catch (error) {
+            if (attempt === 3) throw error;
+            console.error(`list-panes attempt ${attempt} failed: ${String(error.stderr || error.message).trim()}`);
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+        }
+    }
 }
 async function port() {
     const server = net.createServer();
