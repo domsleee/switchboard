@@ -820,6 +820,16 @@ echo [{"id":1,"tab_id":4,"tab_position":0,"tab_name":"T","title":"x","pane_comma
         assert_eq!(classify(&claude, &idle)["state"], "ready");
         let agents = format!("{idle}\n\n  ⏺ main\n  ◯ fork  Writing measure.cjs freeze/reload experiment     4m 19s · ↓ 461.3k tokens");
         assert_eq!(classify(&claude, &agents)["state"], "working");
+        // A Monitor keeps the turn alive after the reply ends, above or below the prompt.
+        let monitor = idle.replace(
+            "Baked for 4m 5s",
+            "Baked for 4m 5s · 1 monitor still running",
+        );
+        assert_eq!(classify(&claude, &monitor)["state"], "working");
+        assert_eq!(
+            classify(&claude, &format!("{idle} · 1 monitor still running"))["state"],
+            "working"
+        );
         let titled = json!({"pane_command":"claude","title":"◐ Switchboard logs review"});
         assert_eq!(classify(&titled, &idle)["state"], "working");
         assert_eq!(
