@@ -2525,8 +2525,23 @@ pub(crate) fn route_thread_main(
                                     },
                                     Err(e) => {
                                         log::error!("{}", e);
+                                        // The unblock below ends a CLI client with success, so
+                                        // without this it would exit 0 with no output.
+                                        if is_cli_client {
+                                            send_error_to_client(
+                                                Some(cli_client_id),
+                                                Some(&os_input),
+                                                &format!("{e:#}"),
+                                            );
+                                        }
                                     },
                                 }
+                            } else if is_cli_client {
+                                send_error_to_client(
+                                    Some(cli_client_id),
+                                    Some(&os_input),
+                                    "Session is not ready for actions",
+                                );
                             }
                         },
                         ClientToServerMsg::TerminalResize { new_size } => {
