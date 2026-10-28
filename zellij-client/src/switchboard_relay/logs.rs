@@ -23,6 +23,17 @@ fn diagnostic(message: &str) -> bool {
     message.starts_with("Terminal ") || message.starts_with("Browser tab ")
 }
 
+/// Eviction order: routine samples, then slow samples, then failures.
+fn rank(message: &str) -> u8 {
+    if !diagnostic(message) {
+        2
+    } else if message.contains(" slow ") {
+        1
+    } else {
+        0
+    }
+}
+
 impl Log {
     /// Returns true when the entry is new rather than a repeat of a known failure.
     fn push(&self, source: &str, message: &str, time: u64) -> bool {
@@ -35,12 +46,14 @@ impl Log {
             .and_then(|i| entries.remove(i))
             .map_or(1, |e| e["count"].as_u64().unwrap_or(1) + 1);
         entries.push_back(json!({"time":time,"source":source,"message":message,"count":count}));
-        // Samples give way first, so a busy terminal cannot push failures out.
+        // Routine samples give way first, then slow ones, so a busy terminal
+        // pushes out neither failures nor the slow moments worth investigating.
         while entries.len() > CAPACITY {
             let oldest = entries
                 .iter()
-                .position(|e| e["message"].as_str().is_some_and(diagnostic))
-                .unwrap_or(0);
+                .enumerate()
+                .min_by_key(|(i, e)| (rank(e["message"].as_str().unwrap_or("")), *i))
+                .map_or(0, |(i, _)| i);
             entries.remove(oldest);
         }
         self.1.store(true, Ordering::Relaxed);
@@ -364,10 +377,21 @@ impl SwitchDiagnostic {
         if !slow && !oversized && !self.expected_render {
             return Some(String::new());
         }
+        // Render lag alone is not marked: a hidden terminal defers drawing for minutes.
+        let noticeable = [
+            self.ack_ms,
+            self.first_parse_ms,
+            self.first_render_ms,
+            self.first_animation_ms,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|t| t > 500)
+            || self.max_animation_lag_ms > 500;
         let timing = |t: Option<u32>| t.map_or_else(|| "-".into(), |t| t.to_string());
         Some(format!(
-            "Terminal switch {} pane={}{} focus={} t={}ms ack={} frame={}/{} parse={}/{} render={}/{} raf={}/{} lag={}/{}/{}ms frames={} bytes={} queue={} quiet={} late={}",
-            self.outcome, if self.is_plugin { "plugin:" } else { "" }, self.pane_id, self.focus_id,
+            "Terminal switch {}{} pane={}{} focus={} t={}ms ack={} frame={}/{} parse={}/{} render={}/{} raf={}/{} lag={}/{}/{}ms frames={} bytes={} queue={} quiet={} late={}",
+            if noticeable { "slow " } else { "" }, self.outcome, if self.is_plugin { "plugin:" } else { "" }, self.pane_id, self.focus_id,
             self.elapsed_ms, timing(self.ack_ms), timing(self.first_frame_ms),timing(self.last_frame_ms),timing(self.first_parse_ms),timing(self.last_parse_ms),
             timing(self.first_render_ms),timing(self.last_render_ms),timing(self.first_animation_ms),timing(self.last_animation_ms),
             self.max_parse_lag_ms,self.max_render_lag_ms,self.max_animation_lag_ms,self.frames,self.bytes,self.writes_pending,timing(self.first_quiet_ms),self.late_frames,
@@ -588,6 +612,50 @@ impl NewTabDiagnostic {
     }
 }
 
+/// First load of a terminal page, timed from navigation in the terminal frame.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LoadDiagnostic {
+    host: String,
+    outcome: String,
+    elapsed_ms: u32,
+    page_ms: Option<u32>,
+    socket_ms: Option<u32>,
+    frame_ms: Option<u32>,
+    render_ms: Option<u32>,
+    visible: bool,
+}
+
+impl LoadDiagnostic {
+    fn message(&self) -> Option<String> {
+        if self.outcome != "ready"
+            || [self.page_ms, self.socket_ms, self.frame_ms, self.render_ms]
+                .into_iter()
+                .flatten()
+                .chain([self.elapsed_ms])
+                .any(|t| t > 86_400_000)
+        {
+            return None;
+        }
+        let timing = |t: Option<u32>| t.map_or_else(|| "-".into(), |t| t.to_string());
+        let outcome = if self.elapsed_ms > 500 {
+            "slow"
+        } else {
+            "ready"
+        };
+        Some(format!(
+            "Terminal load {} t={}ms page={}ms socket={}ms frame={}ms render={}ms visible={}",
+            outcome,
+            self.elapsed_ms,
+            timing(self.page_ms),
+            timing(self.socket_ms),
+            timing(self.frame_ms),
+            timing(self.render_ms),
+            self.visible,
+        ))
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EnterDiagnostic {
@@ -650,6 +718,21 @@ pub(super) async fn new_tab(State(state): State<RelayState>, request: Request) -
     StatusCode::NO_CONTENT
 }
 
+pub(super) async fn terminal_load(State(state): State<RelayState>, request: Request) -> StatusCode {
+    let diagnostic: LoadDiagnostic = match diagnostic_body(request).await {
+        Ok(d) => d,
+        Err(status) => return status,
+    };
+    let Some(host) = state.host(&diagnostic.host) else {
+        return StatusCode::NOT_FOUND;
+    };
+    let Some(message) = diagnostic.message() else {
+        return StatusCode::BAD_REQUEST;
+    };
+    record(&host.config.name, &message);
+    StatusCode::NO_CONTENT
+}
+
 pub(super) async fn modified_enter(
     State(state): State<RelayState>,
     request: Request,
@@ -691,6 +774,7 @@ mod tests {
         log.push("Windows", "Host is down", 1);
         log.push("Windows", "Host is down", 2);
         log.push("AP", "Inviter rejected token=abc", 3);
+        log.push("Mac", "Terminal switch slow settled t=1400ms", 4);
         for time in 0..CAPACITY as u64 * 2 {
             log.push(
                 "Mac",
@@ -702,6 +786,9 @@ mod tests {
         assert_eq!(entries.len(), CAPACITY);
         let failure = |e: &&Value| !e["message"].as_str().unwrap().starts_with("Terminal ");
         assert_eq!(entries.iter().filter(failure).count(), 2);
+        assert!(entries
+            .iter()
+            .any(|e| e["message"] == "Terminal switch slow settled t=1400ms"));
         let saved = log.saved().expect("changes are pending");
         assert!(log.saved().is_none(), "saved once until the next change");
         let restarted = Log(
@@ -832,6 +919,51 @@ mod tests {
         assert_eq!(diagnostic.message(), None);
         sample["contents"] = json!("private terminal output");
         assert!(serde_json::from_value::<SwitchDiagnostic>(sample).is_err());
+    }
+
+    #[test]
+    fn noticeable_switch_and_load_delays_are_marked_slow() {
+        let mut sample = switch_sample();
+        assert!(serde_json::from_value::<SwitchDiagnostic>(sample.clone())
+            .unwrap()
+            .message()
+            .unwrap()
+            .starts_with("Terminal switch slow settled "));
+        sample["first_parse_ms"] = json!(40);
+        sample["max_parse_lag_ms"] = json!(20);
+        sample["max_render_lag_ms"] = json!(216270);
+        assert!(serde_json::from_value::<SwitchDiagnostic>(sample.clone())
+            .unwrap()
+            .message()
+            .unwrap()
+            .starts_with("Terminal switch settled "));
+        sample["max_animation_lag_ms"] = json!(1470);
+        assert!(serde_json::from_value::<SwitchDiagnostic>(sample)
+            .unwrap()
+            .message()
+            .unwrap()
+            .starts_with("Terminal switch slow settled "));
+        let load = |elapsed: u32| {
+            serde_json::from_value::<LoadDiagnostic>(
+                json!({"host":"mac","outcome":"ready","elapsed_ms":elapsed,
+                "page_ms":90,"socket_ms":150,"frame_ms":200,"render_ms":elapsed,"visible":true}),
+            )
+            .unwrap()
+            .message()
+            .unwrap()
+        };
+        assert_eq!(load(240), "Terminal load ready t=240ms page=90ms socket=150ms frame=200ms render=240ms visible=true");
+        assert!(load(1800).starts_with("Terminal load slow t=1800ms "));
+        let bad = json!({"host":"mac","outcome":"token=x","elapsed_ms":1,"visible":true});
+        assert_eq!(
+            serde_json::from_value::<LoadDiagnostic>(bad)
+                .unwrap()
+                .message(),
+            None
+        );
+        let contents =
+            json!({"host":"mac","outcome":"ready","elapsed_ms":1,"visible":true,"contents":"x"});
+        assert!(serde_json::from_value::<LoadDiagnostic>(contents).is_err());
     }
 
     #[test]

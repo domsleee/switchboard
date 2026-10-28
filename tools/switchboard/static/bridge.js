@@ -40,6 +40,16 @@
       clipped_bottom_rows:clip&&cellHeight?Math.round(Number(clip[1])/cellHeight):0,
       document_hidden:document.visibilityState==='hidden',browser_focused:parent.document.hasFocus()};});
   window.addEventListener('wheel',()=>diagnostics?.wheel(),{capture:true,passive:true});
+  // First load of this page; performance.now() counts from this frame's navigation.
+  const load={socket_ms:null,frame_ms:null,done:false,visible:document.visibilityState==='visible'&&!!window.frameElement?.classList.contains('active')};
+  function reportLoad(){
+    if(load.done)return;
+    load.done=true;
+    const now=Math.round(performance.now()),page=performance.getEntriesByType?.('navigation')?.[0];
+    parent.postMessage({type:'zellij-load-diagnostic',diagnostic:{outcome:'ready',elapsed_ms:now,
+      page_ms:page?Math.round(page.domContentLoadedEventEnd)||null:null,socket_ms:load.socket_ms,frame_ms:load.frame_ms,
+      render_ms:now,visible:load.visible}},location.origin);
+  }
   let shiftPressedAt=null,shiftReleasedAt=null;
   window.addEventListener('keyup',event=>{if(event.key==='Shift'){shiftPressedAt=null;shiftReleasedAt=performance.now();}},true);
   window.addEventListener('blur',()=>{shiftPressedAt=null;shiftReleasedAt=null;});
@@ -403,6 +413,7 @@
       diagnostics?.hook(term);
       hookedTerm = term;
       term.onRender(updateChrome);
+      term.onRender(()=>{if(load.frame_ms!==null)reportLoad();});
       term.onResize(updateChrome);
       new MutationObserver(updateChrome).observe(document.body,{attributes:true,attributeFilter:['class']});
     }
@@ -460,7 +471,8 @@
       super(...args);
       if(String(args[0]).includes('/ws/terminal')){
         terminalSocket=this;
-        this.addEventListener('message',event=>{if(terminalSocket!==this)return;diagnostics?.hook(window.term);diagnostics?.frame(event.data);});
+        this.addEventListener('open',()=>{load.socket_ms??=Math.round(performance.now());});
+        this.addEventListener('message',event=>{if(terminalSocket!==this)return;load.frame_ms??=Math.round(performance.now());diagnostics?.hook(window.term);diagnostics?.frame(event.data);});
         this.addEventListener('close',()=>{if(terminalSocket===this)terminalSocket=null;});
       }
       if (String(args[0]).includes('/ws/control')) {
