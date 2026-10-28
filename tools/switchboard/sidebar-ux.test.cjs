@@ -188,7 +188,10 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     await page.waitForFunction(()=>document.querySelector('iframe.active')?.contentDocument?.activeElement?.id==='terminal-input');
     assert.equal(await page.locator('#sidebar-resize').getAttribute('aria-valuenow'),'222');
     assert.deepEqual(await order(),reordered);
+    // A late breakpoint change would close the sidebar Ctrl+K opens below.
+    await page.evaluate(()=>{window.breakpointCrossed=new Promise(resolve=>mobileSidebar.addEventListener('change',resolve,{once:true}));});
     await page.setViewportSize({width:390,height:844});
+    await page.evaluate(()=>window.breakpointCrossed);
     await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
     assert.equal(await page.locator('#sidebar').isVisible(),false);
     await page.locator('#sidebar-toggle').focus();await page.keyboard.press('Control+k');assert.equal(await page.locator('#sidebar').isVisible(),true);
@@ -211,7 +214,11 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     await page.evaluate(()=>{for(const key of Object.keys(ready))delete ready[key];});
     await page.evaluate(()=>refreshAttention());
     for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
+      // Each size crosses the mobile breakpoint, whose change event closes the sidebar.
+      // It can land after two frames, so wait for it before opening the sidebar by hand.
+      await page.evaluate(()=>{window.breakpointCrossed=new Promise(resolve=>mobileSidebar.addEventListener('change',resolve,{once:true}));});
       await page.setViewportSize(viewport);
+      await page.evaluate(()=>window.breakpointCrossed);
       await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
       await page.evaluate(()=>{document.body.classList.remove('sidebar-collapsed');document.body.classList.add('sidebar-open');});
       const target=page.locator('#tabs .tab-select').nth(5);
