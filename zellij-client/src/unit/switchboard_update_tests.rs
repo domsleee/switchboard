@@ -110,7 +110,7 @@ struct Harness {
     _dir: tempfile::TempDir,
     root: PathBuf,
     port: u16,
-    /// Use the real update_local.sh with a fake launchctl.
+    /// Use the real update_local.sh with a fake launchctl and systemctl.
     launchd: bool,
     updater: Updater,
 }
@@ -171,8 +171,17 @@ impl Harness {
         };
         harness.write_helpers(&harness.root.join("helpers"), "installed");
         if launchd {
-            // Starts web and relay the way the dev.zellij.switchboard job does.
+            // Start web and relay the way the dev.zellij.switchboard job and
+            // the switchboard.service unit do.
             let installed = installed.display();
+            let restart = format!(
+                r#"kill "$(cat "$root/serve.pid" 2>/dev/null)" 2>/dev/null
+    cp '{installed}' "$root/running"
+    '{installed}' web --status --timeout 2 || '{installed}' web --daemonize
+    (SWITCHBOARD_FAKE_LAUNCHD=1 exec '{installed}' serve --port {port}) >/dev/null 2>&1 &
+    echo $! > "$root/serve.pid""#
+            );
+            let root = harness.root.display();
             write_executable(
                 &harness.root.join("fakebin/launchctl"),
                 &format!(
@@ -181,15 +190,22 @@ root='{root}'
 echo "launchctl $*" >> "$root/events"
 case "$1" in
   print) echo "arguments = {{ /bin/sh -c exec {installed} serve --host-config hosts.json --port {port} }}" ;;
-  kickstart)
-    kill "$(cat "$root/serve.pid" 2>/dev/null)" 2>/dev/null
-    cp '{installed}' "$root/running"
-    '{installed}' web --status --timeout 2 || '{installed}' web --daemonize
-    (SWITCHBOARD_FAKE_LAUNCHD=1 exec '{installed}' serve --port {port}) >/dev/null 2>&1 &
-    echo $! > "$root/serve.pid" ;;
+  kickstart) {restart} ;;
 esac
-"#,
-                    root = harness.root.display(),
+"#
+                ),
+            );
+            write_executable(
+                &harness.root.join("fakebin/systemctl"),
+                &format!(
+                    r#"#!/bin/bash
+root='{root}'
+echo "systemctl $*" >> "$root/events"
+case "$2" in
+  cat) echo 'ExecStart=/bin/sh -c "exec {installed} serve --host-config hosts.json --port {port}"' ;;
+  restart) {restart} ;;
+esac
+"#
                 ),
             );
         }
@@ -743,22 +759,27 @@ mod orchestration {
         assert!(state.get("error").is_none());
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[serial]
     #[test]
-    fn mac_restart_goes_through_launchd_only_and_rolls_back_through_it() {
+    fn restart_goes_through_the_service_manager_only_and_rolls_back_through_it() {
         if Command::new("jq").arg("--version").output().is_err() {
             eprintln!("skipped: jq is not installed");
             return;
         }
         let harness = Harness::build(false, true);
-        let launchctl = harness.root.join("fakebin/launchctl");
-        Command::new(&launchctl)
-            .args(["kickstart", "-k", "gui/0/initial"])
+        let (manager, restart) = if cfg!(target_os = "linux") {
+            ("systemctl", ["--user", "restart", "switchboard.service"])
+        } else {
+            ("launchctl", ["kickstart", "-k", "gui/0/initial"])
+        };
+        Command::new(harness.root.join("fakebin").join(manager))
+            .args(restart)
             .status()
             .unwrap();
+        let restart = format!("{manager} {} {}", restart[0], restart[1]);
         let events = || harness.read("events");
-        let kickstarts = || events().matches("launchctl kickstart -k gui/").count();
+        let kickstarts = || events().matches(&restart).count();
         harness.publish(&full('b'), 5, "");
         harness.updater.run().unwrap();
         assert_eq!(harness.state()["commit"], full('b'));
@@ -766,20 +787,20 @@ mod orchestration {
         let log = events();
         let update = log.find("installed update_local.sh").unwrap();
         let stop = update + log[update..].find("direct web --stop").unwrap();
-        assert!(stop < update + log[update..].find("launchctl kickstart -k").unwrap());
+        assert!(stop < update + log[update..].find(&restart).unwrap());
         assert_eq!(kickstarts(), 2);
 
         harness.publish(&full('c'), 6, "broken");
         let error = harness.updater.run().unwrap_err();
         assert!(error.to_string().contains("did not come back"), "{error:#}");
-        // update_local.sh restored the previous build and restarted it via launchd.
+        // update_local.sh restored the previous build and restarted it via the service manager.
         assert!(harness.read("installed/zellij").contains("commit=bbbbbbb"));
         assert!(harness.read("running").contains("commit=bbbbbbb"));
         assert_eq!(kickstarts(), 4);
         assert!(harness.state().get("pending").is_none());
         assert!(
             !events().contains("direct serve"),
-            "relay started outside launchd:\n{}",
+            "relay started outside the service manager:\n{}",
             events()
         );
     }

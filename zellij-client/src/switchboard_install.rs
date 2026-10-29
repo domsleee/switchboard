@@ -2,7 +2,7 @@
 //! install, then its background services. Re-running is safe and keeps
 //! existing files.
 use super::*;
-#[cfg(any(target_os = "macos", all(unix, test)))]
+#[cfg(any(target_os = "macos", target_os = "linux", all(unix, test)))]
 use serde_json::Value;
 
 /// Helpers the services and the updater run, shipped inside this executable so
@@ -22,6 +22,11 @@ const HELPERS: &[(&str, &str)] = &[
         include_str!("../../tools/switchboard/install_service.py"),
     ),
 ];
+#[cfg(target_os = "linux")]
+const HELPERS: &[(&str, &str)] = &[(
+    "update_local.sh",
+    include_str!("../../tools/switchboard/update_local.sh"),
+)];
 #[cfg(windows)]
 const HELPERS: &[(&str, &str)] = &[
     (
@@ -48,8 +53,8 @@ const HELPERS: &[(&str, &str)] = &[
 
 pub(super) fn install(binary: &Path) -> Result<()> {
     ensure!(
-        cfg!(any(target_os = "macos", windows)),
-        "Switchboard installs on macOS and Windows"
+        cfg!(any(target_os = "macos", target_os = "linux", windows)),
+        "Switchboard installs on macOS, Linux and Windows"
     );
     #[allow(deprecated)]
     let home = std::env::home_dir().context("No home directory")?;
@@ -132,7 +137,7 @@ fn computer_name() -> String {
 }
 
 /// Write each helper only when its content changed.
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn write_helpers(directory: &Path) -> Result<()> {
     fs::create_dir_all(directory)?;
     for (name, text) in HELPERS {
@@ -159,7 +164,7 @@ fn platform_install(home: &Path, binary: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 fn platform_install(_: &Path, _: &Path) -> Result<()> {
     unreachable!("checked in install")
 }
@@ -214,37 +219,17 @@ fn mac_jobs(
     let zellij = binary.to_string_lossy();
     let logs = home.join("Library/Logs");
     let log = |name: &str| logs.join(name).to_string_lossy().into_owned();
-    let join = |words: &[&str]| {
-        words
-            .iter()
-            .map(|w| shell_quote(w))
-            .collect::<Vec<_>>()
-            .join(" ")
-    };
     // Panes start $SHELL. Pin the login shell so an installing agent's shell never leaks in.
     let h = home.display();
     let env = serde_json::json!({
         "PATH": format!("{h}/.local/bin:{h}/.cargo/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"),
         "SHELL": shell,
     });
-    let startup = format!(
-        "{} >/dev/null 2>&1 || {{ {web_start}; }}",
-        join(&[&zellij, "web", "--status", "--timeout", "2"])
-    );
-    let hosts = home.join(".config/zellij/switchboard-hosts.json");
-    let relay = join(&[
-        &zellij,
-        "serve",
-        "--host-config",
-        &hosts.to_string_lossy(),
-        "--port",
-        "8090",
-    ]);
     vec![
         (
             "dev.zellij.switchboard",
             serde_json::json!({
-                "ProgramArguments": ["/bin/sh", "-c", format!("{startup}; exec {relay}")],
+                "ProgramArguments": ["/bin/sh", "-c", relay_command(home, binary, web_start)],
                 "WorkingDirectory": helpers, "KeepAlive": true,
                 // Unset means launchd throttles CPU and I/O, so keystroke echo stalls under load.
                 "ProcessType": "Interactive",
@@ -279,9 +264,131 @@ fn mac_jobs(
     ]
 }
 
+/// Starts the web server unless it is running, then runs the relay.
+#[cfg(any(target_os = "macos", target_os = "linux", all(unix, test)))]
+fn relay_command(home: &Path, binary: &Path, web_start: &str) -> String {
+    let zellij = binary.to_string_lossy();
+    let hosts = home.join(".config/zellij/switchboard-hosts.json");
+    format!(
+        "{} >/dev/null 2>&1 || {{ {web_start}; }}; exec {}",
+        shell_words(&[&zellij, "web", "--status", "--timeout", "2"]),
+        shell_words(&[
+            &zellij,
+            "serve",
+            "--host-config",
+            &hosts.to_string_lossy(),
+            "--port",
+            "8090"
+        ])
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn platform_install(home: &Path, binary: &Path) -> Result<()> {
+    let helpers = home.join(".local/share/switchboard/updater");
+    write_helpers(&helpers)?;
+    let units = home.join(".config/systemd/user");
+    fs::create_dir_all(&units)?;
+    let shell = nix::unistd::User::from_uid(nix::unistd::getuid())
+        .ok()
+        .flatten()
+        .map(|user| user.shell.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "/bin/bash".into());
+    let start = web_start_command(home, &binary.to_string_lossy());
+    let mut relay_changed = false;
+    for (name, text) in linux_units(home, binary, &helpers, &shell, &start) {
+        let path = units.join(name);
+        if fs::read(&path).ok().as_deref() != Some(text.as_bytes()) {
+            fs::write(&path, text)?;
+            relay_changed |= name == "switchboard.service";
+        }
+    }
+    let systemctl = |args: &[&str]| {
+        let mut command = Command::new("systemctl");
+        command.arg("--user").args(args);
+        run_command(command, Duration::from_secs(60)).map(drop)
+    };
+    systemctl(&["daemon-reload"])?;
+    systemctl(&["enable", "switchboard.service", "switchboard-update.timer"])?;
+    // An unchanged, running relay stays online.
+    systemctl(&[
+        if relay_changed { "restart" } else { "start" },
+        "switchboard.service",
+    ])?;
+    systemctl(&["start", "switchboard-update.timer"])?;
+    // Without lingering, systemd stops user services when the last login ends.
+    let mut linger = Command::new("loginctl");
+    linger.arg("enable-linger");
+    if let Err(error) = run_command(linger, Duration::from_secs(30)) {
+        eprintln!(
+            "Switchboard stops when you log out; keep it running with: sudo loginctl enable-linger $USER ({error:#})"
+        );
+    }
+    println!("Switchboard installed: http://127.0.0.1:8090");
+    Ok(())
+}
+
+/// systemd user units: the relay, and an updater every 15 minutes.
+#[cfg(any(target_os = "linux", all(unix, test)))]
+fn linux_units(
+    home: &Path,
+    binary: &Path,
+    helpers: &Path,
+    shell: &str,
+    web_start: &str,
+) -> Vec<(&'static str, String)> {
+    let zellij = binary.to_string_lossy();
+    let h = home.display();
+    // Panes start $SHELL. Pin the login shell so an installing agent's shell never leaks in.
+    let env = format!(
+        "Environment={}\nEnvironment={}\n",
+        systemd_quote(&format!(
+            "PATH={h}/.local/bin:{h}/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+        )),
+        systemd_quote(&format!("SHELL={shell}"))
+    );
+    let exec = |command: &str| systemd_quote(&command.replace('$', "$$"));
+    let relay = format!(
+        "[Unit]\nDescription=Switchboard relay and web server\n\n[Service]\n{env}\
+         WorkingDirectory={}\nExecStart=/bin/sh -c {}\nRestart=always\nRestartSec=2\n\
+         # Restarts stop only the relay: the web server and terminal sessions it started keep running.\n\
+         KillMode=process\n\n[Install]\nWantedBy=default.target\n",
+        helpers.display(),
+        exec(&relay_command(home, binary, web_start))
+    );
+    let update = format!(
+        "[Unit]\nDescription=Switchboard automatic update\n\n[Service]\nType=oneshot\n{env}\
+         ExecStart=/bin/sh -c {}\n\
+         # The web server and relay it restarts must outlive this run.\nKillMode=process\n",
+        exec(&format!(
+            "exec {} switchboard update --binary {}",
+            shell_quote(&zellij),
+            shell_quote(&zellij)
+        ))
+    );
+    let timer = "[Unit]\nDescription=Check for Switchboard updates every 15 minutes\n\n\
+                 [Timer]\nOnBootSec=2min\nOnUnitActiveSec=15min\n\n[Install]\nWantedBy=timers.target\n";
+    vec![
+        ("switchboard.service", relay),
+        ("switchboard-update.service", update),
+        ("switchboard-update.timer", timer.into()),
+    ]
+}
+
+/// One systemd unit-file word: quoted, with escapes and `%` specifiers kept literal.
+#[cfg(any(target_os = "linux", all(unix, test)))]
+fn systemd_quote(word: &str) -> String {
+    format!(
+        "\"{}\"",
+        word.replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('%', "%%")
+    )
+}
+
 /// Starts web daemon mode, first recovering an unshared session only while its
 /// original socket still exists (see native-web-recovery.json).
-#[cfg(any(target_os = "macos", all(unix, test)))]
+#[cfg(any(target_os = "macos", target_os = "linux", all(unix, test)))]
 fn web_start_command(home: &Path, zellij: &str) -> String {
     use std::os::unix::fs::MetadataExt;
     let normal = format!("{} web --daemonize", shell_quote(zellij));
@@ -311,8 +418,18 @@ fn web_start_command(home: &Path, zellij: &str) -> String {
     recovered().unwrap_or(normal)
 }
 
+/// Shell words joined into one POSIX command line.
+#[cfg(any(target_os = "macos", target_os = "linux", all(unix, test)))]
+fn shell_words(words: &[&str]) -> String {
+    words
+        .iter()
+        .map(|w| shell_quote(w))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// POSIX shell quoting, as Python's shlex.quote.
-#[cfg(any(target_os = "macos", all(unix, test)))]
+#[cfg(any(target_os = "macos", target_os = "linux", all(unix, test)))]
 fn shell_quote(word: &str) -> String {
     let safe = !word.is_empty()
         && word
@@ -486,6 +603,39 @@ mod tests {
             "/Users/me/Library/Logs/switchboard-menu.log"
         );
         assert_eq!(shell_quote("it's here"), r#"'it'"'"'s here'"#);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn systemd_units_restart_only_the_relay_and_update_every_15_minutes() {
+        let units = linux_units(
+            Path::new("/home/me"),
+            Path::new("/home/me/.cargo/bin/zellij"),
+            Path::new("/home/me/.local/share/switchboard/updater"),
+            "/usr/bin/nu",
+            "/home/me/.cargo/bin/zellij web --daemonize",
+        );
+        let unit = |name| &units.iter().find(|(n, _)| *n == name).unwrap().1;
+        let relay = unit("switchboard.service");
+        assert!(relay.contains(
+            "ExecStart=/bin/sh -c \"/home/me/.cargo/bin/zellij web --status --timeout 2 >/dev/null 2>&1 || \
+             { /home/me/.cargo/bin/zellij web --daemonize; }; exec /home/me/.cargo/bin/zellij serve \
+             --host-config /home/me/.config/zellij/switchboard-hosts.json --port 8090\"\n"
+        ));
+        for name in ["switchboard.service", "switchboard-update.service"] {
+            assert!(unit(name).contains("\nKillMode=process\n"), "{name}");
+            assert!(
+                unit(name).contains("Environment=\"SHELL=/usr/bin/nu\"\n"),
+                "{name}"
+            );
+        }
+        assert!(relay.contains("\nRestart=always\n"));
+        assert!(unit("switchboard-update.service").contains(
+            "ExecStart=/bin/sh -c \"exec /home/me/.cargo/bin/zellij switchboard update --binary /home/me/.cargo/bin/zellij\"\n"
+        ));
+        assert!(unit("switchboard-update.timer").contains("\nOnUnitActiveSec=15min\n"));
+        // systemd would otherwise expand these itself.
+        assert_eq!(systemd_quote(r#"a "b" \ 100%"#), r#""a \"b\" \\ 100%%""#);
     }
 
     #[cfg(unix)]
