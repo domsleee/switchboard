@@ -16,9 +16,12 @@ notified per build; the tag follows the build's commit. Only this repository's
 updaters installed before this change.
 
 The executable is the updater: `zellij switchboard update` (`--check` downloads
-and verifies only). The macOS LaunchAgent `dev.switchboard.update` and the
-Windows tray run it every 15 minutes; neither needs Python or the GitHub CLI.
-macOS also needs `jq` for `update_local.sh`. Windows checks stop when its tray
+and verifies only). The macOS LaunchAgent `dev.switchboard.update`, the Linux
+systemd user timer `switchboard-update.timer` and the Windows tray run it every
+15 minutes; none needs Python or the GitHub CLI. On Linux, `zellij switchboard
+install` also runs the relay as the user unit `switchboard.service` (logs:
+`journalctl --user -u switchboard -u switchboard-update`) and enables lingering
+so it survives logout. macOS and Linux also need `jq` and `curl` for `update_local.sh`. Windows checks stop when its tray
 exits; the Mac updater runs independently of the menu app. The updater reads
 the manifest over HTTPS first and installs only a run number newer than the last
 one it tried. Assets whose checksum does not match (normally a newer upload in

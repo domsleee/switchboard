@@ -2,7 +2,7 @@
 //!
 //! Only connection services (relay, web server, tray) are restarted; terminal
 //! engines keep running. Platform helpers shipped in the bundle do the
-//! process-preserving work: `update_local.sh` on macOS, the PowerShell release
+//! process-preserving work: `update_local.sh` on macOS and Linux, the PowerShell release
 //! and service helpers on Windows.
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use isahc::{
@@ -82,6 +82,7 @@ pub fn bundle_files(platform: &str) -> Result<&'static [&'static str]> {
             "update_local.sh",
             "zellij",
         ],
+        "linux-x86_64" | "linux-arm64" => &["update_local.sh", "zellij"],
         _ => bail!("Unsupported update platform {platform}"),
     })
 }
@@ -101,8 +102,12 @@ fn target_platform() -> Result<&'static str> {
         Ok("macos-arm64")
     } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
         Ok("macos-x86_64")
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        Ok("linux-x86_64")
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        Ok("linux-arm64")
     } else {
-        bail!("Automatic updates currently support Windows and macOS")
+        bail!("Automatic updates currently support Windows, macOS and Linux (x86_64, arm64)")
     }
 }
 

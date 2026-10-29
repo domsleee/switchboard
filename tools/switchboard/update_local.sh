@@ -1,5 +1,5 @@
 #!/bin/bash
-# Manual macOS updates. Never overwrite a live executable or stop a session server.
+# Manual macOS and Linux updates. Never overwrite a live executable or stop a session server.
 # By default the web server and relay are restarted onto the new executable.
 set -euo pipefail
 umask 077
@@ -7,7 +7,8 @@ umask 077
 usage() {
     echo "Usage: $0 [--binary-only] NEW_BINARY [INSTALLED_BINARY]" >&2
     echo "Default: ~/.cargo/bin/zellij. Requires jq. Restarts the web server and relay" >&2
-    echo "(launchd job dev.zellij.switchboard); --binary-only leaves running services alone." >&2
+    echo "(launchd job dev.zellij.switchboard, or systemd user unit switchboard.service on Linux);" >&2
+    echo "--binary-only leaves running services alone." >&2
     exit 2
 }
 # The environment form lets an updater that restarts services itself
@@ -15,11 +16,19 @@ usage() {
 binary_only=${SWITCHBOARD_UPDATE_BINARY_ONLY:-0}
 if [[ ${1:-} == --binary-only ]]; then binary_only=1; shift; fi
 [[ $# -ge 1 && $# -le 2 && ${1:-} != --* ]] || usage
-[[ $(uname -s) == Darwin ]] || { echo 'This updater supports macOS only.' >&2; exit 2; }
+case $(uname -s) in
+    Darwin) linux=false ;;
+    Linux) linux=true ;;
+    *) echo 'This updater supports macOS and Linux only.' >&2; exit 2 ;;
+esac
 command -v jq >/dev/null || { echo 'Install jq before updating.' >&2; exit 2; }
 # The web server and its sessions start panes with $SHELL; use the login shell,
 # not whatever shell ran this script (agents often run zsh or sh).
-login_shell=$(dscl . -read "/Users/$(id -un)" UserShell 2>/dev/null | sed -n 's/^UserShell: //p') || true
+if [[ $linux == true ]]; then
+    login_shell=$(getent passwd "$(id -un)" | cut -d: -f7) || true
+else
+    login_shell=$(dscl . -read "/Users/$(id -un)" UserShell 2>/dev/null | sed -n 's/^UserShell: //p') || true
+fi
 [[ -z $login_shell ]] || export SHELL=$login_shell
 candidate=$1
 installed=${2:-$HOME/.cargo/bin/zellij}
@@ -36,13 +45,27 @@ staged=''
 changed=false
 old_release=''
 releases=${SWITCHBOARD_RELEASES_DIR:-$HOME/.local/share/switchboard/releases}
-job="gui/$(id -u)/${SWITCHBOARD_LAUNCHD_LABEL:-dev.zellij.switchboard}"
+if [[ $linux == true ]]; then
+    job=${SWITCHBOARD_SYSTEMD_UNIT:-switchboard.service}
+    restart_job() { systemctl --user restart "$job"; }
+    describe_job() { systemctl --user cat "$job"; }
+    inspect="systemctl --user status $job"
+else
+    job="gui/$(id -u)/${SWITCHBOARD_LAUNCHD_LABEL:-dev.zellij.switchboard}"
+    restart_job() { launchctl kickstart -k "$job"; }
+    describe_job() { launchctl print "$job"; }
+    inspect="launchctl print $job"
+fi
 relay_port=${SWITCHBOARD_RELAY_PORT:-8090}
 service_timeout=${SWITCHBOARD_UPDATE_SERVICE_TIMEOUT:-60}
 expected_commit=${SWITCHBOARD_EXPECTED_COMMIT:-}
 restarted=false
 
-digest() { shasum -a 256 "$1" | awk '{print $1}'; }
+if command -v sha256sum >/dev/null; then
+    digest() { sha256sum "$1" | awk '{print $1}'; }
+else
+    digest() { shasum -a 256 "$1" | awk '{print $1}'; }
+fi
 # The alarm survives exec and terminates only this read-only CLI probe.
 probe() { /usr/bin/perl -e 'alarm shift; exec @ARGV; die "exec failed: $!\n"' "$probe_timeout" "$@"; }
 
@@ -89,7 +112,7 @@ restart_services() {
     probe "$installed" web --stop > /dev/null 2>&1 || true
     # The job starts web only if web --status fails, so let the old one exit first.
     wait_for 10 previous_gone web || true
-    launchctl kickstart -k "$job"
+    restart_job
 }
 services_ready() {
     previous_gone || return 1
@@ -133,7 +156,7 @@ finish() {
             if restart_services && await_services; then
                 echo "Web server and relay restarted on the previous executable ($(jq -r .commit "$work/health"))." >&2
             else
-                echo "Services did not recover on the previous executable; inspect: launchctl print $job" >&2
+                echo "Services did not recover on the previous executable; inspect: $inspect" >&2
             fi
         fi
     fi
@@ -168,7 +191,7 @@ fi
 probe "$new_release" --version
 if [[ $binary_only != 1 ]]; then
     # Restart only the job that runs this executable's relay; otherwise change nothing.
-    launchctl print "$job" > "$work/job" 2>&1 || {
+    describe_job > "$work/job" 2>&1 || {
         echo "Service job $job is not loaded; install it (zellij switchboard install) or use --binary-only." >&2; exit 1;
     }
     grep -qF -- "$installed serve " "$work/job" || {

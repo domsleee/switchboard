@@ -123,10 +123,48 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04 keeps the binaries' glibc requirement low enough for older Ubuntu.
+          - runner: ubuntu-22.04
+            platform: linux-x86_64
+            arch: x86-64
+          - runner: ubuntu-22.04-arm
+            platform: linux-arm64
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          rustflags: ""
+          # A manual run on another branch must not evict main's caches.
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: false
+      - name: Check installer and updater
+        if: matrix.platform == 'linux-x86_64'
+        run: cargo test -p zellij-client --features web_server_capability switchboard_update --lib
+      - name: Build native server and relay
+        run: cargo build --release --features web_server_capability
+      - name: Verify and package update bundle
+        run: |
+          target/release/zellij serve --help
+          target/release/zellij switchboard package --platform ${{ matrix.platform }} --commit $GITHUB_SHA --run-number $GITHUB_RUN_NUMBER --helpers tools/switchboard --output dist
+          file dist/zellij | grep -q '${{ matrix.arch }}'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: switchboard-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
   # Updaters download from one rolling prerelease. Its assets are replaced on
   # each build; the release is never recreated, so followers are not notified.
   # Publishing is split per platform: a failing Windows check must not strand
-  # finished macOS bundles (and vice versa). The two jobs share one
+  # finished macOS or Linux bundles (and vice versa). The jobs share one
   # concurrency group so their uploads to the same release never interleave.
   publish-windows:
     needs: [checks, windows]
@@ -180,6 +218,45 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       ARTIFACT_PATTERN: switchboard-macos-*
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: ${{ env.ARTIFACT_PATTERN }}
+          path: artifacts
+      - name: Replace rolling release assets
+        run: |
+          set -euo pipefail
+          gh release view latest-main >/dev/null 2>&1 ||
+            gh release create latest-main --prerelease --latest=false --target "$GITHUB_SHA" \
+              --title 'Latest main build' --notes 'Rolling build used by Switchboard automatic updates.'
+          mkdir release
+          for directory in artifacts/switchboard-*; do
+            platform=${directory#artifacts/switchboard-}
+            for file in "$directory"/*; do cp "$file" "release/switchboard-$platform-$(basename "$file")"; done
+          done
+          # Manifests last: updaters verify every asset against them and retry
+          # on a mismatch while a newer upload is in progress.
+          gh release upload latest-main --clobber $(ls release/* | grep -v -- '-bundle.json$')
+          gh release upload latest-main --clobber release/*-bundle.json
+          # The manifest's commit is authoritative; the tag follows for readers.
+          git tag -f latest-main "$GITHUB_SHA"
+          git push -f origin refs/tags/latest-main
+
+  publish-linux:
+    needs: [linux]
+    # Only this repository's main branch feeds automatic updates.
+    if: github.ref == 'refs/heads/main' && github.repository == 'domsleee/switchboard'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: latest-main-release
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      ARTIFACT_PATTERN: switchboard-linux-*
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
