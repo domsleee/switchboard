@@ -84,7 +84,7 @@ static LONG_FLASH_DURATION_MS: u64 = 1000;
 static FLASH_DURATION_MS: u64 = 400; // Doherty threshold
 static SESSION_METADATA_WRITE_INTERVAL_MS: u64 = 1000;
 static UPDATE_AND_REPORT_CWDS_INTERVAL_MS: u64 = 1000;
-static DEFAULT_SERIALIZATION_INTERVAL: u64 = 60000;
+static DEFAULT_SERIALIZATION_INTERVAL: u64 = 5000;
 static REPAINT_DELAY_MS: u64 = 10;
 static HELP_TEXT_DEBOUNCE_DURATION: u64 = 5000;
 static COMMAND_OUTPUT_FLASH_DURATION_MS: u64 = 400;
@@ -173,6 +173,7 @@ pub(crate) fn background_jobs_main(
             let mut ticker = tokio::time::interval(std::time::Duration::from_millis(
                 SESSION_METADATA_WRITE_INTERVAL_MS,
             ));
+            let mut shrink_guard = LayoutShrinkGuard::default();
             ticker.tick().await;
             loop {
                 ticker.tick().await;
@@ -181,7 +182,14 @@ pub(crate) fn background_jobs_main(
                     continue;
                 }
                 let info = current_session_info.lock().unwrap().clone();
-                let layout = current_session_layout.lock().unwrap().clone();
+                let mut layout = current_session_layout.lock().unwrap().clone();
+                if !shrink_guard.allow_save(
+                    &session_layout_cache_file_name(&name),
+                    &layout.0,
+                    Instant::now(),
+                ) {
+                    layout = Default::default();
+                }
                 write_session_state_to_disk(name, info, layout);
             }
         });
@@ -560,34 +568,245 @@ pub fn write_session_state_to_disk(
     let metadata_cache_file_name = session_info_cache_file_name(&current_session_name);
     let (current_session_layout, layout_files_to_write) = current_session_layout;
     let new_metadata = current_session_info.to_string();
-    if file_content_changed(&metadata_cache_file_name, new_metadata.as_bytes()) {
-        let _wrote_metadata_file = std::fs::create_dir_all(
-            session_info_folder_for_session(&current_session_name).as_path(),
-        )
-        .and_then(|_| std::fs::File::create(&metadata_cache_file_name))
-        .and_then(|mut f| write!(f, "{}", new_metadata));
-    }
+    write_session_cache_file(&metadata_cache_file_name, new_metadata.as_bytes())
+        .with_context(|| format!("Failed to save session metadata for {current_session_name}"))
+        .non_fatal();
 
     if !current_session_layout.is_empty() {
         let layout_cache_file_name = session_layout_cache_file_name(&current_session_name);
-        if file_content_changed(&layout_cache_file_name, current_session_layout.as_bytes()) {
-            let _wrote_layout_file = std::fs::create_dir_all(
-                session_info_folder_for_session(&current_session_name).as_path(),
-            )
-            .and_then(|_| std::fs::File::create(&layout_cache_file_name))
-            .and_then(|mut f| write!(f, "{}", current_session_layout));
-        }
         let session_info_folder = session_info_folder_for_session(&current_session_name);
         for (external_file_name, external_file_contents) in layout_files_to_write {
             let external_file_path = session_info_folder.join(&external_file_name);
-            if file_content_changed(&external_file_path, external_file_contents.as_bytes()) {
-                std::fs::File::create(&external_file_path)
-                    .and_then(|mut f| write!(f, "{}", external_file_contents))
-                    .unwrap_or_else(|e| {
-                        log::error!("Failed to write layout metadata file: {:?}", e);
-                    });
+            if let Err(error) =
+                write_session_cache_file(&external_file_path, external_file_contents.as_bytes())
+                    .with_context(|| {
+                        format!("Failed to save pane contents for {current_session_name}")
+                    })
+            {
+                Err::<(), _>(error).non_fatal();
+                return;
             }
         }
+        // Publish the layout only after its referenced files have been saved.
+        write_session_cache_file(&layout_cache_file_name, current_session_layout.as_bytes())
+            .with_context(|| format!("Failed to save session layout for {current_session_name}"))
+            .non_fatal();
+    }
+}
+
+fn write_session_cache_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    if !file_content_changed(path, contents) {
+        return Ok(());
+    }
+    let directory = path.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
+    fs::create_dir_all(directory)?;
+    // Never truncate the only saved layout. A shutdown during writing leaves
+    // either the previous complete file or the new complete file.
+    let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
+    temporary.write_all(contents)?;
+    temporary.as_file().sync_all()?;
+    for attempt in 0..20 {
+        match temporary.persist(path) {
+            Ok(_) => return Ok(()),
+            Err(error)
+                if cfg!(windows)
+                    && matches!(error.error.raw_os_error(), Some(5 | 32 | 33))
+                    && attempt < 19 =>
+            {
+                // Windows readers and virus scanners can briefly deny a
+                // replacement. Retry the same complete file, never truncate.
+                temporary = error.file;
+                std::thread::sleep(Duration::from_millis(10));
+            },
+            Err(error) => return Err(error.error),
+        }
+    }
+    unreachable!()
+}
+
+// When Windows restarts, shells and agents die one by one before the engine
+// does, and each death closes a pane or tab. Saving that shrinking layout would
+// replace the last complete save with one or no tabs. A smaller layout is saved
+// only after it has lasted longer than a shutdown can.
+const SHRINK_SAVE_DELAY: Duration = Duration::from_secs(60);
+
+#[derive(Default)]
+struct LayoutShrinkGuard {
+    path: Option<std::path::PathBuf>,
+    saved: Option<LayoutSize>,
+    candidate: Option<(String, Option<LayoutSize>)>,
+    smaller_since: Option<Instant>,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct LayoutSize {
+    tabs: usize,
+    panes: usize,
+}
+
+impl LayoutSize {
+    // Counts the saved nodes themselves: parsing the layout would give a tab
+    // whose panes have all closed a default shell pane.
+    fn of(kdl_layout: &str) -> Option<Self> {
+        let document: kdl::KdlDocument = kdl_layout.parse().ok()?;
+        let layout = document.get("layout")?;
+        let tabs: Vec<_> = layout
+            .children()?
+            .nodes()
+            .iter()
+            .filter(|node| node.name().value() == "tab")
+            .collect();
+        let panes = if tabs.is_empty() {
+            Self::panes_in(layout)
+        } else {
+            tabs.iter().map(|tab| Self::panes_in(tab)).sum()
+        };
+        Some(LayoutSize {
+            tabs: tabs.len().max(1),
+            panes,
+        })
+    }
+    fn panes_in(node: &kdl::KdlNode) -> usize {
+        node.children().map_or(0, |children| {
+            children
+                .nodes()
+                .iter()
+                .map(|child| match child.name().value() {
+                    "pane" => Self::panes_in(child).max(1),
+                    "floating_panes" => Self::panes_in(child),
+                    _ => 0,
+                })
+                .sum()
+        })
+    }
+    fn is_smaller_than(&self, other: &LayoutSize) -> bool {
+        self.tabs < other.tabs || self.panes < other.panes
+    }
+}
+
+impl LayoutShrinkGuard {
+    fn allow_save(&mut self, saved_layout: &Path, kdl_layout: &str, now: Instant) -> bool {
+        if kdl_layout.is_empty() {
+            return true;
+        }
+        if self.path.as_deref() != Some(saved_layout) {
+            // A new engine compares with what the previous one left on disk.
+            self.path = Some(saved_layout.to_path_buf());
+            self.saved = fs::read_to_string(saved_layout)
+                .ok()
+                .and_then(|saved| LayoutSize::of(&saved));
+            self.smaller_since = None;
+        }
+        if self.candidate.as_ref().map(|(kdl, _)| kdl.as_str()) != Some(kdl_layout) {
+            self.candidate = Some((kdl_layout.to_owned(), LayoutSize::of(kdl_layout)));
+        }
+        let size = self.candidate.as_ref().and_then(|(_, size)| *size);
+        let shrinks =
+            matches!((size, self.saved), (Some(size), Some(saved)) if size.is_smaller_than(&saved));
+        if shrinks {
+            let since = *self.smaller_since.get_or_insert(now);
+            if now.duration_since(since) < SHRINK_SAVE_DELAY {
+                return false;
+            }
+        }
+        self.smaller_since = None;
+        if size.is_some() {
+            self.saved = size;
+        }
+        true
+    }
+}
+
+#[cfg(test)]
+mod restart_tests {
+    use super::*;
+
+    #[test]
+    fn restart_cache_readers_only_observe_complete_layouts_during_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("session-layout.kdl");
+        let old = b"layout { tab name=\"before\" { pane; } }";
+        let new = b"layout { tab name=\"after\" { pane; } }";
+        write_session_cache_file(&path, old).unwrap();
+        std::thread::scope(|scope| {
+            let path = &path;
+            let reader = scope.spawn(move || {
+                for _ in 0..1000 {
+                    let saved = fs::read(path).unwrap();
+                    assert!(
+                        saved == old || saved == new,
+                        "Never publish a truncated layout"
+                    );
+                }
+            });
+            for _ in 0..10 {
+                write_session_cache_file(path, new).unwrap();
+                write_session_cache_file(path, old).unwrap();
+            }
+            reader.join().unwrap();
+        });
+        assert_eq!(fs::read(path).unwrap(), old);
+    }
+
+    fn tabs(names: &[&str]) -> String {
+        let tabs: String = names
+            .iter()
+            .map(|name| format!("    tab name=\"{name}\" {{\n        pane\n    }}\n"))
+            .collect();
+        format!("layout {{\n{tabs}}}\n")
+    }
+
+    #[test]
+    fn restart_shutdown_closing_tabs_keeps_the_last_complete_layout() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("session-layout.kdl");
+        let complete = tabs(&["Fix startup", "Review changes", "Notes"]);
+        fs::write(&path, &complete).unwrap();
+        let mut guard = LayoutShrinkGuard::default();
+        let start = Instant::now();
+
+        // Shells and agents exit one by one while Windows shuts down. With no
+        // client to redraw, a tab whose panes all closed stays, empty.
+        let emptied = complete.replace(
+            "    tab name=\"Notes\" {\n        pane\n    }",
+            "    tab name=\"Notes\" {\n    }",
+        );
+        assert_ne!(emptied, complete);
+        assert!(!guard.allow_save(&path, &emptied, start));
+        assert!(!guard.allow_save(&path, &tabs(&["Fix startup", "Notes"]), start));
+        let later = start + Duration::from_secs(5);
+        assert!(!guard.allow_save(&path, &tabs(&["Notes"]), later));
+        assert!(
+            !guard.allow_save(&path, &tabs(&["Tab #1"]), start + Duration::from_secs(59)),
+            "Returning to one default tab during a shutdown is still a shrink"
+        );
+
+        // A deliberate close is saved once it has outlasted any shutdown.
+        assert!(guard.allow_save(&path, &tabs(&["Notes"]), start + SHRINK_SAVE_DELAY));
+    }
+
+    #[test]
+    fn restart_growth_and_renames_are_saved_at_once_and_regrowth_cancels_a_pending_shrink() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("session-layout.kdl");
+        let mut guard = LayoutShrinkGuard::default();
+        let start = Instant::now();
+        assert!(
+            guard.allow_save(&path, &tabs(&["One"]), start),
+            "First save"
+        );
+        assert!(guard.allow_save(&path, &tabs(&["One", "Two"]), start));
+        assert!(guard.allow_save(&path, &tabs(&["Renamed", "Two"]), start));
+        assert!(!guard.allow_save(&path, &tabs(&["Renamed"]), start));
+        assert!(guard.allow_save(
+            &path,
+            &tabs(&["Renamed", "New"]),
+            start + Duration::from_secs(30)
+        ));
+        assert!(
+            !guard.allow_save(&path, &tabs(&["Renamed"]), start + Duration::from_secs(61)),
+            "The delay restarts after the layout grew back"
+        );
     }
 }
 

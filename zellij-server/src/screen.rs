@@ -7625,8 +7625,17 @@ impl Screen {
                     )
                 })
                 .collect();
+            let title_pane = first_client_id
+                .and_then(|client_id| tab.get_active_pane(client_id))
+                .filter(|pane| matches!(pane.pid(), PaneId::Terminal(_)))
+                .or_else(|| {
+                    tab.get_tiled_panes()
+                        .find(|(id, _)| matches!(id, PaneId::Terminal(_)))
+                        .map(|(_, pane)| pane.as_ref())
+                });
+            let pane_title = title_pane.map(|pane| pane.current_title());
             session_layout_metadata.add_tab(
-                tab.name.clone(),
+                crate::session_layout_metadata::restored_tab_name(&tab.name, pane_title.as_deref()),
                 tab_is_focused,
                 hide_floating_panes,
                 tiled_panes,
