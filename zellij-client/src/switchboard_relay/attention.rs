@@ -929,6 +929,11 @@ echo [{"id":1,"tab_id":4,"tab_position":0,"tab_name":"T","title":"x","pane_comma
             "· Perambulating… (23s · ↓ 1.4k tokens)",
         );
         assert_eq!(classify(&pane, &working)["state"], "working");
+        // A Monitor in the task footer means Claude is waiting on it, unlike a shell.
+        for count in ["1 shell, 1 monitor", "1 monitor", "2 shells, 3 monitors"] {
+            let screen = screen.replace("1 shell ·", &format!("{count} ·"));
+            assert_eq!(classify(&pane, &screen)["state"], "working", "{count}");
+        }
         let agents = format!("{screen}\n  ◯ fork  Reading files  4m 19s · ↓ 461k tokens");
         assert_eq!(classify(&pane, &agents)["state"], "working");
         let titled = json!({"pane_command":"claude.exe","title":"◐ Example task"});

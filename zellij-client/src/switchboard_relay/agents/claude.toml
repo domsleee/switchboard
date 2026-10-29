@@ -9,7 +9,7 @@
 #
 # Lists match when any pattern matches. A list of lists matches when every
 # pattern in one inner list matches.
-version = "2026-10-28"
+version = "2026-10-29"
 
 # Which panes are Claude: the running command, or its prompt footer on screen.
 command = ['\bclaude(?:\.exe)?\b']
@@ -52,5 +52,6 @@ above_prompt = [
 below_prompt = [
   # A background agent row with a live timer: "◯ fork  Reading files   4m 19s · ↓ 461k tokens".
   '(?m)^[ \t]*◯[ \t]+\S[^\n]*\b\d+[hms]\b',
-  '\b[1-9]\d* monitors? still running',
+  # Monitors count in the task footer, "1 shell, 1 monitor", or "1 monitor still running".
+  '\b[1-9]\d* monitors?\b',
 ]
