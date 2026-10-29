@@ -826,6 +826,11 @@ echo [{"id":1,"tab_id":4,"tab_position":0,"tab_name":"T","title":"x","pane_comma
             "Baked for 4m 5s · 1 monitor still running",
         );
         assert_eq!(classify(&claude, &monitor)["state"], "working");
+        let timed = idle.replace(
+            "✻ Baked for 4m 5s",
+            "✻ Brewed for 3s · done 9:05 am · 1 monitor still running",
+        );
+        assert_eq!(classify(&claude, &timed)["state"], "working");
         assert_eq!(
             classify(&claude, &format!("{idle} · 1 monitor still running"))["state"],
             "working"
