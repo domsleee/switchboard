@@ -116,6 +116,23 @@ pub fn resume_command(
             }
             continue;
         }
+        if agent == AgentKind::Copilot && matches!(flag, "-i" | "--interactive") {
+            // The initial prompt must not be submitted again after a restart.
+            if inline_value.is_none() {
+                args.next()
+                    .ok_or_else(|| format!("Missing value for {flag}"))?;
+            }
+            continue;
+        }
+        if agent == AgentKind::Copilot
+            && matches!(flag, "--bash-env" | "--mouse" | "--sync-session")
+        {
+            command.push(arg.clone());
+            if inline_value.is_none() && args.peek().is_some_and(|arg| !arg.starts_with('-')) {
+                command.push(args.next().unwrap().clone());
+            }
+            continue;
+        }
         if matches!(flag, "--resume" | "-r" | "--session-id") {
             if inline_value.is_none() && args.peek().is_some_and(|arg| !arg.starts_with('-')) {
                 args.next();
@@ -157,6 +174,17 @@ pub fn resume_command(
                         | "--mcp-config"
                         | "--betas"
                 )
+                || agent == AgentKind::Copilot
+                    && matches!(
+                        flag,
+                        "--allow-tool"
+                            | "--deny-tool"
+                            | "--available-tools"
+                            | "--excluded-tools"
+                            | "--secret-env-vars"
+                            | "--allow-url"
+                            | "--deny-url"
+                    )
             {
                 while args.peek().is_some_and(|arg| !arg.starts_with('-')) {
                     command.push(args.next().unwrap().clone());
@@ -253,21 +281,34 @@ fn takes_value(agent: AgentKind, flag: &str) -> bool {
             flag,
             "--agent"
                 | "--model"
+                | "--effort"
                 | "--reasoning-effort"
+                | "--context"
                 | "--context-tier"
+                | "--auto-tier"
                 | "--service-tier"
                 | "--mode"
                 | "--max-ai-credits"
                 | "--add-dir"
                 | "--allow-tool"
                 | "--deny-tool"
+                | "--available-tools"
+                | "--excluded-tools"
+                | "--secret-env-vars"
                 | "--allow-url"
                 | "--deny-url"
                 | "--additional-mcp-config"
                 | "--disable-mcp-server"
+                | "--enable-mcp-server"
+                | "--add-github-mcp-tool"
+                | "--add-github-mcp-toolset"
+                | "--mcp-github-auth"
+                | "--dynamic-retrieval"
+                | "--extension-sdk-path"
                 | "--plugin-dir"
                 | "--log-dir"
                 | "--log-level"
+                | "--stream"
                 | "--theme"
                 | "--name"
                 | "-n"
@@ -327,6 +368,16 @@ fn switch(agent: AgentKind, flag: &str) -> bool {
                 | "--banner"
                 | "--screen-reader"
                 | "--plain-diff"
+                | "--trust-folder"
+                | "--disable-client-telemetry"
+                | "--enable-memory"
+                | "--enable-all-github-mcp-tools"
+                | "--allow-all-mcp-server-instructions"
+                | "--autopilot"
+                | "--plan"
+                | "--no-experimental"
+                | "--no-bash-env"
+                | "--no-mouse"
         ),
     }
 }
@@ -504,6 +555,65 @@ mod tests {
         assert_eq!(
             resumed.args,
             ["--screen-reader", "--banner", "--yolo", "--resume", ID]
+        );
+        assert!(is_exact_resume(&resumed));
+    }
+
+    #[test]
+    fn copilot_effort_and_current_options_are_resumed() {
+        let resumed = command(
+            &[
+                "copilot",
+                "--yolo",
+                "--model",
+                "gpt-6.1-sol",
+                "--effort",
+                "xhigh",
+            ],
+            AgentKind::Copilot,
+        );
+        assert_eq!(
+            resumed.args,
+            [
+                "--yolo",
+                "--model",
+                "gpt-6.1-sol",
+                "--effort",
+                "xhigh",
+                "--resume",
+                ID
+            ]
+        );
+        assert!(is_exact_resume(&resumed));
+        let resumed = command(
+            &[
+                "copilot",
+                "-i",
+                "fix the build",
+                "--allow-tool",
+                "shell(git)",
+                "write",
+                "--mouse",
+                "off",
+                "--context=large",
+                "--autopilot",
+            ],
+            AgentKind::Copilot,
+        );
+        assert_eq!(
+            resumed.args,
+            [
+                "--allow-tool",
+                "shell(git)",
+                "write",
+                "--mouse",
+                "off",
+                "--context=large",
+                "--autopilot",
+                "--resume",
+                ID
+            ],
+            "Keep options but never submit the initial prompt again"
         );
         assert!(is_exact_resume(&resumed));
     }

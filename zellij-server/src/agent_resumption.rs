@@ -535,5 +535,16 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        record.process_start = process.start_time();
+        assert!(
+            validated_command(&record, "original", 0x7fff_fff0, &system)
+                .unwrap()
+                .is_none(),
+            "A record for a process outside the restored pane is ignored"
+        );
+        assert!(
+            validated_command(&record, "original", pid.as_u32(), &system).is_err(),
+            "In its own pane the record passes every check and reaches command parsing"
+        );
     }
 }
