@@ -28,8 +28,11 @@ pub(super) struct Ready {
     pub endpoint: Option<String>,
     pub error: Option<String>,
 }
+/// Peers can reach this computer here: it owns the address on a running interface.
 pub(super) fn local_address(ip: std::net::IpAddr) -> bool {
-    hostname::usable_route_address(ip) && hostname::is_local_address(ip)
+    hostname::usable_route_address(ip)
+        && hostname::is_local_address(ip)
+        && hostname::interface_running(ip)
 }
 
 async fn connection_address(hint: Option<&str>) -> anyhow::Result<std::net::IpAddr> {
@@ -57,6 +60,10 @@ async fn connection_address(hint: Option<&str>) -> anyhow::Result<std::net::IpAd
             if let Some(address) = single_local_address(hostname::resolve(&name, 0).await) {
                 return Ok(address);
             }
+        }
+        // Without mDNS, or with several answers, use the default route's address.
+        if let Some(address) = hostname::default_route_address().filter(|ip| local_address(*ip)) {
+            return Ok(address);
         }
         anyhow::bail!("No single local address for this computer's hostname")
     })

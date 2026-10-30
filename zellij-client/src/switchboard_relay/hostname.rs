@@ -79,6 +79,59 @@ pub(super) fn is_local_address(address: IpAddr) -> bool {
             .is_ok_and(|source| source.ip() == address)
 }
 
+/// Whether the interface holding `address` has a link. An idle Docker bridge
+/// keeps its address while down, so peers could never reach a gateway there.
+/// Addresses not found on any interface are left to `is_local_address`.
+#[cfg(unix)]
+pub(super) fn interface_running(address: IpAddr) -> bool {
+    use nix::net::if_::InterfaceFlags;
+    let Ok(interfaces) = nix::ifaddrs::getifaddrs() else {
+        return true;
+    };
+    running_among(
+        interfaces.filter_map(|interface| {
+            let storage = interface.address?;
+            let ip = match (storage.as_sockaddr_in(), storage.as_sockaddr_in6()) {
+                (Some(v4), _) => IpAddr::V4(v4.ip()),
+                (_, Some(v6)) => IpAddr::V6(v6.ip()),
+                _ => return None,
+            };
+            let running = interface
+                .flags
+                .contains(InterfaceFlags::IFF_UP | InterfaceFlags::IFF_RUNNING);
+            Some((ip, running))
+        }),
+        address,
+    )
+}
+
+#[cfg(not(unix))]
+pub(super) fn interface_running(_: IpAddr) -> bool {
+    true
+}
+
+fn running_among(interfaces: impl Iterator<Item = (IpAddr, bool)>, address: IpAddr) -> bool {
+    let mut found = false;
+    for (ip, running) in interfaces {
+        if ip == address {
+            if running {
+                return true;
+            }
+            found = true;
+        }
+    }
+    !found
+}
+
+/// This computer's source address for its default route. UDP connect selects the
+/// route without sending a packet.
+pub(super) fn default_route_address() -> Option<IpAddr> {
+    let route = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    route.connect((Ipv4Addr::new(192, 0, 2, 1), 9)).ok()?;
+    let address = route.local_addr().ok()?.ip();
+    usable_route_address(address).then_some(address)
+}
+
 pub(super) async fn resolve(name: &str, port: u16) -> Vec<SocketAddr> {
     let Some(hostname) = local_hostname(name) else {
         return Vec::new();
@@ -136,6 +189,22 @@ mod tests {
         }
         assert!(local_hostname(&"a".repeat(63)).is_some());
         assert!(local_hostname(&"a".repeat(64)).is_none());
+    }
+
+    #[test]
+    fn an_address_on_a_down_interface_is_not_running() {
+        let lan: IpAddr = "172.20.10.46".parse().unwrap();
+        let bridge: IpAddr = "172.17.0.1".parse().unwrap();
+        let interfaces = || [(lan, true), (bridge, false)].into_iter();
+        assert!(running_among(interfaces(), lan));
+        assert!(!running_among(interfaces(), bridge));
+        // An address on several interfaces counts when any of them has a link.
+        assert!(running_among(
+            [(bridge, false), (bridge, true)].into_iter(),
+            bridge
+        ));
+        assert!(running_among(interfaces(), "192.0.2.7".parse().unwrap()));
+        assert!(interface_running(Ipv4Addr::LOCALHOST.into()));
     }
 
     #[test]
