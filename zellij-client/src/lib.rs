@@ -469,12 +469,17 @@ fn create_ipc_pipe(teardown: Option<TerminalTeardown>) -> PathBuf {
 /// the intermediate child exits immediately and `cmd.status()` returns.
 #[cfg(not(windows))]
 pub fn spawn_server(socket_path: &Path, debug: bool) -> io::Result<()> {
-    let mut cmd = Command::new(current_exe()?);
-    cmd.arg("--server").arg(socket_path);
-    if debug {
-        cmd.arg("--debug");
+    let exe = current_exe()?;
+    // systemd sets INVOCATION_ID for a service's processes. Started from Switchboard's
+    // service, the server would share its cgroup, so systemd-oomd killing that
+    // service would kill every terminal too. Its own scope keeps them apart.
+    if cfg!(target_os = "linux") && std::env::var_os("INVOCATION_ID").is_some() {
+        match server_command(&exe, socket_path, debug, true).status() {
+            Ok(status) if status.success() => return Ok(()),
+            result => log::warn!("Starting the server in its own systemd scope failed: {result:?}"),
+        }
     }
-    let status = cmd.status()?;
+    let status = server_command(&exe, socket_path, debug, false).status()?;
     if status.success() {
         Ok(())
     } else {
@@ -485,6 +490,23 @@ pub fn spawn_server(socket_path: &Path, debug: bool) -> io::Result<()> {
         };
         Err(io::Error::new(io::ErrorKind::Other, err_msg))
     }
+}
+
+#[cfg(not(windows))]
+fn server_command(exe: &Path, socket_path: &Path, debug: bool, scope: bool) -> Command {
+    let mut cmd = if scope {
+        let mut cmd = Command::new("systemd-run");
+        cmd.args(["--user", "--scope", "--quiet", "--collect", "--"])
+            .arg(exe);
+        cmd
+    } else {
+        Command::new(exe)
+    };
+    cmd.arg("--server").arg(socket_path);
+    if debug {
+        cmd.arg("--debug");
+    }
+    cmd
 }
 
 /// Spawn the Zellij server process.

@@ -349,7 +349,9 @@ fn linux_units(
     );
     let exec = |command: &str| systemd_quote(&command.replace('$', "$$"));
     let relay = format!(
-        "[Unit]\nDescription=Switchboard relay and web server\n\n[Service]\n{env}\
+        // Without StartLimitIntervalSec=0, five quick failures (a port still held by
+        // the previous relay) would stop systemd restarting the relay at all.
+        "[Unit]\nDescription=Switchboard relay and web server\nStartLimitIntervalSec=0\n\n[Service]\n{env}\
          WorkingDirectory={}\nExecStart=/bin/sh -c {}\nRestart=always\nRestartSec=2\n\
          # Restarts stop only the relay: the web server and terminal sessions it started keep running.\n\
          KillMode=process\n\n[Install]\nWantedBy=default.target\n",
@@ -357,8 +359,9 @@ fn linux_units(
         exec(&relay_command(home, binary, web_start))
     );
     let update = format!(
+        // A oneshot has no start timeout by default; a hung run would block every later check.
         "[Unit]\nDescription=Switchboard automatic update\n\n[Service]\nType=oneshot\n{env}\
-         ExecStart=/bin/sh -c {}\n\
+         ExecStart=/bin/sh -c {}\nTimeoutStartSec=30min\n\
          # The web server and relay it restarts must outlive this run.\nKillMode=process\n",
         exec(&format!(
             "exec {} switchboard update --binary {}",
@@ -630,6 +633,8 @@ mod tests {
             );
         }
         assert!(relay.contains("\nRestart=always\n"));
+        assert!(relay.contains("\nStartLimitIntervalSec=0\n"));
+        assert!(unit("switchboard-update.service").contains("\nTimeoutStartSec=30min\n"));
         assert!(unit("switchboard-update.service").contains(
             "ExecStart=/bin/sh -c \"exec /home/me/.cargo/bin/zellij switchboard update --binary /home/me/.cargo/bin/zellij\"\n"
         ));

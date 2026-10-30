@@ -62,3 +62,25 @@ fn the_focus_reporting_sequences_are_the_decset_1004_pair() {
     assert_eq!(ENABLE_FOCUS_REPORTING, "\u{1b}[?1004h");
     assert_eq!(DISABLE_FOCUS_REPORTING, "\u{1b}[?1004l");
 }
+
+#[cfg(not(windows))]
+#[test]
+fn server_runs_in_its_own_systemd_scope_only_when_asked() {
+    use std::path::Path;
+    let args = |scope| {
+        let cmd = crate::server_command(
+            Path::new("/bin/zellij"),
+            Path::new("/run/main"),
+            true,
+            scope,
+        );
+        let mut args = vec![cmd.get_program().to_string_lossy().into_owned()];
+        args.extend(cmd.get_args().map(|arg| arg.to_string_lossy().into_owned()));
+        args.join(" ")
+    };
+    assert_eq!(args(false), "/bin/zellij --server /run/main --debug");
+    assert_eq!(
+        args(true),
+        "systemd-run --user --scope --quiet --collect -- /bin/zellij --server /run/main --debug"
+    );
+}
