@@ -206,9 +206,9 @@ identities are saved beside the relay configuration as `.attention.json`, so a
 relay restart preserves viewed results.
 Archive preserves processes and does not erase attention state.
 
-Claude tabs use live spinners and active background-agent rows to indicate work.
-A background-shell count alone does not keep a finished reply working: that shell
-may be a persistent dev server. Finished-turn markers also recognize accented
+Claude tabs use live spinners, active background-agent rows and the task footer's
+shell and Monitor counts to indicate work, so a reply that leaves a shell running
+(even a dev server) stays working until the footer drops the count. Finished-turn markers also recognize accented
 verbs such as `Sautéed`, so an older spinner cannot override the latest completion.
 
 Copilot tabs stay working while the footer beneath the current boxed input shows
