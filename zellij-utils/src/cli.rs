@@ -161,6 +161,10 @@ pub enum Command {
     /// Register agents and exchange messages through one authenticated board
     Message(MessageCli),
 
+    /// Track exact agent conversations for automatic recovery after a restart
+    #[clap(subcommand)]
+    AgentResume(AgentResumeCommand),
+
     /// Switchboard automatic updates
     #[clap(subcommand)]
     Switchboard(SwitchboardCommand),
@@ -221,6 +225,17 @@ pub enum SwitchboardCommand {
         helpers: PathBuf,
         #[clap(long)]
         output: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
+pub enum AgentResumeCommand {
+    /// Add session hooks without replacing existing agent settings
+    Install,
+    /// Receive an agent session hook on stdin
+    Record {
+        #[clap(long, value_enum)]
+        agent: crate::agent_resumption::AgentKind,
     },
 }
 

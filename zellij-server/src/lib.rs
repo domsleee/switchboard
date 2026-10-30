@@ -5,6 +5,7 @@ mod os_input_output_unix;
 #[path = "os_input_output_windows.rs"]
 mod os_input_output_windows;
 
+pub mod agent_resumption;
 pub mod host_query;
 pub mod os_input_output;
 pub mod output;
