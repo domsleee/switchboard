@@ -61,10 +61,11 @@ service_timeout=${SWITCHBOARD_UPDATE_SERVICE_TIMEOUT:-60}
 expected_commit=${SWITCHBOARD_EXPECTED_COMMIT:-}
 restarted=false
 
-if command -v sha256sum >/dev/null; then
+# macOS ships shasum; a sha256sum on PATH there can be an Intel-only Homebrew leftover.
+if $linux; then
     digest() { sha256sum "$1" | awk '{print $1}'; }
 else
-    digest() { shasum -a 256 "$1" | awk '{print $1}'; }
+    digest() { /usr/bin/shasum -a 256 "$1" | awk '{print $1}'; }
 fi
 # The alarm survives exec and terminates only this read-only CLI probe.
 probe() { /usr/bin/perl -e 'alarm shift; exec @ARGV; die "exec failed: $!\n"' "$probe_timeout" "$@"; }
