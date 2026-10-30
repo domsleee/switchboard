@@ -16,6 +16,37 @@ use zellij_utils::{
     },
 };
 
+// Match the sidebar's title selection when saving a layout. OSC agent titles
+// disappear with their processes, so persist the displayed label as the tab name.
+pub(crate) fn restored_tab_name(tab_name: &str, pane_title: Option<&str>) -> String {
+    use std::sync::LazyLock;
+    static GENERIC: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"^\*?\s*Tab #\d+$").unwrap());
+    static AGENT: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"^(?i-u:codex|claude)(\s*[-:|]|$)").unwrap());
+    static SHELL: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"^(?i-u:nu|zsh|bash|fish|pwsh|powershell|cmd)(?i-u:\.exe)?$").unwrap()
+    });
+    static PREFIX: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"^(?i-u:codex|claude)\s*[-:]\s*").unwrap());
+    let title = pane_title.unwrap_or_default().trim();
+    let is_spinner = |c: char| "✳✻✽✶✢·⏺".contains(c) || ('\u{2801}'..='\u{28ff}').contains(&c);
+    let agent = title.chars().next().is_some_and(is_spinner) || AGENT.is_match(title);
+    let windows_path = title.as_bytes().get(1) == Some(&b':')
+        && matches!(title.as_bytes().get(2), Some(b'\\' | b'/'));
+    let shell =
+        title.is_empty() || title.starts_with(['~', '/']) || windows_path || SHELL.is_match(title);
+    if agent || GENERIC.is_match(tab_name) && !shell {
+        let title = title.trim_start_matches(is_spinner).trim_start();
+        let label = PREFIX.replace(title, "");
+        let label = label.trim();
+        if !label.is_empty() {
+            return label.to_owned();
+        }
+    }
+    tab_name.to_owned()
+}
+
 #[derive(Default, Debug, Clone)]
 pub struct SessionLayoutMetadata {
     default_layout: Box<Layout>,
@@ -686,6 +717,24 @@ impl ClientMetadata {
 mod tests {
     use super::*;
     use zellij_utils::pane_size::PaneGeom;
+
+    #[test]
+    fn restart_preserves_sidebar_titles_and_explicit_shell_tab_names() {
+        for (native, title, expected) in [
+            ("Tab #5", "codex - Fix startup", "Fix startup"),
+            ("Tab #2", "✻ Review changes", "Review changes"),
+            ("Old name", "⠋ New agent name", "New agent name"),
+            ("Tab #3", "Database migration", "Database migration"),
+            ("My shell", "C:\\git\\switchboard", "My shell"),
+            ("Tab #4", "C:\\git\\switchboard", "Tab #4"),
+            ("Tab #4", "/home/dom", "Tab #4"),
+            ("Tab #4", "nu.EXE", "Tab #4"),
+            ("My shell", "unrelated title", "My shell"),
+            ("Tab #4", "", "Tab #4"),
+        ] {
+            assert_eq!(restored_tab_name(native, Some(title)), expected);
+        }
+    }
 
     fn make_command_pane(terminal_id: u32, command: &str, args: Vec<&str>) -> PaneLayoutMetadata {
         let mut run_command = RunCommand::new(PathBuf::from(command));

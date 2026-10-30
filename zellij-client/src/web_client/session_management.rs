@@ -1,15 +1,56 @@
 use crate::os_input_output::ClientOsApi;
 use crate::spawn_server;
 
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 use zellij_utils::{
     consts::session_layout_cache_file_name,
     data::{ConnectToSession, LayoutInfo, LayoutMetadata, WebSharing},
     envs,
-    input::{cli_assets::CliAssets, config::Config, options::Options},
+    input::{cli_assets::CliAssets, config::Config, layout::Layout, options::Options},
     ipc::{ClientAttributes, ClientToServerMsg},
-    sessions::{generate_unique_session_name, resurrection_layout},
+    sessions::generate_unique_session_name,
 };
+
+// The engine falls back to a fresh default layout when the saved one cannot
+// load, and its next save replaces the only copy of the old tabs. Check the
+// save here with the engine's loader and move an unreadable one aside.
+fn restorable_layout(saved_layout: &Path) -> Option<LayoutInfo> {
+    if !saved_layout.is_file() {
+        return None;
+    }
+    let layout_info = LayoutInfo::File(
+        saved_layout.display().to_string(),
+        LayoutMetadata::default(),
+    );
+    let error = match Layout::from_layout_info_with_config(
+        &None,
+        &layout_info,
+        Some(Config::from_default_assets().unwrap_or_default()),
+    ) {
+        Ok(_) => return Some(layout_info),
+        Err(error) => error,
+    };
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let kept = saved_layout.with_file_name(format!("session-layout.unreadable-{seconds}.kdl"));
+    match fs::rename(saved_layout, &kept) {
+        Ok(()) => log::error!(
+            "Cannot restore saved layout {}: {error}. Kept it as {} and started a new session.",
+            saved_layout.display(),
+            kept.display()
+        ),
+        Err(rename_error) => log::error!(
+            "Cannot restore saved layout {}: {error}. Cannot keep a copy: {rename_error}",
+            saved_layout.display()
+        ),
+    }
+    None
+}
 
 pub fn build_initial_connection(
     session_name: Option<String>,
@@ -64,15 +105,14 @@ pub fn create_first_message(
     session_name: &str,
     initial_layout: Option<LayoutInfo>,
 ) -> ClientToServerMsg {
-    let resurrection_layout = resurrection_layout(&session_name).ok().flatten();
+    let resurrection_layout = if should_create_session && !is_read_only {
+        restorable_layout(&session_layout_cache_file_name(session_name))
+    } else {
+        None
+    };
 
     let layout_info = if resurrection_layout.is_some() {
-        Some(LayoutInfo::File(
-            session_layout_cache_file_name(&session_name)
-                .display()
-                .to_string(),
-            LayoutMetadata::default(),
-        ))
+        resurrection_layout
     } else {
         initial_layout
     };
@@ -151,4 +191,39 @@ pub fn create_ipc_pipe(session_name: &str) -> PathBuf {
     };
     crate::check_ipc_pipe_length(&zellij_ipc_pipe);
     zellij_ipc_pipe
+}
+
+#[cfg(test)]
+mod restart_tests {
+    use super::*;
+
+    #[test]
+    fn restart_restores_a_readable_save_and_keeps_an_unreadable_one() {
+        let directory = tempfile::tempdir().unwrap();
+        let saved = directory.path().join("session-layout.kdl");
+        assert!(restorable_layout(&saved).is_none(), "No save, new session");
+
+        fs::write(&saved, "layout {\n tab name=\"Fix startup\" { pane; }\n}\n").unwrap();
+        assert!(
+            matches!(restorable_layout(&saved), Some(LayoutInfo::File(path, _)) if Path::new(&path) == saved)
+        );
+
+        fs::write(&saved, "layout { corrupt").unwrap();
+        assert!(restorable_layout(&saved).is_none());
+        assert!(
+            !saved.exists(),
+            "The new session cannot replace the unreadable save"
+        );
+        let kept: Vec<_> = fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(kept.len(), 1);
+        assert!(kept[0]
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("session-layout.unreadable-"));
+        assert_eq!(fs::read_to_string(&kept[0]).unwrap(), "layout { corrupt");
+    }
 }

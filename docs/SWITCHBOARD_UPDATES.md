@@ -382,14 +382,22 @@ alone do not confirm that Switchboard can connect. Check `/api/hosts/mac` for
 start. Restore the terminal client before checking optional browser services, so
 a temporary HTTP failure cannot skip terminal recovery.
 
-Names are also part of recovery. The sidebar often displays Codex/Claude pane
-titles while native tabs still have generic names such as `Tab #2`. A layout
-dump saves those generic native names, so it cannot recover the displayed labels
-after those agent processes stop. Before any explicitly authorized engine
-restart, save native pane metadata with `action list-panes --json --all` as well
-as the layout, and carry the displayed agent titles into the replacement tab
-names. Verify those labels in the actual browser. Browser/HTTP health, stable
-IDs and a matching tab count alone do not establish a complete recovery.
+Names are also part of recovery. New engines save the sidebar's displayed
+Codex/Claude title as the layout's tab name, so it remains visible after the
+process ends. Older engines save generic native names such as `Tab #2`. Before
+restarting an older engine, save native pane metadata with
+`action list-panes --json --all` as well as the layout, and carry displayed agent
+titles into the replacement tab names. Verify the labels in the browser along
+with the tab count. A saved layout restores the workspace, not running processes.
+
+Saved layouts must survive a computer restart. The engine saves every five
+seconds and replaces the file atomically. During a Windows shutdown, shells and
+agents exit before the engine, so their panes close one by one. A layout with
+fewer tabs or panes than the last save is written only after it has lasted a
+minute, so a shutdown cannot replace the complete save. Saved layouts load by
+absolute path, so a host started with only `--config` and no default config
+directory still restores them. The web client renames a save that cannot load to
+`session-layout.unreadable-<time>.kdl` before it starts a new session.
 
 The Zellij session server owns the terminals and their child processes.
 Its [PTY cleanup](../zellij-server/src/pty.rs) closes panes when the server exits.

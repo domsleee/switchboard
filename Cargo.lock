@@ -4529,6 +4529,7 @@ dependencies = [
  "insta",
  "interprocess",
  "kasuari",
+ "kdl",
  "libc",
  "log",
  "nix",

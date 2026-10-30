@@ -4,6 +4,17 @@ Switchboard shows the terminal tabs from all your computers in one browser
 window. Install it on each computer, then connect them in Settings. After that
 it runs in the background and updates itself.
 
+After a computer restarts, start its terminal from **+** and Switchboard restores
+the saved tabs and their displayed titles. Commands in restored tabs stay
+suspended until you start them, because a restart ends the original shells and
+agents. Tabs are saved every five seconds and replaced atomically. Tabs that
+close while the computer shuts down do not replace the last save: a smaller set
+of tabs is saved only after it has lasted a minute. A saved layout that cannot
+load is kept beside it as `session-layout.unreadable-<time>.kdl`.
+
+To check this on Windows with private test sessions:
+`node tools/switchboard/restart_windows.test.cjs path\to\zellij.exe`.
+
 ## Install on a Mac
 
 You need Rust, the Xcode command line tools and `jq`. From this repository:

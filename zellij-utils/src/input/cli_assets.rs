@@ -144,4 +144,31 @@ mod tests {
     fn a_host_without_any_of_the_known_variables_yields_an_empty_env() {
         assert!(host_terminal_env_from(|_| None).is_empty());
     }
+
+    #[test]
+    fn restart_loads_a_saved_session_layout_without_a_config_directory() {
+        // Tests have no default config directory, like a host that runs with
+        // only --config. The saved layout lives in the cache, not in layouts/.
+        let directory = tempfile::tempdir().unwrap();
+        let saved = directory.path().join("session-layout.kdl");
+        std::fs::write(
+            &saved,
+            "layout {\n tab name=\"Fix startup\" { pane; }\n tab name=\"Review changes\" { pane; }\n}\n",
+        )
+        .unwrap();
+        let assets = CliAssets {
+            layout: Some(LayoutInfo::File(
+                saved.display().to_string(),
+                Default::default(),
+            )),
+            ..Default::default()
+        };
+        let (_, layout) = assets.load_config_and_layout();
+        let names: Vec<_> = layout
+            .tabs
+            .iter()
+            .map(|(name, _, _)| name.clone().unwrap_or_default())
+            .collect();
+        assert_eq!(names, ["Fix startup", "Review changes"]);
+    }
 }
