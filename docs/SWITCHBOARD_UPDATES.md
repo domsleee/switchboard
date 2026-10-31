@@ -61,7 +61,9 @@ builds stay ad hoc signed and ask for each build. Before stopping anything, the
 updater runs the candidate as the `dev.switchboard.lan-probe` launchd job and
 waits up to two minutes for it to reach a paired computer the running relay
 reaches. Without an answer, services stay on the current build and the next
-scheduled check asks again.
+scheduled check asks again. After the handoff, the new relay must keep reaching at least one
+of those computers for 20 seconds; if it loses them all, the updater restarts it
+once and rolls back if that does not help.
 
 A failed handoff restores the retained executable and helpers and restarts
 services on it. Rollback is local: the previous executable and helpers are kept

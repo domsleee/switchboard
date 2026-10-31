@@ -89,13 +89,18 @@ fn respond(mut stream: TcpStream, root: &Path) {
             let body = serde_json::json!({"relay": "rust", "commit": commit});
             (200, body.to_string().into_bytes())
         },
-        ("/api/hosts", Some(_)) => (
-            200,
-            fs::read(root.join("hosts.json")).unwrap_or_else(|_| {
-                br#"[{"id":"mac","sessions":[{"name":"main","web_clients_allowed":true}]}]"#
-                    .to_vec()
-            }),
-        ),
+        ("/api/hosts", Some(binary)) => {
+            let hosts = fs::read_to_string(root.join("hosts.json")).unwrap_or_else(|_| {
+                r#"[{"id":"mac","sessions":[{"name":"main","web_clients_allowed":true}]}]"#.into()
+            });
+            // A relay refused Local Network access reports every peer unavailable.
+            let hosts = if binary.contains("unreachable") {
+                hosts.replace(r#""error":null"#, r#""error":"No route to host""#)
+            } else {
+                hosts
+            };
+            (200, hosts.into_bytes())
+        },
         _ => (404, Vec::new()),
     };
     let _ = write!(
@@ -164,6 +169,7 @@ impl Harness {
                 source: root.join("release").display().to_string(),
                 menu_app: root.join("no-app/Switchboard"),
                 ready_timeout: Duration::from_secs(1),
+                peer_watch: Duration::ZERO,
             },
             _dir: dir,
             root,
@@ -878,4 +884,37 @@ fn lan_probe_targets_reachable_peers_and_waits_for_an_answer() {
         .to_string();
     assert!(lan_probe(&[closed.clone(), open], Duration::from_secs(5)).is_ok());
     assert!(lan_probe(&[closed], Duration::ZERO).is_err());
+}
+
+#[cfg(target_os = "macos")]
+#[serial_test::serial]
+#[test]
+fn a_relay_that_loses_paired_computers_is_restarted_once_then_rolled_back() {
+    let harness = Harness::new(false);
+    // No gateway address, so the Local Network probe has nothing to submit.
+    fs::write(
+        harness.root.join("hosts.json"),
+        r#"[{"id":"mac","sessions":[{"name":"main","web_clients_allowed":true}]},
+            {"id":"peer","local":false,"error":null,"sessions":[]}]"#,
+    )
+    .unwrap();
+    harness.publish(&full('b'), 5, "unreachable");
+    let error = harness.updater.run().unwrap_err();
+    assert!(format!("{error:#}").contains("cannot reach paired computers"));
+    assert!(harness.read("running").contains(OLD));
+    let calls = harness.calls();
+    assert_eq!(
+        calls.lines().count(),
+        3,
+        "handoff, one restart, rollback: {calls}"
+    );
+
+    harness.publish(&full('c'), 6, "");
+    harness.updater.run().unwrap();
+    assert_eq!(harness.state()["commit"], full('c'));
+    assert_eq!(
+        harness.calls().lines().count(),
+        4,
+        "a reachable peer needs no restart"
+    );
 }
