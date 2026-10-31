@@ -119,8 +119,9 @@ dialog p{font-size:12px;color:#9ba7bd}
 #native-tabs:hover .toggle-state{border-color:#6f7c93}
 #native-tabs[aria-pressed="true"] .toggle-state{background:#3d68a8;border-color:#6f9cdd}
 #native-tabs[aria-pressed="true"] .toggle-state::after{transform:translateX(14px);background:#f3f6fb}
-#machines label,#focus-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0;padding:7px 7px 7px 14px;font-size:13px;min-width:0;overflow-wrap:anywhere}
-#machines label+label{border-top:1px solid #222731}
+#machines label,#focus-row,#link-apps label{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0;padding:7px 7px 7px 14px;font-size:13px;min-width:0;overflow-wrap:anywhere}
+#machines label+label,#link-apps label+label{border-top:1px solid #222731}
+#link-apps input{width:200px;flex-shrink:0;font:inherit;font-size:12px;padding:5px 8px;background:#1c212b;color:inherit;border:1px solid #363e4d;border-radius:4px}
 #machines select,#focus-row select{width:auto;min-width:118px;flex-shrink:0;font-size:12px;padding:5px 8px;background:#1c212b}
 #machines:empty::before{content:'No machines connected yet.';display:block;padding:12px 14px;font-size:12px;color:#9ba7bd}
 .log-computer h4{position:sticky;top:0;margin:0;padding:8px 14px 6px;font-size:12px;font-weight:600;color:#b5bfd0;background:#111318}

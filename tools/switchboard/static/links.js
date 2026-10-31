@@ -27,6 +27,7 @@
     event.preventDefault();event.stopImmediatePropagation();
     try {
       const url=resolve(uri);
+      if(window.parent!==window&&parent.SwitchboardOpenInApp?.(host,url))return;
       if(event.metaKey||event.ctrlKey){
         // Open synchronously in this browser, then request foreground focus.
         // No popup features: use the browser's normal new-tab behavior.
