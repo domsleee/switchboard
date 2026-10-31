@@ -63,9 +63,14 @@ $('dismiss-status').onclick=()=>{
   $('status').classList.remove('has-error');
   if($('artifact-preview').hidden)$('terminals').querySelector('iframe.active')?.focus();
 };
+// Work only or Home only, chosen per browser so each one opens on its own group.
+function focusGroup(){
+  const group=localStorage.getItem('switchboard-focus-group');
+  return group==='home'||group==='work'?group:'';
+}
 function requestedFilter(){
   const group=new URLSearchParams(location.search).get('group');
-  return group==='home'||group==='work'?group:'all';
+  return group==='home'||group==='work'||group==='all'?group:focusGroup()||'all';
 }
 function requestedTab(){
   const query=new URLSearchParams(location.search),host=query.get('host'),session=query.get('session'),kind=query.has('tab')?'tab':'pane',id=query.get(kind);
@@ -851,9 +856,19 @@ $('copy').onclick=async()=>{
   setStatus(result.ok?'Copied to this browser.':result.error||'Nothing selected. Select terminal text first.',!result.ok);
 };
 function renderFilter(){
-  for(const b of $('filters').children)b.classList.toggle('selected',b.dataset.filter===filter);
+  const focus=focusGroup(),more=$('filter-more');
+  for(const b of $('filters').querySelectorAll('[data-filter]')){b.classList.toggle('selected',b.dataset.filter===filter);b.hidden=!!focus&&b.dataset.filter!==focus;}
+  more.hidden=!focus;
+  if(focus){
+    const others=[...$('filters').querySelectorAll('[data-filter]')].filter(b=>b.hidden);
+    // The focused group's option only labels the closed dropdown.
+    const label=new Option('Show more',focus);label.hidden=true;
+    more.replaceChildren(label,...others.map(b=>new Option(b.textContent,b.dataset.filter)));
+    more.value=filter;more.classList.toggle('selected',filter!==focus);
+  }
+  $('focus-group').value=focus;
   const url=new URL(location.href);
-  if(filter==='all')url.searchParams.delete('group');else url.searchParams.set('group',filter);
+  if(filter===(focus||'all'))url.searchParams.delete('group');else url.searchParams.set('group',filter);
   if(url.href!==location.href)history.replaceState(null,'',url);
 }
 // The tab last used in each group, restored when returning to that group.
@@ -871,6 +886,8 @@ function setFilter(value){
   if(selected!==previous&&current)focus(current);
 }
 $('filters').onclick=event=>{const button=event.target.closest('[data-filter]');if(button)setFilter(button.dataset.filter);};
+$('filter-more').onchange=event=>setFilter(event.target.value);
+$('focus-group').onchange=event=>{localStorage.setItem('switchboard-focus-group',event.target.value);setFilter(event.target.value||'all');};
 renderFilter();
 $('new-tab').onclick=()=>{
   const select=$('new-tab-target');select.replaceChildren();

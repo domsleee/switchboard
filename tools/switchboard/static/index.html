@@ -7,7 +7,7 @@
 <div id="sidebar-tools">
 <div class="sidebar-brand"><strong>Switchboard</strong><button id="new-tab" aria-label="New tab" title="New terminal tab · Ctrl+Alt+T on Windows · Cmd+Alt+T on Mac">+</button></div>
 <label class="sr-only" for="tab-search">Search tabs and machines</label><input id="tab-search" type="search" placeholder="Search tabs…" autocomplete="off">
-<nav id="filters" aria-label="Machine group"><button data-filter="all" class="selected">All</button><button data-filter="work">Work</button><button data-filter="home">Home</button></nav>
+<nav id="filters" aria-label="Machine group"><button data-filter="all" class="selected">All</button><button data-filter="work">Work</button><button data-filter="home">Home</button><select id="filter-more" aria-label="Other machine groups" hidden></select></nav>
 <div id="sidebar-summary"><span id="notifications" role="status" aria-live="polite"></span><span id="tab-count"></span></div>
 </div>
 <div id="tab-empty" role="status" aria-live="polite" hidden><span id="tab-empty-text"></span><button id="tab-empty-action" hidden></button></div>
@@ -44,7 +44,7 @@
 <section id="panel-logs" class="panel-section" role="tabpanel" aria-labelledby="panel-tab-logs" hidden><div class="settings-heading"><p>Recent Switchboard errors on each computer, newest first.</p><button id="refresh-logs" title="Reload recent errors from every computer">Refresh</button></div><section id="logs" class="settings-group" aria-label="Recent errors" aria-busy="false"></section></section>
 <section id="panel-settings" class="panel-section" role="tabpanel" aria-labelledby="panel-tab-settings">
 <section class="settings-section" aria-labelledby="appearance-heading"><h3 id="appearance-heading">Appearance</h3><div class="settings-group"><button id="native-tabs" aria-pressed="false" aria-describedby="native-tabs-help">Native tab bar<span class="toggle-state" aria-hidden="true"></span></button><p id="native-tabs-help">Show the original Zellij tabs inside each terminal.</p></div></section>
-<section class="settings-section" aria-labelledby="machines-heading"><div class="settings-heading"><h3 id="machines-heading">Machines</h3><button id="refresh" title="Refresh machines and sessions">Refresh</button></div><p>Choose which machines appear in Work and Home.</p><section id="machines" class="settings-group" aria-label="Machine groups"></section></section>
+<section class="settings-section" aria-labelledby="machines-heading"><div class="settings-heading"><h3 id="machines-heading">Machines</h3><button id="refresh" title="Refresh machines and sessions">Refresh</button></div><p>Choose which machines appear in Work and Home.</p><div class="settings-group"><label id="focus-row">This browser shows<select id="focus-group"><option value="">All groups</option><option value="work">Work only</option><option value="home">Home only</option></select></label></div><section id="machines" class="settings-group" aria-label="Machine groups"></section></section>
 <p id="build-version" title="Commit and commit date of the running Switchboard relay">Version unavailable</p>
 </section>
 </div>
