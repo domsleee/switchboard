@@ -251,7 +251,8 @@ pub(super) async fn scan(host: &Host, offset: usize) -> anyhow::Result<Value> {
     let mut results = Vec::new();
     let mut errors = Vec::new();
     let mut deferred_sessions = Vec::new();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+    // A busy engine can take several seconds to list panes; wait rather than report it unavailable.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     for (name, created) in names {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
@@ -262,12 +263,17 @@ pub(super) async fn scan(host: &Host, offset: usize) -> anyhow::Result<Value> {
             host,
             &name,
             &["list-panes", "--json", "--all"],
-            remaining.min(Duration::from_secs(5)),
+            remaining.min(Duration::from_secs(15)),
         )
         .await;
-        let panes: Vec<Value> = match panes.ok().and_then(|text| serde_json::from_str(&text).ok()) {
-            Some(panes) => panes,
-            None => {
+        let panes = panes.and_then(|text| Ok(serde_json::from_str::<Vec<Value>>(&text)?));
+        let panes = match panes {
+            Ok(panes) => panes,
+            Err(error) => {
+                logs::record(
+                    &host.config.name,
+                    &format!("Could not list panes in session '{name}': {error:#}"),
+                );
                 errors.push(json!({"host":host.config.id,"session":name,"message":"Session snapshots unavailable"}));
                 continue;
             },
@@ -328,6 +334,8 @@ pub(super) struct PollState {
     refreshed: HashMap<String, tokio::time::Instant>,
     // Rises whenever a cached snapshot changes, waking peers waiting on this computer.
     pub(super) changes: tokio::sync::watch::Sender<u64>,
+    // Working panes whose latest screen could not be read.
+    unreadable: std::collections::HashSet<String>,
     dirty: bool,
 }
 
@@ -417,6 +425,14 @@ impl PollState {
             } else {
                 self.scanned
                     .insert(key.clone(), tokio::time::Instant::now());
+            }
+            // One unreadable screen mid-turn (a dump between redraws, a timed-out dump)
+            // does not end the turn; a second one in a row does.
+            if row["state"] != "unknown" {
+                self.unreadable.remove(&key);
+            } else if previous["state"] == "working" && self.unreadable.insert(key.clone()) {
+                row["state"] = json!("working");
+                row["agent"] = previous["agent"].clone();
             }
             // The newest completion line seen so far. A screen that no longer
             // shows one (scrolled, resized by another viewer) is not a new result.
@@ -1278,6 +1294,36 @@ echo [{"id":1,"tab_id":4,"tab_position":0,"tab_name":"T","title":"x","pane_comma
         let mut expired = json!({"panes":[],"tabs":[],"errors":[],"deferred_sessions":["main"]});
         poll.update("mac", &mut expired);
         assert!(expired["panes"].as_array().unwrap().is_empty());
+    }
+    #[test]
+    fn one_unreadable_screen_does_not_end_a_working_turn() {
+        let mut poll = PollState::default();
+        let mut scan = |state: &str| {
+            let mut snapshot = json!({"panes":[{"session":"main","pane_id":1,"state":state,"agent":"claude"}],"tabs":[],"errors":[]});
+            if state == "unknown" {
+                snapshot["panes"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("agent");
+            }
+            poll.update("mac", &mut snapshot);
+            snapshot["panes"][0]["state"].as_str().unwrap().to_owned()
+        };
+        assert_eq!(scan("working"), "working");
+        assert_eq!(scan("unknown"), "working");
+        assert_eq!(scan("working"), "working");
+        assert_eq!(
+            scan("unknown"),
+            "working",
+            "a readable screen re-arms the hold"
+        );
+        assert_eq!(
+            scan("unknown"),
+            "unknown",
+            "two unreadable screens in a row"
+        );
+        assert_eq!(scan("ready"), "ready");
+        assert_eq!(scan("unknown"), "unknown", "only a working turn is held");
     }
     #[test]
     fn reviews_persist_per_result_and_owner_snapshots_pass_through() {
