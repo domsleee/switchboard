@@ -37,10 +37,15 @@ function Stop-Captured($Identity, [string]$Pattern) {
         $live.CommandLine -notmatch $Pattern -or $live.CommandLine -match '(?:^|\s)--server(?:\s|=)') {
         throw 'Service identity changed; refusing to stop it'
     }
+    # Older relays' screen subscribers inherit the relay's listening socket, so
+    # one left running would keep the replacement relay from binding its port.
+    $subscribers = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$($live.ProcessId)" |
+        Where-Object { $_.CommandLine -match '\bsubscribe\b' -and $_.CreationDate -ge $live.CreationDate })
     # A service that exits between the identity check and the stop is fine.
     try { Stop-Process -Id $live.ProcessId -ErrorAction Stop }
     catch { if (Get-Process -Id $live.ProcessId -ErrorAction SilentlyContinue) { throw } }
     Wait-Process -Id $live.ProcessId -Timeout 10 -ErrorAction SilentlyContinue
+    foreach ($subscriber in $subscribers) { Stop-Process -Id $subscriber.ProcessId -ErrorAction SilentlyContinue }
 }
 if ($Action -eq 'Arguments') {
     # The running tray's -Config/-ReleaseDirectory, for updates started without them.

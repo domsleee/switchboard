@@ -8,14 +8,20 @@ $function = $ast.Find({ param($node)
 }, $true)
 . ([scriptblock]::Create($function.Extent.Text))
 $script:stopped = @()
-function Get-CimInstance { $script:live }
+$script:children = @()
+function Get-CimInstance($ClassName, $Filter) { if ($Filter -like 'ParentProcessId=*') { $script:children } else { $script:live } }
 function Stop-Process([int]$Id) { $script:stopped += $Id }
 function Wait-Process {}
 $started = [DateTime]::UtcNow
 $identity = [pscustomobject]@{id=123; started=$started.ToString('o')}
 $script:live = [pscustomobject]@{ProcessId=123; CreationDate=$started; CommandLine='zellij.exe serve --port 80'}
+$script:children = @(
+    [pscustomobject]@{ProcessId=124; CreationDate=$started.AddSeconds(1); CommandLine='zellij.exe -s main subscribe --format json --pane-id 5'},
+    [pscustomobject]@{ProcessId=125; CreationDate=$started.AddSeconds(-1); CommandLine='zellij.exe -s main subscribe --format json --pane-id 6'},
+    [pscustomobject]@{ProcessId=126; CreationDate=$started.AddSeconds(1); CommandLine='zellij.exe -s main action list-panes --json'})
 Stop-Captured $identity '\bserve\b'
-if ($script:stopped.Count -ne 1) { throw 'Expected exactly one service stop' }
+if (($script:stopped -join ',') -ne '123,124') { throw "Expected the relay and its own subscriber to stop, got $($script:stopped -join ',')" }
+$script:children = @(); $script:stopped = @(123)
 foreach ($command in @('zellij.exe --server main', 'zellij.exe serve --server main', 'unrelated.exe')) {
     $script:live.CommandLine = $command
     $rejected = $false
@@ -39,7 +45,7 @@ function Get-Process { [pscustomobject]@{Id=123} }
 $rejected = $false
 try { Stop-Captured $identity '\bserve\b' } catch { $rejected = $true }
 if (!$rejected) { throw 'A failed stop of a still-running service was ignored' }
-Write-Output 'PASS: captured service stop rejects engines, unrelated processes and reused PIDs, and tolerates a service that already exited'
+Write-Output 'PASS: captured service stop rejects engines, unrelated processes and reused PIDs, stops the relay''s own subscribers, and tolerates a service that already exited'
 
 
 # Tray identity and settings come from the running tray, not the updater's location.
