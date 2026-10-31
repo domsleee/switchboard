@@ -1269,7 +1269,28 @@ pub async fn router(config: RelayConfig, port: u16) -> anyhow::Result<Router> {
 /// Start the relay on loopback. Never restarts user terminal engines.
 pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
     let config: RelayConfig = serde_json::from_slice(&tokio::fs::read(config_path).await?)?;
-    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await?;
+    let address = (std::net::Ipv4Addr::LOCALHOST, port);
+    let listener = match tokio::net::TcpListener::bind(address).await {
+        #[cfg(windows)]
+        Err(error)
+            if error.kind() == std::io::ErrorKind::AddrInUse
+                && attention::stop_orphaned_subscribers() =>
+        {
+            // The port frees once Windows closes the stopped processes' socket copies.
+            let mut attempts = 0;
+            loop {
+                match tokio::net::TcpListener::bind(address).await {
+                    Ok(listener) => break listener,
+                    Err(_) if attempts < 10 => {
+                        attempts += 1;
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    },
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        },
+        result => result?,
+    };
     let port = listener.local_addr()?.port();
     let mut state = state(&config, port).await?;
     if let Some(local) = state

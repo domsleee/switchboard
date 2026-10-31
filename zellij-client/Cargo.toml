@@ -71,6 +71,7 @@ windows-sys = { workspace = true, features = [
     "Win32_Security",
     "Win32_Security_Authorization",
 ] }
+sysinfo = { version = "0.39.5", default-features = false, features = ["system"] }
 
 [dev-dependencies]
 rcgen = "0.14"

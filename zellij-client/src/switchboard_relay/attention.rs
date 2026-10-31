@@ -441,6 +441,65 @@ impl Screens {
     }
 }
 
+/// Screen subscribers whose relay is gone. Relays built with mio before 1.2.1
+/// let them inherit the listening socket, so one left running keeps the port bound.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn orphaned_subscribers(processes: &[(u32, Option<u32>, Vec<String>)]) -> Vec<u32> {
+    let alive: std::collections::HashSet<u32> = processes.iter().map(|(pid, ..)| *pid).collect();
+    processes
+        .iter()
+        .filter(|(_, parent, command)| {
+            !parent.is_some_and(|parent| alive.contains(&parent))
+                && command.windows(4).any(|args| {
+                    args.iter().map(String::as_str).eq([
+                        "subscribe",
+                        "--format",
+                        "json",
+                        "--pane-id",
+                    ])
+                })
+        })
+        .map(|(pid, ..)| *pid)
+        .collect()
+}
+
+/// Stop orphaned subscribers; true if there were any.
+#[cfg(windows)]
+pub(super) fn stop_orphaned_subscribers() -> bool {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
+    );
+    let processes: Vec<_> = system
+        .processes()
+        .iter()
+        .map(|(pid, process)| {
+            let command = process.cmd().iter();
+            (
+                pid.as_u32(),
+                process.parent().map(Pid::as_u32),
+                command
+                    .map(|arg| arg.to_string_lossy().into_owned())
+                    .collect(),
+            )
+        })
+        .collect();
+    let orphans = orphaned_subscribers(&processes);
+    for pid in &orphans {
+        if let Some(process) = system.process(Pid::from_u32(*pid)) {
+            logs::record(
+                "relay",
+                &format!("Stopping orphaned screen subscriber {pid}"),
+            );
+            process.kill();
+        }
+    }
+    !orphans.is_empty()
+}
+
 fn subscribe(
     host: &Host,
     session: &str,
@@ -1776,6 +1835,40 @@ esac
         poll.update("mac", &mut expired);
         assert!(expired["panes"].as_array().unwrap().is_empty());
     }
+    #[test]
+    fn only_subscribers_whose_relay_is_gone_are_orphans() {
+        let args = |line: &str| line.split(' ').map(str::to_owned).collect::<Vec<_>>();
+        let processes = vec![
+            (10, Some(1), args("zellij.exe serve --port 80")),
+            (
+                11,
+                Some(10),
+                args("zellij.exe -s main subscribe --format json --pane-id 5 6"),
+            ),
+            (
+                12,
+                Some(99),
+                args("zellij.exe -s main subscribe --format json --pane-id 5 6"),
+            ),
+            (
+                13,
+                None,
+                args("zellij.exe -s work subscribe --format json --pane-id 1"),
+            ),
+            (
+                14,
+                Some(99),
+                args("zellij.exe -s main subscribe --pane-id 5"),
+            ),
+            (
+                15,
+                Some(99),
+                args("zellij.exe -s main action list-panes --json"),
+            ),
+        ];
+        assert_eq!(orphaned_subscribers(&processes), vec![12, 13]);
+    }
+
     #[test]
     fn one_unreadable_screen_does_not_end_a_working_turn() {
         let mut poll = PollState::default();
