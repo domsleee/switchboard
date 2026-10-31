@@ -620,19 +620,29 @@ async fn terminal_response(
         }));
     }
     if path.split('?').next() == Some("/switchboard/attention") && request.method() == Method::GET {
-        let offset = request
-            .uri()
-            .query()
-            .and_then(|q| {
-                url::form_urlencoded::parse(q.as_bytes())
-                    .find(|(k, _)| k == "offset")
-                    .and_then(|(_, v)| v.parse::<usize>().ok())
-            })
-            .unwrap_or(0);
+        let query = request.uri().query().unwrap_or("").to_owned();
+        let parameter = |name: &str| {
+            url::form_urlencoded::parse(query.as_bytes())
+                .find(|(k, _)| k == name)
+                .and_then(|(_, v)| v.parse::<u64>().ok())
+        };
+        let offset = parameter("offset").unwrap_or(0) as usize;
+        let after = parameter("after");
         // Serve the owner's poll, so every peer shows its generations and reviews.
         let local = &mesh.local_engine.config.id;
         if let Some(poll) = mesh.attention.get() {
-            if let Some(snapshot) = poll.lock().await.owned(local) {
+            if let Some(after) = after {
+                // Answer when this computer's status changes, so peers need not poll.
+                let mut changes = poll.lock().await.changes.subscribe();
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(25),
+                    changes.wait_for(|version| *version != after),
+                )
+                .await;
+            }
+            let poll = poll.lock().await;
+            if let Some(mut snapshot) = poll.owned(local) {
+                snapshot["version"] = json!(*poll.changes.borrow());
                 return Ok(Json(snapshot).into_response());
             }
         }

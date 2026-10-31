@@ -10,7 +10,7 @@ function monitorContext(){
   const windows={host:'windows',name:'main',catalog:[tab('windows',42)]};
   const other={host:'windows',name:'other',catalog:[tab('windows',90,'other')]};
   const mac={host:'mac',name:'main',catalog:[tab('mac',1)]};
-  const context={attentionErrors:[],attentionLoading:false,attentionRefreshPending:false,paneAttention:new Map(),
+  const context={attentionErrors:[],attentionLoading:false,attentionRefreshPending:false,attentionVersion:0,paneAttention:new Map(),
     tabCatalog:[...windows.catalog,...other.catalog,...mac.catalog],sessions:new Map([['windows',windows],['other',other],['mac',mac]]),
     selected:key('windows',42),allTabs:()=>[],render(){},focus(){assert.fail('Background scanning must not request focus');},
     attentionKey:(host,session,pane)=>JSON.stringify([host,session,pane]),
@@ -18,7 +18,7 @@ function monitorContext(){
     timers:[],setTimeout(fn,ms){context.timers.push({fn,ms});},refreshes:0,refresh(){context.refreshes++;},Date:{now:()=>context.now},now:0};
   vm.createContext(context);
   vm.runInContext(source.slice(source.indexOf('function catalogUnavailable('),source.indexOf('function updateTabUrl(')),context);
-  vm.runInContext(source.slice(source.indexOf('async function refreshAttention('),source.indexOf('refreshAttention();setInterval')),context);
+  vm.runInContext(source.slice(source.indexOf('async function refreshAttention('),source.indexOf('// The relay answers as soon as status changes')),context);
   context.poll=async data=>{context.fetch=async()=>({ok:true,json:async()=>data});await context.refreshAttention();};
   return {context,windows,other,mac};
 }

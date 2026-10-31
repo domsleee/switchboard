@@ -222,7 +222,9 @@ Zellij. Detection follows terminal UI markers; unrecognized screens report
 unknown, and disconnected hosts lose stale ready status. Very short turns between
 polls can be missed if their completion marker is unchanged. The Rust scanner
 reads native pane snapshots locally; paired computers scan themselves and return
-snapshots through their gateway. Only pane
+snapshots through their gateway. Each paired computer is asked separately and holds
+the request until its status changes, and `/api/attention?after=<version>` likewise
+answers the browser as soon as the snapshot changes. Only pane
 identity/status/change markers reach the browser, not terminal transcripts.
 
 **Mark ready** also stars a tab manually. Native tab names starting with `*` are

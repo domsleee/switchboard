@@ -26,7 +26,7 @@ const ready = load('switchboard-ready');
 const archived = load('switchboard-archived');
 if(restoringTab&&archived[selected]){delete archived[selected];localStorage.setItem('switchboard-archived',JSON.stringify(archived));}
 const seenAttention = load('switchboard-attention-seen');
-let attentionLoaded=false,paneAttention=new Map(),tabCatalog=[],attentionErrors=[],attentionLoading=false,attentionRefreshPending=false;
+let attentionLoaded=false,paneAttention=new Map(),tabCatalog=[],attentionErrors=[],attentionLoading=false,attentionRefreshPending=false,attentionVersion=0;
 let contextItem = null, menuTrigger = null, archiveSignature = null;
 let tabOrder=load('switchboard-tab-order');
 if(!Array.isArray(tabOrder))tabOrder=[];
@@ -1205,11 +1205,14 @@ if(startup){
 }
 refresh();
 
-async function refreshAttention(immediate=false){
-  if(attentionLoading){attentionRefreshPending ||= immediate;return;}attentionLoading=true;
+async function refreshAttention(immediate=false,watch=false){
+  if(!watch){if(attentionLoading){attentionRefreshPending ||= immediate;return;}attentionLoading=true;}
   try{
-    const response=await fetch('/api/attention');if(!response.ok)throw Error('Attention monitor unavailable');
+    const response=await fetch(watch?`/api/attention?after=${attentionVersion}`:'/api/attention');if(!response.ok)throw Error('Attention monitor unavailable');
     const data=await response.json();attentionLoaded=true;
+    // Answers can overlap; an older one must not undo a newer one.
+    if(data.version<attentionVersion)return true;
+    attentionVersion=data.version??attentionVersion;
     if(relayLostAt){relayLostAt=0;refresh();}
     paneAttention=new Map((data.panes||[]).map(state=>{const key=attentionKey(state.host,state.session,state.pane_id);return [key,{...state,key}];}));
     attentionErrors=data.errors||[];
@@ -1229,8 +1232,10 @@ async function refreshAttention(immediate=false){
     if(current && document.hasFocus() && !document.hidden && $('artifact-preview').hidden && !document.querySelector('dialog[open]') && !current.entry.requestedPane && !current.entry.focusPending && activeTab(current.entry)?.id===current.tab.id)acknowledgeAttention(current);
     render();
     const selectedTab=allTabs().find(item=>item.key===selected);if(selectedTab?.entry.needsFocus)focus(selectedTab,true);
-  }catch(_){attentionLoaded=true;paneAttention.clear();attentionErrors=[{host:'Switchboard'}];render();relayLost();}
-  finally{attentionLoading=false;if(attentionRefreshPending){attentionRefreshPending=false;refreshAttention();}}
+    // A relay without versions answers at once, so wait before asking again.
+    return data.version!==undefined;
+  }catch(_){attentionLoaded=true;paneAttention.clear();attentionErrors=[{host:'Switchboard'}];render();relayLost();return false;}
+  finally{if(!watch){attentionLoading=false;if(attentionRefreshPending){attentionRefreshPending=false;refreshAttention();}}}
 }
 // An upgrade restarts the relay for about a second. Retry every 250 ms for 10 s
 // instead of waiting for the next poll, and reload hosts once it answers.
@@ -1239,7 +1244,9 @@ function relayLost(){
   relayLostAt||=Date.now();
   if(Date.now()-relayLostAt<10000)setTimeout(refreshAttention,250);
 }
-refreshAttention();setInterval(refreshAttention,2000);
+// The relay answers as soon as status changes, so tabs update without polling.
+refreshAttention();
+(async()=>{for(;;)if(!await refreshAttention(false,true))await new Promise(resolve=>setTimeout(resolve,2000));})();
 
 const browserDiagnostics=window.SwitchboardBrowserDiagnostics?.(diagnostic=>{
   fetch('/api/diagnostics/browser-resume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(diagnostic),keepalive:true})

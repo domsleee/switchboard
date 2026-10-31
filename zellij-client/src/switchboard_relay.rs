@@ -84,7 +84,8 @@ struct RelayState {
     hosts: Arc<HashMap<String, Arc<Host>>>,
     order: Arc<Vec<String>>,
     port: u16,
-    attention: Arc<Mutex<Value>>,
+    // The merged status snapshot and a version that changes with it.
+    attention: Arc<tokio::sync::watch::Sender<(u64, Value)>>,
     poll: Arc<Mutex<attention::PollState>>,
     mesh: Option<Arc<mesh::Mesh>>,
     // Remote entries left in the hosts file, offered only as "Pair this computer".
@@ -1171,9 +1172,13 @@ async fn state(config: &RelayConfig, port: u16) -> anyhow::Result<RelayState> {
         order: Arc::new(order),
         port,
         // Until the first scan, report every host unavailable rather than tabless.
-        attention: Arc::new(Mutex::new(
+        attention: Arc::new(tokio::sync::watch::Sender::new((
+            // Versions keep rising across restarts, so browsers can drop stale answers.
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |since| since.as_millis() as u64),
             json!({"panes": [], "tabs": [], "errors": [{"host": "Switchboard", "message": "Status starting"}]}),
-        )),
+        ))),
         poll: Default::default(),
         mesh: None,
         candidates: Arc::new(candidates),
@@ -2418,8 +2423,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(attention.status, StatusCode::OK);
+        let mut attention = serde_json::from_slice::<Value>(&attention.body).unwrap();
+        assert!(attention["version"].as_u64().is_some());
+        attention.as_object_mut().unwrap().remove("version");
         assert_eq!(
-            serde_json::from_slice::<Value>(&attention.body).unwrap(),
+            attention,
             json!({"panes": [], "tabs": [], "errors": [{"host": "Switchboard", "message": "Status starting"}]})
         );
         assert_eq!(
