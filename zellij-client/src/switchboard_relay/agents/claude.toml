@@ -9,7 +9,7 @@
 #
 # Lists match when any pattern matches. A list of lists matches when every
 # pattern in one inner list matches.
-version = "2026-10-30"
+version = "2026-10-29"
 
 # Which panes are Claude: the running command, or its prompt footer on screen.
 command = ['\bclaude(?:\.exe)?\b']
@@ -47,12 +47,11 @@ above_prompt = [
   # A Monitor keeps waiting after the reply ends: "1 monitor still running".
   '\b[1-9]\d* monitors? still running',
 ]
-# Below the prompt: background agents, shells and Monitors can outlive the main reply.
+# Below the prompt: active background agents can outlive the main reply.
+# Shell counts alone are not work: a dev server may stay running while Claude is idle.
 below_prompt = [
   # A background agent row with a live timer: "◯ fork  Reading files   4m 19s · ↓ 461k tokens".
   '(?m)^[ \t]*◯[ \t]+\S[^\n]*\b\d+[hms]\b',
   # Monitors count in the task footer, "1 shell, 1 monitor", or "1 monitor still running".
   '\b[1-9]\d* monitors?\b',
-  # Live shells in the task footer, "· 1 shell ·"; it drops the count when they exit.
-  '\b[1-9]\d* shells?\s*[,·]',
 ]
