@@ -854,7 +854,7 @@ echo [{"id":1,"tab_id":4,"tab_position":0,"tab_name":"T","title":"x","pane_comma
     }
 
     #[test]
-    fn claude_prompt_with_a_background_shell_is_working_until_it_exits() {
+    fn claude_idle_prompt_is_ready_with_a_persistent_background_shell() {
         let pane = json!({"pane_command":"claude.exe --dangerously-skip-permissions","title":"✳ Example task"});
         // Claude Code 2.1.301, sanitized from an idle pane with a dev server still running.
         let screen = "● The requested change is ready.\n\
@@ -863,28 +863,25 @@ echo [{"id":1,"tab_id":4,"tab_position":0,"tab_name":"T","title":"x","pane_comma
               ⏵⏵ bypass permissions on · 1 shell · ← for agents · ↓ to manage\
               ✔ Update installed · Restart to update\n\
               new task? /clear to save 154.6k tokens";
-        assert_eq!(classify(&pane, screen)["state"], "working");
-        for count in ["2 shells", "12 shells"] {
-            assert_eq!(
-                classify(&pane, &screen.replace("1 shell ·", &format!("{count} ·")))["state"],
-                "working",
-                "{count}"
-            );
-        }
-        // The finished line keeps saying "still running"; the footer count is live.
-        let exited = screen.replace(" · 1 shell ·", " ·");
-        assert_eq!(classify(&pane, &exited)["state"], "ready");
+        assert_eq!(classify(&pane, screen)["state"], "ready");
         assert_eq!(
-            classify(&json!({"title":"✳ Example task"}), &exited),
-            classify(&pane, &exited),
+            classify(&json!({"title":"✳ Example task"}), screen),
+            classify(&pane, screen),
             "the native pane has no command metadata, so its footer must identify Claude"
         );
         assert_ne!(
-            classify(&pane, &exited)["token"],
+            classify(&pane, screen)["token"],
             "idle",
             "the accented finished verb must identify the completed turn"
         );
-        for screen in [exited.clone(), exited.replace('\n', "\r\n")] {
+        for count in ["2 shells", "12 shells"] {
+            assert_eq!(
+                classify(&pane, &screen.replace("1 shell ·", &format!("{count} ·")))["state"],
+                "ready",
+                "{count}"
+            );
+        }
+        for screen in [screen.to_owned(), screen.replace('\n', "\r\n")] {
             let busy = screen.replace(
                 "✻ Sautéed for 26s",
                 "· Perambulating… (23s · ↓ 1.4k tokens)\n✻ Sautéed for 26s",
@@ -898,25 +895,29 @@ echo [{"id":1,"tab_id":4,"tab_position":0,"tab_name":"T","title":"x","pane_comma
     }
 
     #[test]
-    fn claude_background_shell_counts_are_working() {
+    fn claude_background_shell_counts_do_not_override_real_agent_state() {
         let pane = json!({"pane_command":"claude.exe --dangerously-skip-permissions","title":"✳ background build"});
-        // Claude Code 2.1.301: a reply that left a background shell running.
+        // Claude Code 2.1.301: a background shell may be a long-lived dev server.
         let screen = "● The build is running in the background.\n\
             ✻ Baked for 1m 40s · done 12:34 PM · 1 shell still running\n\
             ─────\n❯ \n─────\n\
               ⏵⏵ bypass permissions on · 1 shell · ← for agents · ↓ to manage";
-        assert_eq!(classify(&pane, screen)["state"], "working");
-        for count in ["2 shells", "12 shells", "1 shell, 1 monitor"] {
+        assert_eq!(classify(&pane, screen)["state"], "ready");
+        for count in ["2 shells", "12 shells"] {
             let screen = screen.replace("1 shell ·", &format!("{count} ·"));
-            assert_eq!(classify(&pane, &screen)["state"], "working", "{count}");
+            assert_eq!(classify(&pane, &screen)["state"], "ready", "{count}");
         }
         let default_permissions = screen.replace("⏵⏵ bypass permissions on", "? for shortcuts");
-        assert_eq!(classify(&pane, &default_permissions)["state"], "working");
+        assert_eq!(classify(&pane, &default_permissions)["state"], "ready");
         let idle = screen.replace(" · 1 shell · ← for agents · ↓ to manage", " · ← for agents");
         assert_eq!(
             classify(&pane, &idle)["state"],
             "ready",
-            "the footer drops the count when the shell exits"
+            "clearing a shell count does not change the completed turn"
+        );
+        assert_eq!(
+            classify(&pane, screen)["token"],
+            classify(&pane, &idle)["token"]
         );
         assert_eq!(
             classify(&pane, &format!("{screen}\n{idle}"))["state"],
@@ -933,7 +934,8 @@ echo [{"id":1,"tab_id":4,"tab_position":0,"tab_name":"T","title":"x","pane_comma
             "· Perambulating… (23s · ↓ 1.4k tokens)",
         );
         assert_eq!(classify(&pane, &working)["state"], "working");
-        for count in ["1 monitor", "2 shells, 3 monitors"] {
+        // A Monitor in the task footer means Claude is waiting on it, unlike a shell.
+        for count in ["1 shell, 1 monitor", "1 monitor", "2 shells, 3 monitors"] {
             let screen = screen.replace("1 shell ·", &format!("{count} ·"));
             assert_eq!(classify(&pane, &screen)["state"], "working", "{count}");
         }
@@ -956,7 +958,7 @@ echo [{"id":1,"tab_id":4,"tab_position":0,"tab_name":"T","title":"x","pane_comma
             assert_eq!(running["panes"][0]["state"], "working");
             assert!(running["panes"][0].get("token").is_none());
         }
-        let mut finished = snapshot(&idle);
+        let mut finished = snapshot(screen);
         poll.update("windows", &mut finished);
         assert!(finished["panes"][0]["token"]
             .as_str()
