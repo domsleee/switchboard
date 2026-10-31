@@ -87,6 +87,17 @@ fn probe_addresses(hosts: &serde_json::Value) -> Vec<String> {
     addresses
 }
 
+/// Paired computers the running relay reaches now, by id.
+fn reachable_peers(hosts: &serde_json::Value) -> Vec<String> {
+    hosts
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|host| host["local"] == false && host["error"].is_null())
+        .filter_map(|host| host["id"].as_str().map(str::to_owned))
+        .collect()
+}
+
 /// Keeps retrying instead of exiting on the first refusal: macOS shows no
 /// Local Network alert to a launchd job that exits immediately (TN3179).
 fn lan_probe(addresses: &[String], timeout: Duration) -> Result<()> {
@@ -371,6 +382,7 @@ pub struct Updater {
     source: String,
     menu_app: PathBuf,
     ready_timeout: Duration,
+    peer_watch: Duration,
 }
 
 impl Updater {
@@ -435,6 +447,7 @@ impl Updater {
             source: cli.source.clone().unwrap_or_else(|| RELEASE_URL.to_owned()),
             menu_app: home.join("Applications/Switchboard.app/Contents/MacOS/Switchboard"),
             ready_timeout: Duration::from_secs(60),
+            peer_watch: Duration::from_secs(20),
         })
     }
 
@@ -606,8 +619,10 @@ impl Updater {
         let candidate = bundle.join(self.exe());
         make_executable(&candidate)?;
         self.verify_auth(&old, &candidate)?;
+        let mut peers = Vec::new();
         if cfg!(target_os = "macos") {
             self.check_lan_access(&candidate)?;
+            peers = reachable_peers(&self.local_json("/api/hosts", Duration::from_secs(30))?);
         }
         let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let backup = self.state_directory.join(format!("rollback-{nanos}"));
@@ -645,7 +660,14 @@ impl Updater {
         state.pending = Some(pending.clone());
         state.save(&self.state_path())?;
         let mut replaced = false;
-        if let Err(error) = self.handoff(bundle, manifest, &snapshot, &sessions, &mut replaced) {
+        if let Err(error) = self.handoff(
+            bundle,
+            manifest,
+            &snapshot,
+            &sessions,
+            &peers,
+            &mut replaced,
+        ) {
             if replaced {
                 // Undo this transaction's helper replacement along with the binary.
                 for name in self.helper_names(manifest) {
@@ -673,6 +695,7 @@ impl Updater {
         manifest: &Manifest,
         snapshot: &Path,
         sessions: &[Session],
+        peers: &[String],
         replaced: &mut bool,
     ) -> Result<()> {
         let candidate = bundle.join(self.exe());
@@ -692,6 +715,17 @@ impl Updater {
             // identities, restarts web + relay, and restores itself on failure.
             self.install_mac(&self.helpers, &candidate, Some(&manifest.commit))?;
             self.wait_ready(Some(&manifest.commit), sessions)?;
+            if !self.peers_stay_reachable(peers) {
+                // On 2026-10-31 macOS refused a new relay Local Network access
+                // after the probe passed, while a restarted relay was allowed.
+                eprintln!("The new relay lost paired computers; restarting it once");
+                self.install_mac(&self.helpers, &candidate, Some(&manifest.commit))?;
+                self.wait_ready(Some(&manifest.commit), sessions)?;
+                ensure!(
+                    self.peers_stay_reachable(peers),
+                    "The new relay cannot reach paired computers the previous one reached"
+                );
+            }
         }
         *replaced = true;
         let previous_menu = fs::read(self.helpers.join("menu_bar.swift")).ok();
@@ -848,6 +882,27 @@ impl Updater {
             std::thread::sleep(Duration::from_millis(250));
         }
         bail!("Relay did not recover its build identity and existing session catalog")
+    }
+
+    /// Whether the relay keeps reaching any of `peers` for the watch period;
+    /// the refusal on 2026-10-31 began only after the relay first answered.
+    fn peers_stay_reachable(&self, peers: &[String]) -> bool {
+        if peers.is_empty() {
+            return true;
+        }
+        let deadline = Instant::now() + self.peer_watch;
+        loop {
+            let reachable = self
+                .local_json::<serde_json::Value>("/api/hosts", Duration::from_secs(30))
+                .is_ok_and(|hosts| reachable_peers(&hosts).iter().any(|id| peers.contains(id)));
+            if !reachable {
+                return false;
+            }
+            if Instant::now() >= deadline {
+                return true;
+            }
+            std::thread::sleep(Duration::from_secs(2));
+        }
     }
 
     fn selected_binary(&self) -> Result<PathBuf> {
