@@ -2278,7 +2278,7 @@ async fn attention_reviews_live_with_the_owner_and_every_peer_sees_them() {
         StatusCode::NO_CONTENT
     );
     assert_eq!(
-        mac.attention.lock().await["panes"][0]["seen"],
+        mac.attention.borrow().1["panes"][0]["seen"],
         true,
         "the reviewing relay updates at once"
     );
@@ -2288,6 +2288,24 @@ async fn attention_reviews_live_with_the_owner_and_every_peer_sees_them() {
         "a review on one relay clears it on another"
     );
     assert_eq!(pane["token"], "result:1");
+    // A viewer waiting on the owner hears about its next change without polling.
+    let host = laptop.host(&owner_id).unwrap();
+    let version = attention::peer_snapshot(&host, 0, None).await.unwrap()["version"]
+        .as_u64()
+        .unwrap();
+    let waiting =
+        tokio::spawn(async move { attention::peer_snapshot(&host, 0, Some(version)).await });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!waiting.is_finished(), "an unchanged owner does not answer");
+    let mut working = json!({"panes":[{"session":"main","pane_id":3,"state":"working"}],"tabs":[{"session":"main","id":1}],"errors":[]});
+    poll.lock().await.update("mac", &mut working);
+    let answer = tokio::time::timeout(Duration::from_secs(5), waiting)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(answer["panes"][0]["state"], "working");
+    assert!(answer["version"].as_u64().unwrap() > version);
     // An offline owner keeps the review on the reviewing relay without an error.
     handle.shutdown();
     task.await.unwrap();

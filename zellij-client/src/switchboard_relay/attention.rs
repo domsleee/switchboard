@@ -1,4 +1,5 @@
 use super::*;
+use axum::extract::Query;
 use std::sync::LazyLock;
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -204,33 +205,43 @@ fn snapshot(name: &str, panes: &[Value], screens: &HashMap<u64, String>, deferre
     json!({"panes":records,"tabs":tabs,"errors":[]})
 }
 
+/// With `after`, a paired computer holds the request until its status version differs.
+pub(super) async fn peer_snapshot(
+    host: &Host,
+    offset: usize,
+    after: Option<u64>,
+) -> anyhow::Result<Value> {
+    let wait = after.map_or(String::new(), |version| format!("&after={version}"));
+    let response = tokio::time::timeout(
+        Duration::from_secs(if after.is_some() { 45 } else { 20 }),
+        host.request(
+            Method::GET,
+            &format!("/switchboard/attention?offset={offset}{wait}"),
+            Bytes::new(),
+            "application/json",
+        ),
+    )
+    .await??;
+    anyhow::ensure!(
+        response.status == StatusCode::OK,
+        "Peer attention unavailable"
+    );
+    let mut snapshot: Value = serde_json::from_slice(&response.body)?;
+    anyhow::ensure!(
+        snapshot["panes"].is_array()
+            && snapshot["tabs"].is_array()
+            && snapshot["errors"].is_array(),
+        "Invalid peer snapshot"
+    );
+    for error in snapshot["errors"].as_array_mut().unwrap() {
+        error["host"] = json!(host.config.id);
+    }
+    Ok(snapshot)
+}
+
 pub(super) async fn scan(host: &Host, offset: usize) -> anyhow::Result<Value> {
     if host.config.escape_transport.as_deref() == Some("gateway") {
-        let response = tokio::time::timeout(
-            Duration::from_secs(20),
-            host.request(
-                Method::GET,
-                &format!("/switchboard/attention?offset={offset}"),
-                Bytes::new(),
-                "application/json",
-            ),
-        )
-        .await??;
-        anyhow::ensure!(
-            response.status == StatusCode::OK,
-            "Peer attention unavailable"
-        );
-        let mut snapshot: Value = serde_json::from_slice(&response.body)?;
-        anyhow::ensure!(
-            snapshot["panes"].is_array()
-                && snapshot["tabs"].is_array()
-                && snapshot["errors"].is_array(),
-            "Invalid peer snapshot"
-        );
-        for error in snapshot["errors"].as_array_mut().unwrap() {
-            error["host"] = json!(host.config.id);
-        }
-        return Ok(snapshot);
+        return peer_snapshot(host, offset, None).await;
     }
     let mut names = control::shared_sessions(host).await?;
     if !names.is_empty() {
@@ -315,6 +326,8 @@ pub(super) struct PollState {
     scanned: HashMap<String, tokio::time::Instant>,
     sessions_scanned: HashMap<String, tokio::time::Instant>,
     refreshed: HashMap<String, tokio::time::Instant>,
+    // Rises whenever a cached snapshot changes, waking peers waiting on this computer.
+    pub(super) changes: tokio::sync::watch::Sender<u64>,
     dirty: bool,
 }
 
@@ -330,6 +343,7 @@ impl PollState {
         snapshot["panes"] = json!([]);
         snapshot["errors"] =
             json!([{"host":host,"message":format!("Host snapshots unavailable: {error:#}")}]);
+        self.changes.send_modify(|version| *version += 1);
     }
 
     pub(super) fn update(&mut self, host: &str, snapshot: &mut Value) -> bool {
@@ -461,6 +475,9 @@ impl PollState {
                 row["host"] = json!(host);
             }
         }
+        if self.cache.get(host) != Some(&*snapshot) {
+            self.changes.send_modify(|version| *version += 1);
+        }
         self.cache.insert(host.into(), snapshot.clone());
         self.refreshed.insert(host.into(), now);
         changed
@@ -481,6 +498,7 @@ impl PollState {
                 }
             }
         }
+        self.changes.send_modify(|version| *version += 1);
     }
     /// What the owner of `host` tells peers, so every relay shows the same state.
     /// None while the owner's poll is stale, so peers fall back to scanning.
@@ -576,13 +594,7 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
                             false
                         },
                     };
-                    *state.attention.lock().await = poll.merged(
-                        &state
-                            .all_hosts()
-                            .iter()
-                            .map(|h| h.config.id.clone())
-                            .collect::<Vec<_>>(),
-                    );
+                    publish(&state, &poll);
                     if changed || std::mem::take(&mut poll.dirty) {
                         let _ = logs::write_private(&file, poll.persisted().to_string().as_bytes())
                             .await;
@@ -596,59 +608,111 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
             })
         })
         .collect();
-    if state.mesh.is_some() {
+    if let Some(mesh) = state.mesh.clone() {
         tasks.push(tokio::spawn(async move {
-            let mut offset = 0;
+            // One loop per paired computer, so a slow or offline one delays only its own tabs.
+            let mut peers = tokio::task::JoinSet::new();
+            let mut running = HashMap::new();
             loop {
-                let hosts: Vec<_> = state
-                    .mesh
-                    .as_ref()
-                    .unwrap()
-                    .hosts()
-                    .into_iter()
-                    .filter(|h| state.all_hosts().iter().any(|l| l.config.id == h.config.id))
-                    .collect();
-                let results =
-                    futures_util::future::join_all(hosts.iter().map(|host| scan(host, offset)))
-                        .await;
-                offset = offset.wrapping_add(1);
-                let mut poll = poll.lock().await;
-                for (host, result) in hosts.iter().zip(results) {
-                    match result {
-                        Ok(mut snapshot) => {
-                            poll.update(&host.config.id, &mut snapshot);
-                        },
-                        Err(error) => {
-                            logs::record(
-                                &host.config.name,
-                                &format!("Status unavailable from paired computer: {error:#}"),
-                            );
-                            poll.unavailable(
-                                &host.config.id,
-                                &anyhow::anyhow!(
-                                    "Peer snapshots unavailable; check connection and retry"
-                                ),
-                            );
-                        },
+                while peers.try_join_next().is_some() {}
+                running.retain(|_, task: &mut tokio::task::AbortHandle| !task.is_finished());
+                for host in mesh.hosts() {
+                    let id = host.config.id.clone();
+                    if state.hosts.contains_key(&id) || running.contains_key(&id) {
+                        continue;
                     }
+                    let (state, poll, mesh) = (state.clone(), poll.clone(), mesh.clone());
+                    let task = peers.spawn(async move {
+                        let (mut offset, mut after) = (0, None);
+                        // Re-read the catalog each time: re-pairing replaces the Host.
+                        while let Some(host) = mesh.host(&id) {
+                            let result = peer_snapshot(&host, offset, after).await;
+                            offset = offset.wrapping_add(1);
+                            let mut poll = poll.lock().await;
+                            after = None;
+                            match result {
+                                Ok(mut snapshot) => {
+                                    after = snapshot
+                                        .as_object_mut()
+                                        .unwrap()
+                                        .remove("version")
+                                        .and_then(|v| v.as_u64());
+                                    poll.update(&id, &mut snapshot);
+                                },
+                                Err(error) => {
+                                    logs::record(
+                                        &host.config.name,
+                                        &format!(
+                                            "Status unavailable from paired computer: {error:#}"
+                                        ),
+                                    );
+                                    poll.unavailable(
+                                        &id,
+                                        &anyhow::anyhow!(
+                                            "Peer snapshots unavailable; check connection and retry"
+                                        ),
+                                    );
+                                },
+                            }
+                            publish(&state, &poll);
+                            drop(poll);
+                            // A peer that waits for its next change is asked again at once;
+                            // an older peer, or a failed request, is asked every 3 s.
+                            if after.is_none() {
+                                tokio::time::sleep(Duration::from_secs(3)).await;
+                            }
+                        }
+                    });
+                    running.insert(host.config.id.clone(), task);
                 }
-                *state.attention.lock().await = poll.merged(
-                    &state
-                        .all_hosts()
-                        .iter()
-                        .map(|h| h.config.id.clone())
-                        .collect::<Vec<_>>(),
-                );
-                drop(poll);
-                tokio::time::sleep(Duration::from_secs(3)).await;
+                tokio::time::sleep(Duration::from_secs(1)).await;
             }
         }));
     }
     tasks
 }
 
-pub(super) async fn handler(State(state): State<RelayState>) -> Json<Value> {
-    Json(state.attention.lock().await.clone())
+fn publish(state: &RelayState, poll: &PollState) {
+    let snapshot = poll.merged(
+        &state
+            .all_hosts()
+            .iter()
+            .map(|h| h.config.id.clone())
+            .collect::<Vec<_>>(),
+    );
+    state.attention.send_if_modified(|(version, current)| {
+        if *current == snapshot {
+            return false;
+        }
+        *version += 1;
+        *current = snapshot;
+        true
+    });
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Wait {
+    after: Option<u64>,
+}
+
+/// With `after`, holds the request until the snapshot's version differs, or 25 s,
+/// so browsers see a change as soon as a scan finds it.
+pub(super) async fn handler(
+    State(state): State<RelayState>,
+    Query(wait): Query<Wait>,
+) -> Json<Value> {
+    let mut changes = state.attention.subscribe();
+    if let Some(after) = wait.after {
+        let _ = tokio::time::timeout(
+            Duration::from_secs(25),
+            changes.wait_for(|(version, _)| *version != after),
+        )
+        .await;
+    }
+    let (version, mut snapshot) = changes.borrow().clone();
+    snapshot["version"] = json!(version);
+    Json(snapshot)
 }
 
 #[derive(Deserialize)]
@@ -684,13 +748,7 @@ pub(super) async fn acknowledge(
     }
     let mut poll = state.poll.lock().await;
     poll.acknowledge(&ack.host, &ack.session, ack.pane_id, &ack.token);
-    *state.attention.lock().await = poll.merged(
-        &state
-            .all_hosts()
-            .iter()
-            .map(|h| h.config.id.clone())
-            .collect::<Vec<_>>(),
-    );
+    publish(&state, &poll);
     StatusCode::NO_CONTENT
 }
 
@@ -761,6 +819,49 @@ echo [{"id":1,"tab_id":4,"tab_position":0,"tab_name":"T","title":"x","pane_comma
         assert_eq!(snapshot["tabs"][0]["session"], "peer");
         assert_eq!(snapshot["errors"][0]["host"], "mesh-peer");
         server.abort();
+    }
+    #[tokio::test]
+    async fn a_waiting_browser_hears_about_a_change_without_polling() {
+        let host = Arc::new(Host::new(super::super::tests::config("http://127.0.0.1:9")).unwrap());
+        let state = RelayState {
+            hosts: Arc::new(HashMap::from([("mac".to_owned(), host)])),
+            order: Arc::new(vec!["mac".into()]),
+            port: 0,
+            attention: Default::default(),
+            poll: Default::default(),
+            mesh: None,
+            candidates: Default::default(),
+            artifact: None,
+        };
+        let mut poll = PollState::default();
+        publish(&state, &poll);
+        let version = state.attention.borrow().0;
+        let wait = |after| handler(State(state.clone()), Query(Wait { after: Some(after) }));
+        let waiting = tokio::spawn(wait(version));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        publish(&state, &poll);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !waiting.is_finished(),
+            "an unchanged snapshot does not answer"
+        );
+        let mut snapshot = json!({"panes":[{"session":"main","pane_id":1,"state":"working"}],"tabs":[],"errors":[]});
+        poll.update("mac", &mut snapshot);
+        publish(&state, &poll);
+        let Json(answer) = tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(answer["version"], version + 1);
+        assert_eq!(answer["panes"][0]["state"], "working");
+        let Json(stale) = tokio::time::timeout(Duration::from_secs(1), wait(version))
+            .await
+            .unwrap();
+        assert_eq!(
+            stale["version"],
+            version + 1,
+            "a browser behind answers at once"
+        );
     }
     #[test]
     fn failed_hosts_keep_tab_identity_without_stale_attention_and_recover() {
