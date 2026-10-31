@@ -21,7 +21,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
       if(path==='/api/hosts')return json([{id:'mac',name:'Mac'},{id:'windows',name:'Windows'}]);
       if(path.startsWith('/api/hosts/'))return json({id:path.split('/').at(-1),name:path.endsWith('/mac')?'Mac':'Windows',
         ...(hostUnavailable&&path.endsWith('/windows')?{error:'Host unavailable'}:{sessions:[{name:'main',web_clients_allowed:true}]})});
-      if(path==='/api/attention')return json({tabs,panes:working?[{host:'mac',session:'main',pane_id:1,state:'working'}]:[],errors:unavailable?[{host:'windows',session:'main'}]:[]});
+      if(path==='/api/attention')return json({tabs,panes:working?[{host:'mac',session:'main',pane_id:1,state:'working'},{host:'mac',session:'main',pane_id:2,state:'waiting'}]:[],errors:unavailable?[{host:'windows',session:'main'}]:[]});
       if(path.startsWith('/hosts/')){
         // The top machine's terminal answers last; the first tab must still be selected.
         if(path.split('/')[2]==='mac')await new Promise(resolve=>setTimeout(resolve,300));
@@ -51,6 +51,8 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.equal(await page.locator('#tab-count').textContent(),'3 tabs');
     assert.equal(await page.locator('#selection-tools').isVisible(),false);
     assert.equal(await page.locator('#tabs small').first().textContent(),'Mac · Working');
+    assert.equal(await page.locator('#tabs small').nth(1).textContent(),'Mac · Waiting on a shell');
+    assert.equal(await page.locator('#tabs .star').nth(1).getAttribute('class'),'star waiting');
     // xterm pauses drawing only when its element is off screen. Hidden sessions must be.
     const onScreen=title=>page.frameLocator(`iframe[title="${title}"]`).locator('body').evaluate(body=>new Promise(resolve=>
       new IntersectionObserver(([entry],observer)=>{observer.disconnect();resolve(entry.isIntersecting);}).observe(body)));

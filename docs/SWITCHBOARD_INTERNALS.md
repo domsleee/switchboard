@@ -217,7 +217,15 @@ Old interrupt hints in the transcript do not keep a tab working. Copilot has no
 completion line, so a finish must be observed to raise a new notification.
 Unrecognized Copilot dialogs report unknown.
 
-This works with already-running agents, without notification hooks or replacing
+Claude Code tabs with the `switchboard-status` plugin (`plugins/switchboard-status`)
+report their own status: its HTTP hooks post `UserPromptSubmit`, tool, permission,
+notification, `Stop` and `SessionEnd` events to `/api/agent-hook` with the Zellij
+session and pane from `ZELLIJ_SESSION_NAME` and `ZELLIJ_PANE_ID`. That status replaces
+the screen reading for the pane while it still runs Claude. A `Stop` that lists a
+running background task is `waiting`; Claude starts a new turn when the task ends.
+Hooks of a Claude started inside another Claude carry `CLAUDECODE=1` and are ignored.
+
+Screen reading works with already-running agents, without notification hooks or replacing
 Zellij. Detection follows terminal UI markers; unrecognized screens report
 unknown, and disconnected hosts lose stale ready status. Very short turns between
 polls can be missed if their completion marker is unchanged. The Rust scanner

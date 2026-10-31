@@ -1,0 +1,13 @@
+{
+  "name": "switchboard",
+  "owner": {
+    "name": "Dom Slee"
+  },
+  "plugins": [
+    {
+      "name": "switchboard-status",
+      "source": "./plugins/switchboard-status",
+      "description": "Claude Code status for Switchboard tabs"
+    }
+  ]
+}

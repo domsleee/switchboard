@@ -45,6 +45,22 @@ Quitting it leaves your terminals running.
 The first install sets up this computer's login on its own. Running it again
 keeps your settings.
 
+## Exact Claude Code status
+
+Switchboard reads each tab's screen to tell whether an agent is working. Claude Code
+can report its own turns instead, which is exact: it also shows **Waiting on a shell**
+when Claude finished but a background shell it started is still running. Install the
+`switchboard-status` plugin on each computer:
+
+```sh
+claude plugin marketplace add domsleee/switchboard --sparse .claude-plugin plugins
+claude plugin install switchboard-status@switchboard
+```
+
+Then turn on updates: run `/plugin` in Claude Code, open **Marketplaces**, select
+`switchboard` and choose **Enable auto-update**. Claude Code checks for updates when a
+session starts. Running Claude sessions pick up the plugin after a restart.
+
 ## Resume agent chats after a restart
 
 Run this once with the updated executable on each computer:
