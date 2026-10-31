@@ -1,7 +1,7 @@
 use crate::{
     consts::{
         is_ipc_socket, session_info_folder_for_session, session_layout_cache_file_name,
-        ZELLIJ_SESSION_INFO_CACHE_DIR, ZELLIJ_SOCK_DIR,
+        session_sock_dirs, session_socket_path, ZELLIJ_SESSION_INFO_CACHE_DIR, ZELLIJ_SOCK_DIR,
     },
     data::SessionInfo,
     envs,
@@ -16,32 +16,49 @@ use std::time::{Duration, SystemTime};
 use std::{fs, io, process};
 use suggest::Suggest;
 
-pub fn get_sessions() -> Result<Vec<(String, Duration)>, io::ErrorKind> {
-    match fs::read_dir(&*ZELLIJ_SOCK_DIR) {
-        Ok(files) => {
-            let mut sessions = Vec::new();
-            files.for_each(|file| {
-                if let Ok(file) = file {
-                    let file_name = file.file_name().into_string().unwrap();
-                    // try to get creation time, fall back to modification time on platforms where it's not supported (e.g., musl)
-                    // for session creation time these are almost always identical (notable
-                    // exceptions are session name changes)
-                    let ctime = std::fs::metadata(&file.path())
-                        .ok()
-                        .and_then(|f| f.created().ok().or_else(|| f.modified().ok()))
-                        .and_then(|d| d.elapsed().ok())
-                        .unwrap_or_default();
-                    let duration = Duration::from_secs(ctime.as_secs());
-                    if is_ipc_socket(&file.file_type().unwrap()) && assert_socket(&file_name) {
-                        sessions.push((file_name, duration));
-                    }
-                }
-            });
-            Ok(sessions)
-        },
-        Err(err) if io::ErrorKind::NotFound != err.kind() => Err(err.kind()),
-        Err(_) => Ok(Vec::with_capacity(0)),
+/// Live sessions found in `sock_dirs` with their marker metadata. A name found
+/// in several dirs is listed once, from the earliest dir. Only the first dir's
+/// read errors are reported; later (legacy) dirs are best effort.
+fn live_session_markers(sock_dirs: &[&Path]) -> io::Result<Vec<(String, fs::Metadata)>> {
+    let mut sessions: Vec<(String, fs::Metadata)> = Vec::new();
+    for (index, dir) in sock_dirs.iter().enumerate() {
+        let files = match fs::read_dir(dir) {
+            Ok(files) => files,
+            Err(err) if index == 0 && err.kind() != io::ErrorKind::NotFound => return Err(err),
+            Err(_) => continue,
+        };
+        for file in files.flatten() {
+            let (Ok(name), Ok(metadata)) = (file.file_name().into_string(), file.metadata()) else {
+                continue;
+            };
+            if is_ipc_socket(&metadata.file_type())
+                && !sessions.iter().any(|(listed, _)| *listed == name)
+                && assert_socket(&file.path())
+            {
+                sessions.push((name, metadata));
+            }
+        }
     }
+    Ok(sessions)
+}
+
+pub fn get_sessions() -> Result<Vec<(String, Duration)>, io::ErrorKind> {
+    let sessions = live_session_markers(&session_sock_dirs()).map_err(|err| err.kind())?;
+    Ok(sessions
+        .into_iter()
+        .map(|(name, metadata)| {
+            // try to get creation time, fall back to modification time on platforms where it's not supported (e.g., musl)
+            // for session creation time these are almost always identical (notable
+            // exceptions are session name changes)
+            let ctime = metadata
+                .created()
+                .or_else(|_| metadata.modified())
+                .ok()
+                .and_then(|d| d.elapsed().ok())
+                .unwrap_or_default();
+            (name, Duration::from_secs(ctime.as_secs()))
+        })
+        .collect())
 }
 
 pub fn get_resurrectable_sessions() -> Vec<(String, Duration)> {
@@ -119,25 +136,12 @@ pub fn get_resurrectable_session_names() -> Vec<String> {
 }
 
 pub fn get_sessions_sorted_by_mtime() -> anyhow::Result<Vec<String>> {
-    match fs::read_dir(&*ZELLIJ_SOCK_DIR) {
-        Ok(files) => {
-            let mut sessions_with_mtime: Vec<(String, SystemTime)> = Vec::new();
-            for file in files {
-                let file = file?;
-                let file_name = file.file_name().into_string().unwrap();
-                let file_modified_at = file.metadata()?.modified()?;
-                if is_ipc_socket(&file.file_type()?) && assert_socket(&file_name) {
-                    sessions_with_mtime.push((file_name, file_modified_at));
-                }
-            }
-            sessions_with_mtime.sort_by_key(|x| x.1); // the oldest one will be the first
-
-            let sessions = sessions_with_mtime.iter().map(|x| x.0.clone()).collect();
-            Ok(sessions)
-        },
-        Err(err) if io::ErrorKind::NotFound != err.kind() => Err(err.into()),
-        Err(_) => Ok(Vec::with_capacity(0)),
-    }
+    let mut sessions_with_mtime = live_session_markers(&session_sock_dirs())?
+        .into_iter()
+        .map(|(name, metadata)| Ok((name, metadata.modified()?)))
+        .collect::<io::Result<Vec<(String, SystemTime)>>>()?;
+    sessions_with_mtime.sort_by_key(|x| x.1); // the oldest one will be the first
+    Ok(sessions_with_mtime.into_iter().map(|x| x.0).collect())
 }
 
 /// Probe a session socket to check if a server is alive.
@@ -145,9 +149,8 @@ pub fn get_sessions_sorted_by_mtime() -> anyhow::Result<Vec<String>> {
 /// On Unix, connects and sends a `ConnStatus` message to verify the server responds.
 /// On Windows, reads the server PID from the marker file and checks process liveness.
 #[cfg(unix)]
-fn assert_socket(name: &str) -> bool {
+fn assert_socket(path: &Path) -> bool {
     use crate::consts::ipc_connect;
-    let path = &*ZELLIJ_SOCK_DIR.join(name);
     match ipc_connect(path) {
         Ok(stream) => {
             let mut sender: IpcSenderWithContext<ClientToServerMsg> =
@@ -211,9 +214,8 @@ pub fn republish_windows_session_marker(path: &Path) -> io::Result<bool> {
 /// Only a marker whose server is known to have exited is removed: deleting a live
 /// one makes clients treat the session as gone and try to recreate it.
 #[cfg(windows)]
-fn assert_socket(name: &str) -> bool {
-    let path = ZELLIJ_SOCK_DIR.join(name);
-    let alive = windows_session_marker_is_live(&path);
+fn assert_socket(path: &Path) -> bool {
+    let alive = windows_session_marker_is_live(path);
     if alive == Some(false) {
         drop(fs::remove_file(path));
     }
@@ -221,7 +223,7 @@ fn assert_socket(name: &str) -> bool {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn assert_socket(_name: &str) -> bool {
+fn assert_socket(_path: &Path) -> bool {
     true
 }
 
@@ -326,7 +328,7 @@ fn send_kill_session(path: &Path) -> io::Result<()> {
 }
 
 pub fn kill_session(name: &str) {
-    let path = ZELLIJ_SOCK_DIR.join(name);
+    let path = session_socket_path(name);
     if let Err(e) = send_kill_session(&path) {
         eprintln!("Error occurred: {:?}", e);
         process::exit(1);
@@ -335,7 +337,7 @@ pub fn kill_session(name: &str) {
 
 pub fn delete_session(name: &str, force: bool) {
     if force {
-        let _ = send_kill_session(&ZELLIJ_SOCK_DIR.join(name));
+        let _ = send_kill_session(&session_socket_path(name));
     }
     if let Err(e) = std::fs::remove_dir_all(session_info_folder_for_session(name)) {
         if e.kind() == std::io::ErrorKind::NotFound {
@@ -553,14 +555,16 @@ pub fn session_listing_error_message(kind: io::ErrorKind) -> String {
     )
 }
 
+/// Live sessions with cached metadata across `sock_dirs`; on a name clash the
+/// earlier dir wins.
 pub fn read_live_session_states(
     current_session_name: &str,
-    sock_dir: &Path,
+    sock_dirs: &[&Path],
     session_info_cache_dir: &Path,
 ) -> BTreeMap<String, SessionInfo> {
     let mut other_session_names: Vec<(String, Duration)> = vec![];
     let mut session_infos_on_machine = BTreeMap::new();
-    if let Ok(files) = fs::read_dir(sock_dir) {
+    for files in sock_dirs.iter().filter_map(|dir| fs::read_dir(dir).ok()) {
         files.for_each(|file| {
             if let Ok(file) = file {
                 if let Ok(file_name) = file.file_name().into_string() {
@@ -574,6 +578,12 @@ pub fn read_live_session_states(
                         // markers or changing resurrection data during catalog reads.
                         #[cfg(windows)]
                         if windows_session_marker_is_live(&file.path()) != Some(true) {
+                            return;
+                        }
+                        if other_session_names
+                            .iter()
+                            .any(|(listed, _)| *listed == file_name)
+                        {
                             return;
                         }
                         let creation_time = std::fs::metadata(&file.path())
@@ -609,7 +619,7 @@ pub fn read_live_session_states_default_dirs(
 ) -> BTreeMap<String, SessionInfo> {
     read_live_session_states(
         current_session_name,
-        &*ZELLIJ_SOCK_DIR,
+        &session_sock_dirs(),
         &*ZELLIJ_SESSION_INFO_CACHE_DIR,
     )
 }
@@ -649,7 +659,7 @@ mod windows_session_catalog_tests {
         }
 
         for _ in 0..2 {
-            let catalog = read_live_session_states("live", &sockets, &metadata);
+            let catalog = read_live_session_states("live", &[&sockets], &metadata);
             assert_eq!(
                 catalog.keys().map(String::as_str).collect::<Vec<_>>(),
                 ["live"]
@@ -696,6 +706,70 @@ mod windows_session_catalog_tests {
             fs::read_to_string(&marker).unwrap(),
             process::id().to_string()
         );
+    }
+
+    fn exited_pid() -> String {
+        let mut child = process::Command::new("cmd.exe")
+            .args(["/D", "/C", "exit /B 0"])
+            .spawn()
+            .unwrap();
+        child.wait().unwrap();
+        child.id().to_string()
+    }
+
+    #[test]
+    fn listing_merges_dirs_and_prefers_the_new_dir() {
+        let root = tempfile::tempdir().unwrap();
+        let (new, legacy) = (root.path().join("new"), root.path().join("legacy"));
+        fs::create_dir_all(&new).unwrap();
+        fs::create_dir_all(&legacy).unwrap();
+        let live = process::id().to_string();
+        let dead = exited_pid();
+
+        fs::write(new.join("both"), &live).unwrap();
+        // Never inspected (and so never cleaned up): the new dir already lists it.
+        fs::write(legacy.join("both"), &dead).unwrap();
+        fs::write(legacy.join("legacy-only"), &live).unwrap();
+        // A dead marker in the new dir does not hide a live legacy session.
+        fs::write(new.join("moved"), &dead).unwrap();
+        fs::write(legacy.join("moved"), &live).unwrap();
+
+        let mut names: Vec<String> = live_session_markers(&[&new, &legacy])
+            .unwrap()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        names.sort();
+        assert_eq!(names, ["both", "legacy-only", "moved"]);
+        assert!(legacy.join("both").exists());
+        assert!(
+            !new.join("moved").exists(),
+            "dead markers are still cleaned"
+        );
+
+        let catalog_dir = root.path().join("metadata");
+        for name in &names {
+            let folder = catalog_dir.join(name);
+            fs::create_dir_all(&folder).unwrap();
+            fs::write(
+                folder.join("session-metadata.kdl"),
+                SessionInfo::new(name.clone()).to_string(),
+            )
+            .unwrap();
+        }
+        let catalog = read_live_session_states("", &[&new, &legacy], &catalog_dir);
+        assert_eq!(
+            catalog.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["both", "legacy-only", "moved"]
+        );
+    }
+
+    #[test]
+    fn missing_legacy_dir_is_ignored() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("s"), process::id().to_string()).unwrap();
+        let sessions = live_session_markers(&[root.path(), &root.path().join("missing")]).unwrap();
+        assert_eq!(sessions.len(), 1);
     }
 }
 

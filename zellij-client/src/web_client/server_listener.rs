@@ -73,14 +73,15 @@ pub fn zellij_server_listener(
                             client_connection_bus.close_connection();
                             return;
                         };
-                        let mut sock_dir = zellij_utils::consts::ZELLIJ_SOCK_DIR.clone();
                         if let Err(e) = zellij_utils::sessions::validate_session_name(&session_name) {
                             log::error!("Invalid session name: {}", e);
                             client_connection_bus.close_connection();
                             return;
                         }
-                        sock_dir.push(session_name.clone());
-                        sock_dir.to_str().unwrap().to_owned()
+                        zellij_utils::consts::session_socket_path(&session_name)
+                            .to_str()
+                            .unwrap()
+                            .to_owned()
                     };
 
                     reload_config_from_disk(&mut config, &mut config_options, &config_file_path);
@@ -126,7 +127,7 @@ pub fn zellij_server_listener(
                     // The configured recovery name is permanently pinned to an existing
                     // session. Missing/replaced targets must not fall through to creation.
                     let recovery_target = sharing_recovery.as_ref().filter(|recovery| recovery.is_target(&session_name));
-                    let recovery_socket = zellij_utils::consts::ZELLIJ_SOCK_DIR.join(&session_name);
+                    let recovery_socket = zellij_utils::consts::session_socket_path(&session_name);
                     if recovery_target.map(|recovery| !session_exists || !recovery.allows(&session_name, &recovery_socket, false)).unwrap_or(false) {
                         if session_exists {
                             log::warn!("Refusing connection to {session_name}: recovery pin no longer matches the session socket; restart the web service without SWITCHBOARD_RECOVER_UNSHARED_SESSION");
