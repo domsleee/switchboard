@@ -2974,6 +2974,10 @@ mod web_client_tests {
             "sessions must be reported sorted by name"
         );
         assert_eq!(body.build.commit, env!("SWITCHBOARD_COMMIT"));
+        assert_eq!(
+            body.build.commit_timestamp,
+            env!("SWITCHBOARD_COMMIT_TIMESTAMP")
+        );
         assert_eq!(body.sessions[0].tab_count, 3);
         assert_eq!(body.sessions[0].pane_count, 7);
         assert_eq!(body.sessions[0].connected_clients, 1);

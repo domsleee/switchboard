@@ -10,6 +10,12 @@
   let configuredHosts = [], hostDetails = [];
   const buildText = build => build && /^[a-f0-9]{7,40}$/.test(build.commit) && /^\d{4}-\d{2}-\d{2}$/.test(build.commit_date)
     ? `${build.commit} · ${build.commit_date}` : null;
+  // Commit time orders builds; older builds report only the day.
+  const compareBuilds = (build, own) => {
+    const time = b => Date.parse(b.commit_timestamp || '') || null;
+    const [theirs, ours] = time(build) && time(own) ? [time(build), time(own)] : [build.commit_date, own.commit_date];
+    return theirs > ours ? 'Newer than' : theirs < ours ? 'Older than' : 'Different version from';
+  };
   const localBuild = fetch('/api/health', {cache: 'no-store'}).then(r => r.ok ? r.json() : null).catch(() => null);
   const versionKey = list => JSON.stringify(list.map(host => [host.id, host.error, host.version]));
   const show = (message, error = false) => {
@@ -103,12 +109,12 @@
         hostDetails = list;
         if (changed) refresh().catch(() => {});
       });
-      const thisBuild = buildText(await localBuild);
+      const ownBuild = await localBuild, thisBuild = buildText(ownBuild);
       const version = (build, local) => {
         const line = document.createElement('small'), text = local ? thisBuild : buildText(build);
         line.textContent = text ? `Version ${text}` : 'Version unknown';
         if (!local && text && thisBuild && text !== thisBuild) {
-          line.textContent += ' · Different version from this computer'; line.className = 'different';
+          line.textContent += ` · ${compareBuilds(build, ownBuild)} this computer`; line.className = 'different';
         }
         return line;
       };

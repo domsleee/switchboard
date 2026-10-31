@@ -758,15 +758,17 @@ fn host_summary(host: &Host, configured: bool) -> Value {
 }
 
 // Builds that predate the field report null; forward only these short strings.
+// The timestamp, added later, orders builds and is optional.
 fn build_version(catalog: &Value) -> Value {
-    ["commit", "commit_date"]
-        .into_iter()
-        .map(|key| {
-            let value = catalog["build"][key].as_str().filter(|v| v.len() <= 40)?;
-            Some((key.to_owned(), json!(value)))
-        })
-        .collect::<Option<serde_json::Map<_, _>>>()
-        .map_or(Value::Null, Value::Object)
+    let field = |key: &str| catalog["build"][key].as_str().filter(|v| v.len() <= 40);
+    let (Some(commit), Some(date)) = (field("commit"), field("commit_date")) else {
+        return Value::Null;
+    };
+    let mut build = json!({"commit": commit, "commit_date": date});
+    if let Some(timestamp) = field("commit_timestamp") {
+        build["commit_timestamp"] = json!(timestamp);
+    }
+    build
 }
 
 async fn describe(host: &Host, configured: bool) -> Value {
@@ -2214,6 +2216,14 @@ mod tests {
         assert_eq!(
             build_version(&json!({"build": {"commit": "x".repeat(41), "commit_date": "d"}})),
             Value::Null
+        );
+        assert_eq!(
+            build_version(
+                &json!({"build": {"commit": "abc1234", "commit_date": "2026-10-31",
+                "commit_timestamp": "2026-10-31T13:07:45+11:00"}})
+            ),
+            json!({"commit": "abc1234", "commit_date": "2026-10-31",
+                "commit_timestamp": "2026-10-31T13:07:45+11:00"})
         );
     }
 
