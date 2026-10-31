@@ -57,9 +57,32 @@ claude plugin marketplace add domsleee/switchboard --sparse .claude-plugin plugi
 claude plugin install switchboard-status@switchboard
 ```
 
-Then turn on updates: run `/plugin` in Claude Code, open **Marketplaces**, select
-`switchboard` and choose **Enable auto-update**. Claude Code checks for updates when a
-session starts. Running Claude sessions pick up the plugin after a restart.
+Then turn on auto-update, which is off by default for this marketplace. `marketplace
+add` writes an `extraKnownMarketplaces.switchboard` entry to Claude Code's user
+settings; set `"autoUpdate": true` on it (or use `/plugin` → **Marketplaces** →
+`switchboard` → **Enable auto-update**):
+
+```sh
+python3 - <<'PY'
+import json, os
+path = os.path.join(os.environ.get("CLAUDE_CONFIG_DIR", os.path.expanduser("~/.claude")), "settings.json")
+settings = json.load(open(path))
+settings["extraKnownMarketplaces"]["switchboard"]["autoUpdate"] = True
+json.dump(settings, open(path, "w"), indent=2)
+PY
+```
+
+```powershell
+$dir = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $HOME .claude }
+$path = Join-Path $dir settings.json
+$settings = Get-Content $path -Raw | ConvertFrom-Json
+$settings.extraKnownMarketplaces.switchboard | Add-Member autoUpdate $true -Force
+# Without a byte order mark, which Windows PowerShell's -Encoding utf8 would add.
+[IO.File]::WriteAllText($path, ($settings | ConvertTo-Json -Depth 100), [Text.UTF8Encoding]::new($false))
+```
+
+Claude Code checks for updates when a session starts. Running Claude sessions pick up
+the plugin after a restart.
 
 ## Resume agent chats after a restart
 
