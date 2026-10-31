@@ -1,0 +1,7 @@
+{
+  "name": "switchboard",
+  "interface": { "displayName": "switchboard" },
+  "plugins": [
+    { "name": "switchboard", "source": "./tools/switchboard/claude-plugin", "policy": { "installation": "AVAILABLE" } }
+  ]
+}

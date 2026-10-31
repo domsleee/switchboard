@@ -1,0 +1,6 @@
+{
+  "name": "switchboard",
+  "description": "Publish files through Switchboard so they open in the browser on every paired computer.",
+  "author": { "name": "domsleee", "url": "https://github.com/domsleee" },
+  "skills": "./skills/"
+}
