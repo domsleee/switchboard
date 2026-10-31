@@ -270,6 +270,8 @@ pub struct SessionListResponse {
 pub struct BuildInfo {
     pub commit: String,
     pub commit_date: String,
+    #[serde(default)]
+    pub commit_timestamp: String,
 }
 
 #[derive(Deserialize)]

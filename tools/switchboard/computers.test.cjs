@@ -281,18 +281,23 @@ test('configured hosts remain visible when pairing service is unavailable', asyn
   });
 });
 
-test('each reachable computer shows its version and flags builds that differ from this one', async () => {
+test('each reachable computer shows its version and whether it is newer or older than this one', async () => {
   const windows = {id:'windows',name:'Windows',address:'http://172.20.10.69:8082',pairing_address:'https://172.20.10.69:8082',configured:true,local:false};
   const old = {id:'old',name:'Old laptop',address:'https://172.20.10.70:8082',pairing_address:'https://172.20.10.70:8082',configured:true,local:false};
   const offline = {id:'offline',name:'Offline',address:'https://172.20.10.71:8082',pairing_address:'https://172.20.10.71:8082',configured:true,local:false};
   await fixture(async ({page,responses}) => {
-    responses.set('/api/health', {commit:'abc1234',commit_date:'2026-10-07'});
-    responses.set('/api/hosts?summary=1', [windows, old, offline]);
+    const newer = {id:'newer',name:'Newer',address:'https://172.20.10.72:8082',pairing_address:'https://172.20.10.72:8082',configured:true,local:false};
+    const sameDay = {id:'same-day',name:'Same day',address:'https://172.20.10.73:8082',pairing_address:'https://172.20.10.73:8082',configured:true,local:false};
+    responses.set('/api/health', {commit:'abc1234',commit_date:'2026-10-07',commit_timestamp:'2026-10-07T12:00:00+11:00'});
+    responses.set('/api/hosts?summary=1', [windows, old, offline, newer, sameDay]);
     responses.set('/api/hosts', [
       {id:'mesh-owner',name:'Owner',sessions:[],version:{commit:'abc1234',commit_date:'2026-10-07'}},
       {...windows,sessions:[],version:{commit:'def5678',commit_date:'2026-09-30'}},
       {...old,sessions:[],version:null},
-      {...offline,error:'Host unavailable'}
+      {...offline,error:'Host unavailable'},
+      // Same day: the timestamp decides, here 09:00 in UTC is later than 12:00 in Sydney.
+      {...newer,sessions:[],version:{commit:'fed9876',commit_date:'2026-10-07',commit_timestamp:'2026-10-07T09:00:00+00:00'}},
+      {...sameDay,sessions:[],version:{commit:'aaa1111',commit_date:'2026-10-07'}}
     ]);
     await page.goto('https://switchboard.test/computers.html');
     await page.waitForFunction(() => document.querySelector('#members').textContent.includes('Old laptop'));
@@ -300,9 +305,11 @@ test('each reachable computer shows its version and flags builds that differ fro
     assert.deepEqual(cards, {
       'Windows <admin>': 'Version abc1234 · 2026-10-07',
       'Mac': 'Version abc1234 · 2026-10-07',
-      'Windows': 'Version def5678 · 2026-09-30 · Different version from this computer',
+      'Windows': 'Version def5678 · 2026-09-30 · Older than this computer',
       'Old laptop': 'Version unknown',
-      'Offline': null
+      'Offline': null,
+      'Newer': 'Version fed9876 · 2026-10-07 · Newer than this computer',
+      'Same day': 'Version aaa1111 · 2026-10-07 · Different version from this computer'
     });
   }, pairedState);
 });
@@ -315,6 +322,6 @@ test('unpaired configured computers fill in versions after the fast summary rend
     responses.set('/api/hosts', [{...windows,sessions:[],version:{commit:'def5678',commit_date:'2026-09-30'}}]);
     await page.goto('https://switchboard.test/computers.html');
     await page.waitForFunction(() => document.querySelector('#members small.different'));
-    assert.match(await page.locator('#members').textContent(), /Version def5678 · 2026-09-30 · Different version/);
+    assert.match(await page.locator('#members').textContent(), /Version def5678 · 2026-09-30 · Older than this computer/);
   });
 });

@@ -172,6 +172,7 @@ pub async fn list_sessions_handler(
         build: BuildInfo {
             commit: env!("SWITCHBOARD_COMMIT").into(),
             commit_date: env!("SWITCHBOARD_COMMIT_DATE").into(),
+            commit_timestamp: env!("SWITCHBOARD_COMMIT_TIMESTAMP").into(),
         },
     })
 }
