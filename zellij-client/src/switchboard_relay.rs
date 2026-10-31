@@ -1226,6 +1226,11 @@ fn app(state: RelayState) -> Router {
         .route("/api/hosts/{host}", get(host))
         .route("/api/attention", get(attention::handler))
         .route("/api/attention/ack", post(attention::acknowledge))
+        // Hook bodies carry tool output, which can be large.
+        .route(
+            "/api/agent-hook",
+            post(attention::hook).layer(axum::extract::DefaultBodyLimit::max(16 << 20)),
+        )
         .route("/api/logs", get(logs::handler))
         .route(
             "/api/diagnostics/browser-resume",
@@ -2423,6 +2428,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(attention.status, StatusCode::OK);
+        // Claude Code's HTTP hooks post without an Origin, like the CLI.
+        let hooked = client
+            .raw_request(
+                Method::POST,
+                "/api/agent-hook",
+                Bytes::from_static(br#"{"hook_event_name":"Stop"}"#),
+                "application/json",
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(hooked.status, StatusCode::NO_CONTENT);
         let mut attention = serde_json::from_slice::<Value>(&attention.body).unwrap();
         assert!(attention["version"].as_u64().is_some());
         attention.as_object_mut().unwrap().remove("version");

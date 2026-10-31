@@ -200,6 +200,8 @@ fn snapshot(name: &str, panes: &[Value], screens: &HashMap<u64, String>, deferre
         status["session"] = json!(name);
         status["pane_id"] = pane["id"].clone();
         status["tab_id"] = json!(tab_id);
+        // Lets PollState::update check that a hook's pane still runs Claude; removed there.
+        status["command"] = pane["pane_command"].clone();
         records.push(status);
     }
     let mut tabs: Vec<_> = tabs.into_values().collect();
@@ -499,6 +501,10 @@ pub(super) struct PollState {
     pub(super) changes: tokio::sync::watch::Sender<u64>,
     // Working panes whose latest screen could not be read.
     unreadable: std::collections::HashSet<String>,
+    // The latest Claude Code hook status per local (session, pane); it beats the screen.
+    hooks: HashMap<(String, u64), Hooked>,
+    // Wakes the local scan loops when a hook reports.
+    hooked: Arc<tokio::sync::Notify>,
     dirty: bool,
 }
 
@@ -573,6 +579,9 @@ impl PollState {
                 {
                     previous = Value::Null;
                 }
+            }
+            if let Some(command) = row.as_object_mut().unwrap().remove("command") {
+                self.apply_hook(row, &command);
             }
             if row.as_object_mut().unwrap().remove("deferred") == Some(json!(true))
                 && self
@@ -660,6 +669,32 @@ impl PollState {
         self.cache.insert(host.into(), snapshot.clone());
         self.refreshed.insert(host.into(), now);
         changed
+    }
+    /// Replaces a local pane's screen reading with its Claude Code hook status.
+    fn apply_hook(&mut self, row: &mut Value, command: &Value) {
+        let (Some(session), Some(pane)) = (row["session"].as_str(), row["pane_id"].as_u64()) else {
+            return;
+        };
+        let key = (session.to_owned(), pane);
+        // A pane that now runs something else (Claude exited without SessionEnd) drops it.
+        if command
+            .as_str()
+            .is_some_and(|c| !c.is_empty() && !c.to_ascii_lowercase().contains("claude"))
+        {
+            self.hooks.remove(&key);
+            return;
+        }
+        let Some(hooked) = self.hooks.get(&key) else {
+            return;
+        };
+        let row = row.as_object_mut().unwrap();
+        row.remove("deferred");
+        row.insert("state".into(), json!(hooked.state));
+        row.insert("agent".into(), json!("claude"));
+        match &hooked.token {
+            Some(token) => row.insert("token".into(), json!(token)),
+            None => row.remove("token"),
+        };
     }
     /// Records that a viewer reviewed this exact ready result.
     pub(super) fn acknowledge(&mut self, host: &str, session: &str, pane: u64, token: &str) {
@@ -759,6 +794,8 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
                 let mut offset = 0;
                 let mut live = Screens::default();
                 let redrawn = live.changed.clone();
+                let hooked = poll.lock().await.hooked.clone();
+                let scans_here = host.config.escape_transport.as_deref() != Some("gateway");
                 let mut next = tokio::time::Instant::now();
                 loop {
                     let started = tokio::time::Instant::now();
@@ -800,6 +837,7 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
                         _ = tokio::time::sleep_until(next) => {},
                         // Gather a burst of redraws into one status read.
                         _ = redrawn.notified() => tokio::time::sleep(Duration::from_millis(250)).await,
+                        _ = hooked.notified(), if scans_here => {},
                     }
                 }
             })
@@ -910,6 +948,76 @@ pub(super) async fn handler(
     let (version, mut snapshot) = changes.borrow().clone();
     snapshot["version"] = json!(version);
     Json(snapshot)
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct Hooked {
+    state: &'static str,
+    token: Option<String>,
+}
+
+/// What a Claude Code hook event says about its pane, if anything.
+fn hook_status(event: &Value) -> Option<Hooked> {
+    let state = match event["hook_event_name"].as_str()? {
+        "UserPromptSubmit" | "PostToolUse" | "PostToolUseFailure" => "working",
+        "PermissionRequest" => "approval",
+        "Notification" => match event["notification_type"].as_str()? {
+            "permission_prompt" => "approval",
+            "elicitation_dialog" => "input",
+            _ => return None,
+        },
+        // Claude wakes itself when a background shell it started finishes, so a
+        // running one means the turn may resume; a dev server never finishes.
+        "Stop" | "StopFailure"
+            if event["background_tasks"]
+                .as_array()
+                .is_some_and(|tasks| tasks.iter().any(|task| task["status"] == "running")) =>
+        {
+            "waiting"
+        },
+        "Stop" | "StopFailure" => "ready",
+        _ => return None,
+    };
+    // Each turn has its own prompt ID, so every finished turn is a new result.
+    let token = (state == "ready").then(|| {
+        let turn = event["prompt_id"].as_str().or(event["session_id"].as_str());
+        Sha256::digest(turn.unwrap_or("hook").as_bytes())[..10]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    });
+    Some(Hooked { state, token })
+}
+
+/// Receives Claude Code hook events from the switchboard-status plugin. The plugin's
+/// HTTP hooks name their Zellij session and pane in headers; events from outside
+/// Zellij carry neither and are ignored. A Claude started by another Claude in the
+/// same pane inherits `CLAUDECODE=1` and is ignored too, so it can't overwrite the
+/// pane's own status.
+pub(super) async fn hook(
+    State(state): State<RelayState>,
+    headers: HeaderMap,
+    Json(event): Json<Value>,
+) -> StatusCode {
+    let header = |name| headers.get(name).and_then(|v| v.to_str().ok());
+    let session = header("x-zellij-session").filter(|s| !s.is_empty());
+    let pane = header("x-zellij-pane").and_then(|p| p.parse::<u64>().ok());
+    let nested = header("x-claude-nested").is_some_and(|n| !n.is_empty());
+    let (Some(session), Some(pane), false) = (session, pane, nested) else {
+        return StatusCode::NO_CONTENT;
+    };
+    let key = (session.to_owned(), pane);
+    let mut poll = state.poll.lock().await;
+    if event["hook_event_name"] == "SessionEnd" {
+        poll.hooks.remove(&key);
+    } else if let Some(hooked) = hook_status(&event) {
+        poll.hooks.insert(key, hooked);
+    } else {
+        return StatusCode::NO_CONTENT;
+    }
+    // shortcut: wakes one local scan loop, enough for the usual single local host.
+    poll.hooked.notify_one();
+    StatusCode::NO_CONTENT
 }
 
 #[derive(Deserialize)]
@@ -1114,6 +1222,143 @@ esac
         assert_eq!(second["panes"][0]["state"], "working");
         assert_eq!(dumped(), before, "a live screen is not dumped again");
         server.abort();
+    }
+    #[test]
+    fn claude_hook_events_map_to_status() {
+        let event = |name: &str, extra: Value| {
+            let mut event = json!({"hook_event_name":name,"session_id":"s","prompt_id":"p1"});
+            event
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            hook_status(&event).map(|h| h.state)
+        };
+        assert_eq!(event("UserPromptSubmit", json!({})), Some("working"));
+        assert_eq!(event("PostToolUse", json!({})), Some("working"));
+        assert_eq!(event("PermissionRequest", json!({})), Some("approval"));
+        assert_eq!(
+            event(
+                "Notification",
+                json!({"notification_type":"permission_prompt"})
+            ),
+            Some("approval")
+        );
+        assert_eq!(
+            event(
+                "Notification",
+                json!({"notification_type":"elicitation_dialog"})
+            ),
+            Some("input")
+        );
+        assert_eq!(
+            event("Notification", json!({"notification_type":"idle_prompt"})),
+            None
+        );
+        assert_eq!(event("SessionStart", json!({})), None);
+        // Claude Code 2.1.316: Stop lists the shells a finished turn left running.
+        let running = json!({"background_tasks":[{"id":"b","type":"shell","status":"running","command":"sleep 8 && echo BG_DONE"}]});
+        assert_eq!(event("Stop", running), Some("waiting"));
+        assert_eq!(event("Stop", json!({"background_tasks":[]})), Some("ready"));
+        let finished = |prompt: &str| {
+            hook_status(&json!({"hook_event_name":"Stop","prompt_id":prompt,"background_tasks":[]}))
+                .unwrap()
+                .token
+        };
+        assert_ne!(
+            finished("p1"),
+            finished("p2"),
+            "each finished turn is a new result"
+        );
+    }
+    #[tokio::test]
+    async fn hook_status_replaces_the_screen_for_its_own_claude_pane_only() {
+        let state = RelayState {
+            hosts: Default::default(),
+            order: Default::default(),
+            port: 0,
+            attention: Default::default(),
+            poll: Default::default(),
+            mesh: None,
+            candidates: Default::default(),
+            artifact: None,
+        };
+        let send = |event: Value, pane: Option<&str>| {
+            let mut headers = HeaderMap::new();
+            headers.insert("x-zellij-session", "main".parse().unwrap());
+            headers.insert("x-claude-nested", "".parse().unwrap());
+            if let Some(pane) = pane {
+                headers.insert("x-zellij-pane", pane.parse().unwrap());
+            }
+            hook(State(state.clone()), headers, Json(event))
+        };
+        let scan = |command: &str| json!({"panes":[{"session":"main","pane_id":3,"state":"unknown","command":command}],"tabs":[],"errors":[]});
+        assert_eq!(
+            send(json!({"hook_event_name":"UserPromptSubmit"}), None).await,
+            StatusCode::NO_CONTENT
+        );
+        assert!(
+            state.poll.lock().await.hooks.is_empty(),
+            "outside Zellij there is no pane"
+        );
+        send(json!({"hook_event_name":"UserPromptSubmit"}), Some("3")).await;
+        let mut poll = state.poll.lock().await;
+        let mut working = scan("/Users/dom/.local/bin/claude --resume");
+        poll.update("mac", &mut working);
+        assert_eq!(working["panes"][0]["state"], "working");
+        assert!(
+            working["panes"][0].get("command").is_none(),
+            "the command stays on this relay"
+        );
+        let mut peer = json!({"panes":[{"session":"main","pane_id":3,"state":"unknown"}],"tabs":[],"errors":[]});
+        poll.update("peer", &mut peer);
+        assert_eq!(
+            peer["panes"][0]["state"], "unknown",
+            "a peer's pane 3 is another pane"
+        );
+        drop(poll);
+        send(
+            json!({"hook_event_name":"Stop","prompt_id":"p1","background_tasks":[]}),
+            Some("3"),
+        )
+        .await;
+        let mut poll = state.poll.lock().await;
+        let mut ready = scan("claude");
+        poll.update("mac", &mut ready);
+        assert_eq!(ready["panes"][0]["state"], "ready");
+        assert!(
+            ready["panes"][0]["token"].as_str().unwrap().ends_with(":1"),
+            "{ready}"
+        );
+        let mut shell = scan("nu");
+        poll.update("mac", &mut shell);
+        assert_eq!(
+            shell["panes"][0]["state"], "unknown",
+            "Claude left this pane"
+        );
+        assert!(poll.hooks.is_empty());
+        drop(poll);
+        send(json!({"hook_event_name":"UserPromptSubmit"}), Some("3")).await;
+        let mut nested = HeaderMap::new();
+        for (name, value) in [
+            ("x-zellij-session", "main"),
+            ("x-zellij-pane", "3"),
+            ("x-claude-nested", "1"),
+        ] {
+            nested.insert(name, value.parse().unwrap());
+        }
+        hook(
+            State(state.clone()),
+            nested,
+            Json(json!({"hook_event_name":"SessionEnd"})),
+        )
+        .await;
+        assert_eq!(
+            state.poll.lock().await.hooks.len(),
+            1,
+            "a Claude run by this pane's Claude does not end its status"
+        );
+        send(json!({"hook_event_name":"SessionEnd"}), Some("3")).await;
+        assert!(state.poll.lock().await.hooks.is_empty());
     }
     #[test]
     fn failed_hosts_keep_tab_identity_without_stale_attention_and_recover() {

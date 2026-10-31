@@ -1,0 +1,172 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8090/api/agent-hook",
+            "timeout": 5,
+            "headers": {
+              "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
+              "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
+              "X-Claude-Nested": "$CLAUDECODE"
+            },
+            "allowedEnvVars": [
+              "ZELLIJ_SESSION_NAME",
+              "ZELLIJ_PANE_ID",
+              "CLAUDECODE"
+            ]
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8090/api/agent-hook",
+            "timeout": 5,
+            "headers": {
+              "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
+              "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
+              "X-Claude-Nested": "$CLAUDECODE"
+            },
+            "allowedEnvVars": [
+              "ZELLIJ_SESSION_NAME",
+              "ZELLIJ_PANE_ID",
+              "CLAUDECODE"
+            ]
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8090/api/agent-hook",
+            "timeout": 5,
+            "headers": {
+              "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
+              "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
+              "X-Claude-Nested": "$CLAUDECODE"
+            },
+            "allowedEnvVars": [
+              "ZELLIJ_SESSION_NAME",
+              "ZELLIJ_PANE_ID",
+              "CLAUDECODE"
+            ]
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8090/api/agent-hook",
+            "timeout": 5,
+            "headers": {
+              "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
+              "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
+              "X-Claude-Nested": "$CLAUDECODE"
+            },
+            "allowedEnvVars": [
+              "ZELLIJ_SESSION_NAME",
+              "ZELLIJ_PANE_ID",
+              "CLAUDECODE"
+            ]
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8090/api/agent-hook",
+            "timeout": 5,
+            "headers": {
+              "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
+              "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
+              "X-Claude-Nested": "$CLAUDECODE"
+            },
+            "allowedEnvVars": [
+              "ZELLIJ_SESSION_NAME",
+              "ZELLIJ_PANE_ID",
+              "CLAUDECODE"
+            ]
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8090/api/agent-hook",
+            "timeout": 5,
+            "headers": {
+              "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
+              "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
+              "X-Claude-Nested": "$CLAUDECODE"
+            },
+            "allowedEnvVars": [
+              "ZELLIJ_SESSION_NAME",
+              "ZELLIJ_PANE_ID",
+              "CLAUDECODE"
+            ]
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8090/api/agent-hook",
+            "timeout": 5,
+            "headers": {
+              "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
+              "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
+              "X-Claude-Nested": "$CLAUDECODE"
+            },
+            "allowedEnvVars": [
+              "ZELLIJ_SESSION_NAME",
+              "ZELLIJ_PANE_ID",
+              "CLAUDECODE"
+            ]
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8090/api/agent-hook",
+            "timeout": 5,
+            "headers": {
+              "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
+              "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
+              "X-Claude-Nested": "$CLAUDECODE"
+            },
+            "allowedEnvVars": [
+              "ZELLIJ_SESSION_NAME",
+              "ZELLIJ_PANE_ID",
+              "CLAUDECODE"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
