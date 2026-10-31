@@ -316,10 +316,13 @@ pub fn start_subscribe_client(
                             let _ = writeln!(stdout, "{}", line);
                         }
                     }
+                    let mut written = Ok(());
                     for line in &viewport {
-                        let _ = writeln!(stdout, "{}", line);
+                        written = written.and_then(|_| writeln!(stdout, "{}", line));
                     }
-                    let _ = stdout.flush();
+                    if written.and_then(|_| stdout.flush()).is_err() {
+                        break;
+                    }
                 },
                 SubscribeFormat::Json => {
                     let json = serde_json::json!({
@@ -329,8 +332,13 @@ pub fn start_subscribe_client(
                         "scrollback": scrollback,
                         "is_initial": is_initial,
                     });
-                    let _ = writeln!(stdout, "{}", json);
-                    let _ = stdout.flush();
+                    // A reader that went away (such as a relay that was killed) ends the subscription.
+                    if writeln!(stdout, "{}", json)
+                        .and_then(|_| stdout.flush())
+                        .is_err()
+                    {
+                        break;
+                    }
                 },
             },
             Some((ServerToClientMsg::SubscribedPaneClosed { pane_id }, _)) => {
