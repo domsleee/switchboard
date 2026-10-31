@@ -57,6 +57,54 @@ pub fn run(command: &SwitchboardCommand) -> Result<()> {
             helpers,
             output,
         ),
+        SwitchboardCommand::LanProbe {
+            addresses,
+            timeout_secs,
+        } => lan_probe(addresses, Duration::from_secs(*timeout_secs)),
+    }
+}
+
+/// Gateways of the paired computers the running relay reaches now, so a probe
+/// failure means the candidate is refused rather than a computer being offline.
+fn probe_addresses(hosts: &serde_json::Value) -> Vec<String> {
+    let mut addresses = Vec::new();
+    for host in hosts.as_array().into_iter().flatten() {
+        if host["local"] != false || !host["error"].is_null() {
+            continue;
+        }
+        for field in ["address", "pairing_address"] {
+            let Some(url) = host[field].as_str().and_then(|u| url::Url::parse(u).ok()) else {
+                continue;
+            };
+            if let (Some(name), Some(port)) = (url.host_str(), url.port_or_known_default()) {
+                let address = format!("{name}:{port}");
+                if !addresses.contains(&address) {
+                    addresses.push(address);
+                }
+            }
+        }
+    }
+    addresses
+}
+
+/// Keeps retrying instead of exiting on the first refusal: macOS shows no
+/// Local Network alert to a launchd job that exits immediately (TN3179).
+fn lan_probe(addresses: &[String], timeout: Duration) -> Result<()> {
+    use std::net::{TcpStream, ToSocketAddrs};
+    let deadline = Instant::now() + timeout;
+    loop {
+        for address in addresses {
+            for socket in address.to_socket_addrs().into_iter().flatten() {
+                if TcpStream::connect_timeout(&socket, Duration::from_secs(1)).is_ok() {
+                    println!("reachable {address}");
+                    return Ok(());
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            bail!("No paired computer answered");
+        }
+        std::thread::sleep(Duration::from_secs(1));
     }
 }
 
@@ -558,6 +606,9 @@ impl Updater {
         let candidate = bundle.join(self.exe());
         make_executable(&candidate)?;
         self.verify_auth(&old, &candidate)?;
+        if cfg!(target_os = "macos") {
+            self.check_lan_access(&candidate)?;
+        }
         let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let backup = self.state_directory.join(format!("rollback-{nanos}"));
         fs::create_dir(&backup)?;
@@ -829,6 +880,52 @@ impl Updater {
             "Candidate cannot see existing authentication tokens; services were not changed"
         );
         Ok(())
+    }
+
+    /// macOS grants Local Network access per code signature and every build is
+    /// ad hoc signed, so a new relay could not reach paired computers until someone
+    /// clicked Allow, and the update rolled back after a minute of downtime. Ask
+    /// first, from a launchd job running the candidate as the relay will.
+    fn check_lan_access(&self, candidate: &Path) -> Result<()> {
+        let hosts: serde_json::Value = self.local_json("/api/hosts", Duration::from_secs(30))?;
+        let addresses = probe_addresses(&hosts);
+        if addresses.is_empty() {
+            return Ok(());
+        }
+        const LABEL: &str = "dev.switchboard.lan-probe";
+        let log = self.state_directory.join("lan-probe.log");
+        let _ = fs::remove_file(&log);
+        let remove = || {
+            let _ = Command::new("launchctl").args(["remove", LABEL]).status();
+        };
+        remove();
+        let mut submit = Command::new("launchctl");
+        submit
+            .args(["submit", "-l", LABEL, "-o"])
+            .arg(&log)
+            .arg("-e")
+            .arg(&log)
+            .arg("--")
+            .arg(candidate)
+            .args(["switchboard", "lan-probe"])
+            .args(&addresses);
+        run_command(submit, Duration::from_secs(15))?;
+        let deadline = Instant::now() + Duration::from_secs(125);
+        let outcome = loop {
+            let output = fs::read_to_string(&log).unwrap_or_default();
+            // shortcut: a build without lan-probe skips the check; drop once every build has it.
+            if output.contains("reachable") || output.contains("unrecognized subcommand") {
+                break Ok(());
+            }
+            if Instant::now() >= deadline {
+                break Err(anyhow!(
+                    "This build cannot reach paired computers yet; allow Local Network access for zellij when macOS asks. Services were not changed"
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        };
+        remove();
+        outcome
     }
 
     fn install_mac(&self, helpers: &Path, candidate: &Path, commit: Option<&str>) -> Result<()> {

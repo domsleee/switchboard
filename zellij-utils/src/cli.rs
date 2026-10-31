@@ -226,6 +226,14 @@ pub enum SwitchboardCommand {
         #[clap(long)]
         output: PathBuf,
     },
+    /// Retry TCP connections until one of these host:port addresses answers (updater)
+    #[clap(hide = true)]
+    LanProbe {
+        #[clap(required = true)]
+        addresses: Vec<String>,
+        #[clap(long, default_value_t = 120)]
+        timeout_secs: u64,
+    },
 }
 
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
