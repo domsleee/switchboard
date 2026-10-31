@@ -1,7 +1,9 @@
 use super::*;
 use axum::extract::Query;
+use std::process::Stdio;
 use std::sync::LazyLock;
 use std::{collections::BTreeMap, path::PathBuf};
+use tokio::io::AsyncBufReadExt;
 
 fn tail(text: &str, count: usize) -> &str {
     text.char_indices()
@@ -240,6 +242,23 @@ pub(super) async fn peer_snapshot(
 }
 
 pub(super) async fn scan(host: &Host, offset: usize) -> anyhow::Result<Value> {
+    scan_with(host, offset, None).await
+}
+
+/// Panes whose screens decide status: terminals that are running and not a quiet shell.
+fn readable(pane: &Value) -> bool {
+    pane["is_plugin"] != true
+        && pane["is_selectable"] != false
+        && pane["exited"] != true
+        && pane["is_held"] != true
+        && !quiet_shell(pane)
+}
+
+async fn scan_with(
+    host: &Host,
+    offset: usize,
+    mut live: Option<&mut Screens>,
+) -> anyhow::Result<Value> {
     if host.config.escape_transport.as_deref() == Some("gateway") {
         return peer_snapshot(host, offset, None).await;
     }
@@ -251,6 +270,7 @@ pub(super) async fn scan(host: &Host, offset: usize) -> anyhow::Result<Value> {
     let mut results = Vec::new();
     let mut errors = Vec::new();
     let mut deferred_sessions = Vec::new();
+    let mut catalog = Vec::new();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
     for (name, created) in names {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -272,6 +292,10 @@ pub(super) async fn scan(host: &Host, offset: usize) -> anyhow::Result<Value> {
                 continue;
             },
         };
+        let watched = live.as_deref_mut().map_or_else(HashMap::new, |live| {
+            let ids = panes.iter().filter(|p| readable(p));
+            live.watch(host, &name, ids.filter_map(|p| p["id"].as_u64()).collect())
+        });
         let mut screens = HashMap::new();
         for index in 0..panes.len() {
             let pane = &panes[(index + offset) % panes.len()];
@@ -279,15 +303,14 @@ pub(super) async fn scan(host: &Host, offset: usize) -> anyhow::Result<Value> {
             if remaining.is_zero() {
                 break;
             }
-            if pane["is_plugin"] == true
-                || pane["is_selectable"] == false
-                || pane["exited"] == true
-                || pane["is_held"] == true
-                || quiet_shell(pane)
-            {
+            if !readable(pane) {
                 continue;
             }
             if let Some(id) = pane["id"].as_u64() {
+                if let Some(screen) = watched.get(&id) {
+                    screens.insert(id, screen.clone());
+                    continue;
+                }
                 if let Ok(screen) = control::run_local(
                     host,
                     &name,
@@ -300,23 +323,163 @@ pub(super) async fn scan(host: &Host, offset: usize) -> anyhow::Result<Value> {
                 }
             }
         }
-        let mut session = snapshot(
+        results.push(session_snapshot(
             &name,
+            created,
             &panes,
             &screens,
             tokio::time::Instant::now() >= deadline,
-        );
-        // Pane IDs restart in a recreated session; its creation time tells them apart.
-        if let Some(created) = created {
-            for row in session["panes"].as_array_mut().unwrap() {
-                row["created"] = json!(created);
+        ));
+        catalog.push((name, created, panes));
+    }
+    if let Some(live) = live {
+        live.sessions
+            .retain(|name, _| catalog.iter().any(|(listed, ..)| listed == name));
+        live.last = (catalog, errors.clone(), deferred_sessions.clone());
+    }
+    Ok(assemble(&results, errors, deferred_sessions))
+}
+
+fn session_snapshot(
+    name: &str,
+    created: Option<u64>,
+    panes: &[Value],
+    screens: &HashMap<u64, String>,
+    deferred: bool,
+) -> Value {
+    let mut session = snapshot(name, panes, screens, deferred);
+    // Pane IDs restart in a recreated session; its creation time tells them apart.
+    if let Some(created) = created {
+        for row in session["panes"].as_array_mut().unwrap() {
+            row["created"] = json!(created);
+        }
+    }
+    session
+}
+
+fn assemble(results: &[Value], errors: Vec<Value>, deferred: Vec<String>) -> Value {
+    json!({"panes":results.iter().flat_map(|v|v["panes"].as_array().unwrap().clone()).collect::<Vec<_>>(),"tabs":results.iter().flat_map(|v|v["tabs"].as_array().unwrap().clone()).collect::<Vec<_>>(),"errors":errors,"deferred_sessions":deferred})
+}
+
+/// Live screens from one `zellij subscribe` per session, so status follows each
+/// screen change without launching a process per pane.
+#[derive(Default)]
+pub(super) struct Screens {
+    sessions: HashMap<String, Subscription>,
+    changed: Arc<tokio::sync::Notify>,
+    // The last full scan's sessions with their panes, errors and deferred sessions.
+    last: (
+        Vec<(String, Option<u64>, Vec<Value>)>,
+        Vec<Value>,
+        Vec<String>,
+    ),
+}
+
+struct Subscription {
+    panes: Vec<u64>,
+    started: tokio::time::Instant,
+    screens: Arc<std::sync::Mutex<HashMap<u64, String>>>,
+    reader: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        // The reader owns the child, which is killed when the reader is dropped.
+        self.reader.abort();
+    }
+}
+
+impl Screens {
+    /// The newest screens of `panes`, (re)subscribing when the pane set changes.
+    fn watch(&mut self, host: &Host, session: &str, panes: Vec<u64>) -> HashMap<u64, String> {
+        // A subscription that ended (older Zellij, closed session) retries after a
+        // minute; until then the scan dumps those panes as before.
+        let restart = self.sessions.get(session).is_none_or(|current| {
+            current.panes != panes
+                || (current.reader.is_finished()
+                    && current.started.elapsed() > Duration::from_secs(60))
+        });
+        if restart {
+            self.sessions.remove(session);
+            if !panes.is_empty() {
+                if let Ok(subscription) = subscribe(host, session, panes, self.changed.clone()) {
+                    self.sessions.insert(session.to_owned(), subscription);
+                }
             }
         }
-        results.push(session);
+        self.sessions
+            .get(session)
+            .filter(|current| !current.reader.is_finished())
+            .map(|current| current.screens.lock().unwrap().clone())
+            .unwrap_or_default()
     }
-    Ok(
-        json!({"panes":results.iter().flat_map(|v|v["panes"].as_array().unwrap().clone()).collect::<Vec<_>>(),"tabs":results.iter().flat_map(|v|v["tabs"].as_array().unwrap().clone()).collect::<Vec<_>>(),"errors":errors,"deferred_sessions":deferred_sessions}),
-    )
+    /// The last full scan with the newest screens, without running any terminal command.
+    /// Panes without a live screen keep their previous status.
+    fn rescan(&self) -> Value {
+        let (catalog, errors, deferred) = &self.last;
+        let results: Vec<_> = catalog
+            .iter()
+            .map(|(name, created, panes)| {
+                let screens = self
+                    .sessions
+                    .get(name)
+                    .filter(|current| !current.reader.is_finished())
+                    .map(|current| current.screens.lock().unwrap().clone())
+                    .unwrap_or_default();
+                session_snapshot(name, *created, panes, &screens, true)
+            })
+            .collect();
+        assemble(&results, errors.clone(), deferred.clone())
+    }
+}
+
+fn subscribe(
+    host: &Host,
+    session: &str,
+    panes: Vec<u64>,
+    changed: Arc<tokio::sync::Notify>,
+) -> anyhow::Result<Subscription> {
+    let mut child = tokio::process::Command::new(control::binary(host)?)
+        .args(["-s", session, "subscribe", "--format", "json", "--pane-id"])
+        .args(panes.iter().map(u64::to_string))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()?;
+    let stdout = child.stdout.take().unwrap();
+    let screens: Arc<std::sync::Mutex<HashMap<u64, String>>> = Default::default();
+    let shared = screens.clone();
+    let reader = tokio::spawn(async move {
+        let _child = child;
+        let mut lines = tokio::io::BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let Ok(update) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            let id = update["pane_id"]
+                .as_str()
+                .and_then(|id| id.strip_prefix("terminal_"))
+                .and_then(|id| id.parse::<u64>().ok());
+            let (Some(id), Some(rows)) = (id, update["viewport"].as_array()) else {
+                continue;
+            };
+            // Rows are padded to the pane width; dump-screen trims them.
+            let mut screen = String::new();
+            for row in rows.iter().filter_map(Value::as_str) {
+                screen.push_str(row.trim_end());
+                screen.push('\n');
+            }
+            shared.lock().unwrap().insert(id, screen);
+            changed.notify_one();
+        }
+    });
+    Ok(Subscription {
+        panes,
+        started: tokio::time::Instant::now(),
+        screens,
+        reader,
+    })
 }
 
 #[derive(Default)]
@@ -578,10 +741,27 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
             let id = id.clone();
             tokio::spawn(async move {
                 let mut offset = 0;
+                let mut live = Screens::default();
+                let redrawn = live.changed.clone();
+                let mut next = tokio::time::Instant::now();
                 loop {
                     let started = tokio::time::Instant::now();
-                    let result = scan(&host, offset).await;
-                    offset = offset.wrapping_add(1);
+                    // Panes and tabs are listed every few seconds; a screen change in
+                    // between re-reads status from the live screens alone.
+                    let full = started >= next;
+                    let result = if full {
+                        scan_with(&host, offset, Some(&mut live)).await
+                    } else {
+                        Ok(live.rescan())
+                    };
+                    if full {
+                        offset = offset.wrapping_add(1);
+                        // Every CLI call queues on the engine thread that also echoes typing.
+                        // A slow scan (loaded machine, many panes) waits 3x its own duration so
+                        // scanning stays under a quarter of the engine's time.
+                        next = tokio::time::Instant::now()
+                            + Duration::from_secs(3).max(started.elapsed() * 3);
+                    }
                     let mut poll = poll.lock().await;
                     let changed = match result {
                         Ok(mut snapshot) => poll.update(&id, &mut snapshot),
@@ -600,10 +780,11 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
                             .await;
                     }
                     drop(poll);
-                    // Every CLI call queues on the engine thread that also echoes typing.
-                    // A slow scan (loaded machine, many panes) waits 3x its own duration so
-                    // scanning stays under a quarter of the engine's time.
-                    tokio::time::sleep(Duration::from_secs(3).max(started.elapsed() * 3)).await;
+                    tokio::select! {
+                        _ = tokio::time::sleep_until(next) => {},
+                        // Gather a burst of redraws into one status read.
+                        _ = redrawn.notified() => tokio::time::sleep(Duration::from_millis(250)).await,
+                    }
                 }
             })
         })
@@ -862,6 +1043,61 @@ echo [{"id":1,"tab_id":4,"tab_position":0,"tab_name":"T","title":"x","pane_comma
             version + 1,
             "a browser behind answers at once"
         );
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn live_screens_replace_dumps_and_update_status_between_listings() {
+        let upstream = Router::new()
+            .route(
+                "/command/login",
+                post(|| async { ([(header::SET_COOKIE, "session_token=t")], "{}") }),
+            )
+            .route(
+                "/session-list",
+                get(|| async {
+                    Json(json!({"sessions":[{"name":"main","web_clients_allowed":true}]}))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+        let dir = tempfile::tempdir().unwrap();
+        let token = dir.path().join("token");
+        std::fs::write(&token, "t").unwrap();
+        let (cli, dumps) = (dir.path().join("zellij"), dir.path().join("dumps"));
+        // The subscription streams a working Codex screen, padded like real rows.
+        std::fs::write(&cli, format!(r#"#!/bin/sh
+case "$*" in
+*list-panes*) echo '[{{"id":1,"tab_id":4,"tab_position":0,"tab_name":"T","title":"x","pane_command":"codex","is_plugin":false}}]';;
+*"subscribe --format json --pane-id 1") echo '{{"event":"pane_update","pane_id":"terminal_1","viewport":["(3s esc to interrupt)   ","> x   ","gpt-5 tab to queue message   "]}}'; sleep 30;;
+*dump-screen*) echo dump >> {}; printf 'quiet\n';;
+esac
+"#, dumps.display())).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut config = super::super::tests::config(&url);
+        config.token_file = token.to_str().unwrap().into();
+        config.zellij_binary = Some(cli.to_str().unwrap().into());
+        let host = Host::new(config).unwrap();
+        let mut live = Screens::default();
+        let redrawn = live.changed.clone();
+        let first = scan_with(&host, 0, Some(&mut live)).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), redrawn.notified())
+            .await
+            .expect("the subscription delivers the screen");
+        assert_eq!(live.rescan()["panes"][0]["state"], "working", "{first}");
+        assert_eq!(live.rescan()["tabs"][0]["id"], 4);
+        let dumped = || {
+            std::fs::read_to_string(&dumps)
+                .unwrap_or_default()
+                .lines()
+                .count()
+        };
+        let before = dumped();
+        let second = scan_with(&host, 1, Some(&mut live)).await.unwrap();
+        assert_eq!(second["panes"][0]["state"], "working");
+        assert_eq!(dumped(), before, "a live screen is not dumped again");
+        server.abort();
     }
     #[test]
     fn failed_hosts_keep_tab_identity_without_stale_attention_and_recover() {
