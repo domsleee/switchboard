@@ -294,13 +294,16 @@ window.SwitchboardBrowserDiagnostics = function (report, probe) {
       const receivedOnly=sample.phase==='received';
       if(receivedOnly&&span.terminal_message_ms!==null)return;
       const received=performance.timeOrigin+now(),started=performance.timeOrigin+span.started;
-      if(Number.isFinite(sample.received_at)&&sample.received_at>=started&&sample.received_at<=received){
-        span.terminal_message_ms=rounded(sample.received_at-started);
-        if(!receivedOnly&&Number.isFinite(sample.animation_at)&&sample.animation_at>=sample.received_at&&sample.animation_at<=received){
+      // The terminal frame's clock starts from its own document's time origin and
+      // can be a few ms off this one; beyond that the timestamps are invalid.
+      const skew=50;
+      if(Number.isFinite(sample.received_at)&&sample.received_at>=started-skew&&sample.received_at<=received+skew){
+        span.terminal_message_ms=Math.max(0,rounded(sample.received_at-started));
+        if(!receivedOnly&&Number.isFinite(sample.animation_at)&&sample.animation_at>=sample.received_at&&sample.animation_at<=received+skew){
           span.terminal_frame_ms=rounded(sample.animation_at-sample.received_at);
           if(Number.isInteger(sample.render_cycle_ms)&&sample.render_cycle_ms>=0&&sample.render_cycle_ms<=4294967295)
             span.terminal_render_cycle_ms=sample.render_cycle_ms;
-          span.terminal_reply_ms=rounded(received-sample.animation_at-(span.terminal_render_cycle_ms??0));
+          span.terminal_reply_ms=Math.max(0,rounded(received-sample.animation_at-(span.terminal_render_cycle_ms??0)));
         }
       }
       for(const field of ['initial_writes_pending','long_tasks','max_long_task_ms','total_long_task_ms'])

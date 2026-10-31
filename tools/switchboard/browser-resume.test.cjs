@@ -123,7 +123,7 @@ test('an immediate receipt survives a missing animation without being mistaken f
 });
 
 test('invalid stage timestamps cannot become valid-looking measurements, and legacy replies still work',()=>{
-  for(const timestamps of [{received_at:999999,animation_at:1000001},{received_at:1000011,animation_at:1000012},
+  for(const timestamps of [{received_at:999900,animation_at:1000001},{received_at:1000100,animation_at:1000101},
     {received_at:'private URL',animation_at:1000001},{received_at:NaN,animation_at:Infinity}]){
     const h=harness();h.visibility(true);h.visibility(false);h.advance(10);
     h.diagnostics.terminal({id:h.probes[0],...timestamps,initial_writes_pending:'secret',long_tasks:-1});
@@ -136,6 +136,10 @@ test('invalid stage timestamps cannot become valid-looking measurements, and leg
   const h=harness();h.visibility(true);h.visibility(false);h.advance(10);
   h.diagnostics.terminal({id:h.probes[0],received_at:1000008,animation_at:1000007});h.advance(5000);
   assert.equal(h.reports[0].terminal_message_ms,8);assert.equal(h.reports[0].terminal_frame_ms,null);
+  // A terminal frame clock a few ms ahead keeps its stage timings.
+  const ahead=harness();ahead.visibility(true);ahead.visibility(false);ahead.advance(660);
+  ahead.diagnostics.terminal({id:ahead.probes[0],phase:'animation',received_at:1000003,animation_at:1000663});ahead.advance(5000);
+  assert.deepEqual([ahead.reports[0].terminal_message_ms,ahead.reports[0].terminal_frame_ms,ahead.reports[0].terminal_reply_ms],[3,660,0]);
   const legacy=harness();legacy.visibility(true);legacy.visibility(false);legacy.advance(20);
   legacy.diagnostics.terminal({id:legacy.probes[0],writes_pending:0,render_pending:false});legacy.advance(5000);
   assert.equal(legacy.reports[0].terminal_animation_ms,20);assert.equal(legacy.reports[0].terminal_message_ms,null);
