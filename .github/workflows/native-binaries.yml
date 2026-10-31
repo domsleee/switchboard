@@ -109,6 +109,11 @@ jobs:
         run: cargo test -p zellij-client --features web_server_capability switchboard_update::install --lib
       - name: Build native server and relay
         run: cargo build --release --features web_server_capability --target ${{ matrix.target }}
+      - name: Sign with Switchboard's certificate
+        env:
+          MACOS_SIGNING_P12: ${{ secrets.MACOS_SIGNING_P12 }}
+          MACOS_SIGNING_PASSWORD: ${{ secrets.MACOS_SIGNING_PASSWORD }}
+        run: .github/signing/sign.sh target/${{ matrix.target }}/release/zellij
       - name: Verify and package update bundle
         run: |
           target/${{ matrix.target }}/release/zellij serve --help

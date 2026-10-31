@@ -52,8 +52,12 @@ use the selected release when started through the updated services/launcher.
 On Windows a separate old `zellij.exe` on PATH is not overwritten; use the
 installed `windows_cli.ps1` launcher to follow the selected release.
 
-macOS grants Local Network access per code signature, and each build is ad hoc
-signed, so every build needs **Allow** once. Before stopping anything, the
+macOS grants Local Network access per code signature. CI signs every macOS
+build with Switchboard's own certificate (`.github/signing`) under the fixed
+identifier `dev.switchboard.zellij`, so one **Allow** carries over to later
+builds; the key is in the `MACOS_SIGNING_P12` and `MACOS_SIGNING_PASSWORD`
+repository secrets, and replacing it means every Mac asks once more. Local
+builds stay ad hoc signed and ask for each build. Before stopping anything, the
 updater runs the candidate as the `dev.switchboard.lan-probe` launchd job and
 waits up to two minutes for it to reach a paired computer the running relay
 reaches. Without an answer, services stay on the current build and the next
