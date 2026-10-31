@@ -857,3 +857,25 @@ mod orchestration {
         assert_eq!(state["run_number"], 6);
     }
 }
+
+#[test]
+fn lan_probe_targets_reachable_peers_and_waits_for_an_answer() {
+    let hosts = serde_json::json!([
+        {"id":"mac","local":true,"address":"http://127.0.0.1:8090","error":null},
+        {"id":"ubuntu","local":false,"address":"https://172.20.10.10:8082",
+         "pairing_address":"https://172.20.10.10:8082","error":null},
+        {"id":"windows","local":false,"address":"https://172.20.10.69:8082","error":"Host unavailable"},
+        {"id":"old","address":"https://192.0.2.9:8082"}
+    ]);
+    assert_eq!(probe_addresses(&hosts), ["172.20.10.10:8082"]);
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let open = listener.local_addr().unwrap().to_string();
+    let closed = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .to_string();
+    assert!(lan_probe(&[closed.clone(), open], Duration::from_secs(5)).is_ok());
+    assert!(lan_probe(&[closed], Duration::ZERO).is_err());
+}

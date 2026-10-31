@@ -52,6 +52,13 @@ use the selected release when started through the updated services/launcher.
 On Windows a separate old `zellij.exe` on PATH is not overwritten; use the
 installed `windows_cli.ps1` launcher to follow the selected release.
 
+macOS grants Local Network access per code signature, and each build is ad hoc
+signed, so every build needs **Allow** once. Before stopping anything, the
+updater runs the candidate as the `dev.switchboard.lan-probe` launchd job and
+waits up to two minutes for it to reach a paired computer the running relay
+reaches. Without an answer, services stay on the current build and the next
+scheduled check asks again.
+
 A failed handoff restores the retained executable and helpers and restarts
 services on it. Rollback is local: the previous executable and helpers are kept
 in `automatic-updates/rollback-*`. A build that fails during a handoff is recorded
