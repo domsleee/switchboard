@@ -351,3 +351,19 @@ fn tcgetpgrp_returns_foreground_group() {
         let _ = server.force_kill(child_pid);
     }
 }
+
+#[test]
+fn a_shell_reports_its_most_recently_started_program() {
+    let command = |name: &str| vec![name.to_owned()];
+    let children = vec![
+        (10, 100, command("copilot.exe")),
+        (10, 250, command("claude.exe")),
+        (10, 300, vec![]),
+        (10, 50, command("node.exe")),
+        (20, 75, command("codex.exe")),
+    ];
+    let newest = newest_child_commands(children.into_iter());
+    assert_eq!(newest[&10], command("claude.exe"));
+    assert_eq!(newest[&20], command("codex.exe"));
+    assert_eq!(newest.len(), 2);
+}

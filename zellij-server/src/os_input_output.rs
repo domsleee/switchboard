@@ -638,22 +638,23 @@ impl ServerOsApi for ServerOsInputOutput {
         let mut system_info = System::new();
         let refresh_kind = ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always);
         system_info.refresh_processes_specifics(ProcessesToUpdate::All, true, refresh_kind);
-        let mut cmds = HashMap::new();
-        for (_pid, process) in system_info.processes() {
-            if let Some(parent_pid) = process.parent() {
-                let ppid_str = format!("{}", parent_pid);
-                let command: Vec<String> = process
-                    .cmd()
-                    .iter()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .collect();
-                if command.is_empty() {
-                    continue;
-                }
-                cmds.insert(ppid_str, apply_post_command_hook(command, post_hook));
-            }
-        }
-        cmds
+        let children = system_info.processes().values().filter_map(|process| {
+            let command: Vec<String> = process
+                .cmd()
+                .iter()
+                .map(|s| s.to_string_lossy().into_owned())
+                .collect();
+            Some((process.parent()?.as_u32(), process.start_time(), command))
+        });
+        newest_child_commands(children)
+            .into_iter()
+            .map(|(ppid, command)| {
+                (
+                    ppid.to_string(),
+                    apply_post_command_hook(command, post_hook),
+                )
+            })
+            .collect()
     }
 
     #[cfg(unix)]
@@ -811,6 +812,31 @@ impl Drop for ResizeCache {
                 log::error!("Failed to apply cached resizes: {}", e);
             });
     }
+}
+
+/// The most recently started child of each parent. Windows has no foreground
+/// process group, and a shell can keep earlier programs running alongside the
+/// one just started, so an arbitrary child can report the wrong program.
+#[cfg(any(not(unix), test))]
+fn newest_child_commands(
+    children: impl Iterator<Item = (u32, u64, Vec<String>)>,
+) -> HashMap<u32, Vec<String>> {
+    let mut newest: HashMap<u32, (u64, Vec<String>)> = HashMap::new();
+    for (parent, started, command) in children {
+        if command.is_empty() {
+            continue;
+        }
+        match newest.get(&parent) {
+            Some((current, _)) if *current > started => {},
+            _ => {
+                newest.insert(parent, (started, command));
+            },
+        }
+    }
+    newest
+        .into_iter()
+        .map(|(parent, (_, command))| (parent, command))
+        .collect()
 }
 
 fn apply_post_command_hook(command: Vec<String>, post_hook: &Option<String>) -> Vec<String> {
