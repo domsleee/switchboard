@@ -1237,6 +1237,7 @@ fn app(state: RelayState) -> Router {
         .route("/api/message-board/{*path}", any(message_board))
         .route("/api/hosts/{host}/close-tab", post(control::close_tab))
         .route("/api/hosts/{host}/escape", post(control::escape))
+        .route("/api/open-link", post(control::open_link))
         .route("/link-config.js", get(link_config))
         .route("/hosts/{host}/{*path}", any(proxy))
         .fallback(asset)

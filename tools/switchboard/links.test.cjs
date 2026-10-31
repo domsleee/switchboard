@@ -30,6 +30,11 @@ for(const modifier of ['metaKey','ctrlKey']){
 }
 opened.splice(1);
 assert.equal(tabFocused,2,'Cmd/Ctrl-click requests foreground focus');
+// A link the Switchboard page sends to another browser opens no tab here.
+parent.SwitchboardOpenInApp=(host,url)=>{routed.push([host,url]);return true;};const routed=[];
+handlers.mousedown({...click,shiftKey:false,metaKey:true});handlers.mouseup({...click,shiftKey:false,metaKey:true});
+assert.deepEqual(routed,[['windows','http://172.20.10.69:8765/']]);assert.equal(opened.length,1);assert.equal(tabFocused,2);
+delete parent.SwitchboardOpenInApp;
 const app=fs.readFileSync(__dirname+'/static/app.js','utf8'),frameWindow={};let active=true;
 const sessions=new Map([['main',{frame:{contentWindow:frameWindow,classList:{contains:()=>active}}}]]);
 vm.runInNewContext(app.slice(app.indexOf("window.addEventListener('message',event=>{"),app.indexOf("$('artifact-back').onclick=")),{window,location,document,URL,sessions,setStatus(){}});

@@ -886,6 +886,22 @@ function setFilter(value){
   if(selected!==previous&&current)focus(current);
 }
 $('filters').onclick=event=>{const button=event.target.closest('[data-filter]');if(button)setFilter(button.dataset.filter);};
+// claude.ai links from each group's tabs can open in another browser on this
+// computer, such as the one signed into a work account. Saved per browser.
+const linkApps=load('switchboard-link-apps');
+for(const input of $('link-apps').querySelectorAll('input')){
+  input.value=linkApps[input.dataset.group]||'';
+  input.onchange=()=>{linkApps[input.dataset.group]=input.value.trim();localStorage.setItem('switchboard-link-apps',JSON.stringify(linkApps));};
+}
+// Terminal frames call this on Cmd/Ctrl-click; true means the link was handled here.
+window.SwitchboardOpenInApp=(host,href)=>{
+  const app=linkApps[groups[host]],url=new URL(href);
+  if(!app||!/(^|\.)claude\.ai$/.test(url.hostname))return false;
+  fetch('/api/open-link',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url.href,app})})
+    .then(async response=>{if(!response.ok)throw Error(await response.text());})
+    .catch(error=>setStatus(`Could not open the link in ${app}: ${error.message}`,true));
+  return true;
+};
 $('filter-more').onchange=event=>setFilter(event.target.value);
 $('focus-group').onchange=event=>{localStorage.setItem('switchboard-focus-group',event.target.value);setFilter(event.target.value||'all');};
 renderFilter();

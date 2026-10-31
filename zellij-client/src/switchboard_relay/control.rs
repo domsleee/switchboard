@@ -1,6 +1,7 @@
 use super::*;
 use serde::Deserialize;
 use std::path::PathBuf;
+use std::process::Stdio;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -146,6 +147,54 @@ pub(super) async fn close_tab(
         .await
         .inspect_err(|e| failed(&state, &id, "Close tab", e))?;
     Ok(Json(json!({"ok":true})))
+}
+
+#[derive(Deserialize)]
+pub(super) struct OpenLink {
+    url: String,
+    app: String,
+}
+
+/// Opens a link in another browser on this computer, such as the one signed into
+/// a work account. The relay only serves pages viewed on this computer.
+pub(super) async fn open_link(Json(link): Json<OpenLink>) -> Result<Json<Value>, Error> {
+    let url = checked_link(&link)?;
+    if !cfg!(target_os = "macos") {
+        return Err((
+            StatusCode::NOT_IMPLEMENTED,
+            "Opening links in another browser needs macOS",
+        ));
+    }
+    let status = tokio::process::Command::new("open")
+        .arg("-a")
+        .arg(link.app.trim())
+        .arg(url.as_str())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await;
+    match status {
+        Ok(status) if status.success() => Ok(Json(json!({"ok":true}))),
+        _ => Err((
+            StatusCode::BAD_GATEWAY,
+            "That browser could not be opened; check its name in Settings",
+        )),
+    }
+}
+
+fn checked_link(link: &OpenLink) -> Result<url::Url, Error> {
+    let url = url::Url::parse(&link.url).map_err(|_| (StatusCode::BAD_REQUEST, "Invalid link"))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Only web links can open in another browser",
+        ));
+    }
+    if link.app.trim().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "Choose a browser in Settings"));
+    }
+    Ok(url)
 }
 
 fn failed(state: &RelayState, id: &str, action: &str, (status, message): &Error) {
@@ -364,6 +413,35 @@ async fn forget_closed_session(binary: PathBuf, session: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_web_links_open_in_another_browser() {
+        let link = |url: &str, app: &str| OpenLink {
+            url: url.into(),
+            app: app.into(),
+        };
+        assert!(checked_link(&link("https://claude.ai/new", "Google Chrome Canary")).is_ok());
+        for bad in [
+            link("javascript:alert(1)", "Safari"),
+            link("file:///etc/passwd", "Safari"),
+            link("not a url", "Safari"),
+            link("https://claude.ai", " "),
+        ] {
+            assert_eq!(checked_link(&bad).unwrap_err().0, StatusCode::BAD_REQUEST);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_missing_browser_is_reported() {
+        let link = OpenLink {
+            url: "https://claude.ai/new".into(),
+            app: "Switchboard Missing Browser".into(),
+        };
+        let (status, message) = open_link(Json(link)).await.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert!(message.contains("Settings"));
+    }
 
     #[test]
     fn peer_refusals_explain_the_cause() {

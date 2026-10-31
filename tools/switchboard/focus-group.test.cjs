@@ -1,7 +1,7 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs');
 
 // All HTTP and terminal state is local fixture data; never attach to user sessions.
-test('a browser focused on Work shows only Work and keeps the other groups behind Show more',
+test('a browser focused on Work shows only Work, keeps the other groups behind Show more, and sends Work claude.ai links to its browser',
   {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
   const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
   const browser=await chromium.launch({headless:true});
@@ -51,6 +51,29 @@ test('a browser focused on Work shows only Work and keeps the other groups behin
     await page.locator('#close-panel').click();
     assert.deepEqual(await buttons(),['All','Work','Home']);
     assert.deepEqual(await names(),['Personal','Job']);
+
+    // claude.ai links from Work tabs open in the browser named for Work.
+    const opened=[];let refuse=false;
+    await context.route('**/api/open-link',route=>{opened.push(route.request().postDataJSON());
+      return refuse?route.fulfill({status:502,body:'That browser could not be opened'}):route.fulfill({contentType:'application/json',body:'{"ok":true}'});});
+    await page.locator('#settings').click();
+    await page.locator('#link-app-work').fill('Google Chrome Canary');
+    await page.locator('#link-app-work').press('Tab');
+    await page.locator('#close-panel').click();
+    const route=(host,url)=>page.evaluate(([host,url])=>window.SwitchboardOpenInApp(host,url),[host,url]);
+    assert.equal(await route('windows','https://claude.ai/new'),true);
+    assert.equal(await route('windows','https://www.claude.ai/chat/1'),true);
+    assert.equal(await route('mac','https://claude.ai/new'),false,'Home has no browser set');
+    assert.equal(await route('windows','https://notclaude.ai/'),false);
+    assert.equal(await route('windows','https://github.com/'),false);
+    await new Promise(resolve=>setTimeout(resolve,200));
+    assert.deepEqual(opened,[{url:'https://claude.ai/new',app:'Google Chrome Canary'},{url:'https://www.claude.ai/chat/1',app:'Google Chrome Canary'}]);
+    refuse=true;
+    await route('windows','https://claude.ai/new');
+    await page.waitForFunction(()=>document.querySelector('#status-message').textContent.includes('Could not open the link in Google Chrome Canary'));
+    await page.reload();
+    await page.waitForFunction(()=>document.querySelectorAll('#tabs .tab-select').length===2);
+    assert.equal(await page.locator('#link-app-work').inputValue(),'Google Chrome Canary','saved in this browser');
     assert.deepEqual(errors,[]);
   }finally{await browser.close();}
 });
