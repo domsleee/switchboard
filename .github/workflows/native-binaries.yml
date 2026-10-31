@@ -169,8 +169,9 @@ jobs:
   # Updaters download from one rolling prerelease. Its assets are replaced on
   # each build; the release is never recreated, so followers are not notified.
   # Publishing is split per platform: a failing Windows check must not strand
-  # finished macOS or Linux bundles (and vice versa). The jobs share one
-  # concurrency group so their uploads to the same release never interleave.
+  # finished macOS or Linux bundles (and vice versa). Each platform has its own
+  # concurrency group so two builds' uploads of its assets never interleave. One
+  # shared group dropped Windows: GitHub keeps one pending job per group.
   publish-windows:
     needs: [checks, windows]
     # Only this repository's main branch feeds automatic updates.
@@ -179,7 +180,7 @@ jobs:
     permissions:
       contents: write
     concurrency:
-      group: latest-main-release
+      group: latest-main-release-windows
       cancel-in-progress: false
     env:
       GH_TOKEN: ${{ github.token }}
@@ -217,7 +218,7 @@ jobs:
     permissions:
       contents: write
     concurrency:
-      group: latest-main-release
+      group: latest-main-release-macos
       cancel-in-progress: false
     env:
       GH_TOKEN: ${{ github.token }}
@@ -256,7 +257,7 @@ jobs:
     permissions:
       contents: write
     concurrency:
-      group: latest-main-release
+      group: latest-main-release-linux
       cancel-in-progress: false
     env:
       GH_TOKEN: ${{ github.token }}
