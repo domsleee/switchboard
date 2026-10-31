@@ -36,7 +36,7 @@ pub(super) fn validate_session(session: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn binary(host: &Host) -> anyhow::Result<PathBuf> {
+pub(super) fn binary(host: &Host) -> anyhow::Result<PathBuf> {
     host.config
         .zellij_binary
         .as_ref()
