@@ -20,12 +20,41 @@
     }
     return url.href;
   }
+  // Absolute paths with two parts (so /help and and/or stay text), ~/ paths, and C:\ paths.
+  const part=String.raw`[^\s"'<>|*?:;,()[\]{}\\/]+`,sep=String.raw`[\\/]`;
+  const filePath=new RegExp(String.raw`(?<![\w.~:/\\-])(?:(?:~|[A-Za-z]:)${sep}${part}|/${part}${sep}${part})(?:${sep}${part})*`,'g');
+  function filePathOf(uri) {
+    if (uri.startsWith('file:')) {
+      const path = decodeURIComponent(new URL(uri).pathname);
+      return /^\/[A-Za-z]:/.test(path) ? path.slice(1) : path;
+    }
+    return /^(~|[A-Za-z]:)?[\\/]/.test(uri) ? uri : null;
+  }
+  // Joins a wrapped path's rows. shortcut: wide characters shift the cells after them.
+  const fileLinks = term => ({provideLinks(y,callback) {
+    const buffer = term.buffer.active;
+    let start = y-1, line = '';
+    while (start > 0 && buffer.getLine(start)?.isWrapped) start--;
+    let row = start;
+    do line += buffer.getLine(row).translateToString(true).padEnd(term.cols); while (buffer.getLine(++row)?.isWrapped);
+    const cell = index => ({x:index%term.cols+1,y:start+Math.floor(index/term.cols)+1});
+    const links = [...line.matchAll(filePath)].map(match => {
+      const text = match[0].replace(/[.`]+$/,'');
+      return {range:{start:cell(match.index),end:cell(match.index+text.length-1)},text,activate:open};
+    }).filter(link => link.range.start.y <= y && y <= link.range.end.y);
+    callback(links.length ? links : undefined);
+  }});
   // Modifiers belong to the viewing browser, regardless of the terminal host OS.
   const linkGesture = event => event.button===0 && !event.altKey && (event.metaKey || event.ctrlKey || event.shiftKey);
   function open(event,uri) {
     if (!linkGesture(event)) return;
     event.preventDefault();event.stopImmediatePropagation();
     try {
+      const path=filePathOf(uri);
+      if(path){
+        if(window.parent===window||!parent.SwitchboardOpenFile)throw Error('Files open from the Switchboard page');
+        parent.SwitchboardOpenFile(host,path);return;
+      }
       const url=resolve(uri);
       if(window.parent!==window&&parent.SwitchboardOpenInApp?.(host,url))return;
       if(event.metaKey||event.ctrlKey){
@@ -81,10 +110,12 @@
   const timer=setInterval(()=>{
     const term=window.term;if(!term)return;clearInterval(timer);
     if(term.options.linkHandler)term.options.linkHandler={...term.options.linkHandler,activate:open};
+    term.registerLinkProvider?.(fileLinks(term));
     for(const entry of term._addonManager?._addons || []){
       const addon=entry.instance;
       if(addon?._linkProvider?._handler){addon._handler=open;addon._linkProvider._handler=open;}
     }
   },25);
   window.__switchboardResolveLink=resolve;
+  window.__switchboardFilePaths=line=>[...line.matchAll(filePath)].map(match=>match[0].replace(/[.`]+$/,''));
 })();

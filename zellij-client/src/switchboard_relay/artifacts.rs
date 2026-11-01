@@ -1,5 +1,5 @@
 use super::*;
-use axum::http::HeaderValue;
+use axum::{extract::Query, http::HeaderValue};
 use http_body_util::BodyExt;
 
 #[derive(Clone, Deserialize)]
@@ -272,18 +272,35 @@ fn byte_range(header: Option<&str>, len: u64) -> Result<Option<(u64, u64)>, ()> 
 }
 
 pub(super) async fn serve_file(root: &Path, path: &str, range: Option<&HeaderValue>) -> Response {
-    let not_found = || (StatusCode::NOT_FOUND, "Artifact not found").into_response();
-    let Some(target) = relative(path).and_then(|relative| resolve(root, relative)) else {
-        return not_found();
-    };
-    let Ok(mut file) = tokio::fs::File::open(&target).await else {
+    match relative(path).and_then(|relative| resolve(root, relative)) {
+        Some(target) => send(&target, range, "Artifact not found").await,
+        None => (StatusCode::NOT_FOUND, "Artifact not found").into_response(),
+    }
+}
+
+/// Any regular file this account can read, by absolute or `~/` path, for the file viewer.
+pub(super) async fn serve_path(path: &str, range: Option<&HeaderValue>) -> Response {
+    let target = control::expand_path(path)
+        .ok()
+        .filter(|path| path.is_absolute())
+        .and_then(|path| path.canonicalize().ok())
+        .filter(|path| path.is_file());
+    match target {
+        Some(target) => send(&target, range, "File not found").await,
+        None => (StatusCode::NOT_FOUND, "File not found").into_response(),
+    }
+}
+
+async fn send(target: &Path, range: Option<&HeaderValue>, missing: &'static str) -> Response {
+    let not_found = || (StatusCode::NOT_FOUND, missing).into_response();
+    let Ok(mut file) = tokio::fs::File::open(target).await else {
         return not_found();
     };
     let Ok(len) = file.metadata().await.map(|m| m.len()) else {
         return not_found();
     };
     let mut headers = HeaderMap::new();
-    headers.insert(header::CONTENT_TYPE, content_type(&target).parse().unwrap());
+    headers.insert(header::CONTENT_TYPE, content_type(target).parse().unwrap());
     headers.insert(header::ACCEPT_RANGES, "bytes".parse().unwrap());
     let (status, start, end) = match byte_range(range.and_then(|r| r.to_str().ok()), len) {
         Ok(None) => (StatusCode::OK, 0, len),
@@ -331,11 +348,9 @@ async fn remote(
     path: &str,
     range: HeaderMap,
 ) -> Result<Response, Error> {
-    let path: Vec<_> = path.split('/').map(urlencoding::encode).collect();
-    let path = format!("/switchboard/artifacts/{}", path.join("/"));
     let response = tokio::time::timeout(
         Duration::from_secs(20),
-        host.stream_request(method, &path, Bytes::new(), "", None, range),
+        host.stream_request(method, path, Bytes::new(), "", None, range),
     )
     .await
     .map_err(|_| (StatusCode::BAD_GATEWAY, "Computer timed out"))?
@@ -398,6 +413,8 @@ pub(super) async fn serve(
         } else {
             request.method().clone()
         };
+        let path: Vec<_> = path.split('/').map(urlencoding::encode).collect();
+        let path = format!("/switchboard/artifacts/{}", path.join("/"));
         remote(&host, method, &path, range).await?
     };
     let mut csp = FRAME.to_owned();
@@ -423,6 +440,58 @@ pub(super) async fn serve(
     headers.insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
     // Republishing keeps the URL, so revalidate instead of reusing a stale copy.
     headers.insert(header::CACHE_CONTROL, "no-cache".parse().unwrap());
+    Ok(response)
+}
+
+#[derive(Deserialize)]
+pub(super) struct FilePath {
+    path: String,
+}
+
+/// `GET /api/hosts/{host}/file?path=`: a file from that computer's disk for the in-page viewer.
+pub(super) async fn file(
+    State(state): State<RelayState>,
+    RoutePath(id): RoutePath<String>,
+    Query(file): Query<FilePath>,
+    request: Request,
+) -> Result<Response, Error> {
+    // Sibling origins, such as published artifact pages on 127.0.0.1:8091, are same-site.
+    if request
+        .headers()
+        .get("sec-fetch-site")
+        .is_some_and(|site| site != "same-origin" && site != "none")
+    {
+        return Err((StatusCode::FORBIDDEN, "Untrusted file request"));
+    }
+    let host = state
+        .host(&id)
+        .ok_or((StatusCode::NOT_FOUND, "Unknown computer"))?;
+    let range = range_header(request.headers());
+    let mut response = if host.is_local_engine() {
+        serve_path(&file.path, range.get(header::RANGE)).await
+    } else {
+        let path = format!(
+            "/switchboard/files?path={}",
+            urlencoding::encode(&file.path)
+        );
+        remote(&host, request.method().clone(), &path, range).await?
+    };
+    // The relay's origin holds terminal access, so a viewed page never runs scripts. Media,
+    // PDF and plain text run none, and Chrome will not play or render them in a sandbox.
+    let kind = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let inert = ["video/", "audio/", "application/pdf", "text/plain"]
+        .iter()
+        .any(|prefix| kind.starts_with(prefix))
+        || kind.starts_with("image/") && !kind.contains("svg");
+    if !inert {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_SECURITY_POLICY, "sandbox".parse().unwrap());
+    }
     Ok(response)
 }
 
@@ -798,6 +867,84 @@ mod tests {
         ] {
             assert!(page.contains(expected), "{expected}");
         }
+    }
+
+    #[tokio::test]
+    async fn paired_computer_files_stream_into_a_sandboxed_viewer() {
+        use tower::ServiceExt;
+        let temp = fixture();
+        // Stands in for the peer's gateway branch, which calls serve_path the same way.
+        let gateway = Router::new().route(
+            "/switchboard/files",
+            get(
+                |Query(file): Query<FilePath>, headers: HeaderMap| async move {
+                    serve_path(&file.path, headers.get(header::RANGE)).await
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut peer =
+            super::super::tests::config(&format!("http://{}", listener.local_addr().unwrap()));
+        let server = tokio::spawn(async move { axum::serve(listener, gateway).await.unwrap() });
+        peer.id = format!("mesh-{}", "ab".repeat(32));
+        let mut relay = super::super::state(
+            &RelayConfig {
+                hosts: vec![],
+                artifact_proxy: None,
+            },
+            8090,
+        )
+        .await
+        .unwrap();
+        relay.order = Arc::new(vec![peer.id.clone()]);
+        relay.hosts =
+            Arc::new([(peer.id.clone(), Arc::new(Host::new(peer.clone()).unwrap()))].into());
+        let app = Router::new()
+            .route("/api/hosts/{host}/file", get(file))
+            .with_state(relay);
+        let send = |path: &str, headers: &[(&str, &str)]| {
+            let uri = format!(
+                "/api/hosts/{}/file?path={}",
+                peer.id,
+                urlencoding::encode(path)
+            );
+            let mut request = Request::builder().uri(uri);
+            for (name, value) in headers {
+                request = request.header(*name, *value);
+            }
+            let request = request.body(Body::empty()).unwrap();
+            let app = app.clone();
+            async move { read(app.oneshot(request).await.unwrap()).await }
+        };
+
+        let clip = temp.path().join("artifacts/clip/clip.mp4");
+        let clip = clip.to_str().unwrap();
+        let (status, headers, body) = send(clip, &[("range", "bytes=2-5")]).await;
+        assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+        assert_eq!(headers[header::CONTENT_TYPE], "video/mp4");
+        assert!(headers.get(header::CONTENT_SECURITY_POLICY).is_none());
+        assert_eq!(&body[..], &[2, 3, 4, 5]);
+        let page = temp.path().join("artifacts/clip/page.html");
+        let (status, headers, _) = send(page.to_str().unwrap(), &[]).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[header::CONTENT_SECURITY_POLICY], "sandbox");
+
+        // Only absolute paths to regular files; the terminal's working directory is unknown.
+        let folder = temp.path().join("artifacts");
+        for path in [
+            "artifacts/clip/clip.mp4",
+            folder.to_str().unwrap(),
+            "/no/such/file",
+        ] {
+            let (status, _, _) = send(path, &[]).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+        }
+        // Published artifact pages share the relay's site but not its origin.
+        let (status, _, _) = send(clip, &[("sec-fetch-site", "same-site")]).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _, _) = send(clip, &[("sec-fetch-site", "same-origin")]).await;
+        assert_eq!(status, StatusCode::OK);
+        server.abort();
     }
 
     #[tokio::test]

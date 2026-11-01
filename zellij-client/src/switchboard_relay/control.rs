@@ -183,6 +183,41 @@ pub(super) async fn open_link(Json(link): Json<OpenLink>) -> Result<Json<Value>,
     }
 }
 
+#[derive(Deserialize)]
+pub(super) struct OpenFile {
+    path: String,
+}
+
+/// Opens a file shown in this computer's terminal in its default app.
+pub(super) async fn open_file(Json(file): Json<OpenFile>) -> Result<Json<Value>, Error> {
+    let path = expand_path(&file.path)
+        .ok()
+        .filter(|path| path.is_absolute() && path.exists())
+        .ok_or((StatusCode::NOT_FOUND, "File not found"))?;
+    let program = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(windows) {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    let status = tokio::process::Command::new(program)
+        .arg(&path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await;
+    match status {
+        // Explorer exits with 1 even after opening the file.
+        Ok(status) if status.success() || cfg!(windows) => Ok(Json(json!({"ok":true}))),
+        _ => Err((
+            StatusCode::BAD_GATEWAY,
+            "No app on this computer could open that file",
+        )),
+    }
+}
+
 fn checked_link(link: &OpenLink) -> Result<url::Url, Error> {
     let url = url::Url::parse(&link.url).map_err(|_| (StatusCode::BAD_REQUEST, "Invalid link"))?;
     if !matches!(url.scheme(), "http" | "https") {

@@ -35,6 +35,15 @@ parent.SwitchboardOpenInApp=(host,url)=>{routed.push([host,url]);return true;};c
 handlers.mousedown({...click,shiftKey:false,metaKey:true});handlers.mouseup({...click,shiftKey:false,metaKey:true});
 assert.deepEqual(routed,[['windows','http://172.20.10.69:8765/']]);assert.equal(opened.length,1);assert.equal(tabFocused,2);
 delete parent.SwitchboardOpenInApp;
+// File paths go to the Switchboard page, which opens or previews them; the browser opens no tab.
+assert.deepEqual([...window.__switchboardFilePaths('Saved to /Users/dom/clips/demo.mp4. /help and/or https://x.test/a/b ~/a.mov C:\\Users\\dom\\b.mp4 /x/y.rs:12')],['/Users/dom/clips/demo.mp4','~/a.mov','C:\\Users\\dom\\b.mp4','/x/y.rs']);
+const files=[];parent.SwitchboardOpenFile=(host,path)=>files.push([host,path]);
+const link=window.term._core.linkifier._currentLink.link;
+for(const text of ['/Users/dom/clips/demo.mp4','file:///C:/Users/dom/a%20b.mp4']){
+  link.text=text;handlers.mousedown({...click,shiftKey:false,metaKey:true});handlers.mouseup({...click,shiftKey:false,metaKey:true});
+}
+assert.deepEqual(files,[['windows','/Users/dom/clips/demo.mp4'],['windows','C:/Users/dom/a b.mp4']]);
+assert.equal(opened.length,1);link.text='http://127.0.0.1:8765/';delete parent.SwitchboardOpenFile;
 const app=fs.readFileSync(__dirname+'/static/app.js','utf8'),frameWindow={};let active=true;
 const sessions=new Map([['main',{frame:{contentWindow:frameWindow,classList:{contains:()=>active}}}]]);
 vm.runInNewContext(app.slice(app.indexOf("window.addEventListener('message',event=>{"),app.indexOf("$('artifact-back').onclick=")),{window,location,document,URL,sessions,setStatus(){}});

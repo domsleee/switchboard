@@ -904,6 +904,20 @@ window.SwitchboardOpenInApp=(host,href)=>{
     .catch(error=>setStatus(`Could not open the link in ${app}: ${error.message}`,true));
   return true;
 };
+// Terminal frames call this on a modified click of a file path.
+window.SwitchboardOpenFile=(host,path)=>{
+  if(hosts.get(host)?.local){
+    fetch('/api/open-file',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})})
+      .then(async response=>{if(!response.ok)throw Error(await response.text());})
+      .catch(error=>setStatus(`Could not open ${path}: ${error.message}`,true));
+    return;
+  }
+  // Another computer's file streams into the preview, which closes on the next tab switch.
+  const url=`/api/hosts/${encodeURIComponent(host)}/file?path=${encodeURIComponent(path)}`;
+  $('artifact-url').textContent=`${hosts.get(host)?.name||host}: ${path}`;
+  $('artifact-external').href=url;$('artifact-frame').src=url;
+  $('artifact-preview').hidden=false;$('artifact-back').focus();
+};
 $('filter-more').onchange=event=>setFilter(event.target.value);
 $('focus-group').onchange=event=>{localStorage.setItem('switchboard-focus-group',event.target.value);setFilter(event.target.value||'all');};
 renderFilter();
