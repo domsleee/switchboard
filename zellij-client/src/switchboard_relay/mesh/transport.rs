@@ -633,9 +633,10 @@ async fn terminal_response(
         if let Some(poll) = mesh.attention.get() {
             if let Some(after) = after {
                 // Answer when this computer's status changes, so peers need not poll.
+                // Stay under the pairing bridge's 15 s cutoff, or quiet waits end in errors.
                 let mut changes = poll.lock().await.changes.subscribe();
                 let _ = tokio::time::timeout(
-                    Duration::from_secs(25),
+                    Duration::from_secs(10),
                     changes.wait_for(|version| *version != after),
                 )
                 .await;
