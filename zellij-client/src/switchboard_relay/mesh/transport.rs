@@ -701,6 +701,16 @@ async fn terminal_response(
             );
         }
     }
+    // Paired computers already reach this account's shells, so its files add no access.
+    if path.split('?').next() == Some("/switchboard/files")
+        && matches!(*request.method(), Method::GET | Method::HEAD)
+    {
+        let file = url::form_urlencoded::parse(request.uri().query().unwrap_or("").as_bytes())
+            .find(|(k, _)| k == "path")
+            .map(|(_, v)| v.into_owned())
+            .ok_or((StatusCode::NOT_FOUND, "File not found"))?;
+        return Ok(artifacts::serve_path(&file, request.headers().get(header::RANGE)).await);
+    }
     if path == "/switchboard/logs" && request.method() == Method::GET {
         return Ok(Json(logs::local()).into_response());
     }

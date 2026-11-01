@@ -259,6 +259,14 @@ Shift-click opens terminal links in a new browser tab. Loopback links on paired
 computers use that machine’s LAN address. This requires a reachable artifact
 server or tunnel; rewriting a URL cannot reach a remote loopback-only server.
 
+Cmd/Ctrl/Shift-click on an absolute, `~/` or `C:\` file path (or a `file://`
+link) opens it. A file on the browser's own computer opens in its default app.
+A paired computer's file streams into the preview pane through
+`/api/hosts/<id>/file`, which reaches that computer's `/switchboard/files` with
+the same credential as its terminals. Files that could run scripts, such as HTML
+and SVG, are served with `Content-Security-Policy: sandbox`; Chrome will not
+play media or render PDFs under it, so those are served without it.
+
 The Windows gallery on port 8765 uses the separate HTTPS origin
 `https://zellij-gallery.localhost`, proxied through an anonymous HTTP listener
 on 127.0.0.1:8091. It streams GET/HEAD responses from the configured
