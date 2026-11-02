@@ -37,7 +37,7 @@ test('computer and session inboxes preserve history, receipt status, literal tex
     await page.goto('https://switchboard.test/messages.html');
     await page.locator('button[data-key="agent:session-new"]').click();
     await page.waitForFunction(() => document.querySelectorAll('article').length === 1);
-    assert.match(await page.locator('#location').textContent(), /windows \/ main \/ tab 2.*session-new/);
+    assert.equal(await page.locator('#location').textContent(), 'Terminal: windows / main / tab 2');
     assert.equal(await page.locator('#location a').count(),0);
     assert.match(await page.locator('button[data-key="agent:session-old"]').textContent(), /Retired/);
     assert.match(await page.locator('article').textContent(), /Awaiting acknowledgment/);
@@ -202,4 +202,21 @@ test('conflicts and existing board storage preserve the server error instead of 
       assert.equal(await page.locator('a[href="/computers.html"]').count(),1);
     });
   }
+});
+
+test('ids in messages and inboxes read as names', async () => {
+  await fixture(async ({page,respond}) => {
+    const known = '1cf771a7-fa6b-4bf6-934b-3db4f2ec95cf', unknown = '4b8d9097-0030-4943-9bb7-a1d0b4a5baac';
+    const machines = [{id:'mac',name:'Mac',unread_count:0,participants:[{...agent,id:known,name:'claude-mac'}]}];
+    respond(url => url.pathname.endsWith('/inboxes') ? {machine_id:'mac',machines}
+      : {items:[message('m1',{body:`Reply to agent ${known} about request ${unknown}`})],next_cursor:null});
+    await page.goto('https://switchboard.test/messages.html');
+    const button = page.locator(`button[data-key="agent:${known}"]`);
+    assert.doesNotMatch(await button.textContent(), new RegExp(known));
+    await button.click();
+    await page.waitForFunction(() => document.querySelector('.body'));
+    assert.equal(await page.locator('.body').textContent(), 'Reply to agent claude-mac (Mac) about request 4b8d9097…');
+    assert.equal(await page.locator('.body .id').getAttribute('title'), unknown);
+    assert.doesNotMatch(await page.locator('main').textContent(), /m1|[0-9a-f]{8}-[0-9a-f]{4}/);
+  });
 });
