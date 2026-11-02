@@ -323,3 +323,51 @@ test('right-click paste reports denied or unavailable clipboard reads', async ()
     assert.deepEqual(h.pastes, []);
   }
 });
+
+function imageHarness({clipboardTypes = ['image/png'], status = 200} = {}) {
+  const h = harness(), uploads = [], pasted = [];
+  h.term.paste = text => pasted.push(text);
+  h.context.fetch = async (url, options) => {
+    uploads.push({url, type: options.headers['Content-Type'], body: options.body});
+    return {ok: status === 200, status, json: async () => ({path: '/home/me/.cache/zellij/pasted-images/a.png'})};
+  };
+  h.context.navigator.clipboard.read = async () => [{types: clipboardTypes,
+    getType: async type => ({type, image: true})}];
+  return {...h, uploads, pasted};
+}
+const altV = {code: 'KeyV', key: 'v', altKey: true};
+
+test('Alt+V uploads a browser clipboard image to the host and pastes its path', async () => {
+  const h = imageHarness();
+  const key = h.event('keydown', altV);
+  assert.equal(key.prevented, true); assert.equal(key.stopped, true);
+  await settle(); await settle();
+  assert.deepEqual(h.uploads.map(u => [u.url, u.type]), [['/hosts/mac/paste-image', 'image/png']]);
+  assert.deepEqual(h.pasted, ['/home/me/.cache/zellij/pasted-images/a.png']);
+  assert.deepEqual(h.inputs, []);
+});
+
+test('Alt+V without an image, or when upload fails, still sends Alt+V', async () => {
+  const text = imageHarness({clipboardTypes: ['text/plain']});
+  text.event('keydown', altV); await settle(); await settle();
+  assert.deepEqual(text.inputs, [['\x1bv']]);
+  assert.deepEqual(text.uploads, []);
+  const old = imageHarness({status: 404});
+  old.event('keydown', altV); await settle(); await settle(); await settle();
+  assert.deepEqual(old.inputs, [['\x1bv']]);
+  assert.match(old.messages.at(-1).message.error, /Image paste failed.*404/);
+  const mac = imageHarness();
+  assert.equal(mac.event('keydown', {...altV, key: '√'}).prevented, undefined);
+});
+
+test('pasting an image file uploads it, while text pastes stay native', async () => {
+  const h = imageHarness(), file = {type: 'image/png'};
+  const image = {kind: 'file', type: 'image/png', getAsFile: () => file};
+  const paste = h.event('paste', {clipboardData: {items: [image]}});
+  assert.equal(paste.prevented, true);
+  await settle(); await settle();
+  assert.equal(h.uploads[0].body, file);
+  assert.deepEqual(h.pasted, ['/home/me/.cache/zellij/pasted-images/a.png']);
+  const mixed = h.event('paste', {clipboardData: {items: [image, {kind: 'string', type: 'text/plain'}]}});
+  assert.equal(mixed.prevented, undefined);
+});

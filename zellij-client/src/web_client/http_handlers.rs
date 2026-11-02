@@ -196,3 +196,62 @@ pub async fn get_static_asset(AxumPath(path): AxumPath<String>) -> impl IntoResp
 pub async fn version_handler() -> &'static str {
     VERSION
 }
+
+pub const PASTE_IMAGE_LIMIT: usize = 16 * 1024 * 1024;
+const PASTE_IMAGE_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+// Browser clipboard images are saved on this host so terminal apps can open the pasted path.
+pub async fn paste_image_handler(
+    axum::Extension(IsReadOnly(is_read_only)): axum::Extension<IsReadOnly>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    if is_read_only {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let extension = match headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+    {
+        Some("image/png") => "png",
+        Some("image/jpeg") => "jpg",
+        Some("image/gif") => "gif",
+        Some("image/webp") => "webp",
+        _ => return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE),
+    };
+    if body.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let directory = zellij_utils::consts::ZELLIJ_CACHE_DIR.join("pasted-images");
+    let path = tokio::task::spawn_blocking(move || save_pasted_image(&directory, extension, &body))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|error| {
+            log::error!("Failed to save pasted image: {}", error);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    Ok(Json(serde_json::json!({ "path": path.to_string_lossy() })))
+}
+
+pub fn save_pasted_image(
+    directory: &std::path::Path,
+    extension: &str,
+    bytes: &[u8],
+) -> std::io::Result<std::path::PathBuf> {
+    std::fs::create_dir_all(directory)?;
+    // Pasted screenshots may be sensitive; keep only recent ones.
+    for entry in std::fs::read_dir(directory)?.flatten() {
+        let expired = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .map_or(false, |age| age > PASTE_IMAGE_MAX_AGE);
+        if expired {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+    let path = directory.join(format!("{}.{}", Uuid::new_v4(), extension));
+    std::fs::write(&path, bytes)?;
+    Ok(path)
+}

@@ -298,6 +298,14 @@ PCs. Copy shortcuts still copy a terminal selection instead of interrupting.
 Sidebar selection restores that same input, so Ctrl+V works without another
 terminal click. Input stays suspended until the selected pane is confirmed.
 
+## Pasting images
+
+Terminal apps read their own computer's clipboard, not the browser's. Alt+V, or
+a browser paste holding only an image, uploads it to the tab's computer
+(`POST /paste-image`, kept for a day in Zellij's cache) and pastes the saved
+path, which Claude Code attaches as an image. Alt+V with no image still reaches
+the terminal.
+
 ## Escape key
 
 Bare Escape in stock web 0.45.1 drops its byte during parser finalization. The
