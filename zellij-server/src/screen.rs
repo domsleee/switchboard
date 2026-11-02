@@ -63,7 +63,7 @@ use zellij_utils::ipc::{
 use zellij_utils::pane_size::{PaneGeom, Size, SizeInPixels};
 use zellij_utils::shared::{clean_string_from_control_and_linebreak, detect_theme_hue};
 use zellij_utils::{
-    consts::{session_info_folder_for_session, ZELLIJ_SOCK_DIR},
+    consts::{session_info_folder_for_session, session_socket_path},
     envs::set_session_name,
     input::command::TerminalAction,
     input::layout::{
@@ -5574,7 +5574,7 @@ impl Screen {
         }
         let available_layouts = self.cached_layouts.clone();
         let creation_time = {
-            let sock_path = ZELLIJ_SOCK_DIR.join(&self.session_name);
+            let sock_path = session_socket_path(&self.session_name);
             std::fs::metadata(&sock_path)
                 .ok()
                 .and_then(|f| f.created().ok().or_else(|| f.modified().ok()))
@@ -11563,7 +11563,7 @@ pub(crate) fn screen_thread_main(
                 let available_layouts = vec![];
 
                 let creation_time = {
-                    let sock_path = ZELLIJ_SOCK_DIR.join(&screen.session_name);
+                    let sock_path = session_socket_path(&screen.session_name);
                     std::fs::metadata(&sock_path)
                         .ok()
                         .and_then(|f| f.created().ok().or_else(|| f.modified().ok()))
@@ -11656,9 +11656,9 @@ pub(crate) fn screen_thread_main(
                         tab.rename_session(name.clone()).with_context(err_context)?;
                     }
 
-                    // rename socket file
-                    let old_socket_file_path = ZELLIJ_SOCK_DIR.join(&old_session_name);
-                    let new_socket_file_path = ZELLIJ_SOCK_DIR.join(&name);
+                    // rename socket file, within the (possibly legacy) dir it lives in
+                    let old_socket_file_path = session_socket_path(&old_session_name);
+                    let new_socket_file_path = old_socket_file_path.with_file_name(&name);
                     if let Err(e) = std::fs::rename(old_socket_file_path, new_socket_file_path) {
                         log::error!("Failed to rename ipc socket: {:?}", e);
                     }

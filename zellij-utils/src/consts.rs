@@ -4,7 +4,7 @@ use crate::home::find_default_config_dir;
 use directories::ProjectDirs;
 use include_dir::{include_dir, Dir};
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{LazyLock, OnceLock},
 };
 
@@ -132,6 +132,55 @@ pub fn is_ipc_socket(file_type: &std::fs::FileType) -> bool {
     file_type.is_file()
 }
 
+/// Socket directories that may hold live sessions, current first. On Windows this
+/// includes the pre-%LOCALAPPDATA% directory where servers started by older
+/// versions keep their markers (their pipe names derive from that path).
+pub fn session_sock_dirs() -> Vec<&'static Path> {
+    std::iter::once(ZELLIJ_SOCK_DIR.as_path())
+        .chain(ZELLIJ_LEGACY_SOCK_DIR.as_deref())
+        .collect()
+}
+
+/// The socket path of session `name`: the first of `sock_dirs` holding its
+/// marker, else the first dir (where a new server would bind).
+pub fn resolve_session_socket_path(name: &str, sock_dirs: &[&Path]) -> PathBuf {
+    sock_dirs
+        .iter()
+        .map(|dir| dir.join(name))
+        .find(|path| std::fs::metadata(path).is_ok_and(|m| is_ipc_socket(&m.file_type())))
+        .unwrap_or_else(|| sock_dirs[0].join(name))
+}
+
+/// Socket path to connect to or inspect session `name`, legacy dir included.
+pub fn session_socket_path(name: &str) -> PathBuf {
+    resolve_session_socket_path(name, &session_sock_dirs())
+}
+
+// Markers are regular files only on Windows; Unix needs a bound socket.
+#[cfg(all(test, windows))]
+mod session_socket_path_tests {
+    use super::*;
+
+    #[test]
+    fn prefers_new_dir_then_legacy_then_defaults_to_new() {
+        let root = tempfile::tempdir().unwrap();
+        let (new, legacy) = (root.path().join("new"), root.path().join("legacy"));
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::create_dir_all(&legacy).unwrap();
+        let dirs = [new.as_path(), legacy.as_path()];
+
+        assert_eq!(resolve_session_socket_path("s", &dirs), new.join("s"));
+        std::fs::write(legacy.join("s"), "1").unwrap();
+        assert_eq!(resolve_session_socket_path("s", &dirs), legacy.join("s"));
+        std::fs::write(new.join("s"), "1").unwrap();
+        assert_eq!(resolve_session_socket_path("s", &dirs), new.join("s"));
+
+        // A directory (such as web_server_bus) is not a session marker.
+        std::fs::create_dir(legacy.join("d")).unwrap();
+        assert_eq!(resolve_session_socket_path("d", &dirs), new.join("d"));
+    }
+}
+
 #[cfg(unix)]
 pub fn ipc_connect(path: &std::path::Path) -> std::io::Result<interprocess::local_socket::Stream> {
     use interprocess::local_socket::{prelude::*, GenericFilePath, Stream as LocalSocketStream};
@@ -250,6 +299,7 @@ mod unix_only {
     });
     pub static WEBSERVER_SOCKET_PATH: LazyLock<PathBuf> =
         LazyLock::new(|| ZELLIJ_SOCK_DIR.join("web_server_bus"));
+    pub static ZELLIJ_LEGACY_SOCK_DIR: LazyLock<Option<PathBuf>> = LazyLock::new(|| None);
 }
 
 #[cfg(not(unix))]
@@ -276,9 +326,20 @@ mod not_unix {
 
     pub const ZELLIJ_SOCK_MAX_LENGTH: usize = 256;
 
+    fn legacy_tmp_dir() -> PathBuf {
+        canonicalize_path(temp_dir()).join("zellij")
+    }
+
+    // %LOCALAPPDATA% rather than %TEMP%: temp cleaners (Storage Sense etc.)
+    // delete the session markers of live servers, hiding their sessions.
     pub static ZELLIJ_TMP_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
-        let tmp_dir = canonicalize_path(temp_dir());
-        tmp_dir.join("zellij")
+        #[cfg(windows)]
+        if let Some(local) = std::env::var_os("LOCALAPPDATA").filter(|v| !v.is_empty()) {
+            return canonicalize_path(PathBuf::from(local))
+                .join("switchboard")
+                .join("zellij");
+        }
+        legacy_tmp_dir()
     });
     pub static ZELLIJ_TMP_LOG_DIR: LazyLock<PathBuf> =
         LazyLock::new(|| ZELLIJ_TMP_DIR.join("zellij-log"));
@@ -298,4 +359,20 @@ mod not_unix {
     });
     pub static WEBSERVER_SOCKET_PATH: LazyLock<PathBuf> =
         LazyLock::new(|| ZELLIJ_SOCK_DIR.join("web_server_bus"));
+    /// The socket dir used before ZELLIJ_TMP_DIR moved to %LOCALAPPDATA%, built
+    /// exactly as ZELLIJ_SOCK_DIR was so legacy pipe names match. Not used with
+    /// a ZELLIJ_SOCKET_DIR override.
+    ///
+    /// Temporary: this only keeps servers started before the move discoverable
+    /// after a client/web-server update. Remove it (and its callers' fallback)
+    /// once every Windows install has restarted its session servers on a build
+    /// that binds in %LOCALAPPDATA%.
+    pub static ZELLIJ_LEGACY_SOCK_DIR: LazyLock<Option<PathBuf>> = LazyLock::new(|| {
+        if !cfg!(windows) || envs::get_socket_dir().is_ok() {
+            return None;
+        }
+        let mut dir = canonicalize_path(legacy_tmp_dir());
+        dir.push(CLIENT_SERVER_CONTRACT_DIR.clone());
+        (dir != *ZELLIJ_SOCK_DIR).then_some(dir)
+    });
 }
