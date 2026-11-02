@@ -258,6 +258,43 @@
     }
   }, true);
 
+  // Terminal apps read the host's clipboard, but images live in this browser's:
+  // save them on the host and paste the path, which Claude Code attaches as an image.
+  async function pasteImage(blob) {
+    const response = await fetch(`/hosts/${host}/paste-image`, {method: 'POST', headers: {'Content-Type': blob.type}, body: blob});
+    if (!response.ok) throw Error(`Host rejected the image (${response.status}).`);
+    const {path} = await response.json();
+    (terminal || window.term).paste(path);
+  }
+  function imageFailed(error) {
+    report({ok: false, source: 'image', error: 'Image paste failed: ' + (error?.message || error)});
+  }
+
+  window.addEventListener('paste', event => {
+    const items = [...(event.clipboardData?.items || [])];
+    const image = items.find(item => item.kind === 'file' && item.type.startsWith('image/'));
+    if (!isTerminalTarget(event) || !image || items.some(item => item.type === 'text/plain')) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    pasteImage(image.getAsFile()).catch(imageFailed);
+  }, true);
+
+  // Claude Code on Windows binds Alt+V to image paste; macOS Option+V types √ instead.
+  window.addEventListener('keydown', event => {
+    if (!isTerminalTarget(event) || event.key !== 'v' || !event.altKey || event.ctrlKey ||
+      event.metaKey || event.shiftKey || event.isComposing) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    const forward = () => (terminal || window.term)?.input('\x1bv');
+    (async () => {
+      for (const item of await navigator.clipboard.read()) {
+        const type = item.types.find(type => type.startsWith('image/'));
+        if (type) return pasteImage(await item.getType(type)).catch(error => { imageFailed(error); forward(); });
+      }
+      forward();
+    })().catch(forward);
+  }, true);
+
   function installAddon(namespace) {
     const prototype = namespace?.ClipboardAddon?.prototype;
     if (!prototype || prototype.__switchboardClipboard) return;

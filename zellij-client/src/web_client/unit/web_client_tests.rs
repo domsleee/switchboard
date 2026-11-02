@@ -679,6 +679,75 @@ mod web_client_tests {
 
     #[tokio::test]
     #[serial]
+    async fn test_paste_image_saves_for_writers_only() {
+        let _ = delete_db();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let port = addr.port();
+        let server_handle = tokio::spawn(async move {
+            serve_web_client(
+                Config::default(),
+                Options::default(),
+                Some(std::env::temp_dir().join("test_config.kdl")),
+                listener,
+                None,
+                Some(Arc::new(MockSessionManager::new())),
+                Some(Arc::new(MockClientOsApiFactory::new())),
+                addr.ip(),
+                port,
+            )
+            .await;
+        });
+        wait_for_server(port, Duration::from_secs(5))
+            .await
+            .expect("Server failed to start");
+
+        let paste = |read_only: bool, name: &'static str| async move {
+            let (auth_token, _) = create_token(Some(name.to_string()), read_only).unwrap();
+            tokio::task::spawn_blocking(move || {
+                let login =
+                    isahc::Request::post(format!("http://127.0.0.1:{}/command/login", port))
+                        .header("Content-Type", "application/json")
+                        .body(serde_json::json!({"auth_token": auth_token}).to_string())
+                        .unwrap()
+                        .send()
+                        .unwrap();
+                let cookie = login.headers()["set-cookie"].to_str().unwrap();
+                let cookie = cookie.split(';').next().unwrap().to_string();
+                let mut response =
+                    isahc::Request::post(format!("http://127.0.0.1:{}/paste-image", port))
+                        .header("Cookie", cookie)
+                        .header("Content-Type", "image/png")
+                        .body(b"\x89PNG test".to_vec())
+                        .unwrap()
+                        .send()
+                        .unwrap();
+                (response.status(), response.text().unwrap())
+            })
+            .await
+            .unwrap()
+        };
+
+        let (status, body) = paste(false, "test_token_paste_writer").await;
+        assert_eq!(status, 200);
+        let path = serde_json::from_str::<serde_json::Value>(&body).unwrap()["path"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(std::fs::read(&path).unwrap(), b"\x89PNG test");
+        assert!(path.ends_with(".png"));
+        let _ = std::fs::remove_file(&path);
+
+        let (status, _) = paste(true, "test_token_paste_reader").await;
+        assert_eq!(status, 403);
+
+        server_handle.abort();
+        revoke_token("test_token_paste_writer").unwrap();
+        revoke_token("test_token_paste_reader").unwrap();
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn test_unauthorized_access_without_session() {
         let _ = delete_db();
 
