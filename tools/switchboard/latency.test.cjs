@@ -54,7 +54,8 @@ let native,relay,browser,tokenName,created=false,failed=false;const burners=[];
 (async()=>{
   try{
     fs.copyFileSync(binary,installed);fs.chmodSync(installed,0o755);
-    let settings=`web_sharing "off"\ndefault_shell ${kdl(shell[0])}\nshow_startup_tips false\nsession_serialization false\ndisable_session_metadata false\n`;
+    // Unshared-session recovery is UNIX-socket only, so Windows shares the session from the start.
+    let settings=`web_sharing "${windows?'on':'off'}"\ndefault_shell ${kdl(shell[0])}\nshow_startup_tips false\nsession_serialization false\ndisable_session_metadata false\n`;
     let fingerprint;
     if(tls){
       const cert=path.join(dir,'cert.pem'),key=path.join(dir,'key.pem');
@@ -63,7 +64,11 @@ let native,relay,browser,tokenName,created=false,failed=false;const burners=[];
       settings+=`web_server_cert ${kdl(cert)}\nweb_server_key ${kdl(key)}\n`;
     }
     fs.writeFileSync(config,settings);
-    cli('attach','--create-background',name,'--',...shell);created=true;
+    // On Windows the background server inherits redirected pipes (execFileSync never sees EOF) and the
+    // shell needs a real console, so detach into a hidden one.
+    if(windows)await new Promise((resolve,reject)=>spawn(installed,['--config',config,'attach','--create-background',name,'--',...shell],{env,detached:true,windowsHide:true,stdio:'ignore'}).on('exit',resolve).on('error',reject));
+    else cli('attach','--create-background',name,'--',...shell);
+    created=true;
     let first;
     await until(()=>{first=JSON.parse(cli('-s',name,'action','list-panes','--json','--all')).find(p=>!p.is_plugin);return !!first;},'Private first terminal did not start');
     // Busy panes the attention scan must dump (not quiet shells), each with deep scrollback.
@@ -80,7 +85,7 @@ let native,relay,browser,tokenName,created=false,failed=false;const burners=[];
     if(fingerprint)host.tls_fingerprint=fingerprint;
     const hosts=path.join(dir,'hosts.json');fs.writeFileSync(hosts,JSON.stringify({hosts:[host]}),{mode:0o600});
     const log=file=>fs.openSync(path.join(dir,file),'a');
-    native=spawn(installed,['--config',config,'web','--port',String(nativePort)],{env:{...env,SWITCHBOARD_RECOVER_UNSHARED_SESSION:name},stdio:['ignore',log('native.log'),log('native-error.log')]});
+    native=spawn(installed,['--config',config,'web','--port',String(nativePort)],{env:windows?env:{...env,SWITCHBOARD_RECOVER_UNSHARED_SESSION:name},stdio:['ignore',log('native.log'),log('native-error.log')]});
     relay=spawn(installed,['serve','--host-config',hosts,'--port',String(relayPort)],{env,stdio:['ignore',log('relay.log'),log('relay-error.log')]});
     await until(async()=>{const data=await (await fetch(url+'/api/hosts/fixture')).json();return data.sessions?.some(s=>s.name===name&&s.web_clients_allowed);},'Private session did not appear through the relay');
     browser=await chromium.launch({headless:true});
@@ -95,7 +100,7 @@ let native,relay,browser,tokenName,created=false,failed=false;const burners=[];
         constructor(...a){super(...a);if(String(a[0]).includes('/ws/terminal'))this.addEventListener('message',event=>window.__lastArrival=performance.now());this.addEventListener('message',event=>window.__bytes.push(event.data.length??event.data.size??event.data.byteLength));}
         send(data){if(String(this.url).includes('/ws/terminal')&&typeof data==='string'){
           if(!hooked&&window.term){hooked=true;window.term.onWriteParsed(check);}
-          if(/^[0-9]$/.test(data)){typed+=data;window.__pending.push({len:typed.length,t:performance.now()});}else if(data==='\x15'||data==='\x1b')typed='';}
+          if(/^[0-9]$/.test(data)){typed+=data;window.__pending.push({len:typed.length,t:performance.now()});}else if(data==='\x15'||data==='\x03')typed='';}
           return super.send(data);}
       };
     });
@@ -113,7 +118,7 @@ let native,relay,browser,tokenName,created=false,failed=false;const burners=[];
     const started=Date.now();
     for(let n=0;n<keys;n++){
       await page.keyboard.press(String(n%10));await delay(gap);
-      if(n%30===29){await frame.waitForFunction(()=>!window.__pending.length,null,{timeout:15000}).catch(()=>{});await page.keyboard.press(windows?'Escape':'Control+U');await delay(300);}
+      if(n%30===29){await frame.waitForFunction(()=>!window.__pending.length,null,{timeout:15000}).catch(()=>{});await page.keyboard.press(windows?'Control+C':'Control+U');await delay(300);}
     }
     await frame.waitForFunction(()=>!window.__pending.length,null,{timeout:15000}).catch(()=>{});
     hammering=false;await Promise.all(loops);
