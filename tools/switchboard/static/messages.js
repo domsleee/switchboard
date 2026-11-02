@@ -3,12 +3,29 @@
   const $ = id => document.getElementById(id);
   let selected = null, thread = null, project = '', cursor = null;
   let directoryVersion = 0, historyVersion = 0;
+  const names = new Map();
+  const ids = /\b(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{64})\b/gi;
   const text = (tag, value, className) => {
     const element = document.createElement(tag);
     element.textContent = value;
     if (className) element.className = className;
     return element;
   };
+  // Agents write raw ids into messages; show known ones by name and shorten the rest.
+  function readable(value) {
+    const fragment = document.createDocumentFragment();
+    let last = 0;
+    for (const match of value.matchAll(ids)) {
+      fragment.append(value.slice(last, match.index));
+      const id = match[0], name = names.get(id.toLowerCase());
+      const span = text('span', name || id.slice(0, 8) + '…', name ? 'name' : 'id');
+      span.title = id;
+      fragment.append(span);
+      last = match.index + id.length;
+    }
+    fragment.append(value.slice(last));
+    return fragment;
+  }
   const date = value => value == null ? 'Unknown time' : new Date(value).toLocaleString();
   function status(id, value, error = false) {
     $(id).textContent = value;
@@ -45,14 +62,17 @@
   function choose(inbox) {
     selected = inbox; thread = null;
     $('heading').textContent = inbox.label;
+    $('heading').title = '';
     $('location').textContent = inbox.location || '';
     $('back').hidden = true;
     markSelection();
     loadHistory();
   }
-  function inboxButton(inbox, count, detail, agent = false) {
-    const button = text('button', `${inbox.label} · ${count || 0} awaiting acknowledgment`, agent ? 'agent' : '');
+  function inboxButton(inbox, name, count, detail, id, agent = false) {
+    const button = text('button', name, agent ? 'agent' : '');
     button.dataset.key = inbox.key;
+    button.title = id;
+    if (count) button.append(text('span', `${count} awaiting`, 'count'));
     if (detail) button.append(text('small', detail));
     button.addEventListener('click', () => choose(inbox));
     return button;
@@ -78,18 +98,25 @@
       if (result.error) throw result.error;
       const data = result.data;
       $('inboxes').replaceChildren();
+      for (const machine of data.machines) {
+        names.set(machine.id.toLowerCase(), machine.name);
+        for (const agent of machine.participants) names.set(agent.id.toLowerCase(), `${agent.name} (${machine.name})`);
+      }
       const visibleInboxes = new Set();
       for (const machine of data.machines) {
         const section = document.createElement('section');
         section.append(text('h2', machine.name));
         const machineInbox = {key: 'computer:' + machine.id, label: machine.name + ' / Computer inbox', path: 'machines/' + encodeURIComponent(machine.id) + '/inbox'};
         visibleInboxes.add(machineInbox.key);
-        section.append(inboxButton(machineInbox, machine.unread_count, machine.id));
-        for (const agent of machine.participants) {
-          const location = agent.terminal ? `Terminal location: ${agent.terminal.host} / ${agent.terminal.session} / tab ${agent.terminal.tab_id}` : 'No terminal location registered';
-          const inbox = {key: 'agent:' + agent.id, label: machine.name + ' / ' + agent.name, path: 'participants/' + encodeURIComponent(agent.id) + '/inbox', location: `${location} · Agent session: ${agent.id}`};
+        section.append(inboxButton(machineInbox, 'Computer inbox', machine.unread_count, '', machine.id));
+        // Retired agents sort last so the live ones stay at the top.
+        for (const agent of [...machine.participants].sort((a, b) => b.active - a.active)) {
+          const location = agent.terminal ? `Terminal: ${agent.terminal.host} / ${agent.terminal.session} / tab ${agent.terminal.tab_id}` : '';
+          const inbox = {key: 'agent:' + agent.id, label: machine.name + ' / ' + agent.name, path: 'participants/' + encodeURIComponent(agent.id) + '/inbox', location};
           visibleInboxes.add(inbox.key);
-          section.append(inboxButton(inbox, agent.unread_count, `${agent.project} · ${agent.active ? 'Registered' : 'Retired'} · ${agent.id}`, true));
+          const button = inboxButton(inbox, agent.name, agent.unread_count, agent.active ? agent.project : agent.project + ' · Retired', agent.id, true);
+          button.classList.toggle('retired', !agent.active);
+          section.append(button);
         }
         $('inboxes').append(section);
       }
@@ -111,20 +138,25 @@
   }
   function renderMessage(message) {
     const article = document.createElement('article');
+    article.title = 'Message ' + message.id;
     article.append(text('h3', `${message.sender_name} · ${message.sender_machine_name}`));
-    article.append(text('p', `${date(message.created_at)} · Project: ${message.project} · ${message.id}`, 'meta'));
-    article.append(text('p', message.body, 'body'));
+    article.append(text('p', `${date(message.created_at)} · Project: ${message.project}`, 'meta'));
+    const body = text('p', '', 'body');
+    body.append(readable(message.body));
+    article.append(body);
     const receipts = document.createElement('ul');
     for (const delivery of message.deliveries) {
       const receipt = delivery.acknowledged_at == null ? 'Awaiting acknowledgment' : 'Acknowledged ' + date(delivery.acknowledged_at);
-      receipts.append(text('li', `${delivery.machine_name} / ${delivery.name} (${delivery.recipient_kind === 'computer' ? 'computer' : 'agent'}) · ${receipt}`, 'receipt'));
+      receipts.append(text('li', `To ${delivery.machine_name} / ${delivery.name}${delivery.recipient_kind === 'computer' ? ' (computer)' : ''} · ${receipt}`, 'receipt'));
     }
     article.append(receipts);
     if (!thread) {
       const button = text('button', 'View thread');
       button.addEventListener('click', () => {
         thread = message.thread_id;
-        $('heading').textContent = 'Thread · ' + thread;
+        const subject = message.body.split('\n')[0];
+        $('heading').textContent = 'Thread · ' + (subject.length > 80 ? subject.slice(0, 79) + '…' : subject);
+        $('heading').title = 'Thread ' + thread;
         $('back').hidden = false;
         loadHistory();
       });
