@@ -110,16 +110,17 @@ dialog p{font-size:12px;color:#9ba7bd}
 .settings-section>.settings-heading{margin-bottom:6px}
 .settings-section .settings-heading h3{margin:0}
 #panel .settings-section>p{line-height:1.5;margin:0 0 10px}
+.settings-group+.settings-group{margin-top:8px}
 .settings-group{background:#111318;border:1px solid #2b303b;border-radius:8px;overflow:hidden}
-#native-tabs{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;text-align:left;padding:12px 14px 4px;border:0;border-radius:0;background:transparent}
-#native-tabs:focus-visible{outline-offset:-2px}
-@supports selector(:has(*)){#native-tabs:focus-visible{outline:none}.settings-group:has(#native-tabs:focus-visible){outline:2px solid #9dc2fa;outline-offset:1px}}
-#native-tabs-help{margin:0;padding:0 60px 12px 14px;line-height:1.45}
+.setting-toggle{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;text-align:left;padding:12px 14px 4px;border:0;border-radius:0;background:transparent}
+.setting-toggle:focus-visible{outline-offset:-2px}
+@supports selector(:has(*)){.setting-toggle:focus-visible{outline:none}.settings-group:has(.setting-toggle:focus-visible){outline:2px solid #9dc2fa;outline-offset:1px}}
+.setting-help{margin:0;padding:0 60px 12px 14px;line-height:1.45}
 .toggle-state{position:relative;flex-shrink:0;width:32px;height:18px;border:1px solid #465166;border-radius:9px;background:#222732;transition:background .15s,border-color .15s}
 .toggle-state::after{content:'';position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:#9ba7bd;transition:transform .15s,background .15s}
-#native-tabs:hover .toggle-state{border-color:#6f7c93}
-#native-tabs[aria-pressed="true"] .toggle-state{background:#3d68a8;border-color:#6f9cdd}
-#native-tabs[aria-pressed="true"] .toggle-state::after{transform:translateX(14px);background:#f3f6fb}
+.setting-toggle:hover .toggle-state{border-color:#6f7c93}
+.setting-toggle[aria-pressed="true"] .toggle-state{background:#3d68a8;border-color:#6f9cdd}
+.setting-toggle[aria-pressed="true"] .toggle-state::after{transform:translateX(14px);background:#f3f6fb}
 #machines label,#focus-row,#link-apps label{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0;padding:7px 7px 7px 14px;font-size:13px;min-width:0;overflow-wrap:anywhere}
 #machines label+label,#link-apps label+label{border-top:1px solid #222731}
 #link-apps input{width:200px;flex-shrink:0;font:inherit;font-size:12px;padding:5px 8px;background:#1c212b;color:inherit;border:1px solid #363e4d;border-radius:4px}

@@ -1082,6 +1082,10 @@ async function loadLogs(){
 $('refresh-logs').onclick=loadLogs;
 $('native-tabs').onclick=()=>{nativeTabs=!nativeTabs;localStorage.setItem('switchboard-native-tabs',String(nativeTabs));updateNativeTabs();};
 updateNativeTabs();
+// Terminal frames and the Messages page share this origin and read the flag when they preview.
+function updateMediaPreviews(on){$('media-previews').setAttribute('aria-pressed',String(on));$('media-previews').classList.toggle('selected',on);}
+$('media-previews').onclick=()=>{const on=localStorage.getItem('switchboard-media-previews')!=='true';localStorage.setItem('switchboard-media-previews',String(on));updateMediaPreviews(on);};
+updateMediaPreviews(localStorage.getItem('switchboard-media-previews')==='true');
 setInterval(refresh,15000);
 
 function closeTabMenu(restore=false){

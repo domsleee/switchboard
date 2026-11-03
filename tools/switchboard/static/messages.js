@@ -33,6 +33,8 @@
   function media(message) {
     const host = message.sender_machine_id === localMachine ? localHost : 'mesh-' + message.sender_machine_id;
     const figures = [];
+    // Off by default; toggled in Settings, which shares this origin.
+    try { if (localStorage.getItem('switchboard-media-previews') !== 'true') return figures; } catch { return figures; }
     for (const path of new Set(message.body.match(mediaPaths) || [])) {
       const url = `/api/hosts/${encodeURIComponent(host)}/file?path=${encodeURIComponent(path)}`;
       const video = /\.(?:mp4|webm|mov|m4v)$/i.test(path);

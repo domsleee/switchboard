@@ -232,6 +232,10 @@ test('media paths render inline from the sender computer and plain text stays te
     await page.route('**/api/hosts/*/file*', route => held.push(route));
     await page.goto('https://switchboard.test/messages.html');
     await page.locator('button[data-key="computer:mac"]').click();
+    await page.waitForFunction(() => document.querySelectorAll('article').length === 2);
+    assert.equal(await page.locator('figure').count(), 0, 'Previews are off by default');
+    await page.evaluate(() => localStorage.setItem('switchboard-media-previews', 'true'));
+    await page.locator('#refresh').click();
     await page.waitForFunction(() => document.querySelectorAll('figure').length === 5);
     const sources = await page.evaluate(() => [...document.querySelectorAll('figure video, figure img')].map(e => e.getAttribute('src')));
     assert.deepEqual(sources,[

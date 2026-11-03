@@ -40,6 +40,7 @@
     hidePreview();
     let path;try{path=filePathOf(uri);}catch{return;}
     if(!path||!mediaFile.test(path))return;
+    try{if(localStorage.getItem('switchboard-media-previews')!=='true')return;}catch{return;}
     const {clientX:x,clientY:y}=event,{innerWidth:width,innerHeight:height}=window;
     previewTimer=setTimeout(()=>{
       const box=preview=document.createElement('div'),media=document.createElement(videoFile.test(path)?'video':'img');

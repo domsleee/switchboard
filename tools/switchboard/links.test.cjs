@@ -58,12 +58,14 @@ assert.deepEqual(opened[1],['https://example.test/artifact','_blank','noopener n
 // Hovering a media path shows a preview from the terminal's own computer; other paths show none.
 (async()=>{
   const body=[],node=tag=>({tagName:tag.toUpperCase(),style:{},children:[],append(...nodes){this.children.push(...nodes);},replaceChildren(...nodes){this.children=nodes;},remove(){body.splice(body.indexOf(this),1);}});
-  let provider;const line='Saved /Users/dom/clips/demo.mp4 and /Users/dom/notes.txt and C:\\out\\map.png then D:\\Program Files\\Captures\\run (1).mp4 and \\\\nas\\share\\a.webm';
+  const settings={};let provider;const line='Saved /Users/dom/clips/demo.mp4 and /Users/dom/notes.txt and C:\\out\\map.png then D:\\Program Files\\Captures\\run (1).mp4 and \\\\nas\\share\\a.webm';
   const term={cols:200,buffer:{active:{getLine:()=>({isWrapped:false,translateToString:()=>line})}},options:{},registerLinkProvider:value=>provider=value,_core:{}};
-  vm.runInNewContext(fs.readFileSync(__dirname+'/static/links.js','utf8'),{window:{term,innerWidth:800,innerHeight:600,addEventListener(){}},parent,location,URL,console,
+  vm.runInNewContext(fs.readFileSync(__dirname+'/static/links.js','utf8'),{window:{term,innerWidth:800,innerHeight:600,addEventListener(){}},parent,location,URL,console,localStorage:{getItem:key=>settings[key]??null},
     document:{createElement:node,body:{append:value=>body.push(value)}},setInterval:fn=>(Promise.resolve().then(fn),1),clearInterval(){},setTimeout:fn=>fn(),clearTimeout(){}});
   await Promise.resolve();let links;provider.provideLinks(1,value=>links=value);
   const hover=text=>links.find(link=>link.text===text).hover({clientX:700,clientY:20},text);
+  hover('/Users/dom/clips/demo.mp4');assert.equal(body.length,0,'Previews are off by default');
+  settings['switchboard-media-previews']='true';
   hover('/Users/dom/notes.txt');assert.equal(body.length,0);
   hover('/Users/dom/clips/demo.mp4');
   const video=body[0].children[0];

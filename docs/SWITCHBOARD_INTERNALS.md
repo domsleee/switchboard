@@ -267,7 +267,8 @@ the same credential as its terminals. Files that could run scripts, such as HTML
 and SVG, are served with `Content-Security-Policy: sandbox`; Chrome will not
 play media or render PDFs under it, so those are served without it.
 
-Image and video paths use the same route for previews. Hovering one in a terminal
+With Settings → Media previews on (off by default, saved in this browser), image
+and video paths use the same route for previews. Hovering one in a terminal
 shows it in a popup, and a message on the Messages page shows it inline, read from
 the sender's computer. A media path ends at its extension, so it may contain
 spaces, and drive, UNC, `~/` and `/` roots all match.
