@@ -30,6 +30,28 @@
     }
     return /^(~|[A-Za-z]:)?[\\/]/.test(uri) ? uri : null;
   }
+  // Hovering an image or video path previews it from this terminal's computer.
+  // Drive, UNC, ~/ and / paths to media. Spaces are allowed because the extension ends the path.
+  const mediaPaths=/(?<![\w.~:%/\\-])(?:[A-Za-z]:[\\/]|\\\\|~[\\/]|\/)(?:[^\s"'<>|*?:\\/][^"'<>|*?:\n\\/]*?[\\/])*?[^\s"'<>|*?:\\/][^"'<>|*?:\n\\/]*?\.(?:png|jpe?g|gif|webp|avif|mp4|webm|mov|m4v)(?![\w-]|\.\w)/gi;
+  const mediaFile=/\.(?:png|jpe?g|gif|webp|avif|mp4|webm|mov|m4v)$/i,videoFile=/\.(?:mp4|webm|mov|m4v)$/i;
+  let preview,previewTimer;
+  function hidePreview(){clearTimeout(previewTimer);preview?.remove();preview=null;}
+  function showPreview(event,uri){
+    hidePreview();
+    let path;try{path=filePathOf(uri);}catch{return;}
+    if(!path||!mediaFile.test(path))return;
+    const {clientX:x,clientY:y}=event,{innerWidth:width,innerHeight:height}=window;
+    previewTimer=setTimeout(()=>{
+      const box=preview=document.createElement('div'),media=document.createElement(videoFile.test(path)?'video':'img');
+      if(media.tagName==='VIDEO')Object.assign(media,{muted:true,autoplay:true,loop:true,playsInline:true});else media.alt=path;
+      media.style.cssText='display:block;max-width:min(480px,60vw);max-height:min(320px,45vh);border-radius:4px';
+      // Opens away from the nearest edges so it never covers the hovered path.
+      box.style.cssText=`position:fixed;z-index:1000;pointer-events:none;padding:4px;background:#111318;color:#b5bfd0;font:13px system-ui;border:1px solid #465674;border-radius:6px;box-shadow:0 6px 24px #0009;${x>width/2?`right:${width-x+12}px`:`left:${x+12}px`};${y>height/2?`bottom:${height-y+12}px`:`top:${y+16}px`}`;
+      media.onerror=()=>box.replaceChildren('Preview unavailable');
+      media.src=`/api/hosts/${encodeURIComponent(host)}/file?path=${encodeURIComponent(path)}`;
+      box.append(media);document.body.append(box);
+    },300);
+  }
   // Joins a wrapped path's rows. shortcut: wide characters shift the cells after them.
   const fileLinks = term => ({provideLinks(y,callback) {
     const buffer = term.buffer.active;
@@ -38,10 +60,13 @@
     let row = start;
     do line += buffer.getLine(row).translateToString(true).padEnd(term.cols); while (buffer.getLine(++row)?.isWrapped);
     const cell = index => ({x:index%term.cols+1,y:start+Math.floor(index/term.cols)+1});
-    const links = [...line.matchAll(filePath)].map(match => {
-      const text = match[0].replace(/[.`]+$/,'');
-      return {range:{start:cell(match.index),end:cell(match.index+text.length-1)},text,activate:open};
-    }).filter(link => link.range.start.y <= y && y <= link.range.end.y);
+    const media = [...line.matchAll(mediaPaths)].map(match => ({index:match.index,text:match[0]}));
+    // A media path with spaces wins over the shorter plain path inside it.
+    const plain = [...line.matchAll(filePath)].map(match => ({index:match.index,text:match[0].replace(/[.`]+$/,'')}))
+      .filter(path => !media.some(m => path.index < m.index+m.text.length && m.index < path.index+path.text.length));
+    const links = [...media,...plain].map(({index,text}) =>
+      ({range:{start:cell(index),end:cell(index+text.length-1)},text,activate:open,hover:showPreview,leave:hidePreview}))
+      .filter(link => link.range.start.y <= y && y <= link.range.end.y);
     callback(links.length ? links : undefined);
   }});
   // Modifiers belong to the viewing browser, regardless of the terminal host OS.
@@ -106,10 +131,10 @@
     if(Math.hypot(event.clientX-previous.x,event.clientY-previous.y)>5)return;
     open(event,previous.uri);
   },true);
-  window.addEventListener('blur',()=>{down=null;});
+  window.addEventListener('blur',()=>{down=null;hidePreview();});
   const timer=setInterval(()=>{
     const term=window.term;if(!term)return;clearInterval(timer);
-    if(term.options.linkHandler)term.options.linkHandler={...term.options.linkHandler,activate:open};
+    if(term.options.linkHandler)term.options.linkHandler={...term.options.linkHandler,activate:open,hover:showPreview,leave:hidePreview};
     term.registerLinkProvider?.(fileLinks(term));
     for(const entry of term._addonManager?._addons || []){
       const addon=entry.instance;

@@ -267,6 +267,11 @@ the same credential as its terminals. Files that could run scripts, such as HTML
 and SVG, are served with `Content-Security-Policy: sandbox`; Chrome will not
 play media or render PDFs under it, so those are served without it.
 
+Image and video paths use the same route for previews. Hovering one in a terminal
+shows it in a popup, and a message on the Messages page shows it inline, read from
+the sender's computer. A media path ends at its extension, so it may contain
+spaces, and drive, UNC, `~/` and `/` roots all match.
+
 The Windows gallery on port 8765 uses the separate HTTPS origin
 `https://zellij-gallery.localhost`, proxied through an anonymous HTTP listener
 on 127.0.0.1:8091. It streams GET/HEAD responses from the configured
