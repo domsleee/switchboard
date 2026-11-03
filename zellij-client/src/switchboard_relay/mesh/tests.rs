@@ -2297,6 +2297,13 @@ async fn attention_reviews_live_with_the_owner_and_every_peer_sees_them() {
         tokio::spawn(async move { attention::peer_snapshot(&host, 0, Some(version)).await });
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(!waiting.is_finished(), "an unchanged owner does not answer");
+    let mut elsewhere = json!({"panes":[{"session":"main","pane_id":8,"state":"working"}],"tabs":[{"session":"main","id":2}],"errors":[]});
+    poll.lock().await.update("mesh-other", &mut elsewhere);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !waiting.is_finished(),
+        "another computer's change does not wake the viewer"
+    );
     let mut working = json!({"panes":[{"session":"main","pane_id":3,"state":"working"}],"tabs":[{"session":"main","id":1}],"errors":[]});
     poll.lock().await.update("mac", &mut working);
     let answer = tokio::time::timeout(Duration::from_secs(5), waiting)
@@ -2305,7 +2312,7 @@ async fn attention_reviews_live_with_the_owner_and_every_peer_sees_them() {
         .unwrap()
         .unwrap();
     assert_eq!(answer["panes"][0]["state"], "working");
-    assert!(answer["version"].as_u64().unwrap() > version);
+    assert_ne!(answer["version"].as_u64().unwrap(), version);
     // An offline owner keeps the review on the reviewing relay without an error.
     handle.shutdown();
     task.await.unwrap();

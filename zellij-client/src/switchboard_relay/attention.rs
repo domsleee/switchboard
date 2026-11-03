@@ -297,6 +297,8 @@ async fn scan_with(
                     &format!("Could not list panes in session '{name}': {error:#}"),
                 );
                 errors.push(json!({"host":host.config.id,"session":name,"message":"Session snapshots unavailable"}));
+                // A failed listing is not an empty session: keep its last tabs for now.
+                deferred_sessions.push(name);
                 continue;
             },
         };
@@ -786,6 +788,15 @@ impl PollState {
         }
         Some(snapshot)
     }
+    /// `owned` with a version that changes only when that snapshot does, so a peer
+    /// waiting on this computer is not woken by changes on other computers.
+    pub(super) fn owned_versioned(&self, host: &str) -> Option<(u64, Value)> {
+        use std::hash::{Hash, Hasher};
+        let snapshot = self.owned(host)?;
+        let mut hasher = std::hash::DefaultHasher::new();
+        snapshot.to_string().hash(&mut hasher);
+        Some((hasher.finish(), snapshot))
+    }
     fn merged(&self, order: &[String]) -> Value {
         let mut merged = json!({"panes":[],"tabs":[],"errors":[]});
         for host in order {
@@ -917,7 +928,7 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
                     }
                     let (state, poll, mesh) = (state.clone(), poll.clone(), mesh.clone());
                     let task = peers.spawn(async move {
-                        let (mut offset, mut after) = (0, None);
+                        let (mut offset, mut after, mut failures) = (0, None, 0u32);
                         // Re-read the catalog each time: re-pairing replaces the Host.
                         while let Some(host) = mesh.host(&id) {
                             let result = peer_snapshot(&host, offset, after).await;
@@ -931,9 +942,11 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
                                         .unwrap()
                                         .remove("version")
                                         .and_then(|v| v.as_u64());
+                                    failures = 0;
                                     poll.update(&id, &mut snapshot);
                                 },
                                 Err(error) => {
+                                    failures = failures.saturating_add(1);
                                     logs::record(
                                         &host.config.name,
                                         &format!(
@@ -951,9 +964,12 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
                             publish(&state, &poll);
                             drop(poll);
                             // A peer that waits for its next change is asked again at once;
-                            // an older peer, or a failed request, is asked every 3 s.
+                            // an older peer is asked every 3 s, an unreachable one up to every 24 s.
                             if after.is_none() {
-                                tokio::time::sleep(Duration::from_secs(3)).await;
+                                tokio::time::sleep(Duration::from_secs(
+                                    3 << failures.saturating_sub(1).min(3),
+                                ))
+                                .await;
                             }
                         }
                     });
@@ -1226,6 +1242,43 @@ echo [{"id":1,"tab_id":4,"tab_position":0,"tab_name":"T","title":"x","pane_comma
             version + 1,
             "a browser behind answers at once"
         );
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_empty_pane_listing_keeps_the_sessions_last_tabs() {
+        let upstream = Router::new()
+            .route(
+                "/command/login",
+                post(|| async { ([(header::SET_COOKIE, "session_token=t")], "{}") }),
+            )
+            .route(
+                "/session-list",
+                get(|| async {
+                    Json(json!({"sessions":[{"name":"main","web_clients_allowed":true}]}))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+        let dir = tempfile::tempdir().unwrap();
+        let token = dir.path().join("token");
+        std::fs::write(&token, "t").unwrap();
+        // A busy engine can answer list-panes with nothing and exit 0.
+        let cli = dir.path().join("zellij");
+        std::fs::write(&cli, "#!/bin/sh\nexit 0\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut config = super::super::tests::config(&url);
+        config.token_file = token.to_str().unwrap().into();
+        config.zellij_binary = Some(cli.to_str().unwrap().into());
+        let mut poll = PollState::default();
+        let mut listed = json!({"panes":[{"session":"main","pane_id":1,"state":"working"}],"tabs":[{"session":"main","id":4}],"errors":[]});
+        poll.update("mac", &mut listed);
+        let mut empty = scan(&Host::new(config).unwrap(), 0).await.unwrap();
+        poll.update("mac", &mut empty);
+        assert_eq!(empty["tabs"][0]["id"], 4, "{empty}");
+        assert_eq!(empty["panes"][0]["state"], "working");
+        server.abort();
     }
     #[cfg(unix)]
     #[tokio::test]
