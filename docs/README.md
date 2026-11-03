@@ -16,7 +16,7 @@ Use `cargo build --release --timings` to write a build report to
 | [Error handling](ERROR_HANDLING.md) | Current Rust error APIs, recovery boundaries and isolation of relay failures from healthy sessions. |
 | [Switchboard internals](SWITCHBOARD_INTERNALS.md) | For maintainers: how the relay, sidebar, shortcuts, attention detection and diagnostics work. |
 | [How updates work](SWITCHBOARD_UPDATES.md) | For maintainers: how automatic updates keep terminals running, manual updates and recovery. |
-| [Windows test plan](SWITCHBOARD_WINDOWS_TEST_PLAN.md) | Platform acceptance checklist and known gaps. Record actual Windows results before calling the platform verified. |
+| [Windows test plan](SWITCHBOARD_WINDOWS_TEST_PLAN.md) | Platform acceptance checklist, recorded Windows results and remaining checks. |
 
 Architecture, terminology and error handling have been refreshed against the
 native Switchboard code. Crate, executable and some

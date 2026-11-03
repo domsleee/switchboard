@@ -1,5 +1,22 @@
 # Windows acceptance for the Rust relay
 
+## Recorded results
+
+4 November 2026: the Windows tray and a paired Mac relay were both running
+`b8110f8`, the newest `main` build, so Windows had automatically updated to the
+latest release. These checks ran from the Mac relay and were read-only, so the user's
+live session was left untouched:
+
+- Pairing: the Mac relay lists Windows as a paired computer with its `main` session.
+- Tabs: all three native tabs return their IDs, positions and live Claude/Codex
+  pane titles, and attention scanning reports agent states with no errors.
+- Browser: headless Chromium (with focus disabled so it could not claim size or
+  clear badges) renders the active Windows tab's live Claude terminal.
+
+Still to be recorded on Windows: switching tabs, typing input, Escape,
+confirmed close, new tab, reconnecting during an update, the tray installer, and
+the measurements in section 5.
+
 Run against the PR build before replacing a working Windows installation.
 Keep the current executable, host config, token files and tray startup shortcut.
 The native-binaries workflow now checks Windows marker liveness, pane colour
@@ -121,8 +138,8 @@ must report failure without killing the process that owns it.
 
 ## 5. Measurements and rollback
 
-Run matched Python/Rust trials with the same hosts, tabs and polling workload.
-Record idle/private working-set memory, CPU, startup-to-usable-terminal time,
+Run matched trials of the previous and new builds with the same hosts, tabs and
+polling workload. Record idle/private working-set memory, CPU, startup-to-usable-terminal time,
 reconnect time and p50/p95 catalog/control latency. Separate relay, CLI
 and terminal engine costs. Do not infer Windows memory from Mac measurements.
 
@@ -130,8 +147,8 @@ If any usable-tab or process-preservation check fails, stop only the new relay
 and restore the old relay/tray startup command. Confirm the original browser
 reconnects and shells still respond. Preserve logs and label partial recovery
 as failure. The manual Windows updater now selects retained executables and
-supports guarded rollback; it never restarts loaded services or engines. A
-complete production service handoff and automatic Windows updates remain absent.
+supports guarded rollback; it never restarts loaded services or engines. The
+tray also installs automatic updates; see [How updates work](SWITCHBOARD_UPDATES.md).
 
 ## Windows command/reply pairing
 
