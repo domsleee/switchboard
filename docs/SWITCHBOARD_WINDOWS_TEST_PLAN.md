@@ -1,5 +1,28 @@
 # Windows acceptance for the Rust relay
 
+## Recorded results
+
+4 November 2026: the Windows tray and a paired Mac relay were both running
+`b8110f8`, the newest `main` build, so Windows had automatically updated to the
+latest release. These checks ran from the Mac relay and were read-only, so the user's
+live session was left untouched:
+
+- Pairing: the Mac relay lists Windows as a paired computer with its `main` session.
+- Tabs: all three native tabs return their IDs, positions and live Claude/Codex
+  pane titles, and attention scanning reports agent states with no errors.
+- Browser: headless Chromium (with focus disabled so it could not claim size or
+  clear badges) renders the active Windows tab's live Claude terminal.
+- Controls, in one disposable tab created and closed from the Mac: + New tab
+  selects and focuses it; typed input echoes in the nushell prompt; a deep link
+  and a reload return to it; `/escape` delivers a single Esc key; `close-tab`
+  removes only that tab. Missing or already-closed tab and pane IDs return 409
+  and close nothing. The other tabs kept their names, positions and agent states.
+
+Still to be recorded on Windows: closing through the confirm dialog and Ctrl+D,
+size ownership against a second viewer, Shift-click artifact links, the Windows
+relay's own engine path, reconnecting during an update, the tray installer, and
+the measurements in section 5.
+
 Run against the PR build before replacing a working Windows installation.
 Keep the current executable, host config, token files and tray startup shortcut.
 The native-binaries workflow now checks Windows marker liveness, pane colour
@@ -79,7 +102,7 @@ node acceptance/switchboard/run.cjs windows-update
 These execute real PowerShell/file transactions and the actual tray supervision
 function with simulated Windows processes, Zellij responses and services. They
 do not establish browser, ConPTY, WinForms or login behavior. On Mac PowerShell 7,
-54 release checks and 20 tray checks pass; Windows PowerShell/NTFS results remain
+54 release checks and 32 tray checks pass (4 November 2026); Windows PowerShell/NTFS results remain
 to be recorded. The native-binaries workflow now runs these scripts with Windows
 PowerShell and packages the installer, release module, updater and launcher with
 the executable.
@@ -121,8 +144,8 @@ must report failure without killing the process that owns it.
 
 ## 5. Measurements and rollback
 
-Run matched Python/Rust trials with the same hosts, tabs and polling workload.
-Record idle/private working-set memory, CPU, startup-to-usable-terminal time,
+Run matched trials of the previous and new builds with the same hosts, tabs and
+polling workload. Record idle/private working-set memory, CPU, startup-to-usable-terminal time,
 reconnect time and p50/p95 catalog/control latency. Separate relay, CLI
 and terminal engine costs. Do not infer Windows memory from Mac measurements.
 
@@ -130,8 +153,8 @@ If any usable-tab or process-preservation check fails, stop only the new relay
 and restore the old relay/tray startup command. Confirm the original browser
 reconnects and shells still respond. Preserve logs and label partial recovery
 as failure. The manual Windows updater now selects retained executables and
-supports guarded rollback; it never restarts loaded services or engines. A
-complete production service handoff and automatic Windows updates remain absent.
+supports guarded rollback; it never restarts loaded services or engines. The
+tray also installs automatic updates; see [How updates work](SWITCHBOARD_UPDATES.md).
 
 ## Windows command/reply pairing
 
