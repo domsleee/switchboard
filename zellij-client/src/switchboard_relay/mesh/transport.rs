@@ -631,20 +631,25 @@ async fn terminal_response(
         // Serve the owner's poll, so every peer shows its generations and reviews.
         let local = &mesh.local_engine.config.id;
         if let Some(poll) = mesh.attention.get() {
-            if let Some(after) = after {
-                // Answer when this computer's status changes, so peers need not poll.
-                // Stay under the pairing bridge's 15 s cutoff, or quiet waits end in errors.
-                let mut changes = poll.lock().await.changes.subscribe();
-                let _ = tokio::time::timeout(
-                    Duration::from_secs(10),
-                    changes.wait_for(|version| *version != after),
-                )
-                .await;
-            }
-            let poll = poll.lock().await;
-            if let Some(mut snapshot) = poll.owned(local) {
-                snapshot["version"] = json!(*poll.changes.borrow());
-                return Ok(Json(snapshot).into_response());
+            // Answer when this computer's own status changes, so peers need not poll.
+            // Stay under the pairing bridge's 15 s cutoff, or quiet waits end in errors.
+            let mut changes = poll.lock().await.changes.subscribe();
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                let owned = poll.lock().await.owned_versioned(local);
+                let Some((version, mut snapshot)) = owned else {
+                    break;
+                };
+                let unchanged = after == Some(version);
+                if !unchanged
+                    || !matches!(
+                        tokio::time::timeout_at(deadline, changes.changed()).await,
+                        Ok(Ok(()))
+                    )
+                {
+                    snapshot["version"] = json!(version);
+                    return Ok(Json(snapshot).into_response());
+                }
             }
         }
         let mut snapshot = attention::scan(&host, offset)
