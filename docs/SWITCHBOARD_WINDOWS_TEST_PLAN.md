@@ -12,9 +12,15 @@ live session was left untouched:
   pane titles, and attention scanning reports agent states with no errors.
 - Browser: headless Chromium (with focus disabled so it could not claim size or
   clear badges) renders the active Windows tab's live Claude terminal.
+- Controls, in one disposable tab created and closed from the Mac: + New tab
+  selects and focuses it; typed input echoes in the nushell prompt; a deep link
+  and a reload return to it; `/escape` delivers a single Esc key; `close-tab`
+  removes only that tab. Missing or already-closed tab and pane IDs return 409
+  and close nothing. The other tabs kept their names, positions and agent states.
 
-Still to be recorded on Windows: switching tabs, typing input, Escape,
-confirmed close, new tab, reconnecting during an update, the tray installer, and
+Still to be recorded on Windows: closing through the confirm dialog and Ctrl+D,
+size ownership against a second viewer, Shift-click artifact links, the Windows
+relay's own engine path, reconnecting during an update, the tray installer, and
 the measurements in section 5.
 
 Run against the PR build before replacing a working Windows installation.
