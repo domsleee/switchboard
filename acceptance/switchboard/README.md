@@ -132,6 +132,9 @@ While Codex or Claude runs in a background tab, I can distinguish working,
 finished and waiting for approval. An unrecognized screen stays unknown.
 Opening a finished result acknowledges it without dismissing an approval.
 
+Claude Code with the `switchboard-status` plugin reports its own state through
+hooks; other agents and Claude without the plugin are read from the screen.
+
 **Tests:** `relay` checks scanner states and background tabs; `ui` checks
 acknowledgment.
 **Still to check:** real Codex and Claude turns. A fixture is not a real agent
@@ -203,9 +206,10 @@ versus window placement.
 Pasting an image sends a supported attachment to the selected remote host. It
 must not give that agent a path that exists only on my viewing computer.
 
-**Status: not implemented.** Paste currently sends text. Uploading an image,
-creating a host-local attachment and attaching it in Codex/Claude have no tests
-yet. When implemented, verify the remote agent can actually read the image.
+**Status:** implemented in #179. Alt+V, or a browser paste holding only an image,
+uploads it to the tab's computer (`POST /paste-image`) and pastes that computer's
+path. `clipboard.test.cjs` and `web_client_tests.rs` cover the upload. Still to
+check: a real remote Codex/Claude reading the pasted image.
 
 ## Terminal size and colours
 
@@ -322,8 +326,9 @@ preserve the running engines and verify that existing browser tabs are usable.
 guarded Windows release selection, rejection and rollback with simulated Windows
 process/protocol responses. Windows checks include interrupted/failed restoration,
 retained checksums, native tab names, process creation times and tray supervision.
-**Status:** automatic GitHub release polling and installation are not implemented
-or tested. Windows rollback still needs platform execution.
+**Status:** automatic updates are implemented on macOS, Linux and Windows; see
+[How updates work](../../docs/SWITCHBOARD_UPDATES.md). Windows rollback still
+needs platform execution.
 
 ## Packaging and development
 
