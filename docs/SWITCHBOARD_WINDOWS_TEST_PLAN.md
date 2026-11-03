@@ -96,7 +96,7 @@ node acceptance/switchboard/run.cjs windows-update
 These execute real PowerShell/file transactions and the actual tray supervision
 function with simulated Windows processes, Zellij responses and services. They
 do not establish browser, ConPTY, WinForms or login behavior. On Mac PowerShell 7,
-54 release checks and 20 tray checks pass; Windows PowerShell/NTFS results remain
+54 release checks and 32 tray checks pass (4 November 2026); Windows PowerShell/NTFS results remain
 to be recorded. The native-binaries workflow now runs these scripts with Windows
 PowerShell and packages the installer, release module, updater and launcher with
 the executable.
