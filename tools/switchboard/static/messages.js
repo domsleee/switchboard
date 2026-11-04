@@ -4,6 +4,9 @@
   let selected = null, thread = null, project = '', cursor = null;
   let directoryVersion = 0, historyVersion = 0;
   const names = new Map();
+  let localMachine = null, localHost = null;
+  // Drive, UNC, ~/ and / paths to media. Spaces are allowed because the extension ends the path.
+  const mediaPaths = /(?<![\w.~:%/\\-])(?:[A-Za-z]:[\\/]|\\\\|~[\\/]|\/)(?:[^\s"'<>|*?:\\/][^"'<>|*?:\n\\/]*?[\\/])*?[^\s"'<>|*?:\\/][^"'<>|*?:\n\\/]*?\.(?:png|jpe?g|gif|webp|avif|mp4|webm|mov|m4v)(?![\w-]|\.\w)/gi;
   const ids = /\b(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{64})\b/gi;
   const text = (tag, value, className) => {
     const element = document.createElement(tag);
@@ -25,6 +28,29 @@
     }
     fragment.append(value.slice(last));
     return fragment;
+  }
+  // Media paths stream from the sender's computer through the same route as terminal file previews.
+  function media(message) {
+    const host = message.sender_machine_id === localMachine ? localHost : 'mesh-' + message.sender_machine_id;
+    const figures = [];
+    // Off by default; toggled in Settings, which shares this origin.
+    try { if (localStorage.getItem('switchboard-media-previews') !== 'true') return figures; } catch { return figures; }
+    for (const path of new Set(message.body.match(mediaPaths) || [])) {
+      const url = `/api/hosts/${encodeURIComponent(host)}/file?path=${encodeURIComponent(path)}`;
+      const video = /\.(?:mp4|webm|mov|m4v)$/i.test(path);
+      const element = document.createElement(video ? 'video' : 'img');
+      if (video) { element.controls = true; element.preload = 'metadata'; } else { element.loading = 'lazy'; element.alt = path; }
+      const figure = document.createElement('figure');
+      element.addEventListener('error', () => figure.replaceChildren(text('figcaption', 'Preview unavailable: ' + path)));
+      element.src = url;
+      const caption = text('figcaption', '');
+      const link = text('a', path);
+      link.href = url; link.target = '_blank'; link.rel = 'noopener';
+      caption.append(link);
+      figure.append(element, caption);
+      figures.push(figure);
+    }
+    return figures;
   }
   const date = value => value == null ? 'Unknown time' : new Date(value).toLocaleString();
   function status(id, value, error = false) {
@@ -89,7 +115,8 @@
     const version = ++directoryVersion;
     status('status', 'Loading inboxes…');
     try {
-      const [board, result] = await Promise.all([boardHost(), get('inboxes').then(data => ({data}), error => ({error}))]);
+      const [board, result, hosts] = await Promise.all([boardHost(), get('inboxes').then(data => ({data}), error => ({error})),
+        fetch('/api/hosts', {cache: 'no-store'}).then(response => response.json()).catch(() => [])]);
       if (version !== directoryVersion) return;
       $('board-host').textContent = board?.state === 'selected' ? `Message board host: ${board.host_name || board.host_id}`
         : board?.state === 'unconfigured' ? 'Choose a message board host in Manage computers.'
@@ -97,6 +124,8 @@
         : board?.state === 'legacy_database' ? 'Existing message board needs migration. Open Manage computers for details.' : '';
       if (result.error) throw result.error;
       const data = result.data;
+      localMachine = data.machine_id;
+      localHost = Array.isArray(hosts) ? hosts.find(host => host.local)?.id ?? null : null;
       $('inboxes').replaceChildren();
       for (const machine of data.machines) {
         names.set(machine.id.toLowerCase(), machine.name);
@@ -143,7 +172,7 @@
     article.append(text('p', `${date(message.created_at)} · Project: ${message.project}`, 'meta'));
     const body = text('p', '', 'body');
     body.append(readable(message.body));
-    article.append(body);
+    article.append(body, ...media(message));
     const receipts = document.createElement('ul');
     for (const delivery of message.deliveries) {
       const receipt = delivery.acknowledged_at == null ? 'Awaiting acknowledgment' : 'Acknowledged ' + date(delivery.acknowledged_at);

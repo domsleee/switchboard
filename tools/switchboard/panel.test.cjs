@@ -117,6 +117,11 @@ test('Panel navigation skips hidden Archive and keeps terminals connected',
     // Archive recovery still works without exposing its navigation tab.
     await page.locator('#settings').click();assert.deepEqual(await section(),at('Settings'));
     assert.equal(await page.locator('#native-tabs').isVisible(),true);
+    assert.equal(await page.locator('#media-previews').getAttribute('aria-pressed'),'false','Media previews start off');
+    await page.locator('#media-previews').click();
+    assert.equal(await page.locator('#media-previews').getAttribute('aria-pressed'),'true');
+    assert.equal(await page.evaluate(()=>localStorage.getItem('switchboard-media-previews')),'true');
+    await page.locator('#media-previews').click();
     await page.locator('#close-panel').click();await terminalsIntact();
     await page.evaluate(()=>openPanel('archive'));assert.deepEqual(await section(),at('Archive',''));
     assert.equal(await page.evaluate(()=>document.activeElement.id),'archive-search');

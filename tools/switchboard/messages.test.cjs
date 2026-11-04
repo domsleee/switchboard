@@ -18,6 +18,7 @@ async function fixture(run) {
         const value = await handler(url);
         return route.fulfill({status:value.status || 200,contentType:'application/json',body:JSON.stringify(value.body || value)});
       }
+      if (url.pathname === '/api/hosts') return route.fulfill({contentType:'application/json',body:JSON.stringify([{id:'local-mac',local:true}])});
       const name = url.pathname.slice(1);
       if (!['messages.html','messages.js','messages.css'].includes(name)) return route.fulfill({status:404,body:''});
       return route.fulfill({contentType:name.endsWith('.js')?'text/javascript':name.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+name,'utf8')});
@@ -218,5 +219,35 @@ test('ids in messages and inboxes read as names', async () => {
     assert.equal(await page.locator('.body').textContent(), 'Reply to agent claude-mac (Mac) about request 4b8d9097…');
     assert.equal(await page.locator('.body .id').getAttribute('title'), unknown);
     assert.doesNotMatch(await page.locator('main').textContent(), /m1|[0-9a-f]{8}-[0-9a-f]{4}/);
+  });
+});
+test('media paths render inline from the sender computer and plain text stays text', async () => {
+  await fixture(async ({page,respond}) => {
+    respond(url => url.pathname.endsWith('/inboxes') ? directory : {items:[
+      message('local',{sender_machine_id:'mac',body:'Clip: /Users/me/run.mp4 and ~/shot.png. Not media: /usr/bin/env, http://host/a.png'}),
+      message('remote',{sender_machine_id:'windows',body:'See C:\\out\\map.webp, D:\\Program Files\\run (1).mp4 and \\\\nas\\share\\a.png. %TEMP%\\x.png'}),
+    ],next_cursor:null});
+    // Hold file requests so no preview fails before its source is checked.
+    const held = [];
+    await page.route('**/api/hosts/*/file*', route => held.push(route));
+    await page.goto('https://switchboard.test/messages.html');
+    await page.locator('button[data-key="computer:mac"]').click();
+    await page.waitForFunction(() => document.querySelectorAll('article').length === 2);
+    assert.equal(await page.locator('figure').count(), 0, 'Previews are off by default');
+    await page.evaluate(() => localStorage.setItem('switchboard-media-previews', 'true'));
+    await page.locator('#refresh').click();
+    await page.waitForFunction(() => document.querySelectorAll('figure').length === 5);
+    const sources = await page.evaluate(() => [...document.querySelectorAll('figure video, figure img')].map(e => e.getAttribute('src')));
+    assert.deepEqual(sources,[
+      '/api/hosts/local-mac/file?path=%2FUsers%2Fme%2Frun.mp4',
+      '/api/hosts/local-mac/file?path=~%2Fshot.png',
+      '/api/hosts/mesh-windows/file?path=C%3A%5Cout%5Cmap.webp',
+      '/api/hosts/mesh-windows/file?path=D%3A%5CProgram%20Files%5Crun%20(1).mp4',
+      '/api/hosts/mesh-windows/file?path=%5C%5Cnas%5Cshare%5Ca.png',
+    ]);
+    // A missing file falls back to its path.
+    await page.unroute('**/api/hosts/*/file*');
+    await Promise.all(held.map(route => route.fulfill({status:404,body:''})));
+    await page.waitForFunction(() => document.querySelectorAll('figcaption').length === 5 && [...document.querySelectorAll('figcaption')].every(c => c.textContent.startsWith('Preview unavailable')));
   });
 });
