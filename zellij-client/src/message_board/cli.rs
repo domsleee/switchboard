@@ -186,6 +186,13 @@ fn default_relay_url(registration: &std::path::Path) -> String {
         .unwrap_or(8090);
     format!("http://127.0.0.1:{port}")
 }
+/// The local relay: `explicit` (`--relay-url` or `SWITCHBOARD_RELAY_URL`), else the
+/// port this computer's native web server registered.
+pub(crate) fn local_relay_url(explicit: Option<&str>) -> String {
+    let registration =
+        zellij_utils::consts::ZELLIJ_CACHE_DIR.join("switchboard-peer-8082/registration.json");
+    relay_url(explicit, &registration)
+}
 fn relay_url(explicit: Option<&str>, registration: &std::path::Path) -> String {
     explicit
         .map(str::to_owned)
@@ -206,9 +213,7 @@ pub fn run_cli(cli: &MessageCli) -> anyhow::Result<()> {
     let client = if let Some(config) = cli.board_config.as_deref() {
         Client::load(config)?
     } else {
-        let registration =
-            zellij_utils::consts::ZELLIJ_CACHE_DIR.join("switchboard-peer-8082/registration.json");
-        Client::relay(&relay_url(cli.relay_url.as_deref(), &registration))?
+        Client::relay(&local_relay_url(cli.relay_url.as_deref()))?
     };
     let result = match &cli.command {
         MessageCommand::Register {

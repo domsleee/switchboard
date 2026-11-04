@@ -41,6 +41,15 @@ fn main() {
         return;
     }
 
+    if let Some(Command::AgentHook { agent }) = &opts.command {
+        // Always succeeds: a missing relay must never fail the agent's turn.
+        #[cfg(feature = "web_server_capability")]
+        zellij_client::switchboard_relay::forward_hook(agent.name(), std::io::stdin());
+        #[cfg(not(feature = "web_server_capability"))]
+        let _ = agent;
+        return;
+    }
+
     if let Some(Command::Message(message)) = &opts.command {
         #[cfg(feature = "web_server_capability")]
         if let Err(error) = zellij_client::message_board::run_cli(message) {

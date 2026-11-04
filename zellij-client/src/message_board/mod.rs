@@ -13,6 +13,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+pub(crate) use cli::local_relay_url;
 pub use cli::run_cli;
 pub(crate) use transport::dispatch;
 const MAX_BODY: usize = 64 * 1024;

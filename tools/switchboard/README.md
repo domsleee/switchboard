@@ -90,6 +90,18 @@ The plugin also adds a `message-board` skill, so Claude can read, reply to and s
 Claude Code checks for updates when a session starts. Running Claude sessions pick up
 the plugin after a restart.
 
+Copilot CLI uses the same plugin, including approval prompts and the skill. Its hooks
+run `zellij agent-hook`, so this fork's `zellij` must be on `PATH`:
+
+```sh
+copilot plugin marketplace add domsleee/switchboard
+copilot plugin install switchboard@switchboard
+```
+
+For updates at session start, set `"autoUpdate": true` on the marketplace's
+`extraKnownMarketplaces` entry in `~/.copilot/settings.json`
+([plugin reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-plugin-reference)).
+
 ## Resume agent chats after a restart
 
 Run this once with the updated executable on each computer:
