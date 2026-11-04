@@ -140,7 +140,7 @@ if(process.env.PLAYWRIGHT_MODULE)(async()=>{
 // Relative media paths resolve through this session's pane directories before previewing or opening.
 (async()=>{
   const body=[],requests=[],opened=[],node=tag=>({tagName:tag.toUpperCase(),style:{},children:[],append(...nodes){this.children.push(...nodes);},replaceChildren(...nodes){this.children=nodes;},remove(){body.splice(body.indexOf(this),1);}});
-  let provider;const line='Saved `out/shot.png` and ./clip.webm; see docs/notes.md, http://host/a.png, /tmp/x/b.png and missing.png';
+  let provider;const line='Saved `out/shot.png` and ./clip.webm; see docs/notes.md, out/runs/ e.g. and/or http://host/a.png, /tmp/x/b.png and missing.png';
   const term={cols:200,buffer:{active:{getLine:()=>({isWrapped:false,translateToString:()=>line})}},options:{},registerLinkProvider:value=>provider=value,_core:{}};
   const found={'out/shot.png':'/home/me/project/out/shot.png','./clip.webm':'/home/me/project/./clip.webm'};
   const fetch=async url=>{requests.push(url);const path=new URL(url,'http://relay').searchParams.get('path');return found[path]?{ok:true,json:async()=>({path:found[path]})}:{ok:false};};
@@ -149,7 +149,7 @@ if(process.env.PLAYWRIGHT_MODULE)(async()=>{
     location:{...location,pathname:'/hosts/mesh-pc/my%20session'},URL,console,fetch,localStorage:{getItem:()=>'true'},
     document:{createElement:node,body:{append:value=>body.push(value)}},setInterval:fn=>(Promise.resolve().then(fn),1),clearInterval(){},setTimeout:fn=>fn(),clearTimeout(){}});
   await Promise.resolve();let links;provider.provideLinks(1,value=>links=value);
-  assert.deepEqual([...links.map(link=>link.text)].sort(),['./clip.webm','/tmp/x/b.png','missing.png','out/shot.png'].sort(),'URLs, other files and backticks are not relative media paths');
+  assert.deepEqual([...links.map(link=>link.text)].sort(),['./clip.webm','/tmp/x/b.png','docs/notes.md','missing.png','out/runs/','out/shot.png'].sort(),'Relative files and folders link; URLs, prose and backticks do not');
   const settle=()=>new Promise(resolve=>setImmediate(resolve));
   const hover=text=>links.find(link=>link.text===text).hover({clientX:10,clientY:10},text);
   hover('out/shot.png');await settle();
@@ -163,6 +163,12 @@ if(process.env.PLAYWRIGHT_MODULE)(async()=>{
   const click={metaKey:true,button:0,preventDefault(){},stopImmediatePropagation(){}};
   links.find(link=>link.text==='out/shot.png').activate(click,'out/shot.png');await settle();
   assert.deepEqual(opened,[['mesh-pc','/home/me/project/out/shot.png']]);
+  // Markdown and folders open the same way, but only media previews on hover.
+  found['docs/notes.md']='/home/me/project/docs/notes.md';found['out/runs/']='/home/me/project/out/runs/';
+  hover('docs/notes.md');await settle();assert.equal(body.length,0,'Markdown does not preview');
+  for(const text of ['docs/notes.md','out/runs/'])links.find(link=>link.text===text).activate(click,text);
+  await settle();
+  assert.deepEqual(opened.splice(1),[['mesh-pc','/home/me/project/docs/notes.md'],['mesh-pc','/home/me/project/out/runs/']]);
   // A video's tab opens within the click, then follows the resolved file or closes.
   links.find(link=>link.text==='./clip.webm').activate(click,'./clip.webm');
   assert.equal(tabs.length,1,'The tab opens before the lookup finishes');await settle();

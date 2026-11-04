@@ -40,7 +40,11 @@
   const mediaFile=/\.(?:png|jpe?g|gif|webp|avif|mp4|webm|mov|m4v)$/i,videoFile=/\.(?:mp4|webm|mov|m4v)$/i;
   // Relative media paths, such as out/shot.png, without spaces since they have no root to start from.
   const relativeMedia=/(?<![\w.~:%/\\@-])(?:[^\s"'`<>|*?:;,()[\]{}\\/]+[\\/])*[^\s"'`<>|*?:;,()[\]{}\\/]+\.(?:png|jpe?g|gif|webp|avif|mp4|webm|mov|m4v)(?![\w-]|\.\w)/gi;
-  const relativeFile=path=>mediaFile.test(path)&&!/^(?:[A-Za-z]:|[\\/~]|[a-z][\w+.-]*:)/i.test(path);
+  // Other relative paths: a file with a 2-8 character extension (so e.g. stays text), or a
+  // folder ending in a slash (so and/or stays text). Only media previews; any of them opens.
+  const segment=String.raw`[^\s"'\`<>|*?:;,()[\]{}\\/]+`;
+  const relativePath=new RegExp(String.raw`(?<![\w.~:%/\\@-])(?:(?:${segment}[\\/])*${segment}\.[A-Za-z][A-Za-z0-9]{1,7}|(?:${segment}[\\/])+)(?![\w-]|\.\w)`,'g');
+  const relativeFile=path=>!/^(?:[A-Za-z]:|[\\/~]|[a-z][\w+.-]*:)/i.test(path);
   // The pane that printed a relative path is unknown, so the relay tries each pane directory in
   // this session. Found paths are kept; misses are retried, since the file may appear later.
   const located=new Map();
@@ -79,8 +83,10 @@
     const overlaps = (path,others) => others.some(m => path.index < m.index+m.text.length && m.index < path.index+path.text.length);
     const plain = [...line.matchAll(filePath)].map(match => ({index:match.index,text:match[0].replace(/[.`]+$/,'')}))
       .filter(path => !overlaps(path,media));
-    const relative = [...line.matchAll(relativeMedia)].map(match => ({index:match.index,text:match[0]}))
+    const relativeMediaPaths = [...line.matchAll(relativeMedia)].map(match => ({index:match.index,text:match[0]}))
       .filter(path => !overlaps(path,[...media,...plain]));
+    const relative = [...relativeMediaPaths,...[...line.matchAll(relativePath)].map(match => ({index:match.index,text:match[0]}))
+      .filter(path => !overlaps(path,[...media,...plain,...relativeMediaPaths]))];
     return {media,plain,relative};
   }
   // Joins a wrapped path's rows. shortcut: wide characters shift the cells after them.
@@ -187,7 +193,7 @@
   },25);
   // Shared with thumbnails.js, which shows the media paths on screen without a hover.
   window.__switchboardMedia={
-    paths:line=>{const {media,relative}=pathsIn(line);return [...media,...relative.map(path=>({...path,relative:true}))].sort((a,b)=>a.index-b.index);},
+    paths:line=>{const {media,relative}=pathsIn(line);return [...media,...relative.filter(path=>mediaFile.test(path.text)).map(path=>({...path,relative:true}))].sort((a,b)=>a.index-b.index);},
     locate,
     url:path=>`/api/hosts/${encodeURIComponent(host)}/file?path=${encodeURIComponent(path)}`,
     isVideo:path=>videoFile.test(path),

@@ -280,15 +280,81 @@ pub(super) async fn serve_file(root: &Path, path: &str, range: Option<&HeaderVal
 
 /// Any regular file this account can read, by absolute or `~/` path, for the file viewer.
 pub(super) async fn serve_path(path: &str, range: Option<&HeaderValue>) -> Response {
-    let target = control::expand_path(path)
+    let Some(expanded) = control::expand_path(path)
         .ok()
         .filter(|path| path.is_absolute())
-        .and_then(|path| path.canonicalize().ok())
-        .filter(|path| path.is_file());
-    match target {
-        Some(target) => send(&target, range, "File not found").await,
-        None => (StatusCode::NOT_FOUND, "File not found").into_response(),
+    else {
+        return (StatusCode::NOT_FOUND, "File not found").into_response();
+    };
+    match expanded.canonicalize() {
+        Ok(target) if target.is_file() => send(&target, range, "File not found").await,
+        Ok(target) if target.is_dir() => folder_page(&expanded).await,
+        _ => (StatusCode::NOT_FOUND, "File not found").into_response(),
     }
+}
+
+fn escape_html(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// A link to another path in the file viewer, relative to the viewer's own URL, so it
+/// stays on whichever computer's file route showed this page.
+fn viewer_href(path: &str) -> String {
+    format!("?path={}", urlencoding::encode(path))
+}
+
+/// Folders listed per page; the rest are counted.
+const FOLDER_ENTRIES: usize = 2000;
+
+/// A folder's contents for the file viewer: folders first, each entry opening in place.
+async fn folder_page(folder: &Path) -> Response {
+    let Ok(mut reader) = tokio::fs::read_dir(folder).await else {
+        return (StatusCode::FORBIDDEN, "Cannot read that folder").into_response();
+    };
+    let mut entries = Vec::new();
+    while let Ok(Some(entry)) = reader.next_entry().await {
+        let folder =
+            entry.file_type().await.is_ok_and(|kind| kind.is_dir()) || entry.path().is_dir();
+        entries.push((!folder, entry.file_name().to_string_lossy().into_owned()));
+    }
+    entries.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase()))
+    });
+    let shown = folder.to_string_lossy();
+    let mut rows = String::new();
+    if let Some(parent) = folder.parent() {
+        rows += &format!(
+            r#"<li><a href="{}">..</a></li>"#,
+            escape_html(&viewer_href(&parent.to_string_lossy()))
+        );
+    }
+    for (file, name) in entries.iter().take(FOLDER_ENTRIES) {
+        let href = viewer_href(&folder.join(name).to_string_lossy());
+        let slash = if *file { "" } else { "/" };
+        rows += &format!(
+            r#"<li><a href="{}">{}{slash}</a></li>"#,
+            escape_html(&href),
+            escape_html(name)
+        );
+    }
+    if entries.len() > FOLDER_ENTRIES {
+        rows += &format!("<li>… {} more</li>", entries.len() - FOLDER_ENTRIES);
+    }
+    let title = escape_html(&shown);
+    let page = format!(
+        r#"<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title><style>
+:root{{color-scheme:light dark;--fg:#1f2328;--bg:#fff;--muted:#59636e;--link:#0969da}}
+@media (prefers-color-scheme:dark){{:root{{--fg:#e6edf3;--bg:#0d1117;--muted:#9198a1;--link:#4493f8}}}}
+body{{margin:0;background:var(--bg);color:var(--fg);font:14px/1.7 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}}
+main{{max-width:60rem;margin:0 auto;padding:.75rem 1rem 4rem}}h1{{font-size:1rem;color:var(--muted);font-weight:normal;word-break:break-all}}
+ul{{list-style:none;padding:0}}a{{color:var(--link);text-decoration:none}}a:hover{{text-decoration:underline}}
+</style></head><body><main><h1>{title}</h1><ul>{rows}</ul></main></body></html>"#
+    );
+    ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], page).into_response()
 }
 
 #[derive(Deserialize)]
@@ -336,7 +402,7 @@ fn find_in_panes(panes: &[Value], path: &str) -> Option<String> {
     // Joined rather than canonicalized, which on Windows would add a \\?\ prefix.
     dirs.into_iter()
         .map(|dir| Path::new(dir).join(path))
-        .find(|path| path.is_file())
+        .find(|path| path.exists())
         .map(|path| path.to_string_lossy().into_owned())
 }
 
@@ -513,7 +579,9 @@ pub(super) async fn serve(
         let name = path.rsplit('/').next().unwrap_or(&path);
         response = (
             [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-            markdown_page(name, &String::from_utf8_lossy(&source)),
+            markdown_page(name, &String::from_utf8_lossy(&source), "?raw", &|url| {
+                url.to_owned()
+            }),
         )
             .into_response();
         csp = format!("{DOCUMENT}; {FRAME}");
@@ -542,7 +610,16 @@ pub(super) async fn file(
     let host = state
         .host(&id)
         .ok_or((StatusCode::NOT_FOUND, "Unknown computer"))?;
-    let range = range_header(request.headers());
+    let markdown = is_markdown(&file.path)
+        && !request
+            .uri()
+            .query()
+            .is_some_and(|q| q.split('&').any(|p| p == "raw"));
+    let range = if markdown {
+        HeaderMap::new()
+    } else {
+        range_header(request.headers())
+    };
     let mut response = if host.is_local_engine() {
         serve_path(&file.path, range.get(header::RANGE)).await
     } else {
@@ -550,8 +627,47 @@ pub(super) async fn file(
             "/switchboard/files?path={}",
             urlencoding::encode(&file.path)
         );
-        remote(&host, request.method().clone(), &path, range).await?
+        let method = if markdown {
+            Method::GET
+        } else {
+            request.method().clone()
+        };
+        remote(&host, method, &path, range).await?
     };
+    if markdown && response.status() == StatusCode::OK {
+        let source = to_bytes(std::mem::take(response.body_mut()), MARKDOWN_LIMIT)
+            .await
+            .map_err(|_| {
+                (
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "Markdown too large to render; add &raw",
+                )
+            })?;
+        // The file's computer may use either separator, whatever this one uses.
+        let split = file.path.rfind(['/', '\\']).map_or(0, |i| i + 1);
+        let (folder, name) = file.path.split_at(split);
+        let raw = format!("{}&raw", viewer_href(&file.path));
+        response = (
+            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            markdown_page(name, &String::from_utf8_lossy(&source), &raw, &|url| {
+                let (target, fragment) = url.split_once('#').map_or((url, ""), |(t, f)| (t, f));
+                let target =
+                    urlencoding::decode(target).map_or(target.to_owned(), |t| t.into_owned());
+                let joined = if target.starts_with(['/', '\\']) || target.contains(':') {
+                    target
+                } else {
+                    format!("{folder}{target}")
+                };
+                let fragment = if fragment.is_empty() {
+                    String::new()
+                } else {
+                    format!("#{fragment}")
+                };
+                format!("{}{fragment}", viewer_href(&joined))
+            }),
+        )
+            .into_response();
+    }
     // The relay's origin holds terminal access, so a viewed page never runs scripts. Media,
     // PDF and plain text run none, and Chrome will not play or render them in a sandbox.
     let kind = response
@@ -571,14 +687,23 @@ pub(super) async fn file(
     Ok(response)
 }
 
+fn is_markdown(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"))
+}
+
 /// Markdown without raw HTML or script links, in a small reading template.
 // ponytail: no heading anchors or Mermaid yet; a mermaid fence shows as code.
-fn markdown_page(name: &str, source: &str) -> String {
+/// `raw` links to the source, and `relative` rewrites links and images relative to it.
+fn markdown_page(name: &str, source: &str, raw: &str, relative: &dyn Fn(&str) -> String) -> String {
     use pulldown_cmark::{CowStr, Event, Options, Parser, Tag};
-    fn safe(url: CowStr<'_>) -> CowStr<'_> {
+    fn safe<'a>(url: CowStr<'a>, relative: &dyn Fn(&str) -> String) -> CowStr<'a> {
         match url::Url::parse(&url) {
             Ok(absolute) if !matches!(absolute.scheme(), "http" | "https" | "mailto") => "#".into(),
-            Ok(_) | Err(url::ParseError::RelativeUrlWithoutBase) => url,
+            Ok(_) => url,
+            Err(url::ParseError::RelativeUrlWithoutBase) if url.starts_with('#') => url,
+            Err(url::ParseError::RelativeUrlWithoutBase) => relative(&url).into(),
             Err(_) => "#".into(),
         }
     }
@@ -595,7 +720,7 @@ fn markdown_page(name: &str, source: &str) -> String {
             id,
         }) => Event::Start(Tag::Link {
             link_type,
-            dest_url: safe(dest_url),
+            dest_url: safe(dest_url, relative),
             title,
             id,
         }),
@@ -606,7 +731,7 @@ fn markdown_page(name: &str, source: &str) -> String {
             id,
         }) => Event::Start(Tag::Image {
             link_type,
-            dest_url: safe(dest_url),
+            dest_url: safe(dest_url, relative),
             title,
             id,
         }),
@@ -614,10 +739,8 @@ fn markdown_page(name: &str, source: &str) -> String {
     });
     let mut body = String::new();
     pulldown_cmark::html::push_html(&mut body, events);
-    let title = name
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;");
+    let title = escape_html(name);
+    let raw = escape_html(raw);
     format!(
         r#"<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title><style>
 :root{{color-scheme:light dark;--fg:#1f2328;--bg:#fff;--muted:#59636e;--line:#d1d9e0;--code:#f6f8fa;--link:#0969da}}
@@ -632,7 +755,7 @@ code{{padding:.15em .35em}}pre{{padding:1rem;overflow:auto}}pre code{{padding:0;
 table{{border-collapse:collapse;display:block;overflow:auto}}th,td{{border:1px solid var(--line);padding:.35rem .75rem}}
 blockquote{{margin:0;padding:0 1em;color:var(--muted);border-left:.25em solid var(--line)}}
 img,video{{max-width:100%}}li input{{margin-right:.4em}}
-</style></head><body><nav><span>{title}</span><a href="?raw">Raw</a></nav><main>{body}</main></body></html>"#
+</style></head><body><nav><span>{title}</span><a href="{raw}">Raw</a></nav><main>{body}</main></body></html>"#
     )
 }
 
@@ -925,6 +1048,8 @@ mod tests {
         let page = markdown_page(
             "<notes>.md",
             "# Notes\n\n<script>alert(1)</script>\n\n<img src=x onerror=alert(1)>\n\n[a](javascript:alert(1)) [b](java\tscript:alert(1)) [c](data:text/html,x) [d](other.md) [e](https://example.com/x) [f](#notes)\n\n![shot](images/a.png)\n\n- [x] done\n\n| a | b |\n|---|---|\n| 1 | 2 |\n",
+            "?raw",
+            &|url| url.to_owned(),
         );
         assert!(!page.contains("<script>alert"));
         assert!(!page.contains("<img src=x"));
@@ -1005,16 +1130,45 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(headers[header::CONTENT_SECURITY_POLICY], "sandbox");
 
-        // Only absolute paths to regular files; the terminal's working directory is unknown.
-        let folder = temp.path().join("artifacts");
-        for path in [
-            "artifacts/clip/clip.mp4",
-            folder.to_str().unwrap(),
-            "/no/such/file",
-        ] {
+        // Only absolute paths; the terminal's working directory is unknown.
+        for path in ["artifacts/clip/clip.mp4", "/no/such/file"] {
             let (status, _, _) = send(path, &[]).await;
             assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
         }
+        // A folder lists its contents, folders first, each opening in the same viewer.
+        let folder = temp.path().join("artifacts/clip");
+        let (status, headers, body) = send(folder.to_str().unwrap(), &[]).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[header::CONTENT_SECURITY_POLICY], "sandbox");
+        let listing = String::from_utf8_lossy(&body);
+        let href = |path: &Path| format!("?path={}", urlencoding::encode(path.to_str().unwrap()));
+        let images = listing.find(">images/<").unwrap();
+        assert!(images < listing.find(">clip.mp4<").unwrap(), "{listing}");
+        assert!(
+            listing.contains(&href(&folder.join("notes.md"))),
+            "{listing}"
+        );
+        assert!(
+            listing.contains(&href(&temp.path().join("artifacts"))),
+            "parent: {listing}"
+        );
+        // Markdown renders, with relative links kept on this computer's file route.
+        let notes = folder.join("notes.md");
+        let (status, headers, body) = send(notes.to_str().unwrap(), &[]).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[header::CONTENT_TYPE], "text/html; charset=utf-8");
+        assert_eq!(headers[header::CONTENT_SECURITY_POLICY], "sandbox");
+        let page = String::from_utf8_lossy(&body);
+        assert!(
+            page.contains("<table>") && !page.contains("<script>alert"),
+            "{page}"
+        );
+        assert!(page.contains(&href(&folder.join("other.md"))), "{page}");
+        assert!(page.contains(&href(&folder.join("images/a.png"))), "{page}");
+        assert!(
+            page.contains(&format!("{}&amp;raw", href(&notes))),
+            "{page}"
+        );
         // Published artifact pages share the relay's site but not its origin.
         let (status, _, _) = send(clip, &[("sec-fetch-site", "same-site")]).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
@@ -1148,8 +1302,9 @@ mod tests {
         let found = |path| find_in_panes(&panes, path).map(std::path::PathBuf::from);
         assert_eq!(found("out/shot.png"), Some(focused.join("out/shot.png")));
         assert_eq!(found("only.png"), Some(other.join("only.png")));
-        // Directories are not files, and nothing is found without a pane directory.
-        assert_eq!(found("out"), None);
+        // Folders resolve too, and nothing is found without a pane directory.
+        assert_eq!(found("out/"), Some(focused.join("out/")));
+        assert_eq!(found("missing/"), None);
         assert_eq!(
             find_in_panes(&[json!({"is_focused":true})], "only.png"),
             None
