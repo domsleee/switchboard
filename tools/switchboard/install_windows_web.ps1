@@ -108,7 +108,7 @@ function Check-ForUpdates {
             $owner = Get-Content -LiteralPath $handoff -Raw | ConvertFrom-Json
             if (Get-Process -Id $owner.pid -ErrorAction SilentlyContinue) { return }
         }
-        $script:nextUpdate = [DateTime]::UtcNow.AddMinutes(15)
+        $script:nextUpdate = [DateTime]::UtcNow.AddMinutes(2)
         # The selected release runs the updater; it never replaces its own file.
         $updateArguments = @('switchboard','update','--release-directory',$ReleaseDirectory,'--port',$RelayPort)
         if ($Config) { $updateArguments += @('--config',$Config) }
@@ -117,7 +117,7 @@ function Check-ForUpdates {
             -RedirectStandardOutput (Join-Path $directory 'update.log') -RedirectStandardError (Join-Path $directory 'update-error.log')
         # Start-Process returns an object identified only by PID. Keep a handle
         # to this process before it exits: otherwise HasExited can open an
-        # unrelated process that reused the PID during the 15-minute interval.
+        # unrelated process that reused the PID between checks.
         $null = $script:updater.Handle
         Add-Content -LiteralPath $log -Value ("$([DateTime]::UtcNow.ToString('o')) Automatic update started: $($script:updater.Id)")
     } catch {

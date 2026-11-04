@@ -746,7 +746,7 @@ fn describe(agent: Agent) -> Value {
 /// Whether this computer's automatic Switchboard update is switched on: the systemd
 /// user timer is enabled on Linux, the LaunchAgent is loaded on macOS, and on Windows
 /// the tray, which runs the update checks, holds its single-instance mutex.
-fn automatic_updates() -> bool {
+pub(super) fn automatic_updates() -> bool {
     #[cfg(target_os = "linux")]
     {
         home()

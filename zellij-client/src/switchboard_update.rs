@@ -330,6 +330,36 @@ struct Pending {
     processes: serde_json::Value,
 }
 
+/// Whether the updater should install published build `run_number`: it is newer than
+/// the last build tried, or that build with attempts left.
+fn is_due(state: &State, run_number: u64) -> bool {
+    let last = state.run_number.unwrap_or(0);
+    run_number > last || (run_number == last && state.attempts.is_some_and(|a| a < ATTEMPTS))
+}
+
+/// Whether a published main build is due on this computer. The relay asks every two
+/// minutes and starts the update job early, so updates do not wait for its schedule.
+pub fn newer_build_published() -> Result<bool> {
+    let home = std::env::home_dir().context("No home directory")?;
+    let platform = target_platform()?;
+    let state = State::load(&home.join(".local/share/switchboard/automatic-updates/state.json"))?;
+    let url = format!("{RELEASE_URL}switchboard-{platform}-bundle.json");
+    let request = Request::get(&url)
+        .redirect_policy(RedirectPolicy::Limit(10))
+        .timeout(Duration::from_secs(30))
+        .body(())?;
+    let mut response = isahc::send(request).with_context(|| format!("Cannot download {url}"))?;
+    ensure!(
+        response.status().is_success(),
+        "Download {url} returned {}",
+        response.status()
+    );
+    let manifest: Manifest =
+        serde_json::from_slice(&response.bytes()?).context("Invalid release manifest")?;
+    validate_manifest(&manifest, platform)?;
+    Ok(is_due(&state, manifest.run_number))
+}
+
 impl State {
     fn load(path: &Path) -> Result<Self> {
         match fs::read(path) {
@@ -579,10 +609,8 @@ impl Updater {
         let manifest: Manifest = serde_json::from_slice(&self.fetch(&asset("bundle.json"))?)
             .context("Invalid release manifest")?;
         validate_manifest(&manifest, &self.platform)?;
-        let last = state.run_number.unwrap_or(0);
-        let retry = manifest.run_number == last && state.attempts.is_some_and(|a| a < ATTEMPTS);
-        if manifest.run_number <= last && !retry {
-            // Scheduled runs log every 15 minutes; only say so when someone is watching.
+        if !is_due(state, manifest.run_number) {
+            // Scheduled runs log every few minutes; only say so when someone is watching.
             if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
                 println!("No newer successful main build.");
             }

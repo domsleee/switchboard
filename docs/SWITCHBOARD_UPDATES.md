@@ -19,8 +19,12 @@ updaters installed before this change.
 
 The executable is the updater: `zellij switchboard update` (`--check` downloads
 and verifies only). The macOS LaunchAgent `dev.switchboard.update`, the Linux
-systemd user timer `switchboard-update.timer` and the Windows tray run it every
-15 minutes; none needs Python or the GitHub CLI. On Linux, `zellij switchboard
+systemd user timer `switchboard-update.timer` and the Windows tray run it; none
+needs Python or the GitHub CLI. The tray checks every 2 minutes. The timer and
+LaunchAgent run every 15 minutes, but the relay also checks the published
+`bundle.json` every 2 minutes and starts the job as soon as a build is due
+(`switchboard_relay/update_watch.rs`), so a merge reaches a computer about 2 minutes
+after its build publishes. On Linux, `zellij switchboard
 install` also runs the relay as the user unit `switchboard.service` (logs:
 `journalctl --user -u switchboard -u switchboard-update`) and enables lingering
 so it survives logout. macOS and Linux also need `jq` and `curl` for `update_local.sh`. Windows checks stop when its tray

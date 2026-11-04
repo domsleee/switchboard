@@ -12,6 +12,7 @@ mod mesh;
 mod output_diagnostics;
 pub(crate) mod peer_bridge;
 mod tasks;
+mod update_watch;
 use axum::{
     body::{to_bytes, Body, Bytes},
     extract::{ws::WebSocketUpgrade, Path as RoutePath, Request, State},
@@ -1407,6 +1408,7 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
     let update_tasks = tasks::start(state.clone()).await;
     let also =
         (port != DEFAULT_PORT).then(|| tokio::spawn(serve_also_on(state.clone(), DEFAULT_PORT)));
+    let update_watch = tokio::spawn(update_watch::watch());
     // Keystrokes and echoes are tiny writes; Nagle plus delayed ACK can hold each one back.
     let listener = axum::serve::ListenerExt::tap_io(listener, |stream| {
         let _ = stream.set_nodelay(true);
@@ -1419,6 +1421,7 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
         task.abort();
     }
     update_tasks.abort();
+    update_watch.abort();
     tasks::stop_running().await;
     failures.abort();
     logs::save(&failures_file).await;
