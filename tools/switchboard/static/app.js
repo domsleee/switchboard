@@ -1029,6 +1029,7 @@ function showSection(name,focusTab=false){
     if(focusTab)tab.focus();
   }
   if(name==='logs')loadLogs();
+  if(name==='updates')globalThis.SwitchboardTasks?.load();
   if(name==='archive')renderArchive();
 }
 function openPanel(name){

@@ -8,6 +8,7 @@ mod logs;
 mod mesh;
 mod output_diagnostics;
 pub(crate) mod peer_bridge;
+mod tasks;
 use axum::{
     body::{to_bytes, Body, Bytes},
     extract::{ws::WebSocketUpgrade, Path as RoutePath, Request, State},
@@ -1239,6 +1240,9 @@ fn app(state: RelayState) -> Router {
         .route("/api/askpass", post(askpass::ask))
         .route("/api/askpass/answer", post(askpass::answer))
         .route("/api/logs", get(logs::handler))
+        .route("/api/tasks", get(tasks::handler))
+        .route("/api/tasks/action", post(tasks::action))
+        .route("/api/tasks/log", get(tasks::log))
         .route(
             "/api/diagnostics/browser-resume",
             post(logs::browser_resume),
@@ -1338,6 +1342,7 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
     let failures = logs::start(failures_file.clone()).await;
     let polling =
         attention::start(state.clone(), config_path.with_extension("attention.json")).await;
+    let update_tasks = tasks::start(state.clone()).await;
     // Keystrokes and echoes are tiny writes; Nagle plus delayed ACK can hold each one back.
     let listener = axum::serve::ListenerExt::tap_io(listener, |stream| {
         let _ = stream.set_nodelay(true);
@@ -1346,6 +1351,8 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
         .with_graceful_shutdown(shutdown())
         .await;
     pairing.abort();
+    update_tasks.abort();
+    tasks::stop_running().await;
     failures.abort();
     logs::save(&failures_file).await;
     for task in polling {

@@ -775,6 +775,17 @@ impl PollState {
         }
         self.changes.send_modify(|version| *version += 1);
     }
+    /// Whether an agent pane on these hosts is working, for update tasks that wait.
+    pub(super) fn agents_working(&self, hosts: &[String]) -> bool {
+        hosts
+            .iter()
+            .filter_map(|host| self.cache.get(host))
+            .any(|snapshot| {
+                snapshot["panes"]
+                    .as_array()
+                    .is_some_and(|panes| panes.iter().any(|pane| pane["state"] == "working"))
+            })
+    }
     /// What the owner of `host` tells peers, so every relay shows the same state.
     /// None while the owner's poll is stale, so peers fall back to scanning.
     pub(super) fn owned(&self, host: &str) -> Option<Value> {
