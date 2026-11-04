@@ -9878,6 +9878,19 @@ pub(crate) fn screen_thread_main(
                 let tab_index = screen.get_new_tab_id();
                 log::info!("New tab allocated: client={} tab={}", client_id, tab_index);
                 pending_tab_ids.insert(tab_index);
+                // A tab without an explicit cwd opens where the requesting client is
+                // focused. The pty thread resolves that from its own copy of each client's
+                // focus, which only renders refresh. Hand it the screen's answer before the
+                // client moves to the new tab; it arrives ahead of the layout thread's NewTab.
+                if cwd.is_none() {
+                    if let Some(pane_id) = screen.get_active_pane_id(&client_id) {
+                        screen
+                            .bus
+                            .senders
+                            .send_to_pty(PtyInstruction::UpdateActivePane(Some(pane_id), client_id))
+                            .non_fatal();
+                    }
+                }
                 let client_id_for_new_tab = if should_change_focus_to_new_tab {
                     Some(client_id)
                 } else {
