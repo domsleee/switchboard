@@ -65,6 +65,27 @@ fn main() {
         return;
     }
 
+    if let Some(Command::Absorb {
+        apply,
+        only,
+        session,
+    }) = &opts.command
+    {
+        #[cfg(feature = "web_server_capability")]
+        if let Err(error) = zellij_client::switchboard_absorb::run(*apply, only.as_deref(), session)
+        {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+        #[cfg(not(feature = "web_server_capability"))]
+        {
+            let _ = (apply, only, session);
+            eprintln!("This build has no Switchboard support.");
+            std::process::exit(2);
+        }
+        return;
+    }
+
     if let Some(Command::Switchboard(command)) = &opts.command {
         #[cfg(feature = "web_server_capability")]
         if let Err(error) = zellij_client::switchboard_update::run(command) {

@@ -40,6 +40,7 @@ log = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sysinfo = { version = "0.39.5", default-features = false, features = ["system"] }
 url = { workspace = true }
 uuid = { workspace = true }
 include_dir = { workspace = true, optional = true }
@@ -71,7 +72,6 @@ windows-sys = { workspace = true, features = [
     "Win32_Security",
     "Win32_Security_Authorization",
 ] }
-sysinfo = { version = "0.39.5", default-features = false, features = ["system"] }
 
 [dev-dependencies]
 rcgen = "0.14"

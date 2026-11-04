@@ -2,7 +2,7 @@
 mod agent_setup;
 pub(crate) mod artifacts;
 pub(crate) mod askpass;
-mod attention;
+pub(crate) mod attention;
 pub use attention::forward_hook;
 mod control;
 mod hostname;

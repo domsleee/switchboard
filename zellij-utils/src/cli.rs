@@ -175,6 +175,21 @@ pub enum Command {
     #[clap(subcommand)]
     Switchboard(SwitchboardCommand),
 
+    /// Move this computer's iTerm tabs into Switchboard: idle shells, Claude Code and Codex
+    /// are recreated as tabs of a Zellij session, then the originals close. Prints the plan
+    /// and changes nothing unless --apply is given
+    Absorb {
+        /// Carry out the plan
+        #[clap(long)]
+        apply: bool,
+        /// Absorb only this tab (its id from the plan)
+        #[clap(long)]
+        only: Option<String>,
+        /// Zellij session that receives the tabs
+        #[clap(long, default_value = "main")]
+        session: String,
+    },
+
     /// Send actions to a specific session
     #[clap(visible_alias = "ac")]
     #[clap(subcommand)]
