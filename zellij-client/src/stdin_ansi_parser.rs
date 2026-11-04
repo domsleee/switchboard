@@ -239,6 +239,10 @@ fn is_user_input(event: &InputEvent) -> bool {
 /// same observable behaviour as today for unterminated OSC, just
 /// bounded.
 const PARTIAL_BUFFER_CAP_BYTES: usize = 100 * 1024 * 1024;
+// TODO: each feed() copies the buffered partial sequence and rescans it from its
+// start, so an N-byte unterminated sequence fed in chunks costs O(N^2): 110 MB in
+// 1 MB chunks takes ~77s in a debug build. Resume scanning where the last feed
+// stopped (here and in the termwiz InputParser layer) to make it linear.
 
 const PASTE_START_MARKER: &[u8] = b"\x1b[200~";
 const PASTE_END_MARKER: &[u8] = b"\x1b[201~";
@@ -319,6 +323,9 @@ pub struct StdinAnsiParser {
     in_bracketed_paste: bool,
     startup_kitty_probe: StartupKittyProbe,
     partial_apc: Vec<u8>,
+    /// Longest unterminated sequence kept across feeds; `PARTIAL_BUFFER_CAP_BYTES`
+    /// except in tests, which use a small one to stay fast.
+    partial_cap: usize,
 }
 
 impl std::fmt::Debug for StdinAnsiParser {
@@ -344,6 +351,15 @@ impl StdinAnsiParser {
             in_bracketed_paste: false,
             startup_kitty_probe: StartupKittyProbe::NotSent,
             partial_apc: Vec::new(),
+            partial_cap: PARTIAL_BUFFER_CAP_BYTES,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_partial_cap(partial_cap: usize) -> Self {
+        Self {
+            partial_cap,
+            ..Self::new()
         }
     }
 
@@ -668,7 +684,7 @@ impl StdinAnsiParser {
                     },
                     SeqStatus::NeedMore => {
                         let tail = rest.to_vec();
-                        if tail.len() > PARTIAL_BUFFER_CAP_BYTES {
+                        if tail.len() > self.partial_cap {
                             out.extend_from_slice(&tail);
                         } else {
                             self.partial_apc = tail;
@@ -729,7 +745,7 @@ impl StdinAnsiParser {
                         },
                         MarkerMatch::Prefix => {
                             let tail = rest.to_vec();
-                            if tail.len() > PARTIAL_BUFFER_CAP_BYTES {
+                            if tail.len() > self.partial_cap {
                                 out.extend_from_slice(&tail);
                             } else {
                                 self.partial_paste = tail;
@@ -760,7 +776,7 @@ impl StdinAnsiParser {
                     },
                     SeqStatus::NeedMore => {
                         let tail = rest.to_vec();
-                        if tail.len() > PARTIAL_BUFFER_CAP_BYTES {
+                        if tail.len() > self.partial_cap {
                             // Cap exceeded: flush buffered bytes to
                             // residue and reset, preserving the
                             // semantic that unterminated bytes are not
@@ -787,7 +803,7 @@ impl StdinAnsiParser {
                     },
                     SeqStatus::NeedMore => {
                         let tail = rest.to_vec();
-                        if tail.len() > PARTIAL_BUFFER_CAP_BYTES {
+                        if tail.len() > self.partial_cap {
                             out.extend_from_slice(&tail);
                         } else {
                             self.partial_csi = tail;
