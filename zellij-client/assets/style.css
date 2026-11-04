@@ -1,3 +1,10 @@
+/* Nerd Fonts symbols, MIT licensed: see SymbolsNerdFontMono-LICENSE.txt */
+@font-face {
+    font-family: "Symbols Nerd Font Mono";
+    src: url("SymbolsNerdFontMono-Regular.woff2") format("woff2");
+    font-display: block;
+}
+
 :root {
     /* `100vh` is the fallback for browsers without `dvh` support. On
        iOS Safari this is the *layout* viewport — it includes the
