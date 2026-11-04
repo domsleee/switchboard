@@ -165,6 +165,12 @@ pub enum Command {
     #[clap(subcommand)]
     AgentResume(AgentResumeCommand),
 
+    /// Forward an agent hook event on stdin to the local Switchboard relay's status
+    AgentHook {
+        #[clap(long, value_enum)]
+        agent: crate::agent_resumption::AgentKind,
+    },
+
     /// Switchboard automatic updates
     #[clap(subcommand)]
     Switchboard(SwitchboardCommand),

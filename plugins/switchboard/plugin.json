@@ -1,0 +1,8 @@
+{
+  "name": "switchboard",
+  "description": "Reports each Copilot CLI turn to the local Switchboard relay through `zellij agent-hook`, and adds a message-board skill for reading and sending Switchboard messages.",
+  "author": {
+    "name": "Dom Slee"
+  },
+  "hooks": "copilot-hooks.json"
+}

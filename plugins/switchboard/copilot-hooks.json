@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "type": "command",
+        "exec": "zellij",
+        "args": [
+          "agent-hook",
+          "--agent",
+          "copilot"
+        ],
+        "timeoutSec": 5
+      }
+    ],
+    "PostToolUse": [
+      {
+        "type": "command",
+        "exec": "zellij",
+        "args": [
+          "agent-hook",
+          "--agent",
+          "copilot"
+        ],
+        "timeoutSec": 5
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "type": "command",
+        "exec": "zellij",
+        "args": [
+          "agent-hook",
+          "--agent",
+          "copilot"
+        ],
+        "timeoutSec": 5
+      }
+    ],
+    "Notification": [
+      {
+        "type": "command",
+        "exec": "zellij",
+        "args": [
+          "agent-hook",
+          "--agent",
+          "copilot"
+        ],
+        "timeoutSec": 5
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "exec": "zellij",
+        "args": [
+          "agent-hook",
+          "--agent",
+          "copilot"
+        ],
+        "timeoutSec": 5
+      }
+    ],
+    "SessionEnd": [
+      {
+        "type": "command",
+        "exec": "zellij",
+        "args": [
+          "agent-hook",
+          "--agent",
+          "copilot"
+        ],
+        "timeoutSec": 5
+      }
+    ]
+  }
+}

@@ -232,6 +232,15 @@ the screen reading for the pane while it still runs Claude. A `Stop` that lists 
 running background task is `waiting`; Claude starts a new turn when the task ends.
 Hooks of a Claude started inside another Claude carry `CLAUDECODE=1` and are ignored.
 
+Copilot CLI loads the same plugin through its root `plugin.json`, whose command hooks
+(`copilot-hooks.json`) run `zellij agent-hook --agent copilot`. That command posts the
+event on stdin to `/api/agent-hook` with an `X-Agent` header, and skips agents started
+by Claude in the same pane. Its PascalCase event names give Claude-shaped payloads, so
+a `permission_prompt` notification marks the tab as needing approval. A hooked status
+applies only while the pane's command still names that agent. A finished turn is
+identified by Claude's `prompt_id`, Codex's `turn_id` or Copilot's `timestamp`; a Codex
+`Interrupt` returns the pane to screen reading.
+
 Screen reading works with already-running agents, without notification hooks or replacing
 Zellij. Detection follows terminal UI markers; unrecognized screens report
 unknown, and disconnected hosts lose stale ready status. Very short turns between

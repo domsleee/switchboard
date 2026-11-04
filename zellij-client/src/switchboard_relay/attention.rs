@@ -766,27 +766,27 @@ impl PollState {
         };
         self.interactive.contains_key(&(session.to_owned(), pane))
     }
-    /// Replaces a local pane's screen reading with its Claude Code hook status.
+    /// Replaces a local pane's screen reading with its agent's hook status.
     fn apply_hook(&mut self, row: &mut Value, command: &Value) {
         let (Some(session), Some(pane)) = (row["session"].as_str(), row["pane_id"].as_u64()) else {
             return;
         };
         let key = (session.to_owned(), pane);
-        // A pane that now runs something else (Claude exited without SessionEnd) drops it.
+        let Some(hooked) = self.hooks.get(&key) else {
+            return;
+        };
+        // A pane that now runs something else (the agent exited without SessionEnd) drops it.
         if command
             .as_str()
-            .is_some_and(|c| !c.is_empty() && !c.to_ascii_lowercase().contains("claude"))
+            .is_some_and(|c| !c.is_empty() && !c.to_ascii_lowercase().contains(hooked.agent))
         {
             self.hooks.remove(&key);
             return;
         }
-        let Some(hooked) = self.hooks.get(&key) else {
-            return;
-        };
         let row = row.as_object_mut().unwrap();
         row.remove("deferred");
         row.insert("state".into(), json!(hooked.state));
-        row.insert("agent".into(), json!("claude"));
+        row.insert("agent".into(), json!(hooked.agent));
         match &hooked.token {
             Some(token) => row.insert("token".into(), json!(token)),
             None => row.remove("token"),
@@ -1081,12 +1081,14 @@ pub(super) async fn handler(
 
 #[derive(Clone, Debug, PartialEq)]
 struct Hooked {
+    agent: &'static str,
     state: &'static str,
     token: Option<String>,
 }
 
-/// What a Claude Code hook event says about its pane, if anything.
-fn hook_status(event: &Value) -> Option<Hooked> {
+/// What a hook event says about its pane, if anything. Claude Code, Codex and
+/// Copilot's PascalCase hooks share these event names and fields.
+fn hook_status(agent: &'static str, event: &Value) -> Option<Hooked> {
     let state = match event["hook_event_name"].as_str()? {
         "UserPromptSubmit" | "PostToolUse" | "PostToolUseFailure" => "working",
         "PermissionRequest" => "approval",
@@ -1107,22 +1109,30 @@ fn hook_status(event: &Value) -> Option<Hooked> {
         "Stop" | "StopFailure" => "ready",
         _ => return None,
     };
-    // Each turn has its own prompt ID, so every finished turn is a new result.
+    // Each turn is a new result: Claude names it with a prompt ID, Codex with a
+    // turn ID, and Copilot only timestamps it.
     let token = (state == "ready").then(|| {
-        let turn = event["prompt_id"].as_str().or(event["session_id"].as_str());
+        let turn = ["prompt_id", "turn_id", "timestamp", "session_id"]
+            .iter()
+            .find_map(|field| event[field].as_str());
         Sha256::digest(turn.unwrap_or("hook").as_bytes())[..10]
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect()
     });
-    Some(Hooked { state, token })
+    Some(Hooked {
+        agent,
+        state,
+        token,
+    })
 }
 
-/// Receives Claude Code hook events from the switchboard plugin. The plugin's
-/// HTTP hooks name their Zellij session and pane in headers; events from outside
-/// Zellij carry neither and are ignored. A Claude started by another Claude in the
-/// same pane inherits `CLAUDECODE=1` and is ignored too, so it can't overwrite the
-/// pane's own status.
+/// Receives agent hook events: Claude Code's HTTP hooks from the switchboard plugin,
+/// and Codex and Copilot's command hooks through `zellij agent-hook`, which names
+/// its agent in `X-Agent`. Both name their Zellij session and pane in headers; events
+/// from outside Zellij carry neither and are ignored. A Claude started by another
+/// Claude in the same pane inherits `CLAUDECODE=1` and is ignored too, so it can't
+/// overwrite the pane's own status.
 pub(super) async fn hook(
     State(state): State<RelayState>,
     headers: HeaderMap,
@@ -1132,14 +1142,24 @@ pub(super) async fn hook(
     let session = header("x-zellij-session").filter(|s| !s.is_empty());
     let pane = header("x-zellij-pane").and_then(|p| p.parse::<u64>().ok());
     let nested = header("x-claude-nested").is_some_and(|n| !n.is_empty());
+    let agent = match header("x-agent").unwrap_or("claude") {
+        "claude" => "claude",
+        "codex" => "codex",
+        "copilot" => "copilot",
+        _ => return StatusCode::NO_CONTENT,
+    };
     let (Some(session), Some(pane), false) = (session, pane, nested) else {
         return StatusCode::NO_CONTENT;
     };
     let key = (session.to_owned(), pane);
     let mut poll = state.poll.lock().await;
-    if event["hook_event_name"] == "SessionEnd" {
+    // An interrupted Codex turn has no Stop; the screen shows what it left.
+    if matches!(
+        event["hook_event_name"].as_str(),
+        Some("SessionEnd" | "Interrupt")
+    ) {
         poll.hooks.remove(&key);
-    } else if let Some(hooked) = hook_status(&event) {
+    } else if let Some(hooked) = hook_status(agent, &event) {
         poll.hooks.insert(key, hooked);
     } else {
         return StatusCode::NO_CONTENT;
@@ -1147,6 +1167,42 @@ pub(super) async fn hook(
     // shortcut: wakes one local scan loop, enough for the usual single local host.
     poll.hooked.notify_one();
     StatusCode::NO_CONTENT
+}
+
+/// `zellij agent-hook`: forwards a command hook's event (Codex, Copilot) to `hook`
+/// on the local relay, naming the pane from the agent's Zellij environment.
+pub fn forward_hook(agent: &str, input: impl std::io::Read) {
+    use isahc::ReadResponseExt;
+    let env = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+    let relay = crate::message_board::local_relay_url(env("SWITCHBOARD_RELAY_URL").as_deref());
+    if let Some(request) = hook_request(agent, input, env, &relay) {
+        let _ = isahc::send(request).map(|mut response| response.consume());
+    }
+}
+
+fn hook_request(
+    agent: &str,
+    input: impl std::io::Read,
+    env: impl Fn(&str) -> Option<String>,
+    relay: &str,
+) -> Option<isahc::Request<Vec<u8>>> {
+    use isahc::config::Configurable;
+    use std::io::Read;
+    // An agent started from a Claude Code tool shares the pane with that Claude.
+    if env("CLAUDECODE").is_some() {
+        return None;
+    }
+    let (session, pane) = (env("ZELLIJ_SESSION_NAME")?, env("ZELLIJ_PANE_ID")?);
+    let mut body = Vec::new();
+    input.take(16 << 20).read_to_end(&mut body).ok()?;
+    isahc::Request::post(format!("{relay}/api/agent-hook"))
+        .timeout(Duration::from_secs(2))
+        .header("content-type", "application/json")
+        .header("x-zellij-session", session)
+        .header("x-zellij-pane", pane)
+        .header("x-agent", agent)
+        .body(body)
+        .ok()
 }
 
 #[derive(Deserialize)]
@@ -1398,7 +1454,7 @@ esac
                 .as_object_mut()
                 .unwrap()
                 .extend(extra.as_object().unwrap().clone());
-            hook_status(&event).map(|h| h.state)
+            hook_status("claude", &event).map(|h| h.state)
         };
         assert_eq!(event("UserPromptSubmit", json!({})), Some("working"));
         assert_eq!(event("PostToolUse", json!({})), Some("working"));
@@ -1427,9 +1483,12 @@ esac
         assert_eq!(event("Stop", running), Some("waiting"));
         assert_eq!(event("Stop", json!({"background_tasks":[]})), Some("ready"));
         let finished = |prompt: &str| {
-            hook_status(&json!({"hook_event_name":"Stop","prompt_id":prompt,"background_tasks":[]}))
-                .unwrap()
-                .token
+            hook_status(
+                "claude",
+                &json!({"hook_event_name":"Stop","prompt_id":prompt,"background_tasks":[]}),
+            )
+            .unwrap()
+            .token
         };
         assert_ne!(
             finished("p1"),
@@ -1527,6 +1586,116 @@ esac
         );
         send(json!({"hook_event_name":"SessionEnd"}), Some("3")).await;
         assert!(state.poll.lock().await.hooks.is_empty());
+    }
+    #[tokio::test]
+    async fn codex_and_copilot_hooks_report_status_for_their_own_agent() {
+        let state = RelayState {
+            hosts: Default::default(),
+            order: Default::default(),
+            port: 0,
+            attention: Default::default(),
+            poll: Default::default(),
+            mesh: None,
+            candidates: Default::default(),
+            artifact: None,
+            askpass: Default::default(),
+        };
+        let send = |agent: &str, event: Value| {
+            let mut headers = HeaderMap::new();
+            for (name, value) in [
+                ("x-zellij-session", "main"),
+                ("x-zellij-pane", "3"),
+                ("x-agent", agent),
+            ] {
+                headers.insert(name, value.parse().unwrap());
+            }
+            hook(State(state.clone()), headers, Json(event))
+        };
+        let scan = |command: &str| json!({"panes":[{"session":"main","pane_id":3,"state":"unknown","command":command}],"tabs":[],"errors":[]});
+        send("gemini", json!({"hook_event_name":"UserPromptSubmit"})).await;
+        assert!(state.poll.lock().await.hooks.is_empty(), "unknown agent");
+        // codex-cli 0.164: Stop names its turn, so each finished turn is a new result.
+        let mut tokens = Vec::new();
+        for turn in ["t1", "t2"] {
+            send(
+                "codex",
+                json!({"hook_event_name":"UserPromptSubmit","turn_id":turn}),
+            )
+            .await;
+            let mut working = scan("codex");
+            state.poll.lock().await.update("mac", &mut working);
+            assert_eq!(working["panes"][0]["state"], "working");
+            assert_eq!(working["panes"][0]["agent"], "codex");
+            send(
+                "codex",
+                json!({"hook_event_name":"Stop","session_id":"s","turn_id":turn}),
+            )
+            .await;
+            let mut ready = scan("codex");
+            state.poll.lock().await.update("mac", &mut ready);
+            assert_eq!(ready["panes"][0]["state"], "ready", "{ready}");
+            tokens.push(ready["panes"][0]["token"].clone());
+        }
+        assert_ne!(tokens[0], tokens[1]);
+        assert!(tokens[1].as_str().unwrap().ends_with(":2"), "{tokens:?}");
+        send(
+            "codex",
+            json!({"hook_event_name":"Interrupt","turn_id":"t3"}),
+        )
+        .await;
+        assert!(
+            state.poll.lock().await.hooks.is_empty(),
+            "interrupt reads the screen"
+        );
+        // Copilot 1.0.105 PascalCase hooks: no turn ID, an ISO timestamp per event.
+        let stop = |at: &str| json!({"hook_event_name":"Stop","session_id":"s","timestamp":at,"stop_reason":"end_turn"});
+        let first = hook_status("copilot", &stop("2026-11-04T06:14:01.711Z")).unwrap();
+        let second = hook_status("copilot", &stop("2026-11-04T06:15:00.000Z")).unwrap();
+        assert_ne!(first.token, second.token);
+        send(
+            "copilot",
+            json!({"hook_event_name":"Notification","notification_type":"permission_prompt"}),
+        )
+        .await;
+        let mut approval = scan("/opt/homebrew/bin/copilot");
+        state.poll.lock().await.update("mac", &mut approval);
+        assert_eq!(approval["panes"][0]["state"], "approval");
+        assert_eq!(approval["panes"][0]["agent"], "copilot");
+        let mut claude = scan("claude");
+        state.poll.lock().await.update("mac", &mut claude);
+        assert_eq!(
+            claude["panes"][0]["state"], "unknown",
+            "Copilot left this pane"
+        );
+        assert!(state.poll.lock().await.hooks.is_empty());
+    }
+    #[test]
+    fn forwarded_hooks_name_their_pane_and_agent() {
+        let zellij = |name: &str| match name {
+            "ZELLIJ_SESSION_NAME" => Some("main".to_owned()),
+            "ZELLIJ_PANE_ID" => Some("7".to_owned()),
+            _ => None,
+        };
+        let body = br#"{"hook_event_name":"Stop"}"#;
+        let request = hook_request("copilot", &body[..], zellij, "http://127.0.0.1:8181").unwrap();
+        assert_eq!(request.uri(), "http://127.0.0.1:8181/api/agent-hook");
+        for (name, value) in [
+            ("x-zellij-session", "main"),
+            ("x-zellij-pane", "7"),
+            ("x-agent", "copilot"),
+        ] {
+            assert_eq!(request.headers()[name], value);
+        }
+        assert_eq!(request.body(), body);
+        assert!(
+            hook_request("codex", &body[..], |_| None, "http://x").is_none(),
+            "outside Zellij"
+        );
+        let nested = |name: &str| zellij(name).or((name == "CLAUDECODE").then(|| "1".to_owned()));
+        assert!(
+            hook_request("codex", &body[..], nested, "http://x").is_none(),
+            "started by Claude in the same pane"
+        );
     }
     #[test]
     fn failed_hosts_keep_tab_identity_without_stale_attention_and_recover() {
