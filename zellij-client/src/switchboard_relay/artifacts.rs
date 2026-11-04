@@ -309,12 +309,10 @@ pub(super) async fn resolve_local(host: &Host, query: &SessionPath) -> Response 
     if control::validate_session(&query.session).is_err() || !relative {
         return (StatusCode::BAD_REQUEST, "Not a relative path").into_response();
     }
-    let args = ["list-panes", "--json", "--all"];
-    let Ok(panes) = control::run_local(host, &query.session, &args, Duration::from_secs(5)).await
+    let Ok(panes) = control::list_panes(host, &query.session, true, Duration::from_secs(5)).await
     else {
         return (StatusCode::BAD_GATEWAY, "Cannot list panes").into_response();
     };
-    let panes: Vec<Value> = serde_json::from_str(&panes).unwrap_or_default();
     match find_in_panes(&panes, &query.path) {
         Some(path) => Json(json!({ "path": path })).into_response(),
         None => (StatusCode::NOT_FOUND, "File not found").into_response(),

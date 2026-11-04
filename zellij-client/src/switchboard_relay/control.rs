@@ -73,6 +73,32 @@ pub(super) async fn run_local(
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// A session's panes. Closing a pane or tab tells every client of the session to unblock, so a
+/// listing that overlaps a close can exit successfully before it prints anything. A real answer
+/// is never empty (a session without panes prints `[]`), so an empty one is asked again.
+pub(super) async fn list_panes(
+    host: &Host,
+    session: &str,
+    all: bool,
+    timeout: Duration,
+) -> anyhow::Result<Vec<Value>> {
+    let args: &[&str] = if all {
+        &["list-panes", "--json", "--all"]
+    } else {
+        &["list-panes", "--json"]
+    };
+    let deadline = tokio::time::Instant::now() + timeout;
+    for attempt in 1.. {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let text = run_local(host, session, args, remaining).await?;
+        if !text.trim().is_empty() || attempt == 3 {
+            return Ok(serde_json::from_str(&text)?);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    unreachable!()
+}
+
 pub(super) async fn sessions(host: &Host) -> anyhow::Result<Vec<String>> {
     Ok(shared_sessions(host)
         .await?
@@ -460,16 +486,15 @@ pub(super) async fn execute_host(
         ));
     }
     let close = !matches!(action, ControlAction::Escape(_));
-    let all = if close {
-        vec!["list-panes", "--json", "--all"]
-    } else {
-        vec!["list-panes", "--json"]
-    };
-    let panes = run_local(host, session, &all, Duration::from_secs(5))
+    let panes = list_panes(host, session, close, Duration::from_secs(5))
         .await
-        .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot identify target"))?;
-    let panes: Vec<Value> = serde_json::from_str(&panes)
-        .map_err(|_| (StatusCode::BAD_GATEWAY, "Invalid pane catalog"))?;
+        .map_err(|error| {
+            if error.is::<serde_json::Error>() {
+                (StatusCode::BAD_GATEWAY, "Invalid pane catalog")
+            } else {
+                (StatusCode::BAD_GATEWAY, "Cannot identify target")
+            }
+        })?;
     let target = resolve_target(&panes, action)?;
     let final_tab = close && panes.iter().all(|pane| pane["tab_id"] == target);
     let target = target.to_string();
@@ -681,6 +706,47 @@ mod tests {
         assert!(resolve_target(&panes, ControlAction::ClosePaneTab(18)).is_err());
         assert!(resolve_target(&panes, ControlAction::ClosePaneTab(42)).is_err());
         assert!(resolve_target(&panes, ControlAction::Escape(17)).is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_pane_list_cut_short_by_a_concurrent_close_is_asked_again() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let (fake, log) = (dir.path().join("zellij"), dir.path().join("calls"));
+        // The first listing exits 0 with nothing, as when another tab's close unblocks it.
+        std::fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\necho \"$*\" >> '{0}'\n[ $(wc -l < '{0}') -gt 1 ] && echo '[{{\"id\":1,\"tab_id\":4}}]'\nexit 0\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut config = super::super::tests::config("http://127.0.0.1:9");
+        config.zellij_binary = Some(fake.to_str().unwrap().into());
+        let host = Host::new(config).unwrap();
+        let panes = list_panes(&host, "main", true, Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(panes, vec![json!({"id":1,"tab_id":4})]);
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap(),
+            "-s main action list-panes --json --all\n".repeat(2)
+        );
+        // An engine that never answers still fails, after three tries.
+        std::fs::write(
+            &fake,
+            format!("#!/bin/sh\necho \"$*\" >> '{0}'\n", log.display()),
+        )
+        .unwrap();
+        std::fs::remove_file(&log).unwrap();
+        assert!(list_panes(&host, "main", false, Duration::from_secs(5))
+            .await
+            .unwrap_err()
+            .is::<serde_json::Error>());
+        assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 3);
     }
 
     #[cfg(unix)]
