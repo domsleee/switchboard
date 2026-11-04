@@ -904,6 +904,20 @@ window.SwitchboardOpenInApp=(host,href)=>{
     .catch(error=>setStatus(`Could not open the link in ${app}: ${error.message}`,true));
   return true;
 };
+// Web pages may not open chrome://settings and the like, so the relay asks the
+// browser itself. chrome:// pages open in whichever Chromium browser is viewing.
+window.SwitchboardOpenBrowserPage=url=>{
+  const brands=(navigator.userAgentData?.brands||[]).map(brand=>brand.brand);
+  const viewer=brands.includes('Microsoft Edge')?'edge':brands.includes('Brave')?'brave':brands.includes('Google Chrome')?'chrome':brands.includes('Chromium')?'chromium':'chrome';
+  const scheme=url.split(':')[0],browser=scheme==='chrome'?viewer:scheme;
+  fetch('/api/open-browser-page',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url,browser})})
+    .then(async response=>{if(!response.ok)throw Error(await response.text());})
+    .catch(async error=>{
+      // The click's user activation outlasts a local request, so copying still works here.
+      const copied=await navigator.clipboard?.writeText(url).then(()=>true,()=>false);
+      setStatus(`Could not open ${url}: ${error.message}.${copied?' The link is copied; paste it into the address bar.':''}`,true);
+    });
+};
 // Terminal frames call this on a modified click of a file path.
 window.SwitchboardOpenFile=(host,path)=>{
   if(hosts.get(host)?.local){

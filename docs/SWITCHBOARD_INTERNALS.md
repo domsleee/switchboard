@@ -267,6 +267,14 @@ the same credential as its terminals. Files that could run scripts, such as HTML
 and SVG, are served with `Content-Security-Policy: sandbox`; Chrome will not
 play media or render PDFs under it, so those are served without it.
 
+Browsers refuse to let web pages open their own pages, such as
+`chrome://settings/system`. A modified click on a `chrome://`, `edge://` or
+`brave://` link therefore goes to `/api/open-browser-page`, and the relay starts
+that browser with the page. `chrome://` opens in whichever Chromium browser is
+viewing. The relay accepts only a fixed list of pages (settings, flags, gpu and
+the like, never crash or quit) written in characters that need no shell quoting.
+If the browser cannot be started, the link is copied and the status bar says so.
+
 With Settings → Media previews on (off by default, saved in this browser), image
 and video paths use the same route for previews. Hovering one in a terminal
 shows it in a popup, and a message on the Messages page shows it inline, read from

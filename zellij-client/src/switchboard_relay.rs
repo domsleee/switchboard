@@ -1251,6 +1251,7 @@ fn app(state: RelayState) -> Router {
         .route("/api/hosts/{host}/escape", post(control::escape))
         .route("/api/open-link", post(control::open_link))
         .route("/api/open-file", post(control::open_file))
+        .route("/api/open-browser-page", post(control::open_browser_page))
         .route("/api/hosts/{host}/file", get(artifacts::file))
         .route(
             "/api/hosts/{host}/resolve-file",

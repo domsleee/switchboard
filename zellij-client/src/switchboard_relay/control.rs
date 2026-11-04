@@ -218,6 +218,126 @@ pub(super) async fn open_file(Json(file): Json<OpenFile>) -> Result<Json<Value>,
     }
 }
 
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum Browser {
+    Chrome,
+    Chromium,
+    Edge,
+    Brave,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct OpenBrowserPage {
+    url: String,
+    browser: Browser,
+}
+
+/// Pages a browser lets only its own address bar or command line open. Pages
+/// that crash, hang or quit the browser are left out.
+const BROWSER_PAGES: &[&str] = &[
+    "about",
+    "accessibility",
+    "apps",
+    "bookmarks",
+    "components",
+    "downloads",
+    "extensions",
+    "flags",
+    "gpu",
+    "history",
+    "inspect",
+    "management",
+    "media-internals",
+    "net-internals",
+    "password-manager",
+    "policy",
+    "sandbox",
+    "settings",
+    "system",
+    "version",
+    "webrtc-internals",
+];
+
+/// Accepts chrome://, edge:// and brave:// pages from `BROWSER_PAGES`, in
+/// characters that need no quoting on any platform's command line.
+fn checked_browser_page(url: &str) -> Result<&str, Error> {
+    let refused = (
+        StatusCode::BAD_REQUEST,
+        "Switchboard opens only browser pages such as settings and flags",
+    );
+    let (scheme, rest) = url.split_once("://").ok_or(refused)?;
+    if !matches!(scheme, "chrome" | "edge" | "brave")
+        || url.len() > 200
+        || !rest
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._#-".contains(c))
+    {
+        return Err(refused);
+    }
+    let page = rest.split(['/', '#']).next().unwrap_or_default();
+    if !BROWSER_PAGES.contains(&page) {
+        return Err(refused);
+    }
+    Ok(url)
+}
+
+/// Programs to try for each browser, most specific first.
+fn browser_commands(browser: Browser) -> Vec<Vec<&'static str>> {
+    if cfg!(target_os = "macos") {
+        let app = match browser {
+            Browser::Chrome => "Google Chrome",
+            Browser::Chromium => "Chromium",
+            Browser::Edge => "Microsoft Edge",
+            Browser::Brave => "Brave Browser",
+        };
+        vec![vec!["open", "-a", app]]
+    } else if cfg!(windows) {
+        // `start` finds browsers through App Paths, which Command alone does not.
+        let program = match browser {
+            Browser::Chrome | Browser::Chromium => "chrome",
+            Browser::Edge => "msedge",
+            Browser::Brave => "brave",
+        };
+        vec![vec!["cmd", "/C", "start", "", program]]
+    } else {
+        let programs: &[&str] = match browser {
+            Browser::Chrome => &["google-chrome-stable", "google-chrome"],
+            Browser::Chromium => &["chromium", "chromium-browser"],
+            Browser::Edge => &["microsoft-edge-stable", "microsoft-edge"],
+            Browser::Brave => &["brave-browser", "brave"],
+        };
+        programs.iter().map(|program| vec![*program]).collect()
+    }
+}
+
+/// Opens a browser's own page, such as chrome://settings, which web pages may
+/// not open themselves. The relay only serves pages viewed on this computer.
+pub(super) async fn open_browser_page(
+    Json(page): Json<OpenBrowserPage>,
+) -> Result<Json<Value>, Error> {
+    let url = checked_browser_page(&page.url)?;
+    for command in browser_commands(page.browser) {
+        let spawned = tokio::process::Command::new(command[0])
+            .args(&command[1..])
+            .arg(url)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        // A browser that was not yet running keeps this process until it quits,
+        // so the relay does not wait for it. Tokio reaps it when it exits.
+        if spawned.is_ok() {
+            return Ok(Json(json!({"ok":true})));
+        }
+    }
+    Err((
+        StatusCode::BAD_GATEWAY,
+        "That browser is not installed on this computer",
+    ))
+}
+
 fn checked_link(link: &OpenLink) -> Result<url::Url, Error> {
     let url = url::Url::parse(&link.url).map_err(|_| (StatusCode::BAD_REQUEST, "Invalid link"))?;
     if !matches!(url.scheme(), "http" | "https") {
@@ -464,6 +584,44 @@ mod tests {
         ] {
             assert_eq!(checked_link(&bad).unwrap_err().0, StatusCode::BAD_REQUEST);
         }
+    }
+
+    #[test]
+    fn only_harmless_browser_pages_open() {
+        for good in [
+            "chrome://settings/system",
+            "chrome://flags/#ignore-gpu-blocklist",
+            "edge://settings/system",
+            "brave://gpu",
+        ] {
+            assert_eq!(checked_browser_page(good), Ok(good));
+        }
+        for bad in [
+            "chrome://quit",
+            "chrome://crash",
+            "chrome://settings&calc",
+            "chrome://settings/ x",
+            "chrome://settings\"",
+            "edge://settings/?search=x",
+            "firefox://settings",
+            "https://claude.ai",
+            "javascript:alert(1)",
+            "chrome:settings",
+        ] {
+            assert_eq!(
+                checked_browser_page(bad).unwrap_err().0,
+                StatusCode::BAD_REQUEST,
+                "{bad}"
+            );
+        }
+        assert!(serde_json::from_value::<OpenBrowserPage>(
+            json!({"url":"chrome://gpu","browser":"brave"})
+        )
+        .is_ok_and(|page| page.browser == Browser::Brave));
+        assert!(serde_json::from_value::<OpenBrowserPage>(
+            json!({"url":"chrome://gpu","browser":"/bin/sh"})
+        )
+        .is_err());
     }
 
     #[cfg(target_os = "macos")]
