@@ -80,7 +80,7 @@ test('Enter and other keys pause guessing while the screen settles',async()=>{
 });
 
 // The prompt row with typed text and the cursor after it, as a redraw of Claude Code's input draws it.
-const typedRow=(text,extra='')=>`\x1b[?25l${extra}\x1b[27;1H\x1b[2K❯ ${text}\x1b[27;${text.length+3}H\x1b[?25h`;
+const typedRow=(text,extra='')=>`\x1b[?25l${extra}\x1b[27;1H\x1b[2K❯\u00a0${text}\x1b[27;${text.length+3}H\x1b[?25h`;
 
 test('a frame drawn before any echo never confirms a correction that returns to the same text',async()=>{
   const reports=[];
@@ -113,7 +113,7 @@ test('guesses leave as soon as the input moves to another row, and the miss is r
   const reports=[];
   const h=harness({report:r=>reports.push(r)});await h.write(PROMPT);
   h.core.sent('hi');h.advance(40);
-  await h.write('\x1b[?25l\x1b[27;1H\x1b[2K> earlier message\x1b[29;1H❯ \x1b[29;3H\x1b[?25h');
+  await h.write('\x1b[?25l\x1b[27;1H\x1b[2K> earlier message\x1b[29;1H❯\u00a0\x1b[29;3H\x1b[?25h');
   assert.equal(h.shown(),null);
   assert.equal(reports.length,1);
   assert.deepEqual({...reports[0],since_input_ms:undefined,since_write_ms:undefined},{outcome:'moved',pending:2,typed:2,confirmed:0,frames:1,age_ms:40,
@@ -159,6 +159,73 @@ test('Backspace erases guesses and typed text but never the prompt',async()=>{
   assert.equal(typed.shown().cursor,2,'Stops at the prompt');
   await typed.write('\x1b[27;3H\x1b[K');
   assert.equal(typed.shown(),null);
+});
+
+test('Ctrl+W erases the word before the cursor, typed or already on screen',async()=>{
+  const h=harness();await h.write(PROMPT);
+  h.core.sent('git commit');h.core.sent('\x17');
+  assert.deepEqual([h.shown().text,h.shown().cursor],['git',6]);
+  h.advance(100);await h.write('\x1b[?25l\x1b[27;3Hgit commit\x1b[K\x1b[?25h');
+  assert.deepEqual([h.shown().from,h.shown().text,h.shown().cursor],[6,'',6],'The echo of the word alone is not the state after Ctrl+W');
+  await h.write('\x1b[?25l\x1b[27;3Hgit \x1b[K\x1b[27;7H\x1b[?25h');
+  assert.equal(h.shown(),null);assert.equal(h.core.state().dropped,0);
+
+  const screen=harness();await screen.write('\x1b[2J\x1b[27;1H❯\u00a0hello wor_1d\x1b[27;15H\x1b[?25h');
+  screen.core.sent('\x17');
+  assert.deepEqual([screen.shown().from,screen.shown().text,screen.shown().cursor],[8,'',8],'Letters, digits and _ are one word');
+  await screen.write('\x1b[27;9H\x1b[K');
+  assert.equal(screen.shown(),null);
+
+  const spaces=harness();await spaces.write(PROMPT);
+  spaces.core.sent('hi  \x17');
+  assert.deepEqual([spaces.shown().text,spaces.shown().cursor],['',2],'Spaces typed after the word go with it');
+  const after=harness();await after.write('\x1b[2J\x1b[27;1H❯\u00a0git hello \x1b[?25h');
+  after.core.sent('\x17');
+  assert.equal(after.shown().cursor,6,'A space after a word goes with it, as Backspace erases it');
+
+  const shell=harness();await shell.write('\x1b[2J\x1b[1;1Hdom@box:~$ ls\x1b[?25h');
+  shell.core.sent('\x17');
+  assert.deepEqual([shell.shown().from,shell.shown().cursor],[11,11]);
+});
+
+test('Ctrl+W pauses where shells and agents delete different amounts',async()=>{
+  // readline, Claude Code and Copilot CLI delete back to a space, nushell to a word boundary, Codex to
+  // punctuation. A prompt's space follows a symbol.
+  for(const line of ['❯\u00a0world-foo','❯\u00a0foo.','❯\u00a0','❯\u00a0café','abc','dom@box:~$ ','> ']){
+    const h=harness();await h.write(`\x1b[2J\x1b[27;1H${line}\x1b[?25h`);
+    h.core.sent('\x17');
+    assert.equal(h.shown(),null,JSON.stringify(line));
+    assert.ok(h.core.state().pausedUntil>h.time(),JSON.stringify(line));
+  }
+});
+
+// nushell (reedline) with a starship prompt, as captured through Zellij: the history hint after the
+// cursor is grey (SGR 90), not dim.
+const NU=`\x1b[2J\x1b[2;1H\x1b[32m\x1b[1m❯\x1b[m \x1b[36me\x1b[90m\x1b[22mcho hello world\x1b[m\x1b[2;4H\x1b[?25h`;
+test('a shell history hint is replaced like a placeholder',async()=>{
+  const h=harness();await h.write(NU);
+  h.core.sent('c');
+  assert.deepEqual([h.shown().from,h.shown().text,h.shown().width],[3,'c','cho hello world'.length]);
+  h.advance(30);await h.write('\x1b[?25l\x1b[2;3H\x1b[36mec\x1b[90mho hello world\x1b[m\x1b[2;5H\x1b[?25h');
+  assert.equal(h.shown(),null);
+  h.core.sent('\x7f');
+  await h.write('\x1b[?25l\x1b[2;3H\x1b[36me\x1b[90mcho hello world\x1b[m\x1b[2;4H\x1b[?25h');
+  assert.equal(h.shown(),null,'The hint coming back confirms the erased cell');
+  assert.equal(h.core.state().dropped,0);
+
+  const right=harness();await right.write('\x1b[2J\x1b[2;1H❯ \x1b[2;90H\x1b[90m12:00\x1b[m\x1b[2;3H\x1b[?25h');
+  right.core.sent('l');
+  assert.equal(right.shown(),null,'Grey text away from the cursor is not a hint');
+});
+
+test('Enter sent before the echo arrives keeps the guesses the new line confirms',async()=>{
+  const misses=[],h=harness({report:miss=>misses.push(miss)});await h.write('\x1b[2J\x1b[1;1H$ \x1b[?25h');
+  h.core.sent('ls');h.core.sent('\r');
+  h.advance(40);await h.write('ls\r\nfile\r\n$ ');
+  assert.equal(h.shown(),null);
+  assert.deepEqual([h.core.state().confirmed,h.core.state().dropped,misses],[2,0,[]],'Not logged as moved');
+  h.advance(300);h.core.sent('x');
+  assert.equal(h.shown().text,'x','Not paused by a wrong guess');
 });
 
 test('typing in the middle of a line is not guessed',async()=>{

@@ -482,15 +482,26 @@ Settings → Appearance → **Instant typing** (off by default, stored per brows
 `static/predict.js`, which the relay injects into every terminal frame next to `bridge.js`.
 It draws typed characters at the cursor before the computer echoes them, underlined, on an
 overlay above xterm. It drops each guess when the screen agrees with it, or when the guess
-expires. Only plain typing and Backspace are guessed. Guessing starts only when everything right
-of the cursor, up to a pane border, is blank or dim placeholder text. Any other key, a click or a
-paste pauses guessing until the screen should have settled and a frame has arrived since. A guess
-the screen never confirms disappears after a few round trips, and guessing pauses after it.
+expires. Only plain typing, Backspace and Ctrl+W are guessed. Guessing starts only when everything
+right of the cursor, up to a pane border, is blank or placeholder text: dim text (Claude Code's
+placeholder) or a grey history hint that starts at the cursor (nushell, fish, zsh-autosuggestions).
+Any other key, a click or a paste pauses guessing until the screen should have settled and a frame
+has arrived since. A guess the screen never confirms disappears after a few round trips, and
+guessing pauses after it.
+
+Ctrl+Backspace and Alt+Backspace send Ctrl+W. Programs delete different amounts for it: readline,
+Claude Code and Copilot CLI delete back to a space, nushell (reedline) to a word boundary, and Codex
+to punctuation. All of them delete a run of letters, digits and `_` that follows a space, along
+with the spaces after it, so only that case is guessed. As with Backspace, a space already on
+screen is erased only after a word character, since prompts end in a symbol before their space.
+Ctrl+W after punctuation or a prompt pauses guessing instead.
 
 Echoes arrive in the order keys were sent, so each frame is matched to the earliest state it could
 show, counting "nothing echoed yet". A frame drawn before an echo can otherwise pass for a later
 state (Backspace, then retyping the same letter), remove the guesses early and show the screen
-replaying the edit. Guesses are dropped as soon as the cursor shows on another row.
+replaying the edit. Guesses are dropped as soon as the cursor shows on another row, except after
+Enter or another unguessed key: a shell's echo of the last letters can arrive with the new line,
+and the typed row showing every guess then confirms them.
 
 Each dropped guess is logged, at most once a second per frame, as `Terminal typing miss`
 in Settings → Logs and `/api/logs`: `outcome` is `timeout`, `moved` (the input changed rows) or
@@ -499,9 +510,11 @@ time since the last unguessed key and since the last frame when guessing began, 
 column the guess expected against where the cursor was. It never includes what was typed.
 
 Guesses stop showing when echoes come back in under 20ms and show again above 30ms. They are
-still made and checked while hidden, to keep measuring. The guessing state machine is covered by
-`tools/switchboard/predict.test.cjs` against the real xterm parser. Against a real engine and relay,
-`latency.test.cjs BINARY --predict` fails if any guess goes unconfirmed.
+still made and checked while hidden, to keep measuring. On the same computer, bash, nushell and
+Claude Code echo in about 15ms, so their guesses stay hidden there; Codex and Copilot CLI take
+about 200ms. The guessing state machine is covered by `tools/switchboard/predict.test.cjs` against
+the real xterm parser. Against a real engine and relay, `latency.test.cjs BINARY --predict` types
+into bash, clears each line with Ctrl+Backspace, and fails if any guess goes unconfirmed.
 
 ## Diagnostics
 

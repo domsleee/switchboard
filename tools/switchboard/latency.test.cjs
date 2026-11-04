@@ -8,7 +8,8 @@
 //   --cpu-load N      busy-loop N extra processes while measuring (default 0)
 //   --tls             serve the engine over HTTPS with a pinned self-signed cert (needs openssl)
 //   --max-p95 MS      fail when p95 echo latency exceeds MS
-//   --predict         turn on Instant typing and fail if any guess is not confirmed by the echo
+//   --predict         turn on Instant typing, clear each line with Ctrl+Backspace (delete word) instead
+//                     of Ctrl+U, and fail if any guess is not confirmed by the echo
 // Read-only probe of an existing session (times the relay's attention CLI calls, types nothing):
 //   node latency.test.cjs BINARY --probe SESSION
 const fs=require('node:fs');
@@ -97,7 +98,7 @@ let native,relay,browser,tokenName,created=false,failed=false;const burners=[];
         constructor(...a){super(...a);if(String(a[0]).includes('/ws/terminal'))this.addEventListener('message',event=>window.__lastArrival=performance.now());this.addEventListener('message',event=>window.__bytes.push(event.data.length??event.data.size??event.data.byteLength));}
         send(data){if(String(this.url).includes('/ws/terminal')&&typeof data==='string'){
           if(!hooked&&window.term){hooked=true;window.term.onWriteParsed(check);}
-          if(/^[0-9]$/.test(data)){typed+=data;window.__pending.push({len:typed.length,t:performance.now()});}else if(data==='\x15'||data==='\x1b')typed='';}
+          if(/^[0-9]$/.test(data)){typed+=data;window.__pending.push({len:typed.length,t:performance.now()});}else if(data==='\x15'||data==='\x17'||data==='\x1b')typed='';}
           return super.send(data);}
       };
     });
@@ -106,7 +107,8 @@ let native,relay,browser,tokenName,created=false,failed=false;const burners=[];
     await page.waitForFunction(id=>{const f=document.querySelector('iframe.active'),w=f?.contentWindow;return w?.term&&!w.term.options.disableStdin&&f.contentDocument.activeElement===w.term.textarea&&w.__zjLastMobileState?.active_pane?.pane_id===id;},first.id);
     const frame=await (await page.$('iframe.active')).contentFrame();
     const prompt=windows?'prompt $G$S':'PS1="> "';
-    await page.keyboard.type(prompt);await page.keyboard.press('Enter');await delay(500);
+    // Wait for the echo before Enter, so the prompt line's guesses are confirmed before measuring starts.
+    await page.keyboard.type(prompt);await delay(300);await page.keyboard.press('Enter');await delay(500);
     for(let n=0;n<cpuLoad;n++)burners.push(spawn(process.execPath,['-e','for(;;){}'],{stdio:'ignore'}));
     const action=(...a)=>new Promise(resolve=>execFile(installed,['--config',config,'-s',name,'action',...a],{env,timeout:15000},resolve));
     const busy=JSON.parse(cli('-s',name,'action','list-panes','--json','--all')).filter(p=>!p.is_plugin).map(p=>p.id);
@@ -116,7 +118,7 @@ let native,relay,browser,tokenName,created=false,failed=false;const burners=[];
     const started=Date.now();
     for(let n=0;n<keys;n++){
       await page.keyboard.press(String(n%10));await delay(gap);
-      if(n%30===29){await frame.waitForFunction(()=>!window.__pending.length,null,{timeout:15000}).catch(()=>{});await page.keyboard.press(windows?'Escape':'Control+U');await delay(300);}
+      if(n%30===29){await frame.waitForFunction(()=>!window.__pending.length,null,{timeout:15000}).catch(()=>{});await page.keyboard.press(windows?'Escape':predictEcho?'Control+Backspace':'Control+U');await delay(300);}
     }
     await frame.waitForFunction(()=>!window.__pending.length,null,{timeout:15000}).catch(()=>{});
     hammering=false;await Promise.all(loops);
