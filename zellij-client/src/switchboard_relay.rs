@@ -1145,6 +1145,7 @@ async fn asset(request: Request) -> Response {
         | "pairing-notice.js"
         | "messages.js"
         | "terminal-diagnostics.js"
+        | "tasks.js"
         | "predict.js" => "application/javascript",
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
@@ -1409,6 +1410,37 @@ async fn shutdown() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The browser tests serve static files directly, so only this catches a page
+    // that loads a file the relay does not serve (tasks.js was missed this way).
+    #[tokio::test]
+    async fn switchboard_relay_serves_every_script_and_stylesheet_its_pages_load() {
+        let reference =
+            regex::Regex::new(r#"(?:src|href)="/([A-Za-z0-9._-]+\.(?:js|css))""#).unwrap();
+        let pages: Vec<_> = ASSETS
+            .files()
+            .filter(|file| file.path().extension().is_some_and(|ext| ext == "html"))
+            .collect();
+        assert!(pages.len() >= 3, "index, computers and messages pages");
+        for page in pages {
+            let html = page.contents_utf8().unwrap();
+            for name in reference.captures_iter(html).map(|c| c[1].to_string()) {
+                let response = asset(
+                    Request::builder()
+                        .uri(format!("/{name}"))
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await;
+                assert_eq!(
+                    response.status(),
+                    StatusCode::OK,
+                    "{} loads /{name}",
+                    page.path().display()
+                );
+            }
+        }
+    }
 
     pub(super) fn config(url: &str) -> HostConfig {
         HostConfig {
