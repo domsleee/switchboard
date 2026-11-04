@@ -698,13 +698,13 @@ struct PredictDiagnostic {
     outcome: String,
     pane_id: u32,
     is_plugin: bool,
-    pending: u32,
-    typed: u32,
-    confirmed: u32,
-    frames: u32,
+    pending: u16,
+    typed: u16,
+    confirmed: u16,
+    frames: u16,
     age_ms: u32,
     srtt_ms: Option<u32>,
-    since_key_ms: Option<u32>,
+    since_input_ms: Option<u32>,
     since_write_ms: Option<u32>,
     run_row: u16,
     cursor_row: u16,
@@ -716,7 +716,7 @@ struct PredictDiagnostic {
 impl PredictDiagnostic {
     fn message(&self) -> Option<String> {
         if !["timeout", "moved", "screen"].contains(&self.outcome.as_str())
-            || [self.srtt_ms, self.since_key_ms, self.since_write_ms]
+            || [self.srtt_ms, self.since_input_ms, self.since_write_ms]
                 .into_iter()
                 .flatten()
                 .chain([self.age_ms])
@@ -726,7 +726,7 @@ impl PredictDiagnostic {
         }
         let ms = |t: Option<u32>| t.map_or_else(|| "-".into(), |t| format!("{t}ms"));
         Some(format!(
-            "Terminal instant typing miss outcome={} pane={}{} pending={} typed={} confirmed={} frames={} age={}ms srtt={} since_key={} since_write={} row={}->{} col={} expected_col={} cursor_hidden={}",
+            "Terminal typing miss outcome={} pane={}{} pending={} typed={} confirmed={} frames={} age={}ms srtt={} since_input={} since_write={} row={}->{} col={}->{} hidden={}",
             self.outcome,
             if self.is_plugin { "plugin:" } else { "" },
             self.pane_id,
@@ -736,7 +736,7 @@ impl PredictDiagnostic {
             self.frames,
             self.age_ms,
             ms(self.srtt_ms),
-            ms(self.since_key_ms),
+            ms(self.since_input_ms),
             ms(self.since_write_ms),
             self.run_row,
             self.cursor_row,
@@ -1217,12 +1217,40 @@ mod tests {
     #[test]
     fn instant_typing_misses_accept_only_counts_and_positions() {
         let mut sample = json!({"host":"mac","outcome":"moved","pane_id":30,"is_plugin":false,
-            "pending":2,"typed":2,"confirmed":0,"frames":1,"age_ms":40,"srtt_ms":null,"since_key_ms":900,
+            "pending":2,"typed":2,"confirmed":0,"frames":1,"age_ms":40,"srtt_ms":null,"since_input_ms":900,
             "since_write_ms":12,"run_row":26,"cursor_row":28,"cursor_col":2,"expected_col":4,"cursor_hidden":false});
         let diagnostic: PredictDiagnostic = serde_json::from_value(sample.clone()).unwrap();
+        let message = diagnostic.message().unwrap();
         assert_eq!(
-            diagnostic.message().unwrap(),
-            "Terminal instant typing miss outcome=moved pane=30 pending=2 typed=2 confirmed=0 frames=1 age=40ms srtt=- since_key=900ms since_write=12ms row=26->28 col=2 expected_col=4 cursor_hidden=false"
+            message,
+            "Terminal typing miss outcome=moved pane=30 pending=2 typed=2 confirmed=0 frames=1 age=40ms srtt=- since_input=900ms since_write=12ms row=26->28 col=2->4 hidden=false"
+        );
+        assert_eq!(
+            redact(&message),
+            message,
+            "no field looks like a credential"
+        );
+        let mut longest = sample.clone();
+        longest["pane_id"] = json!(u32::MAX);
+        for field in ["pending", "typed", "confirmed", "frames"] {
+            longest[field] = json!(u16::MAX);
+        }
+        for field in ["age_ms", "srtt_ms", "since_input_ms", "since_write_ms"] {
+            longest[field] = json!(86_400_000);
+        }
+        for field in ["run_row", "cursor_row", "cursor_col", "expected_col"] {
+            longest[field] = json!(u16::MAX);
+        }
+        longest["outcome"] = json!("timeout");
+        longest["is_plugin"] = json!(true);
+        let message = serde_json::from_value::<PredictDiagnostic>(longest)
+            .unwrap()
+            .message()
+            .unwrap();
+        assert_eq!(
+            redact(&message),
+            message,
+            "the longest miss fits a log line"
         );
         sample["outcome"] = json!("typed hello");
         let diagnostic: PredictDiagnostic = serde_json::from_value(sample.clone()).unwrap();

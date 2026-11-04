@@ -180,8 +180,8 @@
         pausedUntil = Math.max(pausedUntil, t + settle()); counts.dropped += run.ops.length;
         // Counts and positions only; never what was typed.
         report({ outcome: reason, pending: run.ops.length, typed: run.ops.filter(op => op.typed).length,
-          confirmed: run.confirmed, frames: run.frames, age_ms: Math.round(t - run.ops[0].at),
-          srtt_ms: finite(srtt), since_key_ms: finite(run.sinceKey), since_write_ms: finite(run.sinceWrite),
+          confirmed: Math.min(run.confirmed, 65535), frames: Math.min(run.frames, 65535), age_ms: Math.round(t - run.ops[0].at),
+          srtt_ms: finite(srtt), since_input_ms: idle(run.sinceKey), since_write_ms: idle(run.sinceWrite),
           run_row: Math.max(0, run.row - buffer.viewportY), cursor_row: buffer.cursorY, cursor_col: buffer.cursorX,
           expected_col: predicted().cursor, cursor_hidden: hidden });
       }
@@ -202,6 +202,8 @@
     }
     function render() { draw(model()); }
     const finite = ms => ms !== null && Number.isFinite(ms) ? Math.round(ms) : null;
+    // A tab left open for days still reports its misses; the relay bounds durations at a day.
+    const idle = ms => finite(ms) === null ? null : Math.min(finite(ms), 86_400_000);
     return { sent, reconcile, drop: () => drop(null), model, state: () => ({ srtt, showing, pausedUntil, run, ...counts }) };
   }
 

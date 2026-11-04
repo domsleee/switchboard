@@ -116,8 +116,8 @@ test('guesses leave as soon as the input moves to another row, and the miss is r
   await h.write('\x1b[?25l\x1b[27;1H\x1b[2K> earlier message\x1b[29;1H❯ \x1b[29;3H\x1b[?25h');
   assert.equal(h.shown(),null);
   assert.equal(reports.length,1);
-  assert.deepEqual({...reports[0],since_key_ms:undefined,since_write_ms:undefined},{outcome:'moved',pending:2,typed:2,confirmed:0,frames:1,age_ms:40,
-    srtt_ms:null,since_key_ms:undefined,since_write_ms:undefined,run_row:26,cursor_row:28,cursor_col:2,expected_col:4,cursor_hidden:false});
+  assert.deepEqual({...reports[0],since_input_ms:undefined,since_write_ms:undefined},{outcome:'moved',pending:2,typed:2,confirmed:0,frames:1,age_ms:40,
+    srtt_ms:null,since_input_ms:undefined,since_write_ms:undefined,run_row:26,cursor_row:28,cursor_col:2,expected_col:4,cursor_hidden:false});
   assert.ok(!JSON.stringify(reports).includes('hi"'),'what was typed is never reported');
   h.advance(1000);await h.write(echo(2,'x'));h.core.sent('a');h.advance(1000);
   assert.equal(reports.at(-1).outcome,'timeout');
