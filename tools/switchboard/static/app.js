@@ -131,7 +131,7 @@ function saveOrder(order){
   const scanned=new Set([...sessions.values()].filter(entry=>entry.catalogPolls&&!entry.catalogUnavailable).map(entry=>canonKey(JSON.stringify([entry.host,entry.name]))));
   // Forget tabs a clean scan no longer lists; tabs on unreachable hosts keep their positions.
   // ponytail: tabs of whole closed sessions stay listed; prune by host session lists if the order grows large.
-  tabOrder=order.filter(key=>live.has(key)||!scanned.has(JSON.stringify(JSON.parse(key).slice(0,2))));
+  tabOrder=order.filter(key=>live.has(key)||isLayout(key)||!scanned.has(JSON.stringify(JSON.parse(key).slice(0,2))));
   localStorage.setItem('switchboard-tab-order',JSON.stringify(tabOrder));
   if(!orderShared)return;
   savingOrder++;
@@ -217,6 +217,46 @@ function activeTab(entry){
   const active=entry.state?.active_pane;
   return sessionTabs(entry).find(tab=>tab.position===active?.tab_position&&tab.panes.some(p=>p.pane_id===active.pane_id&&p.is_plugin===active.is_plugin));
 }
+// Zellij numbers a session's tabs from 0 again when the session is recreated, after a
+// reboot for example, so saved positions would land on other tabs. The order keeps one
+// marker per session with its start time and tab IDs by position; when a different start
+// time appears, each saved position passes to the new tab at that session position.
+const restartSlack=300;
+function isLayout(key){return JSON.parse(key)[2]==='layout';}
+function followRestart(entry,tabs){
+  if(!orderReady||!entry.catalogPolls||entry.catalogUnavailable)return;
+  const created=hosts.get(entry.host)?.sessions?.find(session=>session.name===entry.name)?.created;
+  if(!Number.isInteger(created))return;
+  const ids=tabs.filter(tab=>Number.isInteger(tab.id)&&!tab.pending).sort((a,b)=>a.position-b.position).map(tab=>tab.id);
+  if(!ids.length)return;
+  const [host,name]=JSON.parse(canonKey(JSON.stringify([entry.host,entry.name])));
+  const mine=key=>{const [h,n]=JSON.parse(key);return h===host&&n===name;};
+  const order=tabOrder.map(canonKey),marker=order.filter(key=>mine(key)&&isLayout(key)).map(key=>JSON.parse(key)).at(-1);
+  const same=marker&&marker[4].length===ids.length&&marker[4].every((id,index)=>id===ids[index]);
+  let next=order;
+  if(marker&&Math.abs(marker[3]-created)<=restartSlack){
+    if(same)return;
+    // A tab ID below the newest known one that the marker lacks means numbering restarted
+    // before the new start time arrived (hosts refresh every 15 seconds); wait for it a minute.
+    const newest=Math.max(...marker[4]);
+    if(ids.some(id=>id<=newest&&!marker[4].includes(id))&&Date.now()-(entry.restartSuspected??=Date.now())<60000)return;
+    entry.restartSuspected=null;
+  }else if(marker&&!same){
+    const moved=new Map(marker[4].map((id,index)=>[id,ids[index]]));
+    next=order.flatMap(key=>{
+      if(!mine(key))return [key];
+      const [,,kind,id]=JSON.parse(key);
+      return kind==='tab'&&moved.get(id)!==undefined?[JSON.stringify([host,name,'tab',moved.get(id)])]:[];
+    });
+    // Tabs beyond the old count follow the session's other tabs.
+    const placed=new Set(next.filter(mine)),extra=ids.map(id=>JSON.stringify([host,name,'tab',id])).filter(key=>!placed.has(key));
+    const last=next.findLastIndex(mine);
+    next.splice(last<0?next.length:last+1,0,...extra);
+  }
+  const key=JSON.stringify([host,name,'layout',created,ids]);
+  if(key.length>512)return;
+  saveOrder([...next.filter(key=>!(mine(key)&&isLayout(key))),key]);
+}
 function setCatalog(entry,tabs){
   // Carry browser preferences from the earlier pane keys to native tab IDs.
   const migrations=new Map();
@@ -230,7 +270,7 @@ function setCatalog(entry,tabs){
   const order=tabOrder.map(canonKey),moved=new Map([...migrations].map(([old,key])=>[canonKey(old),canonKey(key)]));
   if(order.some(key=>moved.has(key))){tabOrder=[...new Set(order.map(key=>moved.get(key)||key))];changed=true;}
   if(changed){saveReady();localStorage.setItem('switchboard-archived',JSON.stringify(archived));localStorage.setItem('switchboard-tab-order',JSON.stringify(tabOrder));}
-  markNewTabs(entry,tabs);
+  followRestart(entry,tabs);markNewTabs(entry,tabs);
   entry.catalog=tabs;
   entry.provisionalTabs=entry.provisionalTabs?.filter(tab=>!migrations.has(tabKey(entry,tab)));
   // Keep confirmed closes hidden through snapshots taken before the close finished.
@@ -708,7 +748,8 @@ async function refresh() {
     await Promise.all(data.map(async summary=>{
       try{
         const response=await fetch(`/api/hosts/${encodeURIComponent(summary.id)}`);if(!response.ok)throw Error('Cannot list sessions');
-        const host=await response.json();hosts.set(host.id,host);
+        const host=await response.json(),fetched=Date.now()/1000;hosts.set(host.id,host);
+        for(const session of host.sessions||[])if(Number.isInteger(session.creation_secs_ago))session.created=Math.round(fetched-session.creation_secs_ago);
         for(const session of host.sessions||[]) {
           if(!session.web_clients_allowed)continue;
           connectSession(host,session.name);
