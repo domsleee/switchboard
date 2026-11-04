@@ -919,12 +919,22 @@ pub(super) fn automatic_updates() -> bool {
     }
 }
 
-/// The build this relay runs and whether it updates itself.
+/// Why the last automatic update did not install, from the updater's state file.
+fn last_update_error() -> Option<String> {
+    let state = read_json(&home().join(".local/share/switchboard/automatic-updates/state.json"))?;
+    state["error"].as_str().map(str::to_owned)
+}
+
+/// The build this relay runs, whether it updates itself and whether its last update failed.
 fn switchboard() -> Value {
+    let automatic = automatic_updates();
     json!({
         "commit": env!("SWITCHBOARD_COMMIT"),
         "commitDate": env!("SWITCHBOARD_COMMIT_DATE"),
-        "automaticUpdates": automatic_updates(),
+        "automaticUpdates": automatic,
+        // Windows has no update job to start; its tray checks every 2 minutes.
+        "updateNow": automatic && cfg!(any(target_os = "linux", target_os = "macos")),
+        "lastUpdateError": last_update_error(),
     })
 }
 

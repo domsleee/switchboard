@@ -26,6 +26,15 @@ pub(super) async fn watch() {
 /// Start the update job now. Starting a job that is already running does nothing,
 /// and the updater's own lock keeps two runs apart.
 async fn start_update_job() {
+    match update_now().await {
+        Ok(()) => log::info!("Started the update job for a newer build"),
+        Err(error) => log::warn!("{error}"),
+    }
+}
+
+/// Start this computer's update job, as Settings → Health's Update now does. The
+/// updater still installs only a newer build, so this never reinstalls the running one.
+pub(super) async fn update_now() -> Result<(), String> {
     #[cfg(target_os = "linux")]
     let mut command = {
         let mut command = tokio::process::Command::new("systemctl");
@@ -53,11 +62,13 @@ async fn start_update_job() {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         match command.status().await {
-            Ok(status) if status.success() => {
-                log::info!("Started the update job for a newer build")
-            },
-            Ok(status) => log::warn!("Could not start the update job: {status}"),
-            Err(error) => log::warn!("Could not start the update job: {error}"),
+            Ok(status) if status.success() => Ok(()),
+            Ok(status) => Err(format!("Could not start the update job: {status}")),
+            Err(error) => Err(format!("Could not start the update job: {error}")),
         }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        Err("This computer's tray checks for updates every 2 minutes".into())
     }
 }
