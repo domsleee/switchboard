@@ -170,6 +170,7 @@ impl Harness {
                 menu_app: root.join("no-app/Switchboard"),
                 ready_timeout: Duration::from_secs(1),
                 peer_watch: Duration::ZERO,
+                timings: Default::default(),
             },
             _dir: dir,
             root,
@@ -363,6 +364,19 @@ fn healthy(commit: &str) -> Option<Health> {
         relay: Some("rust".into()),
         commit: Some(commit.into()),
     })
+}
+
+#[test]
+fn timing_line_lists_each_step_and_marks_failures() {
+    let phases = [
+        ("install", Duration::from_millis(8_420), true),
+        ("ready", Duration::from_secs(60), false),
+    ];
+    assert_eq!(
+        timing_line(&phases, Duration::from_millis(80_060)),
+        "install 8.4s, ready 60.0s failed; total 80.1s"
+    );
+    assert_eq!(timing_line(&[], Duration::from_millis(300)), "total 0.3s");
 }
 
 #[test]
@@ -619,6 +633,18 @@ mod orchestration {
             assert_eq!(calls.lines().count(), 2 * attempt);
             let rollback = calls.lines().last().unwrap();
             assert!(rollback.starts_with("installed ") && rollback.contains("/rollback-"));
+            // The timing line names the step that failed and the rollback after it.
+            let phases: Vec<_> = harness
+                .updater
+                .timings
+                .borrow()
+                .iter()
+                .map(|(name, _, ok)| (*name, *ok))
+                .collect();
+            assert!(
+                phases.ends_with(&[("install", true), ("ready", false), ("rollback", true)]),
+                "{phases:?}"
+            );
         }
         harness.updater.run().unwrap();
         assert_eq!(harness.calls().lines().count(), 6, "broken build retried");
