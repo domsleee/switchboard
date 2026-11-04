@@ -39,11 +39,19 @@ delete parent.SwitchboardOpenInApp;
 assert.deepEqual([...window.__switchboardFilePaths('Saved to /Users/dom/clips/demo.mp4. /help and/or https://x.test/a/b ~/a.mov C:\\Users\\dom\\b.mp4 /x/y.rs:12')],['/Users/dom/clips/demo.mp4','~/a.mov','C:\\Users\\dom\\b.mp4','/x/y.rs']);
 const files=[];parent.SwitchboardOpenFile=(host,path)=>files.push([host,path]);
 const link=window.term._core.linkifier._currentLink.link;
-for(const text of ['/Users/dom/clips/demo.mp4','file:///C:/Users/dom/a%20b.mp4']){
+for(const text of ['/Users/dom/clips/demo.png','file:///C:/Users/dom/a%20b.png']){
   link.text=text;handlers.mousedown({...click,shiftKey:false,metaKey:true});handlers.mouseup({...click,shiftKey:false,metaKey:true});
 }
-assert.deepEqual(files,[['windows','/Users/dom/clips/demo.mp4'],['windows','C:/Users/dom/a b.mp4']]);
-assert.equal(opened.length,1);link.text='http://127.0.0.1:8765/';delete parent.SwitchboardOpenFile;
+assert.deepEqual(files,[['windows','/Users/dom/clips/demo.png'],['windows','C:/Users/dom/a b.png']]);
+assert.equal(opened.length,1);
+// Cmd/Ctrl-click on a video opens the file route in a new tab; Shift still goes to the page.
+for(const modifier of ['metaKey','ctrlKey']){
+  link.text='C:\\clips\\a b.mov';handlers.mousedown({...click,shiftKey:false,[modifier]:true});handlers.mouseup({...click,shiftKey:false,[modifier]:true});
+  assert.deepEqual(opened.at(-1),['http://127.0.0.1:8090/api/hosts/windows/file?path=C%3A%5Cclips%5Ca%20b.mov','_blank','noopener noreferrer']);
+}
+link.text='/Users/dom/clips/demo.mp4';handlers.mousedown(click);handlers.mouseup(click);
+assert.deepEqual(files.at(-1),['windows','/Users/dom/clips/demo.mp4']);assert.equal(opened.length,3);
+opened.splice(1);link.text='http://127.0.0.1:8765/';delete parent.SwitchboardOpenFile;
 const app=fs.readFileSync(__dirname+'/static/app.js','utf8'),frameWindow={};let active=true;
 const sessions=new Map([['main',{frame:{contentWindow:frameWindow,classList:{contains:()=>active}}}]]);
 vm.runInNewContext(app.slice(app.indexOf("window.addEventListener('message',event=>{"),app.indexOf("$('artifact-back').onclick=")),{window,location,document,URL,sessions,setStatus(){}});
