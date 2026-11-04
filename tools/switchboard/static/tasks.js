@@ -45,10 +45,21 @@
   function alertStatus(message){const status=byId('status-message');if(status)status.textContent=message;}
   function button(text,title,onclick){const node=element('button','',text);node.type='button';node.title=title;node.onclick=event=>{event.stopPropagation();onclick();};return node;}
 
+  function link(text,title,onclick){const node=button(text,title,onclick);node.className='task-link';return node;}
+  function dot(status){const node=element('span','task-dot');node.dataset.status=status;node.setAttribute('aria-hidden','true');return node;}
+  // The dot carries the status, so the panel spells out the result without glyphs.
+  function result(group){
+    if(group.status==='waiting')return 'Waiting for agents to finish';
+    if(group.status==='running')return 'Running…';
+    if(group.status==='failed'||group.status==='changed')return group.summary;
+    if(group.status==='ok')return `Up to date · ${group.lastEnd?ago(group.lastEnd):'just now'}`;
+    if(group.status==='skipped')return 'Skipped';
+    return 'Not run yet';
+  }
   function taskRow(computer,group,task){
     const row=element('div','task-row');row.dataset.status=task.status;
     const head=element('div','task-head');
-    head.append(element('span','task-mark',marks[task.status]||'·'),element('span','task-name',task.name));
+    head.append(dot(task.status),element('span','task-name',task.name));
     const meta=[];
     if(task.status==='running')meta.push('running');
     else if(task.status==='waiting')meta.push('waiting for agents');
@@ -57,13 +68,13 @@
     if(task.exitCode!=null&&task.exitCode!==0)meta.push(`exit ${task.exitCode}`);
     if(task.whenAgentsIdle)meta.push('when agents are idle');
     head.append(element('small','task-meta',meta.join(' · ')));
-    const actions=element('span','task-actions');
-    const log=element('a','','Log');log.href=logUrl(computer,group,task);log.target='_blank';log.rel='noopener';log.title='Open the full output of the last run';
-    actions.append(button('Run','Run only this task now',()=>act(computer,group,'run',task)),log);
-    if(group.running)actions.firstChild.disabled=true;
+    const actions=element('span','task-links');
+    const run=link('Run','Run only this task now',()=>act(computer,group,'run',task));run.disabled=group.running;
+    const log=element('a','task-link','Log');log.href=logUrl(computer,group,task);log.target='_blank';log.rel='noopener';log.title='Open the full output of the last run';
+    actions.append(run,log);
     head.append(actions);row.append(head);
     if(task.note)row.append(element('p','task-note',task.note));
-    for(const change of task.changed||[])row.append(element('p','task-change',`${marks.changed} ${change}`));
+    for(const change of task.changed||[])row.append(element('p','task-change',change));
     if(task.tail?.length&&!['ok','never'].includes(task.status))row.append(element('pre','task-tail',task.tail.join('\n')));
     return row;
   }
@@ -71,15 +82,15 @@
     const block=element('details','task-group');block.dataset.status=group.status;
     block.dataset.key=`${computer.host||''}\n${group.name}`;
     const summary=element('summary');
-    const title=element('span','task-title');
-    title.append(element('strong','',group.name),element('small','',[`every ${group.every}`,!group.enabled?'off in tasks.json':group.paused?'paused':group.nextRun&&!group.running?`next ${until(group.nextRun)}`:''].filter(Boolean).join(' · ')));
-    const state=element('span','task-state',line(group));state.title=group.summary||'';
-    const actions=element('span','task-actions');
-    const run=button('Run now','Run every task in this group now',()=>act(computer,group,'run'));run.disabled=group.running;
-    actions.append(run,button(group.paused?'Resume':'Pause',group.paused?'Run this group on its schedule again':'Stop running this group on its schedule',()=>act(computer,group,group.paused?'resume':'pause')));
-    if(group.notice)actions.append(button('Clear','Clear this result on every computer',()=>act(computer,group,'clear')));
-    summary.append(title,state,actions);
-    block.append(summary,...group.tasks.map(task=>taskRow(computer,group,task)));
+    const schedule=[`every ${group.every}`,!group.enabled?'off in tasks.json':group.paused?'paused':group.nextRun&&!group.running?`next ${until(group.nextRun)}`:''].filter(Boolean).join(' · ');
+    const title=element('span','task-title');title.append(element('strong','',group.name),element('small','',schedule));
+    const state=element('span','task-state',result(group));state.title=group.summary||'';
+    const run=button('Run now','Run every task in this group now',()=>act(computer,group,'run'));run.className='task-run';run.disabled=group.running;
+    summary.append(dot(group.status),title,state,run);
+    const footer=element('div','task-footer');
+    footer.append(link(group.paused?'Resume schedule':'Pause schedule',group.paused?'Run this group on its schedule again':'Stop running this group on its schedule; Run now still works',()=>act(computer,group,group.paused?'resume':'pause')));
+    if(group.notice)footer.append(link('Clear result','Clear this result on every computer',()=>act(computer,group,'clear')));
+    block.append(summary,...group.tasks.map(task=>taskRow(computer,group,task)),footer);
     return block;
   }
   function renderPanel(){

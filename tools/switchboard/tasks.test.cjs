@@ -51,16 +51,16 @@ test('Update tasks show per computer, flag failures and changes in the sidebar, 
     assert.deepEqual(await computers.locator('h4').allTextContents(),['Mac','Dom-PC','Old PC']);
     assert.equal(await computers.nth(2).locator('.log-note').textContent(),"Update tasks unavailable on this computer's version");
     const mac=computers.nth(0).locator('.task-group');
-    assert.equal(await mac.nth(0).locator('.task-state').textContent(),'✗ agent plugins: codex failed');
+    assert.equal(await mac.nth(0).locator('.task-state').textContent(),'agent plugins: codex failed');
     assert.match(await mac.nth(0).locator('.task-title small').textContent(),/^every 6h · next in 3h$/);
     assert.equal(await mac.nth(1).locator('.task-title small').textContent(),'every 1d · paused');
-    assert.equal(await mac.nth(1).locator('.task-state').textContent(),'✓ 59m ago');
-    assert.equal(await mac.nth(1).getByRole('button',{name:'Resume'}).count(),1);
+    assert.equal(await mac.nth(1).locator('.task-state').textContent(),'Up to date · 59m ago');
+    assert.equal(await mac.nth(1).locator('.task-footer button').textContent(),'Resume schedule');
 
     await mac.nth(0).locator('summary').click();
     const rows=mac.nth(0).locator('.task-row');
     assert.equal(await rows.count(),2);
-    assert.equal(await rows.nth(0).locator('.task-change').textContent(),'↑ dotfiles: 3 commits');
+    assert.equal(await rows.nth(0).locator('.task-change').textContent(),'dotfiles: 3 commits');
     assert.equal(await rows.nth(1).locator('.task-tail').textContent(),'claude ok\ncodex failed');
     assert.match(await rows.nth(1).locator('.task-meta').textContent(),/2h ago · 4s · exit 1 · when agents are idle/);
     assert.equal(await rows.nth(1).getByRole('link',{name:'Log'}).getAttribute('href'),'/api/tasks/log?group=dotfiles&task=agent+plugins');
