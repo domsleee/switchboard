@@ -430,6 +430,22 @@ other terminals and retry later. Writes are limited to 4 KiB because Windows can
 reject an oversized nonblocking write even when some pipe space is available.
 Queued input keeps its original order; a disconnected pipe remains an error.
 
+## Instant typing
+
+Settings → Appearance → **Instant typing** (off by default, stored per browser) turns on
+`static/predict.js`, which the relay injects into every terminal frame next to `bridge.js`.
+It draws typed characters at the cursor before the computer echoes them, underlined, on an
+overlay above xterm. It drops each guess when the screen agrees with it, or when the guess
+expires. Only plain typing and Backspace are guessed. Guessing starts only when everything right
+of the cursor, up to a pane border, is blank or dim placeholder text. Any other key, a click or a
+paste pauses guessing until the screen should have settled. A guess the screen never confirms
+disappears after a few round trips, and guessing pauses after it.
+
+Guesses stop showing when echoes come back in under 20ms and show again above 30ms. They are
+still made and checked while hidden, to keep measuring. The guessing state machine is covered by
+`tools/switchboard/predict.test.cjs` against the real xterm parser. Against a real engine and relay,
+`latency.test.cjs BINARY --predict` fails if any guess goes unconfirmed.
+
 ## Diagnostics
 
 Settings → Logs records each new-tab request's time to reach the terminal iframe,

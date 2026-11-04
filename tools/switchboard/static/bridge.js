@@ -25,6 +25,9 @@
     if (stray || (!preserveFocus && active === origin)) focusTerminalInput();
   }
   let terminalSocket, controlSocket;
+  // Instant typing draws what the terminal socket sends before it echoes (predict.js, off by default).
+  const predict=window.SwitchboardPredictiveEcho?.install();
+  window.__switchboardPredict=predict;
   let scrollport, lastViewport, viewportTab, bottomButton, claimedViewportTab;
   let chromeKey, nativeTopBar=false, nativeBottomRows=0;
   const diagnostics=window.SwitchboardTerminalDiagnostics?.(
@@ -438,9 +441,10 @@
       super(...args);
       if(String(args[0]).includes('/ws/terminal')){
         terminalSocket=this;
+        predict?.attach(window.term);
         this.addEventListener('open',()=>{load.socket_ms??=Math.round(performance.now());});
         this.addEventListener('message',event=>{if(terminalSocket!==this)return;load.frame_ms??=Math.round(performance.now());diagnostics?.hook(window.term);diagnostics?.frame(event.data);});
-        this.addEventListener('close',()=>{if(terminalSocket===this)terminalSocket=null;});
+        this.addEventListener('close',()=>{if(terminalSocket===this){terminalSocket=null;predict?.reset();}});
       }
       if (String(args[0]).includes('/ws/control')) {
         controlSocket=this;
@@ -475,6 +479,7 @@
     }
     send(data) {
       if(controlSocket===this)diagnostics?.sent(data);
+      if(terminalSocket===this&&this.readyState===1)predict?.sent(data);
       return super.send(data);
     }
   };
