@@ -540,3 +540,42 @@ test('a late native catalog cannot replace a selected tab waiting for focus',()=
   entry.needsFocus=false;context.syncActiveTab(entry);
   assert.equal(context.selected,key(42));assert.equal(entry.followActiveTab,false);
 });
+
+test('a recreated session keeps its tabs where they were dragged, though Zellij numbers them from 0 again',async()=>{
+  const view=(winTabs,created)=>{
+    const tabs=ids=>ids.map((id,position)=>({id,name:'Windows-'+'ABCD'[position],position,panes:[]}));
+    const sessions=new Map([['mesh-24',{host:'mesh-24',name:'main',state:{panes:[]},catalogPolls:1,catalog:tabs(winTabs)}],
+      ['mesh-d1',{host:'mesh-d1',name:'main',state:{panes:[]},catalogPolls:1,catalog:[0,1].map(id=>({id,name:'Mac-'+id,position:id,panes:[]}))}]]);
+    const hosts=new Map([['mesh-24',{name:'Windows',sessions:[{name:'main',created}]}],['mesh-d1',{name:'Mac',sessions:[{name:'main',created:50}]}]]);
+    const posted=[],stored={};
+    const context={hosts,sessions,archived:{},ready:{},selected:null,saveReady(){},filter:'all',groups:{},render(){},tabButtons:new Map(),
+      localStorage:{getItem:key=>stored[key]??null,setItem:(key,value)=>stored[key]=value},
+      fetch:(url,options)=>{posted.push(JSON.parse(options.body).keys);return Promise.resolve({ok:true,json:()=>({updated:1000+posted.length})});}};
+    vm.createContext(context);context.tabOrder=[];
+    vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function moveSelected(')),context);
+    const names=()=>Array.from(context.allTabs(),item=>item.tab.name);
+    const restart=(ids,at)=>{const entry=sessions.get('mesh-24');if(at)hosts.get('mesh-24').sessions[0].created=at;context.setCatalog(entry,tabs(ids));};
+    return {context,sessions,posted,names,restart};
+  };
+  const key=(host,id)=>JSON.stringify([host,'main','tab',id]);
+  const before=view([5,7,9],1000);
+  before.context.applyTabOrder({tab_order:{keys:[key('mesh-24',9),key('mesh-d1',0),key('mesh-24',5),key('mesh-d1',1),key('mesh-24',7)],updated:1}},{id:'me'});
+  for(const entry of before.sessions.values())before.context.setCatalog(entry,entry.catalog);
+  const dragged=['Windows-C','Mac-0','Windows-A','Mac-1','Windows-B'];
+  assert.deepEqual(before.names(),dragged);
+  await new Promise(setImmediate);
+  // Windows reboots: the same tabs come back as 0, 1 and 2, and their catalog may beat the new start time.
+  before.restart([0,1,2]);
+  const waiting=before.posted.length;before.restart([0,1,2]);assert.equal(before.posted.length,waiting,'a catalog ahead of the start time waits');
+  before.restart([0,1,2],9000);
+  assert.deepEqual(before.names(),dragged);
+  const shared=before.posted.at(-1);
+  // Another browser that hears the remapped order after the restart leaves it alone.
+  const after=view([0,1,2],9000);
+  after.context.applyTabOrder({tab_order:{keys:shared,updated:2000}},{id:'me'});
+  for(const entry of after.sessions.values())after.context.setCatalog(entry,entry.catalog);
+  assert.deepEqual(after.names(),dragged);assert.equal(after.posted.length,0);
+  // A session that comes back with an extra tab keeps the others in place and lists the new one with them.
+  after.restart([0,1,2,3],20000);
+  assert.deepEqual(after.names(),['Windows-C','Mac-0','Windows-A','Mac-1','Windows-B','Windows-D']);
+});

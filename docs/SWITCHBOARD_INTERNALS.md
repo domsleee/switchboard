@@ -169,6 +169,9 @@ when you select a tab. Width and desktop collapse state persist in this browser.
 Drag tabs across machines to rearrange them, or use **Alt+Shift+H / Alt+Shift+L** to move the
 selected tab left/right. Paired computers share the order, so every browser on every
 computer lists tabs alike, including across work/home filters; new tabs go last everywhere.
+A session recreated after a reboot or crash numbers its tabs from 0 again; the order keeps a
+marker per session (its start time and tab IDs by position), so each saved position passes to
+the new tab at the same session position instead of a different tab.
 Without pairing, the order is saved in this browser. Attention changes never reorder tabs. The URL follows the selected machine, session,
 and native tab ID, plus `group=home` or `group=work` for the selected group.
 Choosing All removes the group parameter. Refreshing restores the group and reconnects to that terminal. Opening a link to an
