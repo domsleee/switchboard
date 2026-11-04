@@ -98,7 +98,7 @@ fn newest<'t>(patterns: &[regex::Regex], text: &'t str) -> Option<regex::Match<'
         .max_by_key(|m| m.start())
 }
 
-pub(super) fn classify(pane: &Value, screen: &str) -> Value {
+pub(crate) fn classify(pane: &Value, screen: &str) -> Value {
     static PROMPT: LazyLock<regex::Regex> =
         LazyLock::new(|| regex::Regex::new(r"[›❯](?:[ \t\u{a0}]|\r?\n|$)").unwrap());
     static NUMBER: LazyLock<regex::Regex> =

@@ -21,6 +21,8 @@ mod stdin_handler;
 #[cfg(windows)]
 mod stdin_handler_windows;
 #[cfg(feature = "web_server_capability")]
+pub mod switchboard_absorb;
+#[cfg(feature = "web_server_capability")]
 pub mod switchboard_relay;
 #[cfg(feature = "web_server_capability")]
 pub mod switchboard_update;
