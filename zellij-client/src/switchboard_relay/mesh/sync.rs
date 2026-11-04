@@ -12,6 +12,8 @@ pub(super) struct Update {
     tab_order: Option<TabOrder>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     hidden_tabs: Option<TabOrder>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    settings: BTreeMap<String, Setting>,
     membership: Signed<Membership>,
     credential: Envelope,
     /// The sender's network name, trusted only from a reply over its pinned TLS.
@@ -61,6 +63,7 @@ impl Mesh {
             categories: db.categories.clone(),
             tab_order: db.tab_order.clone(),
             hidden_tabs: db.hidden_tabs.clone(),
+            settings: db.settings.clone(),
             // Keep the inviter's signature: an existing peer may not know this
             // newly joined computer yet, but already trusts its inviter.
             membership: membership.clone(),
@@ -158,6 +161,7 @@ impl Mesh {
             Self::merge_tab_keys(&mut db, TabList::Order, update.tab_order.as_ref());
         let hidden_changed =
             Self::merge_tab_keys(&mut db, TabList::Hidden, update.hidden_tabs.as_ref());
+        let settings_changed = Self::merge_settings(&mut db, &update.settings);
         let mut response = self.sync_payload(&mut db, peer)?;
         response.hostname = system_hostname;
         if changed
@@ -165,6 +169,7 @@ impl Mesh {
             || categories_changed
             || order_changed
             || hidden_changed
+            || settings_changed
             || credential_changed
             || db.outgoing.len() != committed.outgoing.len()
         {
@@ -464,6 +469,97 @@ pub(super) async fn hidden_tabs(
     Json(input): Json<SetTabOrder>,
 ) -> Response {
     set_tab_keys(state, TabList::Hidden, input.keys).await
+}
+
+/// A sidebar setting's shared value, such as an Appearance toggle, the same in every browser on
+/// every computer in the group. A browser may override it for itself.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct Setting {
+    value: String,
+    updated: u64,
+}
+
+fn valid_setting(key: &str, value: &str) -> bool {
+    (1..=40).contains(&key.len())
+        && key.bytes().all(|b| b.is_ascii_lowercase() || b == b'-')
+        && value.len() <= 256
+}
+const MAX_SETTINGS: usize = 32;
+
+impl Mesh {
+    /// The latest change per setting wins; a tie keeps the larger value, so every computer agrees.
+    pub(super) fn merge_settings(db: &mut Database, incoming: &BTreeMap<String, Setting>) -> bool {
+        if db.membership.is_none() {
+            return false;
+        }
+        let mut changed = false;
+        for (key, setting) in incoming {
+            if !valid_setting(key, &setting.value)
+                || !db.settings.contains_key(key) && db.settings.len() >= MAX_SETTINGS
+            {
+                continue;
+            }
+            if db
+                .settings
+                .get(key)
+                .is_none_or(|old| (setting.updated, &setting.value) > (old.updated, &old.value))
+            {
+                db.settings.insert(key.clone(), setting.clone());
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    pub(super) async fn set_setting(&self, key: &str, value: String) -> anyhow::Result<u64> {
+        anyhow::ensure!(
+            valid_setting(key, &value),
+            "Unknown setting or value too long"
+        );
+        let mut committed = self.database.lock().await;
+        let mut db = committed.clone();
+        anyhow::ensure!(db.membership.is_some(), "Group unavailable");
+        anyhow::ensure!(
+            db.settings.contains_key(key) || db.settings.len() < MAX_SETTINGS,
+            "Too many shared settings"
+        );
+        let updated = now().max(db.settings.get(key).map_or(0, |s| s.updated + 1));
+        db.settings
+            .insert(key.to_owned(), Setting { value, updated });
+        self.save(&db)?;
+        *committed = db;
+        Ok(updated)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SetSetting {
+    key: String,
+    value: String,
+}
+pub(super) async fn setting(
+    State(state): State<RelayState>,
+    Json(input): Json<SetSetting>,
+) -> Response {
+    let Some(mesh) = state.mesh else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":"Pair computers before sharing settings"})),
+        )
+            .into_response();
+    };
+    match mesh.set_setting(&input.key, input.value).await {
+        Ok(updated) => {
+            tokio::spawn(async move { mesh.synchronize().await });
+            Json(json!({ "updated": updated })).into_response()
+        },
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":error.to_string()})),
+        )
+            .into_response(),
+    }
 }
 
 /// Per-computer retry delay, so an offline computer is not contacted every

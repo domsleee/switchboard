@@ -62,7 +62,7 @@ test('Panel navigation moves between sections and keeps terminals connected',
     }
     async function section(){
       return page.evaluate(()=>{
-        const tabs=[...document.querySelectorAll('#panel [role=tab]')],selected=tabs.filter(tab=>tab.getAttribute('aria-selected')==='true');
+        const tabs=[...document.querySelectorAll('#panel-tabs [role=tab]')],selected=tabs.filter(tab=>tab.getAttribute('aria-selected')==='true');
         const panels=[...document.querySelectorAll('#panel [role=tabpanel]')].filter(panel=>!panel.hidden);
         return {open:document.querySelector('#panel').open,selected:selected.map(tab=>tab.textContent),
           visible:panels.map(panel=>panel.id),title:document.querySelector('#panel-title').textContent,
@@ -152,7 +152,7 @@ test('Panel navigation moves between sections and keeps terminals connected',
     assert.deepEqual([box.x,box.y,box.width,box.height],[0,0,390,844]);
     await page.waitForFunction(()=>matchMedia('(max-width:700px)').matches);
     const layout=await page.evaluate(()=>{
-      const tabs=[...document.querySelectorAll('#panel [role=tab]:not([hidden])')].map(tab=>tab.getBoundingClientRect());
+      const tabs=[...document.querySelectorAll('#panel-tabs [role=tab]:not([hidden])')].map(tab=>tab.getBoundingClientRect());
       return {row:new Set(tabs.map(tab=>tab.top)).size,within:tabs.every(tab=>tab.left>=0&&tab.right<=390),
         headerAbove:document.querySelector('#panel-body>header').getBoundingClientRect().bottom<=tabs[0].top,
         orientation:document.querySelector('#panel-tabs').getAttribute('aria-orientation'),

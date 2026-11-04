@@ -65,7 +65,7 @@ $('dismiss-status').onclick=()=>{
   $('status').classList.remove('has-error');
   if($('artifact-preview').hidden)$('terminals').querySelector('iframe.active')?.focus();
 };
-// Work only or Home only, chosen per browser so each one opens on its own group.
+// Work only or Home only, so a browser opens on its own group: Settings → Show tabs from.
 function focusGroup(){
   const group=localStorage.getItem('switchboard-focus-group');
   return group==='home'||group==='work'?group:'';
@@ -812,7 +812,7 @@ function pruneSessions(listed=null,hostId=null){
 async function refresh() {
   if(loading)return;loading=true;
   try {
-    fetch('/api/mesh',{cache:'no-store'}).then(r=>r.ok?r.json():null).then(mesh=>{meshMembers=mesh?.members||[];localMember=meshMembers.find(m=>m.local)||null;applyCategories();applyTabOrder(mesh,localMember);applyHidden(mesh,localMember);render();}).catch(()=>{});
+    fetch('/api/mesh',{cache:'no-store'}).then(r=>r.ok?r.json():null).then(mesh=>{meshMembers=mesh?.members||[];localMember=meshMembers.find(m=>m.local)||null;applyCategories();applyTabOrder(mesh,localMember);applyHidden(mesh,localMember);applySettings(mesh,localMember);render();}).catch(()=>{});
     const response=await fetch('/api/hosts?summary=1');if(!response.ok)throw Error('Cannot reach local relay');
     const data=await response.json();hostsLoaded=true;
     globalThis.SwitchboardStartup?.discover(data);
@@ -1006,7 +1006,6 @@ function renderFilter(){
     more.replaceChildren(label,...others.map(b=>new Option(b.textContent,b.dataset.filter)));
     more.value=filter;more.classList.toggle('selected',filter!==focus);
   }
-  $('focus-group').value=focus;
   const url=new URL(location.href);
   if(filter===(focus||'all'))url.searchParams.delete('group');else url.searchParams.set('group',filter);
   if(url.href!==location.href)history.replaceState(history.state,'',url);
@@ -1026,16 +1025,11 @@ function setFilter(value){
   if(selected!==previous&&current)focus(current);
 }
 $('filters').onclick=event=>{const button=event.target.closest('[data-filter]');if(button)setFilter(button.dataset.filter);};
-// claude.ai links from each group's tabs can open in another browser on this
-// computer, such as the one signed into a work account. Saved per browser.
-const linkApps=load('switchboard-link-apps');
-for(const input of $('link-apps').querySelectorAll('input')){
-  input.value=linkApps[input.dataset.group]||'';
-  input.onchange=()=>{linkApps[input.dataset.group]=input.value.trim();localStorage.setItem('switchboard-link-apps',JSON.stringify(linkApps));};
-}
+// claude.ai links from each group's tabs can open in another browser on this computer, such as
+// the one signed into a work account: Settings → Links.
 // Terminal frames call this on Cmd/Ctrl-click; true means the link was handled here.
 window.SwitchboardOpenInApp=(host,href)=>{
-  const app=linkApps[groups[host]],url=new URL(href);
+  const app=groups[host]?settingValue('link-app-'+groups[host]):'',url=new URL(href);
   if(!app||!/(^|\.)claude\.ai$/.test(url.hostname))return false;
   fetch('/api/open-link',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url.href,app})})
     .then(async response=>{if(!response.ok)throw Error(await response.text());})
@@ -1074,7 +1068,6 @@ window.SwitchboardOpenFile=(host,path)=>{
   $('artifact-preview').hidden=false;$('artifact-back').focus();
 };
 $('filter-more').onchange=event=>setFilter(event.target.value);
-$('focus-group').onchange=event=>{localStorage.setItem('switchboard-focus-group',event.target.value);setFilter(event.target.value||'all');};
 renderFilter();
 let newTabElevated=false;
 $('new-tab').onclick=()=>openNewTabDialog(false);
@@ -1155,7 +1148,7 @@ $('size-owner').onclick=()=>{
 // terminals, so terminal iframes and their sockets stay connected. Messages and
 // Computers stay standalone pages, embedded per section; their links to each
 // other are hidden there, since each is a tab. Modified clicks still open a real page.
-const panel=$('panel'),panelTabs=[...panel.querySelectorAll('[role=tab]')];
+const panel=$('panel'),panelTabs=[...$('panel-tabs').querySelectorAll('[role=tab]')];
 const panelPages={'/messages.html':'messages','/computers.html':'computers'};
 function sectionLink(event){
   const link=event.target.closest?.('a[href="/messages.html"],a[href="/computers.html"]');
@@ -1240,24 +1233,138 @@ async function loadLogs(){
   finally{button.disabled=false;list.setAttribute('aria-busy','false');}
 }
 $('refresh-logs').onclick=loadLogs;
-$('native-tabs').onclick=()=>{nativeTabs=!nativeTabs;localStorage.setItem('switchboard-native-tabs',String(nativeTabs));updateNativeTabs();};
-updateNativeTabs();
-// Terminal frames and the Messages page share this origin and read the flag when they preview.
-function updateMediaPreviews(on){$('media-previews').setAttribute('aria-pressed',String(on));$('media-previews').classList.toggle('selected',on);}
-$('media-previews').onclick=()=>{const on=localStorage.getItem('switchboard-media-previews')!=='true';localStorage.setItem('switchboard-media-previews',String(on));updateMediaPreviews(on);};
-updateMediaPreviews(localStorage.getItem('switchboard-media-previews')==='true');
-// Terminal frames read this flag through predict.js and follow its storage events.
-function updatePredictiveEcho(on){$('predictive-echo').setAttribute('aria-pressed',String(on));$('predictive-echo').classList.toggle('selected',on);}
-$('predictive-echo').onclick=()=>{const on=localStorage.getItem('switchboard-predictive-echo')!=='true';localStorage.setItem('switchboard-predictive-echo',String(on));updatePredictiveEcho(on);};
-updatePredictiveEcho(localStorage.getItem('switchboard-predictive-echo')==='true');
-// Read by each terminal's wheel handler and socket when it connects, so a change reloads.
-function updateFineScroll(on){$('fine-scroll').setAttribute('aria-pressed',String(on));$('fine-scroll').classList.toggle('selected',on);}
-$('fine-scroll').onclick=()=>{const on=localStorage.getItem('switchboard-fine-scroll')!=='true';localStorage.setItem('switchboard-fine-scroll',String(on));updateFineScroll(on);location.reload();};
-updateFineScroll(localStorage.getItem('switchboard-fine-scroll')==='true');
-// Terminal frames watch this key and show or hide their thumbnails when it changes.
-function updateMediaThumbnails(on){$('media-thumbnails').setAttribute('aria-pressed',String(on));$('media-thumbnails').classList.toggle('selected',on);}
-$('media-thumbnails').onclick=()=>{const on=localStorage.getItem('switchboard-media-thumbnails')!=='true';localStorage.setItem('switchboard-media-thumbnails',String(on));updateMediaThumbnails(on);};
-updateMediaThumbnails(localStorage.getItem('switchboard-media-thumbnails')==='true');
+// Settings, like VS Code's User and Workspace settings: each has a value shared by every browser
+// on every paired computer, and this browser may override it. Terminal frames, the Messages page
+// and this page read the result from switchboard-<key>, so they need not know which one won.
+// Frames share this origin and follow storage events; native tabs reach them by message; fine
+// scrolling is read when a terminal connects, so a change reloads the page.
+const settingDefs={
+  'native-tabs':{toggle:true,apply:()=>{nativeTabs=settingValue('native-tabs')==='true';updateNativeTabs();}},
+  'media-previews':{toggle:true},
+  'media-thumbnails':{toggle:true},
+  'predictive-echo':{toggle:true},
+  'fine-scroll':{toggle:true,apply:remote=>remote?reloadWhenHidden():location.reload()},
+  // Another computer changing the shared group must not switch the tabs someone is looking at.
+  'focus-group':{apply:remote=>{if(!remote)setFilter(focusGroup()||'all');}},
+  'link-app-work':{},
+  'link-app-home':{},
+};
+const settingDefault=key=>settingDefs[key].toggle?'false':'';
+let sharedSettings=load('switchboard-shared-settings'),settingOverrides=load('switchboard-setting-overrides');
+let settingsShared=false,settingScope='shared';const savingSetting={};
+// Before scopes, each browser kept its own values: toggles move to the group once, and the
+// group filter and link browsers, which were always per browser, become this browser's overrides.
+if(localStorage.getItem('switchboard-shared-settings')===null){
+  for(const key in settingDefs){
+    const old=localStorage.getItem('switchboard-'+key);
+    if(settingDefs[key].toggle&&old!==null)sharedSettings[key]={value:old,updated:0};
+  }
+  if(focusGroup())settingOverrides['focus-group']=focusGroup();
+  const apps=load('switchboard-link-apps');
+  for(const group of ['work','home'])if(apps[group])settingOverrides['link-app-'+group]=apps[group];
+  saveSettings();
+}
+function saveSettings(){
+  try{
+    localStorage.setItem('switchboard-shared-settings',JSON.stringify(sharedSettings));
+    localStorage.setItem('switchboard-setting-overrides',JSON.stringify(settingOverrides));
+  }catch(_){}
+}
+function sharedValue(key){return sharedSettings[key]?.value??settingDefault(key);}
+function settingValue(key){return key in settingOverrides?settingOverrides[key]:sharedValue(key);}
+// Store the resolved value where readers look, and act only when it changed.
+function resolveSetting(key,remote=false,starting=false){
+  const value=settingValue(key);
+  let stored=null;try{stored=localStorage.getItem('switchboard-'+key);}catch(_){}
+  if(stored!==value&&!(stored===null&&value===settingDefault(key))){
+    try{localStorage.setItem('switchboard-'+key,value);}catch(_){}
+    if(!starting)settingDefs[key].apply?.(remote);
+  }
+  renderSettings();
+}
+function pushSetting(key){
+  if(!settingsShared)return;
+  const value=sharedValue(key);
+  savingSetting[key]=(savingSetting[key]||0)+1;
+  fetch('/api/mesh/setting',{method:'POST',keepalive:true,headers:{'Content-Type':'application/json'},body:JSON.stringify({key,value})})
+    .then(r=>r.ok?r.json():null)
+    // The relay's time is the group's clock, so a browser whose clock runs ahead does not resend forever.
+    .then(saved=>{if(saved&&sharedSettings[key]?.value===value){sharedSettings[key].updated=saved.updated;saveSettings();}})
+    .catch(()=>{}).finally(()=>savingSetting[key]--);
+}
+function setSetting(key,value){
+  if(settingScope==='browser')settingOverrides[key]=value;
+  else sharedSettings[key]={value,updated:Math.max(Math.floor(Date.now()/1000),(sharedSettings[key]?.updated||0)+1)};
+  saveSettings();
+  if(settingScope==='shared')pushSetting(key);
+  resolveSetting(key);
+}
+function resetSetting(key){delete settingOverrides[key];saveSettings();resolveSetting(key);}
+// The group's value wins unless this browser holds a newer one it has not shared yet,
+// such as one set before this computer was paired. Older relays keep settings here.
+function applySettings(mesh,member){
+  const group=mesh?.settings;
+  settingsShared=!!member&&group!=null;
+  if(!settingsShared)return;
+  for(const key in settingDefs){
+    const theirs=group[key],mine=sharedSettings[key];
+    if(savingSetting[key])continue;
+    if(theirs&&(!mine||theirs.updated>=mine.updated)){
+      if(mine?.value===theirs.value&&mine.updated===theirs.updated)continue;
+      sharedSettings[key]={value:theirs.value,updated:theirs.updated};saveSettings();resolveSetting(key,true);
+    }
+    else if(mine)pushSetting(key);
+  }
+}
+// Reloading under someone who is using this browser would lose their place; wait until they leave it.
+function reloadWhenHidden(){
+  if(document.hidden)location.reload();
+  else document.addEventListener('visibilitychange',()=>{if(document.hidden)location.reload();});
+}
+const settingNotes={};
+// A setting's box, or its own line where one box holds several (Links).
+function settingRow(key){const control=$(key),label=control.closest('#link-apps label');return label||control.closest('.settings-group');}
+function describeSetting(key,value){
+  if(settingDefs[key].toggle)return value==='true'?'On':'Off';
+  if(key==='focus-group')return [...$(key).options].find(option=>option.value===value)?.textContent||value;
+  return value||'Default browser';
+}
+function renderSettings(){
+  const browser=settingScope==='browser';
+  for(const button of $('setting-scopes').querySelectorAll('[data-scope]')){
+    const on=button.dataset.scope===settingScope;button.setAttribute('aria-selected',String(on));button.tabIndex=on?0:-1;
+  }
+  $('setting-scope-help').textContent=browser?'Set here, a setting overrides All computers in this browser only.':'Every browser on your paired computers uses these, unless it overrides them.';
+  $('machines-shared').hidden=browser;
+  for(const key in settingDefs){
+    const control=$(key),value=browser?settingValue(key):sharedValue(key),overridden=browser&&key in settingOverrides;
+    if(settingDefs[key].toggle){control.setAttribute('aria-pressed',String(value==='true'));control.classList.toggle('selected',value==='true');}
+    else if(control!==document.activeElement||control.tagName==='SELECT')control.value=value;
+    settingRow(key).classList.toggle('overridden',overridden);
+    let note=settingNotes[key];
+    if(!note){
+      note=settingNotes[key]=document.createElement('p');note.className='setting-override';note.id=key+'-override';
+      const text=document.createElement('span'),reset=document.createElement('button');
+      reset.type='button';reset.textContent='Reset';reset.title='Use the All computers value in this browser';reset.onclick=()=>{resetSetting(key);control.focus();};
+      note.append(text,reset);($(key+'-help')||control.closest('label')).after(note);
+      control.setAttribute('aria-describedby',[control.getAttribute('aria-describedby'),note.id].filter(Boolean).join(' '));
+    }
+    note.hidden=!overridden;
+    note.firstChild.textContent=`Overrides All computers (${describeSetting(key,sharedValue(key))}). `;
+  }
+}
+for(const key in settingDefs){
+  const control=$(key);
+  if(settingDefs[key].toggle)control.onclick=()=>setSetting(key,control.getAttribute('aria-pressed')==='true'?'false':'true');
+  else control.onchange=()=>setSetting(key,control.value.trim());
+}
+$('setting-scopes').onclick=event=>{const button=event.target.closest('[data-scope]');if(button){settingScope=button.dataset.scope;renderSettings();}};
+$('setting-scopes').onkeydown=event=>{
+  if(!['ArrowLeft','ArrowRight'].includes(event.key))return;
+  event.preventDefault();settingScope=settingScope==='shared'?'browser':'shared';renderSettings();
+  $('setting-scopes').querySelector('[aria-selected="true"]').focus();
+};
+for(const key in settingDefs)resolveSetting(key,false,true);
 setInterval(refresh,15000);
 
 function closeTabMenu(restore=false){

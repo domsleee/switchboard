@@ -622,3 +622,58 @@ test('a recreated session keeps its tabs where they were dragged, though Zellij 
   after.restart([0,1,2,3],20000);
   assert.deepEqual(after.names(),['Windows-C','Mac-0','Windows-A','Mac-1','Windows-B','Windows-D']);
 });
+
+test('settings are shared by every paired computer, and a browser can override any of them',async()=>{
+  const start=source.indexOf('const settingDefs={'),end=source.indexOf("for(const key in settingDefs){\n  const control=$(key);");
+  const view=stored=>{
+    const posted=[],filters=[],reloads=[];
+    const context={posted,filters,reloads,location:{reload:()=>reloads.push(1)},document:{hidden:false,addEventListener(){}},
+      nativeTabs:false,updateNativeTabs(){},setFilter:value=>filters.push(value),
+      load:key=>{try{return JSON.parse(stored[key])||{};}catch(_){return {};}},
+      focusGroup:()=>['work','home'].includes(stored['switchboard-focus-group'])?stored['switchboard-focus-group']:'',
+      localStorage:{getItem:key=>stored[key]??null,setItem:(key,value)=>stored[key]=value},
+      fetch:(url,options)=>{const body=JSON.parse(options.body);posted.push([url,body]);return Promise.resolve({ok:true,json:()=>({updated:500})});}};
+    vm.createContext(context);vm.runInContext(source.slice(start,end)+';renderSettings=()=>{};',context);
+    return context;
+  };
+  const member={id:'d1',local:true},settle=()=>new Promise(setImmediate);
+  // Before scopes: toggles move to the group once; the group filter and link browsers stay this browser's own.
+  const stored={'switchboard-media-previews':'true','switchboard-focus-group':'work','switchboard-link-apps':JSON.stringify({work:'Google Chrome Canary'})};
+  const mac=view(stored);
+  assert.equal(mac.settingValue('focus-group'),'work');
+  assert.equal(mac.settingValue('link-app-work'),'Google Chrome Canary');
+  mac.applySettings({settings:{}},member);
+  assert.deepEqual(mac.posted,[['/api/mesh/setting',{key:'media-previews',value:'true'}]]);
+  await settle();
+  // The group's value reaches readers of switchboard-<key>, unless this browser overrides it.
+  const group={'media-previews':{value:'true',updated:500},'native-tabs':{value:'true',updated:600},'focus-group':{value:'home',updated:600}};
+  mac.applySettings({settings:group},member);
+  assert.equal(stored['switchboard-native-tabs'],'true');assert.equal(mac.nativeTabs,true);
+  assert.equal(stored['switchboard-focus-group'],'work','this browser still opens on Work');
+  assert.deepEqual(mac.filters,[]);
+  // Reset falls back to the group's value.
+  mac.resetSetting('focus-group');
+  assert.equal(stored['switchboard-focus-group'],'home');assert.deepEqual(mac.filters,['home']);
+  // An override in This browser never reaches the group.
+  vm.runInContext(`settingScope='browser'`,mac);
+  mac.setSetting('media-previews','false');
+  assert.equal(stored['switchboard-media-previews'],'false');assert.equal(mac.sharedValue('media-previews'),'true');
+  assert.equal(mac.posted.length,1);
+  // A shared change is sent; a poll older than the save in flight cannot undo it.
+  vm.runInContext(`settingScope='shared'`,mac);
+  mac.setSetting('native-tabs','false');
+  mac.applySettings({settings:group},member);
+  assert.equal(stored['switchboard-native-tabs'],'false');
+  assert.deepEqual(mac.posted.at(-1),['/api/mesh/setting',{key:'native-tabs',value:'false'}]);
+  await settle();
+  // Fine scrolling from another computer waits until nobody is looking before it reloads.
+  mac.applySettings({settings:{...group,'native-tabs':{value:'false',updated:650},'fine-scroll':{value:'true',updated:700}}},member);
+  assert.equal(stored['switchboard-fine-scroll'],'true');assert.equal(mac.reloads.length,0);
+  assert.equal(mac.posted.length,2,'nothing is sent twice');
+  // An unpaired computer, or a relay without shared settings, keeps them in this browser.
+  const alone=view({});
+  alone.applySettings({settings:{}},null);alone.applySettings({},member);
+  alone.setSetting('media-thumbnails','true');
+  assert.deepEqual(alone.posted,[]);
+  assert.equal(alone.sharedValue('media-thumbnails'),'true');
+});
