@@ -944,3 +944,24 @@ fn a_relay_that_loses_paired_computers_is_restarted_once_then_rolled_back() {
         "a reachable peer needs no restart"
     );
 }
+
+#[test]
+fn switchboard_update_is_due_for_a_newer_build_or_a_retry() {
+    let state = |run_number, attempts| State {
+        run_number,
+        attempts,
+        ..Default::default()
+    };
+    assert!(is_due(&state(None, None), 1));
+    assert!(is_due(&state(Some(5), None), 6));
+    assert!(!is_due(&state(Some(5), None), 5), "already installed");
+    assert!(!is_due(&state(Some(6), None), 5), "never go back");
+    assert!(
+        is_due(&state(Some(5), Some(1)), 5),
+        "retry a failed handoff"
+    );
+    assert!(
+        !is_due(&state(Some(5), Some(ATTEMPTS)), 5),
+        "out of attempts"
+    );
+}

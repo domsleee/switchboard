@@ -41,7 +41,7 @@ a focused browser viewer claims the terminal size of the user's real sessions.
   `/api/health` before blaming the deployed build.
 - Unfinished work may live on another computer's branch or in a PR. Check
   `gh pr list --repo domsleee/switchboard --state all` and `origin/*` before calling it missing.
-- Every merge to `main` ships to every paired computer within about 15 minutes and restarts its
+- Every merge to `main` ships to every paired computer within about 10 minutes and restarts its
   services. Merge deliberately and keep running terminals safe across a restart.
 - "Merge" from the user is the go-ahead: wait for `gh pr checks --watch`, then
   `gh pr merge --squash --delete-branch`. Rerun a flaky check once, and fix the flake in its own PR.
