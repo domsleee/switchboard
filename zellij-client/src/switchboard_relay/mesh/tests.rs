@@ -1864,11 +1864,17 @@ async fn tab_order_syncs_and_the_latest_change_wins() {
         let mesh = mesh.clone();
         async move { mesh.status().await["tab_order"]["keys"].clone() }
     };
-    assert!(mac.set_tab_order(vec!["x".repeat(513)]).await.is_err());
-    assert!(mac.set_tab_order(vec![String::new(); 2001]).await.is_err());
+    assert!(mac
+        .set_tab_keys(sync::TabList::Order, vec!["x".repeat(513)])
+        .await
+        .is_err());
+    assert!(mac
+        .set_tab_keys(sync::TabList::Order, vec![String::new(); 2001])
+        .await
+        .is_err());
     // Set on the Mac, seen on Windows.
     let first = mac
-        .set_tab_order(vec!["a".into(), "b".into()])
+        .set_tab_keys(sync::TabList::Order, vec!["a".into(), "b".into()])
         .await
         .unwrap();
     let stale = mac.prepare_sync(&windows_id).await.unwrap();
@@ -1878,7 +1884,7 @@ async fn tab_order_syncs_and_the_latest_change_wins() {
     assert_eq!(order(&windows).await, json!(["a", "b"]));
     // A later change on Windows replaces it everywhere; the older update cannot undo it.
     let second = windows
-        .set_tab_order(vec!["b".into(), "a".into()])
+        .set_tab_keys(sync::TabList::Order, vec!["b".into(), "a".into()])
         .await
         .unwrap();
     assert!(second > first, "a change outranks the order it replaces");
@@ -1888,6 +1894,54 @@ async fn tab_order_syncs_and_the_latest_change_wins() {
     windows.exchange(stale).await.unwrap();
     assert_eq!(order(&mac).await, json!(["b", "a"]));
     assert_eq!(order(&windows).await, json!(["b", "a"]));
+}
+
+#[tokio::test]
+async fn hidden_tabs_sync_apart_from_the_tab_order() {
+    let temp = tempfile::tempdir().unwrap();
+    let mac = machine(&temp.path().join("mac"), "Mac", "https://192.0.2.1:8091").await;
+    let windows = machine(
+        &temp.path().join("windows"),
+        "Windows",
+        "https://192.0.2.2:8091",
+    )
+    .await;
+    let invite = invitation(&mac, 1000).await;
+    let (_, approval) = approved(&mac, &windows, &invite, 1000).await;
+    mac.complete(windows.install(approval, &invite).await.unwrap())
+        .await
+        .unwrap();
+    let windows_id = windows
+        .database
+        .lock()
+        .await
+        .local
+        .as_ref()
+        .unwrap()
+        .id
+        .clone();
+    assert_eq!(mac.status().await["hidden_tabs"], Value::Null);
+    mac.set_tab_keys(sync::TabList::Order, vec!["a".into(), "b".into()])
+        .await
+        .unwrap();
+    mac.set_tab_keys(sync::TabList::Hidden, vec!["b".into()])
+        .await
+        .unwrap();
+    mac.exchange(
+        windows
+            .exchange(mac.prepare_sync(&windows_id).await.unwrap())
+            .await
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    let status = windows.status().await;
+    assert_eq!(status["hidden_tabs"]["keys"], json!(["b"]));
+    assert_eq!(status["tab_order"]["keys"], json!(["a", "b"]));
+    assert!(mac
+        .set_tab_keys(sync::TabList::Hidden, vec![String::new(); 2001])
+        .await
+        .is_err());
 }
 
 #[tokio::test]

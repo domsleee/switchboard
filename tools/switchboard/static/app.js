@@ -23,11 +23,13 @@ let dragState=null, dragScrollFrame=0, suppressTabClickUntil=0;
 function load(key) { try { return JSON.parse(localStorage.getItem(key)) || {}; } catch (_) { return {}; } }
 const groups = load('switchboard-groups');
 const ready = load('switchboard-ready');
-const archived = load('switchboard-archived');
-if(restoringTab&&archived[selected]){delete archived[selected];localStorage.setItem('switchboard-archived',JSON.stringify(archived));}
+// Tabs in the Hidden group at the bottom of the sidebar. The group shares them like the
+// tab order; tabs archived before Hidden existed join it.
+const hidden = localStorage.getItem('switchboard-hidden')===null?load('switchboard-archived'):load('switchboard-hidden');
+let hiddenOpen = localStorage.getItem('switchboard-hidden-open')==='true';
 const seenAttention = load('switchboard-attention-seen');
 let attentionLoaded=false,paneAttention=new Map(),tabCatalog=[],attentionErrors=[],attentionLoading=false,attentionRefreshPending=false,attentionVersion=0;
-let contextItem = null, menuTrigger = null, archiveSignature = null;
+let contextItem = null, menuTrigger = null;
 let tabOrder=load('switchboard-tab-order');
 if(!Array.isArray(tabOrder))tabOrder=[];
 let nativeTabs = localStorage.getItem('switchboard-native-tabs') === 'true';
@@ -126,12 +128,15 @@ let localHost=null,orderUpdated=0,savingOrder=0,orderReady=false,orderShared=fal
 try{localHost=JSON.parse(localStorage.getItem('switchboard-local-host'));}catch(_){}
 // Peers know this computer as mesh-<member id>, so its tabs get that key everywhere.
 function canonKey(key){const [host,...rest]=JSON.parse(key);return host===localHost?.id?JSON.stringify(['mesh-'+localHost.member,...rest]):key;}
-function saveOrder(order){
+// Forget tabs a clean scan no longer lists; tabs on unreachable hosts keep their places.
+// ponytail: tabs of whole closed sessions stay listed; prune by host session lists if a list grows large.
+function stillListed(keys){
   const live=new Set([...sessions.values()].flatMap(entry=>sessionTabs(entry).map(tab=>canonKey(tabKey(entry,tab)))));
   const scanned=new Set([...sessions.values()].filter(entry=>entry.catalogPolls&&!entry.catalogUnavailable).map(entry=>canonKey(JSON.stringify([entry.host,entry.name]))));
-  // Forget tabs a clean scan no longer lists; tabs on unreachable hosts keep their positions.
-  // ponytail: tabs of whole closed sessions stay listed; prune by host session lists if the order grows large.
-  tabOrder=order.filter(key=>live.has(key)||isLayout(key)||!scanned.has(JSON.stringify(JSON.parse(key).slice(0,2))));
+  return keys.filter(key=>live.has(key)||isLayout(key)||!scanned.has(JSON.stringify(JSON.parse(key).slice(0,2))));
+}
+function saveOrder(order){
+  tabOrder=stillListed(order);
   localStorage.setItem('switchboard-tab-order',JSON.stringify(tabOrder));
   if(!orderShared)return;
   savingOrder++;
@@ -150,12 +155,39 @@ function applyTabOrder(mesh,member){
   else if(orderShared&&shared===null&&!savingOrder&&tabOrder.length&&localHost)saveOrder([...new Set(tabOrder.map(canonKey))]);
   orderReady=true;flushNewTabs();
 }
+function isHidden(key){return !!(hidden[key]||hidden[canonKey(key)]);}
+let hiddenUpdated=0,savingHidden=0,hiddenShared=false;
+function replaceHidden(keys){
+  for(const key of Object.keys(hidden))delete hidden[key];
+  for(const key of keys)hidden[key]=1;
+}
+function saveHidden(keys=Object.keys(hidden)){
+  replaceHidden([...new Set(keys.map(canonKey))]);
+  localStorage.setItem('switchboard-hidden',JSON.stringify(hidden));
+  if(!hiddenShared)return;
+  savingHidden++;
+  fetch('/api/mesh/hidden-tabs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keys:Object.keys(hidden)})})
+    .then(r=>r.ok?r.json():null).then(saved=>{if(saved)hiddenUpdated=Math.max(hiddenUpdated,saved.updated);}).catch(()=>{}).finally(()=>savingHidden--);
+}
+function setHidden(item,on){
+  if(on)hidden[canonKey(item.key)]=1;else{delete hidden[item.key];delete hidden[canonKey(item.key)];}
+  saveHidden(stillListed(Object.keys(hidden).map(canonKey)));
+}
+function applyHidden(mesh,member){
+  const shared=mesh?.hidden_tabs;
+  hiddenShared=!!member&&shared!==undefined;
+  if(shared&&!savingHidden&&shared.updated>hiddenUpdated){
+    hiddenUpdated=shared.updated;replaceHidden(shared.keys);localStorage.setItem('switchboard-hidden',JSON.stringify(hidden));
+  }
+  // Tabs hidden before sharing existed move to the group once this computer's tabs can be keyed.
+  else if(hiddenShared&&shared===null&&!savingHidden&&Object.keys(hidden).length&&localHost)saveHidden();
+}
 // New tabs join the end of the shared order, so they land in the same place in every browser.
 // Wait for the shared order first, or a stale local copy would replace it.
 function flushNewTabs(){
   const state=lateTabs();
   if(!orderReady||!state.keys.length)return;
-  const order=[...new Set([...tabOrder,...allTabs(true,true).map(item=>item.key),...state.keys].map(canonKey))];
+  const order=[...new Set([...tabOrder,...allTabs(true).map(item=>item.key),...state.keys].map(canonKey))];
   state.keys=[];localStorage.setItem('switchboard-new-tabs',JSON.stringify(state));
   saveOrder(order);
 }
@@ -252,6 +284,13 @@ function followRestart(entry,tabs){
     const placed=new Set(next.filter(mine)),extra=ids.map(id=>JSON.stringify([host,name,'tab',id])).filter(key=>!placed.has(key));
     const last=next.findLastIndex(mine);
     next.splice(last<0?next.length:last+1,0,...extra);
+    // Hidden tabs follow their positions the same way.
+    const hiddenKeys=Object.keys(hidden).map(canonKey);
+    if(hiddenKeys.some(mine))saveHidden(hiddenKeys.flatMap(key=>{
+      if(!mine(key))return [key];
+      const [,,kind,id]=JSON.parse(key);
+      return kind==='tab'&&moved.get(id)!==undefined?[JSON.stringify([host,name,'tab',moved.get(id)])]:[];
+    }));
   }
   const key=JSON.stringify([host,name,'layout',created,ids]);
   if(key.length>512)return;
@@ -265,11 +304,14 @@ function setCatalog(entry,tabs){
     if(!pane.is_plugin)migrations.set(JSON.stringify([entry.host,entry.name,'pane',pane.pane_id]),tabKey(entry,tab));
   }
   let changed=false;
-  for(const store of [ready,archived])for(const [old,key] of migrations)if(old in store){store[key]=store[old];delete store[old];changed=true;}
+  for(const [old,key] of migrations)if(old in ready){ready[key]=ready[old];delete ready[old];changed=true;}
+  let hiddenMoved=false;
+  for(const [old,key] of migrations)for(const stored of new Set([old,canonKey(old)]))if(stored in hidden){delete hidden[stored];hidden[canonKey(key)]=1;hiddenMoved=true;}
+  if(hiddenMoved)saveHidden();
   if(migrations.has(selected)){selected=migrations.get(selected);changed=true;}
   const order=tabOrder.map(canonKey),moved=new Map([...migrations].map(([old,key])=>[canonKey(old),canonKey(key)]));
   if(order.some(key=>moved.has(key))){tabOrder=[...new Set(order.map(key=>moved.get(key)||key))];changed=true;}
-  if(changed){saveReady();localStorage.setItem('switchboard-archived',JSON.stringify(archived));localStorage.setItem('switchboard-tab-order',JSON.stringify(tabOrder));}
+  if(changed){saveReady();localStorage.setItem('switchboard-tab-order',JSON.stringify(tabOrder));}
   followRestart(entry,tabs);markNewTabs(entry,tabs);
   entry.catalog=tabs;
   entry.provisionalTabs=entry.provisionalTabs?.filter(tab=>!migrations.has(tabKey(entry,tab)));
@@ -360,7 +402,8 @@ function applyCategories(){
     else if(groups[id])setCategory(member,groups[id]);
   }
 }
-function allTabs(ignoreFilter=false, includeArchived=false) {
+// Every tab, with hidden tabs after the rest. Each item says whether it is hidden.
+function allTabs(ignoreFilter=false) {
   const ranks=new Map([...new Set([...tabOrder,...(globalThis.SwitchboardStartup?.order()||[])].map(canonKey))].map((key,index)=>[key,index]));
   const late=new Map(lateTabs().keys.map((key,index)=>[key,index]));
   // A tab still being created has no native ID yet; it already belongs at the end.
@@ -368,13 +411,18 @@ function allTabs(ignoreFilter=false, includeArchived=false) {
   // Saved drag positions first; the rest by machine and session, keeping each session's tab order;
   // tabs created since then last.
   const byMachine=(a,b)=>{const x=machineOrder(a),y=machineOrder(b);return x<y?-1:x>y?1:0;};
-  return [...sessions.values()].flatMap(entry => sessionTabs(entry).map(tab => {const key=tabKey(entry,tab);return {entry,tab,key,rank:ranks.get(canonKey(key))??Infinity};}))
-    .filter(({entry,tab,key}) => ![...(entry.closingTabs?.values()||[])].some(closing=>matchesClosingTab(tab,closing)) && (includeArchived || !archived[key]) && (ignoreFilter || filter === 'all' || groups[entry.host] === filter))
-    .sort((a,b) => a.rank-b.rank || lateness(a)-lateness(b) || byMachine(a,b));
+  return [...sessions.values()].flatMap(entry => sessionTabs(entry).map(tab => {const key=tabKey(entry,tab);return {entry,tab,key,hidden:isHidden(key),rank:ranks.get(canonKey(key))??Infinity};}))
+    .filter(({entry,tab}) => ![...(entry.closingTabs?.values()||[])].some(closing=>matchesClosingTab(tab,closing)) && (ignoreFilter || filter === 'all' || groups[entry.host] === filter))
+    .sort((a,b) => a.hidden-b.hidden || a.rank-b.rank || lateness(a)-lateness(b) || byMachine(a,b));
+}
+// The tabs listed in the sidebar, in order: hidden ones only while their group is open.
+function listedTabs(){
+  const searching=!!$('tab-search').value.trim();
+  return allTabs().filter(item=>matchesSearch(item)&&(!item.hidden||hiddenOpen||searching));
 }
 function moveTab(key,targetKey,after=false) {
   if(key===targetKey)return;
-  const tabs=allTabs(true,true),source=tabs.find(t=>t.key===key),target=tabs.find(t=>t.key===targetKey);
+  const tabs=allTabs(true),source=tabs.find(t=>t.key===key),target=tabs.find(t=>t.key===targetKey);
   if(!source||!target)return;
   // A missing host or catalog is temporary; retain its saved positions when another tab moves.
   const order=[...new Set([...tabOrder,...tabs.map(t=>t.key)].map(canonKey))];
@@ -384,9 +432,12 @@ function moveTab(key,targetKey,after=false) {
   tabButtons.get(key)?.scrollIntoView({block:'nearest',inline:'nearest'});
 }
 function moveSelected(direction) {
-  const tabs=allTabs().filter(matchesSearch),index=tabs.findIndex(t=>t.key===selected),target=tabs[index+direction];
+  const tabs=listedTabs(),index=tabs.findIndex(t=>t.key===selected),target=tabs[index+direction];
   if(index<0||!target)return;
-  moveTab(selected,target.key,direction>0);
+  // Moving past the Hidden header hides or shows the tab, next to the tab it passed.
+  const crossing=target.hidden!==tabs[index].hidden;
+  if(crossing)setHidden(tabs[index],target.hidden);
+  moveTab(selected,target.key,crossing?direction<0:direction>0);
 }
 // True until every reachable machine's terminals have reported once. Polls
 // refresh hosts and catalogs; only the first load counts.
@@ -401,7 +452,6 @@ function sidebarEmpty(tabs,shown){
   const machines=[...hosts.values()];
   if(tabs.length)return {text:`No tabs match “${$('tab-search').value.trim()}”`,action:'Clear search',run(){$('tab-search').value='';render();$('tab-search').focus();}};
   if(filter!=='all'&&allTabs(true).length)return {text:`No tabs in ${$('filters').querySelector('.selected').textContent}`,action:'Show all',run:()=>setFilter('all')};
-  if(allTabs(true,true).length)return {text:'All tabs are archived',action:'Open archive',run:()=>openPanel('archive')};
   const entries=[...sessions.values()];
   if(machines.length&&machines.every(host=>host.error)||entries.length&&entries.every(entry=>catalogUnavailable(entry.host,entry.name)))
     return {state:'unreachable',text:'Can’t reach your machines',action:'View logs',run:()=>openPanel('logs')};
@@ -417,6 +467,23 @@ function renderSidebarEmpty(tabs,shown){
   action.hidden=!empty.action;action.textContent=empty.action||'';action.onclick=empty.run||null;
   return empty;
 }
+// Opens and closes the Hidden group. It sits in the tab list after the other tabs, so a
+// tab dragged onto it is hidden, and one dragged above it is shown again.
+const hiddenHeader=document.createElement('button');
+hiddenHeader.id='hidden-toggle';hiddenHeader._hiddenGroup=true;
+hiddenHeader.innerHTML='<span class="chevron" aria-hidden="true">›</span><span>Hidden</span><span class="star attention" aria-hidden="true"></span><span class="count"></span>';
+hiddenHeader.onclick=()=>{
+  if(dragging||Date.now()<suppressTabClickUntil)return;
+  hiddenOpen=!hiddenOpen;localStorage.setItem('switchboard-hidden-open',String(hiddenOpen));render();
+};
+function renderHiddenHeader(tabs,shown,searching){
+  const expanded=hiddenOpen||searching,attention=tabs.some(isReady),count=searching?`${shown.length} / ${tabs.length}`:String(tabs.length);
+  hiddenHeader.setAttribute('aria-expanded',String(expanded));
+  hiddenHeader.children[2].hidden=!attention;
+  if(hiddenHeader.children[3].textContent!==count)hiddenHeader.children[3].textContent=count;
+  hiddenHeader.setAttribute('aria-label',`Hidden tabs, ${tabs.length}${attention?', one needs you':''}`);
+  hiddenHeader.title=`${expanded?'Collapse':'Expand'} hidden tabs. They keep running.\nDrag a tab here to hide it, or above here to show it again.`;
+}
 function render() {
   // Live metadata arrives while dragging; keep the source element mounted.
   if(dragging)return;
@@ -428,10 +495,13 @@ function render() {
   else if(!waitingForRequestedTab()){restoringTab=false;selected=terminalsSettling()?null:tabs[0]?.key||null;}
   const liveKeys=new Set(tabs.map(item=>item.key));
   for(const [key,button] of tabButtons)if(!liveKeys.has(key)){button._row.remove();tabButtons.delete(key);}
-  const shown=tabs.filter(matchesSearch), nodes=[],shownKeys=new Set(shown.map(item=>item.key));
+  const shown=tabs.filter(matchesSearch),listed=listedTabs(),nodes=[],shownKeys=new Set(listed.map(item=>item.key));
+  const searching=!!$('tab-search').value.trim(),hiddenTabs=tabs.filter(item=>item.hidden),hiddenShown=shown.filter(item=>item.hidden);
+  const showHiddenGroup=hiddenTabs.length>0&&(!searching||hiddenShown.length>0);
   const titles=new Map(tabs.map(item=>[item.key,tabTitle(item)])),titleCounts=new Map();
   for(const item of tabs){const key=JSON.stringify([item.entry.host,titles.get(item.key)]);titleCounts.set(key,(titleCounts.get(key)||0)+1);}
-  for (const item of shown) {
+  for (const item of listed) {
+    if(item.hidden&&!nodes.includes(hiddenHeader))nodes.push(hiddenHeader);
     let button=tabButtons.get(item.key);
     if(!button){
       button=document.createElement('button');button.draggable=true;
@@ -486,20 +556,24 @@ function render() {
     if(button.children[2].textContent!==subtitle)button.children[2].textContent=subtitle;
     const row=button._row,actions=row.lastElementChild;row._item=item;
     row.classList.toggle('active',item.key===selected);
+    row.classList.toggle('hidden-tab',item.hidden);
     actions.setAttribute('aria-label',`Actions for ${title} · ${machine}`);
     actions.title=`Actions for ${title}`;
     actions.setAttribute('aria-expanded',String(!$('tab-menu').hidden&&contextItem?.key===item.key));
     nodes.push(row);
   }
+  if(showHiddenGroup&&!nodes.includes(hiddenHeader))nodes.push(hiddenHeader);
+  if(showHiddenGroup)renderHiddenHeader(hiddenTabs,hiddenShown,searching);else hiddenHeader.remove();
   for(const button of tabButtons.values())if(!shownKeys.has(button._item.key))button._row.remove();
   let cursor=$('tabs').firstChild;
   for(const node of nodes){if(node!==cursor)$('tabs').insertBefore(node,cursor);else cursor=cursor.nextSibling;}
-  $('tab-count').textContent=`${shown.length}${shown.length!==tabs.length?' / '+tabs.length:''} tabs`;
+  const visibleCount=tabs.length-hiddenTabs.length,visibleShown=shown.length-hiddenShown.length;
+  $('tab-count').textContent=`${visibleShown}${visibleShown!==visibleCount?' / '+visibleCount:''} tabs`;
   const emptyHint=renderSidebarEmpty(tabs,shown);
 
   const current=tabs.find(t=>t.key===selected);
   updateTabUrl(current);
-  const notifications=allTabs(true,true).filter(isReady).length;
+  const notifications=allTabs(true).filter(isReady).length;
   $('notifications').textContent=`${notifications} notification${notifications===1?'':'s'}`;
   $('notifications').classList.toggle('has-notifications',notifications>0);
   $('notifications').hidden=notifications===0;
@@ -509,9 +583,6 @@ function render() {
   for (const entry of sessions.values()) entry.frame.classList.toggle('active',entry===currentEntry);
   updateSelectionTools(current);
   if(!$('tab-menu').hidden)updateTabMenu();
-  const archiveCount=allTabs(true,true).filter(item=>archived[item.key]).length;
-  $('archive').textContent=`Archive${archiveCount?' ('+archiveCount+')':''}`;
-  if(!$('panel-archive').hidden&&$('panel').open)renderArchive();
   if(!current){$('artifact-preview').hidden=true;$('artifact-frame').contentWindow?.location.replace('about:blank');}
   // The sidebar says why nothing is selected; the main area repeats only its
   // action, which matters on phones where the sidebar is a closed drawer.
@@ -526,7 +597,7 @@ function render() {
   for(const error of attentionErrors)errors.push({host:hosts.has(error.host)?error.host:null,message:`${hosts.get(error.host)?.name||error.host}: attention status unavailable`});
   if(currentEntry?.disconnected)errors.push({message:`${hosts.get(currentEntry.host)?.name||currentEntry.host}: reconnecting…`});
   setStatus(errors.length?errors.map(error=>error.message).join(' · '):`${hosts.size} machines · ${tabs.length} tabs${current?' · '+hosts.get(current.entry.host)?.name:''}`,errors.length>0,errors);
-  if(hostsLoaded&&attentionLoaded&&!terminalsSettling())globalThis.SwitchboardStartup?.save([...hosts.values()],allTabs(true,true).map(item=>({...item,title:tabTitle(item)})),groups);
+  if(hostsLoaded&&attentionLoaded&&!terminalsSettling())globalThis.SwitchboardStartup?.save([...hosts.values()],allTabs(true).map(item=>({...item,title:tabTitle(item)})),groups);
   if ((selected !== previous || wasRestoring&&!restoringTab) && current) focus(current,true);
   if(selected!==previous) $('tabs').querySelector('.selected')?.scrollIntoView({block:'nearest',inline:'nearest'});
   globalThis.SwitchboardAskpass?.update();
@@ -534,12 +605,14 @@ function render() {
 function updateDragTarget() {
   if(!dragState)return;
   const strip=$('tabs'),bounds=strip.getBoundingClientRect();
-  const candidates=[...strip.children].filter(button=>button._item&&button._item.key!==dragState.key);
+  const candidates=[...strip.children].filter(row=>row._hiddenGroup||row._item&&row._item.key!==dragState.key);
   const next=candidates.find(button=>{const rect=button.getBoundingClientRect();return dragState.clientY<rect.top+rect.height/2;});
   const target=next||candidates.at(-1);
   if(!target){dragState.target=null;strip.classList.remove('drop-target');return;}
   const after=!next,rect=target.getBoundingClientRect();
-  dragState.target={key:target._item.key,after};
+  // Above the Hidden header: shown, after the last shown tab. Below it: hidden, in its own place.
+  if(target._hiddenGroup)dragState.target=after?{hidden:true}:{key:candidates.filter(row=>row._item&&!row._item.hidden).at(-1)?._item.key,after:true,hidden:false};
+  else dragState.target={key:target._item.key,after,hidden:target._item.hidden};
   strip.style.setProperty('--drop-top',`${(after?rect.bottom+1:rect.top-2)-bounds.top+strip.scrollTop}px`);
   strip.classList.add('drop-target');
 }
@@ -566,7 +639,10 @@ $('tabs').addEventListener('drop',event=>{
   if(!dragState||!event.dataTransfer.types.includes(dragType))return;
   event.preventDefault();dragState.clientY=event.clientY;updateDragTarget();
   const {key,target}=dragState;
-  finishDrag();if(target)moveTab(key,target.key,target.after);
+  finishDrag();if(!target)return;
+  const item=allTabs(true).find(item=>item.key===key);
+  if(item&&item.hidden!==target.hidden){setHidden(item,target.hidden);render();}
+  if(target.key)moveTab(key,target.key,target.after);
 });
 function finishDrag(){
   if(!dragging)return;
@@ -623,7 +699,7 @@ function activate(item, clear=true) {
   tabButtons.get(item.key)?.scrollIntoView({block:'nearest',inline:'nearest'});
 }
 function stepTab(direction) {
-  const tabs=allTabs().filter(matchesSearch);
+  const tabs=listedTabs();
   if(!tabs.length)return;
   const index=tabs.findIndex(t=>t.key===selected);
   activate(tabs[(Math.max(index,0)+direction+tabs.length)%tabs.length]);
@@ -674,7 +750,7 @@ function tabNumber(event){
   return modifier?+event.code.slice(5):0;
 }
 function selectTabNumber(number){
-  const tabs=allTabs().filter(matchesSearch),item=number===9?tabs.at(-1):tabs[number-1];
+  const tabs=listedTabs(),item=number===9?tabs.at(-1):tabs[number-1];
   if(item)activate(item);
 }
 function renderMachines() {
@@ -736,7 +812,7 @@ function pruneSessions(listed=null,hostId=null){
 async function refresh() {
   if(loading)return;loading=true;
   try {
-    fetch('/api/mesh',{cache:'no-store'}).then(r=>r.ok?r.json():null).then(mesh=>{meshMembers=mesh?.members||[];localMember=meshMembers.find(m=>m.local)||null;applyCategories();applyTabOrder(mesh,localMember);render();}).catch(()=>{});
+    fetch('/api/mesh',{cache:'no-store'}).then(r=>r.ok?r.json():null).then(mesh=>{meshMembers=mesh?.members||[];localMember=meshMembers.find(m=>m.local)||null;applyCategories();applyTabOrder(mesh,localMember);applyHidden(mesh,localMember);render();}).catch(()=>{});
     const response=await fetch('/api/hosts?summary=1');if(!response.ok)throw Error('Cannot reach local relay');
     const data=await response.json();hostsLoaded=true;
     globalThis.SwitchboardStartup?.discover(data);
@@ -1072,7 +1148,7 @@ $('size-owner').onclick=()=>{
   item.entry.frame.contentWindow.postMessage({type:'zellij-size-owner',tab_position:item.tab.position,owned:true},location.origin);
   closeTabMenu(true);
 };
-// One panel holds Messages, Computers, Archive, Logs and Settings over the
+// One panel holds Messages, Computers, Updates, Logs and Settings over the
 // terminals, so terminal iframes and their sockets stay connected. Messages and
 // Computers stay standalone pages, embedded per section; their links to each
 // other are hidden there, since each is a tab. Modified clicks still open a real page.
@@ -1096,14 +1172,11 @@ function showSection(name,focusTab=false){
   }
   if(name==='logs')loadLogs();
   if(name==='updates')globalThis.SwitchboardTasks?.load();
-  if(name==='archive')renderArchive();
 }
 function openPanel(name){
-  if(name==='archive')$('archive-search').value='';
   showSection(name);
   if(!panel.open)panel.showModal();
-  if(name==='archive')$('archive-search').focus();
-  else panelTabs.find(tab=>tab.dataset.section===name).focus();
+  panelTabs.find(tab=>tab.dataset.section===name).focus();
 }
 document.addEventListener('click',event=>{const name=sectionLink(event);if(name)openPanel(name);});
 $('panel-tabs').onclick=event=>{const tab=event.target.closest('[role=tab]');if(tab)showSection(tab.dataset.section,true);};
@@ -1196,7 +1269,10 @@ function updateTabMenu(){
   contextItem=item;
   $('tab-menu-target').textContent=`${tabTitle(item)} · ${hosts.get(item.entry.host)?.name||item.entry.host} · ${item.entry.name}`;
   $('ready').disabled=!!item.tab.pending&&!Number.isInteger(item.tab.id);
-  $('archive-tab').disabled=!!item.tab.pending&&!Number.isInteger(item.tab.id);
+  const hide=$('hide-tab');
+  hide.disabled=!!item.tab.pending&&!Number.isInteger(item.tab.id);
+  hide.firstChild.textContent=item.hidden?'Show in list':'Hide';
+  hide.lastChild.textContent=item.hidden?'Move back among your tabs':'Move to Hidden; keep processes running';
   $('close-tab').disabled=!closeTabTarget(item);
   $('close-tab').title=$('close-tab').disabled?'Waiting for the terminal to finish connecting':'Close this tab · Ctrl+D';
   $('select-text').disabled=!item.entry.frame.contentWindow.SwitchboardClipboard;
@@ -1225,44 +1301,16 @@ $('tab-menu').onkeydown=event=>{
     items[next]?.focus();
   }else if(event.key==='Tab')closeTabMenu(true);
 };
-function archiveTab(item){
-  archived[item.key]=Date.now();
-  localStorage.setItem('switchboard-archived',JSON.stringify(archived));
+$('hide-tab').onclick=()=>{
+  const item=contextItem;if(!item)return;
+  setHidden(item,!item.hidden);
   closeTabMenu();render();
-  const current=allTabs().find(t=>t.key===selected);
-  if(current)current.entry.frame.focus();
-}
-$('archive-tab').onclick=()=>{if(contextItem)archiveTab(contextItem);};
+  tabButtons.get(item.key)?.scrollIntoView({block:'nearest',inline:'nearest'});
+  allTabs().find(t=>t.key===selected)?.entry.frame.focus();
+};
 document.addEventListener('pointerdown',event=>{if(!$('tab-menu').contains(event.target))closeTabMenu();},true);
 window.addEventListener('blur',closeTabMenu);
 $('tabs').addEventListener('scroll',closeTabMenu);
-function renderArchive(){
-  const query=$('archive-search').value.trim().toLowerCase();
-  const list=$('archive-list');
-  const tabs=allTabs(true,true).filter(item=>archived[item.key]);
-  const signature=JSON.stringify([query,tabs.map(item=>[item.key,tabTitle(item),hosts.get(item.entry.host)?.name,item.entry.name])]);
-  if(signature===archiveSignature)return;
-  archiveSignature=signature;list.replaceChildren();
-  for(const item of tabs){
-    const title=tabTitle(item);
-    const machine=`${hosts.get(item.entry.host)?.name || item.entry.host} · ${item.entry.name}`;
-    if(!`${title} ${machine}`.toLowerCase().includes(query))continue;
-    const row=document.createElement('div');row.className='archive-row';
-    const label=document.createElement('span');label.textContent=`${title} · ${machine}`;
-    const restore=document.createElement('button');restore.textContent='Restore';
-    restore.setAttribute('aria-label',`Restore ${title}`);
-    restore.onclick=()=>{
-      delete archived[item.key];localStorage.setItem('switchboard-archived',JSON.stringify(archived));
-      panel.close();$('tab-search').value='';setFilter('all');activate(item);
-      tabButtons.get(item.key)?.scrollIntoView({block:'nearest',inline:'nearest'});
-      item.entry.frame.focus();
-    };
-    row.append(label,restore);list.append(row);
-  }
-  if(!list.children.length){const empty=document.createElement('p');empty.textContent=tabs.length?'No matching archived tabs.':'No archived tabs.';list.append(empty);}
-}
-$('archive').onclick=()=>openPanel('archive');
-$('archive-search').oninput=renderArchive;
 
 function updateSidebar(){
   document.body.classList.toggle('sidebar-collapsed',sidebarCollapsed);

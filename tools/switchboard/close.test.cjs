@@ -12,7 +12,7 @@ test('Close (menu or Ctrl+D) closes the clicked tab immediately and restores it 
   const item={entry,tab:{id:42,position:2,name:'Clicked tab'},key:'clicked'};
   const context={$,contextItem:item,hosts:new Map([['win',{name:'Windows'}]]),statuses:[],
     tabTitle:item=>item.tab.name,closeTabMenu(){context.contextItem=null;},
-    setStatus(message){context.statuses.push(message);},ready:{clicked:1},archived:{clicked:1},saveReady(){},localStorage:{setItem(){}},render(){},activate(next){context.selected=next.key;},
+    setStatus(message){context.statuses.push(message);},ready:{clicked:1},hidden:{clicked:1},isHidden:key=>key in context.hidden,canonKey:key=>key,saveHidden(){},saveReady(){},localStorage:{setItem(){}},render(){},activate(next){context.selected=next.key;},
     fetch:async(url,options)=>{calls.push([url,JSON.parse(options.body)]);return {ok:true};}};
   context.selected='clicked';context.allTabs=()=>[item];
   context.document={querySelector:()=>null};
@@ -27,7 +27,7 @@ test('Close (menu or Ctrl+D) closes the clicked tab immediately and restores it 
   entry.focusPending=true;entry.followActiveTab=true;entry.requestedPane={pane_id:99,is_plugin:false};
   context.closeSelectedTab();await clicked;
   assert.deepEqual(calls[0],['/api/hosts/win/close-tab',{session:'main',tab_id:42}],'no confirmation step');
-  assert.equal(context.ready.clicked,undefined);assert.equal(context.archived.clicked,undefined);
+  assert.equal(context.ready.clicked,undefined);assert.equal(context.hidden.clicked,undefined);
   context.contextItem=item;
   context.fetch=async()=>({ok:false,text:async()=>'That tab is no longer available'});
   await $('close-tab').onclick();
@@ -43,7 +43,7 @@ test('close removes the selected tab before the request finishes, keeps stale ca
   const entry={host:'win',name:'main',state:{panes:[]},catalog:[{id:42,name:'A',panes:[]},{id:90,name:'B',panes:[]}]};
   let finish,requests=0;
   const source=fs.readFileSync(__dirname+'/static/app.js','utf8');
-  const context={$,sessions:new Map([['main',entry]]),hosts:new Map(),SwitchboardTitles:{tabTitle:(_,tab)=>tab.name},selected:null,tabOrder:[],filter:'all',groups:{},archived:{},ready:{},
+  const context={$,sessions:new Map([['main',entry]]),hosts:new Map(),SwitchboardTitles:{tabTitle:(_,tab)=>tab.name},selected:null,tabOrder:[],filter:'all',groups:{},hidden:{},ready:{},
     saveReady(){},localStorage:{setItem(){}},tabTitle:item=>item.tab.name,closeTabMenu(){context.contextItem=null;},render(){},
     activate(item){context.selected=item.key;},setStatus(message){context.status=message;},
     fetch:()=>{requests++;return new Promise(resolve=>finish=resolve);}};
@@ -76,7 +76,7 @@ test('close resolves a provisional tab by its live pane, without closing a tab w
   const entry={host:'win',name:'main',state:{panes:[pane]},catalog:[other],provisionalTabs:[provisional]};
   let finish;
   const calls=[],source=fs.readFileSync(__dirname+'/static/app.js','utf8');
-  const context={$,sessions:new Map([['main',entry]]),hosts:new Map(),selected:null,tabOrder:[],filter:'all',groups:{},archived:{},ready:{},
+  const context={$,sessions:new Map([['main',entry]]),hosts:new Map(),selected:null,tabOrder:[],filter:'all',groups:{},hidden:{},ready:{},
     saveReady(){},localStorage:{setItem(){}},closeTabMenu(){context.contextItem=null;},render(){},
     activate(item){context.selected=item.key;},setStatus(message){context.status=message;},
     fetch:(url,options)=>{calls.push([url,JSON.parse(options.body)]);return new Promise(resolve=>finish=resolve);},AbortSignal};
@@ -87,7 +87,7 @@ test('close resolves a provisional tab by its live pane, without closing a tab w
   context.contextItem=context.allTabs().find(item=>item.tab.pending);
   const pending=$('close-tab').onclick();
   const provisionalKey=context.tabKey(entry,provisional),resolvedKey=JSON.stringify(['win','main','tab',42]);
-  context.ready[provisionalKey]=1;context.archived[provisionalKey]=1;
+  context.ready[provisionalKey]=1;context.hidden[provisionalKey]=1;
   assert.deepEqual(calls,[['/api/hosts/win/close-tab',{session:'main',pane_id:17}]]);
   assert.deepEqual(Array.from(context.allTabs(),item=>item.tab.name),['Other'],'Pane IDs and tab IDs are separate identities');
   const resolved={id:42,position:0,name:'Resolved',panes:[pane]};
@@ -95,7 +95,7 @@ test('close resolves a provisional tab by its live pane, without closing a tab w
   assert.deepEqual(Array.from(context.allTabs(),item=>item.tab.name),['Other'],'Resolving a tab ID cannot undo its pending close');
   assert.equal(context.ready[resolvedKey],1);
   finish({ok:true});await pending;
-  assert.equal(context.ready[resolvedKey],undefined);assert.equal(context.archived[resolvedKey],undefined);
+  assert.equal(context.ready[resolvedKey],undefined);assert.equal(context.hidden[resolvedKey],undefined);
   context.setCatalog(entry,[resolved,other]);
   assert.equal(context.allTabs().length,1,'Stale catalogs cannot restore a confirmed close');
   context.setCatalog(entry,[other]);

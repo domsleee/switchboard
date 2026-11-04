@@ -29,7 +29,7 @@ function closeTabTarget(item){
       if(!response.ok)throw new Error((await response.text()).slice(0,240)||`HTTP ${response.status}`);
       closing.pending=false;
       delete ready[closing.key];saveReady();
-      delete archived[closing.key];localStorage.setItem('switchboard-archived',JSON.stringify(archived));
+      if(isHidden(closing.key)){delete hidden[closing.key];delete hidden[canonKey(closing.key)];saveHidden();}
       render();
     }catch(failure){
       closing.entry.closeError=['AbortError','TimeoutError'].includes(failure.name)

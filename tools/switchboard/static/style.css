@@ -48,6 +48,15 @@ body.sidebar-collapsed #sidebar-toggle{left:8px}
 #tabs.reordering,#tabs.reordering button{cursor:grabbing}
 #tabs.drop-target::after{content:'';position:absolute;top:var(--drop-top);left:6px;right:6px;height:2px;background:#9dc2fa;border-radius:2px;pointer-events:none;z-index:1;box-shadow:0 0 4px #9dc2fa}
 #tabs [hidden]{display:none}
+/* The Hidden group: a quiet header after the other tabs, opening onto dimmed rows. */
+#hidden-toggle{flex-shrink:0;display:flex;align-items:center;gap:7px;margin-top:6px;padding:8px 9px;border:0;border-top:1px solid #2b303b;border-radius:0;background:transparent;color:#a3aec0;font-size:11px;text-align:left}
+#hidden-toggle:hover{background:#222732;color:#e5e7eb}
+#hidden-toggle .chevron{display:inline-block;width:8px;font-size:13px;line-height:1;transition:transform .15s}
+#hidden-toggle[aria-expanded=true] .chevron{transform:rotate(90deg)}
+#hidden-toggle .star{width:6px;height:6px;border-radius:50%}
+#hidden-toggle .count{margin-left:auto;color:#9ba7bd;font-variant-numeric:tabular-nums}
+#tabs .tab-row.hidden-tab .tab-select:not(.selected):not(:hover){opacity:.7}
+@media (prefers-reduced-motion:reduce){#hidden-toggle .chevron{transition:none}}
 #tab-empty{display:grid;grid-template-columns:8px minmax(0,1fr);column-gap:7px;row-gap:8px;align-items:center;padding:16px 16px 4px;font-size:12px;line-height:1.4;color:#9ba7bd;overflow-wrap:anywhere}
 #tab-empty[hidden]{display:none}
 #tab-empty span{grid-column:2}
@@ -223,12 +232,6 @@ body.sidebar-collapsed #artifact-preview header{padding-left:42px}
 .panel-section[hidden]{display:none}
 .panel-page{display:flex;padding:0;overflow:hidden}
 .panel-page iframe{position:static;flex:1;min-width:0;visibility:visible;pointer-events:auto;background:#111318}
-#panel-archive>p{margin:20px 0 12px;line-height:1.5}
-#archive-search{display:block;width:100%;margin-bottom:12px;padding:8px 10px;border:1px solid #363e4d;border-radius:6px;background:#111318;color:inherit;font:inherit;font-size:13px}
-.archive-row{display:flex;align-items:center;gap:12px;padding:7px 7px 7px 14px;font-size:13px}
-.archive-row+.archive-row{border-top:1px solid #222731}
-.archive-row span{flex:1;min-width:0;overflow-wrap:anywhere}
-#archive-list>p{margin:0;padding:12px 14px}
 #panel-logs>.settings-heading{margin:20px 0 10px}
 #panel-logs>.settings-heading p{margin:0;line-height:1.5}
 #build-version{margin:24px 0 0;font:11px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#8590a3;width:max-content;max-width:100%;overflow-wrap:anywhere;cursor:help;text-decoration:underline dotted #8590a366;text-underline-offset:3px}

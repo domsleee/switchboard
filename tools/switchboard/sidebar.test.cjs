@@ -35,12 +35,12 @@ test('Copy title reports denied or unavailable clipboard access instead of claim
   }
 });
 // Exercise stable order and attention acknowledgment without connecting terminals.
-test('attention acknowledgment never moves tabs; search, filters, archive and cross-machine reorder preserve order',()=>{
+test('attention acknowledgment never moves tabs; search, filters, hiding and cross-machine reorder preserve order',()=>{
   const hosts=new Map([['mac',{name:'Mac'}],['win',{name:'Windows'}]]);
   function session(host,names){return {host,name:'main',state:{panes:[]},catalog:names.map((name,position)=>({id:position+40,name,position,panes:[]}))};}
   const sessions=new Map([['mac',session('mac',['home-a','home-b'])],['win',session('win',['work-a','work-b','*ready'])]]);
   const search={value:''},stored={},reviews=[];
-  const context={fetch:(url,options)=>{reviews.push([url,JSON.parse(options.body)]);return Promise.resolve();},hosts,sessions,groups:{mac:'home',win:'work'},ready:{},archived:{},paneAttention:new Map(),seenAttention:{},filter:'all',tabOrder:[],
+  const context={fetch:(url,options)=>{reviews.push([url,JSON.parse(options.body)]);return Promise.resolve();},hosts,sessions,groups:{mac:'home',win:'work'},ready:{},hidden:{},paneAttention:new Map(),seenAttention:{},filter:'all',tabOrder:[],
     selected:null,saveReady(){},SwitchboardTitles:{tabTitle:(_,tab)=>tab.name},
     $:()=>search,localStorage:{setItem:(key,value)=>stored[key]=value},render(){},tabButtons:new Map()};
   vm.createContext(context);
@@ -55,10 +55,12 @@ test('attention acknowledgment never moves tabs; search, filters, archive and cr
   context.filter='home';assert.deepEqual(keys(),['mac:0','mac:1']);
   search.value='mac';assert.equal(context.matchesSearch(context.allTabs()[0]),true);
   search.value='work-a';assert.equal(context.matchesSearch(context.allTabs()[0]),false);
-  context.archived[key('mac',0)]=123;assert.deepEqual(keys(),['mac:1']);
-  assert.equal(context.allTabs(true,true).length,5);
+  // A hidden tab keeps its filter and goes after the others.
+  context.hidden[key('mac',0)]=1;assert.deepEqual(keys(),['mac:1','mac:0']);
+  assert.deepEqual(Array.from(context.allTabs(),item=>item.hidden),[false,true]);
+  assert.equal(context.allTabs(true).length,5);
   context.filter='all';context.ready[key('mac',1)]=123;
-  assert.deepEqual(keys(),['win:1','mac:1','win:0','win:2']);
+  assert.deepEqual(keys(),['win:1','mac:1','win:0','win:2','mac:0']);
   delete context.ready[key('mac',1)];
   const entry=sessions.get('mac');entry.catalog[1].panes=[{pane_id:7,tab_position:1,is_plugin:false}];
   const attentionKey=context.attentionKey('mac','main',7),item=context.allTabs().find(t=>t.key===key('mac',1));
@@ -106,7 +108,7 @@ test('reordering while Windows connects preserves saved positions through reload
   const mac=session('mac',[1,2,3]),windows=session('win',[4,5]),stored={};
   const key=(host,id)=>JSON.stringify([host,'main','tab',id]);
   const initial=[key('mac',1),key('win',4),key('mac',2),key('mac',3),key('win',5)];
-  const context={sessions:new Map([['mac',mac]]),tabOrder:[...initial],archived:{},filter:'all',groups:{},ready:{},selected:null,
+  const context={sessions:new Map([['mac',mac]]),tabOrder:[...initial],hidden:{},filter:'all',groups:{},ready:{},selected:null,
     localStorage:{setItem:(name,value)=>stored[name]=value},render(){},tabButtons:new Map()};
   vm.createContext(context);
   vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function moveSelected(')),context);
@@ -137,7 +139,7 @@ test('every browser on every paired computer shares one tab order, including new
   const view=(hosts,self,local)=>{
     const sessions=new Map(hosts.map(([host,{name}])=>[host,{host,name:'main',state:{panes:[]},catalogPolls:1,catalog:[0,1].map(id=>({id,name:`${name}-${id}`,position:id,panes:[]}))}]));
     const posted=[],stored={'switchboard-tab-order':JSON.stringify(local)};
-    const context={hosts:new Map(hosts),sessions,archived:{},ready:{},selected:null,saveReady(){},filter:'all',groups:{},render(){},tabButtons:new Map(),
+    const context={hosts:new Map(hosts),sessions,hidden:{},ready:{},selected:null,saveReady(){},filter:'all',groups:{},render(){},tabButtons:new Map(),
       localStorage:{getItem:key=>stored[key]??null,setItem:(key,value)=>stored[key]=value},
       fetch:(url,options)=>{posted.push(JSON.parse(options.body).keys);return Promise.resolve({ok:true,json:()=>({updated:posted.length+100})});}};
     vm.createContext(context);context.tabOrder=local;
@@ -183,11 +185,48 @@ test('every browser on every paired computer shares one tab order, including new
   assert.deepEqual(later.names(),onWindows.names());
 });
 
+test('hidden tabs are shared by every paired computer and go after the other tabs',async()=>{
+  const view=(hosts,self,local)=>{
+    const sessions=new Map(hosts.map(([host,{name}])=>[host,{host,name:'main',state:{panes:[]},catalogPolls:1,catalog:[0,1].map(id=>({id,name:`${name}-${id}`,position:id,panes:[]}))}]));
+    const posted=[],stored={'switchboard-hidden':JSON.stringify(local)};
+    const context={hosts:new Map(hosts),sessions,ready:{},selected:null,saveReady(){},filter:'all',groups:{},render(){},tabButtons:new Map(),
+      localStorage:{getItem:key=>stored[key]??null,setItem:(key,value)=>stored[key]=value},
+      fetch:(url,options)=>{posted.push([url,JSON.parse(options.body).keys]);return Promise.resolve({ok:true,json:()=>({updated:posted.length+100})});}};
+    vm.createContext(context);context.tabOrder=[];context.hidden={...local};
+    vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function moveSelected(')),context);
+    vm.runInContext(`localMember=${JSON.stringify(self)}`,context);
+    const names=()=>Array.from(context.allTabs(),item=>item.tab.name+(item.hidden?' (hidden)':''));
+    return {context,sessions,posted,stored,names};
+  };
+  const mac={name:'Mac',id:'d1',local:true},win={name:'Windows',id:'24',local:true};
+  // The Mac archived its own tab before sharing existed.
+  const onMac=view([['mac',{name:'Mac',local:true}],['mesh-24',{name:'Windows'}]],mac,{[JSON.stringify(['mac','main','tab',0])]:123});
+  const onWindows=view([['win',{name:'Windows',local:true}],['mesh-d1',{name:'Mac'}]],win,{});
+  assert.deepEqual(onMac.names(),['Mac-1','Windows-0','Windows-1','Mac-0 (hidden)']);
+  onMac.context.applyTabOrder({tab_order:null},mac);onMac.context.applyHidden({hidden_tabs:null},mac);
+  assert.deepEqual(onMac.posted.at(-1),['/api/mesh/hidden-tabs',[JSON.stringify(['mesh-d1','main','tab',0])]],'it joins the group keyed by member');
+  onWindows.context.applyTabOrder({tab_order:null},win);
+  onWindows.context.applyHidden({hidden_tabs:{keys:onMac.posted.at(-1)[1],updated:1}},win);
+  assert.deepEqual(onWindows.names(),['Mac-1','Windows-0','Windows-1','Mac-0 (hidden)']);
+  // Windows hides its own admin tab; the Mac sees it, and an older poll cannot undo it.
+  const admin=onWindows.context.allTabs().find(item=>item.tab.name==='Windows-1');
+  onWindows.context.setHidden(admin,true);await new Promise(setImmediate);
+  const shared=onWindows.posted.at(-1)[1];
+  assert.deepEqual(shared,[JSON.stringify(['mesh-d1','main','tab',0]),JSON.stringify(['mesh-24','main','tab',1])]);
+  onMac.context.applyHidden({hidden_tabs:{keys:shared,updated:150}},mac);
+  onMac.context.applyHidden({hidden_tabs:{keys:onMac.posted.at(-1)[1],updated:120}},mac);
+  assert.deepEqual(onMac.names(),['Mac-1','Windows-0','Mac-0 (hidden)','Windows-1 (hidden)']);
+  // Shown again from the Mac, keyed the way Windows knows it.
+  onMac.context.setHidden(onMac.context.allTabs().find(item=>item.tab.name==='Mac-0'),false);
+  assert.deepEqual(onMac.posted.at(-1)[1],[JSON.stringify(['mesh-24','main','tab',1])]);
+  assert.deepEqual(JSON.parse(onMac.stored['switchboard-hidden']),{[JSON.stringify(['mesh-24','main','tab',1])]:1},'this browser keeps a copy');
+});
+
 test('every computer in a mesh lists unsorted tabs in the same machine order',()=>{
   // Each computer calls itself by a local ID and lists itself first; catalogs arrive in any order.
   const view=(hosts,arrival,self)=>{
     const sessions=new Map(arrival.map(([host,name])=>[host,{host,name:'main',state:{panes:[]},catalog:[0,1].map(id=>({id,name:`${name}-${id}`,position:id,panes:[]}))}]));
-    const context={hosts:new Map(hosts),sessions,tabOrder:[],archived:{},filter:'all',groups:{}};
+    const context={hosts:new Map(hosts),sessions,tabOrder:[],hidden:{},filter:'all',groups:{}};
     vm.createContext(context);
     vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function moveSelected(')),context);
     vm.runInContext(`localMember=${JSON.stringify(self)}`,context);
@@ -204,7 +243,7 @@ test('every computer in a mesh lists unsorted tabs in the same machine order',()
 test('a new tab goes to the bottom on every computer and stays there after reload',()=>{
   const stored={};
   const view=()=>{
-    const context={hosts:new Map([['mac',{name:'Doms-MacBook-Pro'}],['win',{name:'Windows'}]]),sessions:new Map(),tabOrder:[],ready:{},archived:{},selected:null,
+    const context={hosts:new Map([['mac',{name:'Doms-MacBook-Pro'}],['win',{name:'Windows'}]]),sessions:new Map(),tabOrder:[],ready:{},hidden:{},selected:null,
       filter:'all',groups:{},saveReady(){},localStorage:{getItem:key=>stored[key]??null,setItem:(key,value)=>stored[key]=value}};
     vm.createContext(context);
     vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function moveSelected(')),context);
@@ -250,7 +289,7 @@ test('each group returns to and shows its own last selected tab, even across com
   const tab=(host,id)=>({id,name:`${host}-${id}`,position:id,panes:[]});
   const sessions=new Map(['w1','w2','h1','h2'].map(host=>[host,{host,name:'main',state:{panes:[]},catalog:[tab(host,0)]}]));
   const focused=[];
-  const context={hosts:new Map([...sessions.keys()].map(host=>[host,{name:host}])),sessions,tabOrder:[],archived:{},ready:{},
+  const context={hosts:new Map([...sessions.keys()].map(host=>[host,{name:host}])),sessions,tabOrder:[],hidden:{},ready:{},
     filter:'work',groups:{w1:'work',w2:'work',h1:'home',h2:'home'},selected:null,localStorage:{setItem(){}},renderFilter(){},
     focus:item=>focused.push(item.key)};
   vm.createContext(context);
@@ -278,16 +317,16 @@ test('each group returns to and shows its own last selected tab, even across com
   assert.equal(focused.length,count);
 });
 
-test('native tab identity preserves selection, archive and order through pane removal, floating and reordered positions',()=>{
+test('native tab identity preserves selection, hiding and order through pane removal, floating and reordered positions',()=>{
   const entry={host:'win',name:'main',state:{panes:[]}},stored={};
-  const context={ready:{},archived:{},selected:null,tabOrder:[],saveReady(){},localStorage:{setItem:(key,val)=>stored[key]=val},SwitchboardTitles:{tabTitle:(_,tab)=>tab.name}};
+  const context={ready:{},hidden:{},selected:null,tabOrder:[],saveReady(){},localStorage:{setItem:(key,val)=>stored[key]=val},SwitchboardTitles:{tabTitle:(_,tab)=>tab.name}};
   vm.createContext(context);
   vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function attentionKey(')),context);
   const pane=(pane_id,position,is_floating=false)=>({pane_id,is_plugin:false,tab_position:position,is_floating});
   context.setCatalog(entry,[{id:42,position:0,name:'A',panes:[pane(7,0),pane(8,0)]},{id:90,position:1,name:'B',panes:[pane(9,1)]}]);
-  const key=context.tabKey(entry,entry.catalog[0]);context.selected=key;context.archived[key]=123;context.tabOrder=[key];
+  const key=context.tabKey(entry,entry.catalog[0]);context.selected=key;context.hidden[key]=1;context.tabOrder=[key];
   context.setCatalog(entry,[{id:90,position:0,name:'B',panes:[pane(9,0)]},{id:42,position:1,name:'A',panes:[pane(8,1,true)]}]);
-  assert.equal(context.tabKey(entry,entry.catalog[1]),key);assert.equal(context.selected,key);assert.equal(context.archived[key],123);assert.equal(context.tabOrder[0],key);
+  assert.equal(context.tabKey(entry,entry.catalog[1]),key);assert.equal(context.selected,key);assert.equal(context.isHidden(key),true);assert.equal(context.tabOrder[0],key);
   // A pane moved to another tab must never be used for focus while the catalog is stale.
   entry.state.panes=[pane(8,0,true)];assert.equal(context.tabPanes(entry,entry.catalog[1]).length,0);
   entry.state.panes=[pane(8,1,true)];assert.equal(context.tabPanes(entry,entry.catalog[1]).length,1);
@@ -295,12 +334,12 @@ test('native tab identity preserves selection, archive and order through pane re
 
 test('existing pane-key preferences migrate once to native tab IDs',()=>{
   const entry={host:'mac',name:'main',state:{panes:[]}},old=JSON.stringify(['mac','main',7,false]);
-  const context={ready:{[old]:321},archived:{[old]:123},selected:old,tabOrder:[old],saveReady(){},localStorage:{setItem(){}}};
+  const context={ready:{[old]:321},hidden:{[old]:123},selected:old,tabOrder:[old],saveReady(){},localStorage:{setItem(){}}};
   vm.createContext(context);vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function attentionKey(')),context);
   const tabs=[{id:42,position:0,name:'A',panes:[{pane_id:7,is_plugin:false}]}];context.setCatalog(entry,tabs);
   const key=JSON.stringify(['mac','main','tab',42]);
-  assert.equal(context.selected,key);assert.equal(context.ready[key],321);assert.equal(context.archived[key],123);assert.equal(context.archived[old],undefined);assert.equal(context.tabOrder[0],key);
-  context.setCatalog(entry,[{...tabs[0],panes:[{pane_id:8,is_plugin:false}]}]);assert.equal(context.archived[key],123);
+  assert.equal(context.selected,key);assert.equal(context.ready[key],321);assert.deepEqual(Object.keys(context.hidden),[key]);assert.equal(context.tabOrder[0],key);
+  context.setCatalog(entry,[{...tabs[0],panes:[{pane_id:8,is_plugin:false}]}]);assert.deepEqual(Object.keys(context.hidden),[key]);
 });
 
 test('Cmd/Ctrl+Alt+T opens the New tab dialog once outside inputs and open dialogs',()=>{
@@ -321,7 +360,7 @@ test('a native new tab arriving before its catalog follows its active pane after
   const pane={pane_id:9,is_plugin:false,tab_position:1};
   const entry={host:'win',name:'main',state:{panes:[pane],active_pane:pane},followActiveTab:true,frame:{classList:{contains:()=>true}}};
   const key=id=>JSON.stringify(['win','main','tab',id]);
-  const context={ready:{},archived:{},selected:key(42),tabOrder:[],saveReady(){},localStorage:{setItem(){}}};
+  const context={ready:{},hidden:{},selected:key(42),tabOrder:[],saveReady(){},localStorage:{setItem(){}}};
   vm.createContext(context);vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function attentionKey(')),context);
   context.setCatalog(entry,[{id:42,position:0,name:'A',panes:[]}]);assert.equal(context.selected,key(42));
   const tabs=[{id:42,position:0,name:'A',panes:[]},{id:90,position:1,name:'B',panes:[pane]}];
@@ -340,7 +379,7 @@ test('new tab focus and catalog resolve selection in either arrival order withou
     const key=id=>JSON.stringify(['win','main','tab',id]);
     entry.pendingNewTab=new Set([key(42)]);
     const search={value:'old search'};let handler,scans=0,highlight,focused;
-    const context={sessions:new Map([[JSON.stringify(['win','main']),entry]]),ready:{},archived:{},selected:key(42),tabOrder:[],
+    const context={sessions:new Map([[JSON.stringify(['win','main']),entry]]),ready:{},hidden:{},selected:key(42),tabOrder:[],
       filter:'work',groups:{win:'home'},nativeTabs:false,saveReady(){},localStorage:{setItem(){}},$:()=>search,location:{origin:'http://localhost'},
       window:{addEventListener:(_,fn)=>handler=fn},setFilter(value){context.filter=value;},
       allTabs:()=>entry.catalog.map(tab=>({entry,tab,key:key(tab.id)})),acknowledgeAttention(){},
@@ -404,7 +443,7 @@ test('New tab cannot snapshot an unscanned or empty catalog',()=>{
 test('early catalog data is applied immediately and one delayed host does not block other terminals',async()=>{
   let releaseSlow;const delayed=new Promise(resolve=>releaseSlow=resolve),mounted=[];
   const catalog=[{host:'mac',session:'main',id:42,position:0,name:'A',panes:[]}];
-  const context={loading:false,hosts:new Map(),startedHosts:new Set(),sessions:new Map(),tabCatalog:catalog,ready:{},archived:{},tabOrder:[],selected:null,catalogUnavailable:()=>false,saveReady(){},localStorage:{setItem(){}},clearTimeout(){},
+  const context={loading:false,hosts:new Map(),startedHosts:new Set(),sessions:new Map(),tabCatalog:catalog,ready:{},hidden:{},tabOrder:[],selected:null,catalogUnavailable:()=>false,saveReady(){},localStorage:{setItem(){}},clearTimeout(){},
     document:{createElement:()=>({remove(){}})},$:()=>({append:frame=>mounted.push(frame)}),renderMachines(){},render(){},setStatus(){},
     fetch:async url=>{if(url==='/api/hosts?summary=1')return {ok:true,json:async()=>[{id:'mac',name:'Mac'},{id:'slow',name:'Slow'}]};
       if(url==='/api/hosts/slow')return delayed;
@@ -419,7 +458,7 @@ test('early catalog data is applied immediately and one delayed host does not bl
 
 test('a host the relay stops listing leaves the sidebar without a reload',async()=>{
   let summary=[{id:'windows',name:'Windows'},{id:'mesh-twin',name:'Windows'}];const removed=[];
-  const context={loading:false,hosts:new Map(),startedHosts:new Set(),sessions:new Map(),tabCatalog:[],ready:{},archived:{},tabOrder:[],selected:null,catalogUnavailable:()=>false,saveReady(){},localStorage:{setItem(){}},clearTimeout(){},setTimeout(){},
+  const context={loading:false,hosts:new Map(),startedHosts:new Set(),sessions:new Map(),tabCatalog:[],ready:{},hidden:{},tabOrder:[],selected:null,catalogUnavailable:()=>false,saveReady(){},localStorage:{setItem(){}},clearTimeout(){},setTimeout(){},
     document:{createElement:()=>({remove(){removed.push(this.src);}})},$:()=>({append(){}}),renderMachines(){},render(){},setStatus(){},
     fetch:async url=>url==='/api/hosts?summary=1'?{ok:true,json:async()=>summary}
       :{ok:true,json:async()=>({id:decodeURIComponent(url.split('/').pop()),name:'Windows',sessions:[{name:'main',web_clients_allowed:true}]})}};
@@ -532,7 +571,7 @@ test('a late native catalog cannot replace a selected tab waiting for focus',()=
   const entry={host:'mac',name:'main',state:{panes:[pane],active_pane:pane},needsFocus:true,followActiveTab:true,
     frame:{classList:{contains:()=>true}}};
   const key=id=>JSON.stringify(['mac','main','tab',id]);
-  const context={ready:{},archived:{},selected:key(90),tabOrder:[],saveReady(){},localStorage:{setItem(){}}};
+  const context={ready:{},hidden:{},selected:key(90),tabOrder:[],saveReady(){},localStorage:{setItem(){}}};
   vm.createContext(context);
   vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function attentionKey(')),context);
   context.setCatalog(entry,[{id:42,position:0,panes:[pane]},{id:90,position:1,panes:[]}]);
@@ -548,7 +587,7 @@ test('a recreated session keeps its tabs where they were dragged, though Zellij 
       ['mesh-d1',{host:'mesh-d1',name:'main',state:{panes:[]},catalogPolls:1,catalog:[0,1].map(id=>({id,name:'Mac-'+id,position:id,panes:[]}))}]]);
     const hosts=new Map([['mesh-24',{name:'Windows',sessions:[{name:'main',created}]}],['mesh-d1',{name:'Mac',sessions:[{name:'main',created:50}]}]]);
     const posted=[],stored={};
-    const context={hosts,sessions,archived:{},ready:{},selected:null,saveReady(){},filter:'all',groups:{},render(){},tabButtons:new Map(),
+    const context={hosts,sessions,hidden:{},ready:{},selected:null,saveReady(){},filter:'all',groups:{},render(){},tabButtons:new Map(),
       localStorage:{getItem:key=>stored[key]??null,setItem:(key,value)=>stored[key]=value},
       fetch:(url,options)=>{posted.push(JSON.parse(options.body).keys);return Promise.resolve({ok:true,json:()=>({updated:1000+posted.length})});}};
     vm.createContext(context);context.tabOrder=[];
@@ -559,6 +598,7 @@ test('a recreated session keeps its tabs where they were dragged, though Zellij 
   };
   const key=(host,id)=>JSON.stringify([host,'main','tab',id]);
   const before=view([5,7,9],1000);
+  before.context.hidden[key('mesh-24',7)]=1;
   before.context.applyTabOrder({tab_order:{keys:[key('mesh-24',9),key('mesh-d1',0),key('mesh-24',5),key('mesh-d1',1),key('mesh-24',7)],updated:1}},{id:'me'});
   for(const entry of before.sessions.values())before.context.setCatalog(entry,entry.catalog);
   const dragged=['Windows-C','Mac-0','Windows-A','Mac-1','Windows-B'];
@@ -569,6 +609,9 @@ test('a recreated session keeps its tabs where they were dragged, though Zellij 
   const waiting=before.posted.length;before.restart([0,1,2]);assert.equal(before.posted.length,waiting,'a catalog ahead of the start time waits');
   before.restart([0,1,2],9000);
   assert.deepEqual(before.names(),dragged);
+  // The hidden tab stays hidden under its new number, and no other tab takes its place.
+  assert.deepEqual(Object.keys(before.context.hidden),[key('mesh-24',1)]);
+  assert.deepEqual(Array.from(before.context.allTabs().filter(item=>item.hidden),item=>item.tab.name),['Windows-B']);
   const shared=before.posted.at(-1);
   // Another browser that hears the remapped order after the restart leaves it alone.
   const after=view([0,1,2],9000);

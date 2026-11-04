@@ -69,10 +69,10 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     const action=page.locator('.tab-actions').nth(1);
     await page.locator('.tab-row').nth(1).hover();await action.click();
     assert.match(await page.locator('#tab-menu-target').textContent(),/Online shopping · Mac · main/);
-    assert.equal(await page.locator('#archive-tab').isVisible(),false);
-    assert.equal(await page.locator('#archive').isVisible(),false);
+    assert.match(await page.locator('#hide-tab').textContent(),/^Hide/);
     if(process.env.SWITCHBOARD_UX_SCREENSHOTS)await page.screenshot({path:process.env.SWITCHBOARD_UX_SCREENSHOTS+'/tab-menu.png'});
     await page.keyboard.press('End');assert.equal(await page.evaluate(()=>document.activeElement.id),'close-tab');
+    await page.keyboard.press('ArrowUp');assert.equal(await page.evaluate(()=>document.activeElement.id),'hide-tab');
     await page.keyboard.press('ArrowUp');assert.equal(await page.evaluate(()=>document.activeElement.id),'select-text');
     await page.keyboard.press('Home');assert.equal(await page.evaluate(()=>document.activeElement.id),'ready');
     await page.keyboard.press('Escape');assert.equal(await action.evaluate(e=>document.activeElement===e),true);
@@ -91,10 +91,31 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.equal(await page.locator('#tabs .selected .tab-name').textContent(),'switchboard');
     assert.match(await page.locator('#tabs small').nth(1).textContent(),/For review/);
     assert.deepEqual(await order(),names);
-    await page.evaluate(()=>archiveTab(allTabs().find(item=>tabTitle(item)==='Online shopping')));
+    // Hide moves the tab into the collapsed Hidden group at the bottom; it still needs review.
+    const toggle=page.locator('#hidden-toggle');
+    assert.equal(await toggle.count(),0,'no Hidden group until a tab is hidden');
+    await action.click();await page.locator('#hide-tab').click();
     assert.deepEqual(await order(),['switchboard','ssb orchestrator']);
-    await page.evaluate(()=>openPanel('archive'));await page.getByRole('button',{name:'Restore Online shopping',exact:true}).click();
+    assert.equal(await toggle.getAttribute('aria-expanded'),'false');
+    assert.equal(await toggle.locator('.count').textContent(),'1');
+    assert.equal(await toggle.locator('.star').isVisible(),true,'a hidden tab that needs you marks the group');
+    assert.match(await page.locator('#tab-count').textContent(),/^2 tabs/);
+    assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('switchboard-hidden'))[JSON.stringify(['mac','main','tab',2])]),1);
+    // Search finds it while the group is collapsed.
+    await page.locator('#tab-search').fill('shopping');
+    assert.deepEqual(await order(),['Online shopping']);
+    await page.locator('#tab-search').fill('');
+    assert.deepEqual(await order(),['switchboard','ssb orchestrator']);
+    await toggle.click();
+    assert.deepEqual(await order(),['switchboard','ssb orchestrator','Online shopping']);
+    assert.equal(await page.evaluate(()=>localStorage.getItem('switchboard-hidden-open')),'true');
+    if(process.env.SWITCHBOARD_UX_SCREENSHOTS)await page.locator('#sidebar').screenshot({path:process.env.SWITCHBOARD_UX_SCREENSHOTS+'/hidden.png'});
+    const hiddenRow=page.locator('.tab-row.hidden-tab');
+    await hiddenRow.hover();await hiddenRow.locator('.tab-actions').click();
+    assert.match(await page.locator('#hide-tab').textContent(),/^Show in list/);
+    await page.locator('#hide-tab').click();
     assert.deepEqual(await order(),names);
+    assert.equal(await toggle.count(),0);
     // Copy toolbar works with the actual clipboard adapter, and Done clears it.
     await page.locator('.tab-row.active .tab-actions').click();await page.locator('#select-text').click();
     await page.waitForFunction(()=>!document.querySelector('#selection-tools').hidden);
@@ -197,6 +218,19 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     await page.waitForFunction(()=>document.querySelector('iframe.active')?.contentDocument?.activeElement?.id==='terminal-input');
     assert.equal(await page.locator('#sidebar-resize').getAttribute('aria-valuenow'),'222');
     assert.deepEqual(await order(),reordered);
+    // Dragging below the Hidden header hides a tab; dragging above it shows one again.
+    const hiddenNames=()=>page.locator('#tabs .hidden-tab .tab-name').allTextContents();
+    const tabNamed=name=>page.locator('#tabs .tab-select',{hasText:name});
+    await page.evaluate(()=>{setHidden(allTabs().find(item=>tabTitle(item)==='Online shopping'),true);render();});
+    assert.equal(await page.locator('#hidden-toggle').getAttribute('aria-expanded'),'true','the group stays as it was left');
+    const header=await page.locator('#hidden-toggle').boundingBox();
+    await tabNamed('switchboard').dragTo(page.locator('#hidden-toggle'),{targetPosition:{x:20,y:header.height-3}});
+    assert.deepEqual(await hiddenNames(),['switchboard','Online shopping']);
+    await tabNamed('Online shopping').dragTo(page.locator('#hidden-toggle'),{targetPosition:{x:20,y:3}});
+    assert.deepEqual(await order(),['ssb orchestrator','Online shopping','switchboard']);
+    assert.deepEqual(await hiddenNames(),['switchboard']);
+    await tabNamed('switchboard').dragTo(tabNamed('Online shopping'),{targetPosition:{x:20,y:5}});
+    assert.deepEqual(await order(),reordered);assert.equal(await page.locator('#hidden-toggle').count(),0);
     // A late breakpoint change would close the sidebar Ctrl+K opens below.
     await page.evaluate(()=>{window.breakpointCrossed=new Promise(resolve=>mobileSidebar.addEventListener('change',resolve,{once:true}));});
     await page.setViewportSize({width:390,height:844});
@@ -208,7 +242,6 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.equal(await page.locator('#sidebar').isVisible(),false);
     assert.equal(await page.evaluate(()=>document.activeElement.id),'sidebar-toggle');
     await page.locator('#sidebar-toggle').click();
-    assert.equal(await page.locator('#archive').isVisible(),false);
     await page.clock.setFixedTime(new Date('2026-10-29T00:01:00+11:00'));
     hostUnavailable=true;unavailable=true;await page.evaluate(async()=>{await refresh();await refreshAttention();});
     const bounds=await status.boundingBox();
