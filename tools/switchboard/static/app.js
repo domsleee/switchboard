@@ -1159,6 +1159,10 @@ updateNativeTabs();
 function updateMediaPreviews(on){$('media-previews').setAttribute('aria-pressed',String(on));$('media-previews').classList.toggle('selected',on);}
 $('media-previews').onclick=()=>{const on=localStorage.getItem('switchboard-media-previews')!=='true';localStorage.setItem('switchboard-media-previews',String(on));updateMediaPreviews(on);};
 updateMediaPreviews(localStorage.getItem('switchboard-media-previews')==='true');
+// Terminal frames read this flag through predict.js and follow its storage events.
+function updatePredictiveEcho(on){$('predictive-echo').setAttribute('aria-pressed',String(on));$('predictive-echo').classList.toggle('selected',on);}
+$('predictive-echo').onclick=()=>{const on=localStorage.getItem('switchboard-predictive-echo')!=='true';localStorage.setItem('switchboard-predictive-echo',String(on));updatePredictiveEcho(on);};
+updatePredictiveEcho(localStorage.getItem('switchboard-predictive-echo')==='true');
 setInterval(refresh,15000);
 
 function closeTabMenu(restore=false){

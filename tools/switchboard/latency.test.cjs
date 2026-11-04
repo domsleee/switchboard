@@ -8,6 +8,7 @@
 //   --cpu-load N      busy-loop N extra processes while measuring (default 0)
 //   --tls             serve the engine over HTTPS with a pinned self-signed cert (needs openssl)
 //   --max-p95 MS      fail when p95 echo latency exceeds MS
+//   --predict         turn on Instant typing and fail if any guess is not confirmed by the echo
 // Read-only probe of an existing session (times the relay's attention CLI calls, types nothing):
 //   node latency.test.cjs BINARY --probe SESSION
 const fs=require('node:fs');
@@ -22,6 +23,7 @@ if(!args[0]||args[0].startsWith('--')){console.log('latency.test.cjs: skipped (o
 const binary=path.resolve(args[0]);
 const keys=Number(option('keys',60)),gap=Number(option('gap',120)),hammer=Number(option('hammer',0));
 const tabs=Number(option('tabs',4)),scrollback=Number(option('scrollback',10000)),cpuLoad=Number(option('cpu-load',0));
+const predictEcho=args.includes('--predict');
 const tls=args.includes('--tls'),maxP95=option('max-p95'),probe=option('probe');
 const windows=process.platform==='win32';
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -99,6 +101,7 @@ let native,relay,browser,tokenName,created=false,failed=false;const burners=[];
           return super.send(data);}
       };
     });
+    if(predictEcho)await page.addInitScript(()=>{try{localStorage.setItem('switchboard-predictive-echo','true');}catch{}});
     await page.goto(url+'/?host=fixture&session='+name+'&tab='+first.tab_id);
     await page.waitForFunction(id=>{const f=document.querySelector('iframe.active'),w=f?.contentWindow;return w?.term&&!w.term.options.disableStdin&&f.contentDocument.activeElement===w.term.textarea&&w.__zjLastMobileState?.active_pane?.pane_id===id;},first.id);
     const frame=await (await page.$('iframe.active')).contentFrame();
@@ -118,12 +121,14 @@ let native,relay,browser,tokenName,created=false,failed=false;const burners=[];
     await frame.waitForFunction(()=>!window.__pending.length,null,{timeout:15000}).catch(()=>{});
     hammering=false;await Promise.all(loops);
     const {latency,arrival,lost,bytes}=await frame.evaluate(()=>({latency:window.__latency,arrival:window.__arrival,lost:window.__pending.length,bytes:window.__bytes}));
-    const result={kind:'disposable private terminal',platform:process.platform,tls,tabs,scrollback,cpu_load:cpuLoad,hammer,hammer_scans:scans,duration_s:(Date.now()-started)/1000,echo_ms:stats(latency),arrival_ms:stats(arrival),lost_echoes:lost,terminal_frame_bytes:stats(bytes)};
+    const prediction=predictEcho?await frame.evaluate(()=>window.__switchboardPredict?.stats()):undefined;
+    const result={kind:'disposable private terminal',prediction,platform:process.platform,tls,tabs,scrollback,cpu_load:cpuLoad,hammer,hammer_scans:scans,duration_s:(Date.now()-started)/1000,echo_ms:stats(latency),arrival_ms:stats(arrival),lost_echoes:lost,terminal_frame_bytes:stats(bytes)};
     // Per-call cost of what each attention scan spawns (one list-panes plus one dump-screen per busy pane).
     Object.assign(result,timeCli((...a)=>cli('-s',name,'action',...a),busy));
     console.log(JSON.stringify(result,null,2));
     if(maxP95&&!(result.echo_ms.p95<=Number(maxP95)))throw Error(`p95 echo ${result.echo_ms.p95} ms exceeds ${maxP95} ms`);
     if(lost)throw Error(lost+' keystrokes never echoed');
+    if(predictEcho&&!(prediction?.guessed>0&&prediction.dropped===0&&prediction.confirmed===prediction.guessed))throw Error('Instant typing guessed wrong: '+JSON.stringify(prediction));
   }catch(error){failed=true;console.error('Private fixture logs:',dir);throw error;}
   finally{for(const b of burners)b.kill();if(browser)await browser.close();if(created)try{cli('kill-session',name);}catch{}await stop(relay);await stop(native);if(tokenName)try{cli('web','--revoke-token',tokenName);}catch{}if(!failed)fs.rmSync(dir,{recursive:true,force:true});}
 })().catch(error=>{console.error(error);process.exitCode=1;});

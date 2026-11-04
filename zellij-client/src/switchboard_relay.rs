@@ -45,7 +45,7 @@ const LIMIT: usize = 16 * 1024 * 1024;
 const ROUTE_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 const ROUTE_CONNECT_TIMEOUT: Duration = Duration::from_millis(1200);
 const ROUTE_CACHE_TTL: Duration = Duration::from_secs(60);
-const BRIDGE: &str = "<head><script src=\"/link-config.js\"></script><script src=\"/links.js\"></script><script src=\"/clipboard.js\"></script><script src=\"/chrome.js\"></script><script src=\"/terminal-diagnostics.js\"></script><script src=\"/bridge.js\"></script>";
+const BRIDGE: &str = "<head><script src=\"/link-config.js\"></script><script src=\"/links.js\"></script><script src=\"/clipboard.js\"></script><script src=\"/chrome.js\"></script><script src=\"/terminal-diagnostics.js\"></script><script src=\"/predict.js\"></script><script src=\"/bridge.js\"></script>";
 
 #[derive(Clone, Deserialize)]
 pub struct RelayConfig {
@@ -1141,7 +1141,8 @@ async fn asset(request: Request) -> Response {
         | "computers.js"
         | "pairing-notice.js"
         | "messages.js"
-        | "terminal-diagnostics.js" => "application/javascript",
+        | "terminal-diagnostics.js"
+        | "predict.js" => "application/javascript",
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
     match ASSETS.get_file(name) {
@@ -2196,6 +2197,7 @@ mod tests {
             ("/messages.js", "application/javascript"),
             ("/messages.css", "text/css; charset=utf-8"),
             ("/terminal-diagnostics.js", "application/javascript"),
+            ("/predict.js", "application/javascript"),
         ] {
             let response = app
                 .clone()
