@@ -96,7 +96,7 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
     const page=await browser.newPage({viewport:{width:1280,height:900}}),errors=[],setups=[];page.setDefaultTimeout(5000);
     page.on('pageerror',e=>errors.push(e.message));
     const now=Date.now();
-    const build=(commit,at,extra={})=>({commit,commitDate:at.slice(0,10),commitTimestamp:at,updateError:null,updateAttempts:null,...extra});
+    const build=(commit,at,extra={})=>({commit,commitDate:at.slice(0,10),automaticUpdates:true,...extra});
     const agent=(id,name,state,detail,extra={})=>({agent:id,name,state,detail,lastReport:null,setupError:null,setupFinished:null,...extra});
     const absent=[agent('claude','Claude Code','absent','Not installed'),agent('copilot','Copilot CLI','absent','Not installed'),agent('codex','Codex','absent','Not installed')];
     const tasks={computers:[
@@ -104,9 +104,9 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
         agent('claude','Claude Code','ready','Plugin installed and auto-updating',{lastReport:now-120e3}),
         agent('copilot','Copilot CLI','setup','Plugin not installed · Auto-update off'),
         agent('codex','Codex','approve','Start Codex and choose “Trust all and continue” when it asks to review hooks')]},
-      {name:'Dom-PC',host:'mesh-dompc',groups:[],error:null,switchboard:build('ca42095','2026-11-04T20:04:27+11:00',{updateError:'bash failed: session not found',updateAttempts:1}),agents:[
+      {name:'Dom-PC',host:'mesh-dompc',groups:[],error:null,switchboard:build('ca42095','2026-11-04T20:04:27+11:00',{automaticUpdates:false}),agents:[
         ...absent.slice(0,2),agent('codex','Codex','setup','Status hooks not installed',{setupError:'Could not save hooks.json: denied'})]},
-      {name:'Linux',host:'mesh-linux',groups:[],error:null,switchboard:build('ca42095','2026-11-04T20:04:27+11:00'),agents:absent},
+      {name:'Linux',host:'mesh-linux',groups:[],error:null,switchboard:build('ca42095','2026-11-04T20:04:27+11:00',{automaticUpdates:undefined}),agents:absent},
       {name:'Old PC',host:'mesh-old',groups:[],error:null}]};
     await page.addInitScript(()=>{window.setInterval=()=>0;});
     await page.route('**/*',async route=>{
@@ -142,11 +142,14 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
     assert.equal(await macRows.nth(1).locator('.task-meta').textContent(),'Plugin not installed · Auto-update off');
     assert.equal(await macRows.nth(2).getByRole('button',{name:'Set up'}).count(),0,'Codex hooks are approved in Codex, not here');
 
-    assert.equal(await pc.locator('.task-state').textContent(),'Self-update failed: bash failed: session not found');
-    assert.equal(await pc.locator('.task-row').first().locator('.task-meta').textContent(),'failed (attempt 1 of 3)');
+    assert.equal(await mac.locator('.task-row').first().locator('.task-meta').textContent(),'on');
+    assert.equal(await pc.locator('.task-state').textContent(),'Automatic updates are off');
+    assert.equal(await pc.locator('.task-row').first().locator('.task-name').textContent(),'Automatic updates');
+    assert.equal(await pc.locator('.task-row').first().locator('.task-meta').textContent(),'off');
     assert.equal(await pc.locator('.agent-row').count(),1,'agents that are not installed are left out');
     assert.equal(await pc.locator('.agent-row .task-tail').textContent(),'Could not save hooks.json: denied');
-    assert.equal(await linux.locator('.task-state').textContent(),'Behind 0c60c7f');
+    assert.equal(await linux.locator('.task-state').textContent(),'All set');
+    assert.equal(await linux.locator('.task-row').first().locator('.task-meta').textContent(),'unknown on this build');
     assert.equal(await linux.locator('.agent-none').textContent(),'No Claude Code, Copilot CLI or Codex on this computer');
     assert.equal(await page.locator('#updates .task-computer').nth(3).locator('.log-note').first().textContent(),'Update Switchboard on this computer to check its agents');
 

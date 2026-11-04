@@ -122,31 +122,26 @@
     if(agent.setupError&&agent.state!=='ready'&&agent.state!=='running')row.append(element('pre','task-tail',agent.setupError));
     return row;
   }
-  // The newest build any computer runs, to show which ones are behind.
-  function newestBuild(){
-    return computers.map(c=>c.switchboard).filter(s=>s?.commitTimestamp).sort((a,b)=>Date.parse(b.commitTimestamp)-Date.parse(a.commitTimestamp))[0];
-  }
-  function switchboardBlock(computer,newest){
+  function switchboardBlock(computer){
     const sb=computer.switchboard,agents=(computer.agents||[]).filter(agent=>agent.state!=='absent');
-    const behind=newest&&sb.commitTimestamp&&Date.parse(sb.commitTimestamp)<Date.parse(newest.commitTimestamp);
+    // Builds before automaticUpdates existed leave it out: shown as unknown, not off.
+    const updates=sb.automaticUpdates===true?'ok':sb.automaticUpdates===false?'failed':'never';
     const waiting=agents.filter(agent=>agent.state!=='ready');
-    const status=sb.updateError||waiting.some(agent=>agent.state==='setup')?'failed':waiting.some(agent=>agent.state==='running')?'running':waiting.length||behind?'attention':'ok';
+    const status=updates==='failed'||waiting.some(agent=>agent.state==='setup')?'failed':waiting.some(agent=>agent.state==='running')?'running':waiting.length?'attention':'ok';
     const block=element('details','task-group switchboard-group');block.dataset.status=status;
     block.dataset.key=`${computer.host||''}\n\u0000switchboard`;
     const summary=element('summary');
     const title=element('span','task-title');title.append(element('strong','','Switchboard'),element('small','',`build ${sb.commit}${sb.commitDate?` · ${sb.commitDate}`:''}`));
     let text='All set';
-    if(sb.updateError)text=`Self-update failed: ${sb.updateError}`;
+    if(updates==='failed')text='Automatic updates are off';
     else if(waiting.length)text=waiting.map(agent=>`${agent.name}: ${agent.state==='approve'?'approve hooks in Codex':agent.state==='running'?'setting up…':'needs setup'}`).join(' · ');
-    else if(behind)text=`Behind ${newest.commit}`;
     const state=element('span','task-state',text);state.title=text;
     summary.append(dot(status),title,state);
     block.append(summary);
-    const update=element('div','task-row');update.dataset.status=sb.updateError?'failed':behind?'attention':'ok';
+    const update=element('div','task-row');update.dataset.status=updates;
     const head=element('div','task-head');
-    head.append(dot(update.dataset.status),element('span','task-name','Self-update'),element('small','task-meta',sb.updateError?`failed${sb.updateAttempts?` (attempt ${sb.updateAttempts} of 3)`:''}`:behind?`behind ${newest.commit}`:'up to date'));
+    head.append(dot(updates),element('span','task-name','Automatic updates'),element('small','task-meta',updates==='ok'?'on':updates==='failed'?'off':'unknown on this build'));
     update.append(head);
-    if(sb.updateError)update.append(element('pre','task-tail',sb.updateError));
     block.append(update,...agents.map(agent=>agentRow(computer,agent)));
     if(!agents.length)block.append(element('p','task-note agent-none','No Claude Code, Copilot CLI or Codex on this computer'));
     // Open by default while something needs the user.
@@ -157,11 +152,11 @@
     const list=byId('updates');if(!list)return;
     const open=new Set([...list.querySelectorAll('details.task-group[open]')].map(node=>node.dataset.key));
     if(failed&&!computers.length){list.replaceChildren(element('p','log-note','Update tasks unavailable; refresh to try again.'));return;}
-    const newest=newestBuild(),closed=new Set([...list.querySelectorAll('details.switchboard-group:not([open])')].map(node=>node.dataset.key));
+    const closed=new Set([...list.querySelectorAll('details.switchboard-group:not([open])')].map(node=>node.dataset.key));
     list.replaceChildren(...computers.map(computer=>{
       const section=element('section','log-computer task-computer');section.append(element('h4','',computer.name));
       if(computer.switchboard){
-        const block=switchboardBlock(computer,newest);
+        const block=switchboardBlock(computer);
         if(open.has(block.dataset.key))block.open=true;else if(closed.has(block.dataset.key))block.open=false;
         section.append(block);
       }
