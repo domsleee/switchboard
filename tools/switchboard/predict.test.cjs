@@ -229,7 +229,8 @@ test('the sidebar setting reaches terminal frames, and the relay serves the scri
   const relay=fs.readFileSync(path.join(root,'zellij-client/src/switchboard_relay.rs'),'utf8');
   assert.match(relay,/<script src=\\"\/predict\.js\\"><\/script><script src=\\"\/bridge\.js\\">/);
   const app=fs.readFileSync(path.join(__dirname,'static/app.js'),'utf8');
-  assert.ok(app.includes(`'${Predict.FLAG}'`));
+  // Settings stores each toggle as switchboard-<button id>.
+  assert.ok(Predict.FLAG.startsWith('switchboard-')&&app.includes(`'${Predict.FLAG.slice('switchboard-'.length)}'`));
 });
 
 test('the overlay draws each guess over its cell with the cell background',

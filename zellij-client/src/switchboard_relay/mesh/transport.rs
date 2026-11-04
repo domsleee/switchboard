@@ -13,6 +13,7 @@ pub(in crate::switchboard_relay) fn routes() -> Router<RelayState> {
         .route("/api/mesh/category", post(super::sync::category))
         .route("/api/mesh/tab-order", post(super::sync::tab_order))
         .route("/api/mesh/hidden-tabs", post(super::sync::hidden_tabs))
+        .route("/api/mesh/setting", post(super::sync::setting))
         .route("/api/mesh/defaults", get(super::discovery::defaults))
         .route("/api/mesh/invitations", post(create))
         .route("/api/mesh/cancel", post(cancel))

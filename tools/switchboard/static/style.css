@@ -121,6 +121,14 @@ dialog p{font-size:12px;color:#9ba7bd}
 #panel .settings-heading button:hover{background:#262c38}
 .settings-section{margin-top:20px}
 .settings-section h3{font-size:12px;font-weight:600;color:#b5bfd0;margin:0 0 8px}
+.setting-scopes{display:flex;gap:4px;border-bottom:1px solid #2a303c;margin:0 0 8px}
+.setting-scopes button{background:none;border:0;border-bottom:2px solid transparent;border-radius:0;margin-bottom:-1px;padding:6px 10px;font-size:13px;color:#8b95a7}
+.setting-scopes button[aria-selected="true"]{color:#e6eaf2;border-bottom-color:#5b8def}
+#panel .setting-scope-help{margin:0 0 4px;font-size:12px;color:#8b95a7}
+.overridden{box-shadow:inset 2px 0 0 #5b8def}
+#machines-shared+.settings-group{margin-top:8px}
+.setting-override{margin:0;padding:0 14px 10px;font-size:12px;color:#8b95a7}
+.setting-override button{background:none;border:0;padding:0;font-size:12px;color:#8fb2f5;text-decoration:underline;cursor:pointer}
 .settings-section>.settings-heading{margin-bottom:6px}
 .settings-section .settings-heading h3{margin:0}
 #panel .settings-section>p{line-height:1.5;margin:0 0 10px}
