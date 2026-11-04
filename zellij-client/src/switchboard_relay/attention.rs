@@ -281,14 +281,8 @@ async fn scan_with(
             deferred_sessions.push(name);
             continue;
         }
-        let panes = control::run_local(
-            host,
-            &name,
-            &["list-panes", "--json", "--all"],
-            remaining.min(Duration::from_secs(15)),
-        )
-        .await;
-        let panes = panes.and_then(|text| Ok(serde_json::from_str::<Vec<Value>>(&text)?));
+        let panes =
+            control::list_panes(host, &name, true, remaining.min(Duration::from_secs(15))).await;
         let panes = match panes {
             Ok(panes) => panes,
             Err(error) => {
