@@ -536,6 +536,31 @@ fn check_codex(dir: &Path, launcher: &Path, reported_since_setup: bool) -> Check
     }
 }
 
+/// At relay start (so after every update), trust Switchboard's Codex hooks if setup
+/// installed them and Codex hasn't trusted them yet, so nobody has to.
+pub(super) fn trust_codex_hooks_on_start() {
+    tokio::spawn(async {
+        let folders = search_path();
+        let dir = Agent::Codex.home();
+        let Some(codex) = find_program("codex", &folders) else {
+            return;
+        };
+        if !dir.is_dir() || check_codex(&dir, &codex_launcher(&home()), false).state != "approve" {
+            return;
+        }
+        match trust_codex_hooks(&codex, &folders).await {
+            Ok(()) => log::info!("Trusted Switchboard's Codex hooks"),
+            Err(error) => {
+                log::warn!("Cannot trust Switchboard's Codex hooks: {error}");
+                logs::record(
+                    "codex",
+                    &format!("Cannot trust Switchboard's Codex hooks: {error}"),
+                );
+            },
+        }
+    });
+}
+
 // --- Setup ------------------------------------------------------------------------
 
 /// Set `extraKnownMarketplaces.switchboard.autoUpdate`, adding the marketplace entry
