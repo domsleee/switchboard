@@ -104,7 +104,8 @@ window.SwitchboardTerminalDiagnostics = function (report, dimensions) {
         max_clipped_bottom_rows:0,
         xterm_size_changes:0,first_xterm_cols:0,first_xterm_rows:0,min_xterm_cols:0,min_xterm_rows:0,max_xterm_cols:0,max_xterm_rows:0,
         hidden_at_start:!!dimensions().document_hidden,viewport_size_changes:0,
-        first_native_cols:0,first_native_rows:0,min_native_cols:0,min_native_rows:0,max_native_cols:0,max_native_rows:0};
+        first_native_cols:0,first_native_rows:0,min_native_cols:0,min_native_rows:0,max_native_cols:0,max_native_rows:0,
+        first_owner_active:null,first_is_owner:null};
       size(term);
       geometry();
       quiet = false;
@@ -194,6 +195,9 @@ window.SwitchboardTerminalDiagnostics = function (report, dimensions) {
       if (!span.first_native_cols) {
         span.first_native_cols = span.min_native_cols = cols;
         span.first_native_rows = span.min_native_rows = rows;
+        // Who sized the tab before this switch: a tab nobody owns falls back to its smallest viewer.
+        span.first_owner_active = !!state.tab_viewport.owner_active;
+        span.first_is_owner = !!state.tab_viewport.is_owner;
       } else if (span.last_native_cols !== cols || span.last_native_rows !== rows) span.viewport_size_changes++;
       span.last_native_cols = cols;span.last_native_rows = rows;
       span.min_native_cols = Math.min(span.min_native_cols,cols);span.min_native_rows = Math.min(span.min_native_rows,rows);

@@ -179,6 +179,17 @@ test('native size transitions are tracked only for the requested pane',()=>{
   const report=h.reports[0];assert.equal(report.viewport_size_changes,2);assert.equal(report.first_native_cols,120);
   assert.equal(report.min_native_rows,40);assert.equal(report.max_native_cols,162);assert.equal('last_native_cols' in report,false);
 });
+test('the size owner on arrival is taken from the first state of the requested pane',()=>{
+  const h=harness();h.start(1);
+  assert.equal(h.reports.length,0);
+  const state=(pane,cols,rows,owner_active,is_owner)=>h.diagnostics.state({active_pane:{pane_id:pane,is_plugin:false},tab_viewport:{cols,rows,owner_active,is_owner}});
+  state(31,200,60,true,true);state(30,100,30,false,false);state(30,200,60,true,true);
+  h.diagnostics.finish('superseded');
+  const report=h.reports[0];assert.equal(report.first_native_cols,100);assert.equal(report.first_owner_active,false);
+  assert.equal(report.first_is_owner,false);assert.equal(report.viewport_size_changes,1);
+  const unseen=harness();unseen.start(1);unseen.diagnostics.finish('superseded');
+  assert.equal(unseen.reports[0].first_owner_active,null,'No state for the pane is unknown, not unowned');
+});
 test('replacing a terminal discards its previous pending animation probe',()=>{
   const h=harness({},true);h.setAnimationDelay(900);h.start(1);h.diagnostics.ack();
   h.diagnostics.frame('old');h.term.write('old');h.writes[0].callback();h.render();h.advance(800);
