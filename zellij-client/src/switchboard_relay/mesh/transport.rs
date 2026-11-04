@@ -726,6 +726,13 @@ async fn terminal_response(
                 .map_err(|_| (StatusCode::BAD_REQUEST, "Not a relative path"))?;
         return Ok(artifacts::resolve_local(&host, &query).await);
     }
+    if path
+        .split('?')
+        .next()
+        .is_some_and(|p| p.starts_with("/switchboard/tasks"))
+    {
+        return Ok(tasks::gateway(request).await);
+    }
     if path == "/switchboard/logs" && request.method() == Method::GET {
         return Ok(Json(logs::local()).into_response());
     }

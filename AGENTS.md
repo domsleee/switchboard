@@ -17,6 +17,8 @@ Read the live relay before guessing. It answers on `http://127.0.0.1:8090`:
 - `/api/attention`: each pane's state (working, ready, approval, input), review token and `seen`.
 - `/api/logs`: recent failures from every computer, grouped by the computer that logged them.
 - `/api/mesh`: paired members; `local: true` marks this computer's mesh name and id.
+- `/api/tasks`: each computer's update tasks from `tasks.json` and their last results
+  (`docs/SWITCHBOARD_TASKS.md`).
 
 To capture what an agent pane shows (for detection rules and their tests):
 `zellij -s main action dump-screen -p <pane id>`.
