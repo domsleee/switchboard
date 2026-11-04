@@ -101,6 +101,9 @@ dialog button,dialog select{font-size:13px;padding:7px 10px}
 dialog select{width:100%}
 dialog p{font-size:12px;color:#9ba7bd}
 .dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}
+#askpass-dialog{width:520px}
+#askpass-command{margin:0 0 14px;padding:8px 10px;max-height:30vh;overflow:auto;white-space:pre-wrap;word-break:break-all;font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#0f1116;border:1px solid #2a303c;border-radius:6px}
+#askpass-password{box-sizing:border-box;width:100%;font-size:14px;padding:7px 10px}
 .settings-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .settings-heading h2{margin:0}
 #panel .settings-heading button{font-size:12px;padding:5px 10px;background:transparent}

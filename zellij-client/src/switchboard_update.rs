@@ -43,6 +43,9 @@ pub fn run(command: &SwitchboardCommand) -> Result<()> {
             id,
             relay_url,
         } => crate::switchboard_relay::artifacts::publish(files, id.as_deref(), relay_url),
+        SwitchboardCommand::Askpass { prompt, relay_url } => {
+            crate::switchboard_relay::askpass::run(prompt.as_deref(), relay_url)
+        },
         SwitchboardCommand::Package {
             platform,
             commit,

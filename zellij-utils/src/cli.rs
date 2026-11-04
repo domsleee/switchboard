@@ -211,6 +211,20 @@ pub enum SwitchboardCommand {
         )]
         relay_url: String,
     },
+    /// sudo's askpass helper: ask for the password in the Switchboard sidebar and print it.
+    /// New panes set SUDO_ASKPASS to a script that runs this, so use `sudo -A`
+    Askpass {
+        /// The prompt sudo passes
+        #[clap(allow_hyphen_values = true)]
+        prompt: Option<String>,
+        /// Local relay that shows the request
+        #[clap(
+            long,
+            env = "SWITCHBOARD_RELAY_URL",
+            default_value = "http://127.0.0.1:8090"
+        )]
+        relay_url: String,
+    },
     /// Stage this executable and its helpers as a checksummed update bundle (CI)
     #[clap(hide = true)]
     Package {
