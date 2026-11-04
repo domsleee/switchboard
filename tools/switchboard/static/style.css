@@ -143,7 +143,7 @@ dialog p{font-size:12px;color:#9ba7bd}
 .task-group summary:hover{background:#151921}
 .task-group summary>.task-dot{grid-row:1;grid-column:2}
 .task-title{grid-row:1;grid-column:3;display:flex;gap:8px;align-items:baseline;min-width:0}
-.task-title strong{font-weight:600}
+.task-title strong{font-weight:600;white-space:nowrap}
 .task-title small,.task-meta{font-size:11px;color:#8590a3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .task-state{grid-row:2;grid-column:3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#9ba7bd}
 [data-status=failed]>summary .task-state{color:#f08a8a}
