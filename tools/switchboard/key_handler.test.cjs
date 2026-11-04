@@ -156,6 +156,9 @@ for(const variant of Object.keys(handlerSources))for(const bridge of [false,true
       assert.equal(await page.evaluate(()=>sent.join('')),'\x17\x7f\x7f\x1b[3~','Backspace and forward Delete still work after word-delete');
       await page.evaluate(()=>{sent.length=0;});
     }
+    await page.keyboard.press('Shift+Enter');await page.keyboard.press('Enter');
+    assert.deepEqual(await page.evaluate(()=>[...sent]),['\x1b[13;2u','\r'],'Shift+Enter inserts a newline in agent TUIs; plain Enter still submits');
+    await page.evaluate(()=>{sent.length=0;});
     await page.evaluate(()=>{term.options.disableStdin=true;});
     for(const key of ['Control+c','Control+Backspace','Backspace','Delete'])await page.keyboard.press(key);
     assert.equal(await page.evaluate(()=>sent.join('')),'','input suspension also applies to touchscreen hardware shortcuts');

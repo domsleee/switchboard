@@ -26,7 +26,8 @@
   }
   let terminalSocket, controlSocket;
   // Instant typing draws what the terminal socket sends before it echoes (predict.js, off by default).
-  const predict=window.SwitchboardPredictiveEcho?.install();
+  const predict=window.SwitchboardPredictiveEcho?.install({report:miss=>{const pane=latest?.active_pane;
+    if(pane)parent.postMessage({type:'zellij-predict-diagnostic',diagnostic:{...miss,pane_id:pane.pane_id,is_plugin:!!pane.is_plugin}},location.origin);}});
   window.__switchboardPredict=predict;
   let scrollport, lastViewport, viewportTab, bottomButton, claimedViewportTab;
   let chromeKey, nativeTopBar=false, nativeBottomRows=0;

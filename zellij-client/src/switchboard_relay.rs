@@ -1259,6 +1259,10 @@ fn app(state: RelayState) -> Router {
         .route("/api/diagnostics/new-tab", post(logs::new_tab))
         .route("/api/diagnostics/terminal-load", post(logs::terminal_load))
         .route(
+            "/api/diagnostics/instant-typing",
+            post(logs::instant_typing),
+        )
+        .route(
             "/api/diagnostics/modified-enter",
             post(logs::modified_enter),
         )

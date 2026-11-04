@@ -13,6 +13,8 @@
   // Characters on screen before guessing began are only erased when they are plain ASCII text. Prompts
   // end in a space or no-break space (❯\u00a0, "$ "), so Backspace at the start of the input is not guessed.
   const erasable = ch => { const c = ch.codePointAt(0); return c > 0x20 && c < 0x7f; };
+  // A space between words is erased too; prompts end in a symbol before their space ("$ ", "> ").
+  const wordChar = ch => /^[A-Za-z0-9]$/.test(ch);
   // Zellij pane frames and side-by-side panes put a vertical border at the right of the pane's row.
   const border = ch => ch !== '' && '│┃║╎╏┆┇┊┋'.includes(ch);
   const hasParam = (params, values) => params.some(p => values.includes(Array.isArray(p) ? p[0] : p));
@@ -24,8 +26,10 @@
     return !!mouse && (mouse[1] & 32) !== 0 && (mouse[1] & 3) === 3;
   }
 
-  function create({ term, now, setTimer, clearTimer, enabled, draw }) {
+  function create({ term, now, setTimer, clearTimer, enabled, draw, report = () => {} }) {
     let run = null, pausedUntil = 0, srtt = null, showing = true, timer = null;
+    // A key that is not guessed may move or redraw the input, so guessing waits for a frame after it.
+    let lastKeyAt = -Infinity, lastWriteAt = -Infinity;
     const counts = { guessed: 0, confirmed: 0, dropped: 0 };
     // Zellij hides the cursor while it redraws, so a hidden cursor means a frame is still arriving.
     let hidden = !!term._core?.coreService?.isCursorHidden;
@@ -33,12 +37,12 @@
     const timeout = () => srtt === null ? 1000 : clamp(3 * srtt + 200, 300, 2500);
     term.parser.registerCsiHandler({ prefix: '?', final: 'l' }, params => {
       if (hasParam(params, [25])) hidden = true;
-      if (hasParam(params, [47, 1047, 1049])) drop(true);
+      if (hasParam(params, [47, 1047, 1049])) drop('screen');
       return false;
     });
     term.parser.registerCsiHandler({ prefix: '?', final: 'h' }, params => {
       if (hasParam(params, [25])) hidden = false;
-      if (hasParam(params, [47, 1047, 1049])) drop(true);
+      if (hasParam(params, [47, 1047, 1049])) drop('screen');
       return false;
     });
     term.onWriteParsed(reconcile);
@@ -53,7 +57,7 @@
     }
     function start() {
       const buffer = term.buffer.active;
-      if (hidden || buffer.viewportY !== buffer.baseY) return false;
+      if (hidden || buffer.viewportY !== buffer.baseY || lastWriteAt <= lastKeyAt) return false;
       const row = buffer.baseY + buffer.cursorY, x = buffer.cursorX, line = buffer.getLine(row);
       if (!line || x >= term.cols) return false;
       const base = [], dim = [];
@@ -67,7 +71,9 @@
         if (!dim[i]) return false;
         clearEnd = i + 1;
       }
-      run = { row, anchor: x, base, dim, ops: [], open: true, closeBy: Infinity, clearEnd, edge };
+      const t = now();
+      run = { row, anchor: x, base, dim, ops: [], open: true, closeBy: Infinity, clearEnd, edge,
+        sinceKey: t - lastKeyAt, sinceWrite: t - lastWriteAt, frames: 0, confirmed: 0 };
       return true;
     }
     function ready(t) { return enabled() && t >= pausedUntil && ((run && run.open) || (!run && start())); }
@@ -85,12 +91,14 @@
       const { line, written, cursor } = predicted(), pos = cursor - 1;
       if (pos < 0) return false;
       const writer = written.get(pos);
-      if (writer ? !writer.typed : (run.dim[pos] || !erasable(line[pos]))) return false;
+      const word = erasable(line[pos]) || (line[pos] === ' ' && pos > 0 && wordChar(line[pos - 1]));
+      if (writer ? !writer.typed : (run.dim[pos] || !word)) return false;
       run.ops.push({ at: t, pos, ch: ' ', x: pos, typed: false });
       counts.guessed++;
       return true;
     }
     function pause(t) {
+      lastKeyAt = t;
       pausedUntil = Math.max(pausedUntil, t + settle());
       if (run) { run.open = false; run.closeBy = Math.min(run.closeBy, t + settle()); }
     }
@@ -107,45 +115,76 @@
       if (run && !run.ops.length) run = null;
       schedule(); render();
     }
-    // The screen confirms the first n guesses when the cursor sits where they leave it and every cell
-    // they wrote shows what they wrote. A blank guess also accepts the dim placeholder coming back.
+    // The screen shows the state after the first n guesses when the cursor sits where they leave it and
+    // every cell any guess touches shows that state. A blank guess also accepts the dim placeholder coming
+    // back, and a cell no guess has written yet accepts its placeholder vanishing.
     function confirms(n) {
-      const buffer = term.buffer.active, { written, cursor } = predicted(n);
+      const buffer = term.buffer.active, { line: expected, written, cursor } = predicted(n);
       if (buffer.baseY + buffer.cursorY !== run.row || buffer.cursorX !== cursor) return false;
       const line = buffer.getLine(run.row);
-      for (const [pos, op] of written) {
-        const cell = line?.getCell(pos), shown = cell?.getChars() || '';
-        if (op.ch === ' ' ? !(blank(shown) || cell?.isDim()) : shown !== op.ch) return false;
+      for (const pos of new Set(run.ops.map(op => op.pos))) {
+        const cell = line?.getCell(pos), shown = cell?.getChars() || '', want = expected[pos];
+        const ok = written.has(pos) ? (want === ' ' ? blank(shown) || cell?.isDim() : shown === want)
+          : shown === want || (blank(shown) && blank(want)) || run.dim[pos];
+        if (!ok) return false;
       }
       return true;
     }
+    // Echoes arrive in order, so a frame is taken as the earliest state it could be. A frame drawn before
+    // any echo can look like a later state (Backspace then retyping the same letter); taking it for that
+    // state would remove the guesses and show the screen replaying the edit.
+    function settled() {
+      for (let n = 0; n <= run.ops.length; n++) if (confirms(n)) return n;
+      return -1;
+    }
+    function accept(n) {
+      const done = run.ops.splice(0, n), last = done[done.length - 1];
+      counts.confirmed += n; run.confirmed += n;
+      for (const op of done) { run.base[op.pos] = op.ch; run.dim[op.pos] = false; }
+      run.anchor = last.x;
+      const sample = now() - last.at;
+      srtt = srtt === null ? sample : srtt * 7 / 8 + sample / 8;
+      if (srtt > SHOW_ABOVE_MS) showing = true; else if (srtt < HIDE_BELOW_MS) showing = false;
+      if (!run.ops.length) run = null;
+    }
     function reconcile() {
+      lastWriteAt = now();
       if (!run || hidden) return;
-      for (let n = run.ops.length; n > 0; n--) {
-        if (!confirms(n)) continue;
-        const done = run.ops.splice(0, n), last = done[done.length - 1];
-        counts.confirmed += n;
-        for (const op of done) { run.base[op.pos] = op.ch; run.dim[op.pos] = false; }
-        run.anchor = last.x;
-        const sample = now() - last.at;
-        srtt = srtt === null ? sample : srtt * 7 / 8 + sample / 8;
-        if (srtt > SHOW_ABOVE_MS) showing = true; else if (srtt < HIDE_BELOW_MS) showing = false;
-        if (!run.ops.length) run = null;
-        break;
-      }
+      run.frames++;
+      const buffer = term.buffer.active;
+      // The input moved to another row (a submitted message, output above it): these guesses are stale.
+      if (buffer.baseY + buffer.cursorY !== run.row) { drop('moved'); return; }
+      const n = settled();
+      if (n > 0) accept(n);
       schedule(); render();
+    }
+    // At the deadline a screen that already shows every guess confirms them, as coalesced echoes can.
+    function expire() {
+      timer = null;
+      if (run && !hidden && confirms(run.ops.length)) { accept(run.ops.length); schedule(); render(); }
+      else drop('timeout');
     }
     function schedule() {
       if (timer !== null) clearTimer(timer);
       timer = null;
       if (!run) return;
       const deadline = Math.min(run.closeBy, run.ops[0].at + timeout());
-      timer = setTimer(() => { timer = null; drop(true); }, Math.max(0, deadline - now()));
+      timer = setTimer(expire, Math.max(0, deadline - now()));
     }
-    function drop(mistaken) {
+    // reason is set when the guesses were wrong: 'timeout', 'moved' or 'screen' (switched screens).
+    function drop(reason) {
       if (timer !== null) clearTimer(timer);
       timer = null;
-      if (run && mistaken) { pausedUntil = Math.max(pausedUntil, now() + settle()); counts.dropped += run.ops.length; }
+      if (run && reason) {
+        const t = now(), buffer = term.buffer.active;
+        pausedUntil = Math.max(pausedUntil, t + settle()); counts.dropped += run.ops.length;
+        // Counts and positions only; never what was typed.
+        report({ outcome: reason, pending: run.ops.length, typed: run.ops.filter(op => op.typed).length,
+          confirmed: run.confirmed, frames: run.frames, age_ms: Math.round(t - run.ops[0].at),
+          srtt_ms: finite(srtt), since_key_ms: finite(run.sinceKey), since_write_ms: finite(run.sinceWrite),
+          run_row: Math.max(0, run.row - buffer.viewportY), cursor_row: buffer.cursorY, cursor_col: buffer.cursorX,
+          expected_col: predicted().cursor, cursor_hidden: hidden });
+      }
       run = null;
       render();
     }
@@ -162,7 +201,8 @@
       return { row, cells, cursor };
     }
     function render() { draw(model()); }
-    return { sent, reconcile, drop: () => drop(false), model, state: () => ({ srtt, showing, pausedUntil, run, ...counts }) };
+    const finite = ms => ms !== null && Number.isFinite(ms) ? Math.round(ms) : null;
+    return { sent, reconcile, drop: () => drop(null), model, state: () => ({ srtt, showing, pausedUntil, run, ...counts }) };
   }
 
   const ANSI = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white', 'brightBlack', 'brightRed',
@@ -223,15 +263,17 @@
   }
 
   // One per terminal frame: the bridge reports what the terminal socket sends.
-  function install() {
+  function install({ report } = {}) {
     const read = () => { try { return localStorage.getItem(FLAG) === 'true'; } catch { return false; } };
-    let on = read(), attached = null, core = null;
+    let on = read(), attached = null, core = null, reportedAt = -Infinity;
+    // One miss a second at most, so a confused screen cannot flood the relay's log.
+    const throttled = miss => { const t = performance.now(); if (report && t - reportedAt >= 1000) { reportedAt = t; report(miss); } };
     addEventListener('storage', event => { if (event.key === FLAG) { on = read(); if (!on) core?.drop(); } });
     return {
       attach(term) {
         if (!term || term === attached || !term.parser || !term.onWriteParsed) return;
         attached = term;
-        core = create({ term, now: () => performance.now(), setTimer: setTimeout, clearTimer: clearTimeout, enabled: () => on, draw: domRenderer(term) });
+        core = create({ term, now: () => performance.now(), setTimer: setTimeout, clearTimer: clearTimeout, enabled: () => on, draw: domRenderer(term), report: throttled });
       },
       sent: data => core?.sent(data),
       reset: () => core?.drop(),

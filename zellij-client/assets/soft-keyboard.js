@@ -232,7 +232,8 @@ export function installSoftKeyboardCapture(term, sendFunction) {
         switch (ev.key) {
             case "Enter":
                 ev.preventDefault();
-                state.sendFn("\r");
+                // Shift+Enter keeps its modifier so agent TUIs insert a newline instead of submitting.
+                state.sendFn(ev.shiftKey ? "\x1b[13;2u" : "\r");
                 div.value = BASELINE;
                 lastText = BASELINE;
                 setCaretToMiddle();

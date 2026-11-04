@@ -690,6 +690,81 @@ impl LoadDiagnostic {
     }
 }
 
+/// An Instant typing guess the screen never showed. Counts and positions only, never typed text.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PredictDiagnostic {
+    host: String,
+    outcome: String,
+    pane_id: u32,
+    is_plugin: bool,
+    pending: u32,
+    typed: u32,
+    confirmed: u32,
+    frames: u32,
+    age_ms: u32,
+    srtt_ms: Option<u32>,
+    since_key_ms: Option<u32>,
+    since_write_ms: Option<u32>,
+    run_row: u16,
+    cursor_row: u16,
+    cursor_col: u16,
+    expected_col: u16,
+    cursor_hidden: bool,
+}
+
+impl PredictDiagnostic {
+    fn message(&self) -> Option<String> {
+        if !["timeout", "moved", "screen"].contains(&self.outcome.as_str())
+            || [self.srtt_ms, self.since_key_ms, self.since_write_ms]
+                .into_iter()
+                .flatten()
+                .chain([self.age_ms])
+                .any(|t| t > 86_400_000)
+        {
+            return None;
+        }
+        let ms = |t: Option<u32>| t.map_or_else(|| "-".into(), |t| format!("{t}ms"));
+        Some(format!(
+            "Terminal instant typing miss outcome={} pane={}{} pending={} typed={} confirmed={} frames={} age={}ms srtt={} since_key={} since_write={} row={}->{} col={} expected_col={} cursor_hidden={}",
+            self.outcome,
+            if self.is_plugin { "plugin:" } else { "" },
+            self.pane_id,
+            self.pending,
+            self.typed,
+            self.confirmed,
+            self.frames,
+            self.age_ms,
+            ms(self.srtt_ms),
+            ms(self.since_key_ms),
+            ms(self.since_write_ms),
+            self.run_row,
+            self.cursor_row,
+            self.cursor_col,
+            self.expected_col,
+            self.cursor_hidden,
+        ))
+    }
+}
+
+pub(super) async fn instant_typing(
+    State(state): State<RelayState>,
+    request: Request,
+) -> StatusCode {
+    let diagnostic: PredictDiagnostic = match diagnostic_body(request).await {
+        Ok(d) => d,
+        Err(status) => return status,
+    };
+    let Some(host) = state.host(&diagnostic.host) else {
+        return StatusCode::NOT_FOUND;
+    };
+    let Some(message) = diagnostic.message() else {
+        return StatusCode::BAD_REQUEST;
+    };
+    record(&host.config.name, &message);
+    StatusCode::NO_CONTENT
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EnterDiagnostic {
@@ -1137,6 +1212,30 @@ mod tests {
         assert!(message.contains("xterm=80x40->120x40 range=80x40..120x40 changes=1"));
         assert!(message.contains("clipped_rows=35"));
         assert_eq!(message, redact(&message));
+    }
+
+    #[test]
+    fn instant_typing_misses_accept_only_counts_and_positions() {
+        let mut sample = json!({"host":"mac","outcome":"moved","pane_id":30,"is_plugin":false,
+            "pending":2,"typed":2,"confirmed":0,"frames":1,"age_ms":40,"srtt_ms":null,"since_key_ms":900,
+            "since_write_ms":12,"run_row":26,"cursor_row":28,"cursor_col":2,"expected_col":4,"cursor_hidden":false});
+        let diagnostic: PredictDiagnostic = serde_json::from_value(sample.clone()).unwrap();
+        assert_eq!(
+            diagnostic.message().unwrap(),
+            "Terminal instant typing miss outcome=moved pane=30 pending=2 typed=2 confirmed=0 frames=1 age=40ms srtt=- since_key=900ms since_write=12ms row=26->28 col=2 expected_col=4 cursor_hidden=false"
+        );
+        sample["outcome"] = json!("typed hello");
+        let diagnostic: PredictDiagnostic = serde_json::from_value(sample.clone()).unwrap();
+        assert!(
+            diagnostic.message().is_none(),
+            "outcome is one of a few words"
+        );
+        sample["outcome"] = json!("timeout");
+        sample["text"] = json!("private prompt");
+        assert!(serde_json::from_value::<PredictDiagnostic>(sample.clone()).is_err());
+        sample.as_object_mut().unwrap().remove("text");
+        sample["cursor_row"] = json!(-1);
+        assert!(serde_json::from_value::<PredictDiagnostic>(sample).is_err());
     }
 
     #[test]
