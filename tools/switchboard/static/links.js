@@ -73,6 +73,16 @@
       box.append(media);document.body.append(box);
     }
   }
+  function pathsIn(line) {
+    const media = [...line.matchAll(mediaPaths)].map(match => ({index:match.index,text:match[0]}));
+    // A media path with spaces wins over the shorter plain path inside it.
+    const overlaps = (path,others) => others.some(m => path.index < m.index+m.text.length && m.index < path.index+path.text.length);
+    const plain = [...line.matchAll(filePath)].map(match => ({index:match.index,text:match[0].replace(/[.`]+$/,'')}))
+      .filter(path => !overlaps(path,media));
+    const relative = [...line.matchAll(relativeMedia)].map(match => ({index:match.index,text:match[0]}))
+      .filter(path => !overlaps(path,[...media,...plain]));
+    return {media,plain,relative};
+  }
   // Joins a wrapped path's rows. shortcut: wide characters shift the cells after them.
   const fileLinks = term => ({provideLinks(y,callback) {
     const buffer = term.buffer.active;
@@ -81,13 +91,7 @@
     let row = start;
     do line += buffer.getLine(row).translateToString(true).padEnd(term.cols); while (buffer.getLine(++row)?.isWrapped);
     const cell = index => ({x:index%term.cols+1,y:start+Math.floor(index/term.cols)+1});
-    const media = [...line.matchAll(mediaPaths)].map(match => ({index:match.index,text:match[0]}));
-    // A media path with spaces wins over the shorter plain path inside it.
-    const overlaps = (path,others) => others.some(m => path.index < m.index+m.text.length && m.index < path.index+path.text.length);
-    const plain = [...line.matchAll(filePath)].map(match => ({index:match.index,text:match[0].replace(/[.`]+$/,'')}))
-      .filter(path => !overlaps(path,media));
-    const relative = [...line.matchAll(relativeMedia)].map(match => ({index:match.index,text:match[0]}))
-      .filter(path => !overlaps(path,[...media,...plain]));
+    const {media,plain,relative} = pathsIn(line);
     const pages = [...line.matchAll(browserPages)].map(match => ({index:match.index,text:match[0].replace(/[.`]+$/,'')}));
     const links = [...media,...plain,...relative,...pages].map(({index,text}) =>
       ({range:{start:cell(index),end:cell(index+text.length-1)},text,activate:open,hover:showPreview,leave:hidePreview}))
@@ -181,6 +185,14 @@
       if(addon?._linkProvider?._handler){addon._handler=open;addon._linkProvider._handler=open;}
     }
   },25);
+  // Shared with thumbnails.js, which shows the media paths on screen without a hover.
+  window.__switchboardMedia={
+    paths:line=>{const {media,relative}=pathsIn(line);return [...media,...relative.map(path=>({...path,relative:true}))].sort((a,b)=>a.index-b.index);},
+    locate,
+    url:path=>`/api/hosts/${encodeURIComponent(host)}/file?path=${encodeURIComponent(path)}`,
+    isVideo:path=>videoFile.test(path),
+    open:path=>{if(window.parent!==window)parent.SwitchboardOpenFile?.(host,path);},
+  };
   window.__switchboardResolveLink=resolve;
   window.__switchboardBrowserPages=line=>[...line.matchAll(browserPages)].map(match=>match[0].replace(/[.`]+$/,''));
   window.__switchboardFilePaths=line=>[...line.matchAll(filePath)].map(match=>match[0].replace(/[.`]+$/,''));

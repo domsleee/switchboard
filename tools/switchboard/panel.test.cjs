@@ -127,6 +127,11 @@ test('Panel navigation skips hidden Archive and keeps terminals connected',
     assert.equal(await page.locator('#predictive-echo').getAttribute('aria-pressed'),'true');
     assert.equal(await page.evaluate(()=>localStorage.getItem('switchboard-predictive-echo')),'true');
     await page.locator('#predictive-echo').click();
+    assert.equal(await page.locator('#media-thumbnails').getAttribute('aria-pressed'),'false','Terminal thumbnails start off');
+    await page.locator('#media-thumbnails').click();
+    assert.equal(await page.locator('#media-thumbnails').getAttribute('aria-pressed'),'true');
+    assert.equal(await page.evaluate(()=>localStorage.getItem('switchboard-media-thumbnails')),'true');
+    await page.locator('#media-thumbnails').click();
     await page.locator('#close-panel').click();await terminalsIntact();
     await page.evaluate(()=>openPanel('archive'));assert.deepEqual(await section(),at('Archive',''));
     assert.equal(await page.evaluate(()=>document.activeElement.id),'archive-search');
