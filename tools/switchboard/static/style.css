@@ -26,6 +26,8 @@ body.sidebar-collapsed #sidebar-toggle{left:8px}
 #tab-search{width:100%;min-width:0;background:#111318;color:inherit;border:1px solid #363e4d;border-radius:5px;padding:7px 9px;font:inherit;font-size:12px}
 #tabs{position:relative;display:flex;flex-direction:column;gap:3px;padding:6px;overflow-y:auto;overflow-x:hidden;flex:1;min-height:0;scrollbar-width:none;overscroll-behavior:contain}
 #tabs::-webkit-scrollbar{display:none}
+/* Scrolling a tab into view keeps it clear of the pinned Hidden header. */
+#tabs:has(#hidden-toggle){scroll-padding-bottom:40px}
 #tabs .tab-select{flex-shrink:0;display:grid;grid-template-columns:8px minmax(0,1fr);column-gap:7px;row-gap:3px;white-space:normal;text-align:left;padding:9px 34px 9px 9px;min-height:52px;width:100%;border-color:transparent;background:transparent;user-select:none}
 #tabs .tab-select:hover{background:#222732}
 #tabs .tab-select.selected{background:#263d5f;border-color:#507bb3}
@@ -49,7 +51,7 @@ body.sidebar-collapsed #sidebar-toggle{left:8px}
 #tabs.drop-target::after{content:'';position:absolute;top:var(--drop-top);left:6px;right:6px;height:2px;background:#9dc2fa;border-radius:2px;pointer-events:none;z-index:1;box-shadow:0 0 4px #9dc2fa}
 #tabs [hidden]{display:none}
 /* The Hidden group: a quiet header after the other tabs, opening onto dimmed rows. */
-#hidden-toggle{flex-shrink:0;display:flex;align-items:center;gap:7px;margin-top:6px;padding:8px 9px;border:0;border-top:1px solid #2b303b;border-radius:0;background:transparent;color:#a3aec0;font-size:11px;text-align:left}
+#hidden-toggle{position:sticky;bottom:-6px;z-index:1;flex-shrink:0;display:flex;align-items:center;gap:7px;margin-top:6px;padding:8px 9px;border:0;border-top:1px solid #2b303b;border-radius:0;background:#151820;color:#a3aec0;font-size:11px;text-align:left}
 #hidden-toggle:hover{background:#222732;color:#e5e7eb}
 #hidden-toggle .chevron{display:inline-block;width:8px;font-size:13px;line-height:1;transition:transform .15s}
 #hidden-toggle[aria-expanded=true] .chevron{transform:rotate(90deg)}
