@@ -15,6 +15,7 @@ pub fn get_mime_type(ext: Option<&str>) -> &str {
             "ico" => "image/x-icon",
             "svg" => "image/svg+xml",
             "webmanifest" => "application/manifest+json",
+            "woff2" => "font/woff2",
             _ => "text/plain",
         },
     }
