@@ -865,9 +865,10 @@ mod tests {
             .iter()
             .map(|(event, g, h, _)| {
                 let snake = CODEX_EVENTS.iter().find(|e| e.0 == *event).unwrap().1;
+                // A TOML string escapes the backslashes of a Windows path, as Codex writes it.
                 format!(
                     "[hooks.state.\"{}:{snake}:{g}:{h}\"]\ntrusted_hash = \"sha256:00\"\n\n",
-                    file.display()
+                    file.display().to_string().replace('\\', "\\\\")
                 )
             })
             .collect();
