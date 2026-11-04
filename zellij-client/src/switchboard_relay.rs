@@ -1,4 +1,5 @@
 //! Loopback Switchboard relay. Terminal engines remain independent processes.
+mod agent_setup;
 pub(crate) mod artifacts;
 pub(crate) mod askpass;
 mod attention;
@@ -1248,6 +1249,7 @@ fn app(state: RelayState) -> Router {
         .route("/api/tasks", get(tasks::handler))
         .route("/api/tasks/action", post(tasks::action))
         .route("/api/tasks/log", get(tasks::log))
+        .route("/api/tasks/setup", post(tasks::setup))
         .route(
             "/api/diagnostics/browser-resume",
             post(logs::browser_resume),

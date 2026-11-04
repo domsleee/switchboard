@@ -70,7 +70,7 @@ test('Panel navigation moves between sections and keeps terminals connected',
       });
     }
     const at=(name,focused=name)=>({open:true,selected:[name],visible:['panel-'+name.toLowerCase()],title:name,focused,
-      roving:['Messages','Computers','Updates','Logs','Settings'].map(tab=>tab===name?'0':'-1').join('')});
+      roving:['Messages','Computers','Health','Logs','Settings'].map(tab=>tab===name?'0':'-1').join('')});
 
     // Sidebar Messages keeps its href for new-tab use and opens the panel at Messages.
     const messages=page.locator('#sidebar-utilities a[href="/messages.html"]');
@@ -92,7 +92,7 @@ test('Panel navigation moves between sections and keeps terminals connected',
     assert.equal(await page.locator('#messages-frame').evaluate(frame=>frame.contentWindow.location.pathname),'/messages.html');
 
     // Arrow keys move between sections with roving focus; Home/End and wrapping work.
-    await page.keyboard.press('ArrowDown');assert.deepEqual(await section(),at('Updates'));
+    await page.keyboard.press('ArrowDown');assert.deepEqual(await section(),at('Health'));
     await page.keyboard.press('ArrowUp');assert.deepEqual(await section(),at('Computers'));
     await page.keyboard.press('End');assert.deepEqual(await section(),at('Settings'));
     await page.keyboard.press('ArrowDown');assert.deepEqual(await section(),at('Messages'));

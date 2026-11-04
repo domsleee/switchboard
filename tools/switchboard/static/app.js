@@ -1174,7 +1174,7 @@ function showSection(name,focusTab=false){
     if(focusTab)tab.focus();
   }
   if(name==='logs')loadLogs();
-  if(name==='updates')globalThis.SwitchboardTasks?.load();
+  if(name==='health')globalThis.SwitchboardTasks?.load();
 }
 function openPanel(name){
   showSection(name);

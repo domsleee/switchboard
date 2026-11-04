@@ -164,6 +164,7 @@ dialog p{font-size:12px;color:#9ba7bd}
 .task-dot[data-status=ok]{background:#6fbf86}
 .task-dot[data-status=changed]{background:#6f9cdd}
 .task-dot[data-status=failed],.task-dot[data-status=timeout],.task-dot[data-status=interrupted]{background:#e06c6c}
+.task-dot[data-status=attention]{background:#d9b44a}
 .task-dot[data-status=running],.task-dot[data-status=waiting]{background:#d9b44a;animation:pulse 1.4s ease-in-out infinite}
 .task-row{padding:6px 14px 7px 42px;font-size:12px}
 .task-head{display:flex;gap:8px;align-items:center;min-width:0}

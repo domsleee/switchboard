@@ -993,11 +993,23 @@ fn unavailable() -> Response {
         .into_response()
 }
 
+/// The PATH tasks.json gives its tasks, which knows where this computer's tools live.
+pub(super) fn configured_path() -> Option<String> {
+    let tasks = TASKS.get()?;
+    let inner = tasks.inner.lock().unwrap();
+    let path = inner.config.env.get("PATH")?;
+    Some(expand(&substitute(path, &inner.config.env), true))
+}
+
 fn local_status() -> Value {
-    TASKS.get().map_or_else(
+    let mut status = TASKS.get().map_or_else(
         || json!({"groups": [], "error": "Update tasks unavailable"}),
         |t| t.status(),
-    )
+    );
+    let (switchboard, agents) = agent_setup::status();
+    status["switchboard"] = switchboard;
+    status["agents"] = agents;
+    status
 }
 
 fn act_locally(action: &Action) -> Response {
@@ -1032,6 +1044,15 @@ pub(super) async fn gateway(request: Request) -> Response {
             match serde_json::from_slice::<Action>(&bytes) {
                 Ok(action) if action.host.is_none() => act_locally(&action),
                 _ => (StatusCode::BAD_REQUEST, "Invalid task action").into_response(),
+            }
+        },
+        (Method::POST, "/switchboard/tasks/setup") => {
+            let Ok(bytes) = to_bytes(request.into_body(), 4096).await else {
+                return StatusCode::BAD_REQUEST.into_response();
+            };
+            match serde_json::from_slice::<agent_setup::SetupRequest>(&bytes) {
+                Ok(setup) if setup.host.is_none() => agent_setup::set_up_locally(&setup),
+                _ => (StatusCode::BAD_REQUEST, "Invalid setup request").into_response(),
             }
         },
         (Method::GET, "/switchboard/tasks/log") => {
@@ -1142,6 +1163,34 @@ pub(super) async fn action(State(state): State<RelayState>, request: Request) ->
                 Method::POST,
                 "/switchboard/tasks/action",
                 Bytes::from(body.to_string()),
+                "application/json",
+            ),
+        )
+        .await,
+    )
+}
+
+/// Set up an agent's status reporting on this or a paired computer.
+pub(super) async fn setup(State(state): State<RelayState>, request: Request) -> Response {
+    let Ok(bytes) = to_bytes(request.into_body(), 4096).await else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let Ok(mut setup) = serde_json::from_slice::<agent_setup::SetupRequest>(&bytes) else {
+        return (StatusCode::BAD_REQUEST, "Invalid setup request").into_response();
+    };
+    let Some(id) = setup.host.take() else {
+        return agent_setup::set_up_locally(&setup);
+    };
+    let Some(host) = peer_host(&state, &id) else {
+        return (StatusCode::NOT_FOUND, "Unknown computer").into_response();
+    };
+    relayed(
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            host.request(
+                Method::POST,
+                "/switchboard/tasks/setup",
+                Bytes::from(json!({"agent": setup.agent}).to_string()),
                 "application/json",
             ),
         )

@@ -1,12 +1,13 @@
 'use strict';
-// Update tasks from each computer's ~/.config/switchboard/tasks.json: the Updates
-// section lists every group, and failures or changes get a row in the sidebar
-// until someone clears them, on any computer.
+// Settings → Health, per computer: the Switchboard build it runs and whether its
+// agents report their own status (with a Set up button for each that doesn't), then
+// the update tasks from its ~/.config/switchboard/tasks.json. Task failures or
+// changes get a row in the sidebar until someone clears them, on any computer.
 (()=>{
   const byId=id=>document.getElementById(id);
   const element=(tag,className,text)=>{const node=document.createElement(tag);if(className)node.className=className;if(text!==undefined)node.textContent=text;return node;};
   const marks={ok:'✓',changed:'↑',failed:'✗',timeout:'✗',interrupted:'✗',running:'…',waiting:'…',skipped:'–',never:'·'};
-  let computers=[],loading=false,failed=false;
+  let computers=[],loading=false,failed=false,fast=null;
 
   function ago(ms,now=Date.now()){
     const seconds=Math.max(0,(now-ms)/1000);
@@ -93,12 +94,78 @@
     block.append(summary,...group.tasks.map(task=>taskRow(computer,group,task)),footer);
     return block;
   }
+  async function setUp(computer,agent){
+    const body={agent:agent.agent};
+    if(computer.host)body.host=computer.host;
+    try{
+      const response=await fetch('/api/tasks/setup',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+      if(!response.ok){const reply=await response.json().catch(()=>null);alertStatus(reply?.error||`${agent.name} setup failed`);}
+    }catch(_){alertStatus(`${agent.name} setup failed`);}
+    await load();
+  }
+  // Each agent row: ready agents show when they last reported; others say what is missing.
+  const agentStatus={ready:'ok',setup:'failed',approve:'attention',running:'running'};
+  function agentRow(computer,agent){
+    const row=element('div','task-row agent-row');row.dataset.status=agentStatus[agent.state]||'never';row.dataset.agent=agent.agent;
+    const head=element('div','task-head');
+    head.append(dot(row.dataset.status),element('span','task-name',agent.name));
+    const meta=agent.state==='ready'?(agent.lastReport?`reported ${ago(agent.lastReport)}`:'no report yet'):agent.detail;
+    head.append(element('small','task-meta',meta));
+    if(agent.state==='setup'){
+      const actions=element('span','task-links');
+      const setup=button('Set up',`Install Switchboard's status reporting for ${agent.name} on ${computer.name}`,()=>setUp(computer,agent));setup.className='task-run';
+      actions.append(setup);
+      head.append(actions);
+    }
+    row.append(head);
+    if(agent.state==='ready'&&agent.lastReport==null)row.append(element('p','task-note',`Restart running ${agent.name} sessions to start reporting.`));
+    if(agent.setupError&&agent.state!=='ready'&&agent.state!=='running')row.append(element('pre','task-tail',agent.setupError));
+    return row;
+  }
+  // The newest build any computer runs, to show which ones are behind.
+  function newestBuild(){
+    return computers.map(c=>c.switchboard).filter(s=>s?.commitTimestamp).sort((a,b)=>Date.parse(b.commitTimestamp)-Date.parse(a.commitTimestamp))[0];
+  }
+  function switchboardBlock(computer,newest){
+    const sb=computer.switchboard,agents=(computer.agents||[]).filter(agent=>agent.state!=='absent');
+    const behind=newest&&sb.commitTimestamp&&Date.parse(sb.commitTimestamp)<Date.parse(newest.commitTimestamp);
+    const waiting=agents.filter(agent=>agent.state!=='ready');
+    const status=sb.updateError||waiting.some(agent=>agent.state==='setup')?'failed':waiting.some(agent=>agent.state==='running')?'running':waiting.length||behind?'attention':'ok';
+    const block=element('details','task-group switchboard-group');block.dataset.status=status;
+    block.dataset.key=`${computer.host||''}\n\u0000switchboard`;
+    const summary=element('summary');
+    const title=element('span','task-title');title.append(element('strong','','Switchboard'),element('small','',`build ${sb.commit}${sb.commitDate?` · ${sb.commitDate}`:''}`));
+    let text='All set';
+    if(sb.updateError)text=`Self-update failed: ${sb.updateError}`;
+    else if(waiting.length)text=waiting.map(agent=>`${agent.name}: ${agent.state==='approve'?'approve hooks in Codex':agent.state==='running'?'setting up…':'needs setup'}`).join(' · ');
+    else if(behind)text=`Behind ${newest.commit}`;
+    const state=element('span','task-state',text);state.title=text;
+    summary.append(dot(status),title,state);
+    block.append(summary);
+    const update=element('div','task-row');update.dataset.status=sb.updateError?'failed':behind?'attention':'ok';
+    const head=element('div','task-head');
+    head.append(dot(update.dataset.status),element('span','task-name','Self-update'),element('small','task-meta',sb.updateError?`failed${sb.updateAttempts?` (attempt ${sb.updateAttempts} of 3)`:''}`:behind?`behind ${newest.commit}`:'up to date'));
+    update.append(head);
+    if(sb.updateError)update.append(element('pre','task-tail',sb.updateError));
+    block.append(update,...agents.map(agent=>agentRow(computer,agent)));
+    if(!agents.length)block.append(element('p','task-note agent-none','No Claude Code, Copilot CLI or Codex on this computer'));
+    // Open by default while something needs the user.
+    if(status!=='ok')block.open=true;
+    return block;
+  }
   function renderPanel(){
     const list=byId('updates');if(!list)return;
     const open=new Set([...list.querySelectorAll('details.task-group[open]')].map(node=>node.dataset.key));
     if(failed&&!computers.length){list.replaceChildren(element('p','log-note','Update tasks unavailable; refresh to try again.'));return;}
+    const newest=newestBuild(),closed=new Set([...list.querySelectorAll('details.switchboard-group:not([open])')].map(node=>node.dataset.key));
     list.replaceChildren(...computers.map(computer=>{
       const section=element('section','log-computer task-computer');section.append(element('h4','',computer.name));
+      if(computer.switchboard){
+        const block=switchboardBlock(computer,newest);
+        if(open.has(block.dataset.key))block.open=true;else if(closed.has(block.dataset.key))block.open=false;
+        section.append(block);
+      }
+      else if(!computer.error)section.append(element('p','log-note','Update Switchboard on this computer to check its agents'));
       if(computer.error)section.append(element('p','log-note',computer.error));
       else if(!computer.groups.length)section.append(element('p','log-note','No update tasks configured'));
       for(const group of computer.groups){
@@ -117,7 +184,7 @@
       const row=element('div','task-notice');row.dataset.status=group.status;
       const text=`${computer.name} · ${group.name} ${line(group)}`;
       const open=element('button','task-notice-open',text);open.type='button';open.title=`${text}\nOpen Updates`;
-      open.onclick=()=>globalThis.openPanel?.('updates');
+      open.onclick=()=>globalThis.openPanel?.('health');
       const clear=element('button','task-notice-clear','×');clear.type='button';clear.title='Clear on every computer';clear.setAttribute('aria-label',`Clear ${computer.name} ${group.name}`);
       clear.onclick=()=>act(computer,group,'clear');
       row.append(open,clear);return row;
@@ -135,6 +202,9 @@
     finally{
       loading=false;list?.setAttribute('aria-busy','false');if(refresh)refresh.disabled=false;
       renderPanel();renderNotices();
+      // Poll quickly while a setup runs, so its result shows without a refresh.
+      const busy=computers.some(computer=>(computer.agents||[]).some(agent=>agent.state==='running'));
+      if(busy&&!fast)fast=setInterval(load,2000);else if(!busy&&fast){clearInterval(fast);fast=null;}
     }
   }
   const refresh=byId('refresh-updates');if(refresh)refresh.onclick=load;
