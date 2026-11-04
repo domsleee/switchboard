@@ -6,6 +6,8 @@
 
 #[cfg(target_os = "macos")]
 mod iterm;
+#[cfg(windows)]
+mod windows_terminal;
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
@@ -39,8 +41,10 @@ pub trait Terminal {
 fn terminal() -> Result<Box<dyn Terminal>> {
     #[cfg(target_os = "macos")]
     return Ok(Box::new(iterm::ITerm));
-    #[cfg(not(target_os = "macos"))]
-    bail!("zellij absorb supports only iTerm on macOS so far")
+    #[cfg(windows)]
+    return Ok(Box::new(windows_terminal::WindowsTerminal));
+    #[cfg(not(any(target_os = "macos", windows)))]
+    bail!("zellij absorb supports only iTerm on macOS and Windows Terminal so far")
 }
 
 /// A process below a tab's shell, as the core sees it (from sysinfo, or a test fixture).
