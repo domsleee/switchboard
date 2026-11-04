@@ -423,6 +423,9 @@
     if(oldHeight !== height)requestAnimationFrame(()=>window.dispatchEvent(new Event('zellij:rendering-resize')));
   }
   function sendState(payload) {
+    // Guesses belong to the pane they were typed in; another pane's screen would report them as its misses.
+    const was=latest?.active_pane,now=payload?.active_pane;
+    if(was&&(was.pane_id!==now?.pane_id||was.is_plugin!==now?.is_plugin))predict?.reset();
     latest = payload;
     diagnostics?.state(payload);
     if(viewportSupported())window.dispatchEvent(new Event('zellij:rendering-resize'));

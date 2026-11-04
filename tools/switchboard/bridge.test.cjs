@@ -3,13 +3,13 @@ const assert=require('node:assert/strict');
 const vm=require('node:vm');
 const fs=require('node:fs');
 const source=fs.readFileSync(__dirname+'/static/bridge.js','utf8');
-function harness(withDiagnostics=false,platform='MacIntel'){
+function harness(withDiagnostics=false,platform='MacIntel',predict){
   const handlers={},messages=[],properties=new Map(),classes=new Set(),frames=[],resizes=[],timers=new Map();let timerId=0;
   let modal=false,focused=false,browserFocused=false,frameActive=true,bottomRows=2,firstRow='Zellij (main)',now=0;
   class Socket{constructor(){this.handlers={};this.readyState=1;this.sent=[];}addEventListener(type,fn){this.handlers[type]=fn;}send(data){this.sent.push(data);}}
   const parent={postMessage:data=>messages.push(data)};
   const window={WebSocket:Socket,addEventListener:(type,fn)=>handlers[type]=fn,dispatchEvent:()=>resizes.push(1),innerWidth:800,innerHeight:600,
-    frameElement:{classList:{contains:()=>frameActive}},
+    frameElement:{classList:{contains:()=>frameActive}},SwitchboardPredictiveEcho:predict,
     __switchboardBottomRows:()=>bottomRows,
     term:{options:{disableStdin:false},element:{contains:()=>focused,style:{pointerEvents:""}},blur(){},buffer:{active:{viewportY:0,getLine:()=>({translateToString:()=>firstRow})}},_core:{_renderService:{dimensions:{css:{cell:{height:18,width:8}}}}},onRender(){},onResize(){},focus(){}}};
   const document={createElement:()=>({style:{},setAttribute(){}}),head:{append(){}},querySelector:()=>modal?{}:null,
@@ -24,6 +24,18 @@ function harness(withDiagnostics=false,platform='MacIntel'){
   const error=(...lines)=>{const socket=new window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');socket.handlers.message({data:JSON.stringify({type:'LogError',lines})});};
   return{window,handlers,parent,messages,properties,classes,key,state,error,setTime:v=>now=v,setFocus:v=>focused=v,setBodyFocus:()=>{focused=false;document.activeElement=document.body;},setBrowserFocus:v=>browserFocused=v,setFrameActive:v=>frameActive=v,setModal:v=>modal=v,setBottomRows:v=>bottomRows=v,setFirstRow:v=>firstRow=v,frames,resizes,timers};
 }
+test('Instant typing misses name their pane, and switching panes clears pending guesses without a report',()=>{
+  let report,resets=0;
+  const h=harness(false,'MacIntel',{install:options=>{report=options.report;return {reset:()=>resets++,attach(){},sent(){}};}});
+  h.state({active_pane:{pane_id:1,is_plugin:false}});h.state({active_pane:{pane_id:1,is_plugin:false}});
+  assert.equal(resets,0);
+  report({outcome:'moved',pending:1});
+  assert.deepEqual(JSON.parse(JSON.stringify(h.messages.at(-1))),{type:'zellij-predict-diagnostic',diagnostic:{outcome:'moved',pending:1,pane_id:1,is_plugin:false}});
+  h.state({active_pane:{pane_id:2,is_plugin:false}});
+  assert.equal(resets,1,'guesses typed in pane 1 are not reported as pane 2 misses');
+  h.state({active_pane:{pane_id:2,is_plugin:true}});
+  assert.equal(resets,2);
+});
 test('browser-resume receipt is immediate and its final sample waits until after rendering',()=>{
   const h=harness(true),callbacks=[];h.window.term.write=(_,done)=>callbacks.push(done);
   const socket=new h.window.WebSocket('ws://localhost:8090/hosts/windows/ws/terminal');

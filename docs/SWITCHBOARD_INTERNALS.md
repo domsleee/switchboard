@@ -475,7 +475,7 @@ show, counting "nothing echoed yet". A frame drawn before an echo can otherwise 
 state (Backspace, then retyping the same letter), remove the guesses early and show the screen
 replaying the edit. Guesses are dropped as soon as the cursor shows on another row.
 
-Each dropped guess is logged, at most once a second per frame, as `Terminal instant typing miss`
+Each dropped guess is logged, at most once a second per frame, as `Terminal typing miss`
 in Settings → Logs and `/api/logs`: `outcome` is `timeout`, `moved` (the input changed rows) or
 `screen` (the program switched screens), with how many guesses were pending, the echo time, the
 time since the last unguessed key and since the last frame when guessing began, and the row and
