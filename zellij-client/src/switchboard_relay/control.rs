@@ -41,7 +41,21 @@ pub(super) fn binary(host: &Host) -> anyhow::Result<PathBuf> {
         .zellij_binary
         .as_ref()
         .map(|path| expand_path(path))
-        .unwrap_or_else(|| Ok(std::env::current_exe()?))
+        .unwrap_or_else(|| Ok(own_executable()?))
+}
+
+/// This executable's path, for starting its own CLI.
+pub(super) fn own_executable() -> std::io::Result<PathBuf> {
+    Ok(without_deleted_suffix(std::env::current_exe()?))
+}
+
+// Linux reports "<path> (deleted)" once an update renames another binary over this one
+// (including a rollback that leaves services running); the path then holds that binary.
+fn without_deleted_suffix(path: PathBuf) -> PathBuf {
+    match path.to_str().and_then(|p| p.strip_suffix(" (deleted)")) {
+        Some(live) if !path.exists() => live.into(),
+        _ => path,
+    }
 }
 
 pub(super) fn expand_path(path: &str) -> anyhow::Result<PathBuf> {
@@ -593,6 +607,18 @@ async fn forget_closed_session(binary: PathBuf, session: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_replaced_executable_resolves_to_its_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let live = dir.path().join("zellij");
+        let replaced = dir.path().join("zellij (deleted)");
+        assert_eq!(without_deleted_suffix(replaced.clone()), live);
+        assert_eq!(without_deleted_suffix(live.clone()), live);
+        // A file really named that way is left alone.
+        std::fs::write(&replaced, "").unwrap();
+        assert_eq!(without_deleted_suffix(replaced.clone()), replaced);
+    }
 
     #[test]
     fn only_web_links_open_in_another_browser() {

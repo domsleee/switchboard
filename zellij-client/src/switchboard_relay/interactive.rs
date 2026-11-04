@@ -246,7 +246,7 @@ fn run_command(command: &[String], timeout: Duration, relay_url: &str) -> anyhow
     };
     let line = command_line(command);
     let cwd = std::env::current_dir().context("Cannot read the current directory")?;
-    let zellij = std::env::current_exe()?;
+    let zellij = super::control::own_executable()?;
     // Created 0700: the recording may hold anything the command printed.
     let dir = tempfile::Builder::new()
         .prefix("switchboard-run-")
