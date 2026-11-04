@@ -23,12 +23,16 @@ const longest=Math.max(...rows.slice(2,10).map(row=>row.length));
 assert.equal(boxes[0].row,2);assert.equal(boxes[1].row,2,'The second thumbnail sits beside the first');
 assert.equal(boxes[0].col,longest+2,'Thumbnails start after the longest row they span');
 assert.equal(boxes[1].col,boxes[0].col+boxes[0].cols+1);
-assert.equal(boxes[0].rows,8);
+assert.equal(boxes[0].rows,10,'Half of a 20-row terminal');
 assert.ok(boxes.every(box=>box.col+box.cols<=cols-2),'Thumbnails stay inside the screen');
 
 // A thumbnail is as wide as its image's shape needs at its height.
 boxes=place(rows,undefined,{'/tmp/shots/before.png':2});
-assert.equal(boxes[0].cols,Math.ceil(8*cell.height*2/cell.width));
+assert.equal(boxes[0].cols,Math.ceil(10*cell.height*2/cell.width));
+
+// A tall terminal gives taller thumbnails, up to 24 rows.
+rows=['shot: /tmp/a.png',...Array(59).fill('')];
+assert.equal(place(rows)[0].rows,24);
 
 // It never covers text: a full row below the path ends the thumbnail there.
 rows=screen(['shot: /tmp/a.png','','','x'.repeat(cols)]);
