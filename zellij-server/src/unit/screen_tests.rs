@@ -3666,6 +3666,72 @@ pub fn web_new_pane_in_tab_action_targets_requested_tab() {
 }
 
 #[test]
+pub fn web_new_tab_tells_pty_the_requesting_clients_focused_pane() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let mut mock_screen = MockScreen::new(size);
+    let client_id = mock_screen.main_client_id;
+    let pty_receiver = mock_screen.pty_receiver.take().unwrap();
+    let session_metadata = mock_screen.clone_session_metadata();
+    let mut initial_layout = TiledPaneLayout::default();
+    initial_layout.children_split_direction = SplitDirection::Vertical;
+    initial_layout.children = vec![TiledPaneLayout::default(), TiledPaneLayout::default()];
+    let screen_thread = mock_screen.run(Some(initial_layout), vec![]);
+    let received_pty_instructions = Arc::new(Mutex::new(vec![]));
+    let pty_thread = log_actions_in_thread!(
+        received_pty_instructions,
+        PtyInstruction::Exit,
+        pty_receiver
+    );
+    // Focus the second pane. Focus changes alone do not reach the pty thread's copy of
+    // each client's focus (only renders refresh it), so NewTab must deliver it.
+    let _ = mock_screen
+        .to_screen
+        .send(ScreenInstruction::FocusPaneWithId(
+            PaneId::Terminal(1),
+            false,
+            false,
+            client_id,
+            None,
+        ));
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    // This is exactly the Action the web control bridge produces for Ctrl+Alt+T.
+    let action = Action::NewTab {
+        tiled_layout: None,
+        floating_layouts: vec![],
+        swap_tiled_layouts: None,
+        swap_floating_layouts: None,
+        tab_name: None,
+        should_change_focus_to_new_tab: true,
+        cwd: None,
+        initial_panes: None,
+        first_pane_unblock_condition: None,
+    };
+    route_arbitrary_action_to_server(&session_metadata, action, client_id);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    mock_screen.teardown(vec![pty_thread, screen_thread]);
+
+    let focus_updates: Vec<Option<PaneId>> = received_pty_instructions
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|i| match i {
+            PtyInstruction::UpdateActivePane(pane_id, id) if *id == client_id => Some(*pane_id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        focus_updates.last(),
+        Some(&Some(PaneId::Terminal(1))),
+        "a new tab without a cwd must inherit the requesting client's focused pane; got {:?}",
+        focus_updates
+    );
+}
+
+#[test]
 pub fn send_cli_new_pane_action_with_split_direction() {
     let size = Size {
         cols: 121,

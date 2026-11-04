@@ -983,25 +983,34 @@ impl Pty {
             TerminalAction::OpenFile(payload) => &mut payload.cwd,
         };
         if cwd.is_none() {
-            *cwd = self
-                .active_panes
-                .get(&client_id)
-                .and_then(|pane| match pane {
-                    PaneId::Plugin(plugin_id) => self.plugin_cwds.get(plugin_id).cloned(),
-                    PaneId::Terminal(id) => {
-                        // Try to get CWD from OS, fall back to cached value
-                        self.id_to_child_pid
-                            .get(id)
-                            .and_then(|&pid| {
-                                self.bus
-                                    .os_input
-                                    .as_ref()
-                                    .and_then(|input| input.get_cwd(pid))
-                            })
-                            .or_else(|| self.terminal_cwds.get(id).cloned())
-                    },
+            *cwd = self.focused_cwd(client_id).map(|(_, cwd, _)| cwd);
+        }
+    }
+    /// The cwd of the pane `client_id` is focused on, with the pane and where the
+    /// cwd came from: the live process ("process"), or the last known value ("cached").
+    fn focused_cwd(&self, client_id: ClientId) -> Option<(PaneId, PathBuf, &'static str)> {
+        let pane_id = *self.active_panes.get(&client_id)?;
+        match pane_id {
+            PaneId::Plugin(plugin_id) => self
+                .plugin_cwds
+                .get(&plugin_id)
+                .map(|cwd| (pane_id, cwd.clone(), "cached")),
+            PaneId::Terminal(id) => self
+                .id_to_child_pid
+                .get(&id)
+                .and_then(|&pid| {
+                    self.bus
+                        .os_input
+                        .as_ref()
+                        .and_then(|input| input.get_cwd(pid))
                 })
-        };
+                .map(|cwd| (pane_id, cwd, "process"))
+                .or_else(|| {
+                    self.terminal_cwds
+                        .get(&id)
+                        .map(|cwd| (pane_id, cwd.clone(), "cached"))
+                }),
+        }
     }
     fn fill_cwd_from_pane_id(&self, terminal_action: &mut TerminalAction, pane_id: &PaneId) {
         let cwd = match terminal_action {
@@ -1186,6 +1195,29 @@ impl Pty {
         let mut default_shell =
             default_shell.unwrap_or_else(|| self.get_default_terminal(cwd, None));
         let (client_id, is_web_client) = client_id_and_is_web_client;
+        let inherits_cwd = match &default_shell {
+            TerminalAction::RunCommand(run_command) => run_command.cwd.is_none(),
+            TerminalAction::OpenFile(payload) => payload.cwd.is_none(),
+        };
+        if inherits_cwd {
+            // Record what a new tab inherits so a wrong folder can be traced to its source.
+            match self.focused_cwd(client_id) {
+                Some((pane_id, cwd, source)) => log::info!(
+                    "New tab cwd: tab={} client={} pane={:?} cwd={} source={}",
+                    tab_index,
+                    client_id,
+                    pane_id,
+                    cwd.display(),
+                    source
+                ),
+                None => log::info!(
+                    "New tab cwd: tab={} client={} pane={:?} cwd=none",
+                    tab_index,
+                    client_id,
+                    self.active_panes.get(&client_id)
+                ),
+            }
+        }
         self.fill_cwd(&mut default_shell, client_id);
 
         // Match initial_panes commands to empty slots in the layout
