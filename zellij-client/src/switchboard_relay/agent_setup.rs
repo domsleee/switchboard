@@ -246,15 +246,62 @@ fn check_copilot(dir: &Path) -> Check {
     Check::from_missing(missing)
 }
 
-/// Codex hooks run through a shell, as `zellij agent-resume install`'s do; Windows
-/// PowerShell gets the payload as UTF-8.
-fn codex_command(binary: &Path) -> String {
+/// The launcher Codex hooks run. Its path never changes, so the hook text Codex was
+/// asked to trust stays the same across updates; on Windows each release runs from
+/// its own folder. The relay rewrites it at startup to run its current executable.
+pub(super) fn codex_launcher(home: &Path) -> PathBuf {
+    home.join(".local")
+        .join("share")
+        .join("switchboard")
+        .join(if cfg!(windows) {
+            "codex-agent-hook.cmd"
+        } else {
+            "codex-agent-hook"
+        })
+}
+
+fn launcher_text(binary: &Path) -> String {
     let binary = binary.to_string_lossy();
+    if cfg!(windows) {
+        format!(
+            "@\"{}\" agent-hook --agent codex\r\n",
+            binary.replace('%', "%%")
+        )
+    } else {
+        format!(
+            "#!/bin/sh\nexec '{}' agent-hook --agent codex\n",
+            binary.replace('\'', "'\\''")
+        )
+    }
+}
+
+/// Point the launcher at `binary`, rewriting it only when its text changed.
+pub(super) fn install_codex_launcher(home: &Path, binary: &Path) -> std::io::Result<()> {
+    let path = codex_launcher(home);
+    let text = launcher_text(binary);
+    if std::fs::read_to_string(&path).ok().as_deref() == Some(text.as_str()) {
+        return Ok(());
+    }
+    std::fs::create_dir_all(path.parent().unwrap())?;
+    let staged = path.with_extension("switchboard-tmp");
+    std::fs::write(&staged, text)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))?;
+    }
+    std::fs::rename(&staged, &path)
+}
+
+/// Codex hooks run through a shell, as `zellij agent-resume install`'s do; Windows
+/// PowerShell gets the payload as UTF-8 and pipes it to the launcher.
+fn codex_command(launcher: &Path) -> String {
+    let launcher = launcher.to_string_lossy();
     if cfg!(windows) {
         use base64::{engine::general_purpose::STANDARD, Engine};
         let script = format!(
-            "$utf8=New-Object System.Text.UTF8Encoding($false); [Console]::InputEncoding=$utf8; $OutputEncoding=$utf8; $payload=[Console]::In.ReadToEnd(); $payload | & '{}' agent-hook --agent codex; exit 0",
-            binary.replace('\'', "''")
+            "$utf8=New-Object System.Text.UTF8Encoding($false); [Console]::InputEncoding=$utf8; $OutputEncoding=$utf8; $payload=[Console]::In.ReadToEnd(); $payload | & '{}'; exit 0",
+            launcher.replace('\'', "''")
         );
         let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
         format!(
@@ -262,16 +309,17 @@ fn codex_command(binary: &Path) -> String {
             STANDARD.encode(bytes)
         )
     } else {
-        format!(
-            "'{}' agent-hook --agent codex",
-            binary.replace('\'', "'\\''")
-        )
+        format!("'{}'", launcher.replace('\'', "'\\''"))
     }
 }
 
+/// Switchboard's Codex hooks: the launcher, or an executable named directly, as the
+/// first builds did.
 fn is_codex_hook(command: &str) -> bool {
-    const MARK: &str = " agent-hook --agent codex";
-    if command.contains(MARK) {
+    let ours = |text: &str| {
+        text.contains(" agent-hook --agent codex") || text.contains("codex-agent-hook")
+    };
+    if ours(command) {
         return true;
     }
     use base64::{engine::general_purpose::STANDARD, Engine};
@@ -283,7 +331,7 @@ fn is_codex_hook(command: &str) -> bool {
                 .chunks_exact(2)
                 .map(|w| u16::from_le_bytes([w[0], w[1]]))
                 .collect();
-            String::from_utf16_lossy(&words).contains(MARK)
+            ours(&String::from_utf16_lossy(&words))
         })
 }
 
@@ -343,11 +391,11 @@ fn same_path(a: &Path, b: &Path) -> bool {
     }
 }
 
-fn check_codex(dir: &Path, binary: &Path, reported_since_setup: bool) -> Check {
+fn check_codex(dir: &Path, launcher: &Path, reported_since_setup: bool) -> Check {
     let file = dir.join("hooks.json");
     let config = read_json(&file).unwrap_or(Value::Null);
     let hooks = codex_hooks(&config);
-    let expected = codex_command(binary);
+    let expected = codex_command(launcher);
     let complete = CODEX_EVENTS.iter().all(|(event, _, _)| {
         hooks
             .iter()
@@ -363,6 +411,12 @@ fn check_codex(dir: &Path, binary: &Path, reported_since_setup: bool) -> Check {
         return Check {
             state: "setup",
             detail: "Status hooks are out of date".into(),
+        };
+    }
+    if !launcher.is_file() {
+        return Check {
+            state: "setup",
+            detail: "Status hook launcher missing".into(),
         };
     }
     let trusted = hooks
@@ -552,7 +606,12 @@ async fn set_up(agent: Agent) -> Result<(), String> {
         Agent::Codex => {
             let binary = control::own_executable()
                 .map_err(|e| format!("Cannot find Switchboard's executable: {e}"))?;
-            install_codex_hooks(&dir.join("hooks.json"), &codex_command(&binary))
+            install_codex_launcher(&home(), &binary)
+                .map_err(|e| format!("Could not write the Codex hook launcher: {e}"))?;
+            install_codex_hooks(
+                &dir.join("hooks.json"),
+                &codex_command(&codex_launcher(&home())),
+            )
         },
     }
 }
@@ -664,9 +723,12 @@ fn describe(agent: Agent) -> Value {
             Agent::Claude => check_claude(&dir),
             Agent::Copilot => check_copilot(&dir),
             Agent::Codex => {
-                let binary = control::own_executable().unwrap_or_default();
                 let since = setup.finished.unwrap_or(0);
-                check_codex(&dir, &binary, report.is_some_and(|at| at > since))
+                check_codex(
+                    &dir,
+                    &codex_launcher(&home()),
+                    report.is_some_and(|at| at > since),
+                )
             },
         }
     };
@@ -830,14 +892,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dir = dir.path();
         let file = dir.join("hooks.json");
-        let binary = Path::new("/opt/switch board/zellij");
-        let command = codex_command(binary);
+        let launcher = codex_launcher(dir);
+        let command = codex_command(&launcher);
         write(
             &file,
             r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"'/z' agent-resume record --agent codex","timeout":10}]}],"Stop":[{"hooks":[{"type":"command","command":"say done"}]}]}}"#,
         );
-        assert_eq!(check_codex(dir, binary, false).state, "setup");
+        assert_eq!(check_codex(dir, &launcher, false).state, "setup");
         install_codex_hooks(&file, &command).unwrap();
+        assert_eq!(
+            check_codex(dir, &launcher, false).detail,
+            "Status hook launcher missing"
+        );
+        install_codex_launcher(dir, Path::new("/opt/switch board/zellij")).unwrap();
         // Installing again replaces Switchboard's hooks instead of adding more.
         install_codex_hooks(&file, &command).unwrap();
         let config = read_json(&file).unwrap();
@@ -853,10 +920,10 @@ mod tests {
         assert_eq!(config["hooks"]["Interrupt"][0]["hooks"][0]["timeout"], 3);
         assert_eq!(codex_hooks(&config).len(), CODEX_EVENTS.len());
 
-        let check = check_codex(dir, binary, false);
+        let check = check_codex(dir, &launcher, false);
         assert_eq!(check.state, "approve", "{check:?}");
         assert_eq!(
-            check_codex(dir, binary, true).state,
+            check_codex(dir, &launcher, true).state,
             "ready",
             "a report proves trust"
         );
@@ -876,11 +943,26 @@ mod tests {
             &dir.join("config.toml"),
             &format!("[tui]\nscreen_reader_detection_done = true\n\n[hooks.state]\n\n{state}"),
         );
-        assert_eq!(check_codex(dir, binary, false).state, "ready");
-        // A moved executable makes the hooks out of date.
+        assert_eq!(check_codex(dir, &launcher, false).state, "ready");
+        // An update moves the executable (Windows runs each release from its own
+        // folder): only the launcher changes, so the trusted hooks stay ready.
+        install_codex_launcher(dir, Path::new("/releases/abc123/zellij")).unwrap();
+        assert!(std::fs::read_to_string(&launcher)
+            .unwrap()
+            .contains("/releases/abc123/zellij"));
+        assert_eq!(read_json(&file).unwrap(), config);
+        assert_eq!(check_codex(dir, &launcher, false).state, "ready");
+        // Hooks from the first builds named the executable directly; setup replaces them.
+        let old = r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"'/z' agent-hook --agent codex"}]}]}}"#;
+        write(&file, old);
         assert_eq!(
-            check_codex(dir, Path::new("/elsewhere/zellij"), false).detail,
+            check_codex(dir, &launcher, false).detail,
             "Status hooks are out of date"
+        );
+        install_codex_hooks(&file, &command).unwrap();
+        assert_eq!(
+            codex_hooks(&read_json(&file).unwrap()).len(),
+            CODEX_EVENTS.len()
         );
     }
 
@@ -894,7 +976,9 @@ mod tests {
             STANDARD.encode(bytes)
         );
         assert!(is_codex_hook(&command));
-        assert!(is_codex_hook(&codex_command(Path::new("/z"))));
+        assert!(is_codex_hook(&codex_command(&codex_launcher(Path::new(
+            "/home/a"
+        )))));
         assert!(!is_codex_hook("'/z' agent-resume record --agent codex"));
     }
 

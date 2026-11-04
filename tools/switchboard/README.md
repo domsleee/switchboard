@@ -61,9 +61,11 @@ needs it, on any computer. Setup does only this:
   auto-update in the agent's `settings.json`. The plugin also adds a `message-board`
   skill, so the agent can read, reply to and send
   [message board](../../docs/MESSAGE_BOARD_USAGE.md) messages.
-- **Codex:** Codex plugins can't carry hooks, so setup adds command hooks that run
-  `zellij agent-hook --agent codex` to `~/.codex/hooks.json`, keeping any others.
-  The next time Codex starts it asks to review them: choose **Trust all and continue**.
+- **Codex:** Codex plugins can't carry hooks, so setup adds command hooks to
+  `~/.codex/hooks.json`, keeping any others. They run a small launcher in
+  `~/.local/share/switchboard/` that Switchboard keeps pointed at its current
+  executable. The next time Codex starts it asks to review them: choose **Trust all
+  and continue**. Updates don't change the hooks, so Codex asks only once.
 
 Running sessions pick up the plugin or hooks after a restart. Copilot's hooks run
 `zellij` from `PATH`, so this fork's `zellij` must be on it.
