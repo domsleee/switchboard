@@ -122,6 +122,29 @@ fn take_snapshots_and_cursor_coordinates_from_render_events<'a>(
     snapshots
 }
 
+/// Wait until `log` holds `count` renders with output. Tests that check every render
+/// used fixed sleeps between actions, and on a busy CI machine an action could land
+/// before the previous render, merging two renders into one.
+fn wait_for_renders(log: &Arc<Mutex<Vec<ServerInstruction>>>, count: usize) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let renders = log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| matches!(event, ServerInstruction::Render(Some(_))))
+            .count();
+        if renders >= count {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "waited 10s for render {count}, saw {renders}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
 fn send_cli_action_to_server(
     session_metadata: &SessionMetaData,
     cli_action: CliAction,
@@ -4100,19 +4123,20 @@ pub fn send_cli_toggle_pane_embed_or_float() {
     );
     let toggle_pane_embed_or_floating = CliAction::TogglePaneEmbedOrFloating { pane_id: None };
     // first time to float
+    wait_for_renders(&received_server_instructions, 1);
     send_cli_action_to_server(
         &session_metadata,
         toggle_pane_embed_or_floating.clone(),
         client_id,
     );
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    wait_for_renders(&received_server_instructions, 2);
     // second time to embed
     send_cli_action_to_server(
         &session_metadata,
         toggle_pane_embed_or_floating.clone(),
         client_id,
     );
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    wait_for_renders(&received_server_instructions, 3);
     mock_screen.teardown(vec![server_instruction, screen_thread]);
     let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
         received_server_instructions.lock().unwrap().iter(),
@@ -4152,14 +4176,15 @@ pub fn send_cli_toggle_floating_panes() {
     let toggle_pane_embed_or_floating = CliAction::TogglePaneEmbedOrFloating { pane_id: None };
     let toggle_floating_panes = CliAction::ToggleFloatingPanes { tab_id: None };
     // float the focused pane
+    wait_for_renders(&received_server_instructions, 1);
     send_cli_action_to_server(&session_metadata, toggle_pane_embed_or_floating, client_id);
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    wait_for_renders(&received_server_instructions, 2);
     // toggle floating panes (will hide the floated pane from the previous action)
     send_cli_action_to_server(&session_metadata, toggle_floating_panes.clone(), client_id);
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    wait_for_renders(&received_server_instructions, 3);
     // toggle floating panes (will show the floated pane)
     send_cli_action_to_server(&session_metadata, toggle_floating_panes.clone(), client_id);
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    wait_for_renders(&received_server_instructions, 4);
     mock_screen.teardown(vec![server_instruction, screen_thread]);
     let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
         received_server_instructions.lock().unwrap().iter(),
