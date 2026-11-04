@@ -217,7 +217,7 @@ Old interrupt hints in the transcript do not keep a tab working. Copilot has no
 completion line, so a finish must be observed to raise a new notification.
 Unrecognized Copilot dialogs report unknown.
 
-Claude Code tabs with the `switchboard-status` plugin (`plugins/switchboard-status`)
+Claude Code tabs with the `switchboard` plugin (`plugins/switchboard`)
 report their own status: its HTTP hooks post `UserPromptSubmit`, tool, permission,
 notification, `Stop` and `SessionEnd` events to `/api/agent-hook` with the Zellij
 session and pane from `ZELLIJ_SESSION_NAME` and `ZELLIJ_PANE_ID`. That status replaces

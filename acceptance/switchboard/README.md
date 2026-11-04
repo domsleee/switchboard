@@ -132,7 +132,7 @@ While Codex or Claude runs in a background tab, I can distinguish working,
 finished and waiting for approval. An unrecognized screen stays unknown.
 Opening a finished result acknowledges it without dismissing an approval.
 
-Claude Code with the `switchboard-status` plugin reports its own state through
+Claude Code with the `switchboard` plugin reports its own state through
 hooks; other agents and Claude without the plugin are read from the screen.
 
 **Tests:** `relay` checks scanner states and background tabs; `ui` checks

@@ -1064,7 +1064,7 @@ fn hook_status(event: &Value) -> Option<Hooked> {
     Some(Hooked { state, token })
 }
 
-/// Receives Claude Code hook events from the switchboard-status plugin. The plugin's
+/// Receives Claude Code hook events from the switchboard plugin. The plugin's
 /// HTTP hooks name their Zellij session and pane in headers; events from outside
 /// Zellij carry neither and are ignored. A Claude started by another Claude in the
 /// same pane inherits `CLAUDECODE=1` and is ignored too, so it can't overwrite the
