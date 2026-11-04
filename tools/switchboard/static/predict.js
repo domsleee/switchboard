@@ -1,8 +1,8 @@
 // Instant typing (Settings → Appearance, off by default). Typed characters are drawn at the cursor
 // before the computer echoes them, then kept only while the real screen agrees, as mosh does.
-// Only plain typing and Backspace into blank space are guessed; any other key pauses guessing until
-// the screen has had time to settle. Guesses sit on an overlay and never enter xterm's buffer, so a
-// wrong guess is undone by removing it.
+// Only plain typing, Backspace and Ctrl+W (delete word) at the end of the line are guessed; any other
+// key pauses guessing until the screen has had time to settle. Guesses sit on an overlay and never
+// enter xterm's buffer, so a wrong guess is undone by removing it.
 (root => {
   const FLAG = 'switchboard-predictive-echo';
   // Mosh's thresholds: below 20ms of echo time guessing is pointless, above 30ms it is worth showing.
@@ -14,7 +14,12 @@
   // end in a space or no-break space (❯\u00a0, "$ "), so Backspace at the start of the input is not guessed.
   const erasable = ch => { const c = ch.codePointAt(0); return c > 0x20 && c < 0x7f; };
   // A space between words is erased too; prompts end in a symbol before their space ("$ ", "> ").
-  const wordChar = ch => /^[A-Za-z0-9]$/.test(ch);
+  // Ctrl+W deletes a word: readline, Claude Code and Copilot CLI back to whitespace, reedline (nushell)
+  // to a Unicode word boundary, Codex to punctuation. They agree on a run of these characters that
+  // follows a space, so only that is guessed.
+  const wordChar = ch => /^[A-Za-z0-9_]$/.test(ch);
+  // A shell's history hint (nushell, fish, zsh-autosuggestions) is grey (palette colour 8), not dim.
+  const grey = cell => !!cell && cell.isFgPalette() && cell.getFgColor() === 8;
   // Zellij pane frames and side-by-side panes put a vertical border at the right of the pane's row.
   const border = ch => ch !== '' && '│┃║╎╏┆┇┊┋'.includes(ch);
   const hasParam = (params, values) => params.some(p => values.includes(Array.isArray(p) ? p[0] : p));
@@ -60,19 +65,22 @@
       if (hidden || buffer.viewportY !== buffer.baseY || lastWriteAt <= lastKeyAt) return false;
       const row = buffer.baseY + buffer.cursorY, x = buffer.cursorX, line = buffer.getLine(row);
       if (!line || x >= term.cols) return false;
-      const base = [], dim = [];
-      for (let i = 0; i < term.cols; i++) { const cell = line.getCell(i); base.push(cell?.getChars() || ''); dim.push(!!cell?.isDim()); }
-      // Guess only at the end of what is typed: the rest of the pane's row is blank or dim placeholder
-      // text, which the program clears once typing starts.
+      // faint: placeholder text the program replaces as typing goes on.
+      const base = [], faint = [];
+      for (let i = 0; i < term.cols; i++) { const cell = line.getCell(i); base.push(cell?.getChars() || ''); faint.push(!!cell?.isDim()); }
+      // A grey history hint starts at the cursor. Grey text further right, such as a right prompt, does not count.
+      for (let i = x; i < term.cols && grey(line.getCell(i)); i++) faint[i] = true;
+      // Guess only at the end of what is typed: the rest of the pane's row is blank or placeholder text,
+      // which the program clears once typing starts.
       let clearEnd = x, edge = term.cols;
       for (let i = x; i < term.cols; i++) {
         if (blank(base[i])) continue;
         if (border(base[i])) { edge = i; break; }
-        if (!dim[i]) return false;
+        if (!faint[i]) return false;
         clearEnd = i + 1;
       }
       const t = now();
-      run = { row, anchor: x, base, dim, ops: [], open: true, closeBy: Infinity, clearEnd, edge,
+      run = { row, anchor: x, base, faint, ops: [], open: true, closeBy: Infinity, clearEnd, edge,
         sinceKey: t - lastKeyAt, sinceWrite: t - lastWriteAt, frames: 0, confirmed: 0 };
       return true;
     }
@@ -86,15 +94,30 @@
       counts.guessed++;
       return true;
     }
+    const spaceOrErasable = (line, pos) => erasable(line[pos]) || (line[pos] === ' ' && pos > 0 && wordChar(line[pos - 1]));
     function erase(t) {
       if (!ready(t)) return false;
       const { line, written, cursor } = predicted(), pos = cursor - 1;
       if (pos < 0) return false;
       const writer = written.get(pos);
-      const word = erasable(line[pos]) || (line[pos] === ' ' && pos > 0 && wordChar(line[pos - 1]));
-      if (writer ? !writer.typed : (run.dim[pos] || !word)) return false;
+      if (writer ? !writer.typed : (run.faint[pos] || !spaceOrErasable(line, pos))) return false;
       run.ops.push({ at: t, pos, ch: ' ', x: pos, typed: false });
       counts.guessed++;
+      return true;
+    }
+    // Ctrl+W: spaces after the word, then a word that follows a space. Like Backspace, a space already on
+    // screen is skipped only after a word character, as a prompt's space follows a symbol.
+    function eraseWord(t) {
+      if (!ready(t)) return false;
+      const { line, written, cursor } = predicted(), typed = pos => !!written.get(pos)?.typed;
+      const onScreen = pos => !written.has(pos) && !run.faint[pos];
+      let pos = cursor;
+      while (pos > 0 && line[pos - 1] === ' ' && (typed(pos - 1) || (onScreen(pos - 1) && spaceOrErasable(line, pos - 1)))) pos--;
+      const end = pos;
+      while (pos > 0 && wordChar(line[pos - 1]) && (typed(pos - 1) || onScreen(pos - 1))) pos--;
+      if (pos === end || !(line[pos - 1] === ' ' || line[pos - 1] === '\u00a0')) return false;
+      for (let i = cursor - 1; i >= pos; i--) run.ops.push({ at: t, pos: i, ch: ' ', x: i, typed: false });
+      counts.guessed += cursor - pos;
       return true;
     }
     function pause(t) {
@@ -108,7 +131,7 @@
       if (typeof data !== 'string') pause(t);
       else if (!neutral(data)) {
         for (const ch of data) {
-          const guessed = typeable(ch) ? type(ch, t) : (ch === '\x7f' || ch === '\b') ? erase(t) : false;
+          const guessed = typeable(ch) ? type(ch, t) : (ch === '\x7f' || ch === '\b') ? erase(t) : ch === '\x17' ? eraseWord(t) : false;
           if (!guessed) { pause(t); break; }
         }
       }
@@ -116,16 +139,18 @@
       schedule(); render();
     }
     // The screen shows the state after the first n guesses when the cursor sits where they leave it and
-    // every cell any guess touches shows that state. A blank guess also accepts the dim placeholder coming
+    // every cell any guess touches shows that state. A blank guess also accepts placeholder text coming
     // back, and a cell no guess has written yet accepts its placeholder vanishing.
     function confirms(n) {
-      const buffer = term.buffer.active, { line: expected, written, cursor } = predicted(n);
-      if (buffer.baseY + buffer.cursorY !== run.row || buffer.cursorX !== cursor) return false;
-      const line = buffer.getLine(run.row);
+      const buffer = term.buffer.active;
+      return buffer.baseY + buffer.cursorY === run.row && buffer.cursorX === predicted(n).cursor && shows(n);
+    }
+    function shows(n) {
+      const { line: expected, written } = predicted(n), line = term.buffer.active.getLine(run.row);
       for (const pos of new Set(run.ops.map(op => op.pos))) {
         const cell = line?.getCell(pos), shown = cell?.getChars() || '', want = expected[pos];
-        const ok = written.has(pos) ? (want === ' ' ? blank(shown) || cell?.isDim() : shown === want)
-          : shown === want || (blank(shown) && blank(want)) || run.dim[pos];
+        const ok = written.has(pos) ? (want === ' ' ? blank(shown) || cell?.isDim() || grey(cell) : shown === want)
+          : shown === want || (blank(shown) && blank(want)) || run.faint[pos];
         if (!ok) return false;
       }
       return true;
@@ -140,7 +165,7 @@
     function accept(n) {
       const done = run.ops.splice(0, n), last = done[done.length - 1];
       counts.confirmed += n; run.confirmed += n;
-      for (const op of done) { run.base[op.pos] = op.ch; run.dim[op.pos] = false; }
+      for (const op of done) { run.base[op.pos] = op.ch; run.faint[op.pos] = false; }
       run.anchor = last.x;
       const sample = now() - last.at;
       srtt = srtt === null ? sample : srtt * 7 / 8 + sample / 8;
@@ -152,8 +177,13 @@
       if (!run || hidden) return;
       run.frames++;
       const buffer = term.buffer.active;
-      // The input moved to another row (a submitted message, output above it): these guesses are stale.
-      if (buffer.baseY + buffer.cursorY !== run.row) { drop('moved'); return; }
+      if (buffer.baseY + buffer.cursorY !== run.row) {
+        // Enter sent before the echo arrived: the echo and the new line come together, and the row
+        // showing every guess confirms them. It says nothing about echo time.
+        if (!run.open && shows(run.ops.length)) { counts.confirmed += run.ops.length; run = null; schedule(); render(); return; }
+        // The input moved to another row (a submitted message, output above it): these guesses are stale.
+        drop('moved'); return;
+      }
       const n = settled();
       if (n > 0) accept(n);
       schedule(); render();
