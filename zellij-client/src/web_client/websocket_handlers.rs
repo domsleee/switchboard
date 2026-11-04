@@ -18,11 +18,13 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use futures_util::StreamExt;
+use std::path::PathBuf;
 use std::sync::{atomic::AtomicBool, Arc};
 use tokio_util::sync::CancellationToken;
 use zellij_utils::{
-    data::PaneId,
+    data::{CommandOrPlugin, PaneId},
     input::actions::Action,
+    input::command::RunCommandAction,
     input::mouse::MouseEvent,
     ipc::{ClientToServerMsg, PixelDimensions},
     pane_size::{Size, SizeInPixels},
@@ -97,7 +99,10 @@ async fn handle_ws_control(socket: WebSocket, params: ControlParams, state: AppS
             deserialized_msg.payload,
             WebClientToWebServerControlMessagePayload::FocusPane { .. }
         );
-        let Some(client_msg) = control_payload_to_server_msg(deserialized_msg.payload) else {
+        let default_shell = state.config.lock().unwrap().options.default_shell.clone();
+        let Some(client_msg) =
+            control_payload_to_server_msg(deserialized_msg.payload, default_shell)
+        else {
             return;
         };
 
@@ -347,8 +352,27 @@ async fn handle_ws_terminal(
     os_input.send_to_server(ClientToServerMsg::ClientExited);
 }
 
+// An elevated tab runs the default shell through gsudo on Windows (built-in `sudo`
+// needs 24H2 and inline mode turned on) and sudo elsewhere. Either prompts on that computer.
+fn elevated_shell(default_shell: Option<PathBuf>) -> RunCommandAction {
+    let shell = default_shell
+        .or_else(|| std::env::var_os("SHELL").map(PathBuf::from))
+        .or_else(|| std::env::var_os("COMSPEC").map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("/bin/sh"));
+    RunCommandAction {
+        command: PathBuf::from(if cfg!(windows) { "gsudo" } else { "sudo" }),
+        args: vec![shell.to_string_lossy().into_owned()],
+        // Keep a declined prompt or missing gsudo on screen, with Enter to retry.
+        hold_on_close: true,
+        // Agents in the tab still report their state through the title.
+        use_terminal_title: true,
+        ..Default::default()
+    }
+}
+
 fn control_payload_to_server_msg(
     payload: WebClientToWebServerControlMessagePayload,
+    default_shell: Option<PathBuf>,
 ) -> Option<ClientToServerMsg> {
     let client_msg = match payload {
         WebClientToWebServerControlMessagePayload::TerminalResize(size) => {
@@ -395,21 +419,25 @@ fn control_payload_to_server_msg(
                 is_cli_client: false,
             }
         },
-        WebClientToWebServerControlMessagePayload::NewTab => ClientToServerMsg::Action {
-            action: Action::NewTab {
-                tiled_layout: None,
-                floating_layouts: vec![],
-                swap_tiled_layouts: None,
-                swap_floating_layouts: None,
-                tab_name: None,
-                should_change_focus_to_new_tab: true,
-                cwd: None,
-                initial_panes: None,
-                first_pane_unblock_condition: None,
-            },
-            terminal_id: None,
-            client_id: None,
-            is_cli_client: false,
+        WebClientToWebServerControlMessagePayload::NewTab { elevated } => {
+            ClientToServerMsg::Action {
+                action: Action::NewTab {
+                    tiled_layout: None,
+                    floating_layouts: vec![],
+                    swap_tiled_layouts: None,
+                    swap_floating_layouts: None,
+                    // The sidebar marks tabs with this name as elevated.
+                    tab_name: elevated.then(|| "Administrator".to_owned()),
+                    should_change_focus_to_new_tab: true,
+                    cwd: None,
+                    initial_panes: elevated
+                        .then(|| vec![CommandOrPlugin::Command(elevated_shell(default_shell))]),
+                    first_pane_unblock_condition: None,
+                },
+                terminal_id: None,
+                client_id: None,
+                is_cli_client: false,
+            }
         },
         WebClientToWebServerControlMessagePayload::SetMobileRenderPreferences {
             single_pane,
@@ -578,8 +606,39 @@ mod tests {
             serde_json::from_value(raw).expect("parse");
         assert!(matches!(
             parsed.payload,
-            WebClientToWebServerControlMessagePayload::NewTab
+            WebClientToWebServerControlMessagePayload::NewTab { elevated: false }
         ));
+    }
+
+    #[test]
+    fn elevated_new_tab_runs_the_default_shell_through_the_elevator() {
+        let payload =
+            serde_json::from_value(serde_json::json!({ "type": "NewTab", "elevated": true }))
+                .expect("parse");
+        let Some(ClientToServerMsg::Action {
+            action:
+                Action::NewTab {
+                    initial_panes: Some(panes),
+                    tab_name: Some(tab_name),
+                    ..
+                },
+            ..
+        }) = control_payload_to_server_msg(payload, Some(PathBuf::from("nu")))
+        else {
+            panic!("expected a NewTab with an initial pane");
+        };
+        let [CommandOrPlugin::Command(run)] = panes.as_slice() else {
+            panic!("expected one command pane, got {panes:?}");
+        };
+        assert_eq!(
+            tab_name, "Administrator",
+            "The sidebar shields tabs by this name"
+        );
+        let elevator = if cfg!(windows) { "gsudo" } else { "sudo" };
+        assert_eq!(
+            (run.command.to_str(), run.args.as_slice()),
+            (Some(elevator), &["nu".to_owned()][..])
+        );
     }
 
     #[test]
@@ -621,7 +680,7 @@ mod tests {
             let parsed: WebClientToWebServerControlMessage =
                 serde_json::from_value(raw).expect("parse");
             assert_eq!(
-                control_payload_to_server_msg(parsed.payload),
+                control_payload_to_server_msg(parsed.payload, None),
                 Some(ClientToServerMsg::SetTabViewport {
                     size: Size { rows: 24, cols: 80 },
                     tab_position: 2,
@@ -635,6 +694,7 @@ mod tests {
     fn new_pane_in_tab_is_routed_to_the_requesting_client() {
         let client_msg = control_payload_to_server_msg(
             WebClientToWebServerControlMessagePayload::NewPaneInTab { tab_id: 2 },
+            None,
         )
         .expect("message dropped");
         match client_msg {
@@ -658,9 +718,10 @@ mod tests {
 
     #[test]
     fn unknown_control_message_is_dropped() {
-        assert!(
-            control_payload_to_server_msg(WebClientToWebServerControlMessagePayload::Unknown)
-                .is_none()
-        );
+        assert!(control_payload_to_server_msg(
+            WebClientToWebServerControlMessagePayload::Unknown,
+            None
+        )
+        .is_none());
     }
 }

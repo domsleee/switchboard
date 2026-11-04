@@ -27,7 +27,10 @@ pub enum WebClientToWebServerControlMessagePayload {
     NewPaneInTab {
         tab_id: usize,
     },
-    NewTab,
+    NewTab {
+        #[serde(default)]
+        elevated: bool,
+    },
     SetMobileRenderPreferences {
         single_pane: bool,
         fit: bool,

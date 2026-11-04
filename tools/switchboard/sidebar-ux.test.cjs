@@ -59,6 +59,13 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     await page.waitForSelector('iframe.active[title="Mac: main"]');
     assert.equal(await onScreen('Mac: main'),true);
     assert.equal(await onScreen('Windows: main'),false);
+    // A tab opened with Run as administrator carries a shield.
+    tabs[1].name='Administrator';await page.evaluate(()=>refreshAttention());
+    await page.waitForFunction(()=>document.querySelectorAll('#tabs .tab-select')[1]?.classList.contains('elevated'));
+    assert.equal(await page.locator('#tabs .elevated').count(),1);
+    assert.equal(await page.locator('#tabs .elevated .tab-name').evaluate(e=>getComputedStyle(e,'::before').content),'"\u{1F6E1}️"');
+    tabs[1].name=names[1];await page.evaluate(()=>refreshAttention());
+    await page.waitForFunction(()=>!document.querySelector('#tabs .elevated'));
     const action=page.locator('.tab-actions').nth(1);
     await page.locator('.tab-row').nth(1).hover();await action.click();
     assert.match(await page.locator('#tab-menu-target').textContent(),/Online shopping · Mac · main/);

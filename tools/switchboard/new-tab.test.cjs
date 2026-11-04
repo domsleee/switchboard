@@ -28,7 +28,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
         const input=document.querySelector('input');let count=${created},active=count;
         window.term={element:document.querySelector('#terminal'),options:{disableStdin:false},focus(){input.focus()},blur(){input.blur()},
           _core:{_renderService:{dimensions:{css:{cell:{width:8,height:16}}}}},buffer:{active:{viewportY:0,getLine:()=>({translateToString:()=>''})}},onRender(){},onResize(){}};
-        window.__zjSendControl=message=>{if(message.type==='NewTab'&&window.controlSocket.readyState===1)window.creationRequested=true;};
+        window.__zjSendControl=message=>{if(message.type==='NewTab'&&window.controlSocket.readyState===1){window.creationRequested=true;window.creationElevated=message.elevated;}};
       </script><script src="/bridge.js"></script><script>
         const socket=window.controlSocket=new WebSocket('wss://switchboard.test/ws/control');
         function state(){const panes=Array.from({length:count+1},(_,i)=>({pane_id:i?8+i:7,is_plugin:false,tab_position:i,title:'~'}));socket.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'MobileState',payload:{session_name:'main',panes,active_pane:panes[active],tabs:panes.map((p,i)=>({position:i,name:i?'New shell '+i:'Original',active:i===active}))}})}));}
@@ -73,8 +73,16 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
     }
     async function create(number){
       if(number===1)await input.evaluate(()=>{window.controlSocket.readyState=0;});
-      await page.keyboard.press(number===1?'Control+Alt+KeyT':'Meta+Alt+KeyT');
+      // The second tab comes from the shield button and asks for administrator.
+      if(number===2){
+        await page.keyboard.press('Meta+Alt+KeyT');
+        await page.waitForFunction(()=>document.querySelector('#new-tab-dialog').open);
+        assert.equal(await page.locator('#new-tab-title').textContent(),'New tab');
+        await page.locator('#cancel-new-tab').click();
+        await page.locator('#new-admin-tab').click();
+      }else await page.keyboard.press('Control+Alt+KeyT');
       await page.waitForFunction(()=>document.querySelector('#new-tab-dialog').open);
+      assert.equal(await page.locator('#new-tab-title').textContent(),number===2?'New administrator tab':'New tab');
       assert.equal(await page.locator('#new-tab-form button[type="submit"]').evaluate(button=>document.activeElement===button),true,'Create tab is focused so Enter confirms the default target');
       assert.equal(await page.locator('#new-tab-form button[type="submit"]').evaluate(button=>{
         const style=getComputedStyle(button);return style.outlineStyle==='solid'&&style.outlineWidth==='2px';
@@ -90,6 +98,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
       // Repeated old scans must not treat the preceding provisional tab as this creation.
       await page.evaluate(()=>refreshAttention());
       assert.equal(await page.locator('#tabs .selected .tab-name').textContent(),'Creating tab…');
+      assert.equal(await input.evaluate(()=>window.creationElevated),number===2);
       await input.evaluate(()=>window.confirmCreation());created=number;
       await page.waitForFunction(n=>document.querySelector('#tabs .selected .tab-name')?.textContent==='New shell '+n,number);
       assert.equal(new URL(page.url()).searchParams.get('pane'),String(8+number));
