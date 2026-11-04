@@ -11,6 +11,11 @@ env:
   CARGO_TERM_COLOR: always
   # Debug Clap parsing exceeds the default test-thread stack.
   RUST_MIN_STACK: 8388608
+  # rust-cache restores dependencies only; sccache also skips this workspace's own
+  # crates when a PR did not change them. A cache service error compiles locally.
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: sccache
+  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
 
 permissions:
   contents: read
@@ -49,6 +54,8 @@ jobs:
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: false
 
+      - uses: mozilla-actions/sccache-action@v0.0.11
+
       - name: Build
         run: cargo xtask build
 
@@ -73,6 +80,8 @@ jobs:
           rustflags: ""
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: false
+
+      - uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: Install NASM
         uses: ilammy/setup-nasm@v1.5.2
@@ -105,6 +114,8 @@ jobs:
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: false
 
+      - uses: mozilla-actions/sccache-action@v0.0.11
+
       - name: Test
         run: cargo xtask test
 
@@ -130,14 +141,11 @@ jobs:
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: false
 
-      - name: Test zellij-utils
-        run: cargo test --no-default-features -p zellij-utils --lib
+      - uses: mozilla-actions/sccache-action@v0.0.11
 
-      - name: Test zellij-server
-        run: cargo test --no-default-features -p zellij-server --lib
-
-      - name: Test zellij-client
-        run: cargo test --no-default-features -p zellij-client --lib
+      # One cargo run builds the crates they share once, not once per crate.
+      - name: Test zellij-utils, zellij-server and zellij-client
+        run: cargo test --no-default-features -p zellij-utils -p zellij-server -p zellij-client --lib
 
       # Lives here rather than in Build (Windows): it needs the test profile,
       # which this job has already compiled, not Build's dev-opt profile.
@@ -172,6 +180,8 @@ jobs:
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: false
 
+      - uses: mozilla-actions/sccache-action@v0.0.11
+
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
@@ -199,6 +209,8 @@ jobs:
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: false
 
+      - uses: mozilla-actions/sccache-action@v0.0.11
+
       - name: Test without web support
         run: cargo xtask test --no-web
 
@@ -216,6 +228,8 @@ jobs:
         with:
           rustflags: ""
           cache: false
+
+      - uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: Test xtask
         run: cargo test -p xtask
@@ -235,6 +249,8 @@ jobs:
         with:
           rustflags: ""
           cache: false
+
+      - uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: Check Format
         run: cargo xtask format --check
