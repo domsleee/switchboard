@@ -98,7 +98,7 @@ function updateTabUrl(item){
   const url=new URL(location.href);
   for(const key of ['host','session','tab','pane'])url.searchParams.delete(key);
   if(item){url.searchParams.set('host',item.entry.host);url.searchParams.set('session',item.entry.name);url.searchParams.set(item.tab.pending?'pane':'tab',item.tab.id);}
-  if(url.href!==location.href)history.replaceState(null,'',url);
+  if(url.href!==location.href)history.replaceState(history.state,'',url);
 }
 function sessionKey(host, name) { return JSON.stringify([host, name]); }
 function tabKey(entry, tab) { return JSON.stringify([entry.host, entry.name, tab.pending?'pane':'tab', tab.id]); }
@@ -512,7 +512,7 @@ function render() {
   const archiveCount=allTabs(true,true).filter(item=>archived[item.key]).length;
   $('archive').textContent=`Archive${archiveCount?' ('+archiveCount+')':''}`;
   if(!$('panel-archive').hidden&&$('panel').open)renderArchive();
-  if(!current){$('artifact-preview').hidden=true;$('artifact-frame').src='about:blank';}
+  if(!current){$('artifact-preview').hidden=true;$('artifact-frame').contentWindow?.location.replace('about:blank');}
   // The sidebar says why nothing is selected; the main area repeats only its
   // action, which matters on phones where the sidebar is a closed drawer.
   $('empty').hidden=!!current?.entry.state;
@@ -600,7 +600,7 @@ function focus(item,background=false) {
   }
   if(item.entry.pendingNewTab||item.tab.pending&&!item.tab.panes.length)return;
   $('artifact-preview').hidden=true;
-  $('artifact-frame').src='about:blank';
+  $('artifact-frame').contentWindow?.location.replace('about:blank');
   const active=item.entry.state.active_pane;
   const panes=tabPanes(item.entry,item.tab);
   const pane=panes.find(p=>p.pane_id===active?.pane_id && p.is_plugin===active?.is_plugin)||panes[0];
@@ -868,6 +868,12 @@ window.addEventListener('message',event=>{
   }else if(event.data?.type==='zellij-disconnected'){entry.disconnected=true;entry.needsFocus=true;render();}
 });
 $('artifact-back').onclick=()=>{const current=allTabs().find(item=>item.key===selected);if(current)focus(current);else $('artifact-preview').hidden=true;};
+// The open preview owns one history entry. Back closes the preview; closing it any other way drops the entry.
+window.addEventListener('popstate',()=>{if(!$('artifact-preview').hidden&&!history.state?.switchboardPreview)$('artifact-back').click();});
+new MutationObserver(()=>{if($('artifact-preview').hidden&&history.state?.switchboardPreview)history.back();})
+  .observe($('artifact-preview'),{attributes:true,attributeFilter:['hidden']});
+// A reload starts with the preview closed, so its entry no longer has a preview to close.
+if(history.state?.switchboardPreview)history.replaceState({...history.state,switchboardPreview:false},'');
 function updateSelectionTools(current=allTabs().find(item=>item.key===selected)){
   const api=current?.entry.frame.contentWindow.SwitchboardClipboard;
   const visible=!!current&&$('artifact-preview').hidden&&!!(api?.selectionMode||api?.getSelectionText?.());
@@ -924,7 +930,7 @@ function renderFilter(){
   $('focus-group').value=focus;
   const url=new URL(location.href);
   if(filter===(focus||'all'))url.searchParams.delete('group');else url.searchParams.set('group',filter);
-  if(url.href!==location.href)history.replaceState(null,'',url);
+  if(url.href!==location.href)history.replaceState(history.state,'',url);
 }
 // The tab last used in each group, restored when returning to that group.
 const filterSelection={};
@@ -982,7 +988,10 @@ window.SwitchboardOpenFile=(host,path)=>{
   // Another computer's file streams into the preview, which closes on the next tab switch.
   const url=`/api/hosts/${encodeURIComponent(host)}/file?path=${encodeURIComponent(path)}`;
   $('artifact-url').textContent=`${hosts.get(host)?.name||host}: ${path}`;
-  $('artifact-external').href=url;$('artifact-frame').src=url;
+  // Replacing the frame's page keeps file switches out of the browser history, so
+  // Back (including a mouse's back button) leaves the preview in one step.
+  $('artifact-external').href=url;$('artifact-frame').contentWindow.location.replace(url);
+  if(!history.state?.switchboardPreview)history.pushState({...history.state,switchboardPreview:true},'');
   $('artifact-preview').hidden=false;$('artifact-back').focus();
 };
 $('filter-more').onchange=event=>setFilter(event.target.value);
@@ -1042,7 +1051,7 @@ $('new-tab-form').onsubmit=event=>{
   selected=tabKey(entry,entry.creatingTab);
   restoringTab=false;entry.followActiveTab=true;
   if(filter!=='all'&&groups[entry.host]!==filter)setFilter('all');$('tab-search').value='';
-  sidebarOpen=false;updateSidebar();$('artifact-preview').hidden=true;$('artifact-frame').src='about:blank';
+  sidebarOpen=false;updateSidebar();$('artifact-preview').hidden=true;$('artifact-frame').contentWindow?.location.replace('about:blank');
   $('new-tab-dialog').close();render();
   // Keyboard dismissal can leave focus on the hidden session selector, then
   // move it to the body. Hand focus to the frame before creation records it.
