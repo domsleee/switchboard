@@ -313,6 +313,18 @@ same question at `/switchboard/resolve-file`. A relative path that no pane holds
 shows no preview. The Messages page shows only rooted paths, since a message
 does not say which directory its sender ran in.
 
+With Settings → Terminal thumbnails on (off by default, saved in this browser), a
+terminal also shows each media path on screen as a thumbnail, with no hover
+(`thumbnails.js`). The setting is separate from Media previews. Zellij owns every
+row, so a thumbnail sits over blank cells to the right of its path, up to 8 rows
+tall and sized to the image. Paths on
+consecutive rows share one band, side by side. A path with no blank room beside
+it, or a file that fails to load, shows no thumbnail. Clicking one opens it the
+way a modified click on its path does.
+
+The Claude plugin's `SessionStart` hook tells Claude, inside Switchboard, that
+printing a full path is how to show the user an image.
+
 The Windows gallery on port 8765 uses the separate HTTPS origin
 `https://zellij-gallery.localhost`, proxied through an anonymous HTTP listener
 on 127.0.0.1:8091. It streams GET/HEAD responses from the configured

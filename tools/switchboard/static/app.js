@@ -1167,6 +1167,10 @@ updatePredictiveEcho(localStorage.getItem('switchboard-predictive-echo')==='true
 function updateFineScroll(on){$('fine-scroll').setAttribute('aria-pressed',String(on));$('fine-scroll').classList.toggle('selected',on);}
 $('fine-scroll').onclick=()=>{const on=localStorage.getItem('switchboard-fine-scroll')!=='true';localStorage.setItem('switchboard-fine-scroll',String(on));updateFineScroll(on);location.reload();};
 updateFineScroll(localStorage.getItem('switchboard-fine-scroll')==='true');
+// Terminal frames watch this key and show or hide their thumbnails when it changes.
+function updateMediaThumbnails(on){$('media-thumbnails').setAttribute('aria-pressed',String(on));$('media-thumbnails').classList.toggle('selected',on);}
+$('media-thumbnails').onclick=()=>{const on=localStorage.getItem('switchboard-media-thumbnails')!=='true';localStorage.setItem('switchboard-media-thumbnails',String(on));updateMediaThumbnails(on);};
+updateMediaThumbnails(localStorage.getItem('switchboard-media-thumbnails')==='true');
 setInterval(refresh,15000);
 
 function closeTabMenu(restore=false){

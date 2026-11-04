@@ -1,6 +1,6 @@
 {
   "name": "switchboard",
-  "description": "Reports each Claude Code turn to the local Switchboard relay, so Switchboard shows Working, Ready, Waiting and approvals from Claude's own events instead of reading the screen. Includes a message-board skill for reading and sending Switchboard messages, a sudo skill that has Claude ask for sudo passwords in the Switchboard sidebar, and an interactive skill that runs prompting commands in a floating pane.",
+  "description": "Reports each Claude Code turn to the local Switchboard relay, so Switchboard shows Working, Ready, Waiting and approvals from Claude's own events instead of reading the screen, and tells Claude that printing an image's path shows the image to the user. Includes a message-board skill for reading and sending Switchboard messages, a sudo skill that has Claude ask for sudo passwords in the Switchboard sidebar, and an interactive skill that runs prompting commands in a floating pane.",
   "author": {
     "name": "Dom Slee"
   }
