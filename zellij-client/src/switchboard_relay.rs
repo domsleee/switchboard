@@ -1,5 +1,6 @@
 //! Loopback Switchboard relay. Terminal engines remain independent processes.
 pub(crate) mod artifacts;
+pub(crate) mod askpass;
 mod attention;
 mod control;
 mod hostname;
@@ -91,6 +92,8 @@ struct RelayState {
     // Remote entries left in the hosts file, offered only as "Pair this computer".
     candidates: Arc<Vec<Value>>,
     artifact: Option<artifacts::ArtifactConfig>,
+    // sudo password requests waiting for an answer in this computer's sidebar.
+    askpass: Arc<askpass::Prompts>,
 }
 
 impl RelayState {
@@ -1130,6 +1133,7 @@ async fn asset(request: Request) -> Response {
         | "chrome.js"
         | "clipboard.js"
         | "close.js"
+        | "askpass.js"
         | "links.js"
         | "titles.js"
         | "computers.js"
@@ -1183,6 +1187,7 @@ async fn state(config: &RelayConfig, port: u16) -> anyhow::Result<RelayState> {
         mesh: None,
         candidates: Arc::new(candidates),
         artifact: config.artifact_proxy.clone(),
+        askpass: Default::default(),
     })
 }
 
@@ -1231,6 +1236,8 @@ fn app(state: RelayState) -> Router {
             "/api/agent-hook",
             post(attention::hook).layer(axum::extract::DefaultBodyLimit::max(16 << 20)),
         )
+        .route("/api/askpass", post(askpass::ask))
+        .route("/api/askpass/answer", post(askpass::answer))
         .route("/api/logs", get(logs::handler))
         .route(
             "/api/diagnostics/browser-resume",
@@ -1313,6 +1320,16 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
                 "pairing",
                 "Switchboard pairing unavailable; local relay continues",
             ),
+        }
+    }
+    #[cfg(unix)]
+    {
+        #[allow(deprecated)]
+        let home = std::env::home_dir();
+        if let (Some(home), Ok(binary)) = (home, std::env::current_exe()) {
+            if let Err(error) = askpass::install_helper(&home, &binary) {
+                log::warn!("Cannot write the sudo askpass helper: {error}");
+            }
         }
     }
     let pairing = mesh::discovery::start(state.clone());
@@ -1838,6 +1855,7 @@ mod tests {
                 hostname: "zellij-gallery.localhost".into(),
                 target: "http://192.0.2.69:8765".into(),
             }),
+            askpass: Default::default(),
         };
         let paired = Host::new(config("https://192.0.2.69:8082")).unwrap();
         assert_eq!(

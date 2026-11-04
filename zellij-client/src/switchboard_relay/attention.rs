@@ -982,14 +982,22 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
     tasks
 }
 
-fn publish(state: &RelayState, poll: &PollState) {
-    let snapshot = poll.merged(
-        &state
-            .all_hosts()
+pub(super) fn publish(state: &RelayState, poll: &PollState) {
+    let hosts = state.all_hosts();
+    let mut snapshot = poll.merged(
+        &hosts
             .iter()
             .map(|h| h.config.id.clone())
             .collect::<Vec<_>>(),
     );
+    // Password requests belong to this computer's own panes and only its own
+    // browsers see them; paired computers read the per-host cache, not this.
+    if let Some(local) = hosts.iter().find(|host| host.is_local_engine()) {
+        let requests = state.askpass.snapshot(&local.config.id);
+        if !requests.is_empty() {
+            snapshot["askpass"] = json!(requests);
+        }
+    }
     state.attention.send_if_modified(|(version, current)| {
         if *current == snapshot {
             return false;
@@ -1212,6 +1220,7 @@ echo [{"id":1,"tab_id":4,"tab_position":0,"tab_name":"T","title":"x","pane_comma
             mesh: None,
             candidates: Default::default(),
             artifact: None,
+            askpass: Default::default(),
         };
         let mut poll = PollState::default();
         publish(&state, &poll);
@@ -1393,6 +1402,7 @@ esac
             mesh: None,
             candidates: Default::default(),
             artifact: None,
+            askpass: Default::default(),
         };
         let send = |event: Value, pane: Option<&str>| {
             let mut headers = HeaderMap::new();

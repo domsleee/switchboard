@@ -322,6 +322,31 @@ a browser paste holding only an image, uploads it to the tab's computer
 path, which Claude Code attaches as an image. Alt+V with no image still reaches
 the terminal.
 
+## sudo passwords
+
+`sudo -A` in a Switchboard pane asks for its password in the sidebar, so sudo
+works where no terminal can prompt: an agent's shell or Claude Code's `!`. The
+relay writes `~/.local/share/switchboard/sudo-askpass` at startup, pointing at
+its own executable, and new panes get `SUDO_ASKPASS` set to it unless one is
+already set. Panes started before that keep their environment; run
+`export SUDO_ASKPASS=~/.local/share/switchboard/sudo-askpass` there. Plain `sudo`
+without `-A` still uses the terminal.
+
+The script runs `zellij switchboard askpass`, which posts the pane, sudo's prompt
+and the requesting command line (read from the process table) to
+`POST /api/askpass` and waits up to 2 minutes. The request rides on the
+`/api/attention` snapshot as `askpass`, never with a password: the tab shows
+**Password needed**, and selecting it opens a dialog with the command. **Send**
+posts `/api/askpass/answer`; the relay hands the password to that one waiting
+helper and keeps no copy. Closing the dialog any other way cancels, and sudo
+fails at once. Interrupting sudo withdraws the request.
+
+Requests stay on their own computer: only browsers of that computer's relay see
+them, and a paired computer's tabs never ask. Any program running as you can
+reach the loopback relay, so this protects the password from web pages, not from
+your own processes; sudo's terminal prompt has the same limit. The Claude plugin's
+`sudo` skill tells Claude to use `sudo -A`.
+
 ## Escape key
 
 Escape travels like any other key: xterm sends byte 27 on the terminal socket,

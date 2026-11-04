@@ -25,6 +25,7 @@ use std::{
         io::{AsRawFd, RawFd},
         process::CommandExt,
     },
+    path::PathBuf,
     process::{Child, Command},
     sync::{
         atomic::{AtomicU32, Ordering},
@@ -183,6 +184,17 @@ fn handle_command_exit(mut child: Child) -> Result<Option<i32>> {
     }
 }
 
+/// The Switchboard relay's sudo askpass script (`switchboard_relay::askpass::helper_script`),
+/// so `sudo -A` in a pane asks for the password in the sidebar. A `SUDO_ASKPASS`
+/// the user already set is kept.
+fn sudo_askpass(configured: Option<std::ffi::OsString>, home: Option<PathBuf>) -> Option<PathBuf> {
+    if configured.is_some() {
+        return None;
+    }
+    let script = home?.join(".local/share/switchboard/sudo-askpass");
+    script.is_file().then_some(script)
+}
+
 fn handle_openpty(
     open_pty_res: OpenptyResult,
     cmd: RunCommand,
@@ -223,6 +235,11 @@ fn handle_openpty(
         }
         let (term, colorterm) =
             pane_terminal_type(std::env::var("TERM").ok(), std::env::var("COLORTERM").ok());
+        #[allow(deprecated)]
+        if let Some(askpass) = sudo_askpass(std::env::var_os("SUDO_ASKPASS"), std::env::home_dir())
+        {
+            command.env("SUDO_ASKPASS", askpass);
+        }
         command
             .args(&cmd.args)
             .env("TERM", term)
@@ -474,6 +491,21 @@ mod tests {
     use nix::fcntl::{fcntl, FcntlArg, OFlag};
     use nix::sys::termios;
     use std::io::Read;
+
+    #[test]
+    fn panes_get_the_switchboard_askpass_unless_one_is_set() {
+        let home = tempfile::tempdir().unwrap();
+        let path = || Some(home.path().to_path_buf());
+        assert_eq!(sudo_askpass(None, path()), None, "no script, no variable");
+        let script = home.path().join(".local/share/switchboard/sudo-askpass");
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        assert_eq!(sudo_askpass(None, path()), Some(script));
+        assert_eq!(
+            sudo_askpass(Some("/usr/bin/ssh-askpass".into()), path()),
+            None
+        );
+    }
 
     /// Verify that `try_write_to_fd` writes as many bytes as the kernel will
     /// accept in one pass and returns a partial count (not an error) when the

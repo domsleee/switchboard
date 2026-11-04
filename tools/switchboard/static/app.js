@@ -257,10 +257,17 @@ function statesForTab(item){
   return item.tab.panes.filter(p=>!p.is_plugin)
     .map(p=>paneAttention.get(attentionKey(item.entry.host,item.entry.name,p.pane_id))).filter(Boolean);
 }
+// sudo -A password requests from this computer's panes (askpass.js answers them).
+let askpassRequests=[];
+function askpassForTab(item){
+  const panes=item.tab.panes.filter(p=>!p.is_plugin).map(p=>p.pane_id);
+  return askpassRequests.find(r=>r.host===item.entry.host&&r.session===item.entry.name&&panes.includes(r.pane_id));
+}
 function needsAttention(state){
   return ['approval','input'].includes(state.state) || (state.state==='ready'&&!state.seen&&seenAttention[state.key]!==state.token);
 }
 function autoLabel(item){
+  if(askpassForTab(item))return 'Password needed';
   const states=statesForTab(item);
   if(states.some(s=>s.state==='approval'))return 'Approval needed';
   if(states.some(s=>s.state==='input'))return 'Input needed';
@@ -283,7 +290,7 @@ function acknowledgeAttention(item){
   }
   if(changed)localStorage.setItem('switchboard-attention-seen',JSON.stringify(seenAttention));
 }
-function isReady(item){return !!(ready[item.key] || item.tab.name.startsWith('*') || statesForTab(item).some(needsAttention));}
+function isReady(item){return !!(ready[item.key] || item.tab.name.startsWith('*') || askpassForTab(item) || statesForTab(item).some(needsAttention));}
 function matchesSearch(item){
   const query=$('tab-search').value.trim().toLowerCase();
   return !query || `${tabTitle(item)} ${hosts.get(item.entry.host)?.name || item.entry.host} ${groups[item.entry.host]||''} ${item.entry.name} ${autoLabel(item)}`.toLowerCase().includes(query);
@@ -480,6 +487,7 @@ function render() {
   if(hostsLoaded&&attentionLoaded&&!terminalsSettling())globalThis.SwitchboardStartup?.save([...hosts.values()],allTabs(true,true).map(item=>({...item,title:tabTitle(item)})),groups);
   if ((selected !== previous || wasRestoring&&!restoringTab) && current) focus(current,true);
   if(selected!==previous) $('tabs').querySelector('.selected')?.scrollIntoView({block:'nearest',inline:'nearest'});
+  globalThis.SwitchboardAskpass?.update();
 }
 function updateDragTarget() {
   if(!dragState)return;
@@ -1234,6 +1242,7 @@ async function refreshAttention(immediate=false,watch=false){
     if(data.version<attentionVersion)return true;
     attentionVersion=data.version??attentionVersion;
     if(relayLostAt){relayLostAt=0;refresh();}
+    askpassRequests=data.askpass||[];
     paneAttention=new Map((data.panes||[]).map(state=>{const key=attentionKey(state.host,state.session,state.pane_id);return [key,{...state,key}];}));
     attentionErrors=data.errors||[];
     // The relay also preserves catalogs during failed scans. Use those on a
@@ -1254,7 +1263,7 @@ async function refreshAttention(immediate=false,watch=false){
     const selectedTab=allTabs().find(item=>item.key===selected);if(selectedTab?.entry.needsFocus)focus(selectedTab,true);
     // A relay without versions answers at once, so wait before asking again.
     return data.version!==undefined;
-  }catch(_){attentionLoaded=true;paneAttention.clear();attentionErrors=[{host:'Switchboard'}];render();relayLost();return false;}
+  }catch(_){attentionLoaded=true;paneAttention.clear();askpassRequests=[];attentionErrors=[{host:'Switchboard'}];render();relayLost();return false;}
   finally{if(!watch){attentionLoading=false;if(attentionRefreshPending){attentionRefreshPending=false;refreshAttention();}}}
 }
 // An upgrade restarts the relay for about a second. Retry every 250 ms for 10 s
