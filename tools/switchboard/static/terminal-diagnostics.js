@@ -100,7 +100,7 @@ window.SwitchboardTerminalDiagnostics = function (report, dimensions) {
         min_cell_width_px:0,min_cell_height_px:0,max_cell_width_px:0,max_cell_height_px:0,
         render_tracking:typeof term?.onRender === 'function', first_render_ms:null,last_render_ms:null,render_events:0,max_render_lag_ms:0,
         first_animation_ms:null,last_animation_ms:null,max_animation_lag_ms:0,first_quiet_ms:null,late_frames:0,
-        buffer_scroll_events:0,line_feed_events:0,wheel_events:0,
+        buffer_scroll_events:0,line_feed_events:0,wheel_events:0,wheel_reports:0,wheel_delta_mode:0,max_wheel_delta:0,
         max_clipped_bottom_rows:0,
         xterm_size_changes:0,first_xterm_cols:0,first_xterm_rows:0,min_xterm_cols:0,min_xterm_rows:0,max_xterm_cols:0,max_xterm_rows:0,
         hidden_at_start:!!dimensions().document_hidden,viewport_size_changes:0,
@@ -178,7 +178,15 @@ window.SwitchboardTerminalDiagnostics = function (report, dimensions) {
       span.bytes += typeof data === 'string' ? new TextEncoder().encode(data).length : data?.byteLength ?? data?.size ?? 0;
       clearTimeout(quietTimer);quiet = false;
     },
-    wheel() {if (span) span.wheel_events++;},
+    // Delta mode and size tell a wheel notch (one large step) from a touchpad stream.
+    wheel(event) {
+      if (!span) return;
+      span.wheel_events++;
+      if (!event?.deltaY) return;
+      span.wheel_delta_mode = event.deltaMode;
+      span.max_wheel_delta = Math.max(span.max_wheel_delta, Math.round(Math.abs(event.deltaY)));
+    },
+    wheelReports(count) {if (span) span.wheel_reports += count;},
     state(state) {
       if (!span || state?.active_pane?.pane_id !== span.pane_id || !!state.active_pane.is_plugin !== span.is_plugin) return;
       const cols = state.tab_viewport?.cols, rows = state.tab_viewport?.rows;

@@ -38,7 +38,9 @@
       xterm_cols:window.term?.cols??0,xterm_rows:window.term?.rows??0,buffer_rows:window.term?.buffer?.active?.length??0,
       clipped_bottom_rows:clip&&cellHeight?Math.round(Number(clip[1])/cellHeight):0,
       document_hidden:document.visibilityState==='hidden',browser_focused:parent.document.hasFocus()};});
-  window.addEventListener('wheel',()=>diagnostics?.wheel(),{capture:true,passive:true});
+  window.addEventListener('wheel',event=>diagnostics?.wheel(event),{capture:true,passive:true});
+  // wheel.js reports how many wheel reports reached the terminal.
+  window.__zjOnWheelReports=count=>diagnostics?.wheelReports(count);
   // First load of this page; performance.now() counts from this frame's navigation.
   const load={socket_ms:null,frame_ms:null,done:false,visible:document.visibilityState==='visible'&&!!window.frameElement?.classList.contains('active')};
   function reportLoad(){

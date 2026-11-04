@@ -12,6 +12,7 @@ const MODULE_ORDER: &[&str] = &[
     "auth",
     "keyboard",
     "links",
+    "wheel",
     "terminal",
     "ime-bypass",
     "soft-keyboard",
