@@ -81,6 +81,9 @@ $settings.extraKnownMarketplaces.switchboard | Add-Member autoUpdate $true -Forc
 [IO.File]::WriteAllText($path, ($settings | ConvertTo-Json -Depth 100), [Text.UTF8Encoding]::new($false))
 ```
 
+The plugin also adds a `message-board` skill, so Claude can read, reply to and send
+[message board](../../docs/MESSAGE_BOARD_USAGE.md) messages.
+
 Claude Code checks for updates when a session starts. Running Claude sessions pick up
 the plugin after a restart.
 

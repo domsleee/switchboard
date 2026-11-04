@@ -7,7 +7,7 @@
     {
       "name": "switchboard-status",
       "source": "./plugins/switchboard-status",
-      "description": "Claude Code status for Switchboard tabs"
+      "description": "Claude Code status for Switchboard tabs, and a message-board skill"
     }
   ]
 }
