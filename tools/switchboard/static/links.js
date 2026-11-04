@@ -76,14 +76,15 @@
     if (!linkGesture(event)) return;
     event.preventDefault();event.stopImmediatePropagation();
     try {
-      const path=filePathOf(uri);
-      if(path){
+      const path=filePathOf(uri),newTab=event.metaKey||event.ctrlKey;
+      // Cmd/Ctrl-click plays a video in a browser tab, streamed from this terminal's computer.
+      if(path&&!(newTab&&videoFile.test(path))){
         if(window.parent===window||!parent.SwitchboardOpenFile)throw Error('Files open from the Switchboard page');
         parent.SwitchboardOpenFile(host,path);return;
       }
-      const url=resolve(uri);
-      if(window.parent!==window&&parent.SwitchboardOpenInApp?.(host,url))return;
-      if(event.metaKey||event.ctrlKey){
+      const url=path?new URL(`/api/hosts/${encodeURIComponent(host)}/file?path=${encodeURIComponent(path)}`,location.href).href:resolve(uri);
+      if(!path&&window.parent!==window&&parent.SwitchboardOpenInApp?.(host,url))return;
+      if(newTab){
         // Open synchronously in this browser, then request foreground focus.
         // No popup features: use the browser's normal new-tab behavior.
         const tab=window.open('about:blank','_blank');
