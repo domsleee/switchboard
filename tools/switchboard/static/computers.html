@@ -1,23 +1,118 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Computers · Switchboard</title>
 <style>
-:root{color-scheme:dark;font:15px system-ui;background:#141414;color:#eee}body{max-width:820px;margin:32px auto;padding:0 24px}a{color:#9dc9ff}h1{font-size:26px}h2{font-size:18px;margin-top:28px}p{color:#bbb;line-height:1.5}label{display:block;margin:14px 0 5px}input,textarea,select,button{font:inherit;padding:10px;border:1px solid #555;border-radius:5px;background:#222;color:#eee}input,textarea,select{box-sizing:border-box;width:100%}textarea{height:80px;resize:vertical}button{cursor:pointer;margin:12px 8px 0 0}button:disabled{opacity:.5;cursor:default}.card{border:1px solid #444;border-radius:8px;padding:16px;margin:12px 0}.code{font:22px monospace;letter-spacing:2px;color:#fff}.error{color:#ffb1a9}[hidden]{display:none!important}.row{display:flex;justify-content:space-between;gap:16px}.muted{color:#aaa}small{display:block;margin-top:8px;color:#aaa}small.different{color:#e5c07b}
-details{margin:18px 0}summary{cursor:pointer;color:#bbb}button[type=submit]{background:#285ea5;border-color:#5689cc}button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid #9dc9ff;outline-offset:3px}</style><script src="/computers.js" defer></script></head>
+/* Matches the Settings panel this page is embedded in. */
+:root{color-scheme:dark;font:13px/1.5 system-ui,sans-serif;background:#111318;color:#e5e7eb;--line:#2b303b;--soft-line:#222731;--box:#151820;--muted:#9ba7bd;--dim:#8590a3;--ok:#6fbf86;--warn:#d9b44a;--bad:#e06c6c}
+*{box-sizing:border-box}
+body{max-width:760px;margin:24px auto;padding:0 24px}
+a{color:#9dc2fa}
+h1{font-size:22px;margin:12px 0 4px}
+h2{font-size:12px;font-weight:600;color:#b5bfd0;margin:28px 0 8px}
+h3{font-size:13px;font-weight:600;margin:0}
+p{margin:0}
+.lead{color:var(--muted);max-width:62ch}
+[hidden]{display:none!important}
+label{display:block;font-size:12px;color:var(--muted);margin:0 0 5px}
+input,textarea,select,button{font:inherit;color:inherit;border:1px solid #363e4d;border-radius:6px}
+input,textarea,select{width:100%;padding:7px 10px;background:#1c212b}
+input[readonly]{color:var(--muted)}
+textarea{resize:vertical;font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+button{flex-shrink:0;padding:6px 12px;background:#222732;cursor:pointer;white-space:nowrap}
+button:hover{background:#303949}
+button:disabled{opacity:.5;cursor:default}
+button[type=submit],button.primary{background:#2f5b9a;border-color:#4f7fc4}
+button[type=submit]:hover,button.primary:hover{background:#3a6aae}
+button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid #9dc2fa;outline-offset:1px}
+.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.inline{display:flex;gap:8px}
+.inline input{min-width:0}
+.hint{font-size:12px;color:var(--dim);margin-top:6px}
+.error{color:#f08a8a}
+#message:not(:empty){margin-top:16px;padding:8px 12px;border-left:2px solid #4f7fc4;background:var(--box);border-radius:0 6px 6px 0}
+#message.error{border-left-color:var(--bad)}
+#retry-gateway,#preview,#receive-requests{margin-top:12px}
+#board-field{margin-top:12px}
+
+/* Grouped boxes, as in Settings. */
+.box{background:var(--box);border:1px solid var(--line);border-radius:8px;padding:14px}
+.box+.box{margin-top:8px}
+.list{background:var(--box);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.list:empty{display:none}
+
+/* One row per computer. */
+.computer{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;padding:10px 14px}
+.computer+.computer{border-top:1px solid var(--soft-line)}
+.computer .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;background:#4b5464}
+.computer[data-state=connected] .dot,.computer[data-state=local] .dot{background:var(--ok)}
+.computer[data-state=connecting] .dot{background:var(--warn);animation:pulse 1.4s ease-in-out infinite}
+.computer[data-state=unavailable] .dot{background:var(--bad)}
+.computer .about{flex:1;min-width:200px;overflow:hidden}
+.computer strong{font-weight:600}
+.computer .tag{margin-left:8px;padding:1px 6px;font-size:11px;border-radius:4px;background:#263d5f;color:#cfe0f7}
+/* Separators sit before every item; the first on each line is clipped off. */
+.computer .meta{display:flex;flex-wrap:wrap;margin-left:-16px;font-size:12px;color:var(--dim);overflow-wrap:anywhere}
+.computer .meta>*::before{content:'·';display:inline-block;width:16px;text-align:center;color:#4b5464}
+.computer small{font-size:inherit}
+.computer small.different{color:#e5c07b}
+.computer .status{display:flex;align-items:center;gap:10px;margin-left:auto;font-size:12px;color:var(--muted)}
+.computer[data-state=unavailable] .status{color:#f08a8a}
+.computer button{font-size:12px;padding:4px 10px}
+@keyframes pulse{50%{opacity:.4}}
+@media (prefers-reduced-motion:reduce){.computer .dot{animation:none}}
+
+/* Requests that need a decision stand out from the list. */
+.request{border:1px solid #4f7fc4;border-radius:8px;background:#162236;padding:14px;margin-top:8px}
+.request.sent{border-color:var(--line);background:var(--box)}
+.request p+p{margin-top:6px}
+.request .detail{color:var(--muted)}
+.code{display:inline-block;margin:10px 0 2px;padding:6px 12px;font:600 18px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:1px;color:#fff;background:#0f1116;border:1px solid var(--line);border-radius:6px}
+#requests:empty,#incoming:empty,#sent:empty{display:none}
+
+/* Ways to add a computer, side by side when there is room. */
+.methods{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:8px}
+.methods .box+.box{margin-top:0}
+.methods .box{display:flex;flex-direction:column;gap:6px}
+.methods .box>p{color:var(--muted)}
+.methods form{margin-top:auto;padding-top:6px}
+/* An open invitation makes its box tall; keep the other box at its own height. */
+.methods:has(#invitation:not([hidden])){align-items:start}
+#invitation-link{height:52px}
+
+.field+.field,.field+details,#network-choice{margin-top:12px}
+details{margin-top:12px}
+summary{cursor:pointer;color:var(--muted);font-size:12px}
+details[open]>summary{margin-bottom:10px}
+details .field+.field{margin-top:12px}
+</style><script src="/computers.js" defer></script></head>
 <body><a href="/">← Terminals</a><h1>Computers</h1>
-<p>Pair computers on the same LAN or an existing private network. Every computer in the group can add computers. New computers appear throughout the group automatically. Joining grants terminal access. Keep Switchboard running while connections sync.</p>
+<p class="lead">Pair computers on the same network to see all their terminals here. Pairing gives each computer in the group access to the others’ terminals.</p>
 <p id="message" role="status" aria-live="polite"></p><button id="retry-gateway" hidden>Retry this computer’s gateway</button>
-<section id="catalog"><h2 id="mesh-title">Your computers</h2><div id="members"></div><div id="requests"></div></section>
-<section id="board-section" hidden><h2>Shared messages</h2><p id="board-description"></p><form id="board-form" hidden><label for="board-host">Message board computer</label><select id="board-host" required></select><p>Messages are stored on this computer. Keep it running so your other computers can use their inboxes. Changing this choice later requires moving the board; this screen supports the initial choice only.</p><button type="submit">Use this computer for messages</button></form></section>
+
 <section id="incoming-section" hidden><h2>Connection requests</h2><div id="incoming"></div></section>
-<section id="direct-section"><h2>Add computer</h2><form id="add-form"><label for="target-address">Other computer’s address</label><input id="target-address" placeholder="172.20.10.10" autocomplete="off" required><button type="submit">Send request</button></form><p>Compare the code and approve on the other computer. No links or tokens to copy.</p><div id="sent"></div></section>
-<section id="local"><label for="computer-name">This computer</label><input id="computer-name" maxlength="80" autocomplete="off" placeholder="Finding this computer’s name…">
-<div id="network-choice" hidden><label for="network">Choose a connection</label><select id="network"><option value="">Choose the network shared by your computers</option></select><small>More than one connection was found. Choose the one the other computer can reach.</small></div>
+
+<section id="catalog"><h2 id="mesh-title">Your computers</h2><div id="members" class="list"></div><div id="requests"></div></section>
+
+<section id="board-section" hidden><h2>Shared messages</h2><div class="box"><p id="board-description"></p>
+<form id="board-form" hidden><div class="field" id="board-field"><label for="board-host">Store messages on</label><div class="inline"><select id="board-host" required></select><button type="submit">Save</button></div></div>
+<p class="hint">Keep that computer running so the others can use their inboxes. This sets the first choice only; moving the board later is not supported here.</p></form></div></section>
+
+<section id="local"><h2>This computer</h2><div class="box">
+<div class="field"><label for="computer-name">Name</label><input id="computer-name" maxlength="80" autocomplete="off" placeholder="Finding this computer’s name…"></div>
+<div id="network-choice" hidden><label for="network">Connection</label><select id="network"><option value="">Choose the network shared by your computers</option></select><p class="hint">More than one connection was found. Choose the one the other computer can reach.</p></div>
 <details id="advanced"><summary>Advanced connection settings</summary>
-<label for="address">Computer address</label><input id="address" autocomplete="off" placeholder="https://192.168.1.10:8082"><small>Detected automatically. If connecting fails, check that this address stays the same and its port is allowed through the firewall.</small>
-<label for="mesh-name">Group name</label><input id="mesh-name" maxlength="80" autocomplete="off" value="My computers"></details><button id="receive-requests" type="button" hidden>Receive connection requests</button></section>
-<section id="create-section"><h2>Create invitation</h2><p>Create a one-time link to send to your other computer.</p><form id="create-form"><button type="submit">Create invitation</button></form>
-<div id="invitation" class="card" hidden><p>Send this one-time link over chat to the other computer. It expires in 10 minutes. Approve joining only when the verification codes match.</p><textarea id="invitation-link" readonly aria-label="Invitation link" spellcheck="false"></textarea><button id="copy-link">Copy link</button><button id="cancel-invitation">Cancel invitation</button><small id="expiry"></small></div></section>
-<section id="join-section"><h2>Have an invitation?</h2><form id="join-form"><label for="join-link">Invitation link</label><textarea id="join-link" placeholder="switchboard://join#…" spellcheck="false" autocomplete="off"></textarea><button id="preview" type="button" hidden>Retry invitation review</button>
-<div id="preview-card" class="card" hidden><p id="preview-description"></p><p>Joining lets authorized computers use this computer’s terminals, and gives this computer terminal access to the mesh.</p><button type="submit">Join computer</button></div></form>
-<div id="joining" class="card" hidden><p id="joining-description"></p><p class="code" id="joining-code"></p><p>On the inviting computer, compare this code and approve only if it matches.</p><button id="retry">Retry pairing</button></div></section>
+<div class="field"><label for="address">Address</label><input id="address" autocomplete="off" placeholder="https://192.168.1.10:8082"><p class="hint">Detected automatically. If connecting fails, check that this address stays the same and its port is allowed through the firewall.</p></div>
+<div class="field"><label for="mesh-name">Group name</label><input id="mesh-name" maxlength="80" autocomplete="off" value="My computers"></div></details>
+<button id="receive-requests" type="button" hidden>Receive connection requests</button></div></section>
+
+<section id="add-section"><h2>Add a computer</h2><div class="methods">
+<div class="box" id="direct-section"><h3>By address</h3><p>Send a request, then approve the matching code on the other computer.</p>
+<form id="add-form"><label for="target-address">Other computer’s address</label><div class="inline"><input id="target-address" placeholder="192.168.1.10" autocomplete="off" required><button type="submit">Send request</button></div></form></div>
+<div class="box" id="create-section"><h3>By invitation link</h3><p>Create a one-time link to send over chat. It expires in 10 minutes.</p>
+<form id="create-form"><button type="submit">Create invitation</button></form>
+<div id="invitation" hidden><textarea id="invitation-link" readonly aria-label="Invitation link" spellcheck="false"></textarea><p class="hint">Approve joining only when the verification codes match. <span id="expiry"></span></p><div class="actions"><button id="copy-link" class="primary">Copy link</button><button id="cancel-invitation">Cancel</button></div></div></div>
+</div><div id="sent"></div></section>
+
+<section id="join-section"><h2>Have an invitation?</h2><div class="box"><form id="join-form"><label for="join-link">Paste the invitation link</label><textarea id="join-link" placeholder="switchboard://join#…" spellcheck="false" autocomplete="off" rows="2"></textarea><button id="preview" type="button" hidden>Retry invitation review</button>
+<div id="preview-card" class="request" hidden><p id="preview-description"></p><p class="detail">Joining lets the group’s computers use this computer’s terminals, and lets this computer use theirs.</p><div class="actions"><button type="submit">Join</button></div></div></form>
+<div id="joining" class="request" hidden><p id="joining-description"></p><p class="code" id="joining-code"></p><p class="detail">On the inviting computer, compare this code and approve only if it matches.</p><div class="actions"><button id="retry">Retry pairing</button></div></div></div></section>
 </body></html>

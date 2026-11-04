@@ -86,6 +86,8 @@
         $('computer-name').readOnly = $('address').readOnly = true;
         $('network-choice').hidden = true;
       }
+      // Once joined, this computer is a row in the list; its fields are read-only.
+      $('local').hidden = Boolean(state.computer);
       if (state.mesh) $('mesh-name').value = state.mesh;
       $('mesh-name').readOnly = Boolean(state.mesh);
       $('join-section').hidden = Boolean(state.mesh) && !pending;
@@ -118,21 +120,42 @@
         }
         return line;
       };
+      // One row per computer: dot, name, address and version, then status or action.
+      const row = ({name, address, state, status, tag, detail, showVersion, build, local}) => {
+        const card = document.createElement('div'); card.className = 'card computer'; card.dataset.state = state;
+        const dot = document.createElement('span'); dot.className = 'dot'; dot.setAttribute('aria-hidden', 'true');
+        const about = document.createElement('div'); about.className = 'about';
+        const title = document.createElement('div'), strong = document.createElement('strong'); strong.textContent = name;
+        title.append(strong);
+        if (tag) { const label = document.createElement('span'); label.className = 'tag'; label.textContent = tag; title.append(label); }
+        const meta = document.createElement('div'); meta.className = 'meta';
+        if (address) { const text = document.createElement('span'); text.textContent = address; meta.append(text); }
+        if (detail) { const text = document.createElement('span'); text.textContent = detail; meta.append(text); }
+        if (showVersion) meta.append(version(build, local));
+        about.append(title, meta);
+        const aside = document.createElement('div'); aside.className = 'status';
+        if (status) { const text = document.createElement('span'); text.textContent = status.text; if (status.title) text.title = status.title; aside.append(text); }
+        card.append(dot, about, aside);
+        return [card, aside];
+      };
       // Build before swapping, and only swap on change, so polling never blanks the list.
       const cards = [];
-      for (const member of state.members) {
-        const card = document.createElement('div'); card.className = 'card';
-        const title = document.createElement('strong'); title.textContent = member.name;
-        const address = document.createElement('p'); address.textContent = member.address;
-        const status = document.createElement('p');
+      const members = [...state.members].sort((a, b) => Boolean(b.local) - Boolean(a.local));
+      for (const member of members) {
         const host = hosts.find(host => host.id === `mesh-${member.id}`);
-        status.textContent = member.local ? 'This computer' : member.state === 'paired'
-          ? (host && Array.isArray(host.sessions) && !host.error ? 'Connected' : 'Paired, connection unavailable. Check the address and retry.')
-          : 'Connecting to this computer. Keep Switchboard running on both computers.';
-        card.append(title, address, status);
-        if (member.local || (host && !host.error)) card.append(version(host && host.version, member.local));
-        if (!member.local && member.state === 'paired' && (!host || host.error)) {
-          const retry = document.createElement('button'); retry.textContent = 'Retry connection'; retry.onclick = () => action(refresh); card.append(retry);
+        const reachable = Boolean(host && Array.isArray(host.sessions) && !host.error);
+        const paired = member.state === 'paired';
+        const [card, aside] = row({
+          name: member.name, address: member.address, local: member.local,
+          tag: member.local ? 'This computer' : null,
+          state: member.local ? 'local' : !paired ? 'connecting' : reachable ? 'connected' : 'unavailable',
+          status: member.local ? null : !paired
+            ? {text: 'Connecting…', title: 'Keep Switchboard running on both computers.'}
+            : reachable ? {text: 'Connected'} : {text: 'Paired, connection unavailable', title: 'Check the address and retry.'},
+          showVersion: member.local || (host && !host.error), build: host && host.version
+        });
+        if (!member.local && paired && (!host || host.error)) {
+          const retry = document.createElement('button'); retry.textContent = 'Retry'; retry.title = 'Retry connection'; retry.onclick = () => action(refresh); aside.append(retry);
         }
         cards.push(card);
       }
@@ -143,20 +166,18 @@
         const identity = endpoint(host.pairing_address || host.address);
         if ((host.local && hasLocalMember) || (identity && endpoints.has(identity))) continue;
         if (identity) endpoints.add(identity);
-        const card = document.createElement('div'); card.className = 'card';
-        const title = document.createElement('strong'); title.textContent = host.name;
-        const address = document.createElement('p'); address.textContent = host.address;
-        const status = document.createElement('span');
-        status.textContent = host.local ? 'This computer · configured terminal connection'
-          : 'In the hosts file · pair this computer to use its terminals';
-        card.append(title, address, status);
         const detail = hostDetails.find(candidate => candidate.id === host.id);
-        if (host.local || (detail && !detail.error)) card.append(version(detail && detail.version, host.local));
+        const [card, aside] = row({
+          name: host.name, address: host.address, local: host.local,
+          tag: host.local ? 'This computer' : null, state: host.local ? 'local' : 'unpaired',
+          detail: host.local ? 'Configured terminal connection' : 'From the hosts file, not paired',
+          showVersion: host.local || (detail && !detail.error), build: detail && detail.version
+        });
         if (!host.local && host.pairing_address) {
           const pair = document.createElement('button'); pair.textContent = 'Pair this computer';
           pair.disabled = Boolean(meshError);
           pair.onclick = () => action(() => addComputer(host.pairing_address));
-          card.append(pair);
+          aside.append(pair);
         }
         cards.push(card);
       }
@@ -171,11 +192,14 @@
       $('requests').dataset.signature=requestSignature;
       $('requests').replaceChildren();
       for (const request of state.requests) {
-        const card = document.createElement('div'); card.className = 'card';
-        const description = document.createElement('p'); description.textContent = `${request.computer} (${request.address}) wants to join. Compare this code on both computers:`;
+        const card = document.createElement('div'); card.className = 'request';
+        const description = document.createElement('p'), who = document.createElement('strong');
+        who.textContent = request.computer; description.append(who, ' wants to join');
+        const address = document.createElement('p'); address.className = 'detail'; address.textContent = `${request.address} · Approve only if the other computer shows the same code.`;
         const code = document.createElement('p'); code.className = 'code'; code.textContent = request.code;
-        const approve = document.createElement('button'); approve.textContent = 'Codes match, approve';
+        const approve = document.createElement('button'); approve.className = 'primary'; approve.textContent = 'Codes match, approve';
         const deny = document.createElement('button'); deny.textContent = 'Deny';
+        const buttons = document.createElement('div'); buttons.className = 'actions'; buttons.append(approve, deny);
         const decide = allow => action(async () => {
           await api('/approve', {invitation: request.invitation, request: request.request, code: request.code, allow});
           show(allow ? `Approved ${request.computer}. The other computer can now finish pairing.` : 'Pairing denied.');
@@ -183,7 +207,7 @@
           await refresh();
         });
         approve.onclick = () => decide(true); deny.onclick = () => decide(false);
-        card.append(description, code, approve, deny); $('requests').append(card);
+        card.append(description, address, code, buttons); $('requests').append(card);
       }
       }
     } finally { refreshing = false; }
@@ -196,7 +220,7 @@
     $('board-section').dataset.signature = signature;
     $('board-form').hidden = !board.can_select;
     $('board-description').textContent = board.state === 'selected'
-      ? `Message board: ${board.host_name || board.host_id}. Keep this computer running to use shared inboxes.`
+      ? `Messages are stored on ${board.host_name || board.host_id}. Keep it running so every computer can use its inbox.`
       : board.state === 'conflict' ? 'Your computers disagree about the message board host. Resolve this before using shared messages.'
       : board.state === 'legacy_database' ? 'An existing message board needs migration before a host can be selected. Its messages have been kept.'
       : board.can_select ? 'Choose which paired computer will store your shared messages.'
@@ -234,29 +258,31 @@
     $('incoming').dataset.signature = signature;
     $('incoming').replaceChildren(); $('sent').replaceChildren();
     for (const request of incoming) {
-      const card=document.createElement('div'); card.className='card';
-      const title=document.createElement('strong'); title.textContent=`${request.computer} wants to connect`;
-      const address=document.createElement('p'); address.textContent=request.address;
+      const card=document.createElement('div'); card.className='request';
+      const title=document.createElement('p'),who=document.createElement('strong'); who.textContent=request.computer; title.append(who,' wants to connect');
+      const address=document.createElement('p'); address.className='detail'; address.textContent=request.address;
       const code=document.createElement('p'); code.className='code'; code.textContent=request.code;
-      const description=document.createElement('p'); description.textContent='Compare this code on both computers. Allowing pairs your terminals with this computer after it confirms the code too.';
-      const allow=document.createElement('button'); allow.textContent='Codes match, allow';
+      const description=document.createElement('p'); description.className='detail'; description.textContent='Compare this code on both computers. Allowing pairs your terminals with this computer after it confirms the code too.';
+      const allow=document.createElement('button'); allow.className='primary'; allow.textContent='Codes match, allow';
       const deny=document.createElement('button'); deny.textContent='Deny';
+      const buttons=document.createElement('div'); buttons.className='actions'; buttons.append(allow,deny);
       const answer=accepted=>action(async()=>{
         await api('/answer',{invitation:request.invitation,code:request.code,allow:accepted});
         show(accepted?'Allowed. Confirm the matching code on the other computer to finish.':'Request denied.');
         await refresh();
       });
       allow.onclick=()=>answer(true); deny.onclick=()=>answer(false);
-      card.append(title,address,code,description,allow,deny); $('incoming').append(card);
+      card.append(title,address,code,description,buttons); $('incoming').append(card);
     }
     for (const request of sent) {
-      const card=document.createElement('div'); card.className='card';
-      const title=document.createElement('strong'); title.textContent=`Request sent to ${request.computer}`;
+      const card=document.createElement('div'); card.className='request sent';
+      const title=document.createElement('p'),who=document.createElement('strong'); who.textContent=request.computer; title.append('Request sent to ',who);
       const code=document.createElement('p'); code.className='code'; code.textContent=request.code;
-      const description=document.createElement('p'); description.textContent='On the other computer, open Switchboard and allow this matching code. Then confirm its request above.';
+      const description=document.createElement('p'); description.className='detail'; description.textContent='On the other computer, open Switchboard → Computers and allow this code, then approve it here.';
       const cancel=document.createElement('button'); cancel.textContent='Cancel request';
       cancel.onclick=()=>action(async()=>{await api('/cancel',{invitation:request.invitation}); await refresh(); show('Request cancelled.');});
-      card.append(title,code,description,cancel); $('sent').append(card);
+      const buttons=document.createElement('div'); buttons.className='actions'; buttons.append(cancel);
+      card.append(title,code,description,buttons); $('sent').append(card);
     }
   }
   $('receive-requests').onclick=()=>action(async()=>{
@@ -266,12 +292,12 @@
     event.preventDefault(); action(() => addComputer($('target-address').value.trim()));
   };
   function clearInvitation() {
-    invitationId = null; $('invitation-link').value = ''; $('invitation').hidden = true;
+    invitationId = null; $('invitation-link').value = ''; $('invitation').hidden = true; $('create-form').hidden = false;
   }
   $('create-form').onsubmit = event => {
     event.preventDefault(); action(async () => {
       const result = await api('/invitations', {name: $('mesh-name').value.trim(), ...local()});
-      invitationId = result.id; $('invitation-link').value = result.link; $('invitation').hidden = false;
+      invitationId = result.id; $('invitation-link').value = result.link; $('invitation').hidden = false; $('create-form').hidden = true;
       $('expiry').textContent = `Expires ${new Date(result.expires * 1000).toLocaleTimeString()}`;
       show('Invitation ready. Share it over chat, then approve the matching computer here.'); await refresh();
     });
@@ -292,7 +318,7 @@
       if (version !== previewVersion || link !== $('join-link').value.trim()) return;
       previewLink = link; $('preview-card').hidden = false;
       $('preview-description').textContent = `${result.computer} invites you to ${result.mesh}. Expires ${new Date(result.expires * 1000).toLocaleTimeString()}.`;
-      show('Check the inviting computer, then choose Join computer.');
+      show('Check the inviting computer, then choose Join.');
     } catch (error) {
       if (version !== previewVersion || link !== $('join-link').value.trim()) return;
       $('preview').hidden = false; show(error.message, true);
