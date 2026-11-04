@@ -50,12 +50,15 @@ keeps your settings.
 Switchboard reads each tab's screen to tell whether an agent is working. Claude Code
 can report its own turns instead, which is exact: it also shows **Waiting on a shell**
 when Claude finished but a background shell it started is still running. Install the
-`switchboard-status` plugin on each computer:
+`switchboard` plugin on each computer:
 
 ```sh
 claude plugin marketplace add domsleee/switchboard --sparse .claude-plugin plugins
-claude plugin install switchboard-status@switchboard
+claude plugin install switchboard@switchboard
 ```
+
+If this computer has the earlier `switchboard-status` plugin, remove it first with
+`claude plugin uninstall switchboard-status@switchboard`.
 
 Then turn on auto-update, which is off by default for this marketplace. `marketplace
 add` writes an `extraKnownMarketplaces.switchboard` entry to Claude Code's user

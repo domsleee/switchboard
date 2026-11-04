@@ -1,5 +1,5 @@
 {
-  "name": "switchboard-status",
+  "name": "switchboard",
   "description": "Reports each Claude Code turn to the local Switchboard relay, so Switchboard shows Working, Ready, Waiting and approvals from Claude's own events instead of reading the screen. Includes a message-board skill for reading and sending Switchboard messages.",
   "author": {
     "name": "Dom Slee"
