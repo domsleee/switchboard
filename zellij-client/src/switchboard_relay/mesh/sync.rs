@@ -10,6 +10,8 @@ pub(super) struct Update {
     categories: BTreeMap<String, Category>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tab_order: Option<TabOrder>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hidden_tabs: Option<TabOrder>,
     membership: Signed<Membership>,
     credential: Envelope,
     /// The sender's network name, trusted only from a reply over its pinned TLS.
@@ -58,6 +60,7 @@ impl Mesh {
             board_hosts: db.board_hosts.clone(),
             categories: db.categories.clone(),
             tab_order: db.tab_order.clone(),
+            hidden_tabs: db.hidden_tabs.clone(),
             // Keep the inviter's signature: an existing peer may not know this
             // newly joined computer yet, but already trusts its inviter.
             membership: membership.clone(),
@@ -151,13 +154,17 @@ impl Mesh {
         }
         let board_changed = self.merge_board_hosts(&mut db, &update.board_hosts)?;
         let categories_changed = Self::merge_categories(&mut db, &update.categories);
-        let order_changed = Self::merge_tab_order(&mut db, update.tab_order.as_ref());
+        let order_changed =
+            Self::merge_tab_keys(&mut db, TabList::Order, update.tab_order.as_ref());
+        let hidden_changed =
+            Self::merge_tab_keys(&mut db, TabList::Hidden, update.hidden_tabs.as_ref());
         let mut response = self.sync_payload(&mut db, peer)?;
         response.hostname = system_hostname;
         if changed
             || board_changed
             || categories_changed
             || order_changed
+            || hidden_changed
             || credential_changed
             || db.outgoing.len() != committed.outgoing.len()
         {
@@ -351,12 +358,28 @@ pub(super) async fn category(
     }
 }
 
-/// The sidebar's manual tab order, the same in every browser on every computer in the group.
-/// Keys name a tab by its computer's group member ID, so they mean the same tab everywhere.
+/// A list of sidebar tab keys shared by every browser on every computer in the group:
+/// the manual tab order, or the tabs moved to the Hidden group. Keys name a tab by its
+/// computer's group member ID, so they mean the same tab everywhere.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(super) struct TabOrder {
     keys: Vec<String>,
     updated: u64,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum TabList {
+    Order,
+    Hidden,
+}
+
+impl TabList {
+    fn slot(self, db: &mut Database) -> &mut Option<TabOrder> {
+        match self {
+            TabList::Order => &mut db.tab_order,
+            TabList::Hidden => &mut db.hidden_tabs,
+        }
+    }
 }
 
 fn valid_tab_order(keys: &[String]) -> bool {
@@ -364,30 +387,41 @@ fn valid_tab_order(keys: &[String]) -> bool {
 }
 
 impl Mesh {
-    /// The latest change wins; a tie keeps the larger order, so every computer agrees.
-    pub(super) fn merge_tab_order(db: &mut Database, incoming: Option<&TabOrder>) -> bool {
+    /// The latest change wins; a tie keeps the larger list, so every computer agrees.
+    pub(super) fn merge_tab_keys(
+        db: &mut Database,
+        list: TabList,
+        incoming: Option<&TabOrder>,
+    ) -> bool {
         let Some(order) = incoming.filter(|order| valid_tab_order(&order.keys)) else {
             return false;
         };
-        if db.membership.is_none()
-            || db
-                .tab_order
-                .as_ref()
-                .is_some_and(|old| (old.updated, &old.keys) >= (order.updated, &order.keys))
+        if db.membership.is_none() {
+            return false;
+        }
+        let slot = list.slot(db);
+        if slot
+            .as_ref()
+            .is_some_and(|old| (old.updated, &old.keys) >= (order.updated, &order.keys))
         {
             return false;
         }
-        db.tab_order = Some(order.clone());
+        *slot = Some(order.clone());
         true
     }
 
-    pub(super) async fn set_tab_order(&self, keys: Vec<String>) -> anyhow::Result<u64> {
-        anyhow::ensure!(valid_tab_order(&keys), "Too many tabs to share their order");
+    pub(super) async fn set_tab_keys(
+        &self,
+        list: TabList,
+        keys: Vec<String>,
+    ) -> anyhow::Result<u64> {
+        anyhow::ensure!(valid_tab_order(&keys), "Too many tabs to share");
         let mut committed = self.database.lock().await;
         let mut db = committed.clone();
         anyhow::ensure!(db.membership.is_some(), "Group unavailable");
-        let updated = now().max(db.tab_order.as_ref().map_or(0, |o| o.updated + 1));
-        db.tab_order = Some(TabOrder { keys, updated });
+        let slot = list.slot(&mut db);
+        let updated = now().max(slot.as_ref().map_or(0, |o| o.updated + 1));
+        *slot = Some(TabOrder { keys, updated });
         self.save(&db)?;
         *committed = db;
         Ok(updated)
@@ -399,18 +433,15 @@ impl Mesh {
 pub(super) struct SetTabOrder {
     keys: Vec<String>,
 }
-pub(super) async fn tab_order(
-    State(state): State<RelayState>,
-    Json(input): Json<SetTabOrder>,
-) -> Response {
+async fn set_tab_keys(state: RelayState, list: TabList, keys: Vec<String>) -> Response {
     let Some(mesh) = state.mesh else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({"error":"Pair computers before sharing tab order"})),
+            Json(json!({"error":"Pair computers before sharing tabs"})),
         )
             .into_response();
     };
-    match mesh.set_tab_order(input.keys).await {
+    match mesh.set_tab_keys(list, keys).await {
         Ok(updated) => {
             tokio::spawn(async move { mesh.synchronize().await });
             Json(json!({ "updated": updated })).into_response()
@@ -421,6 +452,18 @@ pub(super) async fn tab_order(
         )
             .into_response(),
     }
+}
+pub(super) async fn tab_order(
+    State(state): State<RelayState>,
+    Json(input): Json<SetTabOrder>,
+) -> Response {
+    set_tab_keys(state, TabList::Order, input.keys).await
+}
+pub(super) async fn hidden_tabs(
+    State(state): State<RelayState>,
+    Json(input): Json<SetTabOrder>,
+) -> Response {
+    set_tab_keys(state, TabList::Hidden, input.keys).await
 }
 
 /// Per-computer retry delay, so an offline computer is not contacted every

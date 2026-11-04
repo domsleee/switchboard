@@ -48,7 +48,7 @@ entry.
 Remote entries left in the host list are ignored (the relay logs a warning for
 each) and appear in **Computers** with **Pair this computer**. Pair them, then
 delete the entry. A paired computer gets a new id, so its browser tab order and
-archive state start fresh.
+hidden tabs start fresh.
 
 Pairing remembers the computer's LAN address. If that address stops working,
 Switchboard also resolves `<computer-name>.local` and checks the paired computer's
@@ -150,13 +150,20 @@ the terminal bridge loads. Native dialogs keep their shortcuts, and **Ctrl+D**
 does not close a tab while a form input is focused.
 Selecting an offline tab releases the previous terminal's keyboard focus, so
 sidebar shortcuts still work while the selected tab reconnects.
-**Right-click a sidebar tab → Archive** hides it without closing its terminal.
+**Right-click a sidebar tab → Hide** moves it to the **Hidden** group at the bottom
+of the sidebar without closing its terminal; **Show in list** moves it back.
 **Middle-click a sidebar tab**, **Right-click → Close**, or **Ctrl+D** immediately
 closes every pane in that tab and stops its processes. Middle-click targets the
 clicked tab without selecting it first. Close uses its native stable ID, even
 when another tab is focused.
-Use **Archive** to search archived tabs across machines and restore one. Archive
-state is saved in this browser; archived ready tabs still count as notifications.
+The Hidden group starts collapsed and remembers whether it was left open in this
+browser. Dragging a tab below its header hides the tab; dragging it above shows it
+again. Hidden tabs still count as notifications, and the header shows the amber dot
+when one needs attention. Search finds hidden tabs while the group is collapsed;
+Alt+H/L and Ctrl+1–9 skip them unless it is open. Paired computers share the hidden
+tabs like the tab order (`/api/mesh/hidden-tabs`), and they follow a recreated
+session to the new tab numbers the same way. Tabs archived in this browser before
+Hidden existed become hidden tabs.
 Tabs and controls live in one stable, resizable left sidebar, leaving the full
 terminal height available. An amber dot marks tabs that
 need attention; viewing a result clears the dot without moving the tab.
@@ -174,8 +181,8 @@ marker per session (its start time and tab IDs by position), so each saved posit
 the new tab at the same session position instead of a different tab.
 Without pairing, the order is saved in this browser. Attention changes never reorder tabs. The URL follows the selected machine, session,
 and native tab ID, plus `group=home` or `group=work` for the selected group.
-Choosing All removes the group parameter. Refreshing restores the group and reconnects to that terminal. Opening a link to an
-archived tab restores it in this browser.
+Choosing All removes the group parameter. Refreshing restores the group and reconnects to that terminal. A link to a
+hidden tab opens it without showing it in the list.
 Tab labels and the browser window title follow live Codex/Claude/Copilot pane titles,
 including `/rename` updates. Agent spinner prefixes are stripped from labels.
 Keys typed in the browser go to the program, not to Zellij's shortcuts, so Ctrl+T,
@@ -218,7 +225,7 @@ input and approval prompts and running status. Ready results get an attention ba
 approvals/questions retain their badge until resolved. A new observed working-to-ready transition raises a new notification. Notification
 identities are saved beside the relay configuration as `.attention.json`, so a
 relay restart preserves viewed results.
-Archive preserves processes and does not erase attention state.
+Hiding a tab preserves processes and does not erase attention state.
 
 Claude tabs use live spinners and active background-agent rows to indicate work.
 A background-shell count alone does not keep a finished reply working: that shell

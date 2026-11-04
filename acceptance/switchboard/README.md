@@ -35,15 +35,17 @@ sidebar. Native top and bottom bars do not use terminal space.
 **Tests:** `ui` checks search, filters, bar removal, fullscreen and mobile changes.
 **Still to check:** many-tab navigation and sidebar resizing in the browser.
 
-### SB-02 · Archive or close the tab I chose
+### SB-02 · Hide or close the tab I chose
 
-Right-clicking a tab offers Archive and Close. Archiving hides it without losing
-its processes or identity, and I can restore it. Closing asks for confirmation
-and closes that exact tab, even if it is inactive or focus changes meanwhile.
+Right-clicking a tab offers Hide and Close. Hiding moves it to the collapsed Hidden
+group at the bottom of the sidebar without losing its processes or identity, on
+every paired computer, and Show in list brings it back. Closing closes that exact
+tab, even if it is inactive or focus changes meanwhile.
 
-**Tests:** `ui` checks archive identity and captured close targets; `relay` checks
-close targets, conflicts and gateway delivery to a paired computer.
-**Still to check:** the context menu and archive process continuity in a browser.
+**Tests:** `ui` checks hidden-tab identity, sharing and captured close targets; the
+sidebar browser test checks Hide, the Hidden group and dragging across it; `relay`
+checks close targets, conflicts and gateway delivery to a paired computer.
+**Still to check:** hidden process continuity in a browser.
 
 ### SB-04 · Keep my tab order
 

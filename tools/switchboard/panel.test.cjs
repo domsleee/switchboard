@@ -5,7 +5,7 @@ const tab=(host,id)=>({host,session:'main',id,position:0,name:host+' terminal',p
 const statics=['index.html','app.js','bridge.js','close.js','titles.js','pairing-notice.js','style.css','messages.html','messages.js','messages.css','computers.html','computers.js'];
 
 // Synthetic hosts and fixture terminals only; never a live relay.
-test('Panel navigation skips hidden Archive and keeps terminals connected',
+test('Panel navigation moves between sections and keeps terminals connected',
   {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE to run the isolated browser overlay check'},async()=>{
   const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
   const browser=await chromium.launch({headless:true});
@@ -70,15 +70,13 @@ test('Panel navigation skips hidden Archive and keeps terminals connected',
       });
     }
     const at=(name,focused=name)=>({open:true,selected:[name],visible:['panel-'+name.toLowerCase()],title:name,focused,
-      roving:['Messages','Computers','Archive','Updates','Logs','Settings'].map(tab=>tab===name?'0':'-1').join('')});
+      roving:['Messages','Computers','Updates','Logs','Settings'].map(tab=>tab===name?'0':'-1').join('')});
 
     // Sidebar Messages keeps its href for new-tab use and opens the panel at Messages.
     const messages=page.locator('#sidebar-utilities a[href="/messages.html"]');
     assert.equal(await messages.getAttribute('href'),'/messages.html');
     await messages.click();
     assert.deepEqual(await section(),at('Messages'));
-    assert.equal(await page.locator('#archive').isVisible(),false);
-    assert.equal(await page.locator('#panel-tab-archive').isVisible(),false);
     await messagesFrame.locator('button[data-key="computer:windows"]').waitFor();
     for(const selector of ['a[href="/"]','h1','a[href="/computers.html"]'])assert.equal(await messagesFrame.locator(selector).isHidden(),true,selector+' hidden in panel');
     await page.keyboard.press('Escape');
@@ -114,7 +112,6 @@ test('Panel navigation skips hidden Archive and keeps terminals connected',
     await page.keyboard.press('Escape');
     await terminalsIntact();
 
-    // Archive recovery still works without exposing its navigation tab.
     await page.locator('#settings').click();assert.deepEqual(await section(),at('Settings'));
     assert.equal(await page.locator('#native-tabs').isVisible(),true);
     assert.equal(await page.locator('#media-previews').getAttribute('aria-pressed'),'false','Media previews start off');
@@ -132,10 +129,6 @@ test('Panel navigation skips hidden Archive and keeps terminals connected',
     assert.equal(await page.locator('#media-thumbnails').getAttribute('aria-pressed'),'true');
     assert.equal(await page.evaluate(()=>localStorage.getItem('switchboard-media-thumbnails')),'true');
     await page.locator('#media-thumbnails').click();
-    await page.locator('#close-panel').click();await terminalsIntact();
-    await page.evaluate(()=>openPanel('archive'));assert.deepEqual(await section(),at('Archive',''));
-    assert.equal(await page.evaluate(()=>document.activeElement.id),'archive-search');
-    assert.equal(await page.locator('#archive-list').textContent(),'No archived tabs.');
     await page.locator('#close-panel').click();await terminalsIntact();
     await page.evaluate(()=>document.querySelector('#pairing-notice').click());assert.deepEqual(await section(),at('Computers'));
 
@@ -158,7 +151,6 @@ test('Panel navigation skips hidden Archive and keeps terminals connected',
     const box=await page.locator('#panel').boundingBox();
     assert.deepEqual([box.x,box.y,box.width,box.height],[0,0,390,844]);
     await page.waitForFunction(()=>matchMedia('(max-width:700px)').matches);
-    assert.equal(await page.locator('#panel-tab-archive').isVisible(),false);
     const layout=await page.evaluate(()=>{
       const tabs=[...document.querySelectorAll('#panel [role=tab]:not([hidden])')].map(tab=>tab.getBoundingClientRect());
       return {row:new Set(tabs.map(tab=>tab.top)).size,within:tabs.every(tab=>tab.left>=0&&tab.right<=390),
