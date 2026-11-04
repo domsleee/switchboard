@@ -103,7 +103,7 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
       {name:'Mac',local:true,groups:[],error:null,switchboard:build('0c60c7f','2026-11-04T20:21:14+11:00'),agents:[
         agent('claude','Claude Code','ready','Plugin installed and auto-updating',{lastReport:now-120e3}),
         agent('copilot','Copilot CLI','setup','Plugin not installed · Auto-update off'),
-        agent('codex','Codex','approve','Start Codex and choose “Trust all and continue” when it asks to review hooks')]},
+        agent('codex','Codex','approve','Codex has not trusted the status hooks yet')]},
       {name:'Dom-PC',host:'mesh-dompc',groups:[],error:null,switchboard:build('ca42095','2026-11-04T20:04:27+11:00',{automaticUpdates:false}),agents:[
         ...absent.slice(0,2),agent('codex','Codex','setup','Status hooks not installed',{setupError:'Could not save hooks.json: denied'})]},
       {name:'Linux',host:'mesh-linux',groups:[],error:null,switchboard:build('ca42095','2026-11-04T20:04:27+11:00',{automaticUpdates:undefined}),agents:absent},
@@ -134,13 +134,14 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
     // Anything needing the user opens its group and names it in the summary.
     assert.equal(await mac.getAttribute('open'),'');
     assert.equal(await mac.locator('.task-title small').textContent(),'build 0c60c7f · 2026-11-04');
-    assert.equal(await mac.locator('.task-state').textContent(),'Copilot CLI: needs setup · Codex: approve hooks in Codex');
+    assert.equal(await mac.locator('.task-state').textContent(),'Copilot CLI: needs setup · Codex: hooks not trusted');
     const macRows=mac.locator('.agent-row');
     assert.deepEqual(await macRows.locator('.task-name').allTextContents(),['Claude Code','Copilot CLI','Codex']);
     assert.equal(await macRows.nth(0).locator('.task-meta').textContent(),'reported 2m ago');
     assert.equal(await macRows.nth(0).getByRole('button',{name:'Set up'}).count(),0);
     assert.equal(await macRows.nth(1).locator('.task-meta').textContent(),'Plugin not installed · Auto-update off');
-    assert.equal(await macRows.nth(2).getByRole('button',{name:'Set up'}).count(),0,'Codex hooks are approved in Codex, not here');
+    assert.equal(await macRows.nth(2).getByRole('button',{name:'Set up'}).count(),0);
+    assert.equal(await macRows.nth(2).getByRole('button',{name:'Trust hooks'}).count(),1,'untrusted Codex hooks are trusted from here');
 
     assert.equal(await mac.locator('.task-row').first().locator('.task-meta').textContent(),'on');
     assert.equal(await pc.locator('.task-state').textContent(),'Automatic updates are off');
@@ -158,7 +159,9 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
     await page.waitForFunction(()=>document.querySelector('#updates .agent-row[data-agent=copilot] .task-meta')?.textContent==='Setting up…'||document.querySelector('#updates .agent-row[data-agent=copilot]')?.dataset.status==='running');
     await pc.getByRole('button',{name:'Set up'}).click();
     await page.waitForFunction(()=>document.querySelectorAll('#updates .switchboard-group').length===3);
-    assert.deepEqual(setups,[{agent:'copilot'},{agent:'codex',host:'mesh-dompc'}]);
+    await page.locator('#updates .switchboard-group').nth(0).locator('.agent-row[data-agent=codex]').getByRole('button',{name:'Trust hooks'}).click();
+    await page.waitForFunction(()=>document.querySelectorAll('#updates .switchboard-group').length===3);
+    assert.deepEqual(setups,[{agent:'copilot'},{agent:'codex',host:'mesh-dompc'},{agent:'codex'}]);
     assert.deepEqual(errors,[]);
   }finally{await browser.close();}
 });

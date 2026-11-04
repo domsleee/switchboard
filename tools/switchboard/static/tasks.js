@@ -111,9 +111,12 @@
     head.append(dot(row.dataset.status),element('span','task-name',agent.name));
     const meta=agent.state==='ready'?(agent.lastReport?`reported ${ago(agent.lastReport)}`:'no report yet'):agent.detail;
     head.append(element('small','task-meta',meta));
-    if(agent.state==='setup'){
+    if(agent.state==='setup'||agent.state==='approve'){
       const actions=element('span','task-links');
-      const setup=button('Set up',`Install Switchboard's status reporting for ${agent.name} on ${computer.name}`,()=>setUp(computer,agent));setup.className='task-run';
+      const setup=agent.state==='approve'
+        ?button('Trust hooks',`Trust Switchboard's ${agent.name} hooks on ${computer.name}`,()=>setUp(computer,agent))
+        :button('Set up',`Install Switchboard's status reporting for ${agent.name} on ${computer.name}`,()=>setUp(computer,agent));
+      setup.className='task-run';
       actions.append(setup);
       head.append(actions);
     }
@@ -134,7 +137,7 @@
     const title=element('span','task-title');title.append(element('strong','','Switchboard'),element('small','',`build ${sb.commit}${sb.commitDate?` · ${sb.commitDate}`:''}`));
     let text='All set';
     if(updates==='failed')text='Automatic updates are off';
-    else if(waiting.length)text=waiting.map(agent=>`${agent.name}: ${agent.state==='approve'?'approve hooks in Codex':agent.state==='running'?'setting up…':'needs setup'}`).join(' · ');
+    else if(waiting.length)text=waiting.map(agent=>`${agent.name}: ${agent.state==='approve'?'hooks not trusted':agent.state==='running'?'setting up…':'needs setup'}`).join(' · ');
     const state=element('span','task-state',text);state.title=text;
     summary.append(dot(status),title,state);
     block.append(summary);
