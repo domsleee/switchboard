@@ -430,13 +430,15 @@ function render() {
     const unavailable=attentionErrors.some(error=>error.host==='Switchboard'||error.host===item.entry.host&&(!error.session||error.session===item.entry.name));
     const flagged=!!ready[item.key]||item.tab.name.startsWith('*');
     const starred=isReady(item);
+    // The web server names tabs opened with Run as administrator.
+    const elevated=item.tab.name.replace(/^\*\s*/,'')==='Administrator';
     const status=unavailable?'Status unavailable':stateLabel==='Ready'?'':stateLabel;
     const duplicate=titleCounts.get(JSON.stringify([item.entry.host,title]))>1;
     const subtitle=`${machine}${duplicate?' · '+item.entry.name:''}${status?' · '+status:''}${flagged?' · For review':''}`;
     button.title=`${title} · ${machine} · ${item.entry.name}\n${status||'No pending attention'}${flagged?' · Flagged for review':''}\nDrag to reorder · Alt+Shift+H/L moves this tab · Middle-click to close · Right-click for actions`;
-    button.className='tab-select'+(item.key===selected?' selected':'')+(starred?' needs-attention':'');
+    button.className='tab-select'+(item.key===selected?' selected':'')+(starred?' needs-attention':'')+(elevated?' elevated':'');
     button.setAttribute('aria-pressed',String(item.key===selected));
-    button.setAttribute('aria-label',`${title}, ${machine}, ${item.entry.name}${status?', '+status:''}${flagged?', Flagged for review':''}`);
+    button.setAttribute('aria-label',`${title}${elevated&&title!=='Administrator'?', Administrator':''}, ${machine}, ${item.entry.name}${status?', '+status:''}${flagged?', Flagged for review':''}`);
     const dot=button.children[0];dot.hidden=false;
     dot.className='star '+(unavailable?'unavailable':starred?'attention':stateLabel==='Working'?'working':stateLabel.startsWith('Waiting')?'waiting':'quiet');
     if(button.children[1].textContent!==title)button.children[1].textContent=title;
@@ -939,6 +941,7 @@ $('new-tab').onclick=()=>{
   for(const host of hosts.values())if(!host.error&&host.sessions?.length===0&&![...select.options].some(option=>option.value===sessionKey(host.id,'main'))){
     const option=document.createElement('option');option.value=sessionKey(host.id,'main');option.textContent=host.name;select.append(option);
   }
+  $('new-tab-elevated').checked=false;
   if(!select.options.length){setStatus('No machines are connected. Check your machines in Settings.',true);return;}
   $('new-tab-dialog').showModal();
 };
@@ -981,7 +984,7 @@ $('new-tab-form').onsubmit=event=>{
   // Keyboard dismissal can leave focus on the hidden session selector, then
   // move it to the body. Hand focus to the frame before creation records it.
   entry.frame.focus();
-  entry.frame.contentWindow.postMessage({type:'zellij-new-tab',request_id:pending.requestId,started_at:pending.startedAt},location.origin);
+  entry.frame.contentWindow.postMessage({type:'zellij-new-tab',elevated:$('new-tab-elevated').checked,request_id:pending.requestId,started_at:pending.startedAt},location.origin);
   setStatus(`Creating a tab on ${hosts.get(entry.host)?.name}…`);
   setTimeout(()=>failNewTab(entry,pending.requestId,'No new tab received. Check the connection and try again.'),30000);
 };

@@ -140,6 +140,14 @@ test('focus handoffs restore the enabled touchscreen input and otherwise use xte
     assert.deepEqual(focused,[enabled&&installed?'touch':'xterm']);
   }
 });
+test('New tab forwards only an explicit administrator request',()=>{
+  for(const [elevated,expected] of [[true,true],[undefined,false],['true',false]]){
+    const h=harness(),sent=[];h.window.__zjSendControl=message=>sent.push(message);
+    h.state({active_pane:{pane_id:1,is_plugin:false},panes:[{pane_id:1,is_plugin:false}]});
+    h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-new-tab',elevated}});
+    assert.deepEqual(sent.map(m=>[m.type,m.elevated]),[['NewTab',expected]]);
+  }
+});
 test('New tab holds input until its native pane is active, then focuses without waiting for the catalog',()=>{
   const h=harness(),sent=[];let focused=0;h.setBrowserFocus(true);
   h.window.term.focus=()=>focused++;h.window.__zjSendControl=message=>sent.push(message);
