@@ -206,6 +206,7 @@ Wheel and trackpad scrolling moves the text as far as the gesture did, 3 lines p
 Zellij scroll. **Settings → Fine scrolling** (trial) scrolls 1 line per step instead:
 the terminal socket passes `wheel_lines=1` and each wheel report carries that count to
 Zellij. Native terminal clients keep 3 lines per wheel notch.
+
 Smaller plain terminals and older browsers still constrain the layout because they cannot pan.
 
 ## Attention detection
