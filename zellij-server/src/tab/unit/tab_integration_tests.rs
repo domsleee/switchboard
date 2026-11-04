@@ -12392,6 +12392,47 @@ fn test_scroll_wheel_up_scrolls_pane() {
 }
 
 #[test]
+fn fine_wheel_reports_scroll_one_line_each() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let viewport = |reports: usize, wheel_lines: u32| {
+        let mut tab = create_new_tab(size, ModeInfo::default());
+        let mut content = String::new();
+        for i in 0..50 {
+            content.push_str(&format!("Line {}\r\n", i));
+        }
+        tab.handle_pty_bytes(1, Vec::from(content.as_bytes()))
+            .unwrap();
+        let mut event = MouseEvent::new_scroll_up_event(Position::new(10, 60));
+        event.wheel_lines = wheel_lines;
+        for _ in 0..reports {
+            tab.handle_mouse_event(&event, client_id).unwrap();
+        }
+        let mut output = Output::default();
+        tab.render(&mut output, None).unwrap();
+        take_snapshot(
+            output.serialize().unwrap().get(&client_id).unwrap(),
+            size.rows,
+            size.cols,
+            Palette::default(),
+        )
+    };
+    assert_eq!(
+        viewport(3, 1),
+        viewport(1, 0),
+        "three fine reports equal one default report"
+    );
+    assert_ne!(
+        viewport(1, 1),
+        viewport(1, 0),
+        "one fine report moves less than a default one"
+    );
+}
+
+#[test]
 fn test_scroll_wheel_down_scrolls_pane() {
     let size = Size {
         cols: 121,

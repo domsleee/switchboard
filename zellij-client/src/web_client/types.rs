@@ -281,6 +281,8 @@ pub struct TerminalParams {
     pub cols: Option<u16>,
     pub cell_width: Option<u16>,
     pub cell_height: Option<u16>,
+    /// Lines per wheel report when the browser scrolls finely (1); absent keeps 3.
+    pub wheel_lines: Option<u32>,
 }
 
 #[derive(Deserialize)]

@@ -1053,6 +1053,8 @@ message MouseEvent {
   Position position = 10;
   bool wheel_left = 11;
   bool wheel_right = 12;
+  // Lines a wheel report scrolls by; 0 keeps the default.
+  uint32 wheel_lines = 13;
 }
 
 enum MouseEventType {

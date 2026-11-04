@@ -44,6 +44,17 @@ test('the first report of a swipe does not stall the rows that follow',()=>{
   assert.deepEqual(after,[0,0,1,0,0,1,0,0,1],'then one report per 3 rows of travel');
 });
 
+test('fine scrolling sends one report per row of travel',()=>{
+  const context={requestAnimationFrame:()=>{},window:{},localStorage:{getItem:key=>key==='switchboard-fine-scroll'?'true':null}};
+  vm.createContext(context);vm.runInContext(source,context);
+  assert.equal(context.fineScrolling(),true);
+  const add=context.createWheelAccumulator(1);
+  assert.deepEqual([1,1,1,1,1].map((rows,i)=>add(rows,i*16)),[1,1,1,1,1]);
+  const off={localStorage:{getItem:()=>{throw Error('blocked');}},window:{}};
+  vm.createContext(off);vm.runInContext(source,off);
+  assert.equal(off.fineScrolling(),false,'blocked storage keeps three-line steps');
+});
+
 test('reports from one frame go out together in a single batch',()=>{
   const h=harness();
   h.wheel(90,{gap:500});h.wheel(90);

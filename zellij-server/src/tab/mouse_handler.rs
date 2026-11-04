@@ -1413,11 +1413,16 @@ impl MouseHandler {
                         return Ok(MouseAction::ResizeScrollDown { pane_id });
                     }
                 }
+                // A fine-scrolling web client sends one report per line.
+                let lines = match event.wheel_lines {
+                    0 => 3,
+                    lines => lines.min(3) as usize,
+                };
                 if event.wheel_up {
-                    return Ok(MouseAction::ScrollUp { pane_id, lines: 3 });
+                    return Ok(MouseAction::ScrollUp { pane_id, lines });
                 }
                 if event.wheel_down {
-                    return Ok(MouseAction::ScrollDown { pane_id, lines: 3 });
+                    return Ok(MouseAction::ScrollDown { pane_id, lines });
                 }
             }
             return Ok(MouseAction::NoAction);

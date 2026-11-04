@@ -502,6 +502,15 @@ const WHEEL_ROWS_PER_REPORT = 3;
 // A pause this long starts a new gesture, which always scrolls at least once.
 const WHEEL_GESTURE_GAP_MS = 200;
 
+// Switchboard's Fine scrolling setting: one report per row, each scrolling one line.
+function fineScrolling() {
+    try {
+        return localStorage.getItem("switchboard-fine-scroll") === "true";
+    } catch (_) {
+        return false;
+    }
+}
+
 function wheelRows(event, rowHeight, rows) {
     if (event.deltaMode === 1) return event.deltaY;
     if (event.deltaMode === 2) return event.deltaY * rows;
@@ -541,7 +550,7 @@ function createWheelAccumulator(
 
 function installWheelHandler(term) {
     const core = term._core;
-    const add = createWheelAccumulator();
+    const add = createWheelAccumulator(fineScrolling() ? 1 : WHEEL_ROWS_PER_REPORT);
     let queued = 0;
     let target = null;
     let frame = 0;
@@ -3373,6 +3382,9 @@ function initWebSockets(boot, term, fitAddon) {
         queryString += `&cell_width=${cellWidth}&cell_height=${cellHeight}`;
         lastSentCellDimensions = { width: cellWidth, height: cellHeight };
     }
+    // Fine scrolling: the wheel handler sends one report per line, so Zellij
+    // scrolls one line per report instead of three.
+    if (fineScrolling()) queryString += "&wheel_lines=1";
     const wsTerminalUrl = `${url}${queryString}`;
 
     wsTerminal = new WebSocket(wsTerminalUrl);
