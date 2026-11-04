@@ -223,6 +223,10 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     const tabNamed=name=>page.locator('#tabs .tab-select',{hasText:name});
     await page.evaluate(()=>{setHidden(allTabs().find(item=>tabTitle(item)==='Online shopping'),true);render();});
     assert.equal(await page.locator('#hidden-toggle').getAttribute('aria-expanded'),'true','the group stays as it was left');
+    // A short list keeps the Hidden group at the bottom of the sidebar, not under the last tab.
+    const [shortList,lastTab,group]=await page.evaluate(()=>[$('tabs'),$('hidden-toggle').previousElementSibling,$('tabs').lastElementChild].map(el=>el.getBoundingClientRect().toJSON()));
+    assert.ok(shortList.bottom-group.bottom<16,`Hidden group at the list bottom: ${JSON.stringify({shortList,group})}`);
+    assert.ok(group.top-lastTab.bottom>100,`Hidden group apart from the last tab: ${JSON.stringify({lastTab,group})}`);
     // A list taller than the sidebar keeps the Hidden header pinned in view at its bottom.
     const viewport=page.viewportSize();await page.setViewportSize({width:viewport.width,height:260});
     await page.evaluate(()=>{$('tabs').scrollTop=0;});
