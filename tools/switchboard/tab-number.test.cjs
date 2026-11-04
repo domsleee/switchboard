@@ -74,7 +74,7 @@ for(const platform of ['MacIntel','Win32','Linux x86_64'])test(`${platform}: sid
     // Search narrows the numbering to what is shown, even while typing in the search box.
     // From the terminal frame, Cmd+K reaches the page by postMessage; typing before
     // the search box takes focus would send the key to the terminal.
-    await page.keyboard.press('Meta+k');await page.waitForFunction(()=>document.activeElement?.id==='tab-search');
+    await page.keyboard.press(platform==='MacIntel'?'Meta+k':'Control+k');await page.waitForFunction(()=>document.activeElement?.id==='tab-search');
     await page.keyboard.type('r');
     assert.deepEqual(await page.locator('#tabs .tab-row:not([hidden]) .tab-name').allTextContents(),['Bravo','Charlie']);
     await page.keyboard.press(tabModifier+'+Digit1');await settle();assert.equal(await selectedName(),'Bravo');
