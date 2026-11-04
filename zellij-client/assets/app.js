@@ -528,8 +528,12 @@ function createWheelAccumulator(
         pending += rows;
         let reports = Math.trunc(pending / rowsPerReport);
         // The first event of a gesture always scrolls, so a single small notch
-        // is never lost; the debt keeps the rest of the gesture proportional.
-        if (newGesture && reports === 0) reports = sign;
+        // is never lost. It leaves no debt: paying it back would stall the next
+        // rows of a swipe right after it starts.
+        if (newGesture && reports === 0) {
+            pending = 0;
+            return sign;
+        }
         pending -= reports * rowsPerReport;
         return reports;
     };

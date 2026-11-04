@@ -30,9 +30,18 @@ test('a 120px wheel notch scrolls by its distance, not one report per event',()=
 test('a touchpad stream reports once per 3 rows of travel instead of once per row',()=>{
   const h=harness();
   let first;for(let i=0;i<30;i++){h.wheel(4);if(i===0)first=h.flush();}
-  // 120px is 8 rows: the gesture's first event scrolls at once, then one more report.
+  // 120px is 8 rows: the gesture's first event scrolls at once, then one report per 3 rows.
   assert.deepEqual(first,['down']);
-  assert.deepEqual(h.flush(),['down']);
+  assert.deepEqual(h.flush(),['down','down']);
+});
+
+test('the first report of a swipe does not stall the rows that follow',()=>{
+  // A swipe that starts with a tiny event must keep moving every 3 rows, not pause
+  // while the forced first report is paid back.
+  const h=harness();
+  h.wheel(2,{gap:500});assert.deepEqual(h.flush(),['down'],'the swipe starts at once');
+  const after=[];for(let i=0;i<9;i++){h.wheel(15);after.push(h.flush().length);}
+  assert.deepEqual(after,[0,0,1,0,0,1,0,0,1],'then one report per 3 rows of travel');
 });
 
 test('reports from one frame go out together in a single batch',()=>{
