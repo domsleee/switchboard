@@ -162,7 +162,7 @@ terminal height available. An amber dot marks tabs that
 need attention; viewing a result clears the dot without moving the tab.
 
 Machine names stay beneath each tab, and work/home remain optional filters. Search names and
-machines with **Cmd/Ctrl+K**, including from inside the terminal; Enter opens the
+machines with **Cmd+K** (Mac) / **Ctrl+K** (Windows, Linux), including from inside the terminal; Enter opens the
 first result. Searching does not change the current terminal until you choose a
 result. The **☰** button collapses the sidebar; on mobile it opens a drawer that closes
 when you select a tab. Width and desktop collapse state persist in this browser.
@@ -175,7 +175,8 @@ Choosing All removes the group parameter. Refreshing restores the group and reco
 archived tab restores it in this browser.
 Tab labels and the browser window title follow live Codex/Claude/Copilot pane titles,
 including `/rename` updates. Agent spinner prefixes are stripped from labels.
-Plain **Ctrl+T** is disabled inside the terminal so it cannot open Zellij's tab menu.
+Keys typed in the browser go to the program, not to Zellij's shortcuts, so Ctrl+T,
+Ctrl+O, Ctrl+G and the other Zellij mode keys reach Claude as in a terminal window.
 Use **+ New tab** or **Ctrl+Alt+T** (Windows) / **Cmd+Alt+T** (Mac) to open a shell in a chosen machine/session.
 **Create tab** is focused by default, so **Enter** creates a tab in the selected
 machine/session. The new tab is selected automatically.
@@ -333,7 +334,7 @@ Escape.
 
 `acceptance/switchboard/run.cjs keys BINARY` types a lone Escape, Escape then a
 key, and a double Escape into a raw-mode program in a private session, and
-checks it reads the same bytes in the same order.
+checks it reads the same bytes in the same order, along with Zellij's mode keys.
 
 ## Windows terminal input
 

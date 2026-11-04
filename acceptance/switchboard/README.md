@@ -185,7 +185,8 @@ bindings determine the final behavior.
 ### SB-09 · Use the intended New tab shortcut
 
 Ctrl+Alt+T and Cmd+Alt+T open New tab once, while respecting text fields and open
-dialogs. Plain Ctrl+T must not open Zellij's native Tab mode.
+dialogs. Plain Ctrl+T reaches the program; browser keys never enter Zellij modes
+(`keys BINARY` checks this end to end).
 
 **Tests:** `ui` checks shortcuts in the sidebar and terminal, including repeats.
 Browser-reserved shortcuts remain subject to the browser's own handling.

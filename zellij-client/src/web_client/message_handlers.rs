@@ -9,6 +9,7 @@ use std::sync::{
 };
 
 use zellij_utils::{
+    data::KeyWithModifier,
     input::{actions::Action, cast_termwiz_key, mouse::MouseEvent},
     ipc::ClientToServerMsg,
     vendored::termwiz::input::{InputEvent, InputParser},
@@ -98,6 +99,27 @@ impl StdinSession {
     }
 }
 
+/// Switchboard owns tabs and panes in the browser, so a typed key is written to
+/// the focused program as a terminal window would, never matched against Zellij's
+/// mode shortcuts (Ctrl+O, Ctrl+G, Ctrl+Q, ...).
+fn send_key(
+    os_input: &dyn ClientOsApi,
+    key: KeyWithModifier,
+    raw_bytes: Vec<u8>,
+    is_kitty_keyboard_protocol: bool,
+) {
+    os_input.send_to_server(ClientToServerMsg::Action {
+        action: Action::Write {
+            key_with_modifier: Some(key),
+            bytes: raw_bytes,
+            is_kitty_keyboard_protocol,
+        },
+        terminal_id: None,
+        client_id: None,
+        is_cli_client: false,
+    });
+}
+
 /// Dispatch a single termwiz `InputEvent` produced by either the live
 /// path or the idle finalize path. `raw_bytes` is the byte slice that
 /// produced the event, including the held bytes a finalize drains.
@@ -111,11 +133,7 @@ fn dispatch_termwiz_event(
         InputEvent::Key(key_event) => {
             let raw_bytes_vec = raw_bytes.to_vec();
             let key = cast_termwiz_key(key_event.clone(), &raw_bytes_vec, None);
-            os_input.send_to_server(ClientToServerMsg::Key {
-                key: key.clone(),
-                raw_bytes: raw_bytes_vec,
-                is_kitty_keyboard_protocol: false,
-            });
+            send_key(os_input, key, raw_bytes_vec, false);
         },
         InputEvent::FocusGained => {
             os_input.send_to_server(ClientToServerMsg::HostTerminalFocusChanged { focused: true });
@@ -249,11 +267,7 @@ pub fn parse_stdin(
     if !session.explicitly_disable_kitty_keyboard_protocol {
         match session.kitty_parser.feed(buf) {
             KittyParseOutcome::Complete(key_with_modifier) => {
-                os_input.send_to_server(ClientToServerMsg::Key {
-                    key: key_with_modifier.clone(),
-                    raw_bytes: buf.to_vec(),
-                    is_kitty_keyboard_protocol: true,
-                });
+                send_key(&*os_input, key_with_modifier, buf.to_vec(), true);
                 return;
             },
             KittyParseOutcome::Incomplete | KittyParseOutcome::NoMatch => {},
@@ -269,7 +283,7 @@ pub fn parse_stdin(
 
 #[cfg(test)]
 mod tests {
-    use super::parse_stdin;
+    use super::{parse_stdin, Action, KeyWithModifier};
     use crate::os_input_output::ClientOsApi;
     use std::io::{BufRead, Cursor, Write};
     use std::path::Path;
@@ -339,6 +353,24 @@ mod tests {
         }
     }
 
+    /// A typed key as the web client sends it: a write to the focused program.
+    fn typed(message: &ClientToServerMsg) -> (KeyWithModifier, Vec<u8>, bool) {
+        match message {
+            ClientToServerMsg::Action {
+                action:
+                    Action::Write {
+                        key_with_modifier: Some(key),
+                        bytes,
+                        is_kitty_keyboard_protocol,
+                    },
+                terminal_id: None,
+                is_cli_client: false,
+                ..
+            } => (key.clone(), bytes.clone(), *is_kitty_keyboard_protocol),
+            other => panic!("expected a typed key, got {other:?}"),
+        }
+    }
+
     #[test]
     fn ime_multi_char_input_uses_per_char_raw_bytes() {
         let os_input = RecordingOsInput::default();
@@ -357,10 +389,7 @@ mod tests {
 
         let raw_bytes: Vec<Vec<u8>> = sent_messages
             .into_iter()
-            .map(|message| match message {
-                ClientToServerMsg::Key { raw_bytes, .. } => raw_bytes,
-                other => panic!("expected key message, got {other:?}"),
-            })
+            .map(|message| typed(&message).1)
             .collect();
 
         assert_eq!(
@@ -387,13 +416,11 @@ mod tests {
         assert!(os_input.take_sent_messages().is_empty());
         session.finalize(&os_input, &mut mouse_old_event);
 
-        match os_input.take_sent_messages().as_slice() {
-            [ClientToServerMsg::Key { key, raw_bytes, .. }] => {
-                assert_eq!(key.bare_key, BareKey::Esc);
-                assert_eq!(raw_bytes, &vec![0x1b]);
-            },
-            other => panic!("expected one Esc key, got {other:?}"),
-        }
+        let sent = os_input.take_sent_messages();
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        let (key, raw_bytes, _) = typed(&sent[0]);
+        assert_eq!(key.bare_key, BareKey::Esc);
+        assert_eq!(raw_bytes, vec![0x1b]);
     }
 
     /// Claude Code's double Escape: the second press lands before the first is
@@ -415,10 +442,7 @@ mod tests {
         let bytes: Vec<u8> = os_input
             .take_sent_messages()
             .into_iter()
-            .flat_map(|message| match message {
-                ClientToServerMsg::Key { raw_bytes, .. } => raw_bytes,
-                other => panic!("expected key message, got {other:?}"),
-            })
+            .flat_map(|message| typed(&message).1)
             .collect();
         assert_eq!(bytes, b"a\x1b\x1bb\x1b");
     }
@@ -439,12 +463,7 @@ mod tests {
         let sent_messages = os_input.take_sent_messages();
         assert_eq!(sent_messages.len(), 1);
 
-        match &sent_messages[0] {
-            ClientToServerMsg::Key { raw_bytes, .. } => {
-                assert_eq!(raw_bytes, &b"a".to_vec());
-            },
-            other => panic!("expected key message, got {other:?}"),
-        }
+        assert_eq!(typed(&sent_messages[0]).1, b"a".to_vec());
     }
 
     /// Cross-frame fragmentation regression. Under WebSocket transport,
@@ -454,7 +473,7 @@ mod tests {
     /// boundary still resolves on the second frame.
     #[test]
     fn fragmented_kitty_sequence_resolves_across_frames() {
-        use zellij_utils::data::{BareKey, KeyWithModifier};
+        use zellij_utils::data::BareKey;
         let os_input = RecordingOsInput::default();
         let mut mouse_old_event = MouseEvent::new();
         let mut session = super::StdinSession::new(false);
@@ -485,20 +504,12 @@ mod tests {
             "exactly one Kitty key event after both frames; got {:?}",
             sent
         );
-        match &sent[0] {
-            ClientToServerMsg::Key {
-                key,
-                is_kitty_keyboard_protocol,
-                ..
-            } => {
-                assert!(*is_kitty_keyboard_protocol);
-                assert_eq!(
-                    *key,
-                    KeyWithModifier::new(BareKey::Char('a')).with_ctrl_modifier()
-                );
-            },
-            other => panic!("expected Key message, got {other:?}"),
-        }
+        let (key, _, is_kitty_keyboard_protocol) = typed(&sent[0]);
+        assert!(is_kitty_keyboard_protocol);
+        assert_eq!(
+            key,
+            KeyWithModifier::new(BareKey::Char('a')).with_ctrl_modifier()
+        );
     }
 
     #[test]
@@ -581,13 +592,7 @@ mod tests {
         // Two Char events ('a', 'b'), both via the termwiz path.
         assert_eq!(sent.len(), 2);
         for msg in &sent {
-            match msg {
-                ClientToServerMsg::Key {
-                    is_kitty_keyboard_protocol,
-                    ..
-                } => assert!(!*is_kitty_keyboard_protocol),
-                other => panic!("expected Key, got {other:?}"),
-            }
+            assert!(!typed(msg).2);
         }
     }
 }

@@ -196,7 +196,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     await page.evaluate(()=>window.breakpointCrossed);
     await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
     assert.equal(await page.locator('#sidebar').isVisible(),false);
-    await page.locator('#sidebar-toggle').focus();await page.keyboard.press('Control+k');assert.equal(await page.locator('#sidebar').isVisible(),true);
+    await page.locator('#sidebar-toggle').focus();await page.keyboard.press(process.platform==='darwin'?'Meta+k':'Control+k');assert.equal(await page.locator('#sidebar').isVisible(),true);
     await page.locator('#sidebar-toggle').focus();await page.keyboard.press('Escape');
     assert.equal(await page.locator('#sidebar').isVisible(),false);
     assert.equal(await page.evaluate(()=>document.activeElement.id),'sidebar-toggle');
