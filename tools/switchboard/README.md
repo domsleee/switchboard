@@ -64,8 +64,10 @@ needs it, on any computer. Setup does only this:
 - **Codex:** Codex plugins can't carry hooks, so setup adds command hooks to
   `~/.codex/hooks.json`, keeping any others. They run a small launcher in
   `~/.local/share/switchboard/` that Switchboard keeps pointed at its current
-  executable. The next time Codex starts it asks to review them: choose **Trust all
-  and continue**. Updates don't change the hooks, so Codex asks only once.
+  executable. Setup then trusts those hooks through `codex app-server`, as Codex's
+  own **Trust all and continue** would, and leaves other hooks untrusted. If that
+  fails, Codex asks at its next start. A computer whose hooks are still untrusted
+  shows **Trust hooks**. Updates don't change the hooks, so they stay trusted.
 
 Running sessions pick up the plugin or hooks after a restart. Copilot's hooks run
 `zellij` from `PATH`, so this fork's `zellij` must be on it.

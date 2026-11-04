@@ -381,6 +381,107 @@ fn codex_trusted(dir: &Path, hooks_file: &Path, event: &str, group: usize, hook:
         })
 }
 
+/// From Codex's `hooks/list` answer, the trust entries for Switchboard's own hooks that
+/// Codex doesn't trust yet: `{key: {"trusted_hash": hash}}` for `hooks.state`.
+fn codex_trust_edits(listed: &Value) -> serde_json::Map<String, Value> {
+    listed["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|entry| entry["hooks"].as_array().into_iter().flatten())
+        .filter(|hook| hook["command"].as_str().is_some_and(is_codex_hook))
+        .filter(|hook| matches!(hook["trustStatus"].as_str(), Some("untrusted" | "modified")))
+        .filter_map(|hook| {
+            Some((
+                hook["key"].as_str()?.to_owned(),
+                json!({"trusted_hash": hook["currentHash"].as_str()?}),
+            ))
+        })
+        .collect()
+}
+
+/// Trust Switchboard's hooks the way Codex's own "Trust all and continue" does: ask
+/// `codex app-server` for each hook's key and hash, then record those in config.toml.
+/// Codex computes the hashes, and hooks other programs installed stay untrusted.
+async fn trust_codex_hooks(codex: &Path, folders: &[PathBuf]) -> Result<(), String> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let fail = |e: &dyn std::fmt::Display| format!("codex app-server: {e}");
+    let mut command = tokio::process::Command::new(codex);
+    command
+        .arg("app-server")
+        .current_dir(home())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    if let Ok(path) = std::env::join_paths(folders) {
+        command.env("PATH", path);
+    }
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let mut child = command.spawn().map_err(|e| fail(&e))?;
+    let mut input = child.stdin.take().ok_or("codex app-server: no stdin")?;
+    let mut output =
+        BufReader::new(child.stdout.take().ok_or("codex app-server: no stdout")?).lines();
+    let session = async {
+        let mut id = 0;
+        let mut call = async |method: &str, params: Value| -> Result<Value, String> {
+            id += 1;
+            let request = json!({"id": id, "method": method, "params": params});
+            input
+                .write_all(format!("{request}\n").as_bytes())
+                .await
+                .map_err(|e| fail(&e))?;
+            if method == "initialize" {
+                let initialized = json!({"method": "initialized"});
+                input
+                    .write_all(format!("{initialized}\n").as_bytes())
+                    .await
+                    .map_err(|e| fail(&e))?;
+            }
+            // Skip notifications until the answer to this request.
+            loop {
+                let line = output
+                    .next_line()
+                    .await
+                    .map_err(|e| fail(&e))?
+                    .ok_or_else(|| format!("codex app-server exited during {method}"))?;
+                let Ok(message) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
+                if message["id"] != json!(id) {
+                    continue;
+                }
+                if let Some(error) = message.get("error") {
+                    let error = error["message"].as_str().unwrap_or("failed");
+                    return Err(format!("codex app-server {method}: {error}"));
+                }
+                return Ok(message["result"].clone());
+            }
+        };
+        call(
+            "initialize",
+            json!({"clientInfo": {"name": "switchboard", "version": env!("SWITCHBOARD_COMMIT")}}),
+        )
+        .await?;
+        let edits = codex_trust_edits(&call("hooks/list", json!({"cwds": []})).await?);
+        if !edits.is_empty() {
+            call(
+                "config/batchWrite",
+                json!({"edits": [{"keyPath": "hooks.state", "value": edits, "mergeStrategy": "upsert"}],
+                       "reloadUserConfig": true}),
+            )
+            .await?;
+        }
+        Ok(())
+    };
+    let result = tokio::time::timeout(Duration::from_secs(60), session)
+        .await
+        .unwrap_or_else(|_| Err("codex app-server: timed out".into()));
+    let _ = child.kill().await;
+    result
+}
+
 fn same_path(a: &Path, b: &Path) -> bool {
     if cfg!(windows) {
         a.to_string_lossy()
@@ -430,8 +531,7 @@ fn check_codex(dir: &Path, launcher: &Path, reported_since_setup: bool) -> Check
     } else {
         Check {
             state: "approve",
-            detail: "Start Codex and choose “Trust all and continue” when it asks to review hooks"
-                .into(),
+            detail: "Codex has not trusted the status hooks yet".into(),
         }
     }
 }
@@ -611,7 +711,11 @@ async fn set_up(agent: Agent) -> Result<(), String> {
             install_codex_hooks(
                 &dir.join("hooks.json"),
                 &codex_command(&codex_launcher(&home())),
-            )
+            )?;
+            let codex = find_program("codex", &folders).ok_or("Codex not found")?;
+            trust_codex_hooks(&codex, &folders).await.map_err(|error| {
+                format!("Hooks installed, but trusting them failed ({error}). Start Codex and choose “Trust all and continue” when it asks to review hooks")
+            })
         },
     }
 }
@@ -964,6 +1068,30 @@ mod tests {
             codex_hooks(&read_json(&file).unwrap()).len(),
             CODEX_EVENTS.len()
         );
+    }
+
+    #[test]
+    fn switchboard_agent_setup_trusts_only_its_own_untrusted_codex_hooks() {
+        // Shape of Codex 0.164's `hooks/list` answer.
+        let hook = |key: &str, command: &str, status: &str| {
+            json!({"key": key, "command": command, "handlerType": "command",
+                   "currentHash": format!("sha256:{key}"), "trustStatus": status})
+        };
+        let listed = json!({"data": [{"cwd": "/home/me", "errors": [], "warnings": [], "hooks": [
+            hook("/h.json:stop:0:0", "'/home/me/.local/share/switchboard/codex-agent-hook'", "untrusted"),
+            hook("/h.json:post_tool_use:0:0", "'/home/me/.local/share/switchboard/codex-agent-hook'", "modified"),
+            hook("/h.json:session_end:0:0", "'/home/me/.local/share/switchboard/codex-agent-hook'", "trusted"),
+            hook("/h.json:stop:1:0", "notify-send done", "untrusted"),
+        ]}]});
+        let edits = codex_trust_edits(&listed);
+        assert_eq!(
+            Value::Object(edits),
+            json!({
+                "/h.json:stop:0:0": {"trusted_hash": "sha256:/h.json:stop:0:0"},
+                "/h.json:post_tool_use:0:0": {"trusted_hash": "sha256:/h.json:post_tool_use:0:0"},
+            })
+        );
+        assert!(codex_trust_edits(&json!({})).is_empty());
     }
 
     #[test]
