@@ -46,6 +46,15 @@ pub fn run(command: &SwitchboardCommand) -> Result<()> {
         SwitchboardCommand::Askpass { prompt, relay_url } => {
             crate::switchboard_relay::askpass::run(prompt.as_deref(), relay_url)
         },
+        SwitchboardCommand::Run {
+            timeout_secs,
+            relay_url,
+            command,
+        } => crate::switchboard_relay::interactive::run(
+            command,
+            Duration::from_secs(*timeout_secs),
+            relay_url,
+        ),
         SwitchboardCommand::Package {
             platform,
             commit,
