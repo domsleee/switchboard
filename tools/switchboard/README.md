@@ -66,8 +66,9 @@ needs it, on any computer. Setup does only this:
   `~/.local/share/switchboard/` that Switchboard keeps pointed at its current
   executable. Setup then trusts those hooks through `codex app-server`, as Codex's
   own **Trust all and continue** would, and leaves other hooks untrusted. If that
-  fails, Codex asks at its next start. A computer whose hooks are still untrusted
-  shows **Trust hooks**. Updates don't change the hooks, so they stay trusted.
+  fails, Codex asks at its next start. The relay also trusts them when it starts, so
+  computers set up earlier catch up after their next update. A computer whose hooks
+  are still untrusted shows **Trust hooks**. Updates don't change the hooks, so they stay trusted.
 
 Running sessions pick up the plugin or hooks after a restart. Copilot's hooks run
 `zellij` from `PATH`, so this fork's `zellij` must be on it.
