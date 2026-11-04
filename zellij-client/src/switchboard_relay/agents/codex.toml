@@ -17,7 +17,7 @@ title = ['^codex\s*[-:]']
 screen = [['gpt-[\w.-]+', 'for shortcuts|enter to send|tab to queue message']]
 
 # Under the idle prompt (›). Without it the screen is a dialog or unknown.
-footer = ['for shortcuts|enter to send|tab to queue message']
+footer = ['for shortcuts|enter to send|tab to queue message|f2 to view']
 
 # A finished turn, e.g. "Worked for 3m 51s • 8:06 PM". A new one is a new result.
 # Codex briefly looks ready mid-task, so only this line ends a Codex turn.

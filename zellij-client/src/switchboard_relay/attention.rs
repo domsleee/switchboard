@@ -1725,6 +1725,9 @@ esac
         let pane = json!({"pane_command":"cmd.exe /c codex.cmd resume","title":"ssb orchestrator"});
         let idle="• Result ready\nWorked for 3m 51s • 8:06 PM\n› Ask Codex to do anything\nGPT-6.1-Sol high · Main\n? for shortcuts";
         assert_eq!(classify(&pane, idle)["state"], "ready");
+        // codex-cli 0.164 with untrusted hooks: a warnings footer replaces "? for shortcuts".
+        let warned = "• Done\nWorked for 12s • 9:14 PM\n› \n  GPT-6.1-Sol max · ~\\git\\switchboard · Exit Git\n                        ⚠ 2 warnings · f2 to view";
+        assert_eq!(classify(&pane, warned)["state"], "ready");
         assert_eq!(classify(&pane,"• Working (3m 26s • esc to interrupt)\n› draft\nGPT-6.1-Sol high · tab to queue message")["state"],"working");
         let old="Would you like to run this command?\n› 1. Yes, proceed\n2. No\nPress enter to confirm or esc to cancel\n";
         assert_eq!(classify(&pane, old)["state"], "approval");

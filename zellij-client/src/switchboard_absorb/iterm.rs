@@ -13,6 +13,8 @@ fn with_session(body: &str, args: &[&str]) -> Result<String> {
         &format!(
             r#"on run argv
     tell application "iTerm"
+    -- A modal iTerm alert would otherwise block this forever.
+    with timeout of 10 seconds
         repeat with w in windows
             repeat with t in tabs of w
                 repeat with s in sessions of t
@@ -22,6 +24,7 @@ fn with_session(body: &str, args: &[&str]) -> Result<String> {
                 end repeat
             end repeat
         end repeat
+    end timeout
     end tell
     error "No iTerm session " & (item 1 of argv)
 end run"#
@@ -38,7 +41,11 @@ fn osascript(script: &str, args: &[&str]) -> Result<String> {
         .output()
         .context("Running osascript")?;
     if !output.status.success() {
-        bail!("{}", String::from_utf8_lossy(&output.stderr).trim());
+        let error = String::from_utf8_lossy(&output.stderr);
+        if error.contains("(-1712)") {
+            bail!("iTerm did not answer for 10 seconds; close any iTerm dialog and try again");
+        }
+        bail!("{}", error.trim());
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
@@ -78,6 +85,8 @@ impl Terminal for ITerm {
         let list = osascript(
             r#"set out to ""
 tell application "iTerm"
+    -- A modal iTerm alert would otherwise block this forever.
+    with timeout of 10 seconds
     repeat with w in windows
         repeat with t in tabs of w
             repeat with s in sessions of t
@@ -85,6 +94,7 @@ tell application "iTerm"
             end repeat
         end repeat
     end repeat
+    end timeout
 end tell
 return out"#,
             &[],

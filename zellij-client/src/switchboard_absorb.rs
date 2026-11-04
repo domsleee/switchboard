@@ -63,13 +63,14 @@ pub struct Process {
 pub enum Action {
     /// Open a tab in `cwd`, then close the original.
     Shell { cwd: PathBuf },
-    /// Quit the agent at `pid`, then run `command` in `cwd`.
+    /// Quit the agent at `pid`, then resume its conversation in `cwd`. Codex's conversation
+    /// id is None until `--apply` reads it from Codex's /status.
     Agent {
         agent: AgentKind,
         pid: u32,
-        session_id: String,
+        session_id: Option<String>,
         cwd: PathBuf,
-        command: Vec<String>,
+        launch: Vec<String>,
     },
     /// Leave the tab alone.
     Skip(String),
@@ -278,9 +279,10 @@ fn same_dir(a: &Path, b: &Path) -> bool {
     canonical(a) == canonical(b)
 }
 
-/// The Codex conversation `codex` is in. Codex keeps no pid file and doesn't hold its rollout
-/// open, so look for rollouts in its folder written since it started. None if not exactly one.
-fn codex_thread(home: &Path, codex: &Process) -> Result<String, String> {
+/// Conversations Codex wrote in its folder since `codex` started. Codex keeps no pid file and
+/// doesn't hold its rollout open, so this only tells whether it has a conversation at all;
+/// its /status names which one.
+fn codex_threads(home: &Path, codex: &Process) -> Result<Vec<String>, String> {
     let cwd = codex.cwd.as_deref().ok_or("can't read Codex's folder")?;
     let since = UNIX_EPOCH + Duration::from_secs(codex.started);
     let mut ids = Vec::new();
@@ -317,11 +319,61 @@ fn codex_thread(home: &Path, codex: &Process) -> Result<String, String> {
             }
         }
     }
-    match ids.len() {
-        1 => Ok(ids.remove(0)),
-        0 => Err("Codex has no conversation yet".into()),
-        _ => Err("can't tell which Codex conversation it is".into()),
+    Ok(ids)
+}
+
+/// Session ids on a Codex /status card ("Session:  01a1a644-18d0-…"), oldest first.
+fn status_sessions(screen: &str) -> Vec<String> {
+    static SESSION: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"Session:\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+        )
+        .unwrap()
+    });
+    SESSION
+        .captures_iter(screen)
+        .map(|c| c[1].to_owned())
+        .collect()
+}
+
+/// Ask Codex for its conversation id with /status, which only prints a card.
+fn codex_session(terminal: &dyn Terminal, tab: &str, home: &Path) -> Result<String> {
+    let before = status_sessions(&terminal.screen(tab)?).len();
+    for keys in ["/status", "\r"] {
+        terminal.type_text(tab, keys)?;
+        std::thread::sleep(Duration::from_millis(400));
     }
+    let mut sessions = Vec::new();
+    wait_for(Duration::from_secs(5), || {
+        sessions = terminal
+            .screen(tab)
+            .map(|s| status_sessions(&s))
+            .unwrap_or_default();
+        sessions.len() > before
+    });
+    if sessions.len() <= before {
+        bail!("Codex's /status showed no session id");
+    }
+    let id = sessions.pop().unwrap();
+    if !rollout_exists(&home.join(".codex/sessions"), &id) {
+        bail!("Codex's /status names {id}, which has no saved conversation");
+    }
+    Ok(id)
+}
+
+fn rollout_exists(dir: &Path, id: &str) -> bool {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|entry| {
+            let path = entry.path();
+            if path.is_dir() {
+                return rollout_exists(&path, id);
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            name.starts_with("rollout-") && name.ends_with(&format!("{id}.jsonl"))
+        })
 }
 
 fn claude_session(home: &Path, pid: u32) -> Option<Value> {
@@ -359,13 +411,14 @@ fn plan_tab(
             else {
                 return skip("Claude's session file has no session id");
             };
-            agent_action(AgentKind::Claude, claude, id, PathBuf::from(cwd))
+            agent_action(AgentKind::Claude, claude, Some(id), PathBuf::from(cwd))
         },
         Found::Agent(AgentKind::Codex, codex) => {
-            let id = match codex_thread(home, codex) {
-                Ok(id) => id,
+            match codex_threads(home, codex) {
+                Ok(ids) if ids.is_empty() => return skip("Codex has no conversation yet"),
+                Ok(_) => {},
                 Err(reason) => return Action::Skip(reason),
-            };
+            }
             let pane = json!({"pane_command": "codex", "title": tab.title});
             let state = match screen() {
                 Ok(screen) => crate::switchboard_relay::attention::classify(&pane, &screen)
@@ -378,7 +431,7 @@ fn plan_tab(
             if state != "ready" {
                 return Action::Skip(format!("Codex is {state}"));
             }
-            agent_action(AgentKind::Codex, codex, &id, codex.cwd.clone().unwrap())
+            agent_action(AgentKind::Codex, codex, None, codex.cwd.clone().unwrap())
         },
         Found::Agent(agent, _) => Action::Skip(format!("{} can't be resumed here", agent.name())),
     };
@@ -426,19 +479,32 @@ fn prompt_empty(agent: AgentKind, screen: &str) -> Result<(), String> {
     }
 }
 
-fn agent_action(agent: AgentKind, process: &Process, id: &str, cwd: PathBuf) -> Action {
-    match resume_command(&process.args, agent, id, cwd.clone()) {
-        Ok(run) => Action::Agent {
+fn agent_action(agent: AgentKind, process: &Process, id: Option<&str>, cwd: PathBuf) -> Action {
+    // Check the agent's options can be resumed before quitting it.
+    let probe = id.unwrap_or("00000000-0000-0000-0000-000000000000");
+    match resume(agent, &process.args, probe, &cwd) {
+        Ok(_) => Action::Agent {
             agent,
             pid: process.pid,
-            session_id: id.to_owned(),
+            session_id: id.map(str::to_owned),
             cwd,
-            command: std::iter::once(run.command.to_string_lossy().into_owned())
-                .chain(run.args)
-                .collect(),
+            launch: process.args.clone(),
         },
         Err(reason) => Action::Skip(reason),
     }
+}
+
+/// The command that resumes conversation `id` of an agent started with `launch`.
+fn resume(
+    agent: AgentKind,
+    launch: &[String],
+    id: &str,
+    cwd: &Path,
+) -> Result<Vec<String>, String> {
+    let run = resume_command(launch, agent, id, cwd.to_path_buf())?;
+    Ok(std::iter::once(run.command.to_string_lossy().into_owned())
+        .chain(run.args)
+        .collect())
 }
 
 fn plan(terminal: &dyn Terminal, home: &Path, only: Option<&str>) -> Result<Vec<Step>> {
@@ -463,10 +529,20 @@ fn plan(terminal: &dyn Terminal, home: &Path, only: Option<&str>) -> Result<Vec<
 fn describe(step: &Step) -> String {
     let what = match &step.action {
         Action::Shell { cwd } => format!("open a shell tab in {}", cwd.display()),
-        Action::Agent { agent, command, .. } => format!(
+        Action::Agent {
+            agent,
+            session_id: Some(id),
+            cwd,
+            launch,
+            ..
+        } => format!(
             "quit {} and resume it in a new tab: {}",
             agent.name(),
-            shell_words(command)
+            resume(*agent, launch, id, cwd).map_or_else(|e| e, |c| shell_words(&c))
+        ),
+        Action::Agent { agent, .. } => format!(
+            "read {0}'s conversation id from /status, quit {0} and resume it in a new tab",
+            agent.name()
         ),
         Action::Skip(reason) => format!("leave alone: {reason}"),
     };
@@ -563,8 +639,14 @@ fn absorb(terminal: &dyn Terminal, home: &Path, session: &str, step: &Step) -> R
             pid,
             session_id,
             cwd,
-            command,
+            launch,
         } => {
+            let session_id = match session_id {
+                Some(known) => known.clone(),
+                None => codex_session(terminal, id, home)?,
+            };
+            let command = resume(*agent, launch, &session_id, cwd).map_err(anyhow::Error::msg)?;
+            let command = &command;
             let name = claude_session(home, *pid)
                 .and_then(|s| s["name"].as_str().map(str::to_owned))
                 .unwrap_or_else(|| folder_name(cwd));
@@ -582,7 +664,7 @@ fn absorb(terminal: &dyn Terminal, home: &Path, session: &str, step: &Step) -> R
             })?;
             if *agent == AgentKind::Claude
                 && !wait_for(Duration::from_secs(30), || {
-                    claude_resumed(home, session_id, *pid)
+                    claude_resumed(home, &session_id, *pid)
                 })
             {
                 bail!(
@@ -755,21 +837,17 @@ mod tests {
             Action::Agent {
                 agent: AgentKind::Claude,
                 pid: 11,
-                session_id: id.into(),
+                session_id: Some(id.into()),
                 cwd: "/proj".into(),
-                command: vec![
-                    "/Users/dom/.local/bin/claude".into(),
-                    "--dangerously-skip-permissions".into(),
-                    "--resume".into(),
-                    id.into()
-                ],
+                launch: claude[0].args.clone(),
             }
         );
         // An initial prompt is not sent again.
         let prompted = [process(11, 10, "claude fix-the-bug")];
         assert!(matches!(
             plan_one(home.path(), &prompted, CLAUDE_IDLE),
-            Action::Agent { command, .. } if command == ["claude", "--resume", id]
+            Action::Agent { agent, launch, cwd, .. }
+                if resume(agent, &launch, id, &cwd).unwrap() == ["claude", "--resume", id]
         ));
     }
 
@@ -805,10 +883,12 @@ mod tests {
             id,
             &work,
         );
+        // Which conversation is read from /status when applying.
         assert!(matches!(
             plan_one(home.path(), &[codex.clone()], idle),
-            Action::Agent { session_id, command, .. }
-                if session_id == id && command == ["/Users/dom/.local/bin/codex", "resume", id]
+            Action::Agent { session_id: None, agent, launch, cwd, .. }
+                if resume(agent, &launch, id, &cwd).unwrap()
+                    == ["/Users/dom/.local/bin/codex", "resume", id]
         ));
         assert_eq!(
             plan_one(home.path(), &[codex.clone()], working),
@@ -826,10 +906,35 @@ mod tests {
             "01a1a3aa-468b-7890-8cec-80861b965237",
             &work,
         );
-        assert_eq!(
+        assert!(matches!(
             plan_one(home.path(), &[codex], idle),
-            Action::Skip("can't tell which Codex conversation it is".into())
+            Action::Agent {
+                session_id: None,
+                ..
+            }
+        ));
+        assert!(rollout_exists(&home.path().join(".codex/sessions"), id));
+        assert!(!rollout_exists(
+            &home.path().join(".codex/sessions"),
+            "01a1a644-18d0-7c31-9659-24d0587a92fa"
+        ));
+    }
+
+    #[test]
+    fn switchboard_absorb_reads_codex_status_card() {
+        // codex-cli 0.164 /status, below an earlier card.
+        let card = |id: &str| {
+            format!("  Thread name:         Reply with alpha\n  Collaboration mode:  Default\n  Session:             {id}\n  Context window:      99% left (15.8K used / 475K)\n")
+        };
+        let old = "01a1a644-28d1-76e3-9ca8-a2c6f8e928f6";
+        let new = "01a1a644-18d0-7c31-9659-24d0587a92fa";
+        let screen = format!(
+            "{}› reply\n{}› Ask Codex to do anything",
+            card(old),
+            card(new)
         );
+        assert_eq!(status_sessions(&screen), [old, new]);
+        assert!(status_sessions("Session: not-an-id").is_empty());
     }
 
     #[test]
