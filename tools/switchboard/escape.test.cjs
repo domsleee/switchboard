@@ -6,7 +6,7 @@ function harness(){
  class Socket{constructor(){this.handlers={};}addEventListener(t,f){this.handlers[t]=f;}}
  const window={WebSocket:Socket,addEventListener:(t,f)=>handlers[t]=f,term:{element:{contains:el=>focused&&el===focus},focus(){},input(data){inputs.push(data);}}};
  const document={activeElement:focus,createElement:()=>({setAttribute(){},style:{},textContent:''}),head:{append(){}},body:{append:el=>notices.push(el)},querySelector:()=>modal?{}:null};
- vm.runInNewContext(source,{window,document,parent,location:{pathname:'/hosts/windows/old-session',origin:'http://localhost:8090'},localStorage:{getItem:()=>null},requestAnimationFrame:fn=>frames.push(fn),fetch:async(url,opts)=>{calls.push({url,...JSON.parse(opts.body)});return response;}});
+ vm.runInNewContext(source,{window,document,parent,navigator:{platform:'MacIntel'},location:{pathname:'/hosts/windows/old-session',origin:'http://localhost:8090'},localStorage:{getItem:()=>null},requestAnimationFrame:fn=>frames.push(fn),fetch:async(url,opts)=>{calls.push({url,...JSON.parse(opts.body)});return response;}});
  const socket=new window.WebSocket('ws://localhost/hosts/windows/ws/control');
  const state=p=>socket.handlers.message({data:JSON.stringify({type:'MobileState',payload:p})});state(payload);
  const key=extra=>{const e={code:'Escape',altKey:false,ctrlKey:false,metaKey:false,shiftKey:false,preventDefault(){this.prevented=true;},stopImmediatePropagation(){this.stopped=true;},...extra};handlers.keydown(e);return e;};

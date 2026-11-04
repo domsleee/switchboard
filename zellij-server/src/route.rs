@@ -2329,7 +2329,16 @@ pub(crate) fn route_thread_main(
                     let is_watcher = session_state.read().unwrap().is_watcher(&client_id);
                     if is_watcher {
                         match &instruction {
-                            ClientToServerMsg::Key { key, .. } => {
+                            // Web clients send keys as writes, so a watcher's quit key may be either.
+                            ClientToServerMsg::Key { key, .. }
+                            | ClientToServerMsg::Action {
+                                action:
+                                    Action::Write {
+                                        key_with_modifier: Some(key),
+                                        ..
+                                    },
+                                ..
+                            } => {
                                 if (key.bare_key == BareKey::Char('q')
                                     && key.key_modifiers.contains(&KeyModifier::Ctrl))
                                     || key.bare_key == BareKey::Esc
@@ -2460,6 +2469,13 @@ pub(crate) fn route_thread_main(
                             client_id: maybe_client_id,
                             is_cli_client,
                         } => {
+                            // A typed key arrives as a write from web clients; it counts as a keystroke.
+                            if !is_cli_client && matches!(action, Action::Write { .. }) {
+                                session_state
+                                    .write()
+                                    .unwrap()
+                                    .set_last_active_client(client_id);
+                            }
                             let cli_client_id = client_id;
                             let client_id = if is_cli_client {
                                 // for cli clients, we want to default to the last active client

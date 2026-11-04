@@ -428,14 +428,17 @@ test('a rejected focus still waits when its queued replacement is not the active
   }
 });
 
-test('Cmd/Ctrl+K opens sidebar search from the terminal and respects dialogs',()=>{
-  const h=harness();
-  for(const modifier of ['metaKey','ctrlKey']){
+test('Cmd+K on a Mac and Ctrl+K elsewhere open sidebar search; Mac Ctrl+K stays with the terminal',()=>{
+  for(const [platform,modifier,other] of [['MacIntel','metaKey','ctrlKey'],['Win32','ctrlKey','metaKey']]){
+    const h=harness(false,platform);
     const event=h.key('KeyK',{altKey:false,[modifier]:true});
     assert.equal(event.prevented,true);assert.equal(event.stopped,true);
     assert.equal(h.messages.at(-1).type,'zellij-tab-search');
+    const count=h.messages.length;
+    assert.equal(h.key('KeyK',{altKey:false,[other]:true}).prevented,undefined);
+    assert.equal(h.messages.length,count);
   }
-  h.setModal(true);assert.equal(h.key('KeyK',{altKey:false,metaKey:true}).prevented,undefined);
+  const h=harness();h.setModal(true);assert.equal(h.key('KeyK',{altKey:false,metaKey:true}).prevented,undefined);
 });
 
 test('Ctrl+D requests Close once from the focused terminal, preserving modifiers and dialogs',()=>{
@@ -534,19 +537,13 @@ test('Cmd/Ctrl+Alt+T opens New tab once only from terminal focus',()=>{
   assert.equal(h.key('KeyT',{ctrlKey:true}).prevented,undefined);assert.equal(h.messages.length,2);
 });
 
-test('plain Ctrl+T cannot open native Tab mode, including repeats, and preserves other input',()=>{
+test('plain Ctrl+T reaches the terminal: web keys no longer enter Zellij modes',()=>{
   const h=harness();h.setFocus(true);
-  const socket=new h.window.WebSocket('ws://localhost:8090/hosts/windows/ws/terminal/main');
   for(const repeat of [false,true]){
     const event=h.key('KeyT',{altKey:false,ctrlKey:true,repeat});
-    assert.equal(event.prevented,true);assert.equal(event.stopped,true);
+    assert.equal(event.prevented,undefined);assert.equal(event.stopped,undefined);
   }
-  assert.equal(socket.sent.length,0);assert.equal(h.messages.length,0);
-  for(const extra of [{metaKey:true},{shiftKey:true},{isComposing:true}]){
-    assert.equal(h.key('KeyT',{altKey:false,ctrlKey:true,...extra}).prevented,undefined);
-  }
-  h.setFocus(false);assert.equal(h.key('KeyT',{altKey:false,ctrlKey:true}).prevented,undefined);
-  h.setFocus(true);h.setModal(true);assert.equal(h.key('KeyT',{altKey:false,ctrlKey:true}).prevented,undefined);
+  assert.equal(h.messages.length,0);
 });
 
 test('lost focus acknowledgement retries the newest target, then fails and permits another switch',()=>{

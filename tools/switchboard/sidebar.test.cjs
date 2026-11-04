@@ -305,7 +305,7 @@ test('existing pane-key preferences migrate once to native tab IDs',()=>{
 
 test('Cmd/Ctrl+Alt+T opens the New tab dialog once outside inputs and open dialogs',()=>{
   let handler,clicks=0,modal=false;
-  const context={window:{addEventListener:(_,fn)=>handler=fn},document:{querySelector:()=>modal?{}:null},$:()=>({click(){clicks++;}})};
+  const context={window:{addEventListener:(_,fn)=>handler=fn},navigator:{platform:'MacIntel'},document:{querySelector:()=>modal?{}:null},$:()=>({click(){clicks++;}})};
   vm.createContext(context);const start=source.indexOf("window.addEventListener('keydown'");
   vm.runInContext(source.slice(start,source.indexOf('function renderMachines()',start)),context);
   const key=extra=>{const event={code:'KeyT',ctrlKey:true,altKey:true,metaKey:false,shiftKey:false,target:{closest:()=>null},preventDefault(){this.prevented=true;},stopImmediatePropagation(){},...extra};handler(event);return event;};

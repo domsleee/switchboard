@@ -1,5 +1,5 @@
 // Keys typed in Switchboard reach the program exactly as in a terminal window:
-// the same bytes, in order, promptly. Uses a private recovered terminal only.
+// the same bytes, in order, promptly, with no Zellij mode in between. Uses a private recovered terminal only.
 // PLAYWRIGHT_MODULE=/path/to/playwright node keys_native.test.cjs BINARY
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
@@ -64,7 +64,12 @@ let native,relay,browser,tokenName,created=false;
     await press('Escape',27);await press('b',98);await delay(300);
     // A double Escape, as for an agent's history menu.
     await press('Escape',27);await press('Escape',27);await delay(300);
-    await press('c',99);
+    await press('c',99);await delay(300);
+    // Keys Claude Code uses that Zellij's defaults bind to modes (Ctrl+Q quits the
+    // session). The browser must deliver them to the program as a terminal does.
+    const controls=['h','o','g','b','s','p','n','t',...(process.platform==='darwin'?['k']:[]),'q'];
+    for(const letter of controls){await press('Control+'+letter,letter.charCodeAt(0)&0x1f);await delay(150);}
+    await press('d',100);
     // Compare whatever arrived, so a lost key shows in the assertion.
     for(let n=0;n<30&&fs.readFileSync(log,'utf8').trim().split('\n').length<sent.length;n++)await delay(100);
     await delay(300);

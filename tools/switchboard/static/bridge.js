@@ -287,11 +287,6 @@
         held_ms:shiftPressedAt===null?null:Math.round(now-shiftPressedAt),released_ms:shiftReleasedAt===null?null:Math.round(now-shiftReleasedAt)}},location.origin);
     }
     if(hasDialog())return;
-    if(event.code==='KeyT'&&event.ctrlKey&&!event.metaKey&&!event.altKey&&!event.shiftKey
-        &&!event.isComposing&&terminalFocused()){
-      // Switchboard owns tab navigation; do not enter Zellij's native Tab mode.
-      event.preventDefault();event.stopImmediatePropagation();return;
-    }
     if(event.code==='KeyT'&&(event.ctrlKey!==event.metaKey)&&event.altKey&&!event.shiftKey&&!event.isComposing&&terminalFocused()){
       event.preventDefault();event.stopImmediatePropagation();
       if(!event.repeat)parent.postMessage({type:'zellij-open-new-tab',host},location.origin);return;
@@ -309,7 +304,8 @@
       event.preventDefault();event.stopImmediatePropagation();
       parent.postMessage({type:'zellij-tab-number',host,number:+event.code.slice(5)},location.origin);return;
     }
-    if((event.metaKey||event.ctrlKey)&&!event.altKey&&!event.shiftKey&&event.code==='KeyK'){
+    // Cmd+K on a Mac, Ctrl+K elsewhere: a Mac terminal's Ctrl+K deletes to the end of the line.
+    if((navigator.platform.startsWith('Mac')?event.metaKey&&!event.ctrlKey:event.ctrlKey&&!event.metaKey)&&!event.altKey&&!event.shiftKey&&event.code==='KeyK'){
       event.preventDefault();event.stopImmediatePropagation();
       parent.postMessage({type:'zellij-tab-search',host},location.origin);return;
     }

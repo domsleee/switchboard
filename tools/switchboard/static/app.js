@@ -594,7 +594,7 @@ function closeSelectedTab(){
 }
 window.addEventListener('keydown',sidebarKeydown,true);
 function sidebarKeydown(event){
-  if((event.metaKey||event.ctrlKey)&&!event.altKey&&!event.shiftKey&&event.code==='KeyK'&&!document.querySelector('dialog[open]')){event.preventDefault();showTabSearch();return;}
+  if((navigator.platform.startsWith('Mac')?event.metaKey&&!event.ctrlKey:event.ctrlKey&&!event.metaKey)&&!event.altKey&&!event.shiftKey&&event.code==='KeyK'&&!document.querySelector('dialog[open]')){event.preventDefault();showTabSearch();return;}
   const number=tabNumber(event);
   if(number&&!document.querySelector('dialog[open]')){event.preventDefault();event.stopImmediatePropagation();selectTabNumber(number);return;}
   if(event.key==='Escape'&&event.target===$('tab-search')){
