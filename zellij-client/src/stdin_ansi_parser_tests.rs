@@ -348,11 +348,14 @@ fn partial_osc_overflow_falls_back_to_residue() {
     // An unterminated OSC larger than the cap must not grow memory
     // unbounded. After the cap is hit the buffered bytes flush to
     // residue and parsing resumes from a clean state.
-    let mut p = StdinAnsiParser::new();
+    // A 1 MB cap exercises the same path as the real 100 MB one without feeding
+    // 110 MB, which took over a minute (see the TODO on the cap).
+    assert_eq!(StdinAnsiParser::new().partial_cap, 100 * 1024 * 1024);
+    let mut p = StdinAnsiParser::with_partial_cap(1024 * 1024);
     let _ = p.feed(b"\x1b]52;c;");
-    let chunk = vec![b'A'; 1024 * 1024]; // 1 MB
+    let chunk = vec![b'A'; 64 * 1024];
     let mut total_residue = 0usize;
-    for _ in 0..110 {
+    for _ in 0..18 {
         let out = p.feed(&chunk);
         total_residue += out.residue.len();
     }
