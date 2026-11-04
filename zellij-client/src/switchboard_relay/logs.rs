@@ -311,6 +311,12 @@ struct SwitchDiagnostic {
     #[serde(default)]
     wheel_events: u32,
     #[serde(default)]
+    wheel_reports: u32,
+    #[serde(default)]
+    wheel_delta_mode: u8,
+    #[serde(default)]
+    max_wheel_delta: u32,
+    #[serde(default)]
     xterm_size_changes: u32,
     #[serde(default)]
     first_xterm_cols: u16,
@@ -421,9 +427,10 @@ impl SwitchDiagnostic {
 
     fn scroll_message(&self) -> String {
         format!(
-            "Terminal scrolling pane={}{} focus={} buffer_scrolls={} line_feeds={} wheel={} xterm={}x{}->{}x{} range={}x{}..{}x{} changes={} native={}x{} clipped_rows={}/{}",
+            "Terminal scrolling pane={}{} focus={} buffer_scrolls={} line_feeds={} wheel={} wheel_reports={} wheel_mode={} max_wheel_delta={} xterm={}x{}->{}x{} range={}x{}..{}x{} changes={} native={}x{} clipped_rows={}/{}",
             if self.is_plugin { "plugin:" } else { "" }, self.pane_id, self.focus_id,
             self.buffer_scroll_events, self.line_feed_events, self.wheel_events,
+            self.wheel_reports, self.wheel_delta_mode, self.max_wheel_delta,
             self.first_xterm_cols, self.first_xterm_rows,self.xterm_cols, self.xterm_rows,
             self.min_xterm_cols,self.min_xterm_rows,self.max_xterm_cols,self.max_xterm_rows,self.xterm_size_changes,
             self.native_cols, self.native_rows,self.clipped_bottom_rows,self.max_clipped_bottom_rows,
@@ -1049,6 +1056,9 @@ mod tests {
         sample["buffer_scroll_events"] = json!(17);
         sample["line_feed_events"] = json!(0);
         sample["wheel_events"] = json!(3);
+        sample["wheel_reports"] = json!(5);
+        sample["wheel_delta_mode"] = json!(0);
+        sample["max_wheel_delta"] = json!(120);
         sample["first_xterm_cols"] = json!(80);
         sample["first_xterm_rows"] = json!(40);
         sample["xterm_cols"] = json!(120);
@@ -1061,7 +1071,9 @@ mod tests {
         sample["clipped_bottom_rows"] = json!(35);
         let diagnostic: SwitchDiagnostic = serde_json::from_value(sample).unwrap();
         let message = diagnostic.scroll_message();
-        assert!(message.contains("buffer_scrolls=17 line_feeds=0 wheel=3"));
+        assert!(message.contains(
+            "buffer_scrolls=17 line_feeds=0 wheel=3 wheel_reports=5 wheel_mode=0 max_wheel_delta=120"
+        ));
         assert!(message.contains("xterm=80x40->120x40 range=80x40..120x40 changes=1"));
         assert!(message.contains("clipped_rows=35"));
         assert_eq!(message, redact(&message));

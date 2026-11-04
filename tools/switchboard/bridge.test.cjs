@@ -92,10 +92,11 @@ test('scroll reports capture actual clipping and wheel events without terminal c
   term._core.screenElement={style:{clipPath:'inset(0px 0px 490px)'}};
   h.window.__zjSendControl=()=>{};
   h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-focus',pane_id:30,is_plugin:false,focus_id:1}});
-  h.handlers.wheel();h.handlers.wheel();
+  h.handlers.wheel({deltaMode:0,deltaY:-120});h.handlers.wheel({deltaMode:0,deltaY:4});h.window.__zjOnWheelReports(3);
   h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-focus',pane_id:31,is_plugin:false,focus_id:2}});
   const report=h.messages.find(m=>m.type==='zellij-switch-diagnostic').diagnostic;
   assert.equal(report.clipped_bottom_rows,35);assert.equal(report.xterm_cols,162);assert.equal(report.wheel_events,2);
+  assert.equal(report.wheel_reports,3);assert.equal(report.wheel_delta_mode,0);assert.equal(report.max_wheel_delta,120);
   assert.equal(report.first_xterm_cols,162);assert.equal(report.min_xterm_rows,65);
 });
 test('last focused browser claims once, background metadata and hidden sessions never reclaim',()=>{

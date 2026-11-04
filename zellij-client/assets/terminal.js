@@ -1,5 +1,6 @@
 import { build_link_handler } from "./links.js";
 import { isMobileViewport } from "./utils.js";
+import { installWheelHandler } from "./wheel.js";
 
 export const NATURAL_MIN_TOTAL_ROWS = 25;
 export const MOBILE_LEGIBLE_FLOOR_PX = 16;
@@ -117,6 +118,7 @@ export function initTerminal(config) {
     });
     term.loadAddon(webglAddon);
     term.open(document.getElementById("terminal"));
+    installWheelHandler(term);
     if (!window.__switchboardManagedFocus) term.focus();
     // The WebGL atlas caches glyphs drawn before the webfont arrived as boxes.
     document.fonts
