@@ -189,9 +189,41 @@ fn executable(process: &Process) -> String {
         .to_ascii_lowercase()
 }
 
+/// Shells absorb knows how to end with `exit`. A tab whose own process is anything else (a
+/// profile that runs claude, ssh or zellij directly) is left alone: typing `exit` into it, or
+/// ending it, would not be closing an idle shell.
+const SHELLS: &[&str] = &[
+    "bash",
+    "cmd",
+    "csh",
+    "dash",
+    "elvish",
+    "fish",
+    "ksh",
+    "nu",
+    "powershell",
+    "pwsh",
+    "sh",
+    "tcsh",
+    "xonsh",
+    "zsh",
+];
+
 /// Classify a tab from every process on the computer. An agent may sit below launcher shims
 /// (cmd.exe and node.exe on Windows); anything else running beside it leaves the tab alone.
 fn classify(shell: u32, processes: &[Process]) -> Found<'_> {
+    let own = processes
+        .iter()
+        .find(|p| p.pid == shell)
+        .map(executable)
+        .unwrap_or_default();
+    if !SHELLS.contains(&own.as_str()) {
+        return Found::Other(if own.is_empty() {
+            "can't tell what the tab runs".to_owned()
+        } else {
+            format!("the tab runs {own}, not a shell")
+        });
+    }
     let parent = |pid: u32| processes.iter().find(|p| p.pid == pid)?.parent;
     let below = |pid: u32, ancestor: u32| {
         let mut current = parent(pid);
@@ -613,6 +645,27 @@ mod tests {
     #[test]
     fn switchboard_absorb_classifies_what_runs_in_a_tab() {
         assert_eq!(found(&tab(&[])), "shell");
+        // A profile that starts a program directly: there is no shell to type `exit` into.
+        let direct = |args: &str| {
+            let mut processes = tab(&[]);
+            processes.retain(|p| p.pid != 10);
+            processes.push(process(10, 9, args));
+            found(&processes)
+        };
+        assert_eq!(
+            direct("/Users/dom/.local/bin/claude"),
+            "the tab runs claude, not a shell"
+        );
+        assert_eq!(
+            direct("C:\\Tools\\zellij.exe attach main"),
+            "the tab runs zellij, not a shell"
+        );
+        assert_eq!(direct("ssh box"), "the tab runs ssh, not a shell");
+        assert_eq!(direct("C:\\PowerShell\\7\\pwsh.exe -NoLogo"), "shell");
+        assert_eq!(direct("/bin/zsh -l"), "shell");
+        let mut unreadable = tab(&[]);
+        unreadable.retain(|p| p.pid != 10);
+        assert_eq!(found(&unreadable), "can't tell what the tab runs");
         // Claude's MCP servers and tool commands run below it.
         let claude = [
             process(
