@@ -70,11 +70,9 @@ pub(super) fn shell_pid(ps: &str) -> Option<u32> {
 
 impl Terminal for ITerm {
     fn tabs(&self) -> Result<Vec<ForeignTab>> {
-        let running = osascript(
-            r#"tell application "System Events" to (name of processes) contains "iTerm2""#,
-            &[],
-        )?;
-        if running.trim() != "true" {
+        // Asking iTerm for its tabs would launch it.
+        let running = Command::new("pgrep").args(["-xq", "iTerm2"]).status()?;
+        if !running.success() {
             return Ok(Vec::new());
         }
         let list = osascript(

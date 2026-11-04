@@ -97,7 +97,19 @@ pub fn run(apply: bool, only: Option<&str>, session: &str) -> Result<()> {
         if matches!(step.action, Action::Skip(_)) {
             continue;
         }
-        match absorb(&*terminal, &home, session, step) {
+        // The plan may be minutes old: absorb only what still looks the same.
+        let now = plan(&*terminal, &home, Some(&step.tab.id))
+            .ok()
+            .and_then(|mut steps| steps.pop());
+        let result = match now {
+            Some(now) if now.action == step.action => absorb(&*terminal, &home, session, step),
+            Some(now) => Err(anyhow::anyhow!(
+                "it changed since the plan: {}",
+                describe(&now)
+            )),
+            None => Err(anyhow::anyhow!("it is gone")),
+        };
+        match result {
             Ok(()) => println!("Absorbed {}", step.tab.title),
             Err(error) => {
                 failed += 1;
@@ -288,7 +300,7 @@ fn plan_tab(
     screen: &dyn Fn() -> Result<String>,
 ) -> Action {
     let skip = |reason: &str| Action::Skip(reason.to_owned());
-    match classify(tab.shell_pid, processes) {
+    let action = match classify(tab.shell_pid, processes) {
         Found::Shell => match processes
             .iter()
             .find(|p| p.pid == tab.shell_pid)
@@ -333,6 +345,48 @@ fn plan_tab(
             agent_action(AgentKind::Codex, codex, &id, codex.cwd.clone().unwrap())
         },
         Found::Agent(agent, _) => Action::Skip(format!("{} can't be resumed here", agent.name())),
+    };
+    if let Action::Agent { agent, .. } = &action {
+        // Quitting types /exit, which would join a half-typed prompt and lose it.
+        match screen() {
+            Ok(screen) => {
+                if let Err(reason) = prompt_empty(*agent, &screen) {
+                    return Action::Skip(format!("{} {reason}", agent.name()));
+                }
+            },
+            Err(error) => return Action::Skip(format!("can't read its screen ({error})")),
+        }
+    }
+    action
+}
+
+/// Whether the agent's prompt is on screen and holds nothing but its own placeholder.
+/// shortcut: a dim suggestion we don't know reads as a draft, so that tab is left alone.
+fn prompt_empty(agent: AgentKind, screen: &str) -> Result<(), String> {
+    let marker = if agent == AgentKind::Codex {
+        '›'
+    } else {
+        '❯'
+    };
+    let line = screen
+        .lines()
+        .rev()
+        .find_map(|line| line.trim_start().strip_prefix(marker))
+        .ok_or("shows no prompt")?
+        .trim();
+    let placeholder = match agent {
+        AgentKind::Codex => {
+            matches!(
+                line,
+                "Ask Codex to do anything" | "Ask a follow-up question"
+            )
+        },
+        _ => line.starts_with("Try \"") && line.ends_with('"'),
+    };
+    if line.is_empty() || placeholder {
+        Ok(())
+    } else {
+        Err(format!("has unsent text: {line}"))
     }
 }
 
@@ -478,9 +532,8 @@ fn absorb(terminal: &dyn Terminal, home: &Path, session: &str, step: &Step) -> R
             let name = claude_session(home, *pid)
                 .and_then(|s| s["name"].as_str().map(str::to_owned))
                 .unwrap_or_else(|| folder_name(cwd));
-            // Ctrl-C first clears any half-typed prompt, so /exit is never appended to it.
             // Enter goes separately: typed in one burst, it reads as pasted text.
-            for keys in ["\x03", "/exit", "\r"] {
+            for keys in ["/exit", "\r"] {
                 terminal.type_text(id, keys)?;
                 std::thread::sleep(Duration::from_millis(400));
             }
@@ -512,7 +565,267 @@ fn claude_resumed(home: &Path, session_id: &str, old_pid: u32) -> bool {
         .into_iter()
         .flatten()
         .flatten()
+        .filter(|entry| entry.file_name() != *format!("{old_pid}.json"))
         .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
         .filter_map(|text| serde_json::from_str::<Value>(&text).ok())
-        .any(|s| s["sessionId"] == session_id && s["pid"] != old_pid)
+        .any(|s| s["sessionId"] == session_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn process(pid: u32, parent: u32, args: &str) -> Process {
+        Process {
+            pid,
+            parent: Some(parent),
+            args: args.split(' ').map(str::to_owned).collect(),
+            cwd: Some(PathBuf::from("/work")),
+            started: 0,
+        }
+    }
+
+    /// A login shell (pid 10) in an iTerm tab (pid 1), plus `extra`.
+    fn tab(extra: &[Process]) -> Vec<Process> {
+        let mut processes = vec![
+            process(1, 0, "/Applications/iTerm.app/Contents/MacOS/iTerm2"),
+            process(9, 1, "/usr/bin/login -fqpl dom"),
+            process(10, 9, "-nu"),
+            process(20, 1, "/Users/dom/.local/bin/claude"), // another tab's agent
+        ];
+        processes.extend_from_slice(extra);
+        processes
+    }
+
+    fn found(processes: &[Process]) -> String {
+        match classify(10, processes) {
+            Found::Shell => "shell".into(),
+            Found::Zellij => "zellij".into(),
+            Found::Agent(agent, process) => format!("{} {}", agent.name(), process.pid),
+            Found::Other(reason) => reason,
+        }
+    }
+
+    #[test]
+    fn switchboard_absorb_classifies_what_runs_in_a_tab() {
+        assert_eq!(found(&tab(&[])), "shell");
+        // Claude's MCP servers and tool commands run below it.
+        let claude = [
+            process(
+                11,
+                10,
+                "/Users/dom/.local/bin/claude --dangerously-skip-permissions",
+            ),
+            process(12, 11, "npm exec @playwright/mcp@latest"),
+            process(13, 12, "node playwright-mcp"),
+            process(14, 11, "caffeinate -i -t 300"),
+        ];
+        assert_eq!(found(&tab(&claude)), "claude 11");
+        // Windows: codex.exe under the npm shim under the shell.
+        let codex = [
+            process(11, 10, "C:\\Windows\\System32\\cmd.exe /c codex.cmd"),
+            process(12, 11, "node.exe C:\\npm\\codex.js"),
+            process(13, 12, "C:\\npm\\codex.exe"),
+        ];
+        assert_eq!(found(&tab(&codex)), "codex 13");
+        // A nested agent below Claude is Claude's business.
+        let nested = [process(11, 10, "claude"), process(12, 11, "claude -p hi")];
+        assert_eq!(found(&tab(&nested)), "claude 11");
+        let background = [process(11, 10, "claude"), process(15, 10, "sleep 100")];
+        assert_eq!(found(&tab(&background)), "it also runs sleep");
+        assert_eq!(
+            found(&tab(&[process(11, 10, "zellij attach main")])),
+            "zellij"
+        );
+        assert_eq!(found(&tab(&[process(11, 10, "ssh box")])), "it runs ssh");
+        assert_eq!(
+            found(&tab(&[process(11, 10, "vim notes.md")])),
+            "it runs vim"
+        );
+    }
+
+    const CLAUDE_IDLE: &str = "● Done.\n────\n❯ \n────\n  ⏵⏵ auto mode on";
+
+    fn plan_one(home: &Path, extra: &[Process], screen: &str) -> Action {
+        let tab = ForeignTab {
+            id: "A".into(),
+            title: "t".into(),
+            shell_pid: 10,
+        };
+        let screen = screen.to_owned();
+        plan_tab(&tab, &tab_processes(extra), home, &move || {
+            Ok(screen.clone())
+        })
+    }
+
+    fn tab_processes(extra: &[Process]) -> Vec<Process> {
+        tab(extra)
+    }
+
+    #[test]
+    fn switchboard_absorb_plans_claude_from_its_session_file() {
+        let home = tempfile::tempdir().unwrap();
+        let sessions = home.path().join(".claude/sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let claude = [process(
+            11,
+            10,
+            "/Users/dom/.local/bin/claude --dangerously-skip-permissions",
+        )];
+        assert_eq!(
+            plan_one(home.path(), &claude, CLAUDE_IDLE),
+            Action::Skip("Claude has no conversation yet".into())
+        );
+        let id = "b5eb3883-4bb6-44a0-b8e6-80625b93a4cc";
+        for status in ["busy", "shell"] {
+            std::fs::write(
+                sessions.join("11.json"),
+                json!({"pid":11,"sessionId":id,"cwd":"/proj","status":status}).to_string(),
+            )
+            .unwrap();
+            assert_eq!(
+                plan_one(home.path(), &claude, CLAUDE_IDLE),
+                Action::Skip(format!("Claude is {status}"))
+            );
+        }
+        std::fs::write(
+            sessions.join("11.json"),
+            json!({"pid":11,"sessionId":id,"cwd":"/proj","status":"idle"}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            plan_one(home.path(), &claude, CLAUDE_IDLE),
+            Action::Agent {
+                agent: AgentKind::Claude,
+                pid: 11,
+                session_id: id.into(),
+                cwd: "/proj".into(),
+                command: vec![
+                    "/Users/dom/.local/bin/claude".into(),
+                    "--dangerously-skip-permissions".into(),
+                    "--resume".into(),
+                    id.into()
+                ],
+            }
+        );
+        // An initial prompt is not sent again.
+        let prompted = [process(11, 10, "claude fix-the-bug")];
+        assert!(matches!(
+            plan_one(home.path(), &prompted, CLAUDE_IDLE),
+            Action::Agent { command, .. } if command == ["claude", "--resume", id]
+        ));
+    }
+
+    #[test]
+    fn switchboard_absorb_finds_codex_thread_by_folder_and_start() {
+        let home = tempfile::tempdir().unwrap();
+        let work = home.path().join("work");
+        let day = home.path().join(".codex/sessions/2026/11/04");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&day).unwrap();
+        let rollout = |name: &str, id: &str, cwd: &Path| {
+            let meta = json!({"type":"session_meta","payload":{"id":id,"cwd":cwd}});
+            std::fs::write(day.join(name), format!("{meta}\n{{}}\n")).unwrap();
+        };
+        let id = "01a1a607-29f9-7730-8ce6-8f9b156c2a0b";
+        let mut codex = process(11, 10, "/Users/dom/.local/bin/codex");
+        codex.cwd = Some(work.clone());
+        // A Codex screen at its idle prompt (codex-cli 0.164).
+        let idle = "• hi\n  Worked for 3s • 9:08 PM\n› Ask Codex to do anything\n  GPT-6.1-Sol high · /work\n  ← for agents · ? for shortcuts";
+        let working = "• Working (3s • esc to interrupt)\n› \n  tab to queue message";
+
+        assert_eq!(
+            plan_one(home.path(), &[codex.clone()], idle),
+            Action::Skip("Codex has no conversation yet".into())
+        );
+        rollout(
+            "rollout-other.jsonl",
+            "01a1a3aa-468b-7890-8cec-80861b965236",
+            Path::new("/elsewhere"),
+        );
+        rollout(
+            &format!("rollout-2026-11-04T21-07-29-{id}.jsonl"),
+            id,
+            &work,
+        );
+        assert!(matches!(
+            plan_one(home.path(), &[codex.clone()], idle),
+            Action::Agent { session_id, command, .. }
+                if session_id == id && command == ["/Users/dom/.local/bin/codex", "resume", id]
+        ));
+        assert_eq!(
+            plan_one(home.path(), &[codex.clone()], working),
+            Action::Skip("Codex is working".into())
+        );
+        // Older rollouts in the same folder are other conversations.
+        codex.started = SystemTime_now() + 60;
+        assert_eq!(
+            plan_one(home.path(), &[codex.clone()], idle),
+            Action::Skip("Codex has no conversation yet".into())
+        );
+        codex.started = 0;
+        rollout(
+            "rollout-second.jsonl",
+            "01a1a3aa-468b-7890-8cec-80861b965237",
+            &work,
+        );
+        assert_eq!(
+            plan_one(home.path(), &[codex], idle),
+            Action::Skip("can't tell which Codex conversation it is".into())
+        );
+    }
+
+    #[test]
+    fn switchboard_absorb_sees_unsent_prompts() {
+        let unsent = |line: &str| Err(format!("has unsent text: {line}"));
+        let claude = |line: &str| {
+            prompt_empty(
+                AgentKind::Claude,
+                &format!("● done\n───\n{line}\n───\n  ⏵⏵ auto mode on"),
+            )
+        };
+        assert_eq!(claude("❯ "), Ok(()));
+        assert_eq!(claude("❯ Try \"how do I log an error?\""), Ok(()));
+        assert_eq!(claude("❯ fix the flaky test"), unsent("fix the flaky test"));
+        assert_eq!(
+            prompt_empty(AgentKind::Claude, "Do you trust this folder?"),
+            Err("shows no prompt".into())
+        );
+        let codex = |line: &str| {
+            prompt_empty(
+                AgentKind::Codex,
+                &format!("• hi\n{line}\n  GPT-6.1-Sol high · /w\n  ? for shortcuts"),
+            )
+        };
+        assert_eq!(codex("› Ask Codex to do anything"), Ok(()));
+        assert_eq!(codex("› "), Ok(()));
+        assert_eq!(codex("› explain this repo"), unsent("explain this repo"));
+    }
+
+    #[allow(non_snake_case)]
+    fn SystemTime_now() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    #[test]
+    fn switchboard_absorb_plans_shells_and_leaves_the_rest() {
+        let home = tempfile::tempdir().unwrap();
+        assert_eq!(
+            plan_one(home.path(), &[], ""),
+            Action::Shell {
+                cwd: "/work".into()
+            }
+        );
+        assert_eq!(
+            plan_one(home.path(), &[process(11, 10, "zellij")], ""),
+            Action::Skip("already Switchboard".into())
+        );
+        assert_eq!(
+            plan_one(home.path(), &[process(11, 10, "copilot")], ""),
+            Action::Skip("copilot can't be resumed here".into())
+        );
+    }
 }
