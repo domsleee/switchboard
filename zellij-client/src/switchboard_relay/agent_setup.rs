@@ -550,7 +550,7 @@ async fn set_up(agent: Agent) -> Result<(), String> {
             )
         },
         Agent::Codex => {
-            let binary = std::env::current_exe()
+            let binary = control::own_executable()
                 .map_err(|e| format!("Cannot find Switchboard's executable: {e}"))?;
             install_codex_hooks(&dir.join("hooks.json"), &codex_command(&binary))
         },
@@ -664,7 +664,7 @@ fn describe(agent: Agent) -> Value {
             Agent::Claude => check_claude(&dir),
             Agent::Copilot => check_copilot(&dir),
             Agent::Codex => {
-                let binary = std::env::current_exe().unwrap_or_default();
+                let binary = control::own_executable().unwrap_or_default();
                 let since = setup.finished.unwrap_or(0);
                 check_codex(&dir, &binary, report.is_some_and(|at| at > since))
             },

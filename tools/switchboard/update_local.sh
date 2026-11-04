@@ -213,13 +213,16 @@ LC_ALL=C comm -23 "$work/installed-tokens-sorted" "$work/candidate-tokens-sorted
 }
 
 # Only live sessions: resurrectable layouts do not contain running processes.
-if probe "$installed" list-sessions --no-formatting > "$work/session-list" 2> "$work/list-error"; then
-    awk '!/\(EXITED - attach to resurrect\)/ {sub(/ \[Created .*$/, ""); print}' "$work/session-list" > "$work/sessions"
-elif [[ $(cat "$work/list-error") == 'No active zellij sessions found.' ]]; then
-    : > "$work/sessions"
-else
-    cat "$work/list-error" >&2; exit 1
-fi
+live_sessions() {
+    if probe "$1" list-sessions --no-formatting > "$work/session-list" 2> "$work/list-error"; then
+        awk '!/\(EXITED - attach to resurrect\)/ {sub(/ \[Created .*$/, ""); print}' "$work/session-list"
+    elif [[ $(cat "$work/list-error") == 'No active zellij sessions found.' ]]; then
+        :
+    else
+        cat "$work/list-error" >&2; return 1
+    fi
+}
+live_sessions "$installed" > "$work/sessions" || exit 1
 # Session servers own the PTYs and must survive. Their shells and agents may
 # exit on their own during an update, which is not an update failure.
 ps -U "$(id -u)" -o pid=,lstart=,command= | awk '/(^|\/| )(zellij|switchboard) .*--server / {print $1}' > "$work/protected-pids"
@@ -252,19 +255,36 @@ done < "$work/sessions"
 changed=true
 atomic_install "$new_release" "$new_hash"
 
+# Agents start and end scratch sessions at any time. Before the restart, nothing since the
+# compatibility probes has touched a session server, so one that is gone then ended on its
+# own; a loss after the restart may be the restart's doing. Liveness comes from the
+# retained old CLI: the candidate's own view must not decide that a session ended.
+: > "$work/ended"
 verify_sessions() {
-    local pid session index=0
+    local tolerate=${1:-false} pid session index=0
+    live_sessions "$old_release" > "$work/sessions-now" || exit 1
     while IFS= read -r pid; do
-        ps -p "$pid" -o lstart= > "$work/current-start"
-        cmp -s "$work/process-$pid" "$work/current-start" || { echo "Session server process changed: $pid" >&2; exit 1; }
+        ! grep -qxF -- "$pid" "$work/ended" || continue
+        ps -p "$pid" -o lstart= > "$work/current-start" || true
+        cmp -s "$work/process-$pid" "$work/current-start" && continue
+        [[ $tolerate == true ]] || { echo "Session server process changed: $pid" >&2; exit 1; }
+        echo "Session server $pid exited on its own during the update" >&2
+        echo "$pid" >> "$work/ended"
     done < "$work/protected-pids"
     while IFS= read -r session; do
-        panes "$installed" "$session" > "$work/probe"
-        cmp -s "$work/panes-$index" "$work/probe" || { echo "Session panes changed: $session" >&2; exit 1; }
+        if grep -qxF -- "s:$session" "$work/ended"; then
+            :
+        elif [[ $tolerate == true ]] && ! grep -qxF -- "$session" "$work/sessions-now"; then
+            echo "Session $session ended on its own during the update" >&2
+            echo "s:$session" >> "$work/ended"
+        else
+            panes "$installed" "$session" > "$work/probe"
+            cmp -s "$work/panes-$index" "$work/probe" || { echo "Session panes changed: $session" >&2; exit 1; }
+        fi
         index=$((index+1))
     done < "$work/sessions"
 }
-verify_sessions
+verify_sessions true
 if [[ $binary_only == 1 ]]; then
     echo "Installed $new_hash. Existing session servers, terminal processes and pane identities are intact."
     echo "Previous binary retained at $old_release"

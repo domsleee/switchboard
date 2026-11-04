@@ -154,6 +154,32 @@ const webUp = () => spawnSync(installed, ['web', '--status', '--timeout', '2'], 
         fs.renameSync(installed+'.restore', installed);
         fs.chmodSync(installed, 0o755);
 
+        // A session that ends on its own after the compatibility check is not an update failure,
+        // but the candidate's own check ending one is.
+        const scratch = n => `__switchboard_scratch${n}_${suffix}`;
+        const startScratch = async name => {
+            cli('attach', '--create-background', name, '--', '/bin/bash', '--noprofile', '--norc');
+            await waitFor(() => panes(name).length, 'Scratch session spawns a terminal');
+        };
+        const killScratch = name => `'${newBinary}' kill-session '${name}' >/dev/null 2>&1; while '${newBinary}' -s '${name}' action list-panes >/dev/null 2>&1; do sleep 0.1; done`;
+        await startScratch(scratch(1));
+        const killer = path.join(dir, 'kills-session');
+        fs.writeFileSync(killer, `#!/bin/bash\nif [[ $0 == '${installed}' && "$1 $2" == '-s ${scratch(1)}' ]]; then ${killScratch(scratch(1))}; exit 1; fi\nexec '${newBinary}' "$@"\n`, {mode:0o755});
+        const killed = update(killer, {}, ['--binary-only']);
+        assert.notEqual(killed.status, 0, 'A candidate that ends a session during its check is refused');
+        assert.equal(hash(installed), oldHash);
+        await startScratch(scratch(2));
+        const mockMv = path.join(dir, 'mock-mv');
+        fs.mkdirSync(mockMv);
+        fs.writeFileSync(path.join(mockMv, 'mv'), `#!/bin/bash\n[[ \${@: -1} != '${installed}' ]] || { ${killScratch(scratch(2))}; }\nexec /bin/mv "$@"\n`, {mode:0o755});
+        const ended = update(killer, {PATH:mockMv+':'+env.PATH}, ['--binary-only']);
+        assert.equal(ended.status, 0, ended.stderr);
+        assert.match(ended.stderr, new RegExp(`Session ${scratch(2)} ended on its own`));
+        assert.equal(hash(installed), hash(killer), 'The update is kept');
+        fs.copyFileSync(oldBinary, installed+'.restore');
+        fs.renameSync(installed+'.restore', installed);
+        fs.chmodSync(installed, 0o755);
+
         assert.equal(relayPid(), firstRelay, 'Failures before installation completes never restart services');
         const sessionsSurvive = () => {
             const after = processes();
@@ -206,7 +232,7 @@ const webUp = () => spawnSync(installed, ['web', '--status', '--timeout', '2'], 
         assert.equal(binaryOnly.status, 0, binaryOnly.stderr);
         assert.equal(hash(installed), oldHash);
         assert.equal(relayPid(), relayBeforeBinaryOnly, '--binary-only leaves services running');
-        console.log('PASS: service-job preflight, incompatible/malformed/stalled candidate rejection, atomic installation, rollback and failed-copy protection, web/relay restart onto the new build (including a job pinned to stale recovery), post-restart rollback with service restart, --binary-only, stable PTY/server IDs, ongoing output, new native sessions. Real launchd, input and browser reconnection are not covered.');
+        console.log('PASS: service-job preflight, incompatible/malformed/stalled candidate rejection, atomic installation, rollback and failed-copy protection, a session ending mid-update, web/relay restart onto the new build (including a job pinned to stale recovery), post-restart rollback with service restart, --binary-only, stable PTY/server IDs, ongoing output, new native sessions. Real launchd, input and browser reconnection are not covered.');
     } catch (error) {
         try { console.error('Service job log:\n' + fs.readFileSync(env.FAKE_JOB_LOG, 'utf8').slice(-3000)); } catch {}
         throw error;

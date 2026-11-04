@@ -1342,7 +1342,7 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
     {
         #[allow(deprecated)]
         let home = std::env::home_dir();
-        if let (Some(home), Ok(binary)) = (home, std::env::current_exe()) {
+        if let (Some(home), Ok(binary)) = (home, control::own_executable()) {
             if let Err(error) = askpass::install_helper(&home, &binary) {
                 log::warn!("Cannot write the sudo askpass helper: {error}");
             }
