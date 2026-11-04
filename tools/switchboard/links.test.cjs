@@ -52,6 +52,17 @@ for(const modifier of ['metaKey','ctrlKey']){
 link.text='/Users/dom/clips/demo.mp4';handlers.mousedown(click);handlers.mouseup(click);
 assert.deepEqual(files.at(-1),['windows','/Users/dom/clips/demo.mp4']);assert.equal(opened.length,3);
 opened.splice(1);link.text='http://127.0.0.1:8765/';delete parent.SwitchboardOpenFile;
+// Browser pages such as chrome://settings go to the Switchboard page, which asks the browser to open them.
+assert.deepEqual([...window.__switchboardBrowserPages('Open `chrome://settings/system`, then chrome://flags/#ignore-gpu-blocklist. Not xchrome://a or chrome:settings; edge://gpu')],
+  ['chrome://settings/system','chrome://flags/#ignore-gpu-blocklist','edge://gpu']);
+assert.deepEqual([...window.__switchboardFilePaths('chrome://settings/system')],[],'A browser page is not also a file path');
+const pages=[];
+link.text='chrome://settings/system';handlers.mousedown({...click,shiftKey:false,metaKey:true});handlers.mouseup({...click,shiftKey:false,metaKey:true});
+assert.equal(opened.length,1,'Outside the Switchboard page a browser page opens nothing');
+parent.SwitchboardOpenBrowserPage=url=>pages.push(url);
+handlers.mousedown({...click,shiftKey:false,metaKey:true});handlers.mouseup({...click,shiftKey:false,metaKey:true});
+assert.deepEqual(pages,['chrome://settings/system']);assert.equal(opened.length,1);
+link.text='http://127.0.0.1:8765/';delete parent.SwitchboardOpenBrowserPage;
 const app=fs.readFileSync(__dirname+'/static/app.js','utf8'),frameWindow={};let active=true;
 const sessions=new Map([['main',{frame:{contentWindow:frameWindow,classList:{contains:()=>active}}}]]);
 vm.runInNewContext(app.slice(app.indexOf("window.addEventListener('message',event=>{"),app.indexOf("$('artifact-back').onclick=")),{window,location,document,URL,sessions,setStatus(){}});
@@ -66,7 +77,7 @@ assert.deepEqual(opened[1],['https://example.test/artifact','_blank','noopener n
 // Hovering a media path shows a preview from the terminal's own computer; other paths show none.
 (async()=>{
   const body=[],node=tag=>({tagName:tag.toUpperCase(),style:{},children:[],append(...nodes){this.children.push(...nodes);},replaceChildren(...nodes){this.children=nodes;},remove(){body.splice(body.indexOf(this),1);}});
-  const settings={};let provider;const line='Saved /Users/dom/clips/demo.mp4 and /Users/dom/notes.txt and C:\\out\\map.png then D:\\Program Files\\Captures\\run (1).mp4 and \\\\nas\\share\\a.webm, mv /tmp/a.txt /tmp/b.png';
+  const settings={};let provider;const line='Saved /Users/dom/clips/demo.mp4 and /Users/dom/notes.txt and C:\\out\\map.png then D:\\Program Files\\Captures\\run (1).mp4 and \\\\nas\\share\\a.webm, mv /tmp/a.txt /tmp/b.png then `chrome://settings/system`';
   const term={cols:200,buffer:{active:{getLine:()=>({isWrapped:false,translateToString:()=>line})}},options:{},registerLinkProvider:value=>provider=value,_core:{}};
   vm.runInNewContext(fs.readFileSync(__dirname+'/static/links.js','utf8'),{window:{term,innerWidth:800,innerHeight:600,addEventListener(){}},parent,location,URL,console,localStorage:{getItem:key=>settings[key]??null},
     document:{createElement:node,body:{append:value=>body.push(value)}},setInterval:fn=>(Promise.resolve().then(fn),1),clearInterval(){},setTimeout:fn=>fn(),clearTimeout(){}});
@@ -81,7 +92,7 @@ assert.deepEqual(opened[1],['https://example.test/artifact','_blank','noopener n
   assert.match(body[0].style.cssText,/right:112px;top:36px/);
   hover('C:\\out\\map.png');assert.equal(body.length,1,'One preview at a time');
   body[0].children[0].onerror();assert.deepEqual(body[0].children,['Preview unavailable']);
-  assert.deepEqual([...links.map(link=>link.text)].sort(),['/Users/dom/clips/demo.mp4','/Users/dom/notes.txt','C:\\out\\map.png','D:\\Program Files\\Captures\\run (1).mp4','\\\\nas\\share\\a.webm','/tmp/a.txt','/tmp/b.png'].sort(),'Windows media paths keep spaces, parentheses and UNC roots, and a path never runs into the next one');
+  assert.deepEqual([...links.map(link=>link.text)].sort(),['/Users/dom/clips/demo.mp4','/Users/dom/notes.txt','C:\\out\\map.png','D:\\Program Files\\Captures\\run (1).mp4','\\\\nas\\share\\a.webm','/tmp/a.txt','/tmp/b.png','chrome://settings/system'].sort(),'Windows media paths keep spaces, parentheses and UNC roots, and a path never runs into the next one');
   hover('D:\\Program Files\\Captures\\run (1).mp4');
   assert.equal(body[0].children[0].src,'/api/hosts/windows/file?path=D%3A%5CProgram%20Files%5CCaptures%5Crun%20(1).mp4');
   links[0].leave();assert.equal(body.length,0);

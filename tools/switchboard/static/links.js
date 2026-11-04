@@ -34,6 +34,9 @@
   // Drive, UNC, ~/ and / paths to media. Spaces are allowed because the extension ends the path,
   // but a space before another root starts a new path, so two paths on a line stay separate.
   const mediaPaths=/(?<![\w.~:%/\\-])(?:[A-Za-z]:[\\/]|\\\\|~[\\/]|\/)(?:[^\s"'<>|*?:\\/](?:(?!\s+(?:[A-Za-z]:[\\/]|\\\\|~[\\/]|\/))[^"'<>|*?:\n\\/])*?[\\/])*?[^\s"'<>|*?:\\/](?:(?!\s+(?:[A-Za-z]:[\\/]|\\\\|~[\\/]|\/))[^"'<>|*?:\n\\/])*?\.(?:png|jpe?g|gif|webp|avif|mp4|webm|mov|m4v)(?![\w-]|\.\w)/gi;
+  // Browser pages such as chrome://settings, which only the browser itself may open.
+  const browserPages=/(?<![\w.+-])(?:chrome|edge|brave):\/\/[a-z0-9-]+(?:[/#][\w/.#-]*)?/g;
+  const isBrowserPage=uri=>/^(?:chrome|edge|brave):\/\//.test(uri);
   const mediaFile=/\.(?:png|jpe?g|gif|webp|avif|mp4|webm|mov|m4v)$/i,videoFile=/\.(?:mp4|webm|mov|m4v)$/i;
   // Relative media paths, such as out/shot.png, without spaces since they have no root to start from.
   const relativeMedia=/(?<![\w.~:%/\\@-])(?:[^\s"'`<>|*?:;,()[\]{}\\/]+[\\/])*[^\s"'`<>|*?:;,()[\]{}\\/]+\.(?:png|jpe?g|gif|webp|avif|mp4|webm|mov|m4v)(?![\w-]|\.\w)/gi;
@@ -85,7 +88,8 @@
       .filter(path => !overlaps(path,media));
     const relative = [...line.matchAll(relativeMedia)].map(match => ({index:match.index,text:match[0]}))
       .filter(path => !overlaps(path,[...media,...plain]));
-    const links = [...media,...plain,...relative].map(({index,text}) =>
+    const pages = [...line.matchAll(browserPages)].map(match => ({index:match.index,text:match[0].replace(/[.`]+$/,'')}));
+    const links = [...media,...plain,...relative,...pages].map(({index,text}) =>
       ({range:{start:cell(index),end:cell(index+text.length-1)},text,activate:open,hover:showPreview,leave:hidePreview}))
       .filter(link => link.range.start.y <= y && y <= link.range.end.y);
     callback(links.length ? links : undefined);
@@ -96,6 +100,10 @@
     if (!linkGesture(event)) return;
     event.preventDefault();event.stopImmediatePropagation();
     try {
+      if(isBrowserPage(uri)){
+        if(window.parent===window||!parent.SwitchboardOpenBrowserPage)throw Error('Browser pages open from the Switchboard page');
+        parent.SwitchboardOpenBrowserPage(uri);return;
+      }
       const path=filePathOf(uri),newTab=event.metaKey||event.ctrlKey,relative=!path&&relativeFile(uri);
       // Cmd/Ctrl-click plays a video in a browser tab, streamed from this terminal's computer.
       if((path||relative)&&!(newTab&&videoFile.test(path||uri))){
@@ -174,5 +182,6 @@
     }
   },25);
   window.__switchboardResolveLink=resolve;
+  window.__switchboardBrowserPages=line=>[...line.matchAll(browserPages)].map(match=>match[0].replace(/[.`]+$/,''));
   window.__switchboardFilePaths=line=>[...line.matchAll(filePath)].map(match=>match[0].replace(/[.`]+$/,''));
 })();
