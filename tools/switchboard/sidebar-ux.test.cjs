@@ -223,6 +223,12 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     const tabNamed=name=>page.locator('#tabs .tab-select',{hasText:name});
     await page.evaluate(()=>{setHidden(allTabs().find(item=>tabTitle(item)==='Online shopping'),true);render();});
     assert.equal(await page.locator('#hidden-toggle').getAttribute('aria-expanded'),'true','the group stays as it was left');
+    // A list taller than the sidebar keeps the Hidden header pinned in view at its bottom.
+    const viewport=page.viewportSize();await page.setViewportSize({width:viewport.width,height:260});
+    await page.evaluate(()=>{$('tabs').scrollTop=0;});
+    const [list,pinned]=await page.evaluate(()=>[$('tabs'),$('hidden-toggle')].map(el=>el.getBoundingClientRect().toJSON()));
+    assert.ok(pinned.top>=list.top&&Math.abs(pinned.bottom-list.bottom)<1,`Hidden header pinned to the list bottom: ${JSON.stringify({list,pinned})}`);
+    await page.setViewportSize(viewport);
     const header=await page.locator('#hidden-toggle').boundingBox();
     await tabNamed('switchboard').dragTo(page.locator('#hidden-toggle'),{targetPosition:{x:20,y:header.height-3}});
     assert.deepEqual(await hiddenNames(),['switchboard','Online shopping']);

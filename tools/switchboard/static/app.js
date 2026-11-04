@@ -467,7 +467,8 @@ function renderSidebarEmpty(tabs,shown){
   action.hidden=!empty.action;action.textContent=empty.action||'';action.onclick=empty.run||null;
   return empty;
 }
-// Opens and closes the Hidden group. It sits in the tab list after the other tabs, so a
+// Opens and closes the Hidden group. It sits in the tab list after the other tabs, pinned to
+// the bottom while the list scrolls so hidden tabs are always findable, so a
 // tab dragged onto it is hidden, and one dragged above it is shown again.
 const hiddenHeader=document.createElement('button');
 hiddenHeader.id='hidden-toggle';hiddenHeader._hiddenGroup=true;
