@@ -13,7 +13,7 @@ use zellij_utils::{
     data::PaneId,
     errors::prelude::*,
     input::actions::Action,
-    ipc::{ClientToServerMsg, ExitReason, ServerToClientMsg},
+    ipc::{ClientToServerMsg, ExitReason, IpcReceiveError, ServerToClientMsg},
 };
 
 pub fn start_cli_client(
@@ -160,8 +160,8 @@ fn pipe_client(
         }
         loop {
             // wait for a response and act accordingly
-            match os_input.recv_from_server() {
-                Some((ServerToClientMsg::UnblockCliPipeInput { pipe_name }, _)) => {
+            match os_input.try_recv_from_server() {
+                Ok((ServerToClientMsg::UnblockCliPipeInput { pipe_name }, _)) => {
                     // unblock this pipe, meaning we need to stop waiting for a response and read
                     // once more from STDIN
                     if pipe_name == pipe_id {
@@ -174,7 +174,7 @@ fn pipe_client(
                         }
                     }
                 },
-                Some((ServerToClientMsg::CliPipeOutput { pipe_name, output }, _)) => {
+                Ok((ServerToClientMsg::CliPipeOutput { pipe_name, output }, _)) => {
                     // send data to STDOUT, this *does not* mean we need to unblock the input
                     let err_context = "Failed to write to stdout";
                     if pipe_name == pipe_id {
@@ -186,15 +186,15 @@ fn pipe_client(
                         stdout.flush().context(err_context).non_fatal();
                     }
                 },
-                Some((ServerToClientMsg::Log { lines: log_lines }, _)) => {
+                Ok((ServerToClientMsg::Log { lines: log_lines }, _)) => {
                     log_lines.iter().for_each(|line| println!("{line}"));
                     process::exit(0);
                 },
-                Some((ServerToClientMsg::LogError { lines: log_lines }, _)) => {
+                Ok((ServerToClientMsg::LogError { lines: log_lines }, _)) => {
                     log_lines.iter().for_each(|line| eprintln!("{line}"));
                     process::exit(2);
                 },
-                Some((ServerToClientMsg::Exit { exit_reason }, _)) => match exit_reason {
+                Ok((ServerToClientMsg::Exit { exit_reason }, _)) => match exit_reason {
                     ExitReason::Error(e) => {
                         eprintln!("{}", e);
                         process::exit(2);
@@ -202,6 +202,10 @@ fn pipe_client(
                     _ => {
                         process::exit(0);
                     },
+                },
+                Err(IpcReceiveError::Disconnected) => {
+                    eprintln!("The session closed the connection");
+                    process::exit(2);
                 },
                 _ => {},
             }
@@ -229,19 +233,19 @@ fn individual_messages_client(
     };
     os_input.send_to_server(msg);
     loop {
-        match os_input.recv_from_server() {
-            Some((ServerToClientMsg::UnblockInputThread, _)) if !is_blocking => {
+        match os_input.try_recv_from_server() {
+            Ok((ServerToClientMsg::UnblockInputThread, _)) if !is_blocking => {
                 return None;
             },
-            Some((ServerToClientMsg::Log { lines: log_lines }, _)) => {
+            Ok((ServerToClientMsg::Log { lines: log_lines }, _)) => {
                 log_lines.iter().for_each(|line| println!("{line}"));
                 return None;
             },
-            Some((ServerToClientMsg::LogError { lines: log_lines }, _)) => {
+            Ok((ServerToClientMsg::LogError { lines: log_lines }, _)) => {
                 log_lines.iter().for_each(|line| eprintln!("{line}"));
                 return Some(2);
             },
-            Some((ServerToClientMsg::Exit { exit_reason }, _)) => match exit_reason {
+            Ok((ServerToClientMsg::Exit { exit_reason }, _)) => match exit_reason {
                 ExitReason::Error(e) => {
                     eprintln!("{}", e);
                     return Some(2);
@@ -252,6 +256,11 @@ fn individual_messages_client(
                 _ => {
                     return None;
                 },
+            },
+            // Without this, a closed session leaves the command spinning forever.
+            Err(IpcReceiveError::Disconnected) => {
+                eprintln!("The session closed the connection");
+                return Some(2);
             },
             _ => {},
         }
@@ -371,4 +380,81 @@ pub fn start_subscribe_client(
     }
 
     os_input.send_to_server(ClientToServerMsg::ClientExited);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+    use zellij_utils::{data::Palette, errors::ErrorContext, pane_size::Size};
+
+    /// A session that has gone away: every read reports the closed connection.
+    #[derive(Clone, Debug)]
+    struct ClosedSession;
+
+    impl ClientOsApi for ClosedSession {
+        fn get_terminal_size(&self) -> Size {
+            Size::default()
+        }
+        fn set_raw_mode(&mut self) {}
+        fn unset_raw_mode(&self) -> Result<(), std::io::Error> {
+            Ok(())
+        }
+        fn get_stdout_writer(&self) -> Box<dyn Write> {
+            Box::new(std::io::sink())
+        }
+        fn get_stdin_reader(&self) -> Box<dyn BufRead> {
+            Box::new(Cursor::new(Vec::<u8>::new()))
+        }
+        fn update_session_name(&mut self, _new_session_name: String) {}
+        fn read_from_stdin(&mut self) -> Result<Vec<u8>, &'static str> {
+            Ok(vec![])
+        }
+        fn box_clone(&self) -> Box<dyn ClientOsApi> {
+            Box::new(self.clone())
+        }
+        fn send_to_server(&self, _msg: ClientToServerMsg) {}
+        fn recv_from_server(&self) -> Option<(ServerToClientMsg, ErrorContext)> {
+            None
+        }
+        fn try_recv_from_server(
+            &self,
+        ) -> std::result::Result<(ServerToClientMsg, ErrorContext), IpcReceiveError> {
+            Err(IpcReceiveError::Disconnected)
+        }
+        fn handle_signals(
+            &self,
+            _sigwinch_cb: Box<dyn Fn()>,
+            _quit_cb: Box<dyn Fn()>,
+            _resize_receiver: Option<std::sync::mpsc::Receiver<()>>,
+        ) {
+        }
+        fn connect_to_server(&self, _path: &std::path::Path) {}
+        fn load_palette(&self) -> Palette {
+            Palette::default()
+        }
+        fn enable_mouse(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn disable_mouse(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_command_fails_instead_of_spinning_when_the_session_closes() {
+        let (done, result) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut os_input: Box<dyn ClientOsApi> = Box::new(ClosedSession);
+            let _ = done.send(individual_messages_client(
+                &mut os_input,
+                Action::ListClients,
+                None,
+            ));
+        });
+        assert_eq!(
+            result.recv_timeout(std::time::Duration::from_secs(5)),
+            Ok(Some(2))
+        );
+    }
 }
