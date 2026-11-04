@@ -47,6 +47,8 @@ the installed tray's `-RelayPort`, or recover it from the running relay for olde
 trays. `zellij switchboard update --port PORT` overrides it and carries that port
 into the replacement tray. The tray uses the same port for health checks, browser
 links and scheduled updates; Windows services reserving port 80 do not block it.
+A relay on another port, such as an older installation on port 80, also answers on
+8090 so agent hooks and the CLI reach it.
 
 Healthy existing sessions retain their engines, shells and agents, including new
 tabs created inside those sessions. A browser reconnect is expected. New sessions
