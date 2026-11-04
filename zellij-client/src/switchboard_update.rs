@@ -12,6 +12,7 @@ use isahc::{
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
@@ -27,6 +28,28 @@ pub const RELEASE_URL: &str =
 
 /// Session identity and sharing as listed by the relay catalog.
 type Session = (String, String, bool);
+
+/// A timed update step: name, duration, and whether it succeeded.
+type Phase = (&'static str, Duration, bool);
+
+/// One log line per update, e.g. `install 8.4s, ready 60.0s failed; total 80.1s`.
+fn timing_line(phases: &[Phase], total: Duration) -> String {
+    let mut line = phases
+        .iter()
+        .map(|(name, took, ok)| {
+            format!(
+                "{name} {:.1}s{}",
+                took.as_secs_f64(),
+                if *ok { "" } else { " failed" }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    if !line.is_empty() {
+        line.push_str("; ");
+    }
+    format!("{line}total {:.1}s", total.as_secs_f64())
+}
 
 #[path = "switchboard_install.rs"]
 mod install;
@@ -395,6 +418,7 @@ pub struct Updater {
     menu_app: PathBuf,
     ready_timeout: Duration,
     peer_watch: Duration,
+    timings: RefCell<Vec<Phase>>,
 }
 
 impl Updater {
@@ -460,7 +484,18 @@ impl Updater {
             menu_app: home.join("Applications/Switchboard.app/Contents/MacOS/Switchboard"),
             ready_timeout: Duration::from_secs(60),
             peer_watch: Duration::from_secs(20),
+            timings: RefCell::default(),
         })
+    }
+
+    /// Runs one update step and records how long it took for the timing line.
+    fn timed<T>(&self, phase: &'static str, action: impl FnOnce() -> Result<T>) -> Result<T> {
+        let start = Instant::now();
+        let result = action();
+        self.timings
+            .borrow_mut()
+            .push((phase, start.elapsed(), result.is_ok()));
+        result
     }
 
     fn state_path(&self) -> PathBuf {
@@ -585,7 +620,16 @@ impl Updater {
             return Ok(());
         }
         let before = (state.run_number, state.attempts);
+        self.timings.borrow_mut().clear();
+        let (started, start) = (SystemTime::now(), Instant::now());
         let result = self.with_handoff(|| self.apply(staging.path(), &manifest, state));
+        // The log has no timestamps; Unix seconds match the relay's /api/logs times.
+        println!(
+            "Update timing for {} at {}: {}",
+            manifest.commit,
+            started.duration_since(UNIX_EPOCH)?.as_secs(),
+            timing_line(&self.timings.borrow(), start.elapsed())
+        );
         match &result {
             Ok(()) => {
                 state.error = None;
@@ -625,16 +669,18 @@ impl Updater {
     }
 
     fn apply(&self, bundle: &Path, manifest: &Manifest, state: &mut State) -> Result<()> {
-        let sessions = self.catalog()?;
+        let sessions = self.timed("catalog", || self.catalog())?;
         let old_commit = self.health()?.commit;
         let old = self.selected_binary()?;
         let candidate = bundle.join(self.exe());
         make_executable(&candidate)?;
-        self.verify_auth(&old, &candidate)?;
+        self.timed("auth", || self.verify_auth(&old, &candidate))?;
         let mut peers = Vec::new();
         if cfg!(target_os = "macos") {
-            self.check_lan_access(&candidate)?;
-            peers = reachable_peers(&self.local_json("/api/hosts", Duration::from_secs(30))?);
+            self.timed("lan-probe", || self.check_lan_access(&candidate))?;
+            peers = reachable_peers(&self.timed("peers", || {
+                self.local_json("/api/hosts", Duration::from_secs(30))
+            })?);
         }
         let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let backup = self.state_directory.join(format!("rollback-{nanos}"));
@@ -688,7 +734,7 @@ impl Updater {
                     }
                 }
             }
-            if let Err(recovery) = self.recover(&pending) {
+            if let Err(recovery) = self.timed("rollback", || self.recover(&pending)) {
                 // The journal stays for one more attempt on the next run.
                 return Err(anyhow!("{error:#}; rollback also failed: {recovery:#}"));
             }
@@ -711,32 +757,56 @@ impl Updater {
         replaced: &mut bool,
     ) -> Result<()> {
         let candidate = bundle.join(self.exe());
-        if self.windows {
-            self.install_windows(&self.helpers, &candidate)?;
-            self.services(&self.helpers, "Stop", snapshot, None)?;
-            self.services(
-                &self.helpers,
-                "Start",
-                snapshot,
-                Some(&self.selected_binary()?),
-            )?;
-            self.wait_ready(Some(&manifest.commit), sessions)?;
-            self.services(&self.helpers, "Verify", snapshot, None)?;
-        } else {
-            // update_local.sh checks tokens, session compatibility and engine
-            // identities, restarts web + relay, and restores itself on failure.
-            self.install_mac(&self.helpers, &candidate, Some(&manifest.commit))?;
-            self.wait_ready(Some(&manifest.commit), sessions)?;
-            if !self.peers_stay_reachable(peers) {
-                // On 2026-10-31 macOS refused a new relay Local Network access
-                // after the probe passed, while a restarted relay was allowed.
-                eprintln!("The new relay lost paired computers; restarting it once");
-                self.install_mac(&self.helpers, &candidate, Some(&manifest.commit))?;
-                self.wait_ready(Some(&manifest.commit), sessions)?;
+        let ready = || {
+            self.timed("ready", || {
+                self.wait_ready(Some(&manifest.commit), sessions)
+            })
+        };
+        let peers_stay = || {
+            self.timed("peer-watch", || {
                 ensure!(
                     self.peers_stay_reachable(peers),
                     "The new relay cannot reach paired computers the previous one reached"
                 );
+                Ok(())
+            })
+        };
+        if self.windows {
+            self.timed("install", || {
+                self.install_windows(&self.helpers, &candidate)
+            })?;
+            self.timed("stop", || {
+                self.services(&self.helpers, "Stop", snapshot, None)
+            })?;
+            self.timed("start", || {
+                self.services(
+                    &self.helpers,
+                    "Start",
+                    snapshot,
+                    Some(&self.selected_binary()?),
+                )
+            })?;
+            ready()?;
+            self.timed("verify", || {
+                self.services(&self.helpers, "Verify", snapshot, None)
+            })?;
+        } else {
+            // update_local.sh checks tokens, session compatibility and engine
+            // identities, restarts web + relay, and restores itself on failure.
+            let install = || {
+                self.timed("install", || {
+                    self.install_mac(&self.helpers, &candidate, Some(&manifest.commit))
+                })
+            };
+            install()?;
+            ready()?;
+            if peers_stay().is_err() {
+                // On 2026-10-31 macOS refused a new relay Local Network access
+                // after the probe passed, while a restarted relay was allowed.
+                eprintln!("The new relay lost paired computers; restarting it once");
+                install()?;
+                ready()?;
+                peers_stay()?;
             }
         }
         *replaced = true;
@@ -746,11 +816,13 @@ impl Updater {
         }
         // Reload the tray/menu only after the connection services recover.
         if self.windows {
-            self.services(&self.helpers, "StopTray", snapshot, None)?;
-            self.install_tray()?;
+            self.timed("tray", || {
+                self.services(&self.helpers, "StopTray", snapshot, None)?;
+                self.install_tray()
+            })?;
         } else if previous_menu != fs::read(self.helpers.join("menu_bar.swift")).ok() {
             // The menu is cosmetic; its failure must not roll back working services.
-            if let Err(error) = self.reload_menu() {
+            if let Err(error) = self.timed("menu", || self.reload_menu()) {
                 eprintln!("Menu bar app was not reloaded: {error:#}");
             }
         }
