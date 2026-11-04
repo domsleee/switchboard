@@ -361,7 +361,7 @@ fn elevated_shell(default_shell: Option<PathBuf>) -> RunCommandAction {
         .or_else(|| std::env::var_os("COMSPEC").map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("/bin/sh"));
     RunCommandAction {
-        command: PathBuf::from(if cfg!(windows) { "gsudo" } else { "sudo" }),
+        command: elevator(),
         args: vec![shell.to_string_lossy().into_owned()],
         // Keep a declined prompt or missing gsudo on screen, with Enter to retry.
         hold_on_close: true,
@@ -369,6 +369,18 @@ fn elevated_shell(default_shell: Option<PathBuf>) -> RunCommandAction {
         use_terminal_title: true,
         ..Default::default()
     }
+}
+
+// Services started before gsudo was installed keep a PATH without it, and new
+// tabs inherit that PATH, so prefer winget's default install location.
+fn elevator() -> PathBuf {
+    if !cfg!(windows) {
+        return PathBuf::from("sudo");
+    }
+    std::env::var_os("ProgramFiles")
+        .map(|dir| PathBuf::from(dir).join(r"gsudo\Current\gsudo.exe"))
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| PathBuf::from("gsudo"))
 }
 
 fn control_payload_to_server_msg(
@@ -635,11 +647,12 @@ mod tests {
             tab_name, "Administrator",
             "The sidebar shields tabs by this name"
         );
-        let elevator = if cfg!(windows) { "gsudo" } else { "sudo" };
         assert_eq!(
-            (run.command.to_str(), run.args.as_slice()),
-            (Some(elevator), &["nu".to_owned()][..])
+            (&run.command, run.args.as_slice()),
+            (&elevator(), &["nu".to_owned()][..])
         );
+        let name = run.command.file_stem().and_then(|name| name.to_str());
+        assert_eq!(name, Some(if cfg!(windows) { "gsudo" } else { "sudo" }));
     }
 
     #[test]
