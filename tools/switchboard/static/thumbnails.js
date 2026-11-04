@@ -1,7 +1,9 @@
 // Shows the image and video paths on screen as thumbnails, without a hover. Zellij owns every
 // row, so a thumbnail sits over the blank cells to the right of its path and never covers text.
 (() => {
-  const maxRows=8,minRows=3,minCols=12,gap=2;
+  const minRows=3,minCols=12,gap=2;
+  // As tall as half the terminal allows, so a screenshot is readable at a glance.
+  const maxRows=rows=>Math.min(24,Math.max(8,Math.floor(rows/2)));
   // Settings → Terminal thumbnails, off by default.
   const setting='switchboard-media-thumbnails';
   const enabled=()=>{try{return localStorage.getItem(setting)==='true';}catch{return false;}};
@@ -45,7 +47,7 @@
         continue;
       }
       let height=0,col=0;
-      while(height<maxRows&&row+height<rows.length){
+      while(height<maxRows(rows.length)&&row+height<rows.length){
         const next=Math.max(col,ends[row+height]+gap);
         if(next+minCols>limit)break;
         col=next;height++;
