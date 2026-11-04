@@ -19,10 +19,10 @@ what a task does. Whatever owns the tasks writes the file; for example, dotfiles
       ]
     },
     {
-      "name": "wtg tools",
+      "name": "work tools",
       "every": "1d",
-      "hosts": ["1WN9PD4"],
-      "tasks": [{ "name": "mcp-ediprod", "run": ["bun", "install", "-g", "@wtg/mcp-ediprod@latest"] }]
+      "hosts": ["Work-PC"],
+      "tasks": [{ "name": "mcp server", "run": ["bun", "install", "-g", "@example/mcp-server@latest"] }]
     }
   ]
 }

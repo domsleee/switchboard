@@ -14,8 +14,8 @@ test('Update tasks show per computer, flag failures and changes in the sidebar, 
       lastStart:now-7260e3,lastEnd:now-7200e3,nextRun:now+3*3600e3,tasks:[
         task('pull + install',{changed:['dotfiles: 3 commits']}),
         task('agent plugins',{status:'failed',exitCode:1,tail:['claude ok','codex failed'],whenAgentsIdle:true})]};
-    const tools={name:'wtg tools',every:'1d',enabled:true,paused:true,running:false,status:'ok',summary:'',notice:false,
-      lastStart:now-3600e3,lastEnd:now-3590e3,nextRun:null,tasks:[task('mcp-ediprod')]};
+    const tools={name:'work tools',every:'1d',enabled:true,paused:true,running:false,status:'ok',summary:'',notice:false,
+      lastStart:now-3600e3,lastEnd:now-3590e3,nextRun:null,tasks:[task('mcp server')]};
     const windows={name:'dotfiles',every:'6h',enabled:true,paused:false,running:false,status:'changed',summary:'nushell 0.104',notice:true,
       lastStart:now-60e3,lastEnd:now-30e3,nextRun:now+6*3600e3,tasks:[task('pull + install',{changed:['nushell 0.104']})]};
     let tasks={computers:[
