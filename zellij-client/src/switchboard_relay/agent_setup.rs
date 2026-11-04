@@ -681,23 +681,59 @@ fn describe(agent: Agent) -> Value {
     })
 }
 
-/// The build this relay runs and its updater's last result.
+/// Whether this computer's automatic Switchboard update is switched on: the systemd
+/// user timer is enabled on Linux, the LaunchAgent is loaded on macOS, and on Windows
+/// the tray, which runs the update checks, holds its single-instance mutex.
+fn automatic_updates() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        home()
+            .join(".config/systemd/user/timers.target.wants/switchboard-update.timer")
+            .exists()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        home()
+            .join("Library/LaunchAgents/dev.switchboard.update.plist")
+            .is_file()
+            && std::process::Command::new("launchctl")
+                .arg("print")
+                .arg(format!(
+                    "gui/{}/dev.switchboard.update",
+                    nix::unistd::getuid()
+                ))
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::{Foundation::CloseHandle, System::Threading::OpenMutexW};
+        const SYNCHRONIZE: u32 = 0x0010_0000;
+        let name: Vec<u16> = "Local\\SwitchboardTray".encode_utf16().chain([0]).collect();
+        // SAFETY: `name` is a NUL-terminated UTF-16 string that outlives the call.
+        let handle = unsafe { OpenMutexW(SYNCHRONIZE, 0, name.as_ptr()) };
+        if handle.is_null() {
+            return false;
+        }
+        // SAFETY: `handle` was just opened and is closed once.
+        unsafe { CloseHandle(handle) };
+        true
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        false
+    }
+}
+
+/// The build this relay runs and whether it updates itself.
 fn switchboard() -> Value {
-    let state = read_json(
-        &home()
-            .join(".local")
-            .join("share")
-            .join("switchboard")
-            .join("automatic-updates")
-            .join("state.json"),
-    )
-    .unwrap_or(Value::Null);
     json!({
         "commit": env!("SWITCHBOARD_COMMIT"),
         "commitDate": env!("SWITCHBOARD_COMMIT_DATE"),
-        "commitTimestamp": env!("SWITCHBOARD_COMMIT_TIMESTAMP"),
-        "updateError": state["error"].as_str().map(|e| e.lines().next().unwrap_or(e).to_string()),
-        "updateAttempts": state["attempts"],
+        "automaticUpdates": automatic_updates(),
     })
 }
 
