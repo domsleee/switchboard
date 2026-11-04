@@ -1163,6 +1163,10 @@ updateMediaPreviews(localStorage.getItem('switchboard-media-previews')==='true')
 function updatePredictiveEcho(on){$('predictive-echo').setAttribute('aria-pressed',String(on));$('predictive-echo').classList.toggle('selected',on);}
 $('predictive-echo').onclick=()=>{const on=localStorage.getItem('switchboard-predictive-echo')!=='true';localStorage.setItem('switchboard-predictive-echo',String(on));updatePredictiveEcho(on);};
 updatePredictiveEcho(localStorage.getItem('switchboard-predictive-echo')==='true');
+// Read by each terminal's wheel handler and socket when it connects, so a change reloads.
+function updateFineScroll(on){$('fine-scroll').setAttribute('aria-pressed',String(on));$('fine-scroll').classList.toggle('selected',on);}
+$('fine-scroll').onclick=()=>{const on=localStorage.getItem('switchboard-fine-scroll')!=='true';localStorage.setItem('switchboard-fine-scroll',String(on));updateFineScroll(on);location.reload();};
+updateFineScroll(localStorage.getItem('switchboard-fine-scroll')==='true');
 setInterval(refresh,15000);
 
 function closeTabMenu(restore=false){

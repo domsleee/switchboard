@@ -7,6 +7,15 @@ export const WHEEL_ROWS_PER_REPORT = 3;
 // A pause this long starts a new gesture, which always scrolls at least once.
 export const WHEEL_GESTURE_GAP_MS = 200;
 
+// Switchboard's Fine scrolling setting: one report per row, each scrolling one line.
+export function fineScrolling() {
+    try {
+        return localStorage.getItem("switchboard-fine-scroll") === "true";
+    } catch (_) {
+        return false;
+    }
+}
+
 export function wheelRows(event, rowHeight, rows) {
     if (event.deltaMode === 1) return event.deltaY;
     if (event.deltaMode === 2) return event.deltaY * rows;
@@ -46,7 +55,7 @@ export function createWheelAccumulator(
 
 export function installWheelHandler(term) {
     const core = term._core;
-    const add = createWheelAccumulator();
+    const add = createWheelAccumulator(fineScrolling() ? 1 : WHEEL_ROWS_PER_REPORT);
     let queued = 0;
     let target = null;
     let frame = 0;

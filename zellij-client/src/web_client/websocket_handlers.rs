@@ -260,6 +260,7 @@ async fn handle_ws_terminal(
     // Per-connection parser state. Hoisted so a CSI / Kitty sequence
     // split across two WebSocket frames resolves on the second frame.
     let mut stdin_session = StdinSession::new(explicitly_disable_kitty_keyboard_protocol);
+    stdin_session.wheel_lines = params.wheel_lines.unwrap_or(0).min(3);
     let finalize_idle = std::time::Duration::from_millis(50);
     loop {
         // When termwiz is holding ambiguous-but-complete events from

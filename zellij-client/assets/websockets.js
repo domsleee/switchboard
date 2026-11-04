@@ -1,4 +1,5 @@
 import { handleReconnection, handleDisconnected, markConnectionEstablished } from "./connection.js";
+import { fineScrolling } from "./wheel.js";
 import {
     getBaseUrl,
     getWebSocketBaseUrl,
@@ -131,6 +132,9 @@ export function initWebSockets(boot, term, fitAddon) {
         queryString += `&cell_width=${cellWidth}&cell_height=${cellHeight}`;
         lastSentCellDimensions = { width: cellWidth, height: cellHeight };
     }
+    // Fine scrolling: the wheel handler sends one report per line, so Zellij
+    // scrolls one line per report instead of three.
+    if (fineScrolling()) queryString += "&wheel_lines=1";
     const wsTerminalUrl = `${url}${queryString}`;
 
     wsTerminal = new WebSocket(wsTerminalUrl);

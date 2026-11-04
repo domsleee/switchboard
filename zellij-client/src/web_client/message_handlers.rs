@@ -30,6 +30,9 @@ pub struct StdinSession {
     /// Input bytes not yet sent with an event, so a held ESC still
     /// reaches the pane as byte 27 when a later frame or `finalize` emits it.
     held: Vec<u8>,
+    /// Lines each wheel report scrolls; 0 keeps Zellij's 3. Set from the
+    /// terminal socket's `wheel_lines` when the browser scrolls finely.
+    pub wheel_lines: u32,
 }
 
 impl StdinSession {
@@ -40,6 +43,7 @@ impl StdinSession {
             explicitly_disable_kitty_keyboard_protocol,
             pending_finalize: false,
             held: Vec::new(),
+            wheel_lines: 0,
         }
     }
 
@@ -90,7 +94,13 @@ impl StdinSession {
             remaining = remaining.saturating_sub(consumed);
             let take = self.held.len().saturating_sub(remaining);
             let raw_bytes: Vec<u8> = self.held.drain(..take).collect();
-            dispatch_termwiz_event(os_input, mouse_old_event, input_event, &raw_bytes);
+            dispatch_termwiz_event(
+                os_input,
+                mouse_old_event,
+                input_event,
+                &raw_bytes,
+                self.wheel_lines,
+            );
         }
         // Bytes termwiz dropped without an event are not input.
         if self.input_parser.buffered_len() == 0 {
@@ -128,6 +138,7 @@ fn dispatch_termwiz_event(
     mouse_old_event: &mut MouseEvent,
     input_event: InputEvent,
     raw_bytes: &[u8],
+    wheel_lines: u32,
 ) {
     match input_event {
         InputEvent::Key(key_event) => {
@@ -142,7 +153,10 @@ fn dispatch_termwiz_event(
             os_input.send_to_server(ClientToServerMsg::HostTerminalFocusChanged { focused: false });
         },
         InputEvent::Mouse(mouse_event) => {
-            let mouse_event = from_termwiz(mouse_old_event, mouse_event);
+            let mut mouse_event = from_termwiz(mouse_old_event, mouse_event);
+            if mouse_event.wheel_up || mouse_event.wheel_down {
+                mouse_event.wheel_lines = wheel_lines;
+            }
             let action = Action::MouseEvent { event: mouse_event };
             os_input.send_to_server(ClientToServerMsg::Action {
                 action,
@@ -445,6 +459,32 @@ mod tests {
             .flat_map(|message| typed(&message).1)
             .collect();
         assert_eq!(bytes, b"a\x1b\x1bb\x1b");
+    }
+
+    #[test]
+    fn wheel_reports_carry_the_sockets_line_count() {
+        for (wheel_lines, expected) in [(0, 0), (1, 1)] {
+            let os_input = RecordingOsInput::default();
+            let mut mouse_old_event = MouseEvent::new();
+            let mut session = super::StdinSession::new(false);
+            session.wheel_lines = wheel_lines;
+            parse_stdin(
+                b"\x1b[<64;10;5M",
+                Box::new(os_input.clone()),
+                &mut mouse_old_event,
+                &mut session,
+            );
+            match os_input.take_sent_messages().as_slice() {
+                [ClientToServerMsg::Action {
+                    action: Action::MouseEvent { event },
+                    ..
+                }] => {
+                    assert!(event.wheel_up);
+                    assert_eq!(event.wheel_lines, expected);
+                },
+                other => panic!("expected one wheel event, got {other:?}"),
+            }
+        }
     }
 
     #[test]

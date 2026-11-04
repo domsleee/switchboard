@@ -201,6 +201,12 @@ also claims the size explicitly. Smaller browser
 viewers scroll over the same layout and start at the bottom, near the prompt. **Back to bottom**
 returns after scrolling up. Background windows never reclaim the size from metadata updates.
 Ownership transfers on focus and releases when the owner leaves the tab or disconnects.
+
+Wheel and trackpad scrolling moves the text as far as the gesture did, 3 lines per
+Zellij scroll. **Settings → Fine scrolling** (trial) scrolls 1 line per step instead:
+the terminal socket passes `wheel_lines=1` and each wheel report carries that count to
+Zellij. Native terminal clients keep 3 lines per wheel notch.
+
 Smaller plain terminals and older browsers still constrain the layout because they cannot pan.
 
 ## Attention detection
