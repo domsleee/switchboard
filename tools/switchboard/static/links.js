@@ -108,16 +108,21 @@
       const url=relative?null:path?fileUrl(path):resolve(uri);
       if(!path&&!relative&&window.parent!==window&&parent.SwitchboardOpenInApp?.(host,url))return;
       if(newTab){
-        // Open synchronously in this browser, then request foreground focus.
+        // Open just after the click, not during it: Chrome opens a tab in the background
+        // while the click that opened it holds Cmd/Ctrl. The click still allows the popup.
         // No popup features: use the browser's normal new-tab behavior.
-        const tab=window.open('about:blank','_blank');
-        if(!tab)throw Error('The browser blocked the new tab');
-        tab.opener=null;
-        const go=href=>{const link=tab.document.createElement('a');link.href=href;link.rel='noreferrer';link.click();};
-        // A relative video's tab opens within the click and follows once the relay finds the file.
-        if(relative)locate(uri).then(found=>{if(found)go(fileUrl(found));else{tab.close();console.warn('Switchboard link: no pane in this session holds',uri);}});
-        else go(url);
-        tab.focus();
+        setTimeout(()=>{
+          try{
+            const tab=window.open('about:blank','_blank');
+            if(!tab)throw Error('The browser blocked the new tab');
+            tab.opener=null;
+            const go=href=>{const link=tab.document.createElement('a');link.href=href;link.rel='noreferrer';link.click();};
+            // A relative video's tab opens with the click and follows once the relay finds the file.
+            if(relative)locate(uri).then(found=>{if(found)go(fileUrl(found));else{tab.close();console.warn('Switchboard link: no pane in this session holds',uri);}});
+            else go(url);
+            tab.focus();
+          }catch(error){console.warn('Switchboard link:',error.message);}
+        },0);
       }else{
         const link=document.createElement('a');
         link.href=url;link.target='_blank';link.rel='noopener noreferrer';
