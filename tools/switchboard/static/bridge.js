@@ -5,7 +5,6 @@
   const NativeSocket = window.WebSocket;
   const host = location.pathname.split('/')[2];
   let latest;
-  let escapeQueue = Promise.resolve();
   let escapeStatus;
   let pendingFocus, desiredFocus, focusInputState, focusId, focusTimeout, focusAttempts=0;
   const focusMaxAttempts=3, focusTimeoutMs=5000;
@@ -270,26 +269,6 @@
     escapeStatus.style.color = failed ? '#ffd57a' : '#e5e7eb';
     escapeStatus.hidden = !message;
   }
-  function sendEscape() {
-      if(pendingFocus||pendingNewTab){showEscapeStatus('Waiting for the selected terminal to receive focus.',true);return;}
-      const target = {session:latest?.session_name, pane_id:latest?.active_pane?.pane_id};
-      if (!target.session || !Number.isInteger(target.pane_id)) {
-        showEscapeStatus('Escape failed: terminal state is unavailable.', true);
-        return;
-      }
-      showEscapeStatus('');
-      escapeQueue = escapeQueue.then(async () => {
-        try {
-          const response = await fetch(`/api/hosts/${host}/escape`, {
-            method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(target),
-          });
-          if (!response.ok) throw new Error((await response.text()).slice(0, 240) || `HTTP ${response.status}`);
-          showEscapeStatus('');
-        } catch (error) {
-          showEscapeStatus(`Escape failed: ${error.message}`, true);
-        }
-      });
-  }
   window.addEventListener('keydown',event=>{
     const digit=/^Digit[1-9]$/.test(event.code),windows=digit&&navigator.platform.startsWith('Win');
     // Keep browser tab shortcuts away from older peers' terminal handlers:
@@ -331,16 +310,6 @@
     if((event.metaKey||event.ctrlKey)&&!event.altKey&&!event.shiftKey&&event.code==='KeyK'){
       event.preventDefault();event.stopImmediatePropagation();
       parent.postMessage({type:'zellij-tab-search',host},location.origin);return;
-    }
-    if(event.code === 'Escape' && !event.altKey && !event.ctrlKey && !event.metaKey &&
-        !event.shiftKey && !event.isComposing && terminalFocused()) {
-      // Stock web 0.45.1 loses bare ESC during idle finalization. The relay
-      // writes byte 27 directly to the terminal identified by current metadata.
-      const pane = latest?.active_pane;
-      if (pane?.is_plugin) return;
-      event.preventDefault();event.stopImmediatePropagation();
-      sendEscape();
-      return;
     }
     if(event.code==='KeyL'&&event.ctrlKey&&!event.metaKey&&!event.shiftKey
         &&!event.isComposing&&!event.getModifierState?.('AltGraph')&&terminalFocused()){
@@ -525,7 +494,8 @@
       }else{diagnostics?.ack();releaseFocus();restoreTerminalFocus();if(latest)sendState(latest);}
     } else if (message?.type === 'zellij-escape' && !hasDialog()) {
       focusTerminalInput();
-      if(!latest?.active_pane?.is_plugin)sendEscape();
+      // The same byte the key sends, in order with typing on the terminal socket.
+      window.term?.input('\x1b');
     } else if (message?.type === 'zellij-native-tabs') {
       showNativeTabs = !!message.visible;
       updateChrome();

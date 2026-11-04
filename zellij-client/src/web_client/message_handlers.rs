@@ -26,6 +26,9 @@ pub struct StdinSession {
     /// ambiguous-but-complete event (e.g. a bare ESC). Cleared by
     /// `finalize` when an idle timeout drains those events.
     pending_finalize: bool,
+    /// Input bytes not yet sent with an event, so a held ESC still
+    /// reaches the pane as byte 27 when a later frame or `finalize` emits it.
+    held: Vec<u8>,
 }
 
 impl StdinSession {
@@ -35,6 +38,7 @@ impl StdinSession {
             input_parser: InputParser::new(),
             explicitly_disable_kitty_keyboard_protocol,
             pending_finalize: false,
+            held: Vec::new(),
         }
     }
 
@@ -56,25 +60,47 @@ impl StdinSession {
     /// loop after an idle interval with no further frames, mirroring
     /// `stdin_handler::finalize_events`.
     pub fn finalize(&mut self, os_input: &dyn ClientOsApi, mouse_old_event: &mut MouseEvent) {
-        let mut events = vec![];
-        self.input_parser.parse(
-            &[],
-            |input_event: InputEvent| {
-                events.push(input_event);
-            },
-            false,
-        );
-        for input_event in events {
-            dispatch_termwiz_event(os_input, mouse_old_event, input_event, &[]);
-        }
+        self.dispatch(&[], false, os_input, mouse_old_event);
         self.pending_finalize = false;
+    }
+
+    /// Like the native client, each event carries the bytes that produced it,
+    /// including bytes held from earlier frames. termwiz can absorb an ESC as an
+    /// Alt prefix without counting it, so an event takes every held byte except
+    /// those the parser still buffers.
+    fn dispatch(
+        &mut self,
+        buf: &[u8],
+        maybe_more: bool,
+        os_input: &dyn ClientOsApi,
+        mouse_old_event: &mut MouseEvent,
+    ) {
+        let mut remaining = self.input_parser.buffered_len() + buf.len();
+        self.held.extend_from_slice(buf);
+        let mut events = vec![];
+        self.input_parser.parse_with_consumed(
+            buf,
+            |input_event: InputEvent, consumed: usize| {
+                events.push((input_event, consumed));
+            },
+            maybe_more,
+        );
+        for (input_event, consumed) in events {
+            remaining = remaining.saturating_sub(consumed);
+            let take = self.held.len().saturating_sub(remaining);
+            let raw_bytes: Vec<u8> = self.held.drain(..take).collect();
+            dispatch_termwiz_event(os_input, mouse_old_event, input_event, &raw_bytes);
+        }
+        // Bytes termwiz dropped without an event are not input.
+        if self.input_parser.buffered_len() == 0 {
+            self.held.clear();
+        }
     }
 }
 
 /// Dispatch a single termwiz `InputEvent` produced by either the live
 /// path or the idle finalize path. `raw_bytes` is the byte slice that
-/// produced the event in the live path; finalize passes an empty slice
-/// because no frame is associated with the drained events.
+/// produced the event, including the held bytes a finalize drains.
 fn dispatch_termwiz_event(
     os_input: &dyn ClientOsApi,
     mouse_old_event: &mut MouseEvent,
@@ -237,48 +263,7 @@ pub fn parse_stdin(
     // maybe_more = true so termwiz buffers ambiguous prefixes across
     // WebSocket frames; the WebSocket loop calls `session.finalize`
     // after an idle interval to drain any remaining ambiguous events.
-    let maybe_more = true;
-    let mut events = vec![];
-    session.input_parser.parse(
-        buf,
-        |input_event: InputEvent| {
-            events.push(input_event);
-        },
-        maybe_more,
-    );
-
-    let single_event = events.len() == 1;
-    for (_i, input_event) in events.into_iter().enumerate() {
-        match input_event {
-            InputEvent::Key(key_event) => {
-                // For multi-event buffers (e.g. IME composition), avoid
-                // duplicating the full buffer for each unmodified Char event.
-                // Non-Char or modified keys still use the original buffer.
-                let raw_bytes = if single_event {
-                    buf.to_vec()
-                } else {
-                    use zellij_utils::vendored::termwiz::input::{KeyCode, Modifiers};
-                    match (&key_event.key, key_event.modifiers) {
-                        (KeyCode::Char(c), m) if m == Modifiers::NONE => {
-                            let mut char_buf = [0u8; 4];
-                            c.encode_utf8(&mut char_buf).as_bytes().to_vec()
-                        },
-                        _ => buf.to_vec(),
-                    }
-                };
-                let key = cast_termwiz_key(key_event.clone(), &raw_bytes, None);
-                os_input.send_to_server(ClientToServerMsg::Key {
-                    key: key.clone(),
-                    raw_bytes,
-                    is_kitty_keyboard_protocol: false,
-                });
-            },
-            other => {
-                dispatch_termwiz_event(&*os_input, mouse_old_event, other, buf);
-            },
-        }
-    }
-
+    session.dispatch(buf, true, &*os_input, mouse_old_event);
     session.pending_finalize = true;
 }
 
@@ -382,6 +367,60 @@ mod tests {
             raw_bytes,
             vec!["你".as_bytes().to_vec(), "好".as_bytes().to_vec()]
         );
+    }
+
+    /// A bare ESC is held until the idle finalize. It must still reach the pane
+    /// as byte 27: a pane without the Kitty protocol is written the raw bytes.
+    #[test]
+    fn bare_escape_keeps_its_byte_when_finalized() {
+        use zellij_utils::data::BareKey;
+        let os_input = RecordingOsInput::default();
+        let mut mouse_old_event = MouseEvent::new();
+        let mut session = super::StdinSession::new(false);
+
+        parse_stdin(
+            b"\x1b",
+            Box::new(os_input.clone()),
+            &mut mouse_old_event,
+            &mut session,
+        );
+        assert!(os_input.take_sent_messages().is_empty());
+        session.finalize(&os_input, &mut mouse_old_event);
+
+        match os_input.take_sent_messages().as_slice() {
+            [ClientToServerMsg::Key { key, raw_bytes, .. }] => {
+                assert_eq!(key.bare_key, BareKey::Esc);
+                assert_eq!(raw_bytes, &vec![0x1b]);
+            },
+            other => panic!("expected one Esc key, got {other:?}"),
+        }
+    }
+
+    /// Claude Code's double Escape: the second press lands before the first is
+    /// finalized. The pane must still receive both bytes, in order with typing.
+    #[test]
+    fn quick_escapes_and_typing_reach_the_pane_byte_for_byte() {
+        let os_input = RecordingOsInput::default();
+        let mut mouse_old_event = MouseEvent::new();
+        let mut session = super::StdinSession::new(false);
+        for frame in [&b"a"[..], b"\x1b", b"\x1b", b"b", b"\x1b"] {
+            parse_stdin(
+                frame,
+                Box::new(os_input.clone()),
+                &mut mouse_old_event,
+                &mut session,
+            );
+        }
+        session.finalize(&os_input, &mut mouse_old_event);
+        let bytes: Vec<u8> = os_input
+            .take_sent_messages()
+            .into_iter()
+            .flat_map(|message| match message {
+                ClientToServerMsg::Key { raw_bytes, .. } => raw_bytes,
+                other => panic!("expected key message, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(bytes, b"a\x1b\x1bb\x1b");
     }
 
     #[test]

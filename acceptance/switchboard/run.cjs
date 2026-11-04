@@ -24,6 +24,10 @@ const commands={
     if(process.platform==='win32'||args.length!==1)throw Error('switching requires Unix and BINARY (private recovered terminals)');
     return [[node,'tools/switchboard/tab_switch_native.test.cjs',path.resolve(args[0])]];
   },
+  keys:()=>{
+    if(process.platform==='win32'||args.length!==1)throw Error('keys requires Unix and BINARY (private recovered terminal)');
+    return [[node,'tools/switchboard/keys_native.test.cjs',path.resolve(args[0])]];
+  },
   update:()=>{
     if(process.platform!=='darwin'||args.length!==2)throw Error('update requires macOS and OLD_BINARY NEW_BINARY');
     return [[node,'tools/switchboard/update_local.test.cjs',...args.map(value=>path.resolve(value))]];
@@ -37,7 +41,7 @@ const commands={
 try{
   if(suite==='--list'){console.log(Object.keys(commands).join('\n'));process.exit(0);}
   if(!commands[suite])throw Error('Unknown suite. Use --list.');
-  if(!['browser','sharing','switching','update','windows-browser'].includes(suite)&&args.length)throw Error('This suite takes no arguments.');
+  if(!['browser','sharing','switching','keys','update','windows-browser'].includes(suite)&&args.length)throw Error('This suite takes no arguments.');
   for(const command of commands[suite]()){
     console.log('\nRunning '+command.slice(0,3).join(' '));
     const result=spawnSync(command[0],command.slice(1),{cwd:root,env,stdio:'inherit',windowsHide:true});

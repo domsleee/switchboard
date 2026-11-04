@@ -314,12 +314,16 @@ the terminal.
 
 ## Escape key
 
-Bare Escape in stock web 0.45.1 drops its byte during parser finalization. The
-relay bypasses it with a validated, pane-targeted `zellij action write ... 27`.
-This computer uses the native CLI; paired computers run it behind their gateway.
-Uncertain delivery is never automatically retried. Input waits for focus acknowledgement when switching
-remote panes; Back to terminal preserves the focused pane. Dialogs and plugin
-focus retain their native behavior.
+Escape travels like any other key: xterm sends byte 27 on the terminal socket,
+in order with typing. The web server holds a bare ESC for 50 ms to tell it from
+a key sequence, then sends it with the bytes it held, so a pane without the
+Kitty protocol still receives byte 27. Escape pressed while the sidebar has
+focus is typed into the selected terminal the same way. Dialogs keep their own
+Escape.
+
+`acceptance/switchboard/run.cjs keys BINARY` types a lone Escape, Escape then a
+key, and a double Escape into a raw-mode program in a private session, and
+checks it reads the same bytes in the same order.
 
 ## Windows terminal input
 
