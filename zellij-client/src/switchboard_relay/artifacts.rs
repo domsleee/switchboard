@@ -286,11 +286,53 @@ pub(super) async fn serve_path(path: &str, range: Option<&HeaderValue>) -> Respo
     else {
         return (StatusCode::NOT_FOUND, "File not found").into_response();
     };
+    let expanded = if expanded.exists() || !path.contains('\\') {
+        expanded
+    } else {
+        restore_dropped_separators(&expanded).unwrap_or(expanded)
+    };
     match expanded.canonicalize() {
         Ok(target) if target.is_file() => send(&target, range, "File not found").await,
         Ok(target) if target.is_dir() => folder_page(&expanded).await,
         _ => (StatusCode::NOT_FOUND, "File not found").into_response(),
     }
+}
+
+/// Markdown drops a backslash before punctuation, so an agent's `C:\Users\dom\.config\a.png`
+/// reaches the screen as `C:\Users\dom.config\a.png`. Puts back the separators the disk shows.
+fn restore_dropped_separators(path: &Path) -> Option<std::path::PathBuf> {
+    fn walk(dir: std::path::PathBuf, rest: &[String]) -> Option<std::path::PathBuf> {
+        let Some((name, rest)) = rest.split_first() else {
+            return Some(dir);
+        };
+        let whole = dir.join(name);
+        if whole.exists() {
+            if let Some(found) = walk(whole, rest) {
+                return Some(found);
+            }
+        }
+        // Each split must land on a real folder, so the search stays small.
+        name.char_indices()
+            .skip(1)
+            .filter(|(_, c)| c.is_ascii_punctuation())
+            .find_map(|(i, _)| {
+                let folder = dir.join(&name[..i]);
+                folder.is_dir().then(|| {
+                    let tail = [vec![name[i..].to_string()], rest.to_vec()].concat();
+                    walk(folder, &tail)
+                })?
+            })
+    }
+    let mut root = std::path::PathBuf::new();
+    let mut names = Vec::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::Normal(name) => names.push(name.to_str()?.to_string()),
+            _ if names.is_empty() => root.push(part),
+            _ => return None,
+        }
+    }
+    walk(root, &names)
 }
 
 fn escape_html(text: &str) -> String {
@@ -1282,6 +1324,25 @@ mod tests {
         page.insert(header::ORIGIN, "http://127.0.0.1:8091".parse().unwrap());
         assert!(!super::super::trusted(&page, 8090));
         server.abort();
+    }
+
+    #[test]
+    fn paths_find_separators_that_markdown_dropped() {
+        let temp = tempfile::tempdir().unwrap();
+        let shot = temp.path().join("Dominic.Slee/.cwinspector/.a/shot.png");
+        std::fs::create_dir_all(shot.parent().unwrap()).unwrap();
+        std::fs::write(&shot, "png").unwrap();
+        let restore = |seen: &str| restore_dropped_separators(&temp.path().join(seen));
+        assert_eq!(
+            restore("Dominic.Slee.cwinspector/.a/shot.png"),
+            Some(shot.clone())
+        );
+        assert_eq!(
+            restore("Dominic.Slee.cwinspector.a/shot.png"),
+            Some(shot.clone())
+        );
+        assert_eq!(restore("Dominic.Slee/.cwinspector/.a/shot.png"), Some(shot));
+        assert_eq!(restore("Dominic.Slee.cwinspector/missing.png"), None);
     }
 
     #[test]
