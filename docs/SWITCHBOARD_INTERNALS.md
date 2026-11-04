@@ -267,7 +267,11 @@ install folder, and its settings folder exists. The time of each agent's last ho
 kept in `~/.config/switchboard/agent-reports.json`. `POST /api/tasks/setup`
 (`{agent, host?}`; paired computers use `/switchboard/tasks/setup`) runs that agent's
 fixed setup in the background; requests name an agent, never a command. Codex hooks
-point at the relay's own executable. The same section shows the relay's build and whether
+run `~/.local/share/switchboard/codex-agent-hook` (`.cmd` on Windows), which the relay
+rewrites at startup to run its current executable, so the hook text Codex trusted stays
+the same across updates even though Windows runs each release from its own folder.
+Hooks from builds that named the executable directly read as out of date until set up
+again. The same section shows the relay's build and whether
 its automatic update is on: the `switchboard-update.timer` user unit is enabled on Linux,
 the `dev.switchboard.update` LaunchAgent is loaded on macOS, and on Windows the tray, which
 runs the checks, holds its `Local\SwitchboardTray` mutex.

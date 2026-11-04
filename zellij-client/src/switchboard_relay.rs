@@ -1341,6 +1341,12 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
             },
         }
     }
+    #[allow(deprecated)]
+    if let (Some(home), Ok(binary)) = (std::env::home_dir(), control::own_executable()) {
+        if let Err(error) = agent_setup::install_codex_launcher(&home, &binary) {
+            log::warn!("Cannot write the Codex hook launcher: {error}");
+        }
+    }
     #[cfg(unix)]
     {
         #[allow(deprecated)]
