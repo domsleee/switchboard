@@ -5,7 +5,7 @@ const location={pathname:'/hosts/windows/main',origin:'http://127.0.0.1:8090',hr
 const window={open:(uri,target)=>{assert.equal(uri,'about:blank');assert.equal(target,'_blank');const tab={opener:{},document:{createElement:()=>({click(){assert.equal(tab.opener,null);assert.equal(this.rel,'noreferrer');opened.push([this.href,'_blank','noopener noreferrer']);}})},focus(){tabFocused++;}};return tab;},__switchboardLinkHosts:{windows:{origin:'https://172.20.10.69:8082',local:false,artifacts:{'9000':'http://127.0.0.1:9090'}}},addEventListener:(type,fn)=>handlers[type]=fn};
 const document={createElement:tag=>{assert.equal(tag,'a');return {click(){opened.push([this.href,this.target,this.rel]);}};}};
 window.term={cols:80,element:{},_core:{_mouseService:{},linkifier:{_positionFromMouseEvent:()=>({x:3,y:1}),_currentLink:{link:{text:'http://127.0.0.1:8765/',range:{start:{x:1,y:1},end:{x:8,y:1}}}}}}};
-vm.runInNewContext(fs.readFileSync(__dirname+'/static/links.js','utf8'),{window,parent,location,document,URL,console,setInterval:()=>1,clearInterval:()=>{},setTimeout:()=>1,clearTimeout:()=>{}});
+vm.runInNewContext(fs.readFileSync(__dirname+'/static/links.js','utf8'),{window,parent,location,document,URL,console,setInterval:()=>1,clearInterval:()=>{},setTimeout:fn=>(fn(),1),clearTimeout:()=>{}});
 assert.equal(window.__switchboardResolveLink('http://127.0.0.1:8765/a?q=1'),'http://172.20.10.69:8765/a?q=1');
 assert.equal(window.__switchboardResolveLink('http://localhost:9000/a'),'http://127.0.0.1:9090/a');
 assert.throws(()=>window.__switchboardResolveLink('javascript:alert(1)'));
@@ -104,7 +104,7 @@ if(process.env.PLAYWRIGHT_MODULE)(async()=>{
       window.linkClicks=[];
       const createElement=document.createElement.bind(document);
       document.createElement=(...args)=>{const node=createElement(...args);if(node.tagName==='A')node.addEventListener('click',event=>window.linkClicks.push({shift:event.shiftKey,ctrl:event.ctrlKey,alt:event.altKey,meta:event.metaKey,button:event.button,target:node.target,rel:node.rel}));return node;};
-      const open=window.open.bind(window);window.focusRequests=0;window.open=(...args)=>{const tab=open(...args);if(tab){const focus=tab.focus.bind(tab);tab.focus=()=>{window.focusRequests++;focus();};}return tab;};
+      const open=window.open.bind(window);window.focusRequests=0;window.openedDuringEvent=0;window.open=(...args)=>{if(window.event)window.openedDuringEvent++;const tab=open(...args);if(tab){const focus=tab.focus.bind(tab);tab.focus=()=>{window.focusRequests++;focus();};}return tab;};
     });
     await page.addScriptTag({path:__dirname+'/static/links.js'});
     await page.locator('#terminal').click();
@@ -121,6 +121,8 @@ if(process.env.PLAYWRIGHT_MODULE)(async()=>{
     await popup.close();
     }
     assert.equal(await page.evaluate(()=>window.focusRequests),2);
+    // Chrome sends a tab opened during a Cmd/Ctrl click to the background; headless cannot show that.
+    assert.equal(await page.evaluate(()=>window.openedDuringEvent),0,'Cmd/Ctrl-click opens its tab after the click');
     console.log('Headless browser: Cmd/Ctrl/Shift-click opens each remote URL in the viewing browser with no opener.');
   }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});
