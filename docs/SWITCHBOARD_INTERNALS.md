@@ -271,7 +271,17 @@ With Settings → Media previews on (off by default, saved in this browser), ima
 and video paths use the same route for previews. Hovering one in a terminal
 shows it in a popup, and a message on the Messages page shows it inline, read from
 the sender's computer. A media path ends at its extension, so it may contain
-spaces, and drive, UNC, `~/` and `/` roots all match.
+spaces, and drive, UNC, `~/` and `/` roots all match; a space followed by another
+root starts a new path.
+
+In a terminal, a relative media path without spaces, such as `out/shot.png`, also
+previews and opens. The page cannot tell which pane printed it, so it asks
+`/api/hosts/<id>/resolve-file?session=&path=`, which runs `list-panes --json --all`
+on the computer that owns the session and returns the path under the first pane
+directory that holds the file, focused panes first. Paired computers answer the
+same question at `/switchboard/resolve-file`. A relative path that no pane holds
+shows no preview. The Messages page shows only rooted paths, since a message
+does not say which directory its sender ran in.
 
 The Windows gallery on port 8765 uses the separate HTTPS origin
 `https://zellij-gallery.localhost`, proxied through an anonymous HTTP listener

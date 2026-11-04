@@ -291,6 +291,91 @@ pub(super) async fn serve_path(path: &str, range: Option<&HeaderValue>) -> Respo
     }
 }
 
+#[derive(Deserialize)]
+pub(super) struct SessionPath {
+    session: String,
+    path: String,
+}
+
+/// A path printed relative to one of a session's panes, as `{"path": absolute}`.
+/// The browser cannot tell which pane printed it, so the directories of focused panes
+/// are tried first and the first that holds the file wins.
+pub(super) async fn resolve_local(host: &Host, query: &SessionPath) -> Response {
+    // Drive-relative (C:x) and rooted paths already go to the file route as they are.
+    let relative = !query.path.is_empty()
+        && !query.path.starts_with(['/', '\\', '~'])
+        && !query.path.contains(':')
+        && Path::new(&query.path).is_relative();
+    if control::validate_session(&query.session).is_err() || !relative {
+        return (StatusCode::BAD_REQUEST, "Not a relative path").into_response();
+    }
+    let args = ["list-panes", "--json", "--all"];
+    let Ok(panes) = control::run_local(host, &query.session, &args, Duration::from_secs(5)).await
+    else {
+        return (StatusCode::BAD_GATEWAY, "Cannot list panes").into_response();
+    };
+    let panes: Vec<Value> = serde_json::from_str(&panes).unwrap_or_default();
+    match find_in_panes(&panes, &query.path) {
+        Some(path) => Json(json!({ "path": path })).into_response(),
+        None => (StatusCode::NOT_FOUND, "File not found").into_response(),
+    }
+}
+
+/// `path` under the first pane directory that holds it as a regular file, focused panes first.
+fn find_in_panes(panes: &[Value], path: &str) -> Option<String> {
+    let mut dirs: Vec<&str> = Vec::new();
+    for focused in [true, false] {
+        for pane in panes {
+            if pane["is_plugin"] == true || (pane["is_focused"] == true) != focused {
+                continue;
+            }
+            match pane["pane_cwd"].as_str() {
+                Some(dir) if !dirs.contains(&dir) => dirs.push(dir),
+                _ => {},
+            }
+        }
+    }
+    // Joined rather than canonicalized, which on Windows would add a \\?\ prefix.
+    dirs.into_iter()
+        .map(|dir| Path::new(dir).join(path))
+        .find(|path| path.is_file())
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
+/// `GET /api/hosts/{host}/resolve-file?session=&path=`: see [`resolve_local`].
+pub(super) async fn resolve_file(
+    State(state): State<RelayState>,
+    RoutePath(id): RoutePath<String>,
+    Query(query): Query<SessionPath>,
+    request: Request,
+) -> Result<Response, Error> {
+    same_origin(&request)?;
+    let host = state
+        .host(&id)
+        .ok_or((StatusCode::NOT_FOUND, "Unknown computer"))?;
+    if host.is_local_engine() {
+        return Ok(resolve_local(&host, &query).await);
+    }
+    let path = format!(
+        "/switchboard/resolve-file?session={}&path={}",
+        urlencoding::encode(&query.session),
+        urlencoding::encode(&query.path)
+    );
+    remote(&host, Method::GET, &path, HeaderMap::new()).await
+}
+
+// Sibling origins, such as published artifact pages on 127.0.0.1:8091, are same-site.
+fn same_origin(request: &Request) -> Result<(), Error> {
+    if request
+        .headers()
+        .get("sec-fetch-site")
+        .is_some_and(|site| site != "same-origin" && site != "none")
+    {
+        return Err((StatusCode::FORBIDDEN, "Untrusted file request"));
+    }
+    Ok(())
+}
+
 async fn send(target: &Path, range: Option<&HeaderValue>, missing: &'static str) -> Response {
     let not_found = || (StatusCode::NOT_FOUND, missing).into_response();
     let Ok(mut file) = tokio::fs::File::open(target).await else {
@@ -455,14 +540,7 @@ pub(super) async fn file(
     Query(file): Query<FilePath>,
     request: Request,
 ) -> Result<Response, Error> {
-    // Sibling origins, such as published artifact pages on 127.0.0.1:8091, are same-site.
-    if request
-        .headers()
-        .get("sec-fetch-site")
-        .is_some_and(|site| site != "same-origin" && site != "none")
-    {
-        return Err((StatusCode::FORBIDDEN, "Untrusted file request"));
-    }
+    same_origin(&request)?;
     let host = state
         .host(&id)
         .ok_or((StatusCode::NOT_FOUND, "Unknown computer"))?;
@@ -1052,5 +1130,83 @@ mod tests {
         page.insert(header::ORIGIN, "http://127.0.0.1:8091".parse().unwrap());
         assert!(!super::super::trusted(&page, 8090));
         server.abort();
+    }
+
+    #[test]
+    fn relative_paths_resolve_in_focused_panes_first() {
+        let temp = tempfile::tempdir().unwrap();
+        let (focused, other) = (temp.path().join("focused"), temp.path().join("other"));
+        for dir in [&focused, &other] {
+            std::fs::create_dir_all(dir.join("out")).unwrap();
+            std::fs::write(dir.join("out/shot.png"), "png").unwrap();
+        }
+        std::fs::write(other.join("only.png"), "png").unwrap();
+        let pane = |dir: &Path, focused: bool| json!({"is_plugin":false,"is_focused":focused,"pane_cwd":dir.to_str().unwrap()});
+        let panes = [
+            pane(&other, false),
+            json!({"is_plugin":true,"is_focused":true}),
+            pane(&focused, true),
+        ];
+        let found = |path| find_in_panes(&panes, path).map(std::path::PathBuf::from);
+        assert_eq!(found("out/shot.png"), Some(focused.join("out/shot.png")));
+        assert_eq!(found("only.png"), Some(other.join("only.png")));
+        // Directories are not files, and nothing is found without a pane directory.
+        assert_eq!(found("out"), None);
+        assert_eq!(
+            find_in_panes(&[json!({"is_focused":true})], "only.png"),
+            None
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn relative_paths_resolve_through_the_session_pane_list() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("project/out")).unwrap();
+        std::fs::write(temp.path().join("project/out/shot.png"), "png").unwrap();
+        let cli = temp.path().join("zellij");
+        let catalog = json!([{"id":1,"is_plugin":false,"is_focused":true,
+            "pane_cwd":temp.path().join("project").to_str().unwrap()}]);
+        std::fs::write(
+            &cli,
+            format!("#!/bin/sh\n[ \"$1 $2 $3 $4\" = \"-s main action list-panes\" ] && echo '{catalog}'\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut config = super::super::tests::config("http://127.0.0.1:9");
+        config.zellij_binary = Some(cli.to_str().unwrap().into());
+        let host = Host::new(config).unwrap();
+        let resolve = |session: &str, path: &str| {
+            let query = SessionPath {
+                session: session.into(),
+                path: path.into(),
+            };
+            let host = &host;
+            async move { read(resolve_local(host, &query).await).await }
+        };
+        let (status, _, body) = resolve("main", "out/shot.png").await;
+        assert_eq!(status, StatusCode::OK);
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            body["path"],
+            temp.path().join("project/out/shot.png").to_str().unwrap()
+        );
+        assert_eq!(
+            resolve("main", "out/none.png").await.0,
+            StatusCode::NOT_FOUND
+        );
+        // Rooted paths take the file route as they are, and sessions are validated.
+        for path in ["/etc/shot.png", "~/shot.png", "C:shot.png", ""] {
+            assert_eq!(
+                resolve("main", path).await.0,
+                StatusCode::BAD_REQUEST,
+                "{path}"
+            );
+        }
+        assert_eq!(
+            resolve("../x", "out/shot.png").await.0,
+            StatusCode::BAD_REQUEST
+        );
     }
 }

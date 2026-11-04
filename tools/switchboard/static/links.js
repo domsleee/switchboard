@@ -1,6 +1,6 @@
 // Open links in the viewing browser, synchronously within the user's gesture.
 (() => {
-  const host = location.pathname.split('/')[2];
+  const [host, session] = location.pathname.split('/').slice(2).map(decodeURIComponent);
   const config = window.__switchboardLinkHosts?.[host];
   const localHost = name => ['localhost','127.0.0.1','[::1]','::1'].includes(name);
   function resolve(uri) {
@@ -31,18 +31,35 @@
     return /^(~|[A-Za-z]:)?[\\/]/.test(uri) ? uri : null;
   }
   // Hovering an image or video path previews it from this terminal's computer.
-  // Drive, UNC, ~/ and / paths to media. Spaces are allowed because the extension ends the path.
-  const mediaPaths=/(?<![\w.~:%/\\-])(?:[A-Za-z]:[\\/]|\\\\|~[\\/]|\/)(?:[^\s"'<>|*?:\\/][^"'<>|*?:\n\\/]*?[\\/])*?[^\s"'<>|*?:\\/][^"'<>|*?:\n\\/]*?\.(?:png|jpe?g|gif|webp|avif|mp4|webm|mov|m4v)(?![\w-]|\.\w)/gi;
+  // Drive, UNC, ~/ and / paths to media. Spaces are allowed because the extension ends the path,
+  // but a space before another root starts a new path, so two paths on a line stay separate.
+  const mediaPaths=/(?<![\w.~:%/\\-])(?:[A-Za-z]:[\\/]|\\\\|~[\\/]|\/)(?:[^\s"'<>|*?:\\/](?:(?!\s+(?:[A-Za-z]:[\\/]|\\\\|~[\\/]|\/))[^"'<>|*?:\n\\/])*?[\\/])*?[^\s"'<>|*?:\\/](?:(?!\s+(?:[A-Za-z]:[\\/]|\\\\|~[\\/]|\/))[^"'<>|*?:\n\\/])*?\.(?:png|jpe?g|gif|webp|avif|mp4|webm|mov|m4v)(?![\w-]|\.\w)/gi;
   const mediaFile=/\.(?:png|jpe?g|gif|webp|avif|mp4|webm|mov|m4v)$/i,videoFile=/\.(?:mp4|webm|mov|m4v)$/i;
-  let preview,previewTimer;
-  function hidePreview(){clearTimeout(previewTimer);preview?.remove();preview=null;}
+  // Relative media paths, such as out/shot.png, without spaces since they have no root to start from.
+  const relativeMedia=/(?<![\w.~:%/\\@-])(?:[^\s"'`<>|*?:;,()[\]{}\\/]+[\\/])*[^\s"'`<>|*?:;,()[\]{}\\/]+\.(?:png|jpe?g|gif|webp|avif|mp4|webm|mov|m4v)(?![\w-]|\.\w)/gi;
+  const relativeFile=path=>mediaFile.test(path)&&!/^(?:[A-Za-z]:|[\\/~]|[a-z][\w+.-]*:)/i.test(path);
+  // The pane that printed a relative path is unknown, so the relay tries each pane directory in
+  // this session. Found paths are kept; misses are retried, since the file may appear later.
+  const located=new Map();
+  function locate(path){
+    if(!located.has(path))located.set(path,fetch(`/api/hosts/${encodeURIComponent(host)}/resolve-file?session=${encodeURIComponent(session)}&path=${encodeURIComponent(path)}`)
+      .then(response=>response.ok?response.json():null).then(body=>body?.path||null,()=>null)
+      .then(found=>{if(!found)located.delete(path);return found;}));
+    return located.get(path);
+  }
+  let preview,previewTimer,previewId=0;
+  function hidePreview(){previewId++;clearTimeout(previewTimer);preview?.remove();preview=null;}
   function showPreview(event,uri){
     hidePreview();
     let path;try{path=filePathOf(uri);}catch{return;}
+    const relative=!path&&relativeFile(uri);
+    if(relative)path=uri;
     if(!path||!mediaFile.test(path))return;
     try{if(localStorage.getItem('switchboard-media-previews')!=='true')return;}catch{return;}
-    const {clientX:x,clientY:y}=event,{innerWidth:width,innerHeight:height}=window;
-    previewTimer=setTimeout(()=>{
+    const {clientX:x,clientY:y}=event,{innerWidth:width,innerHeight:height}=window,id=previewId;
+    // A relative path that no pane holds is likely prose, so it shows nothing rather than an error.
+    previewTimer=setTimeout(()=>relative?locate(path).then(found=>{if(found&&id===previewId)show(found);}):show(path),300);
+    function show(path){
       const box=preview=document.createElement('div'),media=document.createElement(videoFile.test(path)?'video':'img');
       if(media.tagName==='VIDEO')Object.assign(media,{muted:true,autoplay:true,loop:true,playsInline:true});else media.alt=path;
       media.style.cssText='display:block;max-width:min(480px,60vw);max-height:min(320px,45vh);border-radius:4px';
@@ -51,7 +68,7 @@
       media.onerror=()=>box.replaceChildren('Preview unavailable');
       media.src=`/api/hosts/${encodeURIComponent(host)}/file?path=${encodeURIComponent(path)}`;
       box.append(media);document.body.append(box);
-    },300);
+    }
   }
   // Joins a wrapped path's rows. shortcut: wide characters shift the cells after them.
   const fileLinks = term => ({provideLinks(y,callback) {
@@ -63,9 +80,12 @@
     const cell = index => ({x:index%term.cols+1,y:start+Math.floor(index/term.cols)+1});
     const media = [...line.matchAll(mediaPaths)].map(match => ({index:match.index,text:match[0]}));
     // A media path with spaces wins over the shorter plain path inside it.
+    const overlaps = (path,others) => others.some(m => path.index < m.index+m.text.length && m.index < path.index+path.text.length);
     const plain = [...line.matchAll(filePath)].map(match => ({index:match.index,text:match[0].replace(/[.`]+$/,'')}))
-      .filter(path => !media.some(m => path.index < m.index+m.text.length && m.index < path.index+path.text.length));
-    const links = [...media,...plain].map(({index,text}) =>
+      .filter(path => !overlaps(path,media));
+    const relative = [...line.matchAll(relativeMedia)].map(match => ({index:match.index,text:match[0]}))
+      .filter(path => !overlaps(path,[...media,...plain]));
+    const links = [...media,...plain,...relative].map(({index,text}) =>
       ({range:{start:cell(index),end:cell(index+text.length-1)},text,activate:open,hover:showPreview,leave:hidePreview}))
       .filter(link => link.range.start.y <= y && y <= link.range.end.y);
     callback(links.length ? links : undefined);
@@ -76,22 +96,27 @@
     if (!linkGesture(event)) return;
     event.preventDefault();event.stopImmediatePropagation();
     try {
-      const path=filePathOf(uri),newTab=event.metaKey||event.ctrlKey;
+      const path=filePathOf(uri),newTab=event.metaKey||event.ctrlKey,relative=!path&&relativeFile(uri);
       // Cmd/Ctrl-click plays a video in a browser tab, streamed from this terminal's computer.
-      if(path&&!(newTab&&videoFile.test(path))){
+      if((path||relative)&&!(newTab&&videoFile.test(path||uri))){
         if(window.parent===window||!parent.SwitchboardOpenFile)throw Error('Files open from the Switchboard page');
-        parent.SwitchboardOpenFile(host,path);return;
+        if(path){parent.SwitchboardOpenFile(host,path);return;}
+        locate(uri).then(found=>found?parent.SwitchboardOpenFile(host,found):console.warn('Switchboard link: no pane in this session holds',uri));
+        return;
       }
-      const url=path?new URL(`/api/hosts/${encodeURIComponent(host)}/file?path=${encodeURIComponent(path)}`,location.href).href:resolve(uri);
-      if(!path&&window.parent!==window&&parent.SwitchboardOpenInApp?.(host,url))return;
+      const fileUrl=file=>new URL(`/api/hosts/${encodeURIComponent(host)}/file?path=${encodeURIComponent(file)}`,location.href).href;
+      const url=relative?null:path?fileUrl(path):resolve(uri);
+      if(!path&&!relative&&window.parent!==window&&parent.SwitchboardOpenInApp?.(host,url))return;
       if(newTab){
         // Open synchronously in this browser, then request foreground focus.
         // No popup features: use the browser's normal new-tab behavior.
         const tab=window.open('about:blank','_blank');
         if(!tab)throw Error('The browser blocked the new tab');
         tab.opener=null;
-        const link=tab.document.createElement('a');
-        link.href=url;link.rel='noreferrer';link.click();
+        const go=href=>{const link=tab.document.createElement('a');link.href=href;link.rel='noreferrer';link.click();};
+        // A relative video's tab opens within the click and follows once the relay finds the file.
+        if(relative)locate(uri).then(found=>{if(found)go(fileUrl(found));else{tab.close();console.warn('Switchboard link: no pane in this session holds',uri);}});
+        else go(url);
         tab.focus();
       }else{
         const link=document.createElement('a');
