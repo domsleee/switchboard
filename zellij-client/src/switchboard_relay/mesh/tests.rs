@@ -2483,3 +2483,22 @@ fn peer_replies_name_the_failure_instead_of_blaming_the_invitation() {
         "Invitation expired, cancelled or consumed"
     );
 }
+
+#[test]
+fn a_database_saved_by_an_older_build_still_opens() {
+    // state.json as builds before shared settings (#210) saved it. A field this
+    // build added without a default made every update roll back, because
+    // pairing could not open and paired computers' sessions went missing.
+    let saved = json!({
+        "board_hosts": [], "categories": {}, "tab_order": null, "hidden_tabs": null,
+        "local": null, "membership": null, "invitations": {}, "incoming": {},
+        "outgoing": {}, "joining": null, "direct_incoming": {}, "direct_sent": {},
+        "hostnames": {}, "addresses": {}
+    });
+    let database: Database = serde_json::from_value(saved).expect("older state.json opens");
+    assert!(database.settings.is_empty());
+    // The fields every build has always written are enough.
+    let minimal = json!({"local": null, "membership": null, "invitations": {},
+        "incoming": {}, "outgoing": {}, "joining": null});
+    serde_json::from_value::<Database>(minimal).expect("minimal state.json opens");
+}

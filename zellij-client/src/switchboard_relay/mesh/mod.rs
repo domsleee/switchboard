@@ -180,6 +180,8 @@ struct Database {
     tab_order: Option<sync::TabOrder>,
     #[serde(default)]
     hidden_tabs: Option<sync::TabOrder>,
+    // Databases saved before shared settings existed have no `settings`.
+    #[serde(default)]
     settings: BTreeMap<String, sync::Setting>,
     local: Option<Member>,
     membership: Option<Signed<Membership>>,

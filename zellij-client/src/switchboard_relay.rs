@@ -1332,10 +1332,13 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
                 mesh.attach_bridge(port)?;
                 state.mesh = Some(mesh);
             },
-            Err(_) => logs::record(
-                "pairing",
-                "Switchboard pairing unavailable; local relay continues",
-            ),
+            Err(error) => {
+                log::warn!("Switchboard pairing unavailable: {error:#}");
+                logs::record(
+                    "pairing",
+                    &format!("Switchboard pairing unavailable; local relay continues: {error:#}"),
+                )
+            },
         }
     }
     #[cfg(unix)]
