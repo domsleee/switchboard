@@ -354,6 +354,43 @@ reach the loopback relay, so this protects the password from web pages, not from
 your own processes; sudo's terminal prompt has the same limit. The Claude plugin's
 `sudo` skill tells Claude to use `sudo -A`.
 
+## Interactive commands
+
+Claude Code's `!` and Bash tool run commands with stdin from `/dev/null` and no
+terminal, so anything that prompts (`gio mount`, `ssh`, `gh auth login`,
+`passwd`) fails or quits. `zellij switchboard run -- <command>` runs it where the
+user can answer. One argument is an `sh` command line; several are a program and
+its arguments. The relay writes `~/.local/share/switchboard/run-interactive` at
+startup, pointing at its own executable, so panes started before an update can
+use it. The Claude plugin's `interactive` skill tells Claude to use it.
+
+The helper opens a floating pane beside the caller's
+(`zellij run --floating --close-on-exit --blocking --near-current-pane`, which
+also works from a floating caller) in the caller's directory, named
+`Input needed: <command>`. The pane runs the command under `script` with
+`SHELL=/bin/sh`, because `script -c` uses `$SHELL` and that may be nu; the
+command gets the caller's `$SHELL` back. The recording, the pane id and the exit
+status go to a private `switchboard-run-*` temp directory. When the pane closes,
+the helper prints the recording without colours, cursor moves or `script`'s
+banners, deletes the directory, and exits with the command's status. `script`
+records what the pane shows, not what is typed, so a password typed with echo off
+stays out of the recording. A helper that is killed first (an interrupted Bash
+call) leaves the pane running; the pane deletes the directory itself when the
+command ends.
+
+The helper gives up after 9 minutes (`--timeout-secs` or
+`SWITCHBOARD_RUN_TIMEOUT_SECS`), under Claude Code's 10-minute Bash limit: it
+closes the pane, prints what it recorded, and fails. A pane the user closes
+early fails with `The pane was closed before the command finished`. Windows has
+no `script`, so the command refuses to run there.
+
+While the pane is open the helper holds `POST /api/interactive`
+(`{session, pane_id}`) open. The relay marks that local pane `input` with token
+`interactive` on top of its scanned state, without recording it in the pane's
+turn history, so the tab reads **Input needed** on every paired computer's
+sidebar. The mark goes when the connection closes, however the helper ends.
+Requests carrying a browser `Origin` or `Sec-Fetch-Mode` are refused.
+
 ## Escape key
 
 Escape travels like any other key: xterm sends byte 27 on the terminal socket,

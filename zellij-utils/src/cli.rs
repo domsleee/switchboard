@@ -225,6 +225,25 @@ pub enum SwitchboardCommand {
         )]
         relay_url: String,
     },
+    /// Run a command that prompts (ssh, gio mount, gh auth login) from a shell with no
+    /// terminal, such as Claude Code's: it opens in a floating pane beside this one, and
+    /// its output and exit status come back here once the pane closes
+    Run {
+        /// Give up and close the pane after this many seconds (under Claude Code's
+        /// 10-minute Bash limit by default)
+        #[clap(long, env = "SWITCHBOARD_RUN_TIMEOUT_SECS", default_value_t = 540)]
+        timeout_secs: u64,
+        /// Local relay that marks this pane as needing input
+        #[clap(
+            long,
+            env = "SWITCHBOARD_RELAY_URL",
+            default_value = "http://127.0.0.1:8090"
+        )]
+        relay_url: String,
+        /// One argument is a shell command line; several are a program and its arguments
+        #[clap(last(true), required(true))]
+        command: Vec<String>,
+    },
     /// Stage this executable and its helpers as a checksummed update bundle (CI)
     #[clap(hide = true)]
     Package {

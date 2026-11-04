@@ -566,6 +566,8 @@ pub(super) struct PollState {
     hooks: HashMap<(String, u64), Hooked>,
     // Wakes the local scan loops when a hook reports.
     hooked: Arc<tokio::sync::Notify>,
+    // Local panes waiting on `zellij switchboard run` (count per pane); they show "input".
+    interactive: HashMap<(String, u64), usize>,
     dirty: bool,
 }
 
@@ -641,8 +643,11 @@ impl PollState {
                     previous = Value::Null;
                 }
             }
+            // Only local scans list commands, so only local panes take hooks and runs.
+            let mut waiting_on_run = false;
             if let Some(command) = row.as_object_mut().unwrap().remove("command") {
                 self.apply_hook(row, &command);
+                waiting_on_run = self.waiting_on_run(row);
             }
             if row.as_object_mut().unwrap().remove("deferred") == Some(json!(true))
                 && self
@@ -718,6 +723,13 @@ impl PollState {
                     .get(&key)
                     .is_some_and(|o| o["seen"] == row["token"]));
             }
+            // Shown, never observed: the agent's own turn tracking carries on beneath it.
+            if waiting_on_run {
+                let row = row.as_object_mut().unwrap();
+                row.insert("state".into(), json!("input"));
+                row.insert("token".into(), json!("interactive"));
+                row.remove("seen");
+            }
         }
         for field in ["panes", "tabs"] {
             for row in snapshot[field].as_array_mut().unwrap() {
@@ -730,6 +742,29 @@ impl PollState {
         self.cache.insert(host.into(), snapshot.clone());
         self.refreshed.insert(host.into(), now);
         changed
+    }
+    /// A local pane started or finished waiting on `zellij switchboard run`.
+    pub(super) fn run_waiting(&mut self, session: &str, pane: u64, waiting: bool) {
+        let key = (session.to_owned(), pane);
+        let count = self.interactive.entry(key.clone()).or_default();
+        if waiting {
+            *count += 1;
+        } else {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                self.interactive.remove(&key);
+            }
+        }
+        self.hooked.notify_one();
+    }
+    pub(super) fn runs_waiting(&self) -> usize {
+        self.interactive.values().sum()
+    }
+    fn waiting_on_run(&self, row: &Value) -> bool {
+        let (Some(session), Some(pane)) = (row["session"].as_str(), row["pane_id"].as_u64()) else {
+            return false;
+        };
+        self.interactive.contains_key(&(session.to_owned(), pane))
     }
     /// Replaces a local pane's screen reading with its Claude Code hook status.
     fn apply_hook(&mut self, row: &mut Value, command: &Value) {

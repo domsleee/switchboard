@@ -228,15 +228,19 @@ fn script_text(binary: &Path) -> String {
 /// after every update, so the script follows updates too.
 #[cfg(unix)]
 pub(super) fn install_helper(home: &Path, binary: &Path) -> std::io::Result<()> {
+    write_script(&helper_script(home), &script_text(binary))
+}
+
+/// Replaces an executable script atomically, and only when its text changed.
+#[cfg(unix)]
+pub(super) fn write_script(path: &Path, text: &str) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    let path = helper_script(home);
-    let text = script_text(binary);
-    if std::fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
+    if std::fs::read_to_string(path).ok().as_deref() != Some(text) {
         std::fs::create_dir_all(path.parent().unwrap())?;
         let staged = path.with_extension("tmp");
-        std::fs::write(&staged, &text)?;
+        std::fs::write(&staged, text)?;
         std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))?;
-        std::fs::rename(&staged, &path)?;
+        std::fs::rename(&staged, path)?;
     }
     Ok(())
 }
@@ -265,7 +269,7 @@ fn parent_command() -> String {
     String::new()
 }
 
-fn shell_quote(arg: &str) -> String {
+pub(super) fn shell_quote(arg: &str) -> String {
     let plain = !arg.is_empty()
         && arg
             .chars()

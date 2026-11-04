@@ -4,6 +4,7 @@ pub(crate) mod askpass;
 mod attention;
 mod control;
 mod hostname;
+pub(crate) mod interactive;
 mod logs;
 mod mesh;
 mod output_diagnostics;
@@ -1239,6 +1240,7 @@ fn app(state: RelayState) -> Router {
         )
         .route("/api/askpass", post(askpass::ask))
         .route("/api/askpass/answer", post(askpass::answer))
+        .route("/api/interactive", post(interactive::wait))
         .route("/api/logs", get(logs::handler))
         .route("/api/tasks", get(tasks::handler))
         .route("/api/tasks/action", post(tasks::action))
@@ -1333,6 +1335,9 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
         if let (Some(home), Ok(binary)) = (home, std::env::current_exe()) {
             if let Err(error) = askpass::install_helper(&home, &binary) {
                 log::warn!("Cannot write the sudo askpass helper: {error}");
+            }
+            if let Err(error) = interactive::install_helper(&home, &binary) {
+                log::warn!("Cannot write the run-interactive helper: {error}");
             }
         }
     }
