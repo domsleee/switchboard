@@ -11,10 +11,10 @@ const PROMPT=`\x1b[2J\x1b[27;1H\x1b[39m❯\u00a0\x1b[2m${PLACEHOLDER}\x1b[22m\x1
 // visits the bottom row before settling after the character.
 const echo=(x,ch)=>`\x1b[?25l\x1b[H\r\x1b[${x}C\x1b[26B${ch}\x1b[K\x1b[30;1H\x1b[27;${x+2}H\x1b[?25h`;
 
-function harness({on=true}={}){
+function harness({on=true,report}={}){
   const term=new Terminal({cols:100,rows:30,allowProposedApi:true});
   let now=0,id=0,enabled=on;const timers=new Map(),draws=[];
-  const core=Predict.create({term,now:()=>now,enabled:()=>enabled,draw:model=>draws.push(model),
+  const core=Predict.create({term,now:()=>now,enabled:()=>enabled,draw:model=>draws.push(model),report,
     setTimer:(fn,ms)=>{timers.set(++id,{fn,at:now+ms});return id;},clearTimer:key=>timers.delete(key)});
   const write=data=>new Promise(resolve=>term.write(data,resolve));
   const advance=ms=>{now+=ms;for(const [key,timer] of [...timers])if(timer.at<=now){timers.delete(key);timer.fn();}};
@@ -61,7 +61,9 @@ test('a wrong guess is removed at its deadline and guessing pauses',async()=>{
   h.core.sent('a');
   assert.equal(h.shown(),null,'Paused after a wrong guess');
   h.advance(300);h.core.sent('b');
-  assert.deepEqual([h.shown().from,h.shown().text],[3,'b']);
+  assert.equal(h.shown(),null,'An unguessed key is not on screen yet, so guessing waits for a frame');
+  h.advance(300);await h.write(echo(3,'b'));h.core.sent('c');
+  assert.deepEqual([h.shown().from,h.shown().text],[4,'c']);
 });
 
 test('Enter and other keys pause guessing while the screen settles',async()=>{
@@ -72,7 +74,62 @@ test('Enter and other keys pause guessing while the screen settles',async()=>{
     h.advance(260);
   }
   h.core.sent('h');
+  assert.equal(h.shown(),null,'After the settle time guessing still waits for a frame drawn after the key');
+  h.advance(260);await h.write(PROMPT);h.core.sent('h');
   assert.equal(h.shown().text,'h');
+});
+
+// The prompt row with typed text and the cursor after it, as a redraw of Claude Code's input draws it.
+const typedRow=(text,extra='')=>`\x1b[?25l${extra}\x1b[27;1H\x1b[2K❯ ${text}\x1b[27;${text.length+3}H\x1b[?25h`;
+
+test('a frame drawn before any echo never confirms a correction that returns to the same text',async()=>{
+  const reports=[];
+  const h=harness({report:r=>reports.push(r)});await h.write(typedRow('helo'));
+  h.core.sent('\x7f\x7f');h.core.sent('lo');
+  assert.deepEqual([h.shown().from,h.shown().text,h.shown().cursor],[4,'lo',6]);
+  h.advance(50);await h.write(typedRow('helo','\x1b[1;1Hspinner'));
+  assert.equal(h.shown()?.text,'lo','The unchanged screen is the state before the edit, not after it');
+  await h.write(typedRow('hel'));
+  assert.equal(h.shown().text,'lo','Each echo confirms only the guesses it shows');
+  await h.write(typedRow('he')+typedRow('hel')+typedRow('helo'));
+  assert.equal(h.shown(),null);
+  assert.equal(h.core.state().confirmed,4);assert.deepEqual(reports,[]);
+});
+
+test('coalesced echoes that end on the starting text confirm at the deadline, not as a mistake',async()=>{
+  const reports=[];
+  const h=harness({report:r=>reports.push(r)});await h.write(typedRow('helo'));
+  h.core.sent('\x7f');h.core.sent('o');
+  h.advance(50);await h.write(typedRow('helo'));
+  assert.equal(h.shown().text,'o');
+  h.advance(1000);
+  assert.equal(h.shown(),null);
+  assert.equal(h.core.state().confirmed,2);assert.deepEqual(reports,[]);
+  await h.write(typedRow('helo'));h.core.sent('!');
+  assert.equal(h.shown().text,'!','Guessing goes on without a pause');
+});
+
+test('guesses leave as soon as the input moves to another row, and the miss is reported without text',async()=>{
+  const reports=[];
+  const h=harness({report:r=>reports.push(r)});await h.write(PROMPT);
+  h.core.sent('hi');h.advance(40);
+  await h.write('\x1b[?25l\x1b[27;1H\x1b[2K> earlier message\x1b[29;1H❯ \x1b[29;3H\x1b[?25h');
+  assert.equal(h.shown(),null);
+  assert.equal(reports.length,1);
+  assert.deepEqual({...reports[0],since_key_ms:undefined,since_write_ms:undefined},{outcome:'moved',pending:2,typed:2,confirmed:0,frames:1,age_ms:40,
+    srtt_ms:null,since_key_ms:undefined,since_write_ms:undefined,run_row:26,cursor_row:28,cursor_col:2,expected_col:4,cursor_hidden:false});
+  assert.ok(!JSON.stringify(reports).includes('hi"'),'what was typed is never reported');
+  h.advance(1000);await h.write(echo(2,'x'));h.core.sent('a');h.advance(1000);
+  assert.equal(reports.at(-1).outcome,'timeout');
+});
+
+test('Backspace keeps guessing across the space between words but not into a prompt',async()=>{
+  const h=harness();await h.write(typedRow('hi yo'));
+  h.core.sent('\x7f\x7f\x7f\x7f');
+  assert.equal(h.shown().cursor,3,'"o", "y", the space after "hi" and "i" are all erased');
+  const shell=harness();await shell.write('\x1b[2J\x1b[1;1Hdom@box:~$ ab\x1b[?25h');
+  shell.core.sent('\x7f\x7f\x7f');
+  assert.equal(shell.shown().cursor,11,'The space after "$" belongs to the prompt');
 });
 
 test('a key sent while a guess is unconfirmed keeps the guess but adds nothing after it',async()=>{

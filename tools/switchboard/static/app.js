@@ -776,6 +776,7 @@ function recordTerminalDiagnostic(entry,type,diagnostic){
     'control_tracking','focus_commands','terminal_metrics','cell_size_changes','first_cell_width_px','first_cell_height_px','last_cell_width_px','last_cell_height_px','min_cell_width_px','min_cell_height_px','max_cell_width_px','max_cell_height_px']:
     type==='new-tab'?['request_id','outcome','elapsed_ms','delivery_ms','sent_ms','pane_id','control_socket']:
     type==='terminal-load'?['outcome','elapsed_ms','page_ms','socket_ms','frame_ms','render_ms','visible']:
+    type==='instant-typing'?['outcome','pane_id','is_plugin','pending','typed','confirmed','frames','age_ms','srtt_ms','since_key_ms','since_write_ms','run_row','cursor_row','cursor_col','expected_col','cursor_hidden']:
     ['pane_id','is_plugin','shift','ctrl','alt','meta','repeat','held_ms','released_ms'];
   const body={host:entry.host};
   for(const field of fields){const value=diagnostic[field];if(value===null||typeof value==='boolean'||typeof value==='string'&&field==='outcome'||typeof value==='number'&&Number.isFinite(value)&&value>=0)body[field]=value;}
@@ -833,6 +834,8 @@ window.addEventListener('message',event=>{
     failNewTab(entry,event.data.request_id,event.data.message);
   }else if(event.data?.type==='zellij-load-diagnostic'){
     recordTerminalDiagnostic(entry,'terminal-load',event.data.diagnostic);
+  }else if(event.data?.type==='zellij-predict-diagnostic'){
+    recordTerminalDiagnostic(entry,'instant-typing',event.data.diagnostic);
   }else if(event.data?.type==='zellij-new-tab-diagnostic'){
     recordTerminalDiagnostic(entry,'new-tab',event.data.diagnostic);
   }else if(event.data?.type==='zellij-switch-diagnostic'){

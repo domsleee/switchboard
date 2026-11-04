@@ -460,8 +460,19 @@ It draws typed characters at the cursor before the computer echoes them, underli
 overlay above xterm. It drops each guess when the screen agrees with it, or when the guess
 expires. Only plain typing and Backspace are guessed. Guessing starts only when everything right
 of the cursor, up to a pane border, is blank or dim placeholder text. Any other key, a click or a
-paste pauses guessing until the screen should have settled. A guess the screen never confirms
-disappears after a few round trips, and guessing pauses after it.
+paste pauses guessing until the screen should have settled and a frame has arrived since. A guess
+the screen never confirms disappears after a few round trips, and guessing pauses after it.
+
+Echoes arrive in the order keys were sent, so each frame is matched to the earliest state it could
+show, counting "nothing echoed yet". A frame drawn before an echo can otherwise pass for a later
+state (Backspace, then retyping the same letter), remove the guesses early and show the screen
+replaying the edit. Guesses are dropped as soon as the cursor shows on another row.
+
+Each dropped guess is logged, at most once a second per frame, as `Terminal instant typing miss`
+in Settings → Logs and `/api/logs`: `outcome` is `timeout`, `moved` (the input changed rows) or
+`screen` (the program switched screens), with how many guesses were pending, the echo time, the
+time since the last unguessed key and since the last frame when guessing began, and the row and
+column the guess expected against where the cursor was. It never includes what was typed.
 
 Guesses stop showing when echoes come back in under 20ms and show again above 30ms. They are
 still made and checked while hidden, to keep measuring. The guessing state machine is covered by
