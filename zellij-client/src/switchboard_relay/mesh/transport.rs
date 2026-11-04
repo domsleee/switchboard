@@ -717,6 +717,15 @@ async fn terminal_response(
             .ok_or((StatusCode::NOT_FOUND, "File not found"))?;
         return Ok(artifacts::serve_path(&file, request.headers().get(header::RANGE)).await);
     }
+    // Pane directories reveal no more than the shells paired computers already reach.
+    if path.split('?').next() == Some("/switchboard/resolve-file")
+        && request.method() == Method::GET
+    {
+        let axum::extract::Query(query) =
+            axum::extract::Query::<artifacts::SessionPath>::try_from_uri(request.uri())
+                .map_err(|_| (StatusCode::BAD_REQUEST, "Not a relative path"))?;
+        return Ok(artifacts::resolve_local(&host, &query).await);
+    }
     if path == "/switchboard/logs" && request.method() == Method::GET {
         return Ok(Json(logs::local()).into_response());
     }

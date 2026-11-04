@@ -66,7 +66,7 @@ assert.deepEqual(opened[1],['https://example.test/artifact','_blank','noopener n
 // Hovering a media path shows a preview from the terminal's own computer; other paths show none.
 (async()=>{
   const body=[],node=tag=>({tagName:tag.toUpperCase(),style:{},children:[],append(...nodes){this.children.push(...nodes);},replaceChildren(...nodes){this.children=nodes;},remove(){body.splice(body.indexOf(this),1);}});
-  const settings={};let provider;const line='Saved /Users/dom/clips/demo.mp4 and /Users/dom/notes.txt and C:\\out\\map.png then D:\\Program Files\\Captures\\run (1).mp4 and \\\\nas\\share\\a.webm';
+  const settings={};let provider;const line='Saved /Users/dom/clips/demo.mp4 and /Users/dom/notes.txt and C:\\out\\map.png then D:\\Program Files\\Captures\\run (1).mp4 and \\\\nas\\share\\a.webm, mv /tmp/a.txt /tmp/b.png';
   const term={cols:200,buffer:{active:{getLine:()=>({isWrapped:false,translateToString:()=>line})}},options:{},registerLinkProvider:value=>provider=value,_core:{}};
   vm.runInNewContext(fs.readFileSync(__dirname+'/static/links.js','utf8'),{window:{term,innerWidth:800,innerHeight:600,addEventListener(){}},parent,location,URL,console,localStorage:{getItem:key=>settings[key]??null},
     document:{createElement:node,body:{append:value=>body.push(value)}},setInterval:fn=>(Promise.resolve().then(fn),1),clearInterval(){},setTimeout:fn=>fn(),clearTimeout(){}});
@@ -81,7 +81,7 @@ assert.deepEqual(opened[1],['https://example.test/artifact','_blank','noopener n
   assert.match(body[0].style.cssText,/right:112px;top:36px/);
   hover('C:\\out\\map.png');assert.equal(body.length,1,'One preview at a time');
   body[0].children[0].onerror();assert.deepEqual(body[0].children,['Preview unavailable']);
-  assert.deepEqual([...links.map(link=>link.text)].sort(),['/Users/dom/clips/demo.mp4','/Users/dom/notes.txt','C:\\out\\map.png','D:\\Program Files\\Captures\\run (1).mp4','\\\\nas\\share\\a.webm'].sort(),'Windows media paths keep spaces, parentheses and UNC roots');
+  assert.deepEqual([...links.map(link=>link.text)].sort(),['/Users/dom/clips/demo.mp4','/Users/dom/notes.txt','C:\\out\\map.png','D:\\Program Files\\Captures\\run (1).mp4','\\\\nas\\share\\a.webm','/tmp/a.txt','/tmp/b.png'].sort(),'Windows media paths keep spaces, parentheses and UNC roots, and a path never runs into the next one');
   hover('D:\\Program Files\\Captures\\run (1).mp4');
   assert.equal(body[0].children[0].src,'/api/hosts/windows/file?path=D%3A%5CProgram%20Files%5CCaptures%5Crun%20(1).mp4');
   links[0].leave();assert.equal(body.length,0);
@@ -123,4 +123,38 @@ if(process.env.PLAYWRIGHT_MODULE)(async()=>{
     assert.equal(await page.evaluate(()=>window.focusRequests),2);
     console.log('Headless browser: Cmd/Ctrl/Shift-click opens each remote URL in the viewing browser with no opener.');
   }finally{await browser.close();}
+})().catch(error=>{console.error(error);process.exitCode=1;});
+// Relative media paths resolve through this session's pane directories before previewing or opening.
+(async()=>{
+  const body=[],requests=[],opened=[],node=tag=>({tagName:tag.toUpperCase(),style:{},children:[],append(...nodes){this.children.push(...nodes);},replaceChildren(...nodes){this.children=nodes;},remove(){body.splice(body.indexOf(this),1);}});
+  let provider;const line='Saved `out/shot.png` and ./clip.webm; see docs/notes.md, http://host/a.png, /tmp/x/b.png and missing.png';
+  const term={cols:200,buffer:{active:{getLine:()=>({isWrapped:false,translateToString:()=>line})}},options:{},registerLinkProvider:value=>provider=value,_core:{}};
+  const found={'out/shot.png':'/home/me/project/out/shot.png','./clip.webm':'/home/me/project/./clip.webm'};
+  const fetch=async url=>{requests.push(url);const path=new URL(url,'http://relay').searchParams.get('path');return found[path]?{ok:true,json:async()=>({path:found[path]})}:{ok:false};};
+  const tabs=[];
+  vm.runInNewContext(fs.readFileSync(__dirname+'/static/links.js','utf8'),{window:{term,innerWidth:800,innerHeight:600,addEventListener(){},open:()=>{const tab={closed:false,close(){this.closed=true;},focus(){},document:{createElement:()=>({click(){tab.href=this.href;}})}};tabs.push(tab);return tab;}},parent:{SwitchboardOpenFile:(host,path)=>opened.push([host,path])},
+    location:{...location,pathname:'/hosts/mesh-pc/my%20session'},URL,console,fetch,localStorage:{getItem:()=>'true'},
+    document:{createElement:node,body:{append:value=>body.push(value)}},setInterval:fn=>(Promise.resolve().then(fn),1),clearInterval(){},setTimeout:fn=>fn(),clearTimeout(){}});
+  await Promise.resolve();let links;provider.provideLinks(1,value=>links=value);
+  assert.deepEqual([...links.map(link=>link.text)].sort(),['./clip.webm','/tmp/x/b.png','missing.png','out/shot.png'].sort(),'URLs, other files and backticks are not relative media paths');
+  const settle=()=>new Promise(resolve=>setImmediate(resolve));
+  const hover=text=>links.find(link=>link.text===text).hover({clientX:10,clientY:10},text);
+  hover('out/shot.png');await settle();
+  assert.equal(requests[0],'/api/hosts/mesh-pc/resolve-file?session=my%20session&path=out%2Fshot.png');
+  assert.equal(body[0].children[0].src,'/api/hosts/mesh-pc/file?path=%2Fhome%2Fme%2Fproject%2Fout%2Fshot.png');
+  hover('out/shot.png');await settle();assert.equal(requests.length,1,'A found path is resolved once');
+  hover('missing.png');await settle();assert.equal(body.length,0,'A path no pane holds shows nothing');
+  hover('missing.png');await settle();assert.equal(requests.length,3,'A missing path is looked up again');
+  // A late resolution never shows after the pointer left.
+  hover('./clip.webm');links[0].leave();await settle();assert.equal(body.length,0);
+  const click={metaKey:true,button:0,preventDefault(){},stopImmediatePropagation(){}};
+  links.find(link=>link.text==='out/shot.png').activate(click,'out/shot.png');await settle();
+  assert.deepEqual(opened,[['mesh-pc','/home/me/project/out/shot.png']]);
+  // A video's tab opens within the click, then follows the resolved file or closes.
+  links.find(link=>link.text==='./clip.webm').activate(click,'./clip.webm');
+  assert.equal(tabs.length,1,'The tab opens before the lookup finishes');await settle();
+  assert.equal(tabs[0].href,'http://127.0.0.1:8090/api/hosts/mesh-pc/file?path=%2Fhome%2Fme%2Fproject%2F.%2Fclip.webm');
+  found['gone.webm']=null;links[0].activate(click,'gone.webm');await settle();
+  assert.equal(tabs[1].closed,true);assert.equal(opened.length,1);
+  console.log('Relative media paths resolve through the session before previewing or opening.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

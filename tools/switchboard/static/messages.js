@@ -5,8 +5,9 @@
   let directoryVersion = 0, historyVersion = 0;
   const names = new Map();
   let localMachine = null, localHost = null;
-  // Drive, UNC, ~/ and / paths to media. Spaces are allowed because the extension ends the path.
-  const mediaPaths = /(?<![\w.~:%/\\-])(?:[A-Za-z]:[\\/]|\\\\|~[\\/]|\/)(?:[^\s"'<>|*?:\\/][^"'<>|*?:\n\\/]*?[\\/])*?[^\s"'<>|*?:\\/][^"'<>|*?:\n\\/]*?\.(?:png|jpe?g|gif|webp|avif|mp4|webm|mov|m4v)(?![\w-]|\.\w)/gi;
+  // Drive, UNC, ~/ and / paths to media. Spaces are allowed because the extension ends the path,
+  // but a space before another root starts a new path, so two paths on a line stay separate.
+  const mediaPaths = /(?<![\w.~:%/\\-])(?:[A-Za-z]:[\\/]|\\\\|~[\\/]|\/)(?:[^\s"'<>|*?:\\/](?:(?!\s+(?:[A-Za-z]:[\\/]|\\\\|~[\\/]|\/))[^"'<>|*?:\n\\/])*?[\\/])*?[^\s"'<>|*?:\\/](?:(?!\s+(?:[A-Za-z]:[\\/]|\\\\|~[\\/]|\/))[^"'<>|*?:\n\\/])*?\.(?:png|jpe?g|gif|webp|avif|mp4|webm|mov|m4v)(?![\w-]|\.\w)/gi;
   const ids = /\b(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{64})\b/gi;
   const text = (tag, value, className) => {
     const element = document.createElement(tag);
