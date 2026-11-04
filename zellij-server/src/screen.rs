@@ -2458,8 +2458,11 @@ impl Screen {
     }
 
     pub fn recompute_tab_size(&mut self, tab_id: usize) -> Result<()> {
-        let err_context = || format!("failed to recompute size for tab {tab_id}");
-
+        let released = self
+            .tab_size_owners
+            .get(&tab_id)
+            .copied()
+            .filter(|owner| self.active_tab_ids.get(owner) != Some(&tab_id));
         self.tab_size_owners
             .retain(|tab_id, client_id| self.active_tab_ids.get(client_id) == Some(tab_id));
         if let Some(owner_size) = self
@@ -2478,13 +2481,12 @@ impl Screen {
                     }
                 }
             }
-            if let Some(tab) = self.tabs.get_mut(&tab_id) {
-                if tab.size != new_size {
-                    tab.resize_whole_tab(new_size).with_context(err_context)?;
-                    tab.set_force_render();
-                }
-            }
-            return Ok(());
+            let owner = self
+                .tab_size_owners
+                .get(&tab_id)
+                .copied()
+                .unwrap_or_default();
+            return self.resize_tab_for_viewers(tab_id, new_size, &format!("owner {owner}"));
         }
 
         let mut rows: Vec<usize> = Vec::new();
@@ -2522,11 +2524,72 @@ impl Screen {
             rows: rows[0],
             cols: cols[0],
         };
+        let reason = match released {
+            Some(owner) => format!("owner {owner} left, smallest viewer"),
+            None => "smallest viewer".to_owned(),
+        };
+        self.resize_tab_for_viewers(tab_id, new_size, &reason)
+    }
+
+    /// Logs each resize with the viewers that decided it: an agent redraws its whole
+    /// screen on every resize, so repeated resizes show up as flicker on tab switches.
+    fn resize_tab_for_viewers(
+        &mut self,
+        tab_id: usize,
+        new_size: Size,
+        reason: &str,
+    ) -> Result<()> {
+        let Some(tab) = self.tabs.get(&tab_id) else {
+            return Ok(());
+        };
+        if tab.size == new_size {
+            return Ok(());
+        }
+        let mut viewers: Vec<_> = self
+            .active_tab_ids
+            .iter()
+            .filter(|(_, active_tab)| **active_tab == tab_id)
+            .map(|(client_id, _)| *client_id)
+            .collect();
+        viewers.sort_unstable();
+        let viewers: Vec<String> = viewers
+            .into_iter()
+            .map(|client_id| {
+                let size = self.client_sizes.get(&client_id).map_or_else(
+                    || "?".to_owned(),
+                    |size| format!("{}x{}", size.cols, size.rows),
+                );
+                let kind = if self.web_viewport_clients.contains(&client_id) {
+                    "browser"
+                } else if self
+                    .mobile_web_prefs
+                    .get(&client_id)
+                    .is_some_and(|prefs| !prefs.fit)
+                {
+                    "fit-off"
+                } else {
+                    "fixed"
+                };
+                format!("{client_id}={size} {kind}")
+            })
+            .collect();
+        log::info!(
+            "Tab {} resized {}x{} -> {}x{}: {reason}; viewers: {}",
+            tab.position,
+            tab.size.cols,
+            tab.size.rows,
+            new_size.cols,
+            new_size.rows,
+            if viewers.is_empty() {
+                "none".to_owned()
+            } else {
+                viewers.join(", ")
+            },
+        );
         if let Some(tab) = self.tabs.get_mut(&tab_id) {
-            if tab.size != new_size {
-                tab.resize_whole_tab(new_size).with_context(err_context)?;
-                tab.set_force_render();
-            }
+            tab.resize_whole_tab(new_size)
+                .with_context(|| format!("failed to recompute size for tab {tab_id}"))?;
+            tab.set_force_render();
         }
         Ok(())
     }

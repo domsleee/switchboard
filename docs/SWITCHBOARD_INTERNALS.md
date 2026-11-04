@@ -470,6 +470,12 @@ acknowledgment, so a short quiet gap cannot hide a later output replay burst.
 Scrolling reports count xterm buffer movement, line feeds and wheel events, and
 record actual xterm size changes and cropped rows. Buffer movement without line
 feeds can expose unwanted wrapping even when the browser viewport stays normal.
+A switch that lands on a tab of a different size logs **Terminal resize on switch**: the
+tab's size on arrival and after, the window size, and who sized the tab before (this window,
+another window, or nobody, which leaves it at its smallest viewer). Agents redraw on every
+resize, so these lines explain flicker on tab switches and are kept as long as slow switches.
+The computer that runs the session logs every tab resize to `zellij.log` as `Tab N resized`,
+with the reason and every viewer's size and kind.
 Control reports count native focus requests and cell pixel-size changes, including
 changes that leave the terminal's row and column count unchanged. Terminal
 transport reports summarize large upstream bursts and slow forwarding separately,

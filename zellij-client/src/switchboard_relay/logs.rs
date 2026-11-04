@@ -27,7 +27,7 @@ fn diagnostic(message: &str) -> bool {
 fn rank(message: &str) -> u8 {
     if !diagnostic(message) {
         2
-    } else if message.contains(" slow ") {
+    } else if message.contains(" slow ") || message.starts_with("Terminal resize ") {
         1
     } else {
         0
@@ -303,6 +303,10 @@ struct SwitchDiagnostic {
     #[serde(default)]
     max_native_rows: u16,
     #[serde(default)]
+    first_owner_active: Option<bool>,
+    #[serde(default)]
+    first_is_owner: Option<bool>,
+    #[serde(default)]
     xterm_cols: u16,
     #[serde(default)]
     buffer_scroll_events: u32,
@@ -413,6 +417,29 @@ impl SwitchDiagnostic {
             self.scroll_height_px,self.client_height_px,self.scroll_top_px,self.xterm_rows,self.buffer_rows,
             self.physical_cols,self.physical_rows,self.hidden_at_start,self.document_hidden,self.browser_focused,self.render_events,self.render_pending,self.animation_pending,
         )
+    }
+
+    /// A tab that changes size on arrival makes its agent redraw: the flicker on tab switches.
+    /// Kept with the slow samples so routine reports cannot push it out.
+    fn resize_message(&self) -> Option<String> {
+        let arrived = (self.first_native_cols, self.first_native_rows);
+        let resized = self.viewport_size_changes > 0
+            || arrived.0 > 0 && arrived != (self.native_cols, self.native_rows);
+        if !resized {
+            return None;
+        }
+        let owner = match (self.first_owner_active, self.first_is_owner) {
+            (Some(true), Some(true)) => "this window",
+            (Some(true), _) => "another window",
+            (Some(false), _) => "none (smallest viewer)",
+            (None, _) => "unknown",
+        };
+        Some(format!(
+            "Terminal resize on switch pane={}{} focus={} arrived={}x{} final={}x{} window={}x{} changes={} owner_on_arrival={} claims={} line_feeds={} bytes={}",
+            if self.is_plugin { "plugin:" } else { "" }, self.pane_id, self.focus_id,
+            arrived.0, arrived.1, self.native_cols, self.native_rows, self.physical_cols, self.physical_rows,
+            self.viewport_size_changes, owner, self.viewport_claims, self.line_feed_events, self.bytes,
+        ))
     }
 
     fn control_message(&self) -> String {
@@ -701,6 +728,9 @@ pub(super) async fn terminal_switch(
     let Some(message) = diagnostic.message() else {
         return StatusCode::BAD_REQUEST;
     };
+    if let Some(resize) = diagnostic.resize_message() {
+        record(&host.config.name, &resize);
+    }
     if !message.is_empty() {
         record(&host.config.name, &message);
         record(&host.config.name, &diagnostic.viewport_message());
@@ -1043,6 +1073,36 @@ mod tests {
             .unwrap()
             .message()
             .is_none());
+    }
+
+    #[test]
+    fn switch_resize_reports_the_size_on_arrival_and_outlasts_routine_samples() {
+        let mut sample = switch_sample();
+        let unchanged: SwitchDiagnostic = serde_json::from_value(sample.clone()).unwrap();
+        assert!(unchanged.resize_message().is_none());
+        sample["first_native_cols"] = json!(100);
+        sample["first_native_rows"] = json!(30);
+        sample["viewport_size_changes"] = json!(1);
+        sample["first_owner_active"] = json!(false);
+        sample["first_is_owner"] = json!(false);
+        sample["line_feed_events"] = json!(420);
+        let message = serde_json::from_value::<SwitchDiagnostic>(sample.clone())
+            .unwrap()
+            .resize_message()
+            .unwrap();
+        assert_eq!(
+            message,
+            "Terminal resize on switch pane=30 focus=17 arrived=100x30 final=120x40 window=120x40 changes=1 owner_on_arrival=none (smallest viewer) claims=2 line_feeds=420 bytes=120000"
+        );
+        assert_eq!(message, redact(&message));
+        sample["first_owner_active"] = json!(true);
+        assert!(serde_json::from_value::<SwitchDiagnostic>(sample)
+            .unwrap()
+            .resize_message()
+            .unwrap()
+            .contains("owner_on_arrival=another window"));
+        assert_eq!(rank(&message), rank("Terminal switch slow settled"));
+        assert!(rank(&message) > rank("Terminal viewport pane=30"));
     }
 
     #[test]

@@ -488,6 +488,8 @@
     const message = event.data;
     if (message?.type === 'zellij-focus') {
       diagnostics?.start(message,window.term,!!pendingFocus||latest?.active_pane?.pane_id!==message.pane_id||latest?.active_pane?.is_plugin!==message.is_plugin);
+      // An already active pane gets no new state; its current size is the size on arrival.
+      if(latest)diagnostics?.state(latest);
       focusId=message.focus_id;
       focusOrigin=parent.document.activeElement;preserveFocus=!!message.preserve_focus;
       if (pendingFocus || latest?.active_pane?.pane_id !== message.pane_id || latest?.active_pane?.is_plugin !== message.is_plugin){
