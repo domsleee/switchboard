@@ -514,9 +514,9 @@ function ensurePreserveDrawingBuffer() {
     };
 }
 
-// Last-resort face for Nerd Font icons (Unicode private use area): macOS font
-// fallback never supplies them, so they render as empty boxes without it.
-const NERD_SYMBOLS_FALLBACK = ', "Symbols Nerd Font Mono"';
+// Nerd Font icons (private use area only, see style.css): macOS fallback never
+// supplies them, and first place beats stale v2 Nerd Fonts' reassigned glyphs.
+const NERD_SYMBOLS_FIRST = '"Symbols Nerd Font Mono", ';
 
 function terminalConfigOptions(config) {
     const options = {};
@@ -524,7 +524,7 @@ function terminalConfigOptions(config) {
         return options;
     }
     if (typeof config.font === "string" && config.font !== "") {
-        options.fontFamily = config.font + NERD_SYMBOLS_FALLBACK;
+        options.fontFamily = NERD_SYMBOLS_FIRST + config.font;
     }
     if (config.theme) {
         options.theme = config.theme;
@@ -583,7 +583,7 @@ function initTerminal(config) {
     const term = new Terminal(
         Object.assign(
             {
-                fontFamily: "Monospace" + NERD_SYMBOLS_FALLBACK,
+                fontFamily: NERD_SYMBOLS_FIRST + "Monospace",
                 allowProposedApi: true,
                 scrollback: 0,
             },
