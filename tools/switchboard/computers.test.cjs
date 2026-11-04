@@ -35,7 +35,7 @@ async function fixture(fn, initial = {}) {
   } finally { await browser.close(); }
 }
 
-test('opening and reviewing an app link requires an explicit Join computer click', async () => {
+test('opening and reviewing an app link requires an explicit Join click', async () => {
   await fixture(async ({page, calls, responses}) => {
     responses.set('/api/mesh/preview', {mesh: 'Home', computer: 'Mac', address: 'https://192.0.2.1:8091', expires: 9999999999});
     await page.goto('https://switchboard.test/computers.html#isolated-invitation-fragment');
@@ -210,7 +210,7 @@ test('configured Windows appears before pairing and pairs using its existing gat
     await page.waitForFunction(() => document.querySelector('#address').value);
     assert.equal(await page.locator('#catalog').isVisible(),true);
     assert.equal(calls.find(call => call.path === '/api/hosts').query, '?summary=1&candidates=1');
-    assert.match(await page.locator('#members').textContent(), /Windows <work>.*pair this computer to use its terminals/s);
+    assert.match(await page.locator('#members').textContent(), /Windows <work>.*not paired/s);
     assert.equal(await page.locator('#members work').count(),0);
     assert.equal(calls.some(call => call.path === '/api/mesh/add'),false);
     await page.locator('#members button').click();
@@ -251,7 +251,7 @@ test('message board host selection is explicit and only offered for initial setu
     await page.locator('#board-form button').click();
     await page.waitForFunction(() => document.querySelector('#board-form').hidden);
     assert.deepEqual(calls.find(call => call.path === '/api/mesh/board-host').body,{host_id:'windows'});
-    assert.match(await page.locator('#board-description').textContent(), /Message board: Windows <work>/);
+    assert.match(await page.locator('#board-description').textContent(), /stored on Windows <work>\./);
     assert.equal(await page.locator('#board-description work').count(),0);
   }, {...pairedState,board_host:board});
 });
