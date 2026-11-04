@@ -45,12 +45,30 @@ Quitting it leaves your terminals running.
 The first install sets up this computer's login on its own. Running it again
 keeps your settings.
 
-## Exact Claude Code status
+## Exact agent status
 
-Switchboard reads each tab's screen to tell whether an agent is working. Claude Code
-can report its own turns instead, which is exact: it also shows **Waiting on a shell**
-when Claude finished but a background shell it started is still running. Install the
-`switchboard` plugin on each computer:
+Switchboard reads each tab's screen to tell whether an agent is working. Claude Code,
+Copilot CLI and Codex can report their own turns instead, which is exact: Claude also
+shows **Waiting on a shell** when it finished but a background shell it started is
+still running.
+
+Open Settings → **Health**. Each computer lists its Switchboard build and the agents
+installed on it, with when each last reported. Press **Set up** next to an agent that
+needs it, on any computer. Setup does only this:
+
+- **Claude Code and Copilot CLI:** adds the `domsleee/switchboard` marketplace,
+  installs and enables the `switchboard@switchboard` plugin, and turns on its
+  auto-update in the agent's `settings.json`. The plugin also adds a `message-board`
+  skill, so the agent can read, reply to and send
+  [message board](../../docs/MESSAGE_BOARD_USAGE.md) messages.
+- **Codex:** Codex plugins can't carry hooks, so setup adds command hooks that run
+  `zellij agent-hook --agent codex` to `~/.codex/hooks.json`, keeping any others.
+  The next time Codex starts it asks to review them: choose **Trust all and continue**.
+
+Running sessions pick up the plugin or hooks after a restart. Copilot's hooks run
+`zellij` from `PATH`, so this fork's `zellij` must be on it.
+
+To set up Claude Code by hand instead:
 
 ```sh
 claude plugin marketplace add domsleee/switchboard --sparse .claude-plugin plugins
@@ -59,48 +77,6 @@ claude plugin install switchboard@switchboard
 
 If this computer has the earlier `switchboard-status` plugin, remove it first with
 `claude plugin uninstall switchboard-status@switchboard`.
-
-Then turn on auto-update, which is off by default for this marketplace. `marketplace
-add` writes an `extraKnownMarketplaces.switchboard` entry to Claude Code's user
-settings; set `"autoUpdate": true` on it (or use `/plugin` → **Marketplaces** →
-`switchboard` → **Enable auto-update**):
-
-```sh
-python3 - <<'PY'
-import json, os
-path = os.path.join(os.environ.get("CLAUDE_CONFIG_DIR", os.path.expanduser("~/.claude")), "settings.json")
-settings = json.load(open(path))
-settings["extraKnownMarketplaces"]["switchboard"]["autoUpdate"] = True
-json.dump(settings, open(path, "w"), indent=2)
-PY
-```
-
-```powershell
-$dir = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $HOME .claude }
-$path = Join-Path $dir settings.json
-$settings = Get-Content $path -Raw | ConvertFrom-Json
-$settings.extraKnownMarketplaces.switchboard | Add-Member autoUpdate $true -Force
-# Without a byte order mark, which Windows PowerShell's -Encoding utf8 would add.
-[IO.File]::WriteAllText($path, ($settings | ConvertTo-Json -Depth 100), [Text.UTF8Encoding]::new($false))
-```
-
-The plugin also adds a `message-board` skill, so Claude can read, reply to and send
-[message board](../../docs/MESSAGE_BOARD_USAGE.md) messages.
-
-Claude Code checks for updates when a session starts. Running Claude sessions pick up
-the plugin after a restart.
-
-Copilot CLI uses the same plugin, including approval prompts and the skill. Its hooks
-run `zellij agent-hook`, so this fork's `zellij` must be on `PATH`:
-
-```sh
-copilot plugin marketplace add domsleee/switchboard
-copilot plugin install switchboard@switchboard
-```
-
-For updates at session start, set `"autoUpdate": true` on the marketplace's
-`extraKnownMarketplaces` entry in `~/.copilot/settings.json`
-([plugin reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-plugin-reference)).
 
 ## Resume agent chats after a restart
 

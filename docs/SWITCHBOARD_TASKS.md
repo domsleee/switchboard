@@ -41,7 +41,7 @@ what a task does. Whatever owns the tasks writes the file; for example, dotfiles
 | `enabled` | `false` turns a group off without deleting it. |
 
 Unknown fields and invalid values are errors. The relay rereads the file when it
-changes. While the file is invalid, nothing runs and the Updates section shows the
+changes. While the file is invalid, nothing runs and Settings → Health shows the
 error.
 
 ## Running
@@ -65,7 +65,7 @@ error.
   and each task's exit code, duration, last three stderr lines (stdout if stderr was
   empty), and `changed` lines. Paired computers answer `/switchboard/tasks` through
   the pairing gateway.
-- Settings → **Updates** shows every group, with Run now, a per-task Run, Log, and
+- Settings → **Health** shows every group, with Run now, a per-task Run, Log, and
   Pause/Resume. A failure or a `changed:` line puts a row in the sidebar. **Clear**
   stores `seen` on the computer that owns the group, so the row clears on every
   computer.

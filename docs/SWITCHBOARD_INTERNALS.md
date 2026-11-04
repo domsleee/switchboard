@@ -255,6 +255,22 @@ applies only while the pane's command still names that agent. A finished turn is
 identified by Claude's `prompt_id`, Codex's `turn_id` or Copilot's `timestamp`; a Codex
 `Interrupt` returns the pane to screen reading.
 
+Settings → **Health** (`switchboard_relay/agent_setup.rs`, drawn by `static/tasks.js`)
+shows whether each computer's agents are set up to report, as part of every computer's
+`/api/tasks` answer (`switchboard` and `agents`). Each relay reads the agents' own files
+rather than running them: Claude's `plugins/installed_plugins.json`, `settings.json` and
+`plugins/known_marketplaces.json`; Copilot's `config.json` (comment lines first) and
+`settings.json`; Codex's `hooks.json`, plus the `[hooks.state."<hooks.json>:<event>:<group>:<hook>"]`
+entries Codex writes to `config.toml` once the user trusts a hook. An agent counts as
+installed when its program is on the relay's PATH, the PATH in `tasks.json` or a usual
+install folder, and its settings folder exists. The time of each agent's last hook is
+kept in `~/.config/switchboard/agent-reports.json`. `POST /api/tasks/setup`
+(`{agent, host?}`; paired computers use `/switchboard/tasks/setup`) runs that agent's
+fixed setup in the background; requests name an agent, never a command. Codex hooks
+point at the relay's own executable. The same section shows the relay's build and the
+first line of the updater's last error from `automatic-updates/state.json`; the browser
+marks a computer behind when another runs a newer build.
+
 Screen reading works with already-running agents, without notification hooks or replacing
 Zellij. Detection follows terminal UI markers; unrecognized screens report
 unknown, and disconnected hosts lose stale ready status. Very short turns between

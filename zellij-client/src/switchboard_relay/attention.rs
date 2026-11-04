@@ -1145,6 +1145,7 @@ pub(super) async fn hook(
     let (Some(session), Some(pane), false) = (session, pane, nested) else {
         return StatusCode::NO_CONTENT;
     };
+    super::agent_setup::heard(agent);
     let key = (session.to_owned(), pane);
     let mut poll = state.poll.lock().await;
     // An interrupted Codex turn has no Stop; the screen shows what it left.

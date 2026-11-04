@@ -46,7 +46,7 @@ test('Update tasks show per computer, flag failures and changes in the sidebar, 
     assert.deepEqual(await notices.allTextContents(),['Mac · dotfiles ✗ agent plugins: codex failed','Dom-PC · dotfiles ↑ nushell 0.104']);
 
     await notices.first().click();
-    assert.equal(await page.locator('#panel-title').textContent(),'Updates');
+    assert.equal(await page.locator('#panel-title').textContent(),'Health');
     const computers=page.locator('#updates .task-computer');
     assert.deepEqual(await computers.locator('h4').allTextContents(),['Mac','Dom-PC','Old PC']);
     assert.equal(await computers.nth(2).locator('.log-note').textContent(),"Update tasks unavailable on this computer's version");
@@ -79,11 +79,83 @@ test('Update tasks show per computer, flag failures and changes in the sidebar, 
       {group:'dotfiles',action:'run',host:'mesh-dompc'},
       {group:'dotfiles',action:'clear',host:'mesh-dompc'}]);
 
-    tasks={computers:[{name:'Mac',local:true,groups:[],error:null}]};
+    tasks={computers:[{name:'Mac',local:true,groups:[],error:null,switchboard:{commit:'abc1234'},agents:[]}]};
     await page.evaluate(()=>SwitchboardTasks.load());
     await page.waitForFunction(()=>document.getElementById('task-notices').hidden);
-    await page.locator('#settings').click();await page.getByRole('tab',{name:'Updates'}).click();
+    await page.locator('#settings').click();await page.getByRole('tab',{name:'Health'}).click();
     await page.waitForFunction(()=>document.querySelector('#updates .log-note')?.textContent==='No update tasks configured');
+    assert.deepEqual(errors,[]);
+  }finally{await browser.close();}
+});
+
+test('Health shows each computer\'s build and agent reporting, and sets agents up on the right computer',
+  {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
+  const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
+  const browser=await chromium.launch({headless:true});
+  try{
+    const page=await browser.newPage({viewport:{width:1280,height:900}}),errors=[],setups=[];page.setDefaultTimeout(5000);
+    page.on('pageerror',e=>errors.push(e.message));
+    const now=Date.now();
+    const build=(commit,at,extra={})=>({commit,commitDate:at.slice(0,10),commitTimestamp:at,updateError:null,updateAttempts:null,...extra});
+    const agent=(id,name,state,detail,extra={})=>({agent:id,name,state,detail,lastReport:null,setupError:null,setupFinished:null,...extra});
+    const absent=[agent('claude','Claude Code','absent','Not installed'),agent('copilot','Copilot CLI','absent','Not installed'),agent('codex','Codex','absent','Not installed')];
+    const tasks={computers:[
+      {name:'Mac',local:true,groups:[],error:null,switchboard:build('0c60c7f','2026-11-04T20:21:14+11:00'),agents:[
+        agent('claude','Claude Code','ready','Plugin installed and auto-updating',{lastReport:now-120e3}),
+        agent('copilot','Copilot CLI','setup','Plugin not installed · Auto-update off'),
+        agent('codex','Codex','approve','Start Codex and choose “Trust all and continue” when it asks to review hooks')]},
+      {name:'Dom-PC',host:'mesh-dompc',groups:[],error:null,switchboard:build('ca42095','2026-11-04T20:04:27+11:00',{updateError:'bash failed: session not found',updateAttempts:1}),agents:[
+        ...absent.slice(0,2),agent('codex','Codex','setup','Status hooks not installed',{setupError:'Could not save hooks.json: denied'})]},
+      {name:'Linux',host:'mesh-linux',groups:[],error:null,switchboard:build('ca42095','2026-11-04T20:04:27+11:00'),agents:absent},
+      {name:'Old PC',host:'mesh-old',groups:[],error:null}]};
+    await page.addInitScript(()=>{window.setInterval=()=>0;});
+    await page.route('**/*',async route=>{
+      const request=route.request(),path=new URL(request.url()).pathname;
+      const json=(value,status=200)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(value)});
+      if(path==='/api/tasks')return json(tasks);
+      if(path==='/api/tasks/setup'){
+        const body=JSON.parse(request.postData());setups.push(body);
+        if(!body.host)tasks.computers[0].agents[1].state='running';
+        return json({ok:true},202);
+      }
+      if(path==='/api/hosts')return json([]);
+      if(path==='/api/attention')return json({tabs:[],panes:[],errors:[]});
+      if(path.startsWith('/api/'))return json({});
+      const file=path==='/'?'index.html':path.slice(1);
+      if(!['index.html','app.js','close.js','titles.js','style.css','tasks.js'].includes(file))return route.fulfill({status:404,body:''});
+      return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
+    });
+    await page.goto('https://switchboard.test/');
+    await page.locator('#settings').click();await page.getByRole('tab',{name:'Health'}).click();
+    const groups=page.locator('#updates .switchboard-group');
+    await page.waitForFunction(()=>document.querySelectorAll('#updates .switchboard-group').length===3);
+    const [mac,pc,linux]=[groups.nth(0),groups.nth(1),groups.nth(2)];
+
+    // Anything needing the user opens its group and names it in the summary.
+    assert.equal(await mac.getAttribute('open'),'');
+    assert.equal(await mac.locator('.task-title small').textContent(),'build 0c60c7f · 2026-11-04');
+    assert.equal(await mac.locator('.task-state').textContent(),'Copilot CLI: needs setup · Codex: approve hooks in Codex');
+    const macRows=mac.locator('.agent-row');
+    assert.deepEqual(await macRows.locator('.task-name').allTextContents(),['Claude Code','Copilot CLI','Codex']);
+    assert.equal(await macRows.nth(0).locator('.task-meta').textContent(),'reported 2m ago');
+    assert.equal(await macRows.nth(0).getByRole('button',{name:'Set up'}).count(),0);
+    assert.equal(await macRows.nth(1).locator('.task-meta').textContent(),'Plugin not installed · Auto-update off');
+    assert.equal(await macRows.nth(2).getByRole('button',{name:'Set up'}).count(),0,'Codex hooks are approved in Codex, not here');
+
+    assert.equal(await pc.locator('.task-state').textContent(),'Self-update failed: bash failed: session not found');
+    assert.equal(await pc.locator('.task-row').first().locator('.task-meta').textContent(),'failed (attempt 1 of 3)');
+    assert.equal(await pc.locator('.agent-row').count(),1,'agents that are not installed are left out');
+    assert.equal(await pc.locator('.agent-row .task-tail').textContent(),'Could not save hooks.json: denied');
+    assert.equal(await linux.locator('.task-state').textContent(),'Behind 0c60c7f');
+    assert.equal(await linux.locator('.agent-none').textContent(),'No Claude Code, Copilot CLI or Codex on this computer');
+    assert.equal(await page.locator('#updates .task-computer').nth(3).locator('.log-note').first().textContent(),'Update Switchboard on this computer to check its agents');
+
+    // Setup goes to the computer that owns the agent; this computer's carries no host.
+    await macRows.nth(1).getByRole('button',{name:'Set up'}).click();
+    await page.waitForFunction(()=>document.querySelector('#updates .agent-row[data-agent=copilot] .task-meta')?.textContent==='Setting up…'||document.querySelector('#updates .agent-row[data-agent=copilot]')?.dataset.status==='running');
+    await pc.getByRole('button',{name:'Set up'}).click();
+    await page.waitForFunction(()=>document.querySelectorAll('#updates .switchboard-group').length===3);
+    assert.deepEqual(setups,[{agent:'copilot'},{agent:'codex',host:'mesh-dompc'}]);
     assert.deepEqual(errors,[]);
   }finally{await browser.close();}
 });
