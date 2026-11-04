@@ -171,7 +171,8 @@ jobs:
   # Publishing is split per platform: a failing Windows check must not strand
   # finished macOS or Linux bundles (and vice versa). Each platform has its own
   # concurrency group so two builds' uploads of its assets never interleave. One
-  # shared group dropped Windows: GitHub keeps one pending job per group.
+  # shared group dropped Windows: GitHub keeps one pending job per group. Groups
+  # do not order runs, so the script skips a build older than the published one.
   publish-windows:
     needs: [checks, windows]
     # Only this repository's main branch feeds automatic updates.
@@ -193,22 +194,8 @@ jobs:
           path: artifacts/switchboard-windows
       - name: Replace rolling release assets
         run: |
-          set -euo pipefail
-          gh release view latest-main >/dev/null 2>&1 ||
-            gh release create latest-main --prerelease --latest=false --target "$GITHUB_SHA" \
-              --title 'Latest main build' --notes 'Rolling build used by Switchboard automatic updates.'
-          mkdir release
-          for directory in artifacts/switchboard-*; do
-            platform=${directory#artifacts/switchboard-}
-            for file in "$directory"/*; do cp "$file" "release/switchboard-$platform-$(basename "$file")"; done
-          done
-          # Manifests last: updaters verify every asset against them and retry
-          # on a mismatch while a newer upload is in progress.
-          gh release upload latest-main --clobber $(ls release/* | grep -v -- '-bundle.json$')
-          gh release upload latest-main --clobber release/*-bundle.json
-          # The manifest's commit is authoritative; the tag follows for readers.
-          git tag -f latest-main "$GITHUB_SHA"
-          git push -f origin refs/tags/latest-main
+          bash .github/scripts/publish_latest_main.test.sh
+          bash .github/scripts/publish_latest_main.sh artifacts
 
   publish-macos:
     needs: [macos]
@@ -232,22 +219,8 @@ jobs:
           path: artifacts
       - name: Replace rolling release assets
         run: |
-          set -euo pipefail
-          gh release view latest-main >/dev/null 2>&1 ||
-            gh release create latest-main --prerelease --latest=false --target "$GITHUB_SHA" \
-              --title 'Latest main build' --notes 'Rolling build used by Switchboard automatic updates.'
-          mkdir release
-          for directory in artifacts/switchboard-*; do
-            platform=${directory#artifacts/switchboard-}
-            for file in "$directory"/*; do cp "$file" "release/switchboard-$platform-$(basename "$file")"; done
-          done
-          # Manifests last: updaters verify every asset against them and retry
-          # on a mismatch while a newer upload is in progress.
-          gh release upload latest-main --clobber $(ls release/* | grep -v -- '-bundle.json$')
-          gh release upload latest-main --clobber release/*-bundle.json
-          # The manifest's commit is authoritative; the tag follows for readers.
-          git tag -f latest-main "$GITHUB_SHA"
-          git push -f origin refs/tags/latest-main
+          bash .github/scripts/publish_latest_main.test.sh
+          bash .github/scripts/publish_latest_main.sh artifacts
 
   publish-linux:
     needs: [linux]
@@ -271,19 +244,5 @@ jobs:
           path: artifacts
       - name: Replace rolling release assets
         run: |
-          set -euo pipefail
-          gh release view latest-main >/dev/null 2>&1 ||
-            gh release create latest-main --prerelease --latest=false --target "$GITHUB_SHA" \
-              --title 'Latest main build' --notes 'Rolling build used by Switchboard automatic updates.'
-          mkdir release
-          for directory in artifacts/switchboard-*; do
-            platform=${directory#artifacts/switchboard-}
-            for file in "$directory"/*; do cp "$file" "release/switchboard-$platform-$(basename "$file")"; done
-          done
-          # Manifests last: updaters verify every asset against them and retry
-          # on a mismatch while a newer upload is in progress.
-          gh release upload latest-main --clobber $(ls release/* | grep -v -- '-bundle.json$')
-          gh release upload latest-main --clobber release/*-bundle.json
-          # The manifest's commit is authoritative; the tag follows for readers.
-          git tag -f latest-main "$GITHUB_SHA"
-          git push -f origin refs/tags/latest-main
+          bash .github/scripts/publish_latest_main.test.sh
+          bash .github/scripts/publish_latest_main.sh artifacts

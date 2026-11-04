@@ -12,7 +12,9 @@ When all checks pass, `native-binaries.yml` replaces the assets of one rolling
 prerelease, `latest-main`, as `switchboard-<platform>-<file>`, each manifest
 last. The release is created once and never recreated, so followers are not
 notified per build; the tag follows the build's commit. Only this repository's
-`main` publishes. Each bundle is also kept as a 30-day Actions artifact for
+`main` publishes. Builds can finish out of order, so a platform whose published
+manifest names a newer commit is skipped (`.github/scripts/publish_latest_main.sh`).
+Each bundle is also kept as a 30-day Actions artifact for
 updaters installed before this change.
 
 The executable is the updater: `zellij switchboard update` (`--check` downloads
