@@ -20,6 +20,7 @@ button:disabled{opacity:.5;cursor:default}
 .sidebar-brand strong{font-size:14px}
 #sidebar-summary{display:flex;min-height:14px;line-height:14px;align-items:center;justify-content:space-between;gap:8px}
 #new-tab{margin-left:auto;width:28px;height:28px;padding:0;font-size:21px;line-height:1}
+#new-admin-tab{width:28px;height:28px;padding:0;font-size:14px;line-height:1}
 #sidebar-toggle{position:absolute;top:12px;left:calc(var(--sidebar-width,242px) - 37px);z-index:6;width:28px;height:28px;padding:0;font-size:15px}
 body.sidebar-collapsed #sidebar-toggle{left:8px}
 #tab-search{width:100%;min-width:0;background:#111318;color:inherit;border:1px solid #363e4d;border-radius:5px;padding:7px 9px;font:inherit;font-size:12px}
@@ -100,7 +101,6 @@ dialog h2{margin:0 0 18px;font-size:18px}
 dialog label{display:block;font-size:13px;margin-bottom:8px}
 dialog button,dialog select{font-size:13px;padding:7px 10px}
 dialog select{width:100%}
-dialog label.check{display:flex;align-items:center;gap:6px;margin:12px 0 0}
 dialog p{font-size:12px;color:#9ba7bd}
 .dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}
 #askpass-dialog{width:520px}

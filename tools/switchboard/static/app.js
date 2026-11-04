@@ -931,20 +931,26 @@ window.SwitchboardOpenFile=(host,path)=>{
 $('filter-more').onchange=event=>setFilter(event.target.value);
 $('focus-group').onchange=event=>{localStorage.setItem('switchboard-focus-group',event.target.value);setFilter(event.target.value||'all');};
 renderFilter();
-$('new-tab').onclick=()=>{
+let newTabElevated=false;
+$('new-tab').onclick=()=>openNewTabDialog(false);
+$('new-admin-tab').onclick=()=>openNewTabDialog(true);
+function openNewTabDialog(elevated){
+  newTabElevated=elevated;
+  $('new-tab-title').textContent=elevated?'New administrator tab':'New tab';
+  $('new-tab-note').textContent=elevated?'Opens an administrator shell on the selected machine. Someone there approves it: a UAC prompt on Windows, a sudo password elsewhere.':'Opens a shell on the selected machine.';
   const select=$('new-tab-target');select.replaceChildren();
   const current=allTabs().find(t=>t.key===selected)?.entry;
   for(const [key,entry] of sessions){
     if(!entry.state||!sessionTabs(entry).length)continue;
     const option=document.createElement('option');option.value=key;option.textContent=`${hosts.get(entry.host)?.name} · ${entry.name}`;option.selected=entry===current;select.append(option);
   }
-  for(const host of hosts.values())if(!host.error&&host.sessions?.length===0&&![...select.options].some(option=>option.value===sessionKey(host.id,'main'))){
+  // A machine's first session starts a plain shell, so it cannot be elevated.
+  if(!elevated)for(const host of hosts.values())if(!host.error&&host.sessions?.length===0&&![...select.options].some(option=>option.value===sessionKey(host.id,'main'))){
     const option=document.createElement('option');option.value=sessionKey(host.id,'main');option.textContent=host.name;select.append(option);
   }
-  $('new-tab-elevated').checked=false;
-  if(!select.options.length){setStatus('No machines are connected. Check your machines in Settings.',true);return;}
+  if(!select.options.length){setStatus(elevated&&hosts.size?'Open a regular tab on the machine first, then an administrator tab.':'No machines are connected. Check your machines in Settings.',true);return;}
   $('new-tab-dialog').showModal();
-};
+}
 $('cancel-new-tab').onclick=()=>$('new-tab-dialog').close();
 // A click on the backdrop closes a dialog. Both press and release must land
 // outside, so selecting text inside and releasing outside keeps it open.
@@ -984,7 +990,7 @@ $('new-tab-form').onsubmit=event=>{
   // Keyboard dismissal can leave focus on the hidden session selector, then
   // move it to the body. Hand focus to the frame before creation records it.
   entry.frame.focus();
-  entry.frame.contentWindow.postMessage({type:'zellij-new-tab',elevated:$('new-tab-elevated').checked,request_id:pending.requestId,started_at:pending.startedAt},location.origin);
+  entry.frame.contentWindow.postMessage({type:'zellij-new-tab',elevated:newTabElevated,request_id:pending.requestId,started_at:pending.startedAt},location.origin);
   setStatus(`Creating a tab on ${hosts.get(entry.host)?.name}…`);
   setTimeout(()=>failNewTab(entry,pending.requestId,'No new tab received. Check the connection and try again.'),30000);
 };

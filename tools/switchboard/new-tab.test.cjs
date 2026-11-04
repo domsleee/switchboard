@@ -73,15 +73,20 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
     }
     async function create(number){
       if(number===1)await input.evaluate(()=>{window.controlSocket.readyState=0;});
-      await page.keyboard.press(number===1?'Control+Alt+KeyT':'Meta+Alt+KeyT');
+      // The second tab comes from the shield button and asks for administrator.
+      if(number===2){
+        await page.keyboard.press('Meta+Alt+KeyT');
+        await page.waitForFunction(()=>document.querySelector('#new-tab-dialog').open);
+        assert.equal(await page.locator('#new-tab-title').textContent(),'New tab');
+        await page.locator('#cancel-new-tab').click();
+        await page.locator('#new-admin-tab').click();
+      }else await page.keyboard.press('Control+Alt+KeyT');
       await page.waitForFunction(()=>document.querySelector('#new-tab-dialog').open);
+      assert.equal(await page.locator('#new-tab-title').textContent(),number===2?'New administrator tab':'New tab');
       assert.equal(await page.locator('#new-tab-form button[type="submit"]').evaluate(button=>document.activeElement===button),true,'Create tab is focused so Enter confirms the default target');
       assert.equal(await page.locator('#new-tab-form button[type="submit"]').evaluate(button=>{
         const style=getComputedStyle(button);return style.outlineStyle==='solid'&&style.outlineWidth==='2px';
       }),true,'The default action is visibly highlighted');
-      assert.equal(await page.locator('#new-tab-elevated').isChecked(),false,'Each new tab starts unelevated');
-      // The second tab asks for administrator; the dialog forgets it for the next one.
-      if(number===2)await page.locator('#new-tab-elevated').evaluate(box=>{box.checked=true;});
       await page.keyboard.press('Enter');
       await page.waitForFunction(()=>document.querySelector('#tabs .selected .tab-name')?.textContent==='Creating tab…');
       if(number===1){
