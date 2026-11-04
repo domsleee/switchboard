@@ -1296,6 +1296,43 @@ pub async fn router(config: RelayConfig, port: u16) -> anyhow::Result<Router> {
     Ok(app(state(&config, port).await?))
 }
 
+/// The port agent hooks, the CLI and the docs use. A relay on another port (older
+/// Windows installations use 80) also answers here, so those still reach it.
+pub const DEFAULT_PORT: u16 = 8090;
+
+/// Serves the relay on `port` as well, retrying while another process holds it
+/// (such as the relay this one replaces during an update).
+async fn serve_also_on(mut state: RelayState, port: u16) {
+    let address = (std::net::Ipv4Addr::LOCALHOST, port);
+    let mut reported = false;
+    let listener = loop {
+        match tokio::net::TcpListener::bind(address).await {
+            Ok(listener) => break listener,
+            Err(error) => {
+                if !reported {
+                    reported = true;
+                    log::warn!("Cannot also serve the relay on port {port}: {error}");
+                    logs::record(
+                        "relay",
+                        &format!(
+                            "Cannot also serve the relay on port {port}, so agent hooks cannot reach it; will retry: {error}"
+                        ),
+                    );
+                }
+                tokio::time::sleep(Duration::from_secs(10)).await;
+            },
+        }
+    };
+    // Requests on this listener must name this port, as on the main one.
+    state.port = port;
+    let listener = axum::serve::ListenerExt::tap_io(listener, |stream| {
+        let _ = stream.set_nodelay(true);
+    });
+    if let Err(error) = axum::serve(listener, app(state)).await {
+        log::warn!("The relay stopped serving on port {port}: {error}");
+    }
+}
+
 /// Start the relay on loopback. Never restarts user terminal engines.
 pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
     let config: RelayConfig = serde_json::from_slice(&tokio::fs::read(config_path).await?)?;
@@ -1368,6 +1405,8 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
     let polling =
         attention::start(state.clone(), config_path.with_extension("attention.json")).await;
     let update_tasks = tasks::start(state.clone()).await;
+    let also =
+        (port != DEFAULT_PORT).then(|| tokio::spawn(serve_also_on(state.clone(), DEFAULT_PORT)));
     // Keystrokes and echoes are tiny writes; Nagle plus delayed ACK can hold each one back.
     let listener = axum::serve::ListenerExt::tap_io(listener, |stream| {
         let _ = stream.set_nodelay(true);
@@ -1376,6 +1415,9 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
         .with_graceful_shutdown(shutdown())
         .await;
     pairing.abort();
+    if let Some(task) = also {
+        task.abort();
+    }
     update_tasks.abort();
     tasks::stop_running().await;
     failures.abort();
@@ -2186,6 +2228,56 @@ mod tests {
         );
         headers.insert("sec-fetch-site", "cross-site".parse().unwrap());
         assert!(!trusted(&headers, 8123));
+    }
+
+    #[tokio::test]
+    async fn switchboard_relay_on_another_port_also_answers_hooks_on_the_default_port() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let config = RelayConfig {
+            hosts: vec![config("http://127.0.0.1:8082")],
+            artifact_proxy: None,
+        };
+        // Older Windows relays listen on 80; hooks post to the default port.
+        let relay = state(&config, 80).await.unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let task = tokio::spawn(serve_also_on(relay, port));
+        let post = |host: String| async move {
+            let body = r#"{"hook_event_name":"SessionEnd"}"#;
+            let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await?;
+            stream
+                .write_all(
+                    format!(
+                        "POST /api/agent-hook HTTP/1.1\r\nHost: {host}\r\nX-Zellij-Session: s\r\n\
+                         X-Zellij-Pane: 1\r\nContent-Type: application/json\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await?;
+            let mut response = String::new();
+            stream.read_to_string(&mut response).await?;
+            std::io::Result::Ok(response.lines().next().unwrap_or_default().to_owned())
+        };
+        let mut status = String::new();
+        for _ in 0..100 {
+            if let Ok(line) = post(format!("127.0.0.1:{port}")).await {
+                status = line;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(status, "HTTP/1.1 204 No Content");
+        // This listener checks requests against its own port, not the main one.
+        assert_eq!(
+            post("127.0.0.1:80".into()).await.unwrap(),
+            "HTTP/1.1 403 Forbidden"
+        );
+        task.abort();
     }
 
     #[test]
