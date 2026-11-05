@@ -491,7 +491,9 @@ right of the cursor, up to a pane border, is blank or placeholder text: dim text
 placeholder) or a grey history hint that starts at the cursor (nushell, fish, zsh-autosuggestions).
 Any other key, a click or a paste pauses guessing until the screen should have settled and a frame
 has arrived since. A guess the screen never confirms disappears after a few round trips, and
-guessing pauses after it.
+guessing pauses after it. When output above the prompt moves it to another row, as Claude Code's
+streamed replies do, often in a frame drawn before the keys arrived, the guesses move with it. After
+Enter or another unguessed key the input on the new row is new, so the guesses are dropped instead.
 
 Ctrl+Backspace and Alt+Backspace send Ctrl+W. Programs delete different amounts for it: readline,
 Claude Code and Copilot CLI delete back to a space, nushell (reedline) to a word boundary, and Codex
