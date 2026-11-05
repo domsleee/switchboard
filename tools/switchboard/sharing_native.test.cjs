@@ -46,7 +46,7 @@ async function port() {
     await new Promise(resolve => server.close(resolve));
     return result;
 }
-let web, tokenName, readOnlyTokenName, browser;
+let web, tokenName, readOnlyTokenName, browser, passed = false;
 const created = [];
 (async () => {
     try {
@@ -170,6 +170,7 @@ const created = [];
                 assert.ok(finalProcesses.some(entry => entry.pid===original.pid && entry.ppid===original.ppid && entry.started===original.started),'Session and terminal process identities survive');
             }
         }
+        passed = true;
         console.log('PASS: native sharing CLI updates authenticated catalog; real writable browser and read-only watcher receive terminal output; Off evicts both and cleans session/screen clients; On permits explicit browser reconnection with preserved shell PID/state and tab/pane identities; Disabled rejects promptly.');
     } finally {
         if(browser)await browser.close();
@@ -181,6 +182,9 @@ const created = [];
         for (const index of created) try {run(index,'kill-session',names[index]);} catch {}
         if (tokenName) try {run(0,'web','--revoke-token',tokenName);} catch {}
         if (readOnlyTokenName) try {run(0,'web','--revoke-token',readOnlyTokenName);} catch {}
-        fs.rmSync(dir,{recursive:true,force:true});
+        // CI uploads /tmp/sbn-*/*.log: keep a failed run's engine log beside the web logs.
+        const engineLog = path.join(require('node:os').tmpdir(), `zellij-${process.getuid()}`, 'zellij-log', 'zellij.log');
+        if (passed) fs.rmSync(dir,{recursive:true,force:true});
+        else try {fs.copyFileSync(engineLog, path.join(dir,'zellij.log'));} catch {}
     }
 })().catch(error => {console.error(error);process.exitCode=1;});

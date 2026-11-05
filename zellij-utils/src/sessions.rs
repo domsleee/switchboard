@@ -159,12 +159,25 @@ fn assert_socket(name: &str) -> bool {
                 None | Some((_, _)) => false,
             }
         },
+        // macOS also refuses while a live server's accept queue is full, so a socket is
+        // removed as stale only when it keeps refusing.
         Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
-            drop(fs::remove_file(path));
+            if still_refused(path) {
+                drop(fs::remove_file(path));
+            }
             false
         },
         Err(_) => false,
     }
+}
+
+#[cfg(unix)]
+fn still_refused(path: &Path) -> bool {
+    use crate::consts::ipc_connect;
+    (0..3).all(|_| {
+        std::thread::sleep(Duration::from_millis(50));
+        matches!(ipc_connect(path), Err(e) if e.kind() == io::ErrorKind::ConnectionRefused)
+    })
 }
 
 /// On Windows, reads the server PID and checks whether the process is running.
