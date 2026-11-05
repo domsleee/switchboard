@@ -51,7 +51,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.equal(await page.locator('#tab-count').textContent(),'3 tabs');
     assert.equal(await page.locator('#selection-tools').isVisible(),false);
     assert.equal(await page.locator('#tabs small').first().textContent(),'Mac · Working');
-    assert.equal(await page.locator('#tabs small').nth(1).textContent(),'Mac · Waiting on a shell');
+    assert.equal(await page.locator('#tabs small').nth(1).textContent(),'Mac · Waiting on an agent');
     assert.equal(await page.locator('#tabs .star').nth(1).getAttribute('class'),'star waiting');
     // xterm pauses drawing only when its element is off screen. Hidden sessions must be.
     const onScreen=title=>page.frameLocator(`iframe[title="${title}"]`).locator('body').evaluate(body=>new Promise(resolve=>
