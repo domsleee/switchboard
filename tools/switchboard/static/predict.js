@@ -181,12 +181,27 @@
         // Enter sent before the echo arrived: the echo and the new line come together, and the row
         // showing every guess confirms them. It says nothing about echo time.
         if (!run.open && shows(run.ops.length)) { counts.confirmed += run.ops.length; run = null; schedule(); render(); return; }
-        // The input moved to another row (a submitted message, output above it): these guesses are stale.
-        drop('moved'); return;
+        // Output streamed above the input and moved it, often in a frame drawn before the keys arrived:
+        // the guesses follow it. After Enter or another key the input there is new, so they are stale.
+        if (!(run.open && follow(buffer.baseY + buffer.cursorY))) { drop('moved'); return; }
       }
       const n = settled();
       if (n > 0) accept(n);
       schedule(); render();
+    }
+    // The input is on this row when it starts with the same prompt and text and shows a state the guesses
+    // pass through. A prompt is required so a blank row with the cursor parked on it does not match.
+    function follow(row) {
+      const line = term.buffer.active.getLine(row), from = run.row, prefix = run.base.slice(0, run.anchor);
+      if (!line || prefix.every(blank)) return false;
+      for (let i = 0; i < prefix.length; i++) {
+        const shown = line.getCell(i)?.getChars() || '';
+        if (shown !== prefix[i] && !(blank(shown) && blank(prefix[i]))) return false;
+      }
+      run.row = row;
+      if (settled() >= 0) return true;
+      run.row = from;
+      return false;
     }
     // At the deadline a screen that already shows every guess confirms them, as coalesced echoes can.
     function expire() {

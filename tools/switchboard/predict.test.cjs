@@ -109,10 +109,10 @@ test('coalesced echoes that end on the starting text confirm at the deadline, no
   assert.equal(h.shown().text,'!','Guessing goes on without a pause');
 });
 
-test('guesses leave as soon as the input moves to another row, and the miss is reported without text',async()=>{
+test('guesses leave as soon as the input moves to another row after Enter, and the miss is reported without text',async()=>{
   const reports=[];
   const h=harness({report:r=>reports.push(r)});await h.write(PROMPT);
-  h.core.sent('hi');h.advance(40);
+  h.core.sent('hi\r');h.advance(40);
   await h.write('\x1b[?25l\x1b[27;1H\x1b[2K> earlier message\x1b[29;1H❯\u00a0\x1b[29;3H\x1b[?25h');
   assert.equal(h.shown(),null);
   assert.equal(reports.length,1);
@@ -121,6 +121,38 @@ test('guesses leave as soon as the input moves to another row, and the miss is r
   assert.ok(!JSON.stringify(reports).includes('hi"'),'what was typed is never reported');
   h.advance(1000);await h.write(echo(2,'x'));h.core.sent('a');h.advance(1000);
   assert.equal(reports.at(-1).outcome,'timeout');
+});
+
+// Claude Code streaming a reply: a line of output above the prompt pushes it down a row.
+const streamed=(row,text='')=>`\x1b[?25l\x1b[${row-1};1H\x1b[2Kstreamed line\x1b[${row};1H\x1b[2K❯ ${text||`\x1b[2m${PLACEHOLDER}\x1b[22m`}\x1b[${row};${3+text.length}H\x1b[?25h`;
+
+test('guesses follow the prompt when streamed output moves it, even in a frame drawn before the keys arrived',async()=>{
+  const reports=[];
+  const h=harness({report:r=>reports.push(r)});await h.write(PROMPT);
+  h.core.sent('hi');h.advance(40);
+  await h.write(streamed(28));
+  assert.deepEqual([h.shown()?.row,h.shown()?.text],[27,'hi'],'Still drawn, on the new row');
+  h.core.sent('!');
+  assert.equal(h.shown().text,'hi!','Guessing goes on without a pause');
+  await h.write(streamed(29,'h'));
+  assert.deepEqual([h.shown().row,h.shown().from,h.shown().text],[28,3,'i!'],'An echo on yet another row confirms "h"; the rest stays drawn');
+  await h.write(streamed(29,'hi!'));
+  assert.equal(h.shown(),null,'All confirmed');
+  assert.deepEqual(reports,[]);
+  assert.deepEqual([h.core.state().confirmed,h.core.state().dropped],[3,0]);
+});
+
+test('guesses do not follow the cursor to a row that is not the prompt',async()=>{
+  const reports=[];
+  const h=harness({report:r=>reports.push(r)});await h.write(PROMPT);
+  h.core.sent('hi');h.advance(40);
+  await h.write('\x1b[10;1Hstreamed line\x1b[10;3H');
+  assert.equal(h.shown(),null);
+  assert.equal(reports[0].outcome,'moved');
+  const empty=harness();await empty.write(PROMPT);
+  empty.core.sent('hi');empty.advance(40);
+  await empty.write('\x1b[12;3H');
+  assert.equal(empty.shown(),null,'A blank row with the cursor at the same column is not the prompt');
 });
 
 test('Backspace keeps guessing across the space between words but not into a prompt',async()=>{
