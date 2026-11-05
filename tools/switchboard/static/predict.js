@@ -189,14 +189,21 @@
       if (n > 0) accept(n);
       schedule(); render();
     }
-    // The input is on this row when it starts with the same prompt and text and shows a state the guesses
-    // pass through. A prompt is required so a blank row with the cursor parked on it does not match.
+    // The input is on this row when it starts with the same prompt and text, nothing but blank or
+    // placeholder text follows the cursor (as start() requires), and it shows a state the guesses pass
+    // through. A prompt is required so a blank row with the cursor parked on it does not match.
     function follow(row) {
-      const line = term.buffer.active.getLine(row), from = run.row, prefix = run.base.slice(0, run.anchor);
+      const line = term.buffer.active.getLine(row), from = run.row;
+      // Text that Backspace or Ctrl+W guesses erase may already be gone from the new row.
+      const prefix = run.base.slice(0, Math.min(run.anchor, ...run.ops.map(op => op.pos)));
       if (!line || prefix.every(blank)) return false;
       for (let i = 0; i < prefix.length; i++) {
         const shown = line.getCell(i)?.getChars() || '';
         if (shown !== prefix[i] && !(blank(shown) && blank(prefix[i]))) return false;
+      }
+      for (let i = term.buffer.active.cursorX; i < run.edge; i++) {
+        const cell = line.getCell(i);
+        if (!blank(cell?.getChars() || '') && !cell.isDim() && !grey(cell)) return false;
       }
       run.row = row;
       if (settled() >= 0) return true;

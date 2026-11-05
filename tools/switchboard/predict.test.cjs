@@ -153,6 +153,19 @@ test('guesses do not follow the cursor to a row that is not the prompt',async()=
   empty.core.sent('hi');empty.advance(40);
   await empty.write('\x1b[12;3H');
   assert.equal(empty.shown(),null,'A blank row with the cursor at the same column is not the prompt');
+  const output=harness();await output.write(PROMPT);
+  output.core.sent('hi');output.advance(40);
+  await output.write('\x1b[20;1H❯ UNRELATED OUTPUT\x1b[20;3H');
+  assert.equal(output.shown(),null,'Text after the cursor that is not placeholder means another row with the same prompt');
+});
+
+test('guesses that erase text follow the prompt when the moved row already shows the erasure',async()=>{
+  const reports=[];
+  const h=harness({report:r=>reports.push(r)});await h.write('\x1b[2J\x1b[27;1H❯ hello\x1b[27;8H\x1b[?25h');
+  h.core.sent('\x7f');h.core.sent('x');h.advance(40);
+  await h.write('\x1b[?25l\x1b[27;1H\x1b[2Kstreamed line\x1b[28;1H❯ hell\x1b[K\x1b[28;7H\x1b[?25h');
+  assert.deepEqual([h.shown()?.row,h.shown()?.from,h.shown()?.text],[27,6,'x'],'Backspace is confirmed on the new row and "x" stays drawn');
+  assert.deepEqual(reports,[]);
 });
 
 test('Backspace keeps guessing across the space between words but not into a prompt',async()=>{
