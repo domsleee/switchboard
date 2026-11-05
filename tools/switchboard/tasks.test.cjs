@@ -93,7 +93,7 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
   const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
   const browser=await chromium.launch({headless:true});
   try{
-    const page=await browser.newPage({viewport:{width:1280,height:900}}),errors=[],setups=[];page.setDefaultTimeout(5000);
+    const page=await browser.newPage({viewport:{width:1280,height:900}}),errors=[],setups=[],updates=[];page.setDefaultTimeout(5000);
     page.on('pageerror',e=>errors.push(e.message));
     const now=Date.now();
     const build=(commit,at,extra={})=>({commit,commitDate:at.slice(0,10),automaticUpdates:true,...extra});
@@ -107,12 +107,14 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
       {name:'Dom-PC',host:'mesh-dompc',groups:[],error:null,switchboard:build('ca42095','2026-11-04T20:04:27+11:00',{automaticUpdates:false}),agents:[
         ...absent.slice(0,2),agent('codex','Codex','setup','Status hooks not installed',{setupError:'Could not save hooks.json: denied'})]},
       {name:'Linux',host:'mesh-linux',groups:[],error:null,switchboard:build('ca42095','2026-11-04T20:04:27+11:00',{automaticUpdates:undefined}),agents:absent},
-      {name:'Old PC',host:'mesh-old',groups:[],error:null}]};
+      {name:'Old PC',host:'mesh-old',groups:[],error:null},
+      {name:'Laptop',host:'mesh-laptop',groups:[],error:null,switchboard:build('6a5fd4c','2026-11-04T23:16:44+11:00',{updateNow:true,lastUpdateError:'This build cannot reach paired computers yet'}),agents:absent}]};
     await page.addInitScript(()=>{window.setInterval=()=>0;});
     await page.route('**/*',async route=>{
       const request=route.request(),path=new URL(request.url()).pathname;
       const json=(value,status=200)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(value)});
       if(path==='/api/tasks')return json(tasks);
+      if(path==='/api/tasks/update'){updates.push(JSON.parse(request.postData()));return json({ok:true},202);}
       if(path==='/api/tasks/setup'){
         const body=JSON.parse(request.postData());setups.push(body);
         if(!body.host)tasks.computers[0].agents[1].state='running';
@@ -128,8 +130,8 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
     await page.goto('https://switchboard.test/');
     await page.locator('#settings').click();await page.getByRole('tab',{name:'Health'}).click();
     const groups=page.locator('#updates .switchboard-group');
-    await page.waitForFunction(()=>document.querySelectorAll('#updates .switchboard-group').length===3);
-    const [mac,pc,linux]=[groups.nth(0),groups.nth(1),groups.nth(2)];
+    await page.waitForFunction(()=>document.querySelectorAll('#updates .switchboard-group').length===4);
+    const [mac,pc,linux,laptop]=[groups.nth(0),groups.nth(1),groups.nth(2),groups.nth(3)];
 
     // Anything needing the user opens its group and names it in the summary.
     assert.equal(await mac.getAttribute('open'),'');
@@ -158,10 +160,18 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
     await macRows.nth(1).getByRole('button',{name:'Set up'}).click();
     await page.waitForFunction(()=>document.querySelector('#updates .agent-row[data-agent=copilot] .task-meta')?.textContent==='Setting up…'||document.querySelector('#updates .agent-row[data-agent=copilot]')?.dataset.status==='running');
     await pc.getByRole('button',{name:'Set up'}).click();
-    await page.waitForFunction(()=>document.querySelectorAll('#updates .switchboard-group').length===3);
+    await page.waitForFunction(()=>document.querySelectorAll('#updates .switchboard-group').length===4);
     await page.locator('#updates .switchboard-group').nth(0).locator('.agent-row[data-agent=codex]').getByRole('button',{name:'Trust hooks'}).click();
-    await page.waitForFunction(()=>document.querySelectorAll('#updates .switchboard-group').length===3);
+    await page.waitForFunction(()=>document.querySelectorAll('#updates .switchboard-group').length===4);
     assert.deepEqual(setups,[{agent:'copilot'},{agent:'codex',host:'mesh-dompc'},{agent:'codex'}]);
+    // A failed update shows why, and Update now starts that computer's update job.
+    assert.equal(await laptop.locator('.task-state').textContent(),'Last update failed');
+    assert.equal(await laptop.getAttribute('open'),'');
+    assert.equal(await laptop.locator('.task-row').first().locator('.task-tail').textContent(),'This build cannot reach paired computers yet');
+    assert.equal(await mac.getByRole('button',{name:'Update now'}).count(),0,'no button without an update job to start');
+    await laptop.getByRole('button',{name:'Update now'}).click();
+    await page.waitForFunction(()=>document.querySelectorAll('#updates .switchboard-group').length===4);
+    assert.deepEqual(updates,[{host:'mesh-laptop'}]);
     assert.deepEqual(errors,[]);
   }finally{await browser.close();}
 });

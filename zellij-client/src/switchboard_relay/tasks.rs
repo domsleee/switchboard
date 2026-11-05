@@ -1055,6 +1055,15 @@ pub(super) async fn gateway(request: Request) -> Response {
                 _ => (StatusCode::BAD_REQUEST, "Invalid setup request").into_response(),
             }
         },
+        (Method::POST, "/switchboard/tasks/update") => {
+            let Ok(bytes) = to_bytes(request.into_body(), 4096).await else {
+                return StatusCode::BAD_REQUEST.into_response();
+            };
+            match serde_json::from_slice::<UpdateRequest>(&bytes) {
+                Ok(update) if update.host.is_none() => update_locally().await,
+                _ => (StatusCode::BAD_REQUEST, "Invalid update request").into_response(),
+            }
+        },
         (Method::GET, "/switchboard/tasks/log") => {
             match axum::extract::Query::<LogQuery>::try_from_uri(request.uri()) {
                 Ok(axum::extract::Query(query)) if query.host.is_none() => {
@@ -1191,6 +1200,48 @@ pub(super) async fn setup(State(state): State<RelayState>, request: Request) -> 
                 Method::POST,
                 "/switchboard/tasks/setup",
                 Bytes::from(json!({"agent": setup.agent}).to_string()),
+                "application/json",
+            ),
+        )
+        .await,
+    )
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct UpdateRequest {
+    #[serde(default)]
+    host: Option<String>,
+}
+
+async fn update_locally() -> Response {
+    match super::update_watch::update_now().await {
+        Ok(()) => (StatusCode::ACCEPTED, Json(json!({"ok": true}))).into_response(),
+        Err(error) => (StatusCode::CONFLICT, Json(json!({ "error": error }))).into_response(),
+    }
+}
+
+/// `POST /api/tasks/update`: start a computer's update job now, from Settings → Health.
+pub(super) async fn update(State(state): State<RelayState>, request: Request) -> Response {
+    let Ok(bytes) = to_bytes(request.into_body(), 4096).await else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let Ok(update) = serde_json::from_slice::<UpdateRequest>(&bytes) else {
+        return (StatusCode::BAD_REQUEST, "Invalid update request").into_response();
+    };
+    let Some(id) = update.host else {
+        return update_locally().await;
+    };
+    let Some(host) = peer_host(&state, &id) else {
+        return (StatusCode::NOT_FOUND, "Unknown computer").into_response();
+    };
+    relayed(
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            host.request(
+                Method::POST,
+                "/switchboard/tasks/update",
+                Bytes::from("{}"),
                 "application/json",
             ),
         )

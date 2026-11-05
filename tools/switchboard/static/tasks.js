@@ -103,6 +103,16 @@
     }catch(_){alertStatus(`${agent.name} setup failed`);}
     await load();
   }
+  // Starts that computer's update job; the updater installs only a newer build.
+  async function updateNow(computer){
+    const body=computer.host?{host:computer.host}:{};
+    try{
+      const response=await fetch('/api/tasks/update',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+      const reply=await response.json().catch(()=>null);
+      alertStatus(response.ok?`Checking for a newer build on ${computer.name}…`:reply?.error||`Could not start the update on ${computer.name}`);
+    }catch(_){alertStatus(`Could not start the update on ${computer.name}`);}
+    await load();
+  }
   // Each agent row: ready agents show when they last reported; others say what is missing.
   const agentStatus={ready:'ok',setup:'failed',approve:'attention',running:'running'};
   function agentRow(computer,agent){
@@ -128,23 +138,30 @@
   function switchboardBlock(computer){
     const sb=computer.switchboard,agents=(computer.agents||[]).filter(agent=>agent.state!=='absent');
     // Builds before automaticUpdates existed leave it out: shown as unknown, not off.
-    const updates=sb.automaticUpdates===true?'ok':sb.automaticUpdates===false?'failed':'never';
+    const updates=sb.automaticUpdates===true?(sb.lastUpdateError?'attention':'ok'):sb.automaticUpdates===false?'failed':'never';
     const waiting=agents.filter(agent=>agent.state!=='ready');
-    const status=updates==='failed'||waiting.some(agent=>agent.state==='setup')?'failed':waiting.some(agent=>agent.state==='running')?'running':waiting.length?'attention':'ok';
+    const status=updates==='failed'||waiting.some(agent=>agent.state==='setup')?'failed':waiting.some(agent=>agent.state==='running')?'running':waiting.length||updates==='attention'?'attention':'ok';
     const block=element('details','task-group switchboard-group');block.dataset.status=status;
     block.dataset.key=`${computer.host||''}\n\u0000switchboard`;
     const summary=element('summary');
     const title=element('span','task-title');title.append(element('strong','','Switchboard'),element('small','',`build ${sb.commit}${sb.commitDate?` · ${sb.commitDate}`:''}`));
     let text='All set';
     if(updates==='failed')text='Automatic updates are off';
+    else if(updates==='attention')text='Last update failed';
     else if(waiting.length)text=waiting.map(agent=>`${agent.name}: ${agent.state==='approve'?'hooks not trusted':agent.state==='running'?'setting up…':'needs setup'}`).join(' · ');
     const state=element('span','task-state',text);state.title=text;
     summary.append(dot(status),title,state);
     block.append(summary);
     const update=element('div','task-row');update.dataset.status=updates;
     const head=element('div','task-head');
-    head.append(dot(updates),element('span','task-name','Automatic updates'),element('small','task-meta',updates==='ok'?'on':updates==='failed'?'off':'unknown on this build'));
+    head.append(dot(updates),element('span','task-name','Automatic updates'),element('small','task-meta',updates==='ok'?'on':updates==='attention'?'on · last update failed':updates==='failed'?'off':'unknown on this build'));
+    if(sb.updateNow){
+      const actions=element('span','task-links');
+      const run=button('Update now',`Install the newest build on ${computer.name} now, if there is one`,()=>updateNow(computer));run.className='task-run';
+      actions.append(run);head.append(actions);
+    }
     update.append(head);
+    if(sb.lastUpdateError)update.append(element('pre','task-tail',sb.lastUpdateError));
     block.append(update,...agents.map(agent=>agentRow(computer,agent)));
     if(!agents.length)block.append(element('p','task-note agent-none','No Claude Code, Copilot CLI or Codex on this computer'));
     // Open by default while something needs the user.

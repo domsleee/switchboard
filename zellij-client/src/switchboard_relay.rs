@@ -1252,6 +1252,7 @@ fn app(state: RelayState) -> Router {
         .route("/api/tasks/action", post(tasks::action))
         .route("/api/tasks/log", get(tasks::log))
         .route("/api/tasks/setup", post(tasks::setup))
+        .route("/api/tasks/update", post(tasks::update))
         .route(
             "/api/diagnostics/browser-resume",
             post(logs::browser_resume),
