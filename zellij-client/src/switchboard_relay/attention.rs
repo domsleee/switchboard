@@ -626,6 +626,7 @@ impl PollState {
             let key = json!([host, row["session"], row["pane_id"]]).to_string();
             let mut previous = self.observed.get(&key).cloned().unwrap_or(Value::Null);
             let created = row.as_object_mut().unwrap().remove("created");
+            let mut recreated = false;
             // A recreated session reuses pane IDs; its panes are new panes. Saved
             // state from before session times were recorded counts as stale too.
             if let Some(created) = created.as_ref().and_then(Value::as_u64) {
@@ -635,11 +636,15 @@ impl PollState {
                         .is_none_or(|before| before.abs_diff(created) > 60)
                 {
                     previous = Value::Null;
+                    recreated = true;
                 }
             }
             // Only local scans list commands, so only local panes take hooks and runs.
             let mut waiting_on_run = false;
             if let Some(command) = row.as_object_mut().unwrap().remove("command") {
+                if recreated {
+                    self.forget_hook(row);
+                }
                 self.apply_hook(row, &command);
                 waiting_on_run = self.waiting_on_run(row);
             }
@@ -760,6 +765,12 @@ impl PollState {
         };
         self.interactive.contains_key(&(session.to_owned(), pane))
     }
+    /// A recreated session reuses pane IDs: an old hook status is not its agent's.
+    fn forget_hook(&mut self, row: &Value) {
+        if let (Some(session), Some(pane)) = (row["session"].as_str(), row["pane_id"].as_u64()) {
+            self.dirty |= self.hooks.remove(&(session.to_owned(), pane)).is_some();
+        }
+    }
     /// Replaces a local pane's screen reading with its agent's hook status.
     fn apply_hook(&mut self, row: &mut Value, command: &Value) {
         let (Some(session), Some(pane)) = (row["session"].as_str(), row["pane_id"].as_u64()) else {
@@ -775,6 +786,7 @@ impl PollState {
             .is_some_and(|c| !c.is_empty() && !c.to_ascii_lowercase().contains(hooked.agent))
         {
             self.hooks.remove(&key);
+            self.dirty = true;
             return;
         }
         let row = row.as_object_mut().unwrap();
@@ -859,16 +871,53 @@ impl PollState {
         merged
     }
     fn persisted(&self) -> Value {
-        Value::Object(
-            self.observed
-                .iter()
-                .map(|(key, value)| {
-                    let mut value = value.clone();
-                    value.as_object_mut().unwrap().remove("agent");
-                    (key.clone(), value)
-                })
-                .collect(),
-        )
+        let mut saved: serde_json::Map<String, Value> = self
+            .observed
+            .iter()
+            .map(|(key, value)| {
+                let mut value = value.clone();
+                value.as_object_mut().unwrap().remove("agent");
+                (key.clone(), value)
+            })
+            .collect();
+        // Older builds skip this row: its key is not a pane identity.
+        let hooks: Vec<_> = self
+            .hooks
+            .iter()
+            .map(|((session, pane), h)| json!([session, pane, h.agent, h.state, h.token]))
+            .collect();
+        saved.insert("hooks".into(), json!(hooks));
+        Value::Object(saved)
+    }
+    /// Hook statuses saved before a relay restart. "working" is not restored: the turn
+    /// may have ended while no relay was listening, and the screen shows a live one.
+    fn restore_hooks(&mut self, saved: &Value) {
+        for row in saved.as_array().into_iter().flatten() {
+            let (Some(session), Some(pane)) = (row[0].as_str(), row[1].as_u64()) else {
+                continue;
+            };
+            let Some(agent) = ["claude", "codex", "copilot"]
+                .into_iter()
+                .find(|a| row[2] == *a)
+            else {
+                continue;
+            };
+            let Some(state) = ["approval", "input", "waiting", "ready"]
+                .into_iter()
+                .find(|s| row[3] == *s)
+            else {
+                continue;
+            };
+            let token = row[4].as_str().map(str::to_owned);
+            self.hooks.insert(
+                (session.to_owned(), pane),
+                Hooked {
+                    agent,
+                    state,
+                    token,
+                },
+            );
+        }
     }
 }
 
@@ -877,6 +926,10 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
     if let Ok(bytes) = tokio::fs::read(&file).await {
         if let Ok(Value::Object(rows)) = serde_json::from_slice::<Value>(&bytes) {
             for (key, value) in rows {
+                if key == "hooks" {
+                    poll.restore_hooks(&value);
+                    continue;
+                }
                 if let Ok(Value::Array(identity)) = serde_json::from_str::<Value>(&key) {
                     if identity.len() == 3 && value["generation"].as_u64().is_some() {
                         poll.observed
@@ -1091,12 +1144,15 @@ fn hook_status(agent: &'static str, event: &Value) -> Option<Hooked> {
             "elicitation_dialog" => "input",
             _ => return None,
         },
-        // Claude wakes itself when a background shell it started finishes, so a
-        // running one means the turn may resume; a dev server never finishes.
+        // A running background agent or workflow will wake the turn when it finishes.
+        // A shell (also what a Monitor runs) is as often a dev server or a watcher that
+        // outlives the reply, so a turn that leaves only shells running is finished.
         "Stop" | "StopFailure"
-            if event["background_tasks"]
-                .as_array()
-                .is_some_and(|tasks| tasks.iter().any(|task| task["status"] == "running")) =>
+            if event["background_tasks"].as_array().is_some_and(|tasks| {
+                tasks
+                    .iter()
+                    .any(|task| task["status"] == "running" && task["type"] != "shell")
+            }) =>
         {
             "waiting"
         },
@@ -1153,9 +1209,9 @@ pub(super) async fn hook(
         event["hook_event_name"].as_str(),
         Some("SessionEnd" | "Interrupt")
     ) {
-        poll.hooks.remove(&key);
+        poll.dirty |= poll.hooks.remove(&key).is_some();
     } else if let Some(hooked) = hook_status(agent, &event) {
-        poll.hooks.insert(key, hooked);
+        poll.dirty |= poll.hooks.insert(key, hooked.clone()).as_ref() != Some(&hooked);
     } else {
         return StatusCode::NO_CONTENT;
     }
@@ -1473,9 +1529,25 @@ esac
             None
         );
         assert_eq!(event("SessionStart", json!({})), None);
-        // Claude Code 2.1.316: Stop lists the shells a finished turn left running.
-        let running = json!({"background_tasks":[{"id":"b","type":"shell","status":"running","command":"sleep 8 && echo BG_DONE"}]});
-        assert_eq!(event("Stop", running), Some("waiting"));
+        // Claude Code 2.1.318: Stop lists the background tasks a finished turn left running.
+        let shell =
+            json!({"id":"b","type":"shell","status":"running","command":"sleep 8 && echo BG_DONE"});
+        let agent =
+            json!({"id":"a","type":"subagent","status":"running","agent_type":"general-purpose"});
+        assert_eq!(
+            event("Stop", json!({"background_tasks":[shell]})),
+            Some("ready"),
+            "a watcher or dev server shell does not keep the turn open"
+        );
+        assert_eq!(
+            event("Stop", json!({"background_tasks":[shell, agent]})),
+            Some("waiting")
+        );
+        let done = json!({"id":"a","type":"subagent","status":"completed"});
+        assert_eq!(
+            event("Stop", json!({"background_tasks":[done]})),
+            Some("ready")
+        );
         assert_eq!(event("Stop", json!({"background_tasks":[]})), Some("ready"));
         let finished = |prompt: &str| {
             hook_status(
@@ -2171,6 +2243,45 @@ esac
         );
         assert_eq!(scan("ready"), "ready");
         assert_eq!(scan("unknown"), "unknown", "only a working turn is held");
+    }
+    #[test]
+    fn hook_status_survives_a_relay_restart_except_working() {
+        let hooked = |state, token: Option<&str>| Hooked {
+            agent: "claude",
+            state,
+            token: token.map(str::to_owned),
+        };
+        let mut poll = PollState::default();
+        poll.hooks
+            .insert(("main".into(), 5), hooked("ready", Some("turn")));
+        poll.hooks
+            .insert(("main".into(), 6), hooked("waiting", None));
+        poll.hooks
+            .insert(("main".into(), 7), hooked("working", None));
+        let mut restarted = PollState::default();
+        restarted.restore_hooks(&poll.persisted()["hooks"]);
+        assert_eq!(
+            restarted.hooks.get(&("main".into(), 5)),
+            Some(&hooked("ready", Some("turn")))
+        );
+        assert_eq!(
+            restarted.hooks.get(&("main".into(), 6)),
+            Some(&hooked("waiting", None))
+        );
+        assert!(
+            !restarted.hooks.contains_key(&("main".into(), 7)),
+            "a turn may end while no relay listens; the screen shows a live one"
+        );
+        // The restored status beats a screen that misreads a finished turn.
+        let pane = |created: u64| json!({"panes":[{"session":"main","pane_id":5,"state":"working","agent":"claude","command":"claude","created":created}],"tabs":[],"errors":[]});
+        let mut snapshot = pane(1000);
+        restarted.update("linux", &mut snapshot);
+        assert_eq!(snapshot["panes"][0]["state"], "ready");
+        // A session recreated with the same pane IDs runs a different agent.
+        let mut snapshot = pane(5000);
+        restarted.update("linux", &mut snapshot);
+        assert_eq!(snapshot["panes"][0]["state"], "working");
+        assert!(!restarted.hooks.contains_key(&("main".into(), 5)));
     }
     #[test]
     fn reviews_persist_per_result_and_owner_snapshots_pass_through() {

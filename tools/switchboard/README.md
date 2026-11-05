@@ -49,8 +49,9 @@ keeps your settings.
 
 Switchboard reads each tab's screen to tell whether an agent is working. Claude Code,
 Copilot CLI and Codex can report their own turns instead, which is exact: Claude also
-shows **Waiting on a shell** when it finished but a background shell it started is
-still running.
+shows **Waiting on an agent** when it finished but a background agent it started is
+still running. A background shell, such as a dev server or a watcher, does not count:
+the turn shows as finished. Reported status survives a relay restart.
 
 Open Settings → **Health**. Each computer lists its Switchboard build and the agents
 installed on it, with when each last reported. Press **Set up** next to an agent that

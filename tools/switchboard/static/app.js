@@ -355,7 +355,7 @@ function autoLabel(item){
   if(states.some(s=>s.state==='input'))return 'Input needed';
   if(states.some(s=>s.state==='working'))return 'Working';
   // Claude finished its turn but a background shell it started is still running.
-  if(states.some(s=>s.state==='waiting'))return 'Waiting on a shell';
+  if(states.some(s=>s.state==='waiting'))return 'Waiting on an agent';
   if(states.some(s=>s.state==='ready'))return states.some(needsAttention)?'Ready to review':'Ready';
   return '';
 }
