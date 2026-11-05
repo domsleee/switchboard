@@ -37,7 +37,9 @@
   // Browser pages such as chrome://settings, which only the browser itself may open.
   const browserPages=/(?<![\w.+-])(?:chrome|edge|brave):\/\/[a-z0-9-]+(?:[/#][\w/.#-]*)?/g;
   const isBrowserPage=uri=>/^(?:chrome|edge|brave):\/\//.test(uri);
-  const mediaFile=/\.(?:png|jpe?g|gif|webp|avif|mp4|webm|mov|m4v)$/i,videoFile=/\.(?:mp4|webm|mov|m4v)$/i;
+  const mediaFile=/\.(?:png|jpe?g|gif|webp|avif|mp4|webm|mov|m4v)$/i,videoFile=/\.(?:mp4|webm|mov|m4v)$/i,
+    // Desktop apps often lack AVIF support (Windows Photos needs an extension); browsers show it.
+    tabFile=/\.(?:mp4|webm|mov|m4v|avif)$/i;
   // Relative media paths, such as out/shot.png, without spaces since they have no root to start from.
   const relativeMedia=/(?<![\w.~:%/\\@-])(?:[^\s"'`<>|*?:;,()[\]{}\\/]+[\\/])*[^\s"'`<>|*?:;,()[\]{}\\/]+\.(?:png|jpe?g|gif|webp|avif|mp4|webm|mov|m4v)(?![\w-]|\.\w)/gi;
   // Other relative paths: a file with a 2-8 character extension (so e.g. stays text), or a
@@ -115,8 +117,8 @@
         parent.SwitchboardOpenBrowserPage(uri);return;
       }
       const path=filePathOf(uri),newTab=event.metaKey||event.ctrlKey,relative=!path&&relativeFile(uri);
-      // Cmd/Ctrl-click plays a video in a browser tab, streamed from this terminal's computer.
-      if((path||relative)&&!(newTab&&videoFile.test(path||uri))){
+      // Cmd/Ctrl-click plays a video or shows an AVIF in a browser tab, streamed from this terminal's computer.
+      if((path||relative)&&!(newTab&&tabFile.test(path||uri))){
         if(window.parent===window||!parent.SwitchboardOpenFile)throw Error('Files open from the Switchboard page');
         if(path){parent.SwitchboardOpenFile(host,path);return;}
         locate(uri).then(found=>found?parent.SwitchboardOpenFile(host,found):console.warn('Switchboard link: no pane in this session holds',uri));
