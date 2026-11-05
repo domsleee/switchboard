@@ -480,7 +480,7 @@ fn automatic_update_lock_acquires_contends_and_releases() {
         harness.updater.run().unwrap_err().to_string(),
         "Another automatic update is running"
     );
-    drop(lock);
+    lock.unlock().unwrap();
     harness.updater.run().unwrap();
     assert!(harness.calls().is_empty());
 }
