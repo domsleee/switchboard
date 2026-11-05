@@ -49,6 +49,9 @@ for(const modifier of ['metaKey','ctrlKey']){
   link.text='C:\\clips\\a b.mov';handlers.mousedown({...click,shiftKey:false,[modifier]:true});handlers.mouseup({...click,shiftKey:false,[modifier]:true});
   assert.deepEqual(opened.at(-1),['http://127.0.0.1:8090/api/hosts/windows/file?path=C%3A%5Cclips%5Ca%20b.mov','_blank','noopener noreferrer']);
 }
+// So does an AVIF, which desktop image viewers often cannot show.
+link.text='C:\\shots\\a.AVIF';handlers.mousedown({...click,shiftKey:false,ctrlKey:true});handlers.mouseup({...click,shiftKey:false,ctrlKey:true});
+assert.deepEqual(opened.at(-1),['http://127.0.0.1:8090/api/hosts/windows/file?path=C%3A%5Cshots%5Ca.AVIF','_blank','noopener noreferrer']);opened.pop();
 link.text='/Users/dom/clips/demo.mp4';handlers.mousedown(click);handlers.mouseup(click);
 assert.deepEqual(files.at(-1),['windows','/Users/dom/clips/demo.mp4']);assert.equal(opened.length,3);
 opened.splice(1);link.text='http://127.0.0.1:8765/';delete parent.SwitchboardOpenFile;
