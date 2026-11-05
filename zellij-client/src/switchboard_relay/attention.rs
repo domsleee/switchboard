@@ -240,6 +240,18 @@ pub(super) async fn peer_snapshot(
     for error in snapshot["errors"].as_array_mut().unwrap() {
         error["host"] = json!(host.config.id);
     }
+    // sudo password requests from the peer's panes, under the id this relay knows it by.
+    match snapshot.get_mut("askpass").and_then(Value::as_array_mut) {
+        Some(requests) => {
+            requests.retain(|request| request["id"].is_string());
+            for request in requests {
+                request["host"] = json!(host.config.id);
+            }
+        },
+        None => {
+            snapshot.as_object_mut().unwrap().remove("askpass");
+        },
+    }
     Ok(snapshot)
 }
 
@@ -575,6 +587,7 @@ impl PollState {
             .entry(host.into())
             .or_insert_with(|| json!({"panes":[],"tabs":[],"errors":[]}));
         snapshot["panes"] = json!([]);
+        snapshot.as_object_mut().unwrap().remove("askpass");
         snapshot["errors"] =
             json!([{"host":host,"message":format!("Host snapshots unavailable: {error:#}")}]);
         self.changes.send_modify(|version| *version += 1);
@@ -840,24 +853,14 @@ impl PollState {
         }
         Some(snapshot)
     }
-    /// `owned` with a version that changes only when that snapshot does, so a peer
-    /// waiting on this computer is not woken by changes on other computers.
-    pub(super) fn owned_versioned(&self, host: &str) -> Option<(u64, Value)> {
-        use std::hash::{Hash, Hasher};
-        let snapshot = self.owned(host)?;
-        let mut hasher = std::hash::DefaultHasher::new();
-        snapshot.to_string().hash(&mut hasher);
-        Some((hasher.finish(), snapshot))
-    }
     fn merged(&self, order: &[String]) -> Value {
-        let mut merged = json!({"panes":[],"tabs":[],"errors":[]});
+        let mut merged = json!({"panes":[],"tabs":[],"errors":[],"askpass":[]});
         for host in order {
             if let Some(snapshot) = self.cache.get(host) {
-                for field in ["panes", "tabs", "errors"] {
-                    merged[field]
-                        .as_array_mut()
-                        .unwrap()
-                        .extend(snapshot[field].as_array().unwrap().clone());
+                for field in ["panes", "tabs", "errors", "askpass"] {
+                    if let Some(rows) = snapshot.get(field).and_then(Value::as_array) {
+                        merged[field].as_array_mut().unwrap().extend(rows.clone());
+                    }
                 }
             } else {
                 // Not scanned since this relay started: browsers keep its tabs
@@ -943,6 +946,7 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
     let poll = state.poll.clone();
     if let Some(mesh) = &state.mesh {
         let _ = mesh.attention.set(poll.clone());
+        let _ = mesh.askpass.set(state.askpass.clone());
     }
     let mut tasks: Vec<_> = state
         .order
@@ -1075,6 +1079,15 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
     tasks
 }
 
+/// A snapshot with a version that changes only when it does, so a peer waiting
+/// on this computer is not woken by changes on other computers.
+pub(super) fn versioned(snapshot: Value) -> (u64, Value) {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    snapshot.to_string().hash(&mut hasher);
+    (hasher.finish(), snapshot)
+}
+
 pub(super) fn publish(state: &RelayState, poll: &PollState) {
     let hosts = state.all_hosts();
     let mut snapshot = poll.merged(
@@ -1083,13 +1096,15 @@ pub(super) fn publish(state: &RelayState, poll: &PollState) {
             .map(|h| h.config.id.clone())
             .collect::<Vec<_>>(),
     );
-    // Password requests belong to this computer's own panes and only its own
-    // browsers see them; paired computers read the per-host cache, not this.
+    // Password requests from this computer's panes join those paired computers
+    // sent. Paired computers read the per-host cache, not this, so a request
+    // reaches only the computers paired with the one that asked.
     if let Some(local) = hosts.iter().find(|host| host.is_local_engine()) {
         let requests = state.askpass.snapshot(&local.config.id);
-        if !requests.is_empty() {
-            snapshot["askpass"] = json!(requests);
-        }
+        snapshot["askpass"].as_array_mut().unwrap().extend(requests);
+    }
+    if snapshot["askpass"].as_array().unwrap().is_empty() {
+        snapshot.as_object_mut().unwrap().remove("askpass");
     }
     state.attention.send_if_modified(|(version, current)| {
         if *current == snapshot {

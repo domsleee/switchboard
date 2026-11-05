@@ -415,8 +415,15 @@ posts `/api/askpass/answer`; the relay hands the password to that one waiting
 helper and keeps no copy. Closing the dialog any other way cancels, and sudo
 fails at once. Interrupting sudo withdraws the request.
 
-Requests stay on their own computer: only browsers of that computer's relay see
-them, and a paired computer's tabs never ask. Any program running as you can
+Paired computers see the request too, so you can answer `sudo` on one computer
+from another's sidebar. The relay adds its open requests (never a password) to the
+`/switchboard/attention` snapshot it serves paired computers, and they show the tab
+as **Password needed**. **Send** there posts `/api/askpass/answer` with the
+request's `host`; that relay forwards `{id, password}` to
+`/switchboard/askpass/answer` on the asking computer over the pinned, peer-authorised
+pairing connection, the one that already carries keystrokes into its terminals.
+Neither relay keeps a copy. A computer that has not updated yet neither shares its
+requests nor accepts forwarded answers. Any program running as you can
 reach the loopback relay, so this protects the password from web pages, not from
 your own processes; sudo's terminal prompt has the same limit. The Claude plugin's
 `sudo` skill tells Claude to use `sudo -A`.

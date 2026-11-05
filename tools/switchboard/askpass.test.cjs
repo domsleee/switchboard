@@ -40,7 +40,7 @@ test('a request on the selected tab asks once and sends the password only to its
   fire('askpass-form','submit');
   assert.equal($('askpass-password').value,'','the field forgets the password at once');
   await settle();
-  assert.deepEqual(posts,[['/api/askpass/answer',{id:'r1',password:'hunter2'}]]);
+  assert.deepEqual(posts,[['/api/askpass/answer',{host:'linux',id:'r1',password:'hunter2'}]]);
   assert.equal(dialog.open,false);assert.equal(state.focused,1,'focus returns to the terminal');
   // The relay has not republished yet: the answered request must not reopen.
   askpass.update([request]);
@@ -54,7 +54,7 @@ test('closing without Send cancels so sudo fails at once',async()=>{
     const context=setup();
     context.askpass.update([request]);
     close(context);await settle();
-    assert.deepEqual(context.posts,[['/api/askpass/answer',{id:'r1'}]]);
+    assert.deepEqual(context.posts,[['/api/askpass/answer',{host:'linux',id:'r1'}]]);
     assert.equal(context.$('askpass-dialog').open,false);
   }
 });
@@ -140,7 +140,7 @@ test('the sidebar badges a password request, asks when its tab is selected, and 
     await page.keyboard.type('hunter2');
     await page.keyboard.press('Enter');
     await page.locator('#askpass-dialog').waitFor({state:'hidden'});
-    assert.deepEqual(answers,[{id:'r1',password:'hunter2'}]);
+    assert.deepEqual(answers,[{host:'linux',id:'r1',password:'hunter2'}]);
     assert.equal(await page.locator('#askpass-password').inputValue(),'');
     await page.waitForFunction(()=>document.querySelectorAll('#tabs .tab-select')[1].dataset.agentState==='',null,{timeout:8000});
     assert.equal(await page.locator('#askpass-dialog').isVisible(),false);
