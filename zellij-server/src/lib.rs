@@ -1105,8 +1105,11 @@ pub fn start_server_impl(
                                 })
                                 .unwrap();
                         },
+                        // One failed accept is one lost client, not the session: macOS
+                        // reports a client that hung up before it was accepted as an error.
                         Err(err) => {
-                            panic!("err {:?}", err);
+                            log::warn!("Failed to accept a client connection: {err}");
+                            thread::sleep(std::time::Duration::from_millis(10));
                         },
                     }
                 }
