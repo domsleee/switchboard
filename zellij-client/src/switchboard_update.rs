@@ -545,11 +545,16 @@ impl Updater {
             .open(self.state_directory.join("automatic.lock"))?;
         lock.try_lock()
             .map_err(|_| anyhow!("Another automatic update is running"))?;
-        let mut state = State::load(&self.state_path())?;
-        if let Some(pending) = state.pending.clone() {
-            self.settle_pending(&mut state, &pending)?;
-        }
-        self.update(&mut state)
+        let result = (|| {
+            let mut state = State::load(&self.state_path())?;
+            if let Some(pending) = state.pending.clone() {
+                self.settle_pending(&mut state, &pending)?;
+            }
+            self.update(&mut state)
+        })();
+        // Closing is not enough: a child forked meanwhile shares the lock until it execs.
+        let _ = lock.unlock();
+        result
     }
 
     fn settle_pending(&self, state: &mut State, pending: &Pending) -> Result<()> {
