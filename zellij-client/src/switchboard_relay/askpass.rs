@@ -6,8 +6,9 @@
 //! attention snapshot, never a password, and answers it; the relay hands the
 //! answer to the one waiting helper and keeps no copy.
 //!
-//! Only this computer's own relay shows its requests: the snapshot paired computers
-//! read is built before they are added, so a password never crosses the network.
+//! Paired computers show the request too: it rides on the snapshot this computer
+//! serves them, and their answer comes back over the pinned pairing connection,
+//! the same one that already carries keystrokes to this computer's terminals.
 use super::{attention, RelayState};
 use axum::{
     extract::State,
@@ -63,15 +64,32 @@ impl Prompts {
         });
         rows
     }
+
+    /// Hands `password` (None cancels) to the helper waiting on request `id`.
+    pub(super) fn answer(&self, id: &str, password: Option<String>) -> StatusCode {
+        if password.as_ref().is_some_and(|p| p.len() > MAX_PASSWORD) {
+            return StatusCode::PAYLOAD_TOO_LARGE;
+        }
+        let Some(pending) = self.0.lock().unwrap().remove(id) else {
+            return StatusCode::NOT_FOUND;
+        };
+        let _ = pending.answer.send(password);
+        StatusCode::NO_CONTENT
+    }
 }
 
+/// Shows the change to this computer's browsers and wakes paired computers
+/// waiting on its snapshot.
 async fn republish(state: &RelayState) {
     let poll = state.poll.lock().await;
+    poll.changes.send_modify(|version| *version += 1);
     attention::publish(state, &poll);
 }
 
 /// Removes a request when its asker stops waiting: answered, timed out, or gone
-/// because sudo was interrupted and dropped the connection.
+/// because sudo was interrupted and dropped the connection. It republishes even
+/// when an answer already removed the request: a paired computer's answer
+/// arrives through the gateway, which cannot republish.
 struct Withdraw {
     state: RelayState,
     id: String,
@@ -79,17 +97,7 @@ struct Withdraw {
 
 impl Drop for Withdraw {
     fn drop(&mut self) {
-        if self
-            .state
-            .askpass
-            .0
-            .lock()
-            .unwrap()
-            .remove(&self.id)
-            .is_none()
-        {
-            return;
-        }
+        self.state.askpass.0.lock().unwrap().remove(&self.id);
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             let state = self.state.clone();
             runtime.spawn(async move { republish(&state).await });
@@ -189,6 +197,9 @@ pub(super) async fn ask(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Answer {
+    /// The computer whose pane asked; absent means this one.
+    #[serde(default)]
+    host: Option<String>,
     id: String,
     /// Absent to cancel: sudo then fails instead of waiting for the timeout.
     password: Option<String>,
@@ -198,19 +209,45 @@ pub(super) async fn answer(
     State(state): State<RelayState>,
     Json(answer): Json<Answer>,
 ) -> StatusCode {
-    if answer
-        .password
-        .as_ref()
-        .is_some_and(|p| p.len() > MAX_PASSWORD)
-    {
-        return StatusCode::PAYLOAD_TOO_LARGE;
+    let remote = answer.host.as_deref().and_then(|id| state.host(id));
+    if let Some(host) = remote.filter(|host| !host.is_local_engine()) {
+        return forward(&host, answer).await;
     }
-    let Some(pending) = state.askpass.0.lock().unwrap().remove(&answer.id) else {
+    let status = state.askpass.answer(&answer.id, answer.password);
+    if status == StatusCode::NO_CONTENT {
+        republish(&state).await;
+    }
+    status
+}
+
+/// Sends the answer to the paired computer whose pane asked.
+async fn forward(host: &super::Host, answer: Answer) -> StatusCode {
+    if host.config.escape_transport.as_deref() != Some("gateway") {
         return StatusCode::NOT_FOUND;
-    };
-    let _ = pending.answer.send(answer.password);
-    republish(&state).await;
-    StatusCode::NO_CONTENT
+    }
+    let body = json!({ "id": answer.id, "password": answer.password });
+    match tokio::time::timeout(
+        Duration::from_secs(10),
+        host.request(
+            axum::http::Method::POST,
+            "/switchboard/askpass/answer",
+            body.to_string().into(),
+            "application/json",
+        ),
+    )
+    .await
+    {
+        Ok(Ok(response)) => response.status,
+        _ => StatusCode::BAD_GATEWAY,
+    }
+}
+
+/// `POST /switchboard/askpass/answer` from a paired computer's relay.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PeerAnswer {
+    pub(super) id: String,
+    pub(super) password: Option<String>,
 }
 
 /// The script `SUDO_ASKPASS` names. sudo runs it with the prompt as its only
@@ -411,6 +448,7 @@ mod tests {
         let sent = answer(
             State(state.clone()),
             Json(Answer {
+                host: None,
                 id: id.clone(),
                 password: Some("hunter2".into()),
             }),
@@ -426,6 +464,7 @@ mod tests {
         let again = answer(
             State(state.clone()),
             Json(Answer {
+                host: None,
                 id,
                 password: Some("x".into()),
             }),
@@ -439,7 +478,15 @@ mod tests {
         let state = relay();
         let waiting = asking(&state, 7);
         let id = open(&state).await[0]["id"].as_str().unwrap().to_owned();
-        answer(State(state.clone()), Json(Answer { id, password: None })).await;
+        answer(
+            State(state.clone()),
+            Json(Answer {
+                host: None,
+                id,
+                password: None,
+            }),
+        )
+        .await;
         let (status, reply) = body(waiting.await.unwrap()).await;
         assert_eq!(status, StatusCode::GONE);
         assert!(reply.get("password").is_none());
@@ -479,6 +526,82 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         panic!("the request outlived its helper");
+    }
+
+    #[tokio::test]
+    async fn a_paired_computers_request_shows_here_and_its_answer_goes_back() {
+        use axum::routing::{get, post};
+        let answers = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let received = answers.clone();
+        let upstream = axum::Router::new()
+            .route(
+                "/command/login",
+                post(|| async { ([(header::SET_COOKIE, "session_token=t")], "{}") }),
+            )
+            .route(
+                "/switchboard/attention",
+                get(|| async {
+                    Json(
+                        json!({"panes":[],"tabs":[],"errors":[],"synced":true,"askpass":[
+                        {"id":"r1","host":"its-own-id","session":"main","pane_id":3,
+                         "prompt":"Password:","command":"sudo -A ls","created":1}]}),
+                    )
+                }),
+            )
+            .route(
+                "/switchboard/askpass/answer",
+                post(move |Json(body): Json<Value>| {
+                    let received = received.clone();
+                    async move {
+                        received.lock().unwrap().push(body);
+                        StatusCode::NO_CONTENT
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+        let dir = tempfile::tempdir().unwrap();
+        let token = dir.path().join("token");
+        std::fs::write(&token, "t").unwrap();
+        let mut config = crate::switchboard_relay::tests::config(&url);
+        let id = format!("mesh-{}", "ab".repeat(32));
+        config.id = id.clone();
+        config.token_file = token.to_str().unwrap().into();
+        config.escape_transport = Some("gateway".into());
+        let peer = Arc::new(Host::new(config).unwrap());
+        let mut state = relay();
+        let mut hosts = (*state.hosts).clone();
+        hosts.insert(id.clone(), peer.clone());
+        state.hosts = Arc::new(hosts);
+        state.order = Arc::new(vec!["mac".into(), id.clone()]);
+
+        let mut snapshot = attention::peer_snapshot(&peer, 0, None).await.unwrap();
+        {
+            let mut poll = state.poll.lock().await;
+            poll.update(&id, &mut snapshot);
+            attention::publish(&state, &poll);
+        }
+        let rows = open(&state).await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["host"], json!(id), "named as this relay knows it");
+        assert_eq!(rows[0]["command"], "sudo -A ls");
+
+        let sent = answer(
+            State(state.clone()),
+            Json(Answer {
+                host: Some(id),
+                id: "r1".into(),
+                password: Some("hunter2".into()),
+            }),
+        )
+        .await;
+        assert_eq!(sent, StatusCode::NO_CONTENT);
+        assert_eq!(
+            *answers.lock().unwrap(),
+            vec![json!({"id":"r1","password":"hunter2"})]
+        );
+        server.abort();
     }
 
     #[test]

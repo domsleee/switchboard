@@ -1217,6 +1217,27 @@ async fn gateway_roundtrip(shared: bool) {
         .await,
         StatusCode::UNAUTHORIZED
     );
+    // Only a paired peer can answer this computer's sudo password requests.
+    let _ = mac.askpass.set(Default::default());
+    let answer = Bytes::from(r#"{"id":"missing","password":"x"}"#);
+    for (bearer, status) in [
+        (None, StatusCode::UNAUTHORIZED),
+        (Some(bearer.as_str()), StatusCode::NOT_FOUND),
+    ] {
+        assert_eq!(
+            request(
+                &client,
+                &authority,
+                bearer,
+                false,
+                Method::POST,
+                "/switchboard/askpass/answer",
+                answer.clone()
+            )
+            .await,
+            status
+        );
+    }
     // Artifacts need the same peer credential as terminals and never leave the artifact root.
     for (bearer, path, status) in [
         (

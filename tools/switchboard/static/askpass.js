@@ -1,16 +1,17 @@
-// `sudo -A` in a pane on this computer asks for its password here
+// `sudo -A` in a pane on this or a paired computer asks for its password here
 // (zellij-client/src/switchboard_relay/askpass.rs). The typed password goes to the
-// relay once, which hands it only to the waiting helper. Closing the dialog any
+// relay once, which hands it, or forwards it to the paired computer, only for the
+// waiting helper. Closing the dialog any
 // other way than Send cancels, so sudo fails at once instead of waiting.
 function createAskpass({$,current,hostName,fetch,focusTerminal,otherDialogOpen}){
   const dialog=$('askpass-dialog'),input=$('askpass-password');
   // Answered here; the relay's next snapshot drops them.
   const handled=new Set();
   let shown=null,settled=false,closing=false;
-  function answer(id,password){
+  function answer({id,host},password){
     handled.add(id);
     return fetch('/api/askpass/answer',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify(password===undefined?{id}:{id,password})}).catch(()=>{});
+      body:JSON.stringify(password===undefined?{host,id}:{host,id,password})}).catch(()=>{});
   }
   function close(){closing=true;dialog.close();}
   function update(requests){
@@ -31,12 +32,12 @@ function createAskpass({$,current,hostName,fetch,focusTerminal,otherDialogOpen})
     event.preventDefault();
     if(!shown||closing)return;
     const password=input.value;input.value='';
-    settled=true;answer(shown.id,password);close();
+    settled=true;answer(shown,password);close();
   });
   $('askpass-cancel').onclick=()=>close();
   dialog.addEventListener('close',()=>{
     input.value='';
-    if(shown&&!settled)answer(shown.id);
+    if(shown&&!settled)answer(shown);
     shown=null;closing=false;
     focusTerminal();
   });

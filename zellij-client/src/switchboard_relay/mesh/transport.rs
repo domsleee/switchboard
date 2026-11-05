@@ -588,6 +588,22 @@ async fn peer_terminal(
         }
     }
 }
+/// Adds this computer's open sudo password requests, never a password, to the
+/// snapshot a paired computer reads, so its sidebar can answer them.
+fn with_askpass(mesh: &Mesh, local: &str, mut snapshot: Value) -> Value {
+    let requests = mesh
+        .askpass
+        .get()
+        .map(|prompts| prompts.snapshot(local))
+        .unwrap_or_default();
+    let snapshot_object = snapshot.as_object_mut().unwrap();
+    if requests.is_empty() {
+        snapshot_object.remove("askpass");
+    } else {
+        snapshot_object.insert("askpass".into(), json!(requests));
+    }
+    snapshot
+}
 async fn terminal_response(
     mesh: Arc<Mesh>,
     host: Arc<Host>,
@@ -638,8 +654,10 @@ async fn terminal_response(
             let mut changes = poll.lock().await.changes.subscribe();
             let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
             loop {
-                let owned = poll.lock().await.owned_versioned(local);
-                let Some((version, mut snapshot)) = owned else {
+                let owned = poll.lock().await.owned(local);
+                let Some((version, mut snapshot)) =
+                    owned.map(|owned| attention::versioned(with_askpass(&mesh, local, owned)))
+                else {
                     break;
                 };
                 let unchanged = after == Some(version);
@@ -663,10 +681,24 @@ async fn terminal_response(
             let mut poll = poll.lock().await;
             poll.update(local, &mut snapshot);
             if let Some(owned) = poll.owned(local) {
-                return Ok(Json(owned).into_response());
+                return Ok(Json(with_askpass(&mesh, local, owned)).into_response());
             }
         }
-        return Ok(Json(snapshot).into_response());
+        return Ok(Json(with_askpass(&mesh, local, snapshot)).into_response());
+    }
+    // A paired computer's sidebar answers a sudo password request from a pane here.
+    // Paired computers already type into these terminals; this adds no access.
+    if path == "/switchboard/askpass/answer" && request.method() == Method::POST {
+        let bytes = to_bytes(request.into_body(), 4096)
+            .await
+            .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid password answer"))?;
+        let answer: askpass::PeerAnswer = serde_json::from_slice(&bytes)
+            .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid password answer"))?;
+        let prompts = mesh.askpass.get().ok_or((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Password requests unavailable",
+        ))?;
+        return Ok(prompts.answer(&answer.id, answer.password).into_response());
     }
     if path == "/switchboard/attention/ack" && request.method() == Method::POST {
         #[derive(Deserialize)]
