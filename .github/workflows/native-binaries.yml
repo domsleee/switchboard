@@ -5,6 +5,11 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Finish the active release; newer pushes replace its pending successor.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
