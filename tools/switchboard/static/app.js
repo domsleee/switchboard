@@ -1154,13 +1154,15 @@ window.SwitchboardOpenFile=(host,path)=>{
   if(/\.(?:png|jpe?g|gif|webp|avif|svg|mp4|webm|mov|m4v)$/i.test(path)&&window.SwitchboardOpenMedia){
     window.SwitchboardOpenMedia(host,path);return;
   }
-  if(hosts.get(host)?.local){
+  const local=!!hosts.get(host)?.local;
+  $('artifact-open-local').hidden=!local;
+  $('artifact-open-local').onclick=()=>{
+    if(!local)return;
     fetch('/api/open-file',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})})
       .then(async response=>{if(!response.ok)throw Error(await response.text());})
       .catch(error=>setStatus(`Could not open ${path}: ${error.message}`,true));
-    return;
-  }
-  // Another computer's file streams into the preview, which closes on the next tab switch.
+  };
+  // Files from every computer share the preview, which closes on the next tab switch.
   const url=`/api/hosts/${encodeURIComponent(host)}/file?path=${encodeURIComponent(path)}`;
   $('artifact-url').textContent=`${hosts.get(host)?.name||host}: ${path}`;
   // Replacing the frame's page keeps file switches out of the browser history, so
