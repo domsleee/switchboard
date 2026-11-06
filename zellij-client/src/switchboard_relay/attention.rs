@@ -755,6 +755,18 @@ impl PollState {
         self.refreshed.insert(host.into(), now);
         changed
     }
+    pub(super) fn restart_identity(
+        &self,
+        session: &str,
+        pane: u32,
+        chat: &str,
+    ) -> Option<super::restart::Identity> {
+        let hook = self.hooks.get(&(session.to_string(), pane.into()))?;
+        if hook.state != "ready" || hook.chat_id.as_deref() != Some(chat) {
+            return None;
+        }
+        hook.restart.clone()
+    }
     /// A local pane started or finished waiting on `zellij switchboard run`.
     pub(super) fn run_waiting(&mut self, session: &str, pane: u64, waiting: bool) {
         let key = (session.to_owned(), pane);
@@ -804,6 +816,7 @@ impl PollState {
         }
         if let Some(id) = &hooked.chat_id {
             row["chat_id"] = json!(id);
+            row["restart_available"] = json!(hooked.restart.is_some() && hooked.state == "ready");
         }
         if hooked.state == "unknown" {
             return;
@@ -906,7 +919,7 @@ impl PollState {
             .hooks
             .iter()
             .map(|((session, pane), h)| {
-                json!([session, pane, h.agent, h.state, h.token, h.chat_id])
+                json!([session, pane, h.agent, h.state, h.token, h.chat_id, h.restart])
             })
             .collect();
         saved.insert("hooks".into(), json!(hooks));
@@ -946,6 +959,7 @@ impl PollState {
                     state,
                     token,
                     chat_id: row[5].as_str().map(str::to_owned),
+                    restart: serde_json::from_value(row[6].clone()).ok(),
                 },
             );
         }
@@ -1175,6 +1189,7 @@ struct Hooked {
     state: &'static str,
     token: Option<String>,
     chat_id: Option<String>,
+    restart: Option<super::restart::Identity>,
 }
 
 /// What a hook event says about its pane, if anything. Claude Code, Codex and
@@ -1220,6 +1235,7 @@ fn hook_status(agent: &'static str, event: &Value) -> Option<Hooked> {
         state,
         token,
         chat_id: super::chats::hook_chat_id(agent, event),
+        restart: None,
     })
 }
 
@@ -1249,21 +1265,52 @@ pub(super) async fn hook(
     };
     super::agent_setup::heard(agent);
     let key = (session.to_owned(), pane);
+    let mut next = hook_status(agent, &event);
+    if let Some(hook) = &mut next {
+        hook.restart = state
+            .poll
+            .lock()
+            .await
+            .hooks
+            .get(&key)
+            .filter(|old| old.chat_id == hook.chat_id && old.agent == agent)
+            .and_then(|old| old.restart.clone());
+    }
+    let capture = next
+        .clone()
+        .filter(|hook| hook.restart.is_none() && hook.state == "ready" && hook.chat_id.is_some());
     let mut poll = state.poll.lock().await;
     // An interrupted Codex turn has no Stop; the screen shows what it left.
     if matches!(event["hook_event_name"].as_str(), Some("SessionEnd")) {
         poll.dirty |= poll.hooks.remove(&key).is_some();
-    } else if let Some(hooked) = hook_status(agent, &event) {
+    } else if let Some(hooked) = next {
         if hooked.state == "unknown" && hooked.chat_id.is_none() {
             poll.dirty |= poll.hooks.remove(&key).is_some();
         } else {
-            poll.dirty |= poll.hooks.insert(key, hooked.clone()).as_ref() != Some(&hooked);
+            poll.dirty |= poll.hooks.insert(key.clone(), hooked.clone()).as_ref() != Some(&hooked);
         }
     } else {
         return StatusCode::NO_CONTENT;
     }
     // shortcut: wakes one local scan loop, enough for the usual single local host.
     poll.hooked.notify_one();
+    drop(poll);
+    if let Some(expected) = capture {
+        let session = session.to_string();
+        let identity = tokio::task::spawn_blocking(move || {
+            super::restart::capture(agent, &event, &session, pane)
+        })
+        .await
+        .ok()
+        .flatten();
+        let mut poll = state.poll.lock().await;
+        // Process inspection may be slow. Never overwrite a newer busy/end event.
+        if identity.is_some() && poll.hooks.get(&key) == Some(&expected) {
+            poll.hooks.get_mut(&key).unwrap().restart = identity;
+            poll.dirty = true;
+            poll.hooked.notify_one();
+        }
+    }
     StatusCode::NO_CONTENT
 }
 
@@ -2457,6 +2504,7 @@ esac
             state,
             token: token.map(str::to_owned),
             chat_id: None,
+            restart: None,
         };
         let mut poll = PollState::default();
         poll.hooks

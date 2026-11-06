@@ -398,7 +398,7 @@ fn plan_tab(
 
 /// Whether the agent's prompt is on screen and holds nothing but its own placeholder.
 /// shortcut: a dim suggestion we don't know reads as a draft, so that tab is left alone.
-fn prompt_empty(agent: AgentKind, screen: &str) -> Result<(), String> {
+pub(crate) fn prompt_empty(agent: AgentKind, screen: &str) -> Result<(), String> {
     let marker = if agent == AgentKind::Codex {
         '›'
     } else {

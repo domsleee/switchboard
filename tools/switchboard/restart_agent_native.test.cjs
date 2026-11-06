@@ -1,0 +1,92 @@
+// Private native engine + real restart endpoint + browser menu; no model calls or user sessions.
+// PLAYWRIGHT_MODULE=/path/to/playwright node restart_agent_native.test.cjs BINARY
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const path=require('node:path');
+const net=require('node:net');
+const crypto=require('node:crypto');
+const {execFileSync,spawn}=require('node:child_process');
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
+const binary=path.resolve(process.argv[2]);
+
+const dir=fs.mkdtempSync('/tmp/switchboard-restart-agent-');
+const installed=path.join(dir,'zellij'),config=path.join(dir,'config.kdl');
+const name='restart-agent-'+crypto.randomBytes(8).toString('hex');
+const env={...process.env,HOME:dir,CODEX_HOME:path.join(dir,'.codex'),CLAUDE_CONFIG_DIR:path.join(dir,'.claude'),ZELLIJ_SOCKET_DIR:path.join(dir,'sockets'),TERM:'xterm-256color',ZELLIJ_CONFIG_FILE:config};
+for(const key of ['ZELLIJ','ZELLIJ_SESSION_NAME','ZELLIJ_PANE_ID','ZELLIJ_CONFIG_DIR'])delete env[key];
+const cli=(...args)=>execFileSync(installed,['--config',config,...args],{env,encoding:'utf8',timeout:15000,stdio:['ignore','pipe','pipe']});
+const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+async function port(){const server=net.createServer();await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const p=server.address().port;await new Promise(resolve=>server.close(resolve));return p;}
+async function until(check,message){for(let n=0;n<150;n++){try{if(await check())return;}catch{}await delay(100);}throw Error(message);}
+async function stop(child){if(!child||child.exitCode!==null)return;const done=new Promise(resolve=>child.once('exit',resolve));child.kill('SIGTERM');await Promise.race([done,delay(3000).then(()=>{if(child.exitCode===null)child.kill('SIGKILL');})]);}
+let native,relay,browser,tokenName,created=false;
+(async()=>{
+  try{
+    fs.copyFileSync(binary,installed);fs.chmodSync(installed,0o755);
+    fs.writeFileSync(config,'web_sharing "off"\ndefault_shell "/bin/bash"\nshow_startup_tips false\nsession_serialization false\ndisable_session_metadata false\n');
+    const fixture=path.join(dir,'codex'),c=path.join(dir,'agent.c');
+    fs.writeFileSync(c,`#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <string.h>
+int main(int argc,char**argv){FILE*f=fopen(${JSON.stringify(path.join('/PLACEHOLDER','launches'))},"a");fprintf(f,"%d",getpid());for(int i=1;i<argc;i++)fprintf(f,"|%s",argv[i]);fprintf(f,"\\n");fclose(f);char previous[64]="";for(;;){char mode[64]="ready";f=fopen(${JSON.stringify(path.join('/PLACEHOLDER','mode'))},"r");if(f){fgets(mode,64,f);fclose(f);}if(strcmp(mode,previous)){printf("\\033[2J\\033[H\\033]0;codex - Restart fixture\\007Worked for 1s\\r\\n\\r\\n› %s\\r\\nGPT-6 · ? for shortcuts\\r\\n",strcmp(mode,"draft")==0?"unsent draft":"Ask Codex to do anything");fflush(stdout);strcpy(previous,mode);}usleep(100000);}}`.replaceAll('/PLACEHOLDER',dir));
+    execFileSync(process.platform==='darwin'?'xcrun':'cc',process.platform==='darwin'?['clang','-isysroot',execFileSync('xcrun',['--sdk','macosx','--show-sdk-path'],{encoding:'utf8'}).trim(),c,'-o',fixture]:[c,'-o',fixture]);
+    cli('attach','--create-background',name,'--',fixture,'--model','fixture','initial prompt');created=true;
+    let first;
+    await until(()=>{first=JSON.parse(cli('-s',name,'action','list-panes','--json','--all')).find(p=>!p.is_plugin);return !!first;},'Private first terminal did not start');
+    cli('-s',name,'action','rename-tab','--tab-id',String(first.tab_id),'Switchboard fixture');
+    cli('-s',name,'action','new-tab','--name','Shopping fixture','--','/bin/bash','--noprofile','--norc');
+    let panes;
+    await until(()=>{panes=JSON.parse(cli('-s',name,'action','list-panes','--json','--all')).filter(p=>!p.is_plugin).sort((a,b)=>a.tab_position-b.tab_position);return panes.length===2;},'Private terminal tabs did not start');
+    // Change only the web service configuration; the existing private engine stays Off.
+    fs.writeFileSync(config,fs.readFileSync(config,'utf8').replace('web_sharing "off"','web_sharing "on"'));
+    const tokenLine=cli('web','--create-token').split('\n').find(line=>line.includes(': '));
+    assert.ok(tokenLine);tokenName=tokenLine.split(': ')[0];
+    const token=path.join(dir,'token');fs.writeFileSync(token,tokenLine.slice(tokenName.length+2).trim(),{mode:0o600});
+    const nativePort=await port(),relayPort=await port(),url='http://127.0.0.1:'+relayPort;
+    const hosts=path.join(dir,'hosts.json');fs.writeFileSync(hosts,JSON.stringify({hosts:[{id:'fixture',name:'Private fixture',url:'http://127.0.0.1:'+nativePort,token_file:token,zellij_binary:installed}]}),{mode:0o600});
+    native=spawn(installed,['--config',config,'web','--port',String(nativePort)],{env:{...env,SWITCHBOARD_RECOVER_UNSHARED_SESSION:name},stdio:['ignore',fs.openSync(path.join(dir,'native.log'),'a'),fs.openSync(path.join(dir,'native-error.log'),'a')]});
+    relay=spawn(installed,['serve','--host-config',hosts,'--port',String(relayPort)],{env,stdio:['ignore',fs.openSync(path.join(dir,'relay.log'),'a'),fs.openSync(path.join(dir,'relay-error.log'),'a')]});
+    await until(async()=>{const data=await (await fetch(url+'/api/hosts/fixture')).json();return data.sessions?.some(s=>s.name===name&&s.sharing_recovery&&s.web_clients_allowed);},'Private recovered session did not start');
+    const sid='11111111-2222-4333-8444-555555555555';
+    const transcript=path.join(env.CODEX_HOME,'sessions','fixture.jsonl');fs.mkdirSync(path.dirname(transcript),{recursive:true});
+    fs.writeFileSync(transcript,JSON.stringify({type:'session_meta',payload:{id:sid,cwd:dir}})+'\n');
+    const hook=async event=>{const response=await fetch(url+'/api/agent-hook',{method:'POST',headers:{'Content-Type':'application/json','x-agent':'codex','x-zellij-session':name,'x-zellij-pane':String(first.id)},body:JSON.stringify({hook_event_name:event,session_id:sid,transcript_path:transcript,cwd:dir})});assert.equal(response.status,204);};
+    await hook('Stop');
+    let state;await until(async()=>{const data=await(await fetch(url+'/api/attention')).json();state=data.panes.find(p=>p.pane_id===first.id&&p.session===name);return state?.restart_available;},'Agent process was not bound to its pane');
+    const target={session:name,pane_id:first.id,tab_id:first.tab_id,chat_id:state.chat_id};
+    const restart=body=>fetch(url+'/api/hosts/fixture/restart-agent',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    assert.equal((await restart({...target,chat_id:'wrong'})).status,409);
+    await hook('UserPromptSubmit');assert.equal((await restart(target)).status,409);await hook('Stop');
+    fs.writeFileSync(path.join(dir,'mode'),'draft');
+    await until(()=>cli('-s',name,'action','dump-screen','-p',String(first.id)).includes('unsent draft'),'Draft did not render');
+    assert.equal((await restart(target)).status,409);
+    fs.writeFileSync(path.join(dir,'mode'),'ready');
+    await until(()=>!cli('-s',name,'action','dump-screen','-p',String(first.id)).includes('unsent draft'),'Draft did not clear');
+    const untouched=panes[1],launches=()=>fs.readFileSync(path.join(dir,'launches'),'utf8').trim().split('\n');
+    assert.equal(launches().length,1);
+    browser=await chromium.launch({headless:true});const page=await browser.newPage({viewport:{width:1200,height:800}});
+    await page.goto(url+'/?host=fixture&session='+name+'&tab='+first.tab_id);
+    await page.waitForSelector('#tabs .tab-select');
+    await page.evaluate(id=>{const item=allTabs().find(i=>i.tab.id===id);openTabMenu(item,220,70);},first.tab_id);
+    await until(()=>page.locator('#restart-agent').isEnabled(),'Menu restart did not enable');
+    await page.locator('#tab-menu').screenshot({path:path.join(dir,'restart-menu.png')});
+    await page.locator('#restart-agent').evaluate(el=>el.hidden=true);
+    await page.locator('#tab-menu').screenshot({path:path.join(dir,'restart-menu-before.png')});
+    await page.locator('#restart-agent').evaluate(el=>el.hidden=false);
+    const response=page.waitForResponse(r=>r.url().endsWith('/restart-agent'));
+    await page.getByRole('menuitem',{name:'Restart & resume agent'}).click();
+    const result=await response;assert.equal(result.status(),200);
+    const replacement=JSON.parse(cli('-s',name,'action','list-panes','--json','--all')).find(p=>!p.is_plugin&&p.tab_id===first.tab_id);
+    assert.ok(replacement);const restarted={pane_id:replacement.id,tab_id:replacement.tab_id};assert.notEqual(restarted.pane_id,first.id);
+    await until(()=>launches().length===2,'Replacement did not start');
+    assert.equal(launches()[1].split('|').slice(1).join('|'),'--model|fixture|resume|'+sid);
+    assert.notEqual(launches()[1].split('|')[0],launches()[0].split('|')[0]);
+    const after=JSON.parse(cli('-s',name,'action','list-panes','--json','--all')).filter(p=>!p.is_plugin);
+    assert.equal(after.length,2);assert.ok(after.some(p=>p.id===untouched.id&&p.tab_id===untouched.tab_id));
+    assert.ok(after.some(p=>p.id===restarted.pane_id&&p.tab_id===first.tab_id));
+    assert.equal((await restart(target)).status,409,'Duplicate stale request cannot restart the replacement');
+    console.log('PASS: real menu + endpoint restarted only the intended agent, retained tab and other pane, resumed exact UUID and flags, rejected busy/draft/stale targets. Screenshots: '+dir);
+  }catch(error){console.error('Private fixture logs:',dir);throw error;}
+  finally{if(browser)await browser.close();if(created)try{cli('kill-session',name);}catch{}await stop(relay);await stop(native);if(tokenName)try{cli('web','--revoke-token',tokenName);}catch{}fs.rmSync(path.join(dir,'token'),{force:true});}
+})().catch(error=>{console.error(error);process.exitCode=1;});

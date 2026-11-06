@@ -781,6 +781,20 @@ async fn terminal_response(
     if path == "/switchboard/logs" && request.method() == Method::GET {
         return Ok(Json(logs::local()).into_response());
     }
+    if path == "/switchboard/restart-agent" && request.method() == Method::POST {
+        let bytes = to_bytes(request.into_body(), 4096)
+            .await
+            .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid restart request"))?;
+        let target = serde_json::from_slice::<restart::Target>(&bytes)
+            .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid restart target"))?;
+        let poll = mesh
+            .attention
+            .get()
+            .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Attention unavailable"))?;
+        return restart::local(&host, poll, target)
+            .await
+            .map(IntoResponse::into_response);
+    }
     if path == "/switchboard/control" && request.method() == Method::POST {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]

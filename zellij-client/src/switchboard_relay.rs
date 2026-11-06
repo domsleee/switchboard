@@ -15,6 +15,7 @@ mod mesh;
 mod output_diagnostics;
 pub(crate) mod peer_bridge;
 mod push;
+mod restart;
 mod tasks;
 mod update_watch;
 use axum::{
@@ -1369,6 +1370,7 @@ fn app(state: RelayState) -> Router {
         )
         .route("/api/message-board/{*path}", any(message_board))
         .route("/api/hosts/{host}/close-tab", post(control::close_tab))
+        .route("/api/hosts/{host}/restart-agent", post(restart::handler))
         .route("/api/hosts/{host}/escape", post(control::escape))
         .route("/api/open-link", post(control::open_link))
         .route("/api/open-file", post(control::open_file))

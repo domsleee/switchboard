@@ -7,7 +7,7 @@ const [suite='ui',...args]=process.argv.slice(2);
 const node=process.execPath;
 const env={...process.env};
 const commands={
-  ui:()=>[[node,'--test',...['conversation-media','conversation','sidebar','sidebar-ux','focus-group','tab-number','focus','startup','startup-cache','new-tab','bridge','key_handler','terminal-diagnostics','browser-resume','logs','terminal-scroll','viewport','clipboard','clipboard-browser','escape','close','titles','links','gallery','reconnect','predict','notifications','mobile'].map(name=>'tools/switchboard/'+name+'.test.cjs')]],
+  ui:()=>[[node,'--test',...['restart-agent','conversation-media','conversation','sidebar','sidebar-ux','focus-group','tab-number','focus','startup','startup-cache','new-tab','bridge','key_handler','terminal-diagnostics','browser-resume','logs','terminal-scroll','viewport','clipboard','clipboard-browser','escape','close','titles','links','gallery','reconnect','predict','notifications','mobile'].map(name=>'tools/switchboard/'+name+'.test.cjs')]],
   messages:()=>[[node,'--test','tools/switchboard/messages.test.cjs']],
   relay:()=>[['cargo','test','-p','zellij-client','--features','web_server_capability','switchboard_relay','--lib']],
   colours:()=>[['cargo','test','-p','zellij-server','windows_pane_environment_advertises_colour_without_overriding_preferences','--lib']],
@@ -18,7 +18,7 @@ const commands={
   },
   sharing:()=>{
     if(process.platform==='win32'||args.length!==1)throw Error('sharing requires Unix and BINARY');
-    return [[node,'tools/switchboard/sharing_native.test.cjs',path.resolve(args[0])]];
+    return ['sharing_native','restart_agent_native'].map(name=>[node,'tools/switchboard/'+name+'.test.cjs',path.resolve(args[0])]);
   },
   switching:()=>{
     if(process.platform==='win32'||args.length!==1)throw Error('switching requires Unix and BINARY (private recovered terminals)');
