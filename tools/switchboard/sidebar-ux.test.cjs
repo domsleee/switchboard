@@ -50,6 +50,23 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.deepEqual(await order(),names.slice(1));
     assert.equal(await snoozed.getAttribute('aria-expanded'),'false');
     assert.equal(await snoozed.locator('.count').textContent(),'1');
+    if(process.env.SWITCHBOARD_UX_SCREENSHOTS)await page.locator('#sidebar').screenshot({path:process.env.SWITCHBOARD_UX_SCREENSHOTS+'/snoozed.png'});
+    const groupBounds=()=>page.evaluate(()=>[$('tabs'),$('snoozed-toggle'),$('hidden-toggle')].map(el=>el?.getBoundingClientRect().toJSON()));
+    let [tabList,snoozedGroup]=await groupBounds();
+    assert.ok(Math.abs(tabList.bottom-6-snoozedGroup.bottom)<1,'Snoozed sits at the bottom of a short list');
+    await page.evaluate(()=>{setHidden(allTabs().find(item=>item.tab.name==='ssb orchestrator'),true);render();});
+    let hiddenGroup;
+    [tabList,snoozedGroup,hiddenGroup]=await groupBounds();
+    assert.ok(Math.abs(tabList.bottom-6-hiddenGroup.bottom)<1,'Hidden stays at the bottom');
+    assert.ok(Math.abs(hiddenGroup.top-snoozedGroup.bottom-3)<1,'Snoozed sits directly above Hidden');
+    // With overflow, both headers remain visible without covering one another.
+    await page.locator('#tabs .tab-row').evaluate(row=>row.style.minHeight='1000px');
+    await page.evaluate(()=>{$('tabs').scrollTop=0;});
+    [tabList,snoozedGroup,hiddenGroup]=await groupBounds();
+    assert.ok(snoozedGroup.top>=tabList.top&&Math.abs(hiddenGroup.bottom-tabList.bottom)<1,'Both headers pin within the scrolling list');
+    assert.ok(Math.abs(hiddenGroup.top-snoozedGroup.bottom-3)<1,'Pinned headers do not overlap');
+    await page.locator('#tabs .tab-row').evaluate(row=>row.style.minHeight='');
+    await page.evaluate(()=>{setHidden(allTabs().find(item=>item.hidden),false);render();});
     await page.evaluate(()=>openPanel('settings'));
     const moveWorking=page.locator('#move-working-to-snoozed');
     assert.equal(await moveWorking.getAttribute('aria-pressed'),'true');
