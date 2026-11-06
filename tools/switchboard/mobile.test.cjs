@@ -67,7 +67,7 @@ test('phone sidebar, actions, Settings, Computers and Messages fit without horiz
         const project=await page.locator('#new-tab-project-lookup').boundingBox(),command=await page.locator('#new-tab-command').boundingBox();
         assert.ok(project.y+project.height<=command.y,'project dropdown must stay above the command field');
       }
-      await page.locator('#cancel-new-tab').click();
+      await page.keyboard.press('Escape');
       await page.locator('.tab-actions').first().click();
       await page.locator('#tab-menu').waitFor({state:'visible'});
       const menu=await page.locator('#tab-menu').boundingBox();assert.ok(menu.x>=0&&menu.x+menu.width<=viewport.width);

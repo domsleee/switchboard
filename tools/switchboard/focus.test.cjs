@@ -600,7 +600,7 @@ test('passive mouse clicks keep terminal typing and selection without switching 
     await input.focus();await page.locator('#new-tab').click();
     assert.equal(await page.locator('#new-tab-dialog').evaluate(dialog=>dialog.open),true);
     assert.equal(await page.evaluate(()=>document.activeElement.closest('dialog')?.id),'new-tab-dialog');
-    await page.locator('#cancel-new-tab').click();
+    await page.keyboard.press('Escape');
     await input.focus();
     await page.evaluate(()=>SwitchboardOpenFile('mac','/tmp/focus-fixture.txt'));
     await page.locator('#hidden-toggle').click();

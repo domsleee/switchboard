@@ -66,7 +66,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
       await page.keyboard.type('first command');assert.equal(await input.inputValue(),'first command');
       await page.evaluate(()=>refresh());assert.equal(frameBoots,1);
       await page.locator('#new-tab').click();assert.equal(await page.locator('#new-tab-target option').count(),1);
-      await page.locator('#cancel-new-tab').click();
+      await page.keyboard.press('Escape');
       assert.deepEqual(errors,[]);return;
     }
     const frame=page.frameLocator('iframe[title="Windows: main"]'),input=frame.locator('#terminal-input');
@@ -80,7 +80,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
         await page.keyboard.press('Meta+Alt+KeyT');
         await page.waitForFunction(()=>document.querySelector('#new-tab-dialog').open);
         assert.equal(await page.locator('#new-tab-title').textContent(),'New tab');
-        await page.locator('#cancel-new-tab').click();
+        await page.keyboard.press('Escape');
         await page.locator('#new-admin-tab').click();
       }else await page.keyboard.press('Control+Alt+KeyT');
       await page.waitForFunction(()=>document.querySelector('#new-tab-dialog').open);
@@ -90,6 +90,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
       assert.equal(await page.locator('#new-tab-target option').first().textContent(),'Windows');
       if(number===1)await page.evaluate(()=>sessions.delete(sessionKey('windows','other')));
       assert.equal(await page.locator('#new-tab-project').inputValue(),'switchboard');
+      assert.equal(await page.getByRole('button',{name:'Cancel',exact:true}).count(),0);
       if(number===1){
         await page.locator('#new-tab-lookup').click();
         assert.deepEqual(await page.locator('#new-tab-commands [role=option] span').allTextContents(),['c','castra','csol']);
@@ -100,16 +101,29 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
         assert.equal(await page.locator('#new-tab-command').getAttribute('aria-expanded'),'false');
         await page.locator('#new-tab-command').fill('custom --flag');
         assert.equal(await page.locator('#new-tab-command').getAttribute('aria-expanded'),'false');
-        await page.locator('#new-tab-command').fill('c');await page.keyboard.press('Escape');
+        await page.locator('#new-tab-command').fill('cs');
+        assert.equal(await page.locator('#new-tab-commands').getByRole('option',{selected:true}).textContent(),'csolCodex · Sol');
+        await page.keyboard.press('Shift+Tab');
+        assert.equal(await page.locator('#new-tab-command').inputValue(),'cs','Shift+Tab keeps the typed value');
+        assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-project');
+        await page.locator('#new-tab-command').fill('cs');await page.keyboard.press('Tab');
+        assert.equal(await page.locator('#new-tab-command').inputValue(),'csol');
+        assert.equal(await page.locator('#new-tab-dialog').evaluate(el=>el.open),true,'Tab completes without submitting');
+        await page.keyboard.press('Tab');
+        assert.equal(await page.evaluate(()=>document.activeElement.textContent),'Create tab ↵','Tab moves on after completion');
+        await page.locator('#new-tab-command').fill('c');await page.keyboard.press('Tab');
+        assert.equal(await page.locator('#new-tab-command').inputValue(),'c','An exact match wins over longer prefixes');
+        await page.locator('#new-tab-command').fill('cs');
       }
       if(number===2){
         await page.locator('#new-tab-command').fill('cast');
         assert.deepEqual(await page.locator('#new-tab-commands [role=option] span').allTextContents(),['castra']);
-        await page.keyboard.press('ArrowDown');await page.keyboard.press('Enter');
+        await page.keyboard.press('ArrowDown');await page.keyboard.press('Tab');
         assert.equal(await page.locator('#new-tab-command').inputValue(),'castra');
         assert.equal(await page.locator('#new-tab-dialog').evaluate(el=>el.open),true,'Picking a suggestion does not submit');
         await page.locator('#new-tab-project').fill('dot');
-        await page.getByRole('option',{name:'dotfiles',exact:true}).click();
+        await page.getByRole('option',{name:'dotfiles',exact:true}).waitFor();
+        await page.keyboard.press('Tab');
         assert.equal(await page.locator('#new-tab-project').inputValue(),'dotfiles');
         assert.equal(await page.locator('#new-tab-project-help').textContent(),'~/git/dotfiles');
         await page.locator('#new-tab-command').focus();
@@ -126,7 +140,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
       await page.evaluate(()=>refreshAttention());
       assert.equal(await page.locator('#tabs .selected .tab-name').textContent(),'Creating tab…');
       assert.equal(await input.evaluate(()=>window.creationElevated),number===2);
-      assert.deepEqual(await input.evaluate(()=>window.creationLaunch),number===2?{project:'dotfiles',command:'castra'}:{project:'switchboard',command:'c'});
+      assert.deepEqual(await input.evaluate(()=>window.creationLaunch),number===2?{project:'dotfiles',command:'castra'}:{project:'switchboard',command:'csol'});
       await input.evaluate(()=>window.confirmCreation());created=number;
       await page.waitForFunction(n=>document.querySelector('#tabs .selected .tab-name')?.textContent==='New shell '+n,number);
       assert.equal(new URL(page.url()).searchParams.get('pane'),String(8+number));
@@ -157,7 +171,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
     assert.equal(await page.locator('#new-tab-project-help').textContent(),'~/git/manual-project');
     await page.keyboard.press('Escape');
     assert.equal(await page.locator('#new-tab-dialog').evaluate(el=>el.open),true);
-    projectError=false;await page.locator('#cancel-new-tab').click();
+    projectError=false;await page.keyboard.press('Escape');
     await create(1);
     await page.locator('#tabs .selected').click({button:'right'});
     await page.locator('#ready').click();
@@ -186,8 +200,12 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
     assert.equal(await input.evaluate(i=>document.activeElement===i),true);
     // A deliberate move to search while creation waits must still win.
     await page.locator('#new-tab').click();
-    await page.locator('#new-tab-form button[type="submit"]').click();
+    await page.locator('#new-tab-command').fill('custom --flag');await page.keyboard.press('Tab');
+    assert.equal(await page.locator('#new-tab-command').inputValue(),'custom --flag');
+    assert.equal(await page.evaluate(()=>document.activeElement.textContent),'Create tab ↵','Unmatched commands keep normal Tab navigation');
+    await page.locator('#new-tab-command').focus();await page.keyboard.press('Enter');
     await page.waitForFunction(()=>document.querySelector('iframe.active')?.contentWindow.creationRequested);
+    assert.deepEqual(await input.evaluate(()=>window.creationLaunch),{project:'switchboard',command:'custom --flag'});
     await page.locator('#tab-search').click();
     await input.evaluate(()=>window.confirmCreation());
     await page.waitForFunction(()=>document.querySelector('#tabs .selected .tab-name')?.textContent==='New shell 3');
