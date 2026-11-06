@@ -178,6 +178,14 @@ fn find_program(name: &str, folders: &[PathBuf]) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
+/// Queue text as argv, never through Windows batch-file shell interpretation.
+pub(super) fn codex_queue_program() -> Option<(PathBuf, std::ffi::OsString)> {
+    let folders = search_path();
+    let name = if cfg!(windows) { "codex.exe" } else { "codex" };
+    let program = folders.iter().map(|p| p.join(name)).find(|p| p.is_file())?;
+    Some((program, std::env::join_paths(folders).ok()?))
+}
+
 // --- Checks -----------------------------------------------------------------------
 
 // Inspect package metadata, not the launcher extension: custom wrappers are not npm.

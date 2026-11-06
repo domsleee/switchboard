@@ -781,6 +781,9 @@ async fn terminal_response(
     if path == "/switchboard/logs" && request.method() == Method::GET {
         return Ok(Json(logs::local()).into_response());
     }
+    if path == "/switchboard/codex/queue" && request.method() == Method::POST {
+        return Ok(native_messages::gateway(request).await);
+    }
     if path == "/switchboard/restart-agent" && request.method() == Method::POST {
         let bytes = to_bytes(request.into_body(), 4096)
             .await
