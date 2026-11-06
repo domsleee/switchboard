@@ -760,12 +760,12 @@ impl PollState {
         session: &str,
         pane: u32,
         chat: &str,
-    ) -> Option<super::restart::Identity> {
+    ) -> Option<(super::restart::Identity, bool)> {
         let hook = self.hooks.get(&(session.to_string(), pane.into()))?;
-        if hook.state != "ready" || hook.chat_id.as_deref() != Some(chat) {
+        if !matches!(hook.state, "ready" | "working") || hook.chat_id.as_deref() != Some(chat) {
             return None;
         }
-        hook.restart.clone()
+        Some((hook.restart.clone()?, hook.state == "working"))
     }
     /// A local pane started or finished waiting on `zellij switchboard run`.
     pub(super) fn run_waiting(&mut self, session: &str, pane: u64, waiting: bool) {
@@ -816,7 +816,8 @@ impl PollState {
         }
         if let Some(id) = &hooked.chat_id {
             row["chat_id"] = json!(id);
-            row["restart_available"] = json!(hooked.restart.is_some() && hooked.state == "ready");
+            row["restart_available"] =
+                json!(hooked.restart.is_some() && matches!(hooked.state, "ready" | "working"));
         }
         if hooked.state == "unknown" {
             return;
@@ -1276,9 +1277,11 @@ pub(super) async fn hook(
             .filter(|old| old.chat_id == hook.chat_id && old.agent == agent)
             .and_then(|old| old.restart.clone());
     }
-    let capture = next
-        .clone()
-        .filter(|hook| hook.restart.is_none() && hook.state == "ready" && hook.chat_id.is_some());
+    let capture = next.clone().filter(|hook| {
+        hook.restart.is_none()
+            && matches!(hook.state, "ready" | "working")
+            && hook.chat_id.is_some()
+    });
     let mut poll = state.poll.lock().await;
     // An interrupted Codex turn has no Stop; the screen shows what it left.
     if matches!(event["hook_event_name"].as_str(), Some("SessionEnd")) {

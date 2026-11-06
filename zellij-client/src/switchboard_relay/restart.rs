@@ -41,7 +41,7 @@ fn owns(p: &sysinfo::Process, session: &str, pane: u64) -> bool {
         && p.environ().iter().any(|v| v == pane.as_str())
 }
 
-/// Called only on a completed turn without a recorded process. Ambiguous processes
+/// Called on a reported turn without a recorded process. Ambiguous processes
 /// (including nested agents inheriting the pane's environment) cannot be restarted.
 pub(super) fn capture(agent: &str, event: &Value, session: &str, pane: u64) -> Option<Identity> {
     let agent = match agent {
@@ -103,6 +103,8 @@ pub(super) struct Target {
     pane_id: u32,
     tab_id: u32,
     chat_id: String,
+    #[serde(default)]
+    confirm_interrupt: bool,
 }
 
 fn refused(message: &'static str) -> Error {
@@ -156,13 +158,11 @@ pub(super) async fn local(
     {
         return Err(refused("Session is not shared"));
     }
-    let identity = poll
+    let (identity, hook_working) = poll
         .lock()
         .await
         .restart_identity(&target.session, target.pane_id, &target.chat_id)
-        .ok_or_else(|| {
-            refused("The agent must finish its turn and report its conversation before restarting")
-        })?;
+        .ok_or_else(|| refused("The agent must report its conversation before restarting"))?;
     let panes = control::list_panes(host, &target.session, true, Duration::from_secs(20))
         .await
         .map_err(|_| refused("Cannot read terminal panes"))?;
@@ -181,12 +181,14 @@ pub(super) async fn local(
     )
     .await
     .map_err(|_| refused("Cannot check the agent's prompt"))?;
-    if attention::classify(pane, &screen)["state"] != "ready"
-        || crate::switchboard_absorb::prompt_empty(identity.agent, &screen).is_err()
-    {
+    let working = hook_working || attention::classify(pane, &screen)["state"] == "working";
+    if working && !target.confirm_interrupt {
         return Err(refused(
-            "Finish the current turn and clear any unsent prompt before restarting",
+            "Confirm that the current turn should be interrupted",
         ));
+    }
+    if !working && crate::switchboard_absorb::prompt_empty(identity.agent, &screen).is_err() {
+        return Err(refused("Clear any unsent prompt before restarting"));
     }
     let run = resume_command(
         &identity.command,
@@ -214,8 +216,7 @@ pub(super) async fn local(
         .lock()
         .await
         .restart_identity(&target.session, target.pane_id, &target.chat_id)
-        .as_ref()
-        != Some(&identity)
+        != Some((identity.clone(), hook_working))
     {
         return Err(refused(
             "The conversation changed while checking the restart",
