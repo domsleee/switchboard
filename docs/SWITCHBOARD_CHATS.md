@@ -44,9 +44,16 @@ curl -G 'http://127.0.0.1:8090/api/chats/CHAT_ID' \
 Here `cursor` is a message offset. Use the search result's `message_cursor` to
 jump to a match, or subtract a few to include preceding context. The response
 contains `messages` and `next_cursor`. Each message has `role`, `text`,
-`timestamp` and `truncated`. Text is capped at 4,000 characters per message;
-search excerpts are capped at 401 characters. Tool calls, tool output, reasoning,
-attachments and provider credentials are excluded. OpenCode text parts are
+`timestamp` and `truncated`. Codex assistant messages also include `phase`
+(`commentary` or `final`) when present in the source; other messages return null. Text is capped at 4,000 characters per message;
+search excerpts are capped at 401 characters. Tool calls, tool output, reasoning, and provider credentials are excluded.
+Messages also include an inert `markdown` event stream for safe DOM rendering.
+Claude and Codex messages may include `attachments` with a media `kind`, `name`,
+and `url` or an explicit `unavailable` reason. Paths are not resolved on the relay
+computer; clients must request them from the conversation’s owning host. Embedded
+PNG/JPEG/GIF/WebP data is bounded to 2 MiB per chat, with eight attachments per
+message; other embedded formats are unavailable. Search results never include
+embedded attachment data. OpenCode text parts are
 returned as individual entries. This is a transcript view, not a reconstruction
 of the agent's current compacted context or active rewind branch.
 

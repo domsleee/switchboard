@@ -50,6 +50,7 @@ struct Chat {
     project: String,
     messages: Vec<Value>,
     partial: bool,
+    embedded_bytes: usize,
 }
 fn clip(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
@@ -88,6 +89,88 @@ impl Chat {
         }
         self.messages
             .push(json!({"role":role,"text":text,"timestamp":timestamp}));
+    }
+    // Only explicit user/assistant content parts, never tool output or reasoning.
+    fn push_parts(&mut self, role: &str, parts: &Value, timestamp: Value) {
+        if !matches!(role, "user" | "assistant") {
+            return;
+        }
+        let mut attachments = Vec::new();
+        for part in parts.as_array().into_iter().flatten() {
+            let kind = part["type"].as_str().unwrap_or_default();
+            if !matches!(
+                kind,
+                "image" | "input_image" | "image_url" | "local_image" | "video" | "input_video"
+            ) {
+                continue;
+            }
+            if attachments.len() == 8 {
+                self.partial = true;
+                break;
+            }
+            let mut item = json!({"kind":if kind.contains("video") {"video"} else {"image"},"name":clip(part["name"].as_str().unwrap_or("Attachment"),120)});
+            let source = &part["source"];
+            let reference = part["path"]
+                .as_str()
+                .or_else(|| part["image_url"].as_str())
+                .or_else(|| part["image_url"]["url"].as_str())
+                .or_else(|| part["video_url"].as_str())
+                .or_else(|| source["url"].as_str());
+            let embedded = if source["type"] == "base64" {
+                Some(format!(
+                    "data:{};base64,{}",
+                    source["media_type"].as_str().unwrap_or(""),
+                    source["data"].as_str().unwrap_or("")
+                ))
+            } else {
+                reference
+                    .filter(|r| r.starts_with("data:"))
+                    .map(str::to_owned)
+            };
+            if let Some(data) = embedded {
+                let supported = ["image/png", "image/jpeg", "image/webp", "image/gif"]
+                    .iter()
+                    .any(|mime| data.starts_with(&format!("data:{mime};base64,")));
+                if supported && self.embedded_bytes + data.len() <= 2 * 1024 * 1024 {
+                    use base64::Engine;
+                    let valid = data.split_once(',').is_some_and(|(_, body)| {
+                        base64::engine::general_purpose::STANDARD
+                            .decode(body)
+                            .is_ok()
+                    });
+                    if valid {
+                        self.embedded_bytes += data.len();
+                        item["url"] = json!(data);
+                    } else {
+                        item["unavailable"] = json!("Invalid embedded image");
+                    }
+                } else {
+                    item["unavailable"] = json!(
+                        "Embedded attachment exceeds preview limits or uses an unsupported format"
+                    );
+                }
+            } else if let Some(reference) = reference.filter(|r| r.len() <= 4096) {
+                item["url"] = json!(reference);
+            } else {
+                item["unavailable"] =
+                    json!("The transcript did not retain a previewable attachment");
+            }
+            attachments.push(item);
+        }
+        let text = content(parts);
+        let before = self.messages.len();
+        self.push(
+            role,
+            if text.trim().is_empty() && !attachments.is_empty() {
+                "[Attachment]".into()
+            } else {
+                text
+            },
+            timestamp,
+        );
+        if self.messages.len() > before && !attachments.is_empty() {
+            self.messages.last_mut().unwrap()["attachments"] = json!(attachments);
+        }
     }
     fn record(&mut self, v: &Value, depth: usize) {
         if depth > 2 {
@@ -147,9 +230,9 @@ impl Chat {
                     self.title = clip(title, 120);
                 }
                 if matches!(v["type"].as_str(), Some("user" | "assistant")) {
-                    self.push(
+                    self.push_parts(
                         v["type"].as_str().unwrap(),
-                        content(&v["message"]["content"]),
+                        &v["message"]["content"],
                         v["timestamp"].clone(),
                     );
                 }
@@ -162,11 +245,18 @@ impl Chat {
                 }
                 // event_msg duplicates these messages. Read only canonical response items.
                 if v["type"] == "response_item" && p["type"] == "message" {
-                    self.push(
+                    let before = self.messages.len();
+                    self.push_parts(
                         p["role"].as_str().unwrap_or_default(),
-                        content(&p["content"]),
+                        &p["content"],
                         v["timestamp"].clone(),
                     );
+                    if self.messages.len() > before
+                        && p["role"] == "assistant"
+                        && matches!(p["phase"].as_str(), Some("commentary" | "final"))
+                    {
+                        self.messages.last_mut().unwrap()["phase"] = p["phase"].clone();
+                    }
                 }
             },
             "copilot" => {
@@ -348,11 +438,38 @@ fn add_result(chat: &Chat, p: &Params, results: &mut Vec<Value>) {
     }
     results.push(v);
 }
+// A small, inert Markdown event stream. The browser creates allowlisted DOM nodes;
+// neither transcript HTML nor provider-controlled attributes are inserted as HTML.
+fn markdown_events(source: &str) -> Vec<Value> {
+    use pulldown_cmark::{Event, Options, Parser, Tag};
+    Parser::new_ext(source, Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS).map(|event| match event {
+        Event::Start(tag) => match tag {
+            Tag::Link { dest_url, .. } => json!({"type":"start","tag":"a","url":dest_url.as_ref()}),
+            Tag::Image { dest_url, .. } => json!({"type":"start","tag":"image","url":dest_url.as_ref()}),
+            Tag::Heading { level, .. } => json!({"type":"start","tag":format!("{level}")}),
+            Tag::List(start) => json!({"type":"start","tag":if start.is_some(){"ol"}else{"ul"},"start":start}),
+            tag => json!({"type":"start","tag":match tag {
+                Tag::Paragraph=>"p",Tag::BlockQuote(_)=>"blockquote",Tag::CodeBlock(_)=>"pre",
+                Tag::Item=>"li",Tag::Emphasis=>"em",Tag::Strong=>"strong",Tag::Strikethrough=>"del",
+                Tag::Table(_)=>"table",Tag::TableHead=>"thead",Tag::TableRow=>"tr",Tag::TableCell=>"td",_=>"span"
+            }}),
+        },
+        Event::End(_)=>json!({"type":"end"}),
+        Event::Text(text)|Event::Html(text)|Event::InlineHtml(text)=>json!({"type":"text","text":text.as_ref()}),
+        Event::Code(text)=>json!({"type":"code","text":text.as_ref()}),
+        Event::SoftBreak=>json!({"type":"text","text":"\n"}),
+        Event::HardBreak=>json!({"type":"break"}),
+        Event::Rule=>json!({"type":"rule"}),
+        Event::TaskListMarker(done)=>json!({"type":"text","text":if done {"☑ "}else{"☐ "}}),
+        _=>json!({"type":"text","text":""}),
+    }).collect()
+}
+
 fn read_page(chat: &Chat, p: &Params) -> Value {
     let mut result = chat.summary();
     let page:Vec<_>=chat.messages.iter().skip(p.cursor).take(p.limit()).map(|m| {
         let text=m["text"].as_str().unwrap_or_default();
-        json!({"role":m["role"],"timestamp":m["timestamp"],"text":clip(text,4000),"truncated":text.chars().count()>4000})
+        json!({"role":m["role"],"timestamp":m["timestamp"],"text":clip(text,4000),"truncated":text.chars().count()>4000,"phase":m["phase"],"attachments":m["attachments"],"markdown":markdown_events(&clip(text,4000))})
     }).collect();
     let next = p.cursor.saturating_add(page.len());
     result["messages"] = json!(page);
@@ -710,6 +827,50 @@ mod tests {
         c
     }
     #[test]
+    fn switchboard_chats_media_parts_and_markdown_are_bounded_and_inert() {
+        let c = chat(
+            "claude",
+            vec![
+                json!({"type":"user","message":{"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGVsbG8="}}]}}),
+                json!({"type":"assistant","message":{"content":[{"type":"text","text":"**Result** ![shot](out/shot.png) [demo](out/demo.mp4) <script>bad()</script>"},{"type":"tool_use","input":{"type":"image","source":{"url":"secret.png"}}}]}}),
+            ],
+        );
+        assert_eq!(c.messages.len(), 2);
+        let page = read_page(&c, &Params::default());
+        assert_eq!(
+            page["messages"][0]["attachments"][0]["url"],
+            "data:image/png;base64,aGVsbG8="
+        );
+        assert!(page["messages"][1]["attachments"].is_null());
+        let markdown = page["messages"][1]["markdown"].as_array().unwrap();
+        assert!(markdown
+            .iter()
+            .any(|v| v["tag"] == "image" && v["url"] == "out/shot.png"));
+        assert!(markdown.iter().any(|v| v["tag"] == "strong"));
+        assert!(!markdown.iter().any(|v| v["tag"] == "script"));
+        let c = chat(
+            "codex",
+            vec![
+                json!({"type":"response_item","payload":{"type":"message","role":"user","content":[
+                    {"type":"local_image","path":"C:\\work\\shot.png"},
+                    {"type":"input_image","image_url":"data:image/svg+xml;base64,aGVsbG8="},
+                    {"type":"input_image","image_url":"data:image/png;base64,INVALID!"}
+                ]}}),
+            ],
+        );
+        let attachments = &c.messages[0]["attachments"];
+        assert_eq!(attachments[0]["url"], "C:\\work\\shot.png");
+        assert!(attachments[1]["unavailable"].is_string());
+        assert!(attachments[2]["unavailable"].is_string());
+        let mut c = Chat {
+            agent: "claude".into(),
+            embedded_bytes: 2 * 1024 * 1024,
+            ..Chat::default()
+        };
+        c.record(&json!({"type":"user","message":{"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGVsbG8="}}]}}),0);
+        assert!(c.messages[0]["attachments"][0]["unavailable"].is_string());
+    }
+    #[test]
     fn switchboard_chats_readers_exclude_tools_reasoning_and_duplicate_events() {
         let c = chat(
             "claude",
@@ -728,11 +889,15 @@ mod tests {
                 json!({"type":"session_meta","payload":{"id":"x1","cwd":"/repo"}}),
                 json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"question"}]}}),
                 json!({"type":"event_msg","payload":{"type":"user_message","message":"question"}}),
-                json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}}),
+                json!({"type":"response_item","payload":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"answer"}]}}),
             ],
         );
         assert_eq!(c.messages.len(), 2);
         assert_eq!(c.session_id, "x1");
+        assert_eq!(
+            read_page(&c, &Params::default())["messages"][1]["phase"],
+            "commentary"
+        );
         let c = chat(
             "copilot",
             vec![
