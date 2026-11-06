@@ -170,6 +170,21 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
     await page.evaluate(()=>SwitchboardTasks.load());
     await page.waitForFunction(()=>document.querySelector('#updates .switchboard-group .task-state')?.textContent==='All set');
     await mac.evaluate(el=>el.open=true);
+    if(process.env.PLUGIN_HOST_SCREENSHOTS)await mac.screenshot({path:process.env.PLUGIN_HOST_SCREENSHOTS+'/before.png'});
+    for(const agent of tasks.computers[0].agents){
+      agent.plugins={state:'attention',warnings:['dotfiles-work@dotfiles: not intended for this computer or agent. Remove it from '+agent.name+'.']};
+    }
+    await page.evaluate(()=>SwitchboardTasks.load());
+    assert.equal(await mac.getAttribute('data-status'),'attention');
+    assert.match(await mac.locator('.task-state').textContent(),/Claude Code: plugins need attention/);
+    assert.equal(await mac.locator('.plugin-warning').count(),3);
+    for(const row of await mac.locator('.agent-row').all())assert.equal(await row.getAttribute('data-status'),'attention');
+    assert.equal(await mac.getByRole('button',{name:'Set up',exact:true}).count(),0,'host plugin warnings do not offer Switchboard hook setup');
+    if(process.env.PLUGIN_HOST_SCREENSHOTS)await mac.screenshot({path:process.env.PLUGIN_HOST_SCREENSHOTS+'/after.png'});
+    for(const agent of tasks.computers[0].agents)agent.plugins={state:'ok',warnings:[]};
+    await page.evaluate(()=>SwitchboardTasks.load());
+    assert.equal(await mac.locator('.task-state').textContent(),'All set');
+    assert.equal(await mac.locator('.plugin-warning').count(),0);
     if(process.env.SKILL_HEALTH_SCREENSHOTS)await page.screenshot({path:'/tmp/skill-health-before.png',clip:await page.locator('#updates .task-computer').first().boundingBox()});
     if(process.env.INSTALL_HEALTH_SCREENSHOTS)await mac.screenshot({path:process.env.INSTALL_HEALTH_SCREENSHOTS+'/before.png'});
     tasks.computers[0].agents[2].installation={state:'attention',manager:'npm',detail:'Codex uses an npm installation on Windows. Updates can fail with EBUSY.',command:'powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"'};

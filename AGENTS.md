@@ -76,3 +76,7 @@ new endpoints. See the [internals](docs/SWITCHBOARD_INTERNALS.md) for transport 
 - Agent state uses reported hooks and screen/title fallback. Check which source produced the
   state before changing detection. For a screen-classification change, capture the actual
   pane with `dump-screen` and add it as a `classify` test before changing the rule.
+
+## Privacy
+
+Never publish Dom's real computer hostnames in code, tests, fixtures, screenshots, logs, commits, or PR content. Use fictional names in published examples and keep real host mappings in untracked local configuration. Check generated artifacts and screenshots before uploading them.
