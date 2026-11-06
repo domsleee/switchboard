@@ -2434,6 +2434,7 @@ async fn attention_reviews_live_with_the_owner_and_every_peer_sees_them() {
         artifact: None,
         askpass: Default::default(),
         html_previews: Default::default(),
+        artifact_proxies: Default::default(),
         push: None,
         browser_origin: None,
     };

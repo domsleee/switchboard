@@ -2,6 +2,7 @@ use super::*;
 use axum::{extract::Query, http::HeaderValue};
 use http_body_util::BodyExt;
 pub(super) mod html;
+pub(super) mod named;
 
 #[derive(Clone, Deserialize)]
 pub struct ArtifactConfig {
@@ -25,6 +26,17 @@ async fn proxy(State(state): State<ArtifactState>, request: Request) -> Result<R
         .unwrap_or("");
     if authority != state.config.hostname && authority != format!("127.0.0.1:{}", state.port) {
         return Err((StatusCode::FORBIDDEN, "Invalid artifact host"));
+    }
+    if request
+        .headers()
+        .get("sec-fetch-site")
+        .is_some_and(|v| v != "same-origin" && v != "none")
+        && request
+            .headers()
+            .get("sec-fetch-mode")
+            .is_none_or(|v| v != "navigate")
+    {
+        return Err((StatusCode::FORBIDDEN, "Untrusted artifact request"));
     }
     let path = format!(
         "{}{}",
@@ -53,6 +65,8 @@ async fn proxy(State(state): State<ArtifactState>, request: Request) -> Result<R
         header::CONTENT_LENGTH,
         header::CONTENT_RANGE,
         header::ACCEPT_RANGES,
+        header::ETAG,
+        header::LAST_MODIFIED,
     ] {
         if let Some(value) = response.headers().get(&name) {
             headers.insert(name, value.clone());
@@ -76,15 +90,16 @@ async fn proxy(State(state): State<ArtifactState>, request: Request) -> Result<R
     }
     headers.insert("content-security-policy","frame-ancestors https://switchboard.localhost http://switchboard.localhost http://127.0.0.1:8090 http://localhost:8090".parse().unwrap());
     headers.insert("x-content-type-options", "nosniff".parse().unwrap());
+    headers.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
     let status = response.status();
     Ok((status, headers, stream(response.into_body())).into_response())
 }
 
 fn range_header(headers: &HeaderMap) -> HeaderMap {
-    headers
-        .get(header::RANGE)
-        .map(|range| [(header::RANGE, range.clone())].into_iter().collect())
-        .unwrap_or_default()
+    [header::RANGE, header::IF_RANGE]
+        .into_iter()
+        .filter_map(|name| headers.get(&name).map(|value| (name, value.clone())))
+        .collect()
 }
 
 /// Stream an upstream body; a stalled upstream fails the download instead of hanging it.
@@ -110,6 +125,14 @@ fn stream(body: hyper::body::Incoming) -> Body {
 }
 
 fn router(config: ArtifactConfig, port: u16) -> anyhow::Result<Router> {
+    router_with_pin(config, port, None)
+}
+
+fn router_with_pin(
+    config: ArtifactConfig,
+    port: u16,
+    pin: Option<String>,
+) -> anyhow::Result<Router> {
     anyhow::ensure!(
         !config.hostname.is_empty() && !config.hostname.starts_with("switchboard.localhost"),
         "Artifact hostname must have a separate origin"
@@ -127,7 +150,7 @@ fn router(config: ArtifactConfig, port: u16) -> anyhow::Result<Router> {
         name: "Artifact".into(),
         url: origin,
         token_file: String::new(),
-        tls_fingerprint: None,
+        tls_fingerprint: pin,
         artifact_urls: Value::Null,
         escape_transport: None,
         zellij_binary: None,

@@ -261,3 +261,28 @@ The main implementation questions are publication consistency across platforms
 and copying a document's supporting files without breaking relative links. Keep
 those mechanics small. Remote discovery, cross-machine replication, an embedded
 editor, comments and version history are outside this release.
+
+## Proxy existing servers
+
+An existing read-only artifact server can now be registered with the local relay
+at `POST /api/artifact-proxies`. `GET` lists running registrations. The JSON body
+contains `id`, `target` (an HTTP(S) origin), `listen_port`, `public_origin` (a distinct
+HTTPS origin), and optionally `tls_fingerprint` for a pinned HTTPS target. Use
+`plugins/switchboard/skills/artifact-proxy/SKILL.md` for the sharing workflow.
+
+Each registration owns a loopback listener with the target's original root paths.
+A private reverse proxy such as Tailscale Serve forwards its HTTPS origin to that
+listener. Registrations persist in `<host-config-stem>.artifact-proxies.json` and
+start without restarting the relay. Existing registrations are immutable through
+the API; edit that local file and restart the relay to change or remove one. A
+failed listener is logged and does not stop terminals or erase the saved entry.
+
+GET, HEAD, byte ranges and redirects are streamed without terminal credentials or
+browser cookies. Only explicitly registered targets are used. POST, WebSockets
+and cookie-based applications are not supported. A target on another computer
+must be reachable from this relay; these proxies do not yet use the paired tunnel.
+
+Terminal links to a registered target origin resolve to its public origin after
+reloading the viewer. Public-origin forwarding is configured separately; registration
+alone does not establish remote reachability. Keep artifact origins separate from
+the terminal origin, including when both use the same Tailscale DNS name.
