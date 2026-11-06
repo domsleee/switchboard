@@ -23,6 +23,13 @@ let dragState=null, dragScrollFrame=0, suppressTabClickUntil=0;
 function load(key) { try { return JSON.parse(localStorage.getItem(key)) || {}; } catch (_) { return {}; } }
 const groups = load('switchboard-groups');
 const ready = load('switchboard-ready');
+const pinned = load('switchboard-pinned');
+function isPinned(key){return !!pinned[canonKey(key)];}
+function savePinned(){localStorage.setItem('switchboard-pinned',JSON.stringify(pinned));}
+function setPinned(item,on){
+  if(on)pinned[canonKey(item.key)]=1;else delete pinned[canonKey(item.key)];
+  savePinned();
+}
 // Tabs in the Hidden group at the bottom of the sidebar. The group shares them like the
 // tab order; tabs archived before Hidden existed join it.
 const hidden = localStorage.getItem('switchboard-hidden')===null?load('switchboard-archived'):load('switchboard-hidden');
@@ -314,6 +321,9 @@ function setCatalog(entry,tabs){
   let hiddenMoved=false;
   for(const [old,key] of migrations)for(const stored of new Set([old,canonKey(old)]))if(stored in hidden){delete hidden[stored];hidden[canonKey(key)]=1;hiddenMoved=true;}
   if(hiddenMoved)saveHidden();
+  let pinnedMoved=false;
+  for(const [old,key] of migrations)if(isPinned(old)){delete pinned[canonKey(old)];pinned[canonKey(key)]=1;pinnedMoved=true;}
+  if(pinnedMoved)savePinned();
   if(migrations.has(selected)){selected=migrations.get(selected);changed=true;}
   const order=tabOrder.map(canonKey),moved=new Map([...migrations].map(([old,key])=>[canonKey(old),canonKey(key)]));
   if(order.some(key=>moved.has(key))){tabOrder=[...new Set(order.map(key=>moved.get(key)||key))];changed=true;}
@@ -430,7 +440,7 @@ function sidebarTabs(){
   let next=Infinity;
   for(const key of snoozedPlacement.keys())if(!present.has(key))snoozedPlacement.delete(key);
   const result=tabs.map(item=>{
-    const eligible=settingValue('move-working-to-snoozed')==='true'&&!item.hidden&&!isReady(item)
+    const eligible=settingValue('move-working-to-snoozed')==='true'&&!item.hidden&&!isPinned(item.key)&&!isReady(item)
       &&!attentionErrors.some(error=>error.host==='Switchboard'||error.host===item.entry.host&&(!error.session||error.session===item.entry.name));
     let snoozed=false;
     if(eligible&&autoLabel(item)==='Working'){
@@ -587,7 +597,7 @@ function render() {
     const elevated=item.tab.name.replace(/^\*\s*/,'')==='Administrator';
     const status=unavailable?'Status unavailable':stateLabel==='Ready'?'':stateLabel;
     const duplicate=titleCounts.get(JSON.stringify([item.entry.host,title]))>1;
-    const subtitle=`${machine}${duplicate?' · '+item.entry.name:''}${status?' · '+status:''}${flagged?' · For review':''}`;
+    const subtitle=`${machine}${duplicate?' · '+item.entry.name:''}${status?' · '+status:''}${flagged?' · For review':''}${isPinned(item.key)?' · Pinned':''}`;
     button.title=`${title} · ${machine} · ${item.entry.name}\n${status||'No pending attention'}${flagged?' · Flagged for review':''}\nDrag to reorder · Alt+Shift+H/L moves this tab · Middle-click to close · Right-click for actions`;
     button.className='tab-select'+(item.key===selected?' selected':'')+(starred?' needs-attention':'')+(elevated?' elevated':'');
     button.setAttribute('aria-pressed',String(item.key===selected));
@@ -1459,6 +1469,10 @@ function updateTabMenu(){
   contextItem=item;
   $('tab-menu-target').textContent=`${tabTitle(item)} · ${hosts.get(item.entry.host)?.name||item.entry.host} · ${item.entry.name}`;
   $('ready').disabled=!!item.tab.pending&&!Number.isInteger(item.tab.id);
+  const pin=$('pin-tab'),isPin=isPinned(item.key);
+  pin.disabled=!!item.tab.pending&&!Number.isInteger(item.tab.id);
+  pin.firstChild.textContent=isPin?'Unpin':'Pin';
+  pin.lastChild.textContent=isPin?'Allow automatic snoozing':'Keep in the list while working';
   const hide=$('hide-tab');
   hide.disabled=!!item.tab.pending&&!Number.isInteger(item.tab.id);
   hide.firstChild.textContent=item.hidden?'Show in list':'Hide';
@@ -1490,6 +1504,13 @@ $('tab-menu').onkeydown=event=>{
     const next=event.key==='Home'?0:event.key==='End'?items.length-1:(index+(event.key==='ArrowDown'?1:-1)+items.length)%items.length;
     items[next]?.focus();
   }else if(event.key==='Tab')closeTabMenu(true);
+};
+$('pin-tab').onclick=()=>{
+  const item=contextItem;if(!item)return;
+  setPinned(item,!isPinned(item.key));
+  closeTabMenu();render();
+  tabButtons.get(item.key)?.scrollIntoView({block:'nearest',inline:'nearest'});
+  if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.focus();else allTabs().find(t=>t.key===selected)?.entry.frame.focus();
 };
 $('hide-tab').onclick=()=>{
   const item=contextItem;if(!item)return;
