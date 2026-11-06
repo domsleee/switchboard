@@ -148,6 +148,13 @@ pub enum Command {
     #[clap(name = "web", value_parser)]
     Web(WebCli),
 
+    /// Internal retained terminal attachment process.
+    #[clap(hide = true)]
+    AttachmentWorker {
+        #[clap(long)]
+        session: String,
+    },
+
     /// Run the Switchboard sidebar and relay on loopback
     Serve {
         /// Switchboard host configuration JSON

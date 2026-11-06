@@ -1,5 +1,6 @@
 pub mod control_message;
 
+pub(crate) mod attachment;
 pub(crate) mod authentication;
 mod connection_manager;
 mod host_query_seed;
@@ -74,6 +75,13 @@ pub fn start_web_client(
     custom_server_key: Option<PathBuf>,
     startup_timeout: Option<u64>,
 ) {
+    if attachment::run_worker(
+        config.clone(),
+        config_options.clone(),
+        config_file_path.clone(),
+    ) {
+        return;
+    }
     #[cfg(unix)]
     for (name, _) in std::env::vars_os() {
         if name
@@ -276,6 +284,7 @@ pub async fn serve_web_client(
     let peer_directory =
         crate::switchboard_relay::peer_bridge::directory(listener.local_addr().unwrap().port());
     let app = Router::new()
+        .route("/ws/resume", any(attachment::proxy))
         .route("/ws/control", any(ws_handler_control))
         .route("/ws/terminal", any(ws_handler_terminal))
         .route("/ws/terminal/{session}", any(ws_handler_terminal))

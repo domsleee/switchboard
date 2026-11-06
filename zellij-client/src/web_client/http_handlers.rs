@@ -123,6 +123,16 @@ pub async fn create_new_client(
         },
     };
 
+    if params.resumable {
+        let token = super::utils::parse_cookies(&request)
+            .remove("session_token")
+            .unwrap_or_default();
+        return super::attachment::bootstrap(state, token, is_read_only, session_name)
+            .await
+            .map(Json)
+            .map_err(|error| (StatusCode::SERVICE_UNAVAILABLE, Json(error.to_string())));
+    }
+
     let web_client_id = String::from(Uuid::new_v4());
     let os_input = state
         .client_os_api_factory
@@ -139,6 +149,7 @@ pub async fn create_new_client(
     let config = SetConfigPayload::from(&*state.config.lock().unwrap());
 
     Ok(Json(CreateClientIdResponse {
+        resumable: None,
         web_client_id,
         is_read_only,
         session_name,
