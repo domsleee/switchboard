@@ -1573,20 +1573,21 @@ function updateTabMenu(){
   const item=allTabs().find(tab=>tab.key===contextItem?.key);
   if(!item){closeTabMenu(true);return;}
   contextItem=item;
-  $('tab-menu-target').textContent=`${tabTitle(item)} · ${hosts.get(item.entry.host)?.name||item.entry.host} · ${item.entry.name}`;
+  $('tab-menu-target').textContent=tabTitle(item);
+  $('tab-menu-target').title=`${tabTitle(item)} · ${hosts.get(item.entry.host)?.name||item.entry.host} · ${item.entry.name}`;
   $('ready').disabled=!!item.tab.pending&&!Number.isInteger(item.tab.id);
   const pin=$('pin-tab'),isPin=isPinned(item.key);
   pin.disabled=!!item.tab.pending&&!Number.isInteger(item.tab.id);
-  pin.firstChild.textContent=isPin?'Unpin':'Pin';
-  pin.lastChild.textContent=isPin?'Allow automatic snoozing':'Keep in the list while working';
+  pin.textContent=isPin?'Unpin':'Pin';
+  pin.title=isPin?'Allow automatic snoozing':'Keep in the list while working';
   const hide=$('hide-tab');
   hide.disabled=!!item.tab.pending&&!Number.isInteger(item.tab.id);
-  hide.firstChild.textContent=item.hidden?'Show in list':'Hide';
-  hide.lastChild.textContent=item.hidden?'Move back among your tabs':'Move to Hidden; keep processes running';
+  hide.textContent=item.hidden?'Show in list':'Hide';
+  hide.title=item.hidden?'Move back among your tabs':'Move to Hidden; keep processes running';
   $('restart-agent').disabled=!restartAgentTarget(item)||restartingAgents.has(item.key);
   $('restart-agent').title=$('restart-agent').disabled?'Available after Codex or Claude finishes a turn and reports its conversation. Select the tab to choose among multiple panes.':'Restart only this agent and resume the same conversation';
   $('close-tab').disabled=!closeTabTarget(item);
-  $('close-tab').title=$('close-tab').disabled?'Waiting for the terminal to finish connecting':'Close this tab · Ctrl+D';
+  $('close-tab').title=$('close-tab').disabled?'Waiting for the terminal to finish connecting':'Close this tab and stop its processes · Ctrl+D';
   $('select-text').disabled=!item.entry.frame.contentWindow.SwitchboardClipboard;
   $('select-text').setAttribute('aria-pressed',String(!!item.entry.frame.contentWindow.SwitchboardClipboard?.selectionMode));
   const viewport=item.entry.state?.tab_viewport,sizeOwner=$('size-owner');

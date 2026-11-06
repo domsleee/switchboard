@@ -72,7 +72,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     await snoozed.click();
     const workingTab=page.locator('#tabs .tab-select').filter({has:page.locator('.tab-name', {hasText:'switchboard'})});
     await workingTab.click({button:'right'});
-    assert.equal(await page.locator('#pin-tab').textContent(),'PinKeep in the list while working');
+    assert.equal(await page.locator('#pin-tab').textContent(),'Pin');
     await page.locator('#pin-tab').click();
     assert.deepEqual(await order(),names);
     assert.equal(await snoozed.count(),0);
@@ -80,7 +80,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.match(await workingTab.locator('small').textContent(),/Pinned/);
     await pinProof('after',workingTab,'Pinned tab stays here while working');
     await workingTab.click({button:'right'});
-    assert.equal(await page.locator('#pin-tab').textContent(),'UnpinAllow automatic snoozing');
+    assert.equal(await page.locator('#pin-tab').textContent(),'Unpin');
     await page.locator('#pin-tab').click();
     assert.equal(await snoozed.count(),1);
     await snoozed.click();
@@ -187,7 +187,8 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     await page.waitForFunction(()=>!document.querySelector('#tabs .elevated'));
     const action=page.locator('.tab-actions').nth(1);
     await page.locator('.tab-row').nth(1).hover();await action.click();
-    assert.match(await page.locator('#tab-menu-target').textContent(),/Online shopping · Mac · main/);
+    assert.equal(await page.locator('#tab-menu-target').textContent(),'Online shopping');
+    assert.match(await page.locator('#tab-menu-target').getAttribute('title'),/Online shopping · Mac · main/);
     assert.match(await page.locator('#hide-tab').textContent(),/^Hide/);
     if(process.env.SWITCHBOARD_UX_SCREENSHOTS)await page.screenshot({path:process.env.SWITCHBOARD_UX_SCREENSHOTS+'/tab-menu.png'});
     await page.keyboard.press('End');assert.equal(await page.evaluate(()=>document.activeElement.id),'close-tab');

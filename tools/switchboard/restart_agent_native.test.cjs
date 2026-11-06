@@ -75,7 +75,7 @@ int main(int argc,char**argv){FILE*f=fopen(${JSON.stringify(path.join('/PLACEHOL
     await page.locator('#tab-menu').screenshot({path:path.join(dir,'restart-menu-before.png')});
     await page.locator('#restart-agent').evaluate(el=>el.hidden=false);
     const response=page.waitForResponse(r=>r.url().endsWith('/restart-agent'));
-    await page.getByRole('menuitem',{name:'Restart & resume agent'}).click();
+    await page.getByRole('menuitem',{name:'Restart & resume'}).click();
     const result=await response;assert.equal(result.status(),200);
     const replacement=JSON.parse(cli('-s',name,'action','list-panes','--json','--all')).find(p=>!p.is_plugin&&p.tab_id===first.tab_id);
     assert.ok(replacement);const restarted={pane_id:replacement.id,tab_id:replacement.tab_id};assert.notEqual(restarted.pane_id,first.id);
