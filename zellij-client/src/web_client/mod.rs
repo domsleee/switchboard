@@ -6,6 +6,7 @@ mod host_query_seed;
 mod http_handlers;
 mod ipc_listener;
 mod message_handlers;
+mod projects;
 mod server_listener;
 mod session_management;
 mod sharing_recovery;
@@ -280,6 +281,7 @@ pub async fn serve_web_client(
         .route("/ws/terminal/{session}", any(ws_handler_terminal))
         .route("/session", post(create_new_client))
         .route("/session-list", get(list_sessions_handler))
+        .route("/project-list", get(projects::list))
         .route(
             "/paste-image",
             post(paste_image_handler).layer(DefaultBodyLimit::max(PASTE_IMAGE_LIMIT)),

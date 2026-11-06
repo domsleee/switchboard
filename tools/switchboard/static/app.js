@@ -1156,7 +1156,7 @@ $('new-admin-tab').onclick=()=>openNewTabDialog(true);
 function openNewTabDialog(elevated){
   newTabElevated=elevated;
   $('new-tab-title').textContent=elevated?'New administrator tab':'New tab';
-  $('new-tab-command').value='c';closeNewTabLookup();
+  $('new-tab-command').value='c';newTabCommandLookup.close();newTabProjectLookup.close();
   $('new-tab-project').value='switchboard';updateNewTabProject();
   $('new-tab-note').textContent=elevated?'Opens an administrator shell on the selected machine. Someone there approves it: a UAC prompt on Windows, a sudo password elsewhere.':'Enter to create and launch.';
   const select=$('new-tab-target');select.replaceChildren();
@@ -1171,56 +1171,62 @@ function openNewTabDialog(elevated){
     const option=document.createElement('option');option.value=sessionKey(host.id,'main');option.textContent=host.name;select.append(option);
   }
   if(!select.options.length){setStatus(elevated&&hosts.size?'Open a regular tab on the machine first, then an administrator tab.':'No machines are connected. Check your machines in Settings.',true);return;}
+  loadNewTabProjects();
   $('new-tab-dialog').showModal();
   $('new-tab-command').focus();$('new-tab-command').select();
 }
-const newTabCommands=[['c','Claude'],['castra','Codex · Astra'],['csol','Codex · Sol']];
-let newTabCommandIndex=-1;
-function closeNewTabLookup(){
-  $('new-tab-commands').hidden=true;newTabCommandIndex=-1;
-  $('new-tab-command').setAttribute('aria-expanded','false');
-  $('new-tab-lookup').setAttribute('aria-expanded','false');
-  $('new-tab-command').removeAttribute('aria-activedescendant');
-}
-function highlightNewTabCommand(index){
-  const options=[...$('new-tab-commands').children];newTabCommandIndex=index;
-  options.forEach((option,i)=>option.setAttribute('aria-selected',String(i===index)));
-  if(options[index])$('new-tab-command').setAttribute('aria-activedescendant',options[index].id);
-  else $('new-tab-command').removeAttribute('aria-activedescendant');
-}
-function chooseNewTabCommand(value){
-  $('new-tab-command').value=value;closeNewTabLookup();$('new-tab-command').focus();$('new-tab-command').select();
-}
-function openNewTabLookup(all=false){
-  const list=$('new-tab-commands'),query=all?'':$('new-tab-command').value.toLowerCase();list.replaceChildren();
-  for(const [command,description] of newTabCommands.filter(([command,description])=>(command+' '+description).toLowerCase().includes(query))){
-    const option=document.createElement('div');option.id='new-tab-option-'+command;option.setAttribute('role','option');option.setAttribute('aria-selected','false');
-    const name=document.createElement('span'),detail=document.createElement('small');name.textContent=command;detail.textContent=description;option.append(name,detail);
-    option.onmousedown=event=>event.preventDefault();option.onclick=()=>chooseNewTabCommand(command);list.append(option);
+function newTabLookup(inputId,listId,buttonId,items,emptyText,onChange=()=>{}){
+  const input=$(inputId),list=$(listId),button=$(buttonId);let index=-1,showAll=false;
+  function close(){list.hidden=true;index=-1;input.setAttribute('aria-expanded','false');button.setAttribute('aria-expanded','false');input.removeAttribute('aria-activedescendant');}
+  function highlight(next){index=next;[...list.querySelectorAll('[role=option]')].forEach((option,i)=>option.setAttribute('aria-selected',String(i===index)));const option=list.querySelectorAll('[role=option]')[index];if(option)input.setAttribute('aria-activedescendant',option.id);}
+  function choose(value){input.value=value;onChange();close();input.focus();input.select();}
+  function open(all=false){
+    showAll=all;const query=all?'':input.value.toLowerCase();list.replaceChildren();index=-1;input.removeAttribute('aria-activedescendant');
+    const matches=items().filter(([name,detail])=>(name+' '+detail).toLowerCase().includes(query));
+    matches.sort((a,b)=>Number(b[0].toLowerCase().startsWith(query))-Number(a[0].toLowerCase().startsWith(query)));
+    for(const [name,detail] of matches){
+      const option=document.createElement('div');option.id=listId+'-'+list.children.length;option.setAttribute('role','option');option.setAttribute('aria-selected','false');
+      const text=document.createElement('span'),description=document.createElement('small');text.textContent=name;description.textContent=detail;option.append(text,description);
+      option.onmousedown=event=>event.preventDefault();option.onclick=()=>choose(name);list.append(option);
+    }
+    if(!matches.length&&emptyText){const message=document.createElement('p');message.textContent=emptyText();message.setAttribute('role','status');list.append(message);}
+    list.hidden=!list.children.length;input.setAttribute('aria-expanded',String(!list.hidden));button.setAttribute('aria-expanded',String(!list.hidden));
   }
-  list.hidden=!list.children.length;newTabCommandIndex=-1;
-  $('new-tab-command').removeAttribute('aria-activedescendant');
-  $('new-tab-command').setAttribute('aria-expanded',String(!list.hidden));$('new-tab-lookup').setAttribute('aria-expanded',String(!list.hidden));
+  input.oninput=()=>{onChange();open();};input.onblur=close;button.onmousedown=event=>event.preventDefault();
+  button.onclick=()=>{const shown=!list.hidden;input.focus();if(shown)close();else open(true);};
+  input.onkeydown=event=>{
+    if(event.isComposing)return;
+    if(event.key==='ArrowDown'||event.key==='ArrowUp'){
+      event.preventDefault();if(list.hidden)open(true);const count=list.querySelectorAll('[role=option]').length;
+      if(count)highlight(index<0?(event.key==='ArrowDown'?0:count-1):(index+(event.key==='ArrowDown'?1:count-1))%count);
+      list.querySelectorAll('[role=option]')[index]?.scrollIntoView({block:'nearest'});
+    }else if(event.key==='Escape'&&!list.hidden){event.preventDefault();event.stopPropagation();close();
+    }else if(event.key==='Enter'&&!list.hidden&&index>=0){event.preventDefault();choose(list.querySelectorAll('[role=option]')[index].firstChild.textContent);}
+  };
+  return {close,refresh(){if(!list.hidden)open(showAll);}};
 }
 function updateNewTabProject(){
   $('new-tab-project-help').textContent='~/git/'+$('new-tab-project').value.trim();
 }
-$('new-tab-project').oninput=updateNewTabProject;
-$('new-tab-command').oninput=()=>openNewTabLookup();
-$('new-tab-command').onblur=closeNewTabLookup;
-$('new-tab-lookup').onmousedown=event=>event.preventDefault();
-$('new-tab-lookup').onclick=()=>{const open=!$('new-tab-commands').hidden;$('new-tab-command').focus();if(open)closeNewTabLookup();else openNewTabLookup(true);};
-$('new-tab-command').onkeydown=event=>{
-  if(event.isComposing)return;
-  const list=$('new-tab-commands');
-  if(event.key==='ArrowDown'||event.key==='ArrowUp'){
-    event.preventDefault();if(list.hidden)openNewTabLookup(true);
-    const count=list.children.length;if(count)highlightNewTabCommand(newTabCommandIndex<0?(event.key==='ArrowDown'?0:count-1):(newTabCommandIndex+(event.key==='ArrowDown'?1:count-1))%count);
-  }else if(event.key==='Escape'&&!list.hidden){event.preventDefault();event.stopPropagation();closeNewTabLookup();
-  }else if(event.key==='Enter'&&!list.hidden&&newTabCommandIndex>=0){
-    event.preventDefault();chooseNewTabCommand(list.children[newTabCommandIndex].firstChild.textContent);
-  }
-};
+const newTabCommandLookup=newTabLookup('new-tab-command','new-tab-commands','new-tab-lookup',()=>[['c','Claude'],['castra','Codex · Astra'],['csol','Codex · Sol']]);
+let newTabProjects=[],newTabProjectMessage='',newTabProjectRequest;
+const newTabProjectLookup=newTabLookup('new-tab-project','new-tab-projects','new-tab-project-lookup',()=>newTabProjects.map(name=>[name,'']),()=>newTabProjectMessage||'No matching folders in ~/git.',updateNewTabProject);
+async function loadNewTabProjects(){
+  newTabProjectRequest?.abort();const request=newTabProjectRequest=new AbortController();
+  newTabProjects=[];newTabProjectMessage='Loading projects…';newTabProjectLookup.refresh();
+  const host=JSON.parse($('new-tab-target').value)[0];
+  const timeout=setTimeout(()=>request.abort(),10000);
+  try{
+    const response=await fetch('/hosts/'+encodeURIComponent(host)+'/project-list',{signal:request.signal,cache:'no-store'});
+    if(!response.ok)throw new Error('Projects unavailable');
+    const names=await response.json();if(!Array.isArray(names)||!names.every(name=>typeof name==='string'))throw new Error('Invalid projects');
+    if(request!==newTabProjectRequest)return;
+    newTabProjects=names;newTabProjectMessage='';
+  }catch(_){if(request!==newTabProjectRequest)return;newTabProjectMessage='Projects unavailable. Type a project name.';}
+  finally{clearTimeout(timeout);}
+  newTabProjectLookup.refresh();
+}
+$('new-tab-target').onchange=()=>{newTabProjectLookup.close();loadNewTabProjects();};
 $('cancel-new-tab').onclick=()=>$('new-tab-dialog').close();
 // A click on the backdrop closes a dialog. Both press and release must land
 // outside, so selecting text inside and releasing outside keeps it open.

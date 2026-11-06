@@ -11,7 +11,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
     const page=await context.newPage(),errors=[];
     page.on('pageerror',error=>errors.push(error.message));
     let created=0,catalog=0,failed=false,closes=0,frameBoots=0,connected=!emptyMachine,catalogReady=!emptyMachine;
-    const diagnostics=[];
+    const diagnostics=[];let projectError=false,delayProjects=false,releaseProjects;
     const nativeTabs=()=>Array.from({length:catalog+1},(_,i)=>({host:'windows',session:'main',id:i?89+i:42,position:i,name:i?'New shell '+i:'Original',panes:[{pane_id:i?8+i:7,is_plugin:false,tab_position:i}]}));
     await page.addInitScript(()=>{window.setInterval=()=>0;});
     await context.route('**/*',async route=>{
@@ -23,6 +23,8 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
       if(path==='/api/attention')return json({tabs:failed||!catalogReady?[]:nativeTabs(),panes:[],errors:failed?[{host:'windows',message:'Unavailable'}]:[]});
       if(path==='/api/diagnostics/new-tab'){diagnostics.push(route.request().postDataJSON());return route.fulfill({status:204});}
       if(path==='/api/hosts/windows/close-tab'){closes++;return json({ok:true});}
+      if(path==='/hosts/windows/project-list'){if(delayProjects)await new Promise(resolve=>releaseProjects=resolve);return projectError?route.fulfill({status:503,body:'unavailable'}):json(['dotfiles','switchboard','switchboard-tools']);}
+      if(path==='/hosts/other/project-list')return json(['other-project']);
       if(path.startsWith('/hosts/')){connected=true;frameBoots++;return route.fulfill({contentType:'text/html',body:`<div id="terminal"><input id="terminal-input"></div><script>
         window.WebSocket=class extends EventTarget {constructor(){super();this.readyState=1;}send(){}};
         const input=document.querySelector('input');let count=${created},active=count;
@@ -106,7 +108,10 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
         await page.keyboard.press('ArrowDown');await page.keyboard.press('Enter');
         assert.equal(await page.locator('#new-tab-command').inputValue(),'castra');
         assert.equal(await page.locator('#new-tab-dialog').evaluate(el=>el.open),true,'Picking a suggestion does not submit');
-        await page.locator('#new-tab-project').fill('dotfiles');
+        await page.locator('#new-tab-project').fill('dot');
+        await page.getByRole('option',{name:'dotfiles',exact:true}).click();
+        assert.equal(await page.locator('#new-tab-project').inputValue(),'dotfiles');
+        assert.equal(await page.locator('#new-tab-project-help').textContent(),'~/git/dotfiles');
         await page.locator('#new-tab-command').focus();
       }
       await page.keyboard.press('Enter');
@@ -130,6 +135,29 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
       await page.keyboard.type('draft '+number);
       assert.ok((await input.inputValue()).endsWith('draft '+number),'Typing reaches the new terminal without an extra click');
     }
+    // A lookup must follow the selected computer, including a late reply from the previous one.
+    await page.locator('#new-tab').click();
+    await page.waitForFunction(()=>newTabProjects.includes('dotfiles'));
+    await page.evaluate(()=>{const option=document.createElement('option');option.value=JSON.stringify(['other','main']);option.textContent='Other';document.querySelector('#new-tab-target').append(option);});
+    delayProjects=true;
+    await page.evaluate(()=>{loadNewTabProjects();});
+    for(let i=0;!releaseProjects&&i<200;i++)await new Promise(resolve=>setTimeout(resolve,5));
+    assert.ok(releaseProjects);
+    await page.locator('#new-tab-target').selectOption(JSON.stringify(['other','main']));
+    await page.locator('#new-tab-project-lookup').click();
+    await page.getByRole('option',{name:'other-project',exact:true}).waitFor();
+    releaseProjects();delayProjects=false;
+    await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,50)));
+    assert.deepEqual(await page.locator('#new-tab-projects [role=option] span').allTextContents(),['other-project']);
+    projectError=true;
+    await page.locator('#new-tab-target').selectOption(JSON.stringify(['windows','main']));
+    await page.locator('#new-tab-project-lookup').click();
+    await page.getByRole('status').filter({hasText:'Projects unavailable. Type a project name.'}).waitFor();
+    await page.locator('#new-tab-project').fill('manual-project');
+    assert.equal(await page.locator('#new-tab-project-help').textContent(),'~/git/manual-project');
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#new-tab-dialog').evaluate(el=>el.open),true);
+    projectError=false;await page.locator('#cancel-new-tab').click();
     await create(1);
     await page.locator('#tabs .selected').click({button:'right'});
     await page.locator('#ready').click();
