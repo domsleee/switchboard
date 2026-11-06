@@ -73,7 +73,9 @@ forced automatic activation is enabled.
 
 Legacy relay and web connections hold shared locks on `automatic-updates/viewers.lock`.
 Automatic activation takes an exclusive lock immediately before mutation and holds it
-through readiness checks and rollback. A new attachment arriving during that interval
+through readiness checks and rollback. A separate short-lived bootstrap admission lock applies even to explicit activation.
+New web services also honor older updaters’ active handoff marker and process lock
+during the first migration. A new attachment arriving during that interval
 retries until activation finishes; existing resumable attachments can reconnect through
 the lock. This also prevents first-upgrade viewers depending on a candidate that
 rolls back to a legacy web service. Locks are released by the OS on process exit;
@@ -533,7 +535,10 @@ cannot replace services while retained workers are active.
 Each browser has one ordered input/control stream, stop-and-wait input acknowledgment,
 a fenced transport generation and an idempotent resume nonce. Reconnect revalidates
 the credential identity, allowing the relay's session cookie to rotate after restart.
-Workers recheck permission changes while connected. An IPC failure is explicit;
+Workers recheck credential permission changes while connected. Recovery attachments
+are discovered only under the current recovery authorization and pinned socket
+identity; removing that authorization on web restart prevents their reuse. Pane
+switches hold subsequent typing until native metadata confirms the destination. An IPC failure is explicit;
 uncertain input is never replayed into a newly created terminal.
 
 Limits are 1 MiB queued browser input, 4 MiB/4096 unacknowledged worker output records,

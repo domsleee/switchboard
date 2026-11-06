@@ -971,6 +971,13 @@ mod orchestration {
     fn unhealthy_pending_recovers_with_retained_helpers_without_clobbering_installed_ones() {
         let harness = Harness::new(false);
         harness.interrupted("6666666", "");
+        let mut state = State::load(&harness.updater.state_path()).unwrap();
+        state.pending.as_mut().unwrap().sessions.push((
+            "unrelated-peer".into(),
+            "temporary".into(),
+            true,
+        ));
+        state.save(&harness.updater.state_path()).unwrap();
         harness.publish(&full('b'), 4, "");
         fs::remove_file(harness.root.join("running")).unwrap(); // services down
         harness.updater.run().unwrap();

@@ -46,6 +46,40 @@ pub(crate) fn update(path: &Path) -> anyhow::Result<Option<File>> {
     }
 }
 
+/// New viewers have a short admission lock independent of legacy lifetime locks.
+/// Explicit activation bypasses legacy viewers, never this admission fence.
+pub(crate) fn bootstrap() -> anyhow::Result<Vec<File>> {
+    let state = std::env::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("No home directory"))?
+        .join(".local/share/switchboard/automatic-updates");
+    bootstrap_at(&path(&state), &state)
+}
+
+fn bootstrap_at(viewers: &Path, state: &Path) -> anyhow::Result<Vec<File>> {
+    let mut locks = vec![viewer_at(&viewers.with_extension("attachments-lock"))?];
+    // An older updater cannot take the new admission lock. It already publishes
+    // this marker for its entire handoff/rollback while holding automatic.lock.
+    // A stale marker after a crash is harmless because the OS releases the lock.
+    if state.join("handoff.json").exists() {
+        locks.push(viewer_at(&state.join("automatic.lock"))?);
+    }
+    Ok(locks)
+}
+
+pub(crate) fn activation(viewers: &Path) -> anyhow::Result<File> {
+    let lock = open(&viewers.with_extension("attachments-lock"))?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(35);
+    loop {
+        match lock.try_lock() {
+            Ok(()) => return Ok(lock),
+            Err(TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50))
+            },
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -64,5 +98,24 @@ mod tests {
         assert!(viewer_at(&path).is_err());
         drop(update);
         assert!(viewer_at(&path).is_ok());
+    }
+    #[test]
+    fn switchboard_attachment_admission_blocks_explicit_activation_and_legacy_migration() {
+        let dir = tempfile::tempdir().unwrap();
+        let viewers = dir.path().join("viewers.lock");
+        let legacy = viewer_at(&viewers).unwrap();
+        let activation = activation(&viewers).unwrap();
+        assert!(bootstrap_at(&viewers, dir.path()).is_err());
+        drop(activation);
+        drop(legacy);
+        let old_update = open(&dir.path().join("automatic.lock")).unwrap();
+        old_update.lock().unwrap();
+        std::fs::write(dir.path().join("handoff.json"), "{}").unwrap();
+        assert!(bootstrap_at(&viewers, dir.path()).is_err());
+        drop(old_update);
+        assert!(
+            bootstrap_at(&viewers, dir.path()).is_ok(),
+            "Stale markers cannot block forever"
+        );
     }
 }
