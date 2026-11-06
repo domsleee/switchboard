@@ -50,6 +50,15 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.deepEqual(await order(),names.slice(1));
     assert.equal(await snoozed.getAttribute('aria-expanded'),'false');
     assert.equal(await snoozed.locator('.count').textContent(),'1');
+    await page.evaluate(()=>openPanel('settings'));
+    const moveWorking=page.locator('#move-working-to-snoozed');
+    assert.equal(await moveWorking.getAttribute('aria-pressed'),'true');
+    await moveWorking.click();
+    assert.equal(await snoozed.count(),0);
+    assert.deepEqual(await order(),names);
+    await moveWorking.click();
+    assert.deepEqual(await order(),names.slice(1));
+    await page.locator('#close-panel').click();
     assert.equal(await page.locator('#tab-count').textContent(),'3 tabs');
     await snoozed.click();
     assert.deepEqual(await order(),[...names.slice(1),names[0]]);

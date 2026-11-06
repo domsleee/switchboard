@@ -418,7 +418,7 @@ function allTabs(ignoreFilter=false) {
 }
 // Working tabs fold into Snoozed without changing their saved order or Hidden membership.
 function sidebarTabs(){
-  return allTabs().map(item=>({...item,snoozed:!item.hidden&&!isReady(item)&&autoLabel(item)==='Working'
+  return allTabs().map(item=>({...item,snoozed:settingValue('move-working-to-snoozed')==='true'&&!item.hidden&&!isReady(item)&&autoLabel(item)==='Working'
     &&!attentionErrors.some(error=>error.host==='Switchboard'||error.host===item.entry.host&&(!error.session||error.session===item.entry.name))}))
     .sort((a,b)=>(a.hidden?2:a.snoozed?1:0)-(b.hidden?2:b.snoozed?1:0));
 }
@@ -1267,6 +1267,7 @@ $('refresh-logs').onclick=loadLogs;
 // Frames share this origin and follow storage events; native tabs reach them by message; fine
 // scrolling is read when a terminal connects, so a change reloads the page.
 const settingDefs={
+  'move-working-to-snoozed':{toggle:true,default:'true',apply:()=>render()},
   'native-tabs':{toggle:true,apply:()=>{nativeTabs=settingValue('native-tabs')==='true';updateNativeTabs();}},
   'media-previews':{toggle:true},
   'media-thumbnails':{toggle:true},
@@ -1277,7 +1278,7 @@ const settingDefs={
   'link-app-work':{},
   'link-app-home':{},
 };
-const settingDefault=key=>settingDefs[key].toggle?'false':'';
+const settingDefault=key=>settingDefs[key].default??(settingDefs[key].toggle?'false':'');
 let sharedSettings=load('switchboard-shared-settings'),settingOverrides=load('switchboard-setting-overrides');
 let settingsShared=false,settingScope='shared';const savingSetting={};
 // Before scopes, each browser kept its own values: toggles move to the group once, and the
