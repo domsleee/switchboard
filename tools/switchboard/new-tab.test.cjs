@@ -88,7 +88,27 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
       assert.equal(await page.locator('#new-tab-target option').first().textContent(),'Windows');
       if(number===1)await page.evaluate(()=>sessions.delete(sessionKey('windows','other')));
       assert.equal(await page.locator('#new-tab-project').inputValue(),'switchboard');
-      if(number===2){await page.locator('[data-command="castra"]').click();await page.locator('#new-tab-project').fill('dotfiles');}
+      if(number===1){
+        await page.locator('#new-tab-lookup').click();
+        assert.deepEqual(await page.locator('#new-tab-commands [role=option] span').allTextContents(),['c','castra','csol']);
+        await page.getByRole('option',{name:'csol Codex · Sol',exact:true}).click();
+        assert.equal(await page.locator('#new-tab-command').inputValue(),'csol');
+        await page.locator('#new-tab-lookup').click();await page.keyboard.press('Escape');
+        assert.equal(await page.locator('#new-tab-dialog').evaluate(el=>el.open),true);
+        assert.equal(await page.locator('#new-tab-command').getAttribute('aria-expanded'),'false');
+        await page.locator('#new-tab-command').fill('custom --flag');
+        assert.equal(await page.locator('#new-tab-command').getAttribute('aria-expanded'),'false');
+        await page.locator('#new-tab-command').fill('c');await page.keyboard.press('Escape');
+      }
+      if(number===2){
+        await page.locator('#new-tab-command').fill('cast');
+        assert.deepEqual(await page.locator('#new-tab-commands [role=option] span').allTextContents(),['castra']);
+        await page.keyboard.press('ArrowDown');await page.keyboard.press('Enter');
+        assert.equal(await page.locator('#new-tab-command').inputValue(),'castra');
+        assert.equal(await page.locator('#new-tab-dialog').evaluate(el=>el.open),true,'Picking a suggestion does not submit');
+        await page.locator('#new-tab-project').fill('dotfiles');
+        await page.locator('#new-tab-command').focus();
+      }
       await page.keyboard.press('Enter');
       await page.waitForFunction(()=>document.querySelector('#tabs .selected .tab-name')?.textContent==='Creating tab…');
       if(number===1){

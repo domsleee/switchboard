@@ -263,12 +263,23 @@ body.sidebar-collapsed #artifact-preview header{padding-left:42px}
 
 @media(hover:none){#tabs .tab-actions{opacity:1}}
 
-#new-tab-dialog{width:410px}
-#new-tab-form input{width:100%;padding:9px 10px;background:#111318;border:1px solid #363e4d;border-radius:4px;color:inherit;font:13px ui-monospace,SFMono-Regular,Consolas,monospace}
-#new-tab-form input:focus{outline:2px solid #9dc2fa;outline-offset:2px}
+#new-tab-dialog{width:400px;padding:26px}
+#new-tab-form h2{margin-bottom:24px}
+#new-tab-form label{color:#b8c1cf;font-size:12px;margin-bottom:8px}
+#new-tab-form input,#new-tab-form select{width:100%;height:40px;padding:9px 11px;background:#111318;border:1px solid #363e4d;border-radius:6px;color:inherit;font-size:13px}
+#new-tab-form input{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+#new-tab-form input:focus{outline:2px solid #9dc2fa;outline-offset:1px}
 #new-tab-form input::selection{background:#426ba4;color:white}
-#new-tab-form select{margin-bottom:18px}
-#new-tab-project-help{margin:8px 0 18px;overflow-wrap:anywhere}
-#new-tab-commands{display:flex;gap:6px;margin-top:10px}
-#new-tab-commands button{font:12px ui-monospace,SFMono-Regular,Consolas,monospace}
-#new-tab-commands button[aria-pressed="true"]{background:#263d5f;border-color:#6f9cdd}
+#new-tab-form select{margin-bottom:20px}
+#new-tab-project-help{margin:7px 0 20px;font-size:11px;overflow-wrap:anywhere}
+.new-tab-combobox{position:relative}
+#new-tab-form #new-tab-command{padding-right:38px}
+#new-tab-lookup{position:absolute;right:1px;top:1px;height:38px;width:34px;padding:0;border:0;background:transparent;color:#9ba7bd;font-size:19px}
+#new-tab-lookup:hover{color:#e5e7eb;background:#222732}
+#new-tab-commands{margin-top:6px;padding:4px;background:#222732;border:1px solid #454f61;border-radius:7px;box-shadow:0 10px 24px #0006}
+#new-tab-commands [role=option]{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 9px;border-radius:4px;cursor:pointer;font:13px ui-monospace,SFMono-Regular,Consolas,monospace}
+#new-tab-commands small{font:12px system-ui,sans-serif;color:#a3aec0}
+#new-tab-commands [role=option]:hover,#new-tab-commands [aria-selected=true]{background:#30466b}
+#new-tab-note{font-size:11px;margin:10px 0 0}
+#new-tab-form .dialog-actions{margin-top:24px}
+#new-tab-form button[type=submit]{background:#30466b;border-color:#507bb3}

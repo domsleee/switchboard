@@ -1156,9 +1156,9 @@ $('new-admin-tab').onclick=()=>openNewTabDialog(true);
 function openNewTabDialog(elevated){
   newTabElevated=elevated;
   $('new-tab-title').textContent=elevated?'New administrator tab':'New tab';
-  $('new-tab-command').value='c';updateNewTabCommand();
+  $('new-tab-command').value='c';closeNewTabLookup();
   $('new-tab-project').value='switchboard';updateNewTabProject();
-  $('new-tab-note').textContent=elevated?'Opens an administrator shell on the selected machine. Someone there approves it: a UAC prompt on Windows, a sudo password elsewhere.':'Enter creates the tab and runs the command in this project.';
+  $('new-tab-note').textContent=elevated?'Opens an administrator shell on the selected machine. Someone there approves it: a UAC prompt on Windows, a sudo password elsewhere.':'Enter to create and launch.';
   const select=$('new-tab-target');select.replaceChildren();
   const current=allTabs().find(t=>t.key===selected)?.entry;
   for(const [key,entry] of [...sessions].sort((a,b)=>Number(b[1]===current)-Number(a[1]===current)||Number(b[1].name==='main')-Number(a[1].name==='main'))){
@@ -1174,16 +1174,52 @@ function openNewTabDialog(elevated){
   $('new-tab-dialog').showModal();
   $('new-tab-command').focus();$('new-tab-command').select();
 }
-function updateNewTabCommand(){
-  document.querySelectorAll('#new-tab-commands button').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.command===$('new-tab-command').value)));
+const newTabCommands=[['c','Claude'],['castra','Codex · Astra'],['csol','Codex · Sol']];
+let newTabCommandIndex=-1;
+function closeNewTabLookup(){
+  $('new-tab-commands').hidden=true;newTabCommandIndex=-1;
+  $('new-tab-command').setAttribute('aria-expanded','false');
+  $('new-tab-lookup').setAttribute('aria-expanded','false');
+  $('new-tab-command').removeAttribute('aria-activedescendant');
+}
+function highlightNewTabCommand(index){
+  const options=[...$('new-tab-commands').children];newTabCommandIndex=index;
+  options.forEach((option,i)=>option.setAttribute('aria-selected',String(i===index)));
+  if(options[index])$('new-tab-command').setAttribute('aria-activedescendant',options[index].id);
+  else $('new-tab-command').removeAttribute('aria-activedescendant');
+}
+function chooseNewTabCommand(value){
+  $('new-tab-command').value=value;closeNewTabLookup();$('new-tab-command').focus();$('new-tab-command').select();
+}
+function openNewTabLookup(all=false){
+  const list=$('new-tab-commands'),query=all?'':$('new-tab-command').value.toLowerCase();list.replaceChildren();
+  for(const [command,description] of newTabCommands.filter(([command,description])=>(command+' '+description).toLowerCase().includes(query))){
+    const option=document.createElement('div');option.id='new-tab-option-'+command;option.setAttribute('role','option');option.setAttribute('aria-selected','false');
+    const name=document.createElement('span'),detail=document.createElement('small');name.textContent=command;detail.textContent=description;option.append(name,detail);
+    option.onmousedown=event=>event.preventDefault();option.onclick=()=>chooseNewTabCommand(command);list.append(option);
+  }
+  list.hidden=!list.children.length;newTabCommandIndex=-1;
+  $('new-tab-command').removeAttribute('aria-activedescendant');
+  $('new-tab-command').setAttribute('aria-expanded',String(!list.hidden));$('new-tab-lookup').setAttribute('aria-expanded',String(!list.hidden));
 }
 function updateNewTabProject(){
-  $('new-tab-project-help').textContent='Folder: ~/git/'+$('new-tab-project').value.trim();
+  $('new-tab-project-help').textContent='~/git/'+$('new-tab-project').value.trim();
 }
-$('new-tab-command').oninput=updateNewTabCommand;
 $('new-tab-project').oninput=updateNewTabProject;
-for(const button of document.querySelectorAll('#new-tab-commands button'))button.onclick=()=>{
-  $('new-tab-command').value=button.dataset.command;updateNewTabCommand();$('new-tab-command').focus();$('new-tab-command').select();
+$('new-tab-command').oninput=()=>openNewTabLookup();
+$('new-tab-command').onblur=closeNewTabLookup;
+$('new-tab-lookup').onmousedown=event=>event.preventDefault();
+$('new-tab-lookup').onclick=()=>{const open=!$('new-tab-commands').hidden;$('new-tab-command').focus();if(open)closeNewTabLookup();else openNewTabLookup(true);};
+$('new-tab-command').onkeydown=event=>{
+  if(event.isComposing)return;
+  const list=$('new-tab-commands');
+  if(event.key==='ArrowDown'||event.key==='ArrowUp'){
+    event.preventDefault();if(list.hidden)openNewTabLookup(true);
+    const count=list.children.length;if(count)highlightNewTabCommand(newTabCommandIndex<0?(event.key==='ArrowDown'?0:count-1):(newTabCommandIndex+(event.key==='ArrowDown'?1:count-1))%count);
+  }else if(event.key==='Escape'&&!list.hidden){event.preventDefault();event.stopPropagation();closeNewTabLookup();
+  }else if(event.key==='Enter'&&!list.hidden&&newTabCommandIndex>=0){
+    event.preventDefault();chooseNewTabCommand(list.children[newTabCommandIndex].firstChild.textContent);
+  }
 };
 $('cancel-new-tab').onclick=()=>$('new-tab-dialog').close();
 // A click on the backdrop closes a dialog. Both press and release must land
