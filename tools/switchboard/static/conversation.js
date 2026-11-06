@@ -12,7 +12,7 @@
   window.SwitchboardConversation={install({selection,terminal}){
     const root=document.getElementById('terminals'),drafts=new Map();
     let savedMode;try{savedMode=localStorage.getItem('switchboard-view-mode');}catch{}
-    let target=null,open=savedMode? savedMode==='conversation':matchMedia('(max-width:700px)').matches,generation=0,readCursor=0,tailCursor=0,messages=[],pending=null,loading=false,lastPaint=null;
+    let target=null,open=savedMode? savedMode==='conversation':matchMedia('(max-width:700px)').matches,generation=0,readCursor=0,tailCursor=0,messages=[],pending=null,loading=false,lastPaint=null,requestId=0;
     const modes=el('div',undefined,'conversation-modes');modes.hidden=true;modes.setAttribute('role','group');modes.setAttribute('aria-label','View mode');
     const back=el('button','Terminal'),toggle=el('button','Conversation','conversation-toggle');back.type=toggle.type='button';back.setAttribute('aria-pressed',String(!open));toggle.setAttribute('aria-pressed',String(open));modes.append(back,toggle);root.append(modes);
     const panel=el('section',undefined,'conversation-panel');panel.hidden=true;panel.tabIndex=-1;panel.setAttribute('aria-label','Agent conversation');
@@ -21,6 +21,8 @@
     const list=el('div',undefined,'conversation-messages'),older=el('button','Load next messages'),refresh=el('button','↻'),latest=el('button','↓');refresh.setAttribute('aria-label','Refresh');refresh.title='Refresh conversation';latest.setAttribute('aria-label','Scroll to bottom');latest.title='Scroll to bottom';older.hidden=true;
     const actions=el('div',undefined,'conversation-actions');actions.append(older,refresh,latest);
     const form=el('form',undefined,'conversation-compose'),draft=el('textarea'),insert=el('button','Send'),help=el('small','Enter to send · Shift+Enter for a new line');draft.rows=2;draft.maxLength=16000;draft.placeholder='Reply to this conversation…';draft.setAttribute('aria-label','Reply draft');insert.type='submit';form.append(draft,insert,help);
+    const sendNotice=el('small',undefined,'conversation-send-notice');sendNotice.hidden=true;sendNotice.setAttribute('role','status');form.append(sendNotice);
+    function sendStatus(text){sendNotice.textContent=text;sendNotice.hidden=!text;}
     panel.append(header,notice,list,actions,form);root.append(panel);
     const identity=t=>t?JSON.stringify([t.key,t.chatId]):null;
     let chat=null;
@@ -35,12 +37,13 @@
       const snapshot=JSON.stringify(messages);if(snapshot===lastPaint)return;
       if([...list.querySelectorAll('video')].some(video=>!video.paused))return;
       lastPaint=snapshot;
+      const expanded=new Set([...list.querySelectorAll('details[open]')].map(node=>node.dataset.messageIndex));
       const nearEnd=list.scrollHeight-list.scrollTop-list.clientHeight<80,position=list.scrollTop;list.replaceChildren();
       let progress;
-      for(const item of messages){
+      for(const [messageIndex,item] of messages.entries()){
         const article=el('article',undefined,'conversation-message '+item.role),label=el('div',item.role==='user'?'You':binding()?.agent||'Assistant','conversation-label');article.append(label);if(window.SwitchboardConversationMedia&&(item.markdown||item.attachments))window.SwitchboardConversationMedia.render(article,item,{host:target.host,project:binding()?.project});else textBlocks(article,item.text||'');if(item.truncated)article.append(el('small','Message truncated by history API. Open the terminal for full context.'));
-        if(item.role==='user'&&/^# AGENTS\.md instructions|^<environment_context>/.test(item.text||'')){progress=null;const context=el('details');context.append(el('summary','Session instructions'),article);list.append(context);}
-        else if(item.phase==='commentary'){if(!progress){progress=el('details');progress.append(el('summary','Progress updates'));list.append(progress);}progress.append(article);}else{progress=null;list.append(article);}
+        if(item.role==='user'&&/^# AGENTS\.md instructions|^<environment_context>/.test(item.text||'')){progress=null;const context=el('details');context.dataset.messageIndex=String(messageIndex);context.open=expanded.has(String(messageIndex));context.append(el('summary','Session instructions'),article);list.append(context);}
+        else if(item.phase==='commentary'){if(!progress){progress=el('details');progress.dataset.messageIndex=String(messageIndex);progress.open=expanded.has(String(messageIndex));progress.append(el('summary','Progress updates'));list.append(progress);}progress.append(article);}else{progress=null;list.append(article);}
       }
       if(nearEnd)list.scrollTop=list.scrollHeight;else list.scrollTop=position;
     }
@@ -57,25 +60,25 @@
     draft.onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();form.requestSubmit();}};
     form.onsubmit=event=>{
       event.preventDefault();const current=selection();if(!target||identity(current)!==identity(target)||!binding()||!draft.value.trim()||pending)return;
-      if(current.state!=='ready'){status('Wait for the agent to finish before sending.');return;}
+      if(current.state!=='ready'){sendStatus(current.state==='working'?'The agent is working. Your reply is kept; press Enter when it finishes.':'The agent is not ready for a reply. Check Terminal; your draft is kept.');return;}
       // Submit only the selected agent and reject terminal control sequences.
-      if(/[\x00-\x08\x0b-\x1f\x7f]/.test(draft.value)){status('The draft contains terminal control characters. Remove them first.');return;}
-      const id=crypto.randomUUID();pending={id,key:identity(target),frame:target.frame,text:draft.value};insert.disabled=true;
+      if(/[\x00-\x08\x0b-\x1f\x7f]/.test(draft.value)){sendStatus('The draft contains terminal control characters. Remove them first.');return;}
+      const id=`conversation-${++requestId}`;pending={id,key:identity(target),frame:target.frame,text:draft.value};insert.disabled=true;sendStatus('Sending…');
       target.frame.contentWindow.postMessage({type:'zellij-conversation-paste',id,pane_id:target.pane,agent:current.agent,submit:true,text:draft.value},location.origin);
-      setTimeout(()=>{if(pending?.id===id){pending=null;insert.disabled=false;if(identity(target)===identity(current))status('No confirmation from the terminal. Check it before trying again; your draft is kept.');}},4000);
+      setTimeout(()=>{if(pending?.id===id){pending=null;insert.disabled=false;if(identity(target)===identity(current))sendStatus('No confirmation from the terminal. Check it before trying again; your draft is kept.');}},4000);
     };
     window.addEventListener('message',event=>{
       if(event.origin!==location.origin||!pending||event.source!==pending.frame.contentWindow||event.data?.type!=='zellij-conversation-paste-result'||event.data.id!==pending.id)return;
       const sent=pending;pending=null;insert.disabled=false;
-      if(event.data.ok){if(drafts.get(sent.key)===sent.text)drafts.delete(sent.key);if(identity(target)===sent.key){if(draft.value===sent.text)draft.value='';status('Sent',true);}}
-      else if(identity(target)===sent.key)status(event.data.error||'Open the terminal and try again.');
+      if(event.data.ok){if(drafts.get(sent.key)===sent.text)drafts.delete(sent.key);if(identity(target)===sent.key){if(draft.value===sent.text)draft.value='';sendStatus('Sent');load(older.hidden);}}
+      else if(identity(target)===sent.key)sendStatus(event.data.error||'Open the terminal and try again.');
     });
     function update(){
       const current=selection();modes.hidden=!current;
       if(identity(current)===identity(target)){target=current;return;}
       if(target)drafts.set(identity(target),draft.value);
       window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();
-      target=current;generation++;lastPaint=null;busy(false);messages=[];readCursor=tailCursor=0;list.replaceChildren();older.hidden=true;
+      target=current;sendStatus('');generation++;lastPaint=null;busy(false);messages=[];readCursor=tailCursor=0;list.replaceChildren();older.hidden=true;
       chat=target?.chatId?{id:target.chatId,agent:target.agent,title:target.title}:null;
       form.hidden=actions.hidden=!chat;
       if(!target){panel.hidden=true;return;}draft.value=drafts.get(identity(target))||'';
@@ -83,8 +86,8 @@
       status(chat?'Loading conversation…':'This terminal has not reported its conversation yet. Continue in Terminal; this view will connect automatically when the agent reports it.');
       if(open){focusSurface();if(chat)load(false);}
     }
-    // Poll only the visible transcript's last loaded page; never scan all history on a timer.
-    setInterval(()=>{if(open&&!document.hidden&&!panel.querySelector('input:focus,textarea:focus,select:focus,[contenteditable="true"]:focus'))load(true);},5000);
+    // Catch up one page at a time, then refresh the tail, including while composing.
+    setInterval(()=>{if(open&&!document.hidden)load(older.hidden);},2000);
     window.SwitchboardConversation.update=update;window.SwitchboardConversation.isOpen=()=>open&&!panel.hidden;window.SwitchboardConversation.focus=focusSurface;window.SwitchboardConversation.showTerminal=()=>show(false);update();
   }};
 })();
