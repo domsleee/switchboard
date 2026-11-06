@@ -41,6 +41,13 @@
       const video = /\.(?:mp4|webm|mov|m4v)$/i.test(path);
       const element = document.createElement(video ? 'video' : 'img');
       if (video) { element.controls = true; element.preload = 'metadata'; } else { element.loading = 'lazy'; element.alt = path; }
+      if (!video) {
+        element.tabIndex = 0; element.setAttribute('role', 'button'); element.style.cursor = 'pointer';
+        const open = () => window.SwitchboardOpenImages?.(host, path,
+          [...new Set(message.body.match(mediaPaths) || [])].filter(p => !/\.(?:mp4|webm|mov|m4v)$/i.test(p)).map(path => ({path})));
+        element.addEventListener('click', open);
+        element.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); open(); } });
+      }
       const figure = document.createElement('figure');
       element.addEventListener('error', () => figure.replaceChildren(text('figcaption', 'Preview unavailable: ' + path)));
       element.src = url;

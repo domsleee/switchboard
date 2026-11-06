@@ -321,6 +321,21 @@ drops its entry. Files that could run scripts, such as HTML
 and SVG, are served with `Content-Security-Policy: sandbox`; Chrome will not
 play media or render PDFs under it, so those are served without it.
 
+Cmd/Ctrl-click on an HTML file opens it in a browser tab on port 8091, including
+when the terminal runs on the viewing computer. The relay creates a random URL
+valid for 24 hours, scoped to the HTML file's directory. Scripts, relative styles,
+images and data work there; the terminal relay remains on a separate origin.
+Assets are read live rather than copied, and symlinks/junctions cannot escape the
+chosen directory. A paired gateway checks the same boundary on its own disk at
+`/switchboard/html-file`. Reopen the terminal link after a relay restart or expiry.
+
+Clicking an image thumbnail or Cmd/Ctrl/Shift-clicking its path opens an image
+carousel. It includes images in the current terminal's recent scrollback, resolves
+relative paths, and removes duplicates. Previous/Next, arrow keys and swipe move
+between images; Escape closes it and returns focus to the terminal. Images on the
+Messages page open the same carousel for that message's images. Open original
+keeps a direct browser-tab link to the displayed image.
+
 Browsers refuse to let web pages open their own pages, such as
 `chrome://settings/system`. A modified click on a `chrome://`, `edge://` or
 `brave://` link therefore goes to `/api/open-browser-page`, and the relay starts

@@ -40,6 +40,7 @@
   const mediaFile=/\.(?:png|jpe?g|gif|webp|avif|mp4|webm|mov|m4v)$/i,videoFile=/\.(?:mp4|webm|mov|m4v)$/i,
     // Browsers play animated images and videos, including formats desktop viewers may lack.
     tabFile=/\.(?:mp4|webm|mov|m4v|avif|gif)$/i;
+  const imageFile=/\.(?:png|jpe?g|gif|webp|avif|svg)$/i,htmlFile=/\.html?$/i;
   // Relative media paths, such as out/shot.png, without spaces since they have no root to start from.
   const relativeMedia=/(?<![\w.~:%/\\@-])(?:[^\s"'`<>|*?:;,()[\]{}\\/]+[\\/])*[^\s"'`<>|*?:;,()[\]{}\\/]+\.(?:png|jpe?g|gif|webp|avif|mp4|webm|mov|m4v)(?![\w-]|\.\w)/gi;
   // Other relative paths: a file with a 2-8 character extension (so e.g. stays text), or a
@@ -108,6 +109,26 @@
   }});
   // Modifiers belong to the viewing browser, regardless of the terminal host OS.
   const linkGesture = event => event.button===0 && !event.altKey && (event.metaKey || event.ctrlKey || event.shiftKey);
+  function openImage(path){
+    if(window.parent===window||!parent.SwitchboardOpenImages)return false;
+    const buffer=window.term?.buffer?.active,paths=[],seen=new Set();
+    // Keep the carousel tied to the current terminal, including its recent scrollback.
+    for(let row=Math.max(0,(buffer?.length||0)-10000);row<(buffer?.length||0);){
+      let line='';
+      do{
+        const text=buffer.getLine(row++)?.translateToString(true)||'',wrapped=row<buffer.length&&buffer.getLine(row)?.isWrapped;
+        line+=wrapped?text.padEnd(window.term.cols):text;
+        if(!wrapped)break;
+      }while(row<buffer.length);
+      const found=pathsIn(line);
+      for(const entry of [...found.media,...found.plain,...found.relative].sort((a,b)=>a.index-b.index)){
+        if(!imageFile.test(entry.text)||seen.has(entry.text))continue;
+        seen.add(entry.text);paths.push({path:entry.text,relative:relativeFile(entry.text)});
+      }
+    }
+    if(!seen.has(path))paths.push({path,relative:relativeFile(path)});
+    hidePreview();parent.SwitchboardOpenImages(host,path,paths,locate);return true;
+  }
   function open(event,uri) {
     if (!linkGesture(event)) return;
     event.preventDefault();event.stopImmediatePropagation();
@@ -117,8 +138,9 @@
         parent.SwitchboardOpenBrowserPage(uri);return;
       }
       const path=filePathOf(uri),newTab=event.metaKey||event.ctrlKey,relative=!path&&relativeFile(uri);
+      if((path||relative)&&imageFile.test(path||uri)&&openImage(path||uri))return;
       // Cmd/Ctrl-click plays videos and animated images in a tab, streamed from this terminal's computer.
-      if((path||relative)&&!(newTab&&tabFile.test(path||uri))){
+      if((path||relative)&&!(newTab&&(tabFile.test(path||uri)||htmlFile.test(path||uri)))){
         if(window.parent===window||!parent.SwitchboardOpenFile)throw Error('Files open from the Switchboard page');
         if(path){parent.SwitchboardOpenFile(host,path);return;}
         locate(uri).then(found=>found?parent.SwitchboardOpenFile(host,found):console.warn('Switchboard link: no pane in this session holds',uri));
@@ -137,8 +159,15 @@
             if(!tab)throw Error('The browser blocked the new tab');
             tab.opener=null;
             const go=href=>{const link=tab.document.createElement('a');link.href=href;link.rel='noreferrer';link.click();};
-            // A relative video's tab opens with the click and follows once the relay finds the file.
-            if(relative)locate(uri).then(found=>{if(found)go(fileUrl(found));else{tab.close();console.warn('Switchboard link: no pane in this session holds',uri);}});
+            // Reserve the tab before resolving a relative path or asking for an isolated HTML URL.
+            if(htmlFile.test(path||uri)&&(path||relative)){
+              Promise.resolve(relative?locate(uri):path).then(async found=>{
+                if(!found)throw Error(`File not found: ${uri}`);
+                const response=await fetch(`/api/hosts/${encodeURIComponent(host)}/html`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:found})});
+                if(!response.ok)throw Error(await response.text());
+                go((await response.json()).url);
+              }).catch(error=>{tab.document.body.textContent=`Could not open HTML: ${error.message}`;});
+            }else if(relative)locate(uri).then(found=>{if(found)go(fileUrl(found));else{tab.close();console.warn('Switchboard link: no pane in this session holds',uri);}});
             else go(url);
             tab.focus();
           }catch(error){console.warn('Switchboard link:',error.message);}
@@ -200,6 +229,7 @@
     url:path=>`/api/hosts/${encodeURIComponent(host)}/file?path=${encodeURIComponent(path)}`,
     isVideo:path=>videoFile.test(path),
     open:(path,event)=>{
+      if(imageFile.test(path)&&openImage(path))return;
       if(event?.metaKey||event?.ctrlKey)open(event,path);
       else if(window.parent!==window)parent.SwitchboardOpenFile?.(host,path);
     },

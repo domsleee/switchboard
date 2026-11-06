@@ -751,6 +751,14 @@ async fn terminal_response(
             .ok_or((StatusCode::NOT_FOUND, "File not found"))?;
         return Ok(artifacts::serve_path(&file, request.headers().get(header::RANGE)).await);
     }
+    if path.split('?').next() == Some("/switchboard/html-file")
+        && matches!(*request.method(), Method::GET | Method::HEAD)
+    {
+        let axum::extract::Query(query) =
+            axum::extract::Query::<artifacts::html::ScopedFile>::try_from_uri(request.uri())
+                .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid HTML path"))?;
+        return Ok(artifacts::html::local(&query, request.headers().get(header::RANGE)).await);
+    }
     // Pane directories reveal no more than the shells paired computers already reach.
     if path.split('?').next() == Some("/switchboard/resolve-file")
         && request.method() == Method::GET
