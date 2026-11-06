@@ -62,6 +62,9 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
       await target.evaluate(el=>el.style.outline='');
       await page.locator('#pin-proof-note').evaluate(el=>el.remove());
     }
+    // Keep a different tab selected: selected snoozed tabs intentionally stay visible.
+    await page.locator('#tabs .tab-select').filter({has:page.locator('.tab-name',{hasText:'Online shopping'})}).click();
+    await page.waitForFunction(()=>{const item=allTabs().find(item=>item.key===selected);return item?.tab.name==='Online shopping'&&!item.entry.focusPending;});
     await pinProof('before',snoozed,'Working tab moves to Snoozed');
     await snoozed.click();
     const workingTab=page.locator('#tabs .tab-select').filter({has:page.locator('.tab-name', {hasText:'switchboard'})});
