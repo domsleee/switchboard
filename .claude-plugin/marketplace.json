@@ -7,7 +7,7 @@
     {
       "name": "switchboard",
       "source": "./plugins/switchboard",
-      "description": "Claude Code and Copilot CLI status for Switchboard tabs and a message-board skill"
+      "description": "Claude Code and Copilot CLI status for Switchboard tabs, with skills for messages, sudo, interactive commands and closing the current tab"
     }
   ]
 }
