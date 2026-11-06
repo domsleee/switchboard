@@ -607,6 +607,7 @@ function render() {
   const currentEntry=current?.entry||(waitingForRequestedTab()?sessions.get(sessionKey(...JSON.parse(selected).slice(0,2))):startingEntry);
   for (const entry of sessions.values()) entry.frame.classList.toggle('active',entry===currentEntry);
   updateSelectionTools(current);
+  window.SwitchboardConversation?.update?.();
   if(!$('tab-menu').hidden)updateTabMenu();
   if(!current){$('artifact-preview').hidden=true;$('artifact-frame').contentWindow?.location.replace('about:blank');}
   // The sidebar says why nothing is selected; the main area repeats only its
@@ -1564,4 +1565,15 @@ const browserDiagnostics=window.SwitchboardBrowserDiagnostics?.(diagnostic=>{
   if(!current||!$('artifact-preview').hidden||document.querySelector('dialog[open]'))return false;
   current.entry.frame.contentWindow.postMessage({type:'zellij-browser-resume',id,started_at},location.origin);
   return true;
+});
+
+window.SwitchboardConversation?.install({
+  selection(){
+    const item=allTabs().find(item=>item.key===selected);if(!item)return null;
+    const active=item.entry.state?.active_pane,panes=tabPanes(item.entry,item.tab).filter(p=>!p.is_plugin);
+    const pane=panes.find(p=>p.pane_id===active?.pane_id)||panes[0];if(!pane)return null;
+    const state=paneAttention.get(attentionKey(item.entry.host,item.entry.name,pane.pane_id));
+    return {key:JSON.stringify([item.entry.host,item.entry.name,pane.pane_id]),host:item.entry.host,pane:pane.pane_id,frame:item.entry.frame,title:tabTitle(item),agent:state?.agent};
+  },
+  terminal(target){const item=allTabs().find(item=>item.key===selected);if(item&&item.entry.frame===target.frame)focus(item);}
 });

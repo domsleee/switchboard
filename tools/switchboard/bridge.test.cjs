@@ -627,3 +627,17 @@ test('focus acknowledgement and disconnect both cancel the timeout',()=>{
     assert.equal(h.window.term.element.style.pointerEvents,'');
   }
 });
+test('conversation drafts require the exact active pane and never submit Enter',()=>{
+  const h=harness(),pastes=[];
+  const socket=new h.window.WebSocket('ws://localhost:8090/hosts/windows/ws/terminal');
+  h.window.term.modes={bracketedPasteMode:true};h.window.term.paste=text=>pastes.push(text);
+  h.state({active_pane:{pane_id:7,is_plugin:false}});
+  const send=(text,pane_id=7,source=h.parent)=>h.handlers.message({origin:'http://localhost:8090',source,data:{type:'zellij-conversation-paste',id:'draft1',pane_id,text}});
+  send('hello',8);assert.equal(pastes.length,0);assert.equal(h.messages.at(-1).ok,false);
+  send('hello',7,{});assert.equal(pastes.length,0);
+  send('hello\x1b[201~');assert.equal(pastes.length,0);
+  h.window.term.modes.bracketedPasteMode=false;send('first\nsecond');assert.equal(pastes.length,0);
+  h.window.term.modes.bracketedPasteMode=true;send('first\nsecond');assert.deepEqual(pastes,['first\nsecond']);assert.equal(h.messages.at(-1).ok,true);
+  socket.readyState=3;send('offline');assert.equal(pastes.length,1);
+  socket.readyState=1;h.setFrameActive(false);send('hidden');assert.equal(pastes.length,1);
+});

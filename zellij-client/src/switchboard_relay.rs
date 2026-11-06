@@ -1133,7 +1133,9 @@ async fn asset(request: Request) -> Response {
     let name = if name.is_empty() { "index.html" } else { name };
     let mime = match name {
         "index.html" | "computers.html" | "messages.html" => "text/html; charset=utf-8",
-        "style.css" | "messages.css" | "gallery.css" => "text/css; charset=utf-8",
+        "style.css" | "messages.css" | "gallery.css" | "conversation.css" => {
+            "text/css; charset=utf-8"
+        },
         "app.js"
         | "startup-cache.js"
         | "bridge.js"
@@ -1150,6 +1152,7 @@ async fn asset(request: Request) -> Response {
         | "messages.js"
         | "terminal-diagnostics.js"
         | "tasks.js"
+        | "conversation.js"
         | "predict.js" => "application/javascript",
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
@@ -2354,6 +2357,8 @@ mod tests {
             ("/terminal-diagnostics.js", "application/javascript"),
             ("/predict.js", "application/javascript"),
             ("/thumbnails.js", "application/javascript"),
+            ("/conversation.js", "application/javascript"),
+            ("/conversation.css", "text/css; charset=utf-8"),
         ] {
             let response = app
                 .clone()

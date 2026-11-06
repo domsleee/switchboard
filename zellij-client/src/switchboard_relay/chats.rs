@@ -162,11 +162,18 @@ impl Chat {
                 }
                 // event_msg duplicates these messages. Read only canonical response items.
                 if v["type"] == "response_item" && p["type"] == "message" {
+                    let before = self.messages.len();
                     self.push(
                         p["role"].as_str().unwrap_or_default(),
                         content(&p["content"]),
                         v["timestamp"].clone(),
                     );
+                    if self.messages.len() > before
+                        && p["role"] == "assistant"
+                        && matches!(p["phase"].as_str(), Some("commentary" | "final"))
+                    {
+                        self.messages.last_mut().unwrap()["phase"] = p["phase"].clone();
+                    }
                 }
             },
             "copilot" => {
@@ -352,7 +359,7 @@ fn read_page(chat: &Chat, p: &Params) -> Value {
     let mut result = chat.summary();
     let page:Vec<_>=chat.messages.iter().skip(p.cursor).take(p.limit()).map(|m| {
         let text=m["text"].as_str().unwrap_or_default();
-        json!({"role":m["role"],"timestamp":m["timestamp"],"text":clip(text,4000),"truncated":text.chars().count()>4000})
+        json!({"role":m["role"],"timestamp":m["timestamp"],"text":clip(text,4000),"truncated":text.chars().count()>4000,"phase":m["phase"]})
     }).collect();
     let next = p.cursor.saturating_add(page.len());
     result["messages"] = json!(page);
@@ -728,11 +735,15 @@ mod tests {
                 json!({"type":"session_meta","payload":{"id":"x1","cwd":"/repo"}}),
                 json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"question"}]}}),
                 json!({"type":"event_msg","payload":{"type":"user_message","message":"question"}}),
-                json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}}),
+                json!({"type":"response_item","payload":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"answer"}]}}),
             ],
         );
         assert_eq!(c.messages.len(), 2);
         assert_eq!(c.session_id, "x1");
+        assert_eq!(
+            read_page(&c, &Params::default())["messages"][1]["phase"],
+            "commentary"
+        );
         let c = chat(
             "copilot",
             vec![

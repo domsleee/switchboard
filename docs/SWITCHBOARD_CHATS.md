@@ -44,7 +44,8 @@ curl -G 'http://127.0.0.1:8090/api/chats/CHAT_ID' \
 Here `cursor` is a message offset. Use the search result's `message_cursor` to
 jump to a match, or subtract a few to include preceding context. The response
 contains `messages` and `next_cursor`. Each message has `role`, `text`,
-`timestamp` and `truncated`. Text is capped at 4,000 characters per message;
+`timestamp` and `truncated`. Codex assistant messages also include `phase`
+(`commentary` or `final`) when present in the source; other messages return null. Text is capped at 4,000 characters per message;
 search excerpts are capped at 401 characters. Tool calls, tool output, reasoning,
 attachments and provider credentials are excluded. OpenCode text parts are
 returned as individual entries. This is a transcript view, not a reconstruction
