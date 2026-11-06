@@ -680,3 +680,14 @@ test('Copilot Send checks the live boxed composer, including multiline drafts',(
  const send=()=>h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-conversation-paste',id:'c',pane_id:7,agent:'copilot',submit:true,text:'reply'}});
  send();assert.deepEqual(writes,['reply','\r']);lines[2]='┃ unsent draft';send();assert.equal(writes.length,2);assert.equal(h.messages.at(-1).ok,false);
 });
+
+test('resumable already-focused confirmation settles the matching sidebar request',()=>{
+  const h=harness();h.window.__zjSendControl=()=>{};
+  const control=new h.window.WebSocket('ws://localhost:8090/ws/control');control.resumable=true;
+  const emit=message=>control.handlers.message({data:JSON.stringify(message)});
+  emit({type:'MobileState',payload:{active_pane:{pane_id:1,is_plugin:false}}});
+  h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-focus',pane_id:1,is_plugin:false,focus_id:8}});
+  assert.equal(h.window.term.options.disableStdin,false,'Typing stays in the retained ordered stream');
+  emit({type:'FocusConfirmed',payload:{pane_id:1,is_plugin:false}});
+  assert.equal(h.messages.at(-1).focus_id,8);assert.equal(h.messages.at(-1).focus_pending,false);
+});

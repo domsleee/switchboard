@@ -1007,8 +1007,10 @@ async fn proxy(
         let viewer = if path.split('?').next() == Some("/ws/resume") {
             None
         } else {
-            Some(crate::switchboard_viewers::viewer()
-                .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "Update in progress"))?)
+            Some(
+                crate::switchboard_viewers::viewer()
+                    .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "Update in progress"))?,
+            )
         };
         let upstream = tokio::time::timeout(Duration::from_secs(20), host.websocket(&path))
             .await

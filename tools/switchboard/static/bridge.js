@@ -467,6 +467,7 @@
           try {
             const message = JSON.parse(event.data);
             if (message.type === 'MobileState') sendState(message.payload);
+            if (message.type === 'FocusConfirmed' && latest?.active_pane?.pane_id===message.payload?.pane_id && latest.active_pane.is_plugin===message.payload.is_plugin) sendState(latest);
             if (message.type === 'LogError') {
               // Unrelated control errors must not acknowledge an in-flight focus.
               if(pendingFocus && message.lines?.some(line=>line.includes(`Could not find pane with id: ${pendingFocus.is_plugin?'Plugin':'Terminal'}(${pendingFocus.pane_id})`)))rejectFocus();
