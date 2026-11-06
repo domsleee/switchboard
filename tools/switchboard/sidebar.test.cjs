@@ -290,9 +290,10 @@ test('each group returns to and shows its own last selected tab, even across com
   const sessions=new Map(['w1','w2','h1','h2'].map(host=>[host,{host,name:'main',state:{panes:[]},catalog:[tab(host,0)]}]));
   const focused=[];
   const context={hosts:new Map([...sessions.keys()].map(host=>[host,{name:host}])),sessions,tabOrder:[],hidden:{},ready:{},
-    filter:'work',groups:{w1:'work',w2:'work',h1:'home',h2:'home'},selected:null,localStorage:{setItem(){}},renderFilter(){},
+    filter:'work',groups:{w1:'work',w2:'work',h1:'home',h2:'home'},selected:null,localStorage:{getItem:()=>null,setItem(){}},renderFilter(){},
     focus:item=>focused.push(item.key)};
   vm.createContext(context);
+  vm.runInContext(source.slice(source.indexOf('function sectionExpanded('),source.indexOf('const seenAttention')),context);
   vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function moveSelected(')),context);
   vm.runInContext(source.slice(source.indexOf('function setFilter('),source.indexOf("$('filters').onclick")),context);
   vm.runInContext(source.slice(source.indexOf('// The tab last used in each group'),source.indexOf('function setFilter(')),context);
