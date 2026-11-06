@@ -398,6 +398,10 @@ retained through agent redraws and cleared when switching panes.
 Ctrl+C without a local selection still interrupts the terminal process. Remote
 OSC52 copies use this browser’s clipboard; denied permissions show a manual
 copy panel instead of silently failing.
+Settings → Logs records `Terminal clipboard` diagnostics under the session computer:
+completed drags (including zero browser-selected characters), OSC52 receipt, copy
+attempts, browser permission failures and fallback results. Only counts and state
+flags are recorded, never clipboard text. These also appear in `/api/logs`.
 Physical Ctrl+C also works through the hidden touch-keyboard input on touchscreen
 PCs. Copy shortcuts still copy a terminal selection instead of interrupting.
 Sidebar selection restores that same input, so Ctrl+V works without another

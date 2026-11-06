@@ -765,6 +765,53 @@ pub(super) async fn instant_typing(
     StatusCode::NO_CONTENT
 }
 
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "kebab-case")]
+enum ClipboardOutcome {
+    Drag,
+    Attempt,
+    Success,
+    Failed,
+    ApiSuccess,
+    PermissionDenied,
+    ApiFailed,
+    Fallback,
+    FallbackSuccess,
+    Manual,
+    CopyKey,
+    Osc52,
+    Osc52Ignored,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClipboardDiagnostic {
+    host: String,
+    outcome: ClipboardOutcome,
+    chars: u32,
+    attempt: u32,
+    selection_mode: bool,
+    mouse_tracking: bool,
+    focused: bool,
+    secure: bool,
+    clipboard_api: bool,
+}
+
+pub(super) async fn clipboard(State(state): State<RelayState>, request: Request) -> StatusCode {
+    let d: ClipboardDiagnostic = match diagnostic_body(request).await {
+        Ok(d) => d,
+        Err(status) => return status,
+    };
+    let Some(host) = state.host(&d.host) else {
+        return StatusCode::NOT_FOUND;
+    };
+    record(&host.config.name, &format!(
+        "Terminal clipboard outcome={:?} attempt={} chars={} selection_mode={} mouse_tracking={} focused={} secure={} clipboard_api={}",
+        d.outcome, d.attempt, d.chars, d.selection_mode, d.mouse_tracking, d.focused, d.secure, d.clipboard_api,
+    ));
+    StatusCode::NO_CONTENT
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EnterDiagnostic {
@@ -876,6 +923,20 @@ pub(super) async fn modified_enter(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipboard_diagnostics_reject_contents_and_arbitrary_errors() {
+        let sample = json!({"host":"mac", "outcome":"drag", "chars":0, "attempt":0,
+            "selection_mode":false, "mouse_tracking":true, "focused":true,
+            "secure":true, "clipboard_api":true});
+        assert!(serde_json::from_value::<ClipboardDiagnostic>(sample.clone()).is_ok());
+        let mut contents = sample.clone();
+        contents["text"] = json!("clipboard contents");
+        assert!(serde_json::from_value::<ClipboardDiagnostic>(contents).is_err());
+        let mut error = sample;
+        error["outcome"] = json!("arbitrary error text");
+        assert!(serde_json::from_value::<ClipboardDiagnostic>(error).is_err());
+    }
 
     #[test]
     fn failures_survive_a_restart_and_samples_never_push_them_out() {
