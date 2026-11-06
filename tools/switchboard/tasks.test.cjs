@@ -234,11 +234,13 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
     await page.evaluate(()=>SwitchboardTasks.load());
     if(process.env.FIX_SKILLS_SCREENSHOTS)await mac.screenshot({path:process.env.FIX_SKILLS_SCREENSHOTS+'/after.png'});
     await mac.getByRole('button',{name:'Fix skills',exact:true}).click();
+    await mac.getByRole('button',{name:'Fixing skills…'}).waitFor({state:'visible'});
     assert.equal(await mac.getByRole('button',{name:'Fixing skills…'}).isDisabled(),true);
     codex.skillRepair={supported:true,running:false,error:'Refresh denied'};
     await page.evaluate(()=>SwitchboardTasks.load());
     assert.equal(await mac.locator('.skill-repair-error').textContent(),'Refresh denied');
     await mac.getByRole('button',{name:'Fix skills',exact:true}).click();
+    await mac.getByRole('button',{name:'Fixing skills…'}).waitFor({state:'visible'});
     codex.skillRepair={supported:true,running:false,finished:now};
     codex.skills={state:'ok',warnings:[],refreshPlugins:[]};
     const remote=tasks.computers[1].agents[2];
@@ -248,6 +250,7 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
     assert.equal(await mac.getByRole('button',{name:'Fix skills',exact:true}).count(),0);
     assert.equal(await mac.getByText('Skills refreshed. Start a new Codex conversation to use them.').count(),1);
     await pc.getByRole('button',{name:'Fix skills',exact:true}).click();
+    await pc.getByRole('button',{name:'Fixing skills…'}).waitFor({state:'visible'});
     assert.deepEqual(repairs,[{agent:'codex',action:'fix-skills'},{agent:'codex',action:'fix-skills'},{agent:'codex',action:'fix-skills',host:'mesh-dompc'}]);
     delete remote.skillRepair;delete remote.skills;delete codex.skillRepair;
     tasks.computers[0].agents[1].state='setup';tasks.computers[0].agents[2].state='approve';
