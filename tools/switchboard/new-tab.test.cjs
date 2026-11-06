@@ -28,7 +28,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
         const input=document.querySelector('input');let count=${created},active=count;
         window.term={element:document.querySelector('#terminal'),options:{disableStdin:false},focus(){input.focus()},blur(){input.blur()},
           _core:{_renderService:{dimensions:{css:{cell:{width:8,height:16}}}}},buffer:{active:{viewportY:0,getLine:()=>({translateToString:()=>''})}},onRender(){},onResize(){}};
-        window.__zjSendControl=message=>{if(message.type==='NewTab'&&window.controlSocket.readyState===1){window.creationRequested=true;window.creationElevated=message.elevated;}};
+        window.__zjSendControl=message=>{if(message.type==='NewTab'&&window.controlSocket.readyState===1){window.creationRequested=true;window.creationElevated=message.elevated;window.creationLaunch={project:message.project,command:message.command};}};
       </script><script src="/bridge.js"></script><script>
         const socket=window.controlSocket=new WebSocket('wss://switchboard.test/ws/control');
         function state(){const panes=Array.from({length:count+1},(_,i)=>({pane_id:i?8+i:7,is_plugin:false,tab_position:i,title:'~'}));socket.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'MobileState',payload:{session_name:'main',panes,active_pane:panes[active],tabs:panes.map((p,i)=>({position:i,name:i?'New shell '+i:'Original',active:i===active}))}})}));}
@@ -54,24 +54,24 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
       // The + dialog offers the empty machine and creates its session.
       await page.locator('#new-tab').click();assert.equal(await page.locator('#new-tab-target option').count(),1);
       await page.locator('#new-tab-form button[type="submit"]').click();
+      await page.waitForFunction(()=>document.querySelector('iframe.active')?.contentWindow.creationRequested);
+      const input=page.frameLocator('iframe[title="Windows: main"]').locator('#terminal-input');
+      assert.deepEqual(await input.evaluate(()=>window.creationLaunch),{project:'switchboard',command:'c'});
+      await input.evaluate(()=>window.confirmCreation());
+      await page.waitForFunction(()=>document.querySelector('#tabs .selected .tab-name')?.textContent==='New shell 1');
+      assert.equal(frameBoots,1);
+      assert.equal(await input.evaluate(i=>document.activeElement===i&&!window.term.options.disableStdin),true);
+      await page.keyboard.type('first command');assert.equal(await input.inputValue(),'first command');
+      await page.evaluate(()=>refresh());assert.equal(frameBoots,1);
+      await page.locator('#new-tab').click();assert.equal(await page.locator('#new-tab-target option').count(),1);
+      await page.locator('#cancel-new-tab').click();
+      assert.deepEqual(errors,[]);return;
     }
     const frame=page.frameLocator('iframe[title="Windows: main"]'),input=frame.locator('#terminal-input');
     await page.waitForFunction(()=>document.querySelector('#tabs .selected')?.textContent.includes('Original'));
     await page.waitForFunction(()=>document.activeElement===document.querySelector('#terminals>iframe.active'));
-    if(emptyMachine){
-      assert.equal(frameBoots,1);
-      assert.equal(new URL(page.url()).searchParams.get('pane'),'7');
-      assert.equal(await input.evaluate(i=>document.activeElement===i&&!window.term.options.disableStdin),true);
-      await page.keyboard.type('first shell');assert.equal(await input.inputValue(),'first shell');
-      await input.fill('');
-      await page.evaluate(()=>refresh());assert.equal(frameBoots,1);
-      // Adding a second tab is already available before the first catalog scan.
-      await page.locator('#new-tab').click();assert.equal(await page.locator('#new-tab-target option').count(),1);
-      await page.locator('#cancel-new-tab').click();
-      catalogReady=true;await page.evaluate(()=>refreshAttention());
-      await page.waitForFunction(()=>new URL(location.href).searchParams.get('tab')==='42');
-    }
     async function create(number){
+      if(number===1)await page.evaluate(()=>{const entry=[...sessions.values()][0];sessions.set(sessionKey(entry.host,'other'),{...entry,name:'other'});});
       if(number===1)await input.evaluate(()=>{window.controlSocket.readyState=0;});
       // The second tab comes from the shield button and asks for administrator.
       if(number===2){
@@ -83,10 +83,12 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
       }else await page.keyboard.press('Control+Alt+KeyT');
       await page.waitForFunction(()=>document.querySelector('#new-tab-dialog').open);
       assert.equal(await page.locator('#new-tab-title').textContent(),number===2?'New administrator tab':'New tab');
-      assert.equal(await page.locator('#new-tab-form button[type="submit"]').evaluate(button=>document.activeElement===button),true,'Create tab is focused so Enter confirms the default target');
-      assert.equal(await page.locator('#new-tab-form button[type="submit"]').evaluate(button=>{
-        const style=getComputedStyle(button);return style.outlineStyle==='solid'&&style.outlineWidth==='2px';
-      }),true,'The default action is visibly highlighted');
+      assert.deepEqual(await page.locator('#new-tab-command').evaluate(input=>({focused:document.activeElement===input,selected:input.value.slice(input.selectionStart,input.selectionEnd)})),{focused:true,selected:'c'});
+      assert.equal(await page.locator('#new-tab-target option').count(),1,'One option per computer even with multiple sessions');
+      assert.equal(await page.locator('#new-tab-target option').first().textContent(),'Windows');
+      if(number===1)await page.evaluate(()=>sessions.delete(sessionKey('windows','other')));
+      assert.equal(await page.locator('#new-tab-project').inputValue(),'switchboard');
+      if(number===2){await page.locator('[data-command="castra"]').click();await page.locator('#new-tab-project').fill('dotfiles');}
       await page.keyboard.press('Enter');
       await page.waitForFunction(()=>document.querySelector('#tabs .selected .tab-name')?.textContent==='Creating tab…');
       if(number===1){
@@ -99,6 +101,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
       await page.evaluate(()=>refreshAttention());
       assert.equal(await page.locator('#tabs .selected .tab-name').textContent(),'Creating tab…');
       assert.equal(await input.evaluate(()=>window.creationElevated),number===2);
+      assert.deepEqual(await input.evaluate(()=>window.creationLaunch),number===2?{project:'dotfiles',command:'castra'}:{project:'switchboard',command:'c'});
       await input.evaluate(()=>window.confirmCreation());created=number;
       await page.waitForFunction(n=>document.querySelector('#tabs .selected .tab-name')?.textContent==='New shell '+n,number);
       assert.equal(new URL(page.url()).searchParams.get('pane'),String(8+number));

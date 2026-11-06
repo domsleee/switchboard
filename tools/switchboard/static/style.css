@@ -262,3 +262,13 @@ body.sidebar-collapsed #artifact-preview header{padding-left:42px}
 }
 
 @media(hover:none){#tabs .tab-actions{opacity:1}}
+
+#new-tab-dialog{width:410px}
+#new-tab-form input{width:100%;padding:9px 10px;background:#111318;border:1px solid #363e4d;border-radius:4px;color:inherit;font:13px ui-monospace,SFMono-Regular,Consolas,monospace}
+#new-tab-form input:focus{outline:2px solid #9dc2fa;outline-offset:2px}
+#new-tab-form input::selection{background:#426ba4;color:white}
+#new-tab-form select{margin-bottom:18px}
+#new-tab-project-help{margin:8px 0 18px;overflow-wrap:anywhere}
+#new-tab-commands{display:flex;gap:6px;margin-top:10px}
+#new-tab-commands button{font:12px ui-monospace,SFMono-Regular,Consolas,monospace}
+#new-tab-commands button[aria-pressed="true"]{background:#263d5f;border-color:#6f9cdd}

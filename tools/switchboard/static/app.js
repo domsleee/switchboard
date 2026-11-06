@@ -937,6 +937,10 @@ window.addEventListener('message',event=>{
     const previousPane=entry.state?.active_pane;
     entry.state=event.data.payload;
     updateCreatedTabs(entry);
+    if(entry.launchOnStart&&entry.state.active_pane&&sessionTabs(entry).length&&!event.data.focus_pending){
+      const launch=entry.launchOnStart;delete entry.launchOnStart;
+      createNewTab(sessionKey(entry.host,entry.name),launch);return;
+    }
     if(previousPane && (previousPane.pane_id!==entry.state.active_pane?.pane_id || previousPane.is_plugin!==entry.state.active_pane?.is_plugin))entry.frame.contentWindow.SwitchboardClipboard?.clearSelection();
     entry.focusPending=!!event.data.focus_pending;
     if(entry.requestedPane){
@@ -1152,12 +1156,15 @@ $('new-admin-tab').onclick=()=>openNewTabDialog(true);
 function openNewTabDialog(elevated){
   newTabElevated=elevated;
   $('new-tab-title').textContent=elevated?'New administrator tab':'New tab';
-  $('new-tab-note').textContent=elevated?'Opens an administrator shell on the selected machine. Someone there approves it: a UAC prompt on Windows, a sudo password elsewhere.':'Opens a shell on the selected machine.';
+  $('new-tab-command').value='c';updateNewTabCommand();
+  $('new-tab-project').value='switchboard';updateNewTabProject();
+  $('new-tab-note').textContent=elevated?'Opens an administrator shell on the selected machine. Someone there approves it: a UAC prompt on Windows, a sudo password elsewhere.':'Enter creates the tab and runs the command in this project.';
   const select=$('new-tab-target');select.replaceChildren();
   const current=allTabs().find(t=>t.key===selected)?.entry;
-  for(const [key,entry] of sessions){
+  for(const [key,entry] of [...sessions].sort((a,b)=>Number(b[1]===current)-Number(a[1]===current)||Number(b[1].name==='main')-Number(a[1].name==='main'))){
+    if([...select.options].some(option=>JSON.parse(option.value)[0]===entry.host))continue;
     if(!entry.state||!sessionTabs(entry).length)continue;
-    const option=document.createElement('option');option.value=key;option.textContent=`${hosts.get(entry.host)?.name} · ${entry.name}`;option.selected=entry===current;select.append(option);
+    const option=document.createElement('option');option.value=key;option.textContent=hosts.get(entry.host)?.name||entry.host;option.selected=entry===current;select.append(option);
   }
   // A machine's first session starts a plain shell, so it cannot be elevated.
   if(!elevated)for(const host of hosts.values())if(!host.error&&host.sessions?.length===0&&![...select.options].some(option=>option.value===sessionKey(host.id,'main'))){
@@ -1165,7 +1172,19 @@ function openNewTabDialog(elevated){
   }
   if(!select.options.length){setStatus(elevated&&hosts.size?'Open a regular tab on the machine first, then an administrator tab.':'No machines are connected. Check your machines in Settings.',true);return;}
   $('new-tab-dialog').showModal();
+  $('new-tab-command').focus();$('new-tab-command').select();
 }
+function updateNewTabCommand(){
+  document.querySelectorAll('#new-tab-commands button').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.command===$('new-tab-command').value)));
+}
+function updateNewTabProject(){
+  $('new-tab-project-help').textContent='Folder: ~/git/'+$('new-tab-project').value.trim();
+}
+$('new-tab-command').oninput=updateNewTabCommand;
+$('new-tab-project').oninput=updateNewTabProject;
+for(const button of document.querySelectorAll('#new-tab-commands button'))button.onclick=()=>{
+  $('new-tab-command').value=button.dataset.command;updateNewTabCommand();$('new-tab-command').focus();$('new-tab-command').select();
+};
 $('cancel-new-tab').onclick=()=>$('new-tab-dialog').close();
 // A click on the backdrop closes a dialog. Both press and release must land
 // outside, so selecting text inside and releasing outside keeps it open.
@@ -1179,13 +1198,17 @@ for(const dialog of document.querySelectorAll('dialog')){
   dialog.addEventListener('click',event=>{if(pressedOutside&&outside(event))dialog.close();pressedOutside=false;});
 }
 $('new-tab-form').onsubmit=event=>{
-  event.preventDefault();const key=$('new-tab-target').value;let entry=sessions.get(key);
+  event.preventDefault();createNewTab($('new-tab-target').value,{project:$('new-tab-project').value.trim(),command:$('new-tab-command').value.trim(),elevated:newTabElevated});
+};
+function createNewTab(key,launch){
+  if(!launch.project||!launch.command)return;
+  let entry=sessions.get(key);
   if(!entry?.state){
     const [id,name]=JSON.parse(key),host=hosts.get(id);
     if(!host||host.error||host.sessions?.length!==0)return;
     if(entry&&!entry.starting){entry.frame.remove();sessions.delete(key);}
     if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.showTerminal();
-    const created=connectSession(host,name,true);created.selectOnStart=true;
+    const created=connectSession(host,name,true);created.selectOnStart=true;created.launchOnStart=launch;
     if(filter!=='all'&&groups[id]!==filter)setFilter('all');$('tab-search').value='';
     // Closing the dialog returns focus to +; give it to the new terminal instead.
     $('new-tab-dialog').close();render();created.frame.focus();return;
@@ -1207,7 +1230,7 @@ $('new-tab-form').onsubmit=event=>{
   // Keyboard dismissal can leave focus on the hidden session selector, then
   // move it to the body. Hand focus to the frame before creation records it.
   entry.frame.focus();
-  entry.frame.contentWindow.postMessage({type:'zellij-new-tab',elevated:newTabElevated,request_id:pending.requestId,started_at:pending.startedAt},location.origin);
+  entry.frame.contentWindow.postMessage({type:'zellij-new-tab',...launch,request_id:pending.requestId,started_at:pending.startedAt},location.origin);
   setStatus(`Creating a tab on ${hosts.get(entry.host)?.name}…`);
   setTimeout(()=>failNewTab(entry,pending.requestId,'No new tab received. Check the connection and try again.'),30000);
 };
