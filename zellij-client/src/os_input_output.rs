@@ -93,6 +93,7 @@ pub struct ClientOsInputOutput {
     receive_instructions_from_server: Arc<Mutex<Option<IpcReceiverWithContext<ServerToClientMsg>>>>,
     reading_from_stdin: Arc<Mutex<Option<Vec<u8>>>>,
     session_name: Arc<Mutex<Option<String>>>,
+    send_failure: Arc<Mutex<Option<String>>>,
 }
 
 impl std::fmt::Debug for ClientOsInputOutput {
@@ -129,6 +130,10 @@ pub trait ClientOsApi: Send + Sync + std::fmt::Debug {
     fn box_clone(&self) -> Box<dyn ClientOsApi>;
     /// Sends a message to the server.
     fn send_to_server(&self, msg: ClientToServerMsg);
+    /// Sticky transport failure, so retained delivery never acknowledges a dropped write.
+    fn send_failure(&self) -> Option<String> {
+        None
+    }
     /// Receives a message on client-side IPC channel
     // This should be called from the client-side router thread only.
     fn recv_from_server(&self) -> Option<(ServerToClientMsg, ErrorContext)>;
@@ -256,12 +261,18 @@ impl ClientOsApi for ClientOsInputOutput {
     fn send_to_server(&self, msg: ClientToServerMsg) {
         match self.send_instructions_to_server.lock().unwrap().as_mut() {
             Some(sender) => {
-                let _ = sender.send_client_msg(msg);
+                if let Err(error) = sender.send_client_msg(msg) {
+                    *self.send_failure.lock().unwrap() = Some(error.to_string());
+                }
             },
             None => {
+                *self.send_failure.lock().unwrap() = Some("Server IPC is not connected".into());
                 log::warn!("Server not ready, dropping message.");
             },
         }
+    }
+    fn send_failure(&self) -> Option<String> {
+        self.send_failure.lock().unwrap().clone()
     }
     fn recv_from_server(&self) -> Option<(ServerToClientMsg, ErrorContext)> {
         self.try_recv_from_server().ok()
@@ -389,6 +400,7 @@ pub fn get_client_os_input() -> Result<ClientOsInputOutput, std::io::Error> {
         receive_instructions_from_server: Arc::new(Mutex::new(None)),
         reading_from_stdin,
         session_name: Arc::new(Mutex::new(None)),
+        send_failure: Arc::new(Mutex::new(None)),
     })
 }
 
@@ -399,6 +411,7 @@ pub fn get_cli_client_os_input() -> Result<ClientOsInputOutput, std::io::Error> 
         receive_instructions_from_server: Arc::new(Mutex::new(None)),
         reading_from_stdin,
         session_name: Arc::new(Mutex::new(None)),
+        send_failure: Arc::new(Mutex::new(None)),
     })
 }
 
@@ -407,6 +420,15 @@ pub const DEFAULT_STDIN_POLL_TIMEOUT_MS: u64 = 10;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switchboard_attachment_ipc_failure_is_visible_to_parser_owner_and_clones() {
+        let client = get_client_os_input().unwrap();
+        let retained = client.clone();
+        assert!(retained.send_failure().is_none());
+        client.send_to_server(ClientToServerMsg::ClientExited);
+        assert!(retained.send_failure().is_some());
+    }
 
     #[test]
     fn single_attempt_connection_to_missing_session_returns_error() {

@@ -234,6 +234,8 @@ pub struct AppState {
 
 #[derive(Serialize)]
 pub struct CreateClientIdResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resumable: Option<super::attachment::ResumeInfo>,
     pub web_client_id: String,
     pub is_read_only: bool,
     pub session_name: String,
@@ -242,6 +244,8 @@ pub struct CreateClientIdResponse {
 
 #[derive(Deserialize)]
 pub struct SessionQuery {
+    #[serde(default)]
+    pub resumable: bool,
     pub session: Option<String>,
     pub welcome: Option<bool>,
 }

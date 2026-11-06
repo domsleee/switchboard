@@ -19,11 +19,11 @@ export function setReconnectHandler(handler) {
     reconnectHandler = handler;
 }
 
-export function showConnectionStatus() {
+export function showConnectionStatus(message = "Reconnecting… Input paused") {
     if (connectionStatus || isPageUnloading || isDisconnected) return;
     connectionStatus = document.createElement("div");
     connectionStatus.setAttribute("role", "status");
-    connectionStatus.textContent = "Reconnecting… Input paused";
+    connectionStatus.textContent = message;
     connectionStatus.style.cssText = "position:fixed;right:12px;top:12px;z-index:10000;padding:6px 10px;border-radius:6px;background:#252525;color:#eee;font:13px sans-serif;pointer-events:none";
     document.body.appendChild(connectionStatus);
 }
@@ -35,12 +35,12 @@ function clearConnectionStatus() {
     connectionStatus = null;
 }
 
-export async function handleDisconnected() {
+export async function handleDisconnected(reason = "You have been disconnected by the host.") {
     if (isDisconnected || isPageUnloading) return;
     isDisconnected = true;
     isReconnecting = false;
     clearConnectionStatus();
-    await showErrorModal("Disconnected", "You have been disconnected by the host.");
+    await showErrorModal("Disconnected", reason);
 }
 
 export async function handleReconnection() {

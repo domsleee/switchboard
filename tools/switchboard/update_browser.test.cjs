@@ -114,6 +114,8 @@ let recoveryPanes, reconnectTarget;
         assert.ok(children.length,'Session owns terminal processes');
         browser=await chromium.launch({headless:true});
         const context=await browser.newContext({viewport:{width:1200,height:800}});
+        // This fixture covers legacy viewer locking and explicit migration.
+        await context.route(/\/session\?/, route=>{const url=new URL(route.request().url());url.searchParams.delete("resumable");return route.continue({url:url.href});});
         const page=await context.newPage();
         page.setDefaultTimeout(30000);
         page.on('pageerror',error=>console.error('Browser error:',error.message));
