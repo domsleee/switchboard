@@ -14,7 +14,7 @@ function closeTabTarget(item){
     if(!target){setStatus('This terminal is still connecting. Try Close again shortly.',true);return;}
     const closing={host:item.entry.host,key:item.key,session:item.entry.name,...target,entry:item.entry};
     if(closing.entry.closingTabs?.get(closing.key)?.pending)return;
-    const tabs=allTabs(),index=tabs.findIndex(item=>item.key===closing.key);
+    const tabs=listedTabs(),index=tabs.findIndex(item=>item.key===closing.key);
     const wasSelected=selected===closing.key,next=tabs[index+1]||tabs[index-1];
     closing.pending=true;
     closing.entry.closeError=null;

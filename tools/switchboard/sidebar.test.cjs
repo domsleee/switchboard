@@ -628,7 +628,7 @@ test('settings are shared by every paired computer, and a browser can override a
   const view=stored=>{
     const posted=[],filters=[],reloads=[];
     const context={posted,filters,reloads,location:{reload:()=>reloads.push(1)},document:{hidden:false,addEventListener(){}},
-      nativeTabs:false,updateNativeTabs(){},setFilter:value=>filters.push(value),
+      render(){},nativeTabs:false,updateNativeTabs(){},setFilter:value=>filters.push(value),
       load:key=>{try{return JSON.parse(stored[key])||{};}catch(_){return {};}},
       focusGroup:()=>['work','home'].includes(stored['switchboard-focus-group'])?stored['switchboard-focus-group']:'',
       localStorage:{getItem:key=>stored[key]??null,setItem:(key,value)=>stored[key]=value},
@@ -676,4 +676,18 @@ test('settings are shared by every paired computer, and a browser can override a
   alone.setSetting('media-thumbnails','true');
   assert.deepEqual(alone.posted,[]);
   assert.equal(alone.sharedValue('media-thumbnails'),'true');
+  // Snoozing defaults on, follows the group, and supports a browser override.
+  assert.equal(mac.settingValue('move-working-to-snoozed'),'true');
+  mac.setSetting('move-working-to-snoozed','false');
+  assert.deepEqual(mac.posted.at(-1),['/api/mesh/setting',{key:'move-working-to-snoozed',value:'false'}]);
+  await settle();
+  alone.applySettings({settings:{'move-working-to-snoozed':{value:'false',updated:500}}},member);
+  assert.equal(alone.settingValue('move-working-to-snoozed'),'false');
+  vm.runInContext("settingScope='browser'",alone);
+  alone.setSetting('move-working-to-snoozed','true');
+  assert.equal(alone.settingValue('move-working-to-snoozed'),'true');
+  assert.equal(alone.sharedValue('move-working-to-snoozed'),'false');
+  assert.ok(!alone.posted.some(([,body])=>body.key==='move-working-to-snoozed'));
+  alone.resetSetting('move-working-to-snoozed');
+  assert.equal(alone.settingValue('move-working-to-snoozed'),'false');
 });
