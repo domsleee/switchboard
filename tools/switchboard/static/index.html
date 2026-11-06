@@ -29,6 +29,7 @@
 <button id="restart-agent" role="menuitem" disabled>Restart &amp; resume</button>
 <button id="close-tab" class="danger" role="menuitem" title="Close current tab · Ctrl+D">Close <kbd>Ctrl+D</kbd></button>
 </div>
+<dialog id="restart-agent-dialog" aria-labelledby="restart-agent-title"><form method="dialog"><h2 id="restart-agent-title">Restart this agent?</h2><p>This will interrupt the current turn and resume the same conversation. In-progress work and unsent input may be lost.</p><div class="dialog-actions"><button value="cancel">Cancel</button><button value="restart" class="danger">Restart &amp; resume</button></div></form></dialog>
 <dialog id="askpass-dialog" aria-labelledby="askpass-title"><form id="askpass-form"><h2 id="askpass-title">Password needed</h2><p>On <strong id="askpass-computer"></strong>, this command is waiting for your password:</p><pre id="askpass-command"></pre><label for="askpass-password" id="askpass-prompt">Password</label><input id="askpass-password" type="password" autocomplete="off" spellcheck="false"><p>Switchboard hands it to this one request and keeps no copy. Closing this cancels the command.</p><div class="dialog-actions"><button type="button" id="askpass-cancel">Cancel</button><button type="submit">Send</button></div></form></dialog>
 <dialog id="panel" aria-labelledby="panel-title">
 <nav id="panel-nav" aria-label="Switchboard sections"><strong>Switchboard</strong>
