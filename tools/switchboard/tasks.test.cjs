@@ -94,7 +94,7 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
   const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
   const browser=await chromium.launch({headless:true});
   try{
-    const page=await browser.newPage({viewport:{width:1280,height:900}}),errors=[],setups=[],updates=[];page.setDefaultTimeout(5000);
+    const page=await browser.newPage({viewport:{width:1280,height:900}}),errors=[],setups=[],updates=[],repairs=[];page.setDefaultTimeout(5000);
     page.on('pageerror',e=>errors.push(e.message));
     const now=Date.now();
     const build=(commit,at,extra={})=>({commit,commitDate:at.slice(0,10),automaticUpdates:true,...extra});
@@ -117,7 +117,14 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
       if(path==='/api/tasks')return json(tasks);
       if(path==='/api/tasks/update'){updates.push(JSON.parse(request.postData()));return json({ok:true},202);}
       if(path==='/api/tasks/setup'){
-        const body=JSON.parse(request.postData());setups.push(body);
+        const body=JSON.parse(request.postData());
+        if(body.action==='fix-skills'){
+          repairs.push(body);
+          const computer=tasks.computers.find(c=>body.host?c.host===body.host:c.local);
+          computer.agents.find(a=>a.agent===body.agent).skillRepair={supported:true,running:true};
+          return json({ok:true},202);
+        }
+        setups.push(body);
         if(!body.host)tasks.computers[0].agents[1].state='running';
         return json({ok:true},202);
       }
@@ -195,6 +202,29 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
 
     assert.equal(await macRows.nth(2).getByRole('button').count(),0);
     if(process.env.SKILL_HEALTH_SCREENSHOTS)await page.screenshot({path:'/tmp/skill-health-after.png',clip:await page.locator('#updates .task-computer').first().boundingBox()});
+    const codex=tasks.computers[0].agents[2];
+    if(process.env.FIX_SKILLS_SCREENSHOTS)await mac.screenshot({path:process.env.FIX_SKILLS_SCREENSHOTS+'/before.png'});
+    codex.skillRepair={supported:true,running:false};
+    codex.skills.refreshPlugins=['pr-description-style@dotfiles'];
+    await page.evaluate(()=>SwitchboardTasks.load());
+    if(process.env.FIX_SKILLS_SCREENSHOTS)await mac.screenshot({path:process.env.FIX_SKILLS_SCREENSHOTS+'/after.png'});
+    await mac.getByRole('button',{name:'Fix skills',exact:true}).click();
+    assert.equal(await mac.getByRole('button',{name:'Fixing skills…'}).isDisabled(),true);
+    codex.skillRepair={supported:true,running:false,error:'Refresh denied'};
+    await page.evaluate(()=>SwitchboardTasks.load());
+    assert.equal(await mac.locator('.skill-repair-error').textContent(),'Refresh denied');
+    await mac.getByRole('button',{name:'Fix skills',exact:true}).click();
+    codex.skillRepair={supported:true,running:false,finished:now};
+    codex.skills={state:'ok',warnings:[],refreshPlugins:[]};
+    const remote=tasks.computers[1].agents[2];
+    remote.skillRepair={supported:true,running:false};
+    remote.skills={state:'attention',warnings:['Stale plugin'],refreshPlugins:['example@test']};
+    await page.evaluate(()=>SwitchboardTasks.load());
+    assert.equal(await mac.getByRole('button',{name:'Fix skills',exact:true}).count(),0);
+    assert.equal(await mac.getByText('Skills refreshed. Start a new Codex conversation to use them.').count(),1);
+    await pc.getByRole('button',{name:'Fix skills',exact:true}).click();
+    assert.deepEqual(repairs,[{agent:'codex',action:'fix-skills'},{agent:'codex',action:'fix-skills'},{agent:'codex',action:'fix-skills',host:'mesh-dompc'}]);
+    delete remote.skillRepair;delete remote.skills;delete codex.skillRepair;
     tasks.computers[0].agents[1].state='setup';tasks.computers[0].agents[2].state='approve';
     delete tasks.computers[0].agents[2].skills;
     await page.waitForFunction(()=>document.querySelector('#updates')?.getAttribute('aria-busy')==='false');

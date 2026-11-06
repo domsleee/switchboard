@@ -94,8 +94,9 @@
     block.append(summary,...group.tasks.map(task=>taskRow(computer,group,task)),footer);
     return block;
   }
-  async function setUp(computer,agent){
+  async function setUp(computer,agent,action){
     const body={agent:agent.agent};
+    if(action)body.action=action;
     if(computer.host)body.host=computer.host;
     try{
       const response=await fetch('/api/tasks/setup',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
@@ -116,7 +117,7 @@
   // Each agent row: ready agents show when they last reported; others say what is missing.
   const agentStatus={ready:'ok',setup:'failed',approve:'attention',running:'running'};
   function agentRow(computer,agent){
-    const row=element('div','task-row agent-row');row.dataset.status=(agent.skills?.state==='attention'||agent.installation?.state==='attention')?'attention':agentStatus[agent.state]||'never';row.dataset.agent=agent.agent;
+    const row=element('div','task-row agent-row');row.dataset.status=agent.skillRepair?.running?'running':agent.skillRepair?.error?'attention':(agent.skills?.state==='attention'||agent.installation?.state==='attention')?'attention':agentStatus[agent.state]||'never';row.dataset.agent=agent.agent;
     const head=element('div','task-head');
     head.append(dot(row.dataset.status),element('span','task-name',agent.name));
     const meta=agent.state==='ready'?(agent.lastReport?`reported ${ago(agent.lastReport)}`:'no report yet'):agent.detail;
@@ -126,18 +127,25 @@
       const setup=agent.state==='approve'
         ?button('Trust hooks',`Trust Switchboard's ${agent.name} hooks on ${computer.name}`,()=>setUp(computer,agent))
         :button('Set up',`Install Switchboard's status reporting for ${agent.name} on ${computer.name}`,()=>setUp(computer,agent));
+      setup.disabled=!!agent.skillRepair?.running;
       setup.className='task-run';
       actions.append(setup);
       head.append(actions);
     }
+    if(agent.skillRepair?.supported&&(agent.skillRepair.running||agent.skillRepair.error||agent.skills?.refreshPlugins?.length)){
+      const fix=button(agent.skillRepair.running?'Fixing skills…':'Fix skills',`Refresh stale Codex plugins on ${computer.name}`,()=>setUp(computer,agent,'fix-skills'));
+      fix.className='task-run';fix.disabled=agent.skillRepair.running||agent.state==='running';head.append(fix);
+    }
     row.append(head);
+    if(agent.skillRepair?.error)row.append(element('pre','task-tail skill-repair-error',agent.skillRepair.error));
+    else if(agent.skillRepair?.finished&&agent.skills?.state==='ok')row.append(element('p','task-note','Skills refreshed. Start a new Codex conversation to use them.'));
     if(agent.installation?.state==='attention'){
       row.append(element('p','task-note installation-warning',agent.installation.detail));
       if(agent.installation.command)row.append(element('pre','task-tail installation-command',agent.installation.command));
     }
     if(agent.skills){
       const warnings=agent.skills.warnings||[];
-      const note=element('p','task-note',agent.skills.state==='checking'?'Checking user skills…':warnings.length?'User skills need attention':'User skills up to date');
+      const note=element('p','task-note',agent.skillRepair?.running?'Refreshing user skills…':agent.skills.state==='checking'?'Checking user skills…':warnings.length?'User skills need attention':'User skills up to date');
       note.title=agent.skills.scope||'';row.append(note);
       if(warnings.length){
         const details=element('details','skill-details');details.dataset.key=JSON.stringify([computer.host||'',agent.agent,'skills']);
@@ -156,9 +164,10 @@
     // Builds before automaticUpdates existed leave it out: shown as unknown, not off.
     const updates=sb.automaticUpdates===true?(sb.lastUpdateError?'attention':'ok'):sb.automaticUpdates===false?'failed':'never';
     const installWarnings=agents.filter(agent=>agent.installation?.state==='attention');
-    const skillWarnings=agents.filter(agent=>agent.skills?.state==='attention');
+    const skillWarnings=agents.filter(agent=>agent.skills?.state==='attention'||agent.skillRepair?.error);
+    const repairing=agents.some(agent=>agent.skillRepair?.running);
     const waiting=agents.filter(agent=>agent.state!=='ready');
-    const status=updates==='failed'||waiting.some(agent=>agent.state==='setup')?'failed':waiting.some(agent=>agent.state==='running')?'running':waiting.length||skillWarnings.length||installWarnings.length||updates==='attention'?'attention':'ok';
+    const status=updates==='failed'||waiting.some(agent=>agent.state==='setup')?'failed':repairing||waiting.some(agent=>agent.state==='running')?'running':waiting.length||skillWarnings.length||installWarnings.length||updates==='attention'?'attention':'ok';
     const block=element('details','task-group switchboard-group');block.dataset.status=status;
     block.dataset.key=`${computer.host||''}\n\u0000switchboard`;
     const summary=element('summary');
@@ -168,7 +177,8 @@
     else if(updates==='attention')text='Last update failed';
     else if(waiting.length)text=waiting.map(agent=>`${agent.name}: ${agent.state==='approve'?'hooks not trusted':agent.state==='running'?'setting up…':'needs setup'}`).join(' · ');
     if(installWarnings.length)text=(text==='All set'?'':text+' · ')+installWarnings.map(agent=>`${agent.name}: installation needs attention`).join(' · ');
-    if(skillWarnings.length)text=(text==='All set'?'':text+' · ')+skillWarnings.map(agent=>`${agent.name}: skills need attention`).join(' · ');
+    if(repairing)text=(text==='All set'?'':text+' · ')+'Refreshing Codex skills…';
+    else if(skillWarnings.length)text=(text==='All set'?'':text+' · ')+skillWarnings.map(agent=>`${agent.name}: skills need attention`).join(' · ');
     const state=element('span','task-state',text);state.title=text;
     summary.append(dot(status),title,state);
     block.append(summary);

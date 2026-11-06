@@ -783,6 +783,82 @@ struct Setup {
 }
 
 static SETUPS: SyncMutex<BTreeMap<&'static str, Setup>> = SyncMutex::new(BTreeMap::new());
+static SKILL_REPAIR: LazyLock<SyncMutex<Setup>> =
+    LazyLock::new(|| SyncMutex::new(Setup::default()));
+
+async fn fix_skills() -> Result<(), String> {
+    let folders = search_path();
+    let program = find_program("codex", &folders).ok_or("Codex not found")?;
+    let dir = Agent::Codex.home();
+    refresh_skills_at(dir, home(), program, folders).await
+}
+
+async fn refresh_skills_at(
+    dir: PathBuf,
+    skill_home: PathBuf,
+    program: PathBuf,
+    folders: Vec<PathBuf>,
+) -> Result<(), String> {
+    let check_dir = dir.clone();
+    let check_home = skill_home.clone();
+    let check = tokio::task::spawn_blocking(move || skill_health::inspect(&check_dir, &check_home))
+        .await
+        .map_err(|e| e.to_string())?;
+    let plugins = check["refreshPlugins"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let mut errors = Vec::new();
+    for plugin in plugins.iter().filter_map(Value::as_str) {
+        if let Err(error) = run(&program, &["plugin", "add", "--", plugin], &folders).await {
+            errors.push(error);
+        }
+    }
+    let check = tokio::task::spawn_blocking(move || skill_health::recheck(&dir, &skill_home))
+        .await
+        .map_err(|e| e.to_string())?;
+    if check["state"] != "ok" && errors.is_empty() {
+        errors.push(
+            "Some skills still need attention. Open diagnostics for the remaining issues.".into(),
+        );
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
+}
+
+fn start_skill_repair(agent: &str) -> Result<(), (StatusCode, String)> {
+    if agent != "codex" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Fix skills is only supported for Codex".into(),
+        ));
+    }
+    // Lock in the same order as hook setup so the two operations cannot overlap.
+    let setups = SETUPS.lock().unwrap();
+    let mut repair = SKILL_REPAIR.lock().unwrap();
+    if repair.running || setups.get("codex").is_some_and(|s| s.running) {
+        return Err((
+            StatusCode::CONFLICT,
+            "Codex setup or skill repair is already running".into(),
+        ));
+    }
+    *repair = Setup {
+        running: true,
+        ..Default::default()
+    };
+    tokio::spawn(async {
+        let result = fix_skills().await;
+        *SKILL_REPAIR.lock().unwrap() = Setup {
+            running: false,
+            finished: Some(now()),
+            error: result.err(),
+        };
+    });
+    Ok(())
+}
 
 /// Start an agent's setup in the background; the status shows it running, then its result.
 fn start_setup(id: &str) -> Result<(), (StatusCode, String)> {
@@ -796,7 +872,7 @@ fn start_setup(id: &str) -> Result<(), (StatusCode, String)> {
     {
         let mut setups = SETUPS.lock().unwrap();
         let setup = setups.entry(agent.id()).or_default();
-        if setup.running {
+        if setup.running || (agent == Agent::Codex && SKILL_REPAIR.lock().unwrap().running) {
             return Err((StatusCode::CONFLICT, "Setup is already running".into()));
         }
         setup.running = true;
@@ -869,6 +945,7 @@ fn describe(agent: Agent) -> Value {
         .get(agent.id())
         .cloned()
         .unwrap_or_default();
+    let repair = SKILL_REPAIR.lock().unwrap().clone();
     let report = last_report(agent);
     // A program without its settings folder has never run, e.g. a launcher that
     // offers to install the real agent.
@@ -899,6 +976,7 @@ fn describe(agent: Agent) -> Value {
         "lastReport": report,
         "installation": if agent == Agent::Codex { codex_installation(program.as_deref(), cfg!(windows)) } else { Value::Null },
         "skills": if agent == Agent::Codex && check.state != "absent" { skill_health::codex(&dir, &home()) } else { Value::Null },
+        "skillRepair": if agent == Agent::Codex { json!({"supported":true,"running":repair.running,"error":repair.error,"finished":repair.finished}) } else { Value::Null },
         "setupError": setup.error,
         "setupFinished": setup.finished,
     })
@@ -984,10 +1062,24 @@ pub(super) struct SetupRequest {
     #[serde(default)]
     pub(super) host: Option<String>,
     pub(super) agent: String,
+    #[serde(default)]
+    pub(super) action: SetupAction,
+}
+
+#[derive(Clone, Copy, Default, Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(super) enum SetupAction {
+    #[default]
+    Setup,
+    FixSkills,
 }
 
 pub(super) fn set_up_locally(request: &SetupRequest) -> Response {
-    match start_setup(&request.agent) {
+    let result = match request.action {
+        SetupAction::Setup => start_setup(&request.agent),
+        SetupAction::FixSkills => start_skill_repair(&request.agent),
+    };
+    match result {
         Ok(()) => (StatusCode::ACCEPTED, Json(json!({"ok": true}))).into_response(),
         Err((status, error)) => (status, Json(json!({ "error": error }))).into_response(),
     }
@@ -1236,5 +1328,65 @@ mod tests {
             r#"{"name":"@openai/codex"}"#,
         );
         assert!(codex_installation(Some(&standalone), true).is_null());
+    }
+    #[tokio::test]
+    async fn switchboard_skill_repair_refreshes_and_reports_failures() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let dir = root.join(".codex");
+        let source = root.join("source");
+        write(&dir.join("config.toml"), &format!("[marketplaces.test]\nsource_type='local'\nsource={:?}\n[plugins.'example@test']\nenabled=true\n", source.to_str().unwrap()));
+        write(
+            &source.join(".agents/plugins/marketplace.json"),
+            r#"{"plugins":[{"name":"example","source":"./plugin"}]}"#,
+        );
+        let manifest = r#"{"skills":"./skills"}"#;
+        write(&source.join("plugin/.codex-plugin/plugin.json"), manifest);
+        let original = source.join("plugin/skills/example/SKILL.md");
+        let cached = dir.join("plugins/cache/test/example/local/skills/example/SKILL.md");
+        write(&original, "---\nname: example\n---\nCurrent");
+        write(&cached, "Old");
+        write(
+            &dir.join("plugins/cache/test/example/local/.codex-plugin/plugin.json"),
+            manifest,
+        );
+        #[cfg(windows)]
+        let (program, script) = (root.join("codex.cmd"), format!("@echo off\r\nif not \"%*\"==\"plugin add -- example@test\" exit /b 7\r\ncopy /y \"{}\" \"{}\" >nul\r\n", original.display().to_string().replace('/', "\\"), cached.display().to_string().replace('/', "\\")));
+        #[cfg(not(windows))]
+        let (program, script) = (
+            root.join("codex"),
+            format!(
+                "#!/bin/sh\n[ \"$*\" = 'plugin add -- example@test' ] || exit 7\ncp '{}' '{}'\n",
+                original.display(),
+                cached.display()
+            ),
+        );
+        write(&program, &script);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        refresh_skills_at(dir.clone(), root.into(), program.clone(), search_path())
+            .await
+            .unwrap();
+        assert_eq!(skill_health::inspect(&dir, root)["state"], "ok");
+        write(&cached, "Old again");
+        #[cfg(windows)]
+        write(
+            &program,
+            "@echo off\r\necho Refresh denied 1>&2\r\nexit /b 42\r\n",
+        );
+        #[cfg(not(windows))]
+        write(&program, "#!/bin/sh\necho 'Refresh denied' >&2\nexit 42\n");
+        let error = refresh_skills_at(dir.clone(), root.into(), program, search_path())
+            .await
+            .unwrap_err();
+        assert!(error.contains("Refresh denied"), "{error}");
+        assert_eq!(skill_health::inspect(&dir, root)["state"], "attention");
+        assert_eq!(
+            std::fs::read_to_string(original).unwrap(),
+            "---\nname: example\n---\nCurrent"
+        );
     }
 }
