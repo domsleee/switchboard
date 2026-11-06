@@ -7,10 +7,11 @@ const source=fs.readFileSync(__dirname+'/static/app.js','utf8');
 function workspace(initial){
   let catalog=initial;
   const mounted=[],timeouts=[],elements=new Map();
-  const context={loading:false,hosts:new Map(),sessions:new Map(),tabCatalog:[],ready:{},hidden:{},tabOrder:[],selected:null,filter:'all',
+  const context={newTabElevated:false,loading:false,hosts:new Map(),sessions:new Map(),tabCatalog:[],ready:{},hidden:{},tabOrder:[],selected:null,filter:'all',
     catalogUnavailable:()=>false,saveReady(){},localStorage:{setItem(){}},renderMachines(){},render(){},setStatus(){},clearTimeout(){},setTimeout:fn=>timeouts.push(fn),
     document:{createElement:()=>({remove(){this.removed=true;},focus(){}})},$:id=>elements.get(id),
     fetch:async url=>({ok:true,json:async()=>url==='/api/hosts?summary=1'?[{id:'windows',name:'Windows'}]:catalog})};
+  elements.set('new-tab-project',{value:'switchboard'});elements.set('new-tab-command',{value:'c'});
   elements.set('terminals',{append:frame=>mounted.push(frame)});
   elements.set('new-tab-form',{});elements.set('new-tab-target',{value:JSON.stringify(['windows','main'])});elements.set('new-tab-dialog',{close(){}});elements.set('tab-search',{value:''});
   vm.createContext(context);
@@ -30,6 +31,7 @@ test('an empty machine starts nothing on its own; + starts one shell that surviv
   create(w);
   assert.equal(w.mounted.length,1);assert.equal(w.mounted[0].src,'/hosts/windows/main');
   const entry=c.sessions.get(JSON.stringify(['windows','main']));assert.equal(entry.starting,true);assert.equal(entry.selectOnStart,true);
+  assert.equal(entry.launchOnStart.project,'switchboard');assert.equal(entry.launchOnStart.command,'c');
   await c.refresh();assert.equal(c.sessions.size,1);assert.equal(w.mounted.length,1);
   const pane={pane_id:7,is_plugin:false,tab_position:0};
   entry.state={session_name:'main',active_pane:pane,panes:[pane],tabs:[{position:0,name:'Shell'}]};
