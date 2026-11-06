@@ -435,7 +435,7 @@ fn elevator() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("gsudo"))
 }
 
-fn control_payload_to_server_msg(
+pub(super) fn control_payload_to_server_msg(
     payload: WebClientToWebServerControlMessagePayload,
     default_shell: Option<PathBuf>,
 ) -> Option<ClientToServerMsg> {
