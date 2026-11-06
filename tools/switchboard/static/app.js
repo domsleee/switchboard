@@ -1547,22 +1547,47 @@ function closeTabMenu(restore=false){
   if(restore===true&&menuTrigger?.isConnected)menuTrigger.focus();
   menuTrigger=null;
 }
+const restartingAgents=new Set();
+function restartAgentTarget(item){
+  if(!item||item.tab.pending||!Number.isInteger(item.tab.id))return null;
+  const panes=tabPanes(item.entry,item.tab).filter(p=>!p.is_plugin);
+  // A tab with several panes must be selected so its active pane is unambiguous.
+  const active=item.key===selected?item.entry.state?.active_pane:null;
+  const pane=panes.length===1?panes[0]:panes.find(p=>p.pane_id===active?.pane_id);
+  if(!pane)return null;
+  const state=paneAttention.get(attentionKey(item.entry.host,item.entry.name,pane.pane_id));
+  if(!state?.restart_available||state.state!=='ready'||!state.chat_id)return null;
+  return {session:item.entry.name,pane_id:pane.pane_id,tab_id:item.tab.id,chat_id:state.chat_id};
+}
+$('restart-agent').onclick=async()=>{
+  const item=contextItem,target=restartAgentTarget(item);if(!target||restartingAgents.has(item.key))return;
+  restartingAgents.add(item.key);closeTabMenu();setStatus(`Restarting ${tabTitle(item)}…`);
+  try{
+    const response=await fetch(`/api/hosts/${encodeURIComponent(item.entry.host)}/restart-agent`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(target),signal:AbortSignal.timeout(120000)});
+    if(!response.ok)throw Error(await response.text()||'Agent restart failed');
+    setStatus(`Resuming ${tabTitle(item)} in the same tab`);await refreshAttention(true);
+  }catch(error){setStatus(error.name==='TimeoutError'?'No restart confirmation. Check the terminal before trying again.':error.message);}
+  finally{restartingAgents.delete(item.key);if(!$('tab-menu').hidden)updateTabMenu();}
+};
 function updateTabMenu(){
   const item=allTabs().find(tab=>tab.key===contextItem?.key);
   if(!item){closeTabMenu(true);return;}
   contextItem=item;
-  $('tab-menu-target').textContent=`${tabTitle(item)} · ${hosts.get(item.entry.host)?.name||item.entry.host} · ${item.entry.name}`;
+  $('tab-menu-target').textContent=tabTitle(item);
+  $('tab-menu-target').title=`${tabTitle(item)} · ${hosts.get(item.entry.host)?.name||item.entry.host} · ${item.entry.name}`;
   $('ready').disabled=!!item.tab.pending&&!Number.isInteger(item.tab.id);
   const pin=$('pin-tab'),isPin=isPinned(item.key);
   pin.disabled=!!item.tab.pending&&!Number.isInteger(item.tab.id);
-  pin.firstChild.textContent=isPin?'Unpin':'Pin';
-  pin.lastChild.textContent=isPin?'Allow automatic snoozing':'Keep in the list while working';
+  pin.textContent=isPin?'Unpin':'Pin';
+  pin.title=isPin?'Allow automatic snoozing':'Keep in the list while working';
   const hide=$('hide-tab');
   hide.disabled=!!item.tab.pending&&!Number.isInteger(item.tab.id);
-  hide.firstChild.textContent=item.hidden?'Show in list':'Hide';
-  hide.lastChild.textContent=item.hidden?'Move back among your tabs':'Move to Hidden; keep processes running';
+  hide.textContent=item.hidden?'Show in list':'Hide';
+  hide.title=item.hidden?'Move back among your tabs':'Move to Hidden; keep processes running';
+  $('restart-agent').disabled=!restartAgentTarget(item)||restartingAgents.has(item.key);
+  $('restart-agent').title=$('restart-agent').disabled?'Available after Codex or Claude finishes a turn and reports its conversation. Select the tab to choose among multiple panes.':'Restart only this agent and resume the same conversation';
   $('close-tab').disabled=!closeTabTarget(item);
-  $('close-tab').title=$('close-tab').disabled?'Waiting for the terminal to finish connecting':'Close this tab · Ctrl+D';
+  $('close-tab').title=$('close-tab').disabled?'Waiting for the terminal to finish connecting':'Close this tab and stop its processes · Ctrl+D';
   $('select-text').disabled=!item.entry.frame.contentWindow.SwitchboardClipboard;
   $('select-text').setAttribute('aria-pressed',String(!!item.entry.frame.contentWindow.SwitchboardClipboard?.selectionMode));
   const viewport=item.entry.state?.tab_viewport,sizeOwner=$('size-owner');
@@ -1725,7 +1750,7 @@ window.SwitchboardConversation?.install({
     const active=item.entry.state?.active_pane,panes=tabPanes(item.entry,item.tab).filter(p=>!p.is_plugin);
     const pane=panes.find(p=>p.pane_id===active?.pane_id)||panes[0];if(!pane)return null;
     const state=paneAttention.get(attentionKey(item.entry.host,item.entry.name,pane.pane_id));
-    return {key:JSON.stringify([item.entry.host,item.entry.name,pane.pane_id]),host:item.entry.host,chatHost:hosts.get(item.entry.host)?.local?'local':item.entry.host,pane:pane.pane_id,frame:item.entry.frame,title:tabTitle(item),agent:state?.agent,chatId:state?.chat_id};
+    return {key:JSON.stringify([item.entry.host,item.entry.name,pane.pane_id]),host:item.entry.host,chatHost:hosts.get(item.entry.host)?.local?'local':item.entry.host,pane:pane.pane_id,frame:item.entry.frame,title:tabTitle(item),agent:state?.agent,state:state?.state,chatId:state?.chat_id};
   },
   terminal(target){const item=allTabs().find(item=>item.key===selected);if(item&&item.entry.frame===target.frame)focus(item);}
 });

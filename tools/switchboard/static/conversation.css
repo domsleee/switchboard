@@ -1,13 +1,18 @@
-.conversation-toggle{position:absolute;right:12px;top:10px;z-index:5;min-height:36px;background:#22252b}
+#terminals{isolation:isolate}
+.conversation-modes{position:absolute;right:12px;top:10px;z-index:6;display:flex;gap:2px;padding:2px;border:1px solid #303239;border-radius:8px;background:#181b22}
+.conversation-modes[hidden]{display:none}
+.conversation-modes button{min-height:36px;padding:6px 10px;border:0;border-radius:5px;background:transparent;color:#a3aec0;font:12px system-ui}
+.conversation-modes button[aria-pressed="true"]{background:#343e50;color:#fff}
+.conversation-modes button:hover{background:#303949;color:#fff}
+.conversation-modes button:focus-visible{outline:2px solid #9dc2fa;outline-offset:1px}
 .conversation-panel{--chat-width:46rem;--chat-border:#303239;position:absolute;inset:0;z-index:5;background:#141519;color:#e5e5e7;display:flex;flex-direction:column;color-scheme:dark;font:15px/1.7 system-ui,sans-serif}
 .conversation-panel[hidden],.conversation-panel [hidden]{display:none!important}
-.conversation-panel header{display:flex;gap:16px;align-items:center;flex-shrink:0;min-height:58px;padding:8px 20px 8px 48px;border-bottom:1px solid #24262c}
+.conversation-panel header{display:flex;gap:16px;align-items:center;flex-shrink:0;min-height:58px;padding:8px 210px 8px 48px;border-bottom:1px solid #24262c}
 .conversation-panel header strong{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:550;color:#d7d8dd}
 .conversation-panel button{background:transparent;color:#adafb9;border:1px solid transparent;min-height:36px;padding:6px 10px;font-size:12px;border-radius:7px}
 .conversation-panel button:hover{background:#272930;color:#ececf0}
 .conversation-panel button:focus-visible{outline:2px solid #9dc2fa;outline-offset:2px}
 .conversation-panel button:disabled{opacity:.45}
-.conversation-panel header button:first-child{border-color:var(--chat-border);color:#d1d2da}
 .conversation-notice{align-self:center;width:min(var(--chat-width),calc(100% - 40px));font-size:12px;color:#a3a6b1;margin:12px 0;padding:10px 12px;border:1px solid var(--chat-border);border-radius:8px;flex-shrink:0;max-height:110px;overflow:auto}
 .conversation-picker{align-self:center;width:min(var(--chat-width),calc(100% - 40px));padding:8px 0 12px;display:flex;flex-wrap:wrap;gap:8px}
 .conversation-panel input,.conversation-panel select,.conversation-panel textarea{font:16px system-ui;color:#e5e5e7;background:#1e2025;border:1px solid var(--chat-border);border-radius:8px;padding:10px;min-width:0}
@@ -40,8 +45,8 @@
 .conversation-compose small{grid-column:1;grid-row:2;align-self:center;color:#9194a0;font-size:11px;padding-left:4px}
 .conversation-panel textarea::placeholder,.conversation-panel input::placeholder{color:#8f929f}
 @media(max-width:700px){
-.conversation-panel header{gap:6px;padding-right:8px;min-height:56px}
-.conversation-panel header button{min-height:44px;padding:6px;font-size:12px}
+.conversation-panel header{gap:6px;padding-right:210px;min-height:64px}
+.conversation-modes button{min-height:44px}
 .conversation-panel header strong{font-size:12px}
 .conversation-messages{padding:22px 16px 12px}
 .conversation-message.user{max-width:88%}
@@ -50,7 +55,7 @@
 .conversation-compose button{min-height:44px;padding:6px 10px}
 .conversation-compose small{font-size:10px;max-width:155px;line-height:1.5}
 .conversation-actions button{min-height:44px;min-width:44px}
-.conversation-toggle{min-height:44px;top:8px}
+.conversation-modes{top:8px}
 }
 @media(max-height:500px){.conversation-messages{padding-top:16px}.conversation-compose textarea{min-height:40px;height:40px}.conversation-compose{margin-bottom:8px;padding:8px}.conversation-actions{padding-bottom:2px}}
 .conversation-message>strong,.conversation-message p strong{font-size:inherit}

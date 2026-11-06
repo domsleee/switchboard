@@ -501,7 +501,26 @@
       if(pendingFocus||pendingNewTab||latest?.active_pane?.is_plugin||latest?.active_pane?.pane_id!==message.pane_id||!window.frameElement?.classList.contains('active'))return reply(false,'The terminal pane changed. Open the intended terminal before replying.');
       if(terminalSocket?.readyState!==1||!window.term||window.term.options.disableStdin)return reply(false,'The terminal is disconnected or not ready.');
       if(message.text.includes('\n')&&!window.term.modes.bracketedPasteMode)return reply(false,'This terminal cannot safely paste a multiline reply. Open the terminal instead.');
-      try{window.term.paste(message.text);reply(true);}catch{reply(false,'Could not insert the draft. Check the terminal before retrying.');}
+      if(message.submit){
+        const marker=message.agent==='codex'?'›':message.agent==='claude'?'❯':null;
+        const buffer=window.term.buffer.active,lines=[];
+        for(let row=0;row<window.term.rows;row++)lines.push(buffer.getLine(buffer.baseY+row)?.translateToString(true)||'');
+        if(message.agent==='copilot'){
+          const top=lines.findLastIndex(line=>/^╻▄+/.test(line.trim())),bottom=lines.findLastIndex(line=>/^╹▀+/.test(line.trim()));
+          if(top<0||bottom<=top+1||!lines.slice(top+1,bottom).every(line=>/^┃\s*$/.test(line.trim())))return reply(false,'Clear the terminal prompt before sending.');
+        }else{
+        const index=marker?lines.findLastIndex(line=>line.trimStart().startsWith(marker)):-1;
+        const prompt=index<0?null:lines[index].trimStart().slice(1).trim();
+        const placeholder=message.agent==='codex'?['Ask Codex to do anything','Ask a follow-up question'].includes(prompt):/^Try ".*"$/.test(prompt||'');
+        if(prompt===null||(prompt!==''&&!placeholder))return reply(false,'Clear the terminal prompt before sending.');
+        for(const line of lines.slice(index+1)){
+          const text=line.trim();if(!text)continue;
+          if(/^[─━ ]+$/.test(text)||(message.agent==='codex'&&/^(?:GPT-|gpt-|\? for shortcuts|← for agents)/.test(text)))break;
+          return reply(false,'Clear the terminal prompt before sending.');
+        }
+        }
+      }
+      try{window.term.paste(message.text);if(message.submit)window.term.input('\r');reply(true);}catch{reply(false,'Could not send the reply. Check the terminal before retrying.');}
     } else if (message?.type === 'zellij-focus') {
       diagnostics?.start(message,window.term,!!pendingFocus||latest?.active_pane?.pane_id!==message.pane_id||latest?.active_pane?.is_plugin!==message.is_plugin);
       // An already active pane gets no new state; its current size is the size on arrival.

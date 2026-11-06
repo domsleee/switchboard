@@ -398,18 +398,39 @@ fn plan_tab(
 
 /// Whether the agent's prompt is on screen and holds nothing but its own placeholder.
 /// shortcut: a dim suggestion we don't know reads as a draft, so that tab is left alone.
-fn prompt_empty(agent: AgentKind, screen: &str) -> Result<(), String> {
+pub(crate) fn prompt_empty(agent: AgentKind, screen: &str) -> Result<(), String> {
     let marker = if agent == AgentKind::Codex {
         '›'
     } else {
         '❯'
     };
-    let line = screen
-        .lines()
-        .rev()
-        .find_map(|line| line.trim_start().strip_prefix(marker))
-        .ok_or("shows no prompt")?
+    let lines: Vec<_> = screen.lines().collect();
+    let index = lines
+        .iter()
+        .rposition(|line| line.trim_start().starts_with(marker))
+        .ok_or("shows no prompt")?;
+    let line = lines[index]
+        .trim_start()
+        .strip_prefix(marker)
+        .unwrap()
         .trim();
+    // Wrapped or multiline input can follow an empty first composer line.
+    for continuation in &lines[index + 1..] {
+        let text = continuation.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let divider = text.chars().all(|c| matches!(c, '─' | '━' | ' '));
+        let codex_footer = agent == AgentKind::Codex
+            && (text.starts_with("GPT-")
+                || text.starts_with("gpt-")
+                || text.starts_with("? for shortcuts")
+                || text.starts_with("← for agents"));
+        if divider || codex_footer {
+            break;
+        }
+        return Err(format!("has unsent text: {text}"));
+    }
     let placeholder = match agent {
         AgentKind::Codex => {
             matches!(
@@ -857,6 +878,14 @@ mod tests {
         assert_eq!(codex("› Ask Codex to do anything"), Ok(()));
         assert_eq!(codex("› "), Ok(()));
         assert_eq!(codex("› explain this repo"), unsent("explain this repo"));
+        assert_eq!(
+            codex("› \n  unsent second line"),
+            unsent("unsent second line")
+        );
+        assert_eq!(
+            claude("❯ \n  unsent second line"),
+            unsent("unsent second line")
+        );
     }
 
     #[allow(non_snake_case)]
