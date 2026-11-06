@@ -50,6 +50,23 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.deepEqual(await order(),names.slice(1));
     assert.equal(await snoozed.getAttribute('aria-expanded'),'false');
     assert.equal(await snoozed.locator('.count').textContent(),'1');
+    if(process.env.SWITCHBOARD_UX_SCREENSHOTS)await page.locator('#sidebar').screenshot({path:process.env.SWITCHBOARD_UX_SCREENSHOTS+'/snoozed.png'});
+    const groupBounds=()=>page.evaluate(()=>[$('tabs'),$('snoozed-toggle'),$('hidden-toggle')].map(el=>el?.getBoundingClientRect().toJSON()));
+    let [tabList,snoozedGroup]=await groupBounds();
+    assert.ok(Math.abs(tabList.bottom-6-snoozedGroup.bottom)<1,'Snoozed sits at the bottom of a short list');
+    await page.evaluate(()=>{setHidden(allTabs().find(item=>item.tab.name==='ssb orchestrator'),true);render();});
+    let hiddenGroup;
+    [tabList,snoozedGroup,hiddenGroup]=await groupBounds();
+    assert.ok(Math.abs(tabList.bottom-6-hiddenGroup.bottom)<1,'Hidden stays at the bottom');
+    assert.ok(Math.abs(hiddenGroup.top-snoozedGroup.bottom-3)<1,'Snoozed sits directly above Hidden');
+    // With overflow, both headers remain visible without covering one another.
+    await page.locator('#tabs .tab-row').evaluate(row=>row.style.minHeight='1000px');
+    await page.evaluate(()=>{$('tabs').scrollTop=0;});
+    [tabList,snoozedGroup,hiddenGroup]=await groupBounds();
+    assert.ok(snoozedGroup.top>=tabList.top&&Math.abs(hiddenGroup.bottom-tabList.bottom)<1,'Both headers pin within the scrolling list');
+    assert.ok(Math.abs(hiddenGroup.top-snoozedGroup.bottom-3)<1,'Pinned headers do not overlap');
+    await page.locator('#tabs .tab-row').evaluate(row=>row.style.minHeight='');
+    await page.evaluate(()=>{setHidden(allTabs().find(item=>item.hidden),false);render();});
     await page.evaluate(()=>openPanel('settings'));
     const moveWorking=page.locator('#move-working-to-snoozed');
     assert.equal(await moveWorking.getAttribute('aria-pressed'),'true');
@@ -57,7 +74,8 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.equal(await snoozed.count(),0);
     assert.deepEqual(await order(),names);
     await moveWorking.click();
-    assert.deepEqual(await order(),names.slice(1));
+    await page.evaluate(()=>activate(allTabs()[0]));
+    assert.deepEqual(await order(),[...names.slice(1),names[0]]);
     await page.locator('#close-panel').click();
     assert.equal(await page.locator('#tab-count').textContent(),'3 tabs');
     await snoozed.click();
@@ -69,6 +87,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     const selectedBefore=await page.evaluate(()=>selected);
     await snoozed.click();
     assert.equal(await page.evaluate(()=>selected),selectedBefore);
+    assert.deepEqual(await order(),[...names.slice(1),names[0]]);
     await page.evaluate(()=>stepTab(1));
     assert.equal(await page.locator('#tabs .selected .tab-name').textContent(),names[1]);
     await page.evaluate(()=>{activate(allTabs()[0]);stepTab(-1);});
@@ -79,7 +98,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.deepEqual(await order(),[names[0]]);
     assert.equal(await snoozed.getAttribute('aria-expanded'),'true');
     await page.locator('#tab-search').fill('');
-    assert.deepEqual(await order(),names.slice(1));
+    assert.deepEqual(await order(),[...names.slice(1),names[0]]);
     // Enter opens the first displayed search result, ahead of matching snoozed tabs.
     await page.locator('#tab-search').fill('Mac');
     assert.deepEqual(await order(),[names[1],names[0]]);
@@ -89,7 +108,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     await page.evaluate(()=>activate(allTabs()[0]));
     // Attention and status failures take precedence over automatic snoozing.
     for(const state of ['ready','approval','input']){
-      await page.evaluate(state=>{paneAttention.get(attentionKey('mac','main',1)).state=state;render();},state);
+      await page.evaluate(state=>{Object.assign(paneAttention.get(attentionKey('mac','main',1)),{state,token:'new-review',seen:false});render();},state);
       assert.equal(await snoozed.count(),0);
       assert.deepEqual(await order(),names);
     }
@@ -101,6 +120,9 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     await page.evaluate(()=>{setHidden(allTabs().find(item=>item.hidden),false);render();});
     assert.equal(await snoozed.count(),1);
     working=false;await page.evaluate(()=>refreshAttention());
+    assert.equal(await snoozed.count(),1);
+    await page.clock.setFixedTime(new Date('2026-10-27T23:59:03+11:00'));
+    await page.evaluate(()=>render());
     await page.waitForFunction(()=>!document.querySelector('#snoozed-toggle'));
     assert.deepEqual(await order(),names);
     assert.equal(await page.locator('#sidebar-summary').isVisible(),true);
