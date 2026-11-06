@@ -684,6 +684,21 @@ window.addEventListener('focus',()=>{
   const current=allTabs().find(item=>item.key===selected);
   if(current&&document.hasFocus())current.entry.frame.contentWindow.postMessage({type:'zellij-window-focus'},location.origin);
 });
+// Passive chrome should not interrupt typing. Cancel only the mouse's default
+// focus transfer; clicks still run, and keyboard navigation keeps normal focus.
+let chromePointerType='mouse';
+document.addEventListener('pointerdown',event=>{chromePointerType=event.pointerType;},true);
+document.addEventListener('mousedown',event=>{
+  if(event.defaultPrevented||event.button!==0||event.altKey||event.ctrlKey||event.metaKey||event.shiftKey||chromePointerType!=='mouse'||event.sourceCapabilities?.firesTouchEvents)return;
+  const frame=$('terminals').querySelector('iframe.active');
+  if(!frame||document.activeElement!==frame||!document.hasFocus()||document.hidden||
+    !$('artifact-preview').hidden||!$('tab-menu').hidden||document.querySelector('dialog[open]'))return;
+  const target=event.target;
+  if(!target.closest('#sidebar,#sidebar-toggle,#sidebar-backdrop,#status,#terminals')||target.closest('#selection-tools'))return;
+  const control=target.closest('a,button,input,textarea,select,label,[contenteditable],[tabindex],[role="button"]');
+  if(control&&!control.matches('#hidden-toggle,#snoozed-toggle,#sidebar-toggle,#sidebar-backdrop,#dismiss-status,#filters [data-filter]'))return;
+  event.preventDefault();
+},true);
 function focus(item,background=false) {
   const activeElement=document.activeElement;
   // A sidebar click may wait for metadata with its button still focused.
@@ -1047,8 +1062,8 @@ function setFilter(value){
   const tabs=allTabs();
   if(!tabs.some(t=>t.key===selected)&&tabs.some(t=>t.key===filterSelection[value]))selected=filterSelection[value];
   renderFilter();render();
-  // The clicked filter keeps focus, so render only defers the switch and the
-  // previous terminal stays on screen. Show the newly selected tab now.
+  // Keyboard and select controls may keep focus, so render can defer the switch.
+  // Show the newly selected tab now.
   const current=allTabs().find(t=>t.key===selected);
   if(selected!==previous&&current)focus(current);
 }
