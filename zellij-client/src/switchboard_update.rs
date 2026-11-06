@@ -625,7 +625,7 @@ impl Updater {
             match lock.try_lock() {
                 Ok(()) => break,
                 Err(std::fs::TryLockError::WouldBlock) if attempt < 2 => {
-                    thread::sleep(Duration::from_millis(20))
+                    std::thread::sleep(Duration::from_millis(20))
                 },
                 Err(error) => return Err(anyhow!("Another automatic update is running: {error}")),
             }
