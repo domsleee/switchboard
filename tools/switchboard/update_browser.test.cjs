@@ -15,7 +15,7 @@ const dir = fs.mkdtempSync('/tmp/switchboard-browser-update-');
 const installed = path.join(dir, 'zellij');
 const config = path.join(dir, 'config.kdl');
 const name = `update-acceptance-${crypto.randomBytes(8).toString('hex')}`;
-const env = {...process.env, ZELLIJ_SOCKET_DIR:path.join(dir,'sockets'),
+const env = {...process.env, HOME:dir, ZELLIJ_SOCKET_DIR:path.join(dir,'sockets'),
     SWITCHBOARD_RELEASES_DIR:path.join(dir,'releases'), TERM:'xterm-256color'};
 for (const key of ['ZELLIJ','ZELLIJ_SESSION_NAME','ZELLIJ_CONFIG_FILE','ZELLIJ_CONFIG_DIR']) delete env[key];
 env.ZELLIJ_CONFIG_FILE = config;
@@ -50,6 +50,7 @@ const otherName='excluded-'+name.slice(-16);
 let recoveryPanes;
 (async()=>{
     try {
+        fs.mkdirSync(path.join(dir,'git','switchboard'),{recursive:true});
         fs.writeFileSync(config,`web_sharing "${recoveryMode?'off':'on'}"\ndefault_shell "/bin/bash"\nshow_startup_tips false\nsession_serialization false\ndisable_session_metadata false\n`);
         fs.copyFileSync(oldBinary,installed);fs.chmodSync(installed,0o755);
         if(recoveryMode)console.log(JSON.stringify({engine_sha256:crypto.createHash('sha256').update(fs.readFileSync(installed)).digest('hex'),web_sha256:crypto.createHash('sha256').update(fs.readFileSync(newBinary)).digest('hex')}));
@@ -287,6 +288,8 @@ let recoveryPanes;
             const previousTabIds=names().map(([id])=>id);
             await page.keyboard.press('Control+Alt+KeyT');
             await page.waitForFunction(()=>document.querySelector('#new-tab-dialog').open);
+            // This private test has no dotfiles aliases; keep a plain shell for the input checks.
+            await page.locator('#new-tab-command').fill('exec /bin/bash --noprofile --norc');
             await page.keyboard.press('Enter');
             await page.waitForFunction(previous=>{
                 const button=document.querySelector('#tabs .tab-select.selected'),frame=document.querySelector('#terminals>iframe.active');
