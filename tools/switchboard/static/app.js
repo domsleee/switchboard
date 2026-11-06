@@ -1215,6 +1215,7 @@ function newTabLookup(inputId,listId,buttonId,items,emptyText,onChange=()=>{}){
     }
     if(!matches.length&&emptyText){const message=document.createElement('p');message.textContent=emptyText();message.setAttribute('role','status');list.append(message);}
     list.hidden=!list.children.length;input.setAttribute('aria-expanded',String(!list.hidden));button.setAttribute('aria-expanded',String(!list.hidden));
+    if(matches.length&&query)highlight(0);
   }
   input.oninput=()=>{onChange();open();};input.onblur=close;button.onmousedown=event=>event.preventDefault();
   button.onclick=()=>{const shown=!list.hidden;input.focus();if(shown)close();else open(true);};
@@ -1225,7 +1226,11 @@ function newTabLookup(inputId,listId,buttonId,items,emptyText,onChange=()=>{}){
       if(count)highlight(index<0?(event.key==='ArrowDown'?0:count-1):(index+(event.key==='ArrowDown'?1:count-1))%count);
       list.querySelectorAll('[role=option]')[index]?.scrollIntoView({block:'nearest'});
     }else if(event.key==='Escape'&&!list.hidden){event.preventDefault();event.stopPropagation();close();
-    }else if(event.key==='Enter'&&!list.hidden&&index>=0){event.preventDefault();choose(list.querySelectorAll('[role=option]')[index].firstChild.textContent);}
+    }else if((event.key==='Enter'||(event.key==='Tab'&&!event.shiftKey))&&!list.hidden&&index>=0){
+      // Tab fills the suggestion; Enter fills it before the form submits.
+      if(event.key==='Tab')event.preventDefault();
+      choose(list.querySelectorAll('[role=option]')[index].firstChild.textContent);
+    }
   };
   return {close,refresh(){if(!list.hidden)open(showAll);}};
 }
@@ -1252,7 +1257,6 @@ async function loadNewTabProjects(){
   newTabProjectLookup.refresh();
 }
 $('new-tab-target').onchange=()=>{newTabProjectLookup.close();loadNewTabProjects();};
-$('cancel-new-tab').onclick=()=>$('new-tab-dialog').close();
 // A click on the backdrop closes a dialog. Both press and release must land
 // outside, so selecting text inside and releasing outside keeps it open.
 for(const dialog of document.querySelectorAll('dialog')){
