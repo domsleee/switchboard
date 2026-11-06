@@ -49,7 +49,7 @@ error.
 - Groups run in parallel, but only one run of a group at a time. Tasks in a group run
   one at a time, in the order written, except where `after` moves a task later.
 - Scheduled runs start 60 s after the relay starts, so a Switchboard update finishes
-  its handoff first. **Run now** starts at once.
+  its handoff first. **Check again** starts at once.
 - Every merge to `main` restarts the relay, which ends running tasks. The next relay
   marks them `interrupted` and reruns the group once. A second interruption in a row
   waits for the normal interval.
@@ -65,7 +65,7 @@ error.
   and each task's exit code, duration, last three stderr lines (stdout if stderr was
   empty), and `changed` lines. Paired computers answer `/switchboard/tasks` through
   the pairing gateway.
-- Settings → **Health** shows every group, with Run now, a per-task Run, Log, and
+- Settings → **Health** shows every group, with Check again inside its details, a per-task Run, Log, and
   Pause/Resume. A failure or a `changed:` line puts a row in the sidebar. **Clear**
   stores `seen` on the computer that owns the group, so the row clears on every
   computer.
@@ -98,3 +98,11 @@ Codex conversation to load refreshed instructions.
 Inspection runs in the background and results are cached for one minute. Missing
 sources, unreadable files and inspection limits produce warnings. Remote
 marketplaces and project skills are not checked; Health states this scope.
+
+Health shows one summary per computer. **Fix all** repairs detected agent setup and
+skill problems and retries failed enabled, unpaused task groups on connected
+computers. Plugin setup finishes before skill refresh starts. Healthy task groups
+are left alone; expand a group and choose **Check again** to check it early.
+Progress and failures stay visible, with **Retry failed** for available repairs.
+Blocked local changes, installation migrations, and other issues without an
+automatic repair remain in the computer details. Fix all does not restart Switchboard.

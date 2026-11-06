@@ -7,7 +7,10 @@
   const byId=id=>document.getElementById(id);
   const element=(tag,className,text)=>{const node=document.createElement(tag);if(className)node.className=className;if(text!==undefined)node.textContent=text;return node;};
   const marks={ok:'✓',changed:'↑',failed:'✗',timeout:'✗',interrupted:'✗',running:'…',waiting:'…',skipped:'–',never:'·'};
-  let computers=[],loading=false,failed=false,fast=null;
+  let computers=[],loading=false,failed=false,fast=null,batch=[],dispatching=false;
+  const pendingRuns=new Set();
+  const groupKey=(computer,group)=>JSON.stringify([computer.host||'',group.name]);
+  const busyGroup=(computer,group)=>group.running||pendingRuns.has(groupKey(computer,group));
 
   function ago(ms,now=Date.now()){
     const seconds=Math.max(0,(now-ms)/1000);
@@ -33,15 +36,102 @@
     if(computer.host)query.set('host',computer.host);
     return `/api/tasks/log?${query}`;
   }
-  async function act(computer,group,action,task){
+  const blocked=group=>/not pulled, local changes/.test(group.summary||'');
+  const groupIssue=group=>blocked(group)||['failed','timeout','interrupted'].includes(group.status);
+  const eligible=(computer,group)=>!computer.error&&group.enabled&&!group.paused&&!busyGroup(computer,group);
+  const needsSetup=agent=>['setup','approve'].includes(agent.state);
+  const needsSkills=agent=>agent.skillRepair?.supported&&(agent.skills?.refreshPlugins?.length||agent.skillRepair?.error);
+  const eligibleAgent=(computer,agent)=>!computer.error&&agent.state!=='absent'&&agent.state!=='running'&&!agent.skillRepair?.running&&(needsSetup(agent)||needsSkills(agent));
+  const repairTargets=(selected=computers)=>selected.flatMap(computer=>[
+    ...(computer.agents||[]).filter(agent=>eligibleAgent(computer,agent)).map(agent=>({computer,agent})),
+    ...(computer.groups||[]).filter(group=>eligible(computer,group)&&groupIssue(group)&&!blocked(group)).map(group=>({computer,group}))
+  ]);
+  async function requestAction(computer,group,action,task){
     const body={group:group.name,action};
     if(computer.host)body.host=computer.host;
     if(task)body.task=task.name;
-    try{
-      const response=await fetch('/api/tasks/action',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
-      if(!response.ok){const reply=await response.json().catch(()=>null);alertStatus(reply?.error||'Update task action failed');}
-    }catch(_){alertStatus('Update task action failed');}
-    await load();
+    const response=await fetch('/api/tasks/action',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+    if(!response.ok){const reply=await response.json().catch(()=>null);throw Error(reply?.error||'Update task action failed');}
+  }
+  async function act(computer,group,action,task){
+    const key=groupKey(computer,group);
+    if(action==='run'&&busyGroup(computer,group))return;
+    if(action==='run')pendingRuns.add(key);
+    renderPanel();
+    try{await requestAction(computer,group,action,task);}
+    catch(error){alertStatus(error.message);}
+    finally{pendingRuns.delete(key);await load();renderPanel();}
+  }
+  async function runBatch(targets,retry=false){
+    if(dispatching||batch.some(job=>job.state==='running'))return;
+    const jobs=targets.filter(({computer,group,agent})=>agent?eligibleAgent(computer,agent):eligible(computer,group)).map(({computer,group,agent})=>({
+      host:computer.host||'',name:computer.name,group:group?.name,agent:agent?.agent,label:agent?.name||group.name,
+      phase:agent?(needsSetup(agent)?'setup':'fix-skills'):null,
+      before:agent?(needsSetup(agent)?agent.setupFinished:agent.skillRepair?.finished):group.lastStart,state:'running',sent:false
+    }));
+    if(!jobs.length)return;
+    batch=retry?batch.map(previous=>jobs.find(job=>job.host===previous.host&&job.group===previous.group&&job.agent===previous.agent)||previous):jobs;
+    dispatching=true;
+    for(const job of jobs.filter(job=>!job.agent))pendingRuns.add(groupKey({host:job.host},{name:job.group}));
+    renderPanel();
+    // One request per computer at a time; failures do not stop the remaining computers.
+    for(const job of jobs){
+      try{await dispatchJob(job);job.sent=true;}
+      catch(error){job.state='failed';job.error=error.message;pendingRuns.delete(groupKey({host:job.host},{name:job.group}));}
+    }
+    dispatching=false;
+    await load();renderPanel();
+  }
+  async function dispatchJob(job){
+    if(!job.agent)return requestAction({host:job.host},{name:job.group},'run');
+    const body={agent:job.agent};
+    if(job.host)body.host=job.host;
+    if(job.phase==='fix-skills')body.action='fix-skills';
+    const response=await fetch('/api/tasks/setup',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+    if(!response.ok){const reply=await response.json().catch(()=>null);throw Error(reply?.error||'Repair failed');}
+  }
+  async function updateBatch(){
+    for(const job of batch){
+      if(job.state!=='running'||!job.sent)continue;
+      const computer=computers.find(c=>(c.host||'')===job.host);
+      if(job.agent){
+        const agent=computer?.agents?.find(a=>a.agent===job.agent);
+        if(!computer||computer.error||!agent)continue;
+        const setup=job.phase==='setup',finished=setup?agent.setupFinished:agent.skillRepair?.finished;
+        if(agent.state==='running'||agent.skillRepair?.running||finished==null||finished===job.before)continue;
+        const error=setup?agent.setupError:agent.skillRepair?.error;
+        if(error){job.state='failed';job.error=error;continue;}
+        // Setup and refresh share a lock on the host. Wait for setup to finish first.
+        if(setup&&needsSkills(agent)){
+          job.phase='fix-skills';job.before=agent.skillRepair?.finished;
+          try{await dispatchJob(job);}catch(error){job.state='failed';job.error=error.message;}
+          continue;
+        }
+        job.state=needsSetup(agent)||needsSkills(agent)?'failed':'done';
+        if(job.state==='failed')job.error='Repair finished but this agent still needs attention';
+        continue;
+      }
+      const group=computer?.groups?.find(g=>g.name===job.group);
+      // Lost contact is not proof that a command failed. Keep the run pending.
+      if(!computer||computer.error||!group)continue;
+      if(group.lastStart!==job.before&&group.lastStart!=null&&!group.running){
+        job.state=groupIssue(group)?'failed':'done';
+        job.error=groupIssue(group)?result(group):null;
+        pendingRuns.delete(groupKey(computer,group));
+      }
+    }
+  }
+  function renderBatch(){
+    const box=byId('health-batch');if(!box)return;
+    box.hidden=!batch.length;
+    const done=batch.filter(j=>j.state!=='running').length,failures=batch.filter(j=>j.state==='failed');
+    box.replaceChildren(element('span','',`${done}/${batch.length} repairs finished${failures.length?` · ${failures.length} need attention`:''}`));
+    for(const job of failures)box.append(element('p','health-batch-error',`${job.name} · ${job.label||job.group}: ${job.error}`));
+    if(!dispatching&&done===batch.length&&failures.length){
+      const retry=button('Retry failed','Retry repairs that failed',()=>runBatch(repairTargets().filter(({computer,group,agent})=>failures.some(j=>j.host===(computer.host||'')&&j.group===group?.name&&j.agent===agent?.agent)),true));
+      retry.disabled=!repairTargets().some(({computer,group,agent})=>failures.some(j=>j.host===(computer.host||'')&&j.group===group?.name&&j.agent===agent?.agent));box.append(retry);
+    }
+    if(failed||batch.some(j=>j.state==='running'&&(!computers.some(c=>(c.host||'')===j.host&&!c.error))))box.append(element('p','health-batch-error','Connection lost. Results will update when the computer reconnects.'));
   }
   function alertStatus(message){const status=byId('status-message');if(status)status.textContent=message;}
   function button(text,title,onclick){const node=element('button','',text);node.type='button';node.title=title;node.onclick=event=>{event.stopPropagation();onclick();};return node;}
@@ -52,7 +142,8 @@
   function result(group){
     if(group.status==='waiting')return 'Waiting for agents to finish';
     if(group.status==='running')return 'Running…';
-    if(group.status==='failed'||group.status==='changed')return group.summary;
+    if(blocked(group))return 'Update blocked by local changes';
+    if(['failed','timeout','interrupted','changed'].includes(group.status))return group.summary||group.status;
     if(group.status==='ok')return `Up to date · ${group.lastEnd?ago(group.lastEnd):'just now'}`;
     if(group.status==='skipped')return 'Skipped';
     return 'Not run yet';
@@ -70,7 +161,7 @@
     if(task.whenAgentsIdle)meta.push('when agents are idle');
     head.append(element('small','task-meta',meta.join(' · ')));
     const actions=element('span','task-links');
-    const run=link('Run','Run only this task now',()=>act(computer,group,'run',task));run.disabled=group.running;
+    const run=link('Run','Run only this task now',()=>act(computer,group,'run',task));run.disabled=busyGroup(computer,group);
     const log=element('a','task-link','Log');log.href=logUrl(computer,group,task);log.target='_blank';log.rel='noopener';log.title='Open the full output of the last run';
     actions.append(run,log);
     head.append(actions);row.append(head);
@@ -80,16 +171,16 @@
     return row;
   }
   function groupBlock(computer,group){
-    const block=element('details','task-group');block.dataset.status=group.status;
+    const block=element('details','task-group');block.dataset.status=blocked(group)?'attention':group.status;
     block.dataset.key=`${computer.host||''}\n${group.name}`;
     const summary=element('summary');
     const schedule=[`every ${group.every}`,!group.enabled?'off in tasks.json':group.paused?'paused':group.nextRun&&!group.running?`next ${until(group.nextRun)}`:''].filter(Boolean).join(' · ');
     const title=element('span','task-title');title.append(element('strong','',group.name),element('small','',schedule));
     const state=element('span','task-state',result(group));state.title=group.summary||'';
-    const run=button('Run now','Run every task in this group now',()=>act(computer,group,'run'));run.className='task-run';run.disabled=group.running;
-    summary.append(dot(group.status),title,state,run);
-    const footer=element('div','task-footer');
-    footer.append(link(group.paused?'Resume schedule':'Pause schedule',group.paused?'Run this group on its schedule again':'Stop running this group on its schedule; Run now still works',()=>act(computer,group,group.paused?'resume':'pause')));
+    const run=button(groupIssue(group)?'Retry':'Check again','Check for updates in this group now',()=>act(computer,group,'run'));run.className='task-run';run.disabled=busyGroup(computer,group);
+    summary.append(dot(block.dataset.status),title,state);
+    const footer=element('div','task-footer');footer.append(run);
+    footer.append(link(group.paused?'Resume schedule':'Pause schedule',group.paused?'Run this group on its schedule again':'Stop running this group on its schedule; Check again still works',()=>act(computer,group,group.paused?'resume':'pause')));
     if(group.notice)footer.append(link('Clear result','Clear this result on every computer',()=>act(computer,group,'clear')));
     block.append(summary,...group.tasks.map(task=>taskRow(computer,group,task)),footer);
     return block;
@@ -131,14 +222,14 @@
       const setup=agent.state==='approve'
         ?button('Trust hooks',`Trust Switchboard's ${agent.name} hooks on ${computer.name}`,()=>setUp(computer,agent))
         :button('Set up',`Install Switchboard's status reporting for ${agent.name} on ${computer.name}`,()=>setUp(computer,agent));
-      setup.disabled=!!agent.skillRepair?.running;
+      setup.disabled=!!agent.skillRepair?.running||batch.some(job=>job.state==='running'&&job.host===(computer.host||'')&&job.agent===agent.agent);
       setup.className='task-run';
       actions.append(setup);
       head.append(actions);
     }
     if(agent.skillRepair?.supported&&(agent.skillRepair.running||agent.skillRepair.error||agent.skills?.refreshPlugins?.length)){
       const fix=button(agent.skillRepair.running?'Fixing skills…':'Fix skills',`Refresh stale Codex plugins on ${computer.name}`,()=>setUp(computer,agent,'fix-skills'));
-      fix.className='task-run';fix.disabled=agent.skillRepair.running||agent.state==='running';head.append(fix);
+      fix.className='task-run';fix.disabled=agent.skillRepair.running||agent.state==='running'||batch.some(job=>job.state==='running'&&job.host===(computer.host||'')&&job.agent===agent.agent);head.append(fix);
     }
     row.append(head);
     if(agent.skillRepair?.error)row.append(element('pre','task-tail skill-repair-error',agent.skillRepair.error));
@@ -174,7 +265,7 @@
     const skillWarnings=agents.filter(agent=>agent.skills?.state==='attention'||agent.skillRepair?.error);
     const repairing=agents.some(agent=>agent.skillRepair?.running);
     const waiting=agents.filter(agent=>agent.state!=='ready');
-    const status=updates==='failed'||waiting.some(agent=>agent.state==='setup')?'failed':updating||repairing||waiting.some(agent=>agent.state==='running')?'running':waiting.length||pluginWarnings.length||skillWarnings.length||installWarnings.length||updates==='attention'?'attention':'ok';
+    const status=updates==='failed'||waiting.some(agent=>agent.state==='setup')?'failed':updating||repairing||waiting.some(agent=>agent.state==='running')?'running':waiting.length||pluginWarnings.length||skillWarnings.length||installWarnings.length||updates==='attention'||updates==='never'?'attention':'ok';
     const block=element('details','task-group switchboard-group');block.dataset.status=status;
     block.dataset.key=`${computer.host||''}\n\u0000switchboard`;
     const summary=element('summary');
@@ -183,6 +274,7 @@
     if(updating)text=sb.updatePhase==='applying'?'Installing update…':'Update requested…';
     else if(updates==='failed')text='Automatic updates are off';
     else if(updates==='attention')text=sb.lastUpdateError?'Last update failed':sb.updatePhase==='recovery'?'Interrupted update · recovery waiting':'Update ready · terminals connected';
+    else if(updates==='never')text='Update status unknown';
     else if(waiting.length)text=waiting.map(agent=>`${agent.name}: ${agent.state==='approve'?'hooks not trusted':agent.state==='running'?'setting up…':'needs setup'}`).join(' · ');
     if(installWarnings.length)text=(text==='All set'?'':text+' · ')+installWarnings.map(agent=>`${agent.name}: installation needs attention`).join(' · ');
     if(pluginWarnings.length)text=(text==='All set'?'':text+' · ')+pluginWarnings.map(agent=>`${agent.name}: plugins need attention`).join(' · ');
@@ -213,26 +305,43 @@
   function renderPanel(){
     const list=byId('updates');if(!list)return;
     const open=new Set([...list.querySelectorAll('details[data-key][open]')].map(node=>node.dataset.key));
-    if(failed&&!computers.length){list.replaceChildren(element('p','log-note','Update tasks unavailable; refresh to try again.'));return;}
-    const closed=new Set([...list.querySelectorAll('details.switchboard-group:not([open])')].map(node=>node.dataset.key));
+    const closed=new Set([...list.querySelectorAll('details[data-key]:not([open])')].map(node=>node.dataset.key));
+    const active=dispatching||batch.some(job=>job.state==='running');
+    const runAll=byId('fix-all-health');
+    if(runAll){runAll.disabled=failed||active||!repairTargets().length;runAll.textContent=active?'Fixing…':'Fix all';}
+    renderBatch();
+    if(failed&&!computers.length){list.replaceChildren(element('p','log-note','Health unavailable; refresh to try again.'));if(byId('health-summary'))byId('health-summary').textContent='Could not check computers';return;}
+    let attention=0;
     list.replaceChildren(...computers.map(computer=>{
-      const section=element('section','log-computer task-computer');section.append(element('h4','',computer.name));
-      if(computer.switchboard){
-        const block=switchboardBlock(computer);
-        if(open.has(block.dataset.key))block.open=true;else if(closed.has(block.dataset.key))block.open=false;
-        section.append(block);
-      }
+      const sb=computer.switchboard?switchboardBlock(computer):null;
+      const groups=computer.groups||[];
+      const issues=[];
+      if(computer.error)issues.push(computer.error);
+      else if(!sb)issues.push('Update Switchboard to check agents');
+      if(sb&&sb.dataset.status!=='ok')issues.push(sb.querySelector('.task-state').textContent);
+      for(const group of groups)if(groupIssue(group))issues.push(`${group.name}: ${result(group)}`);
+      const running=groups.some(group=>busyGroup(computer,group))||sb?.dataset.status==='running';
+      if(issues.length)attention++;
+      const state=running?'running':issues.length?'attention':'ok';
+      const section=element('details','log-computer task-computer');section.dataset.key=JSON.stringify([computer.host||'','computer']);section.dataset.status=state;
+      const summary=element('summary','computer-summary');
+      const title=element('span','computer-title');title.append(element('h4','',computer.name));
+      if(computer.local)title.append(element('small','computer-local','This computer'));
+      const last=Math.max(0,...groups.map(g=>g.lastEnd||0));
+      const status=element('span','computer-state',running?'Working…':issues.length?issues.join(' · '):`All set${last?` · ran ${ago(last)}`:''}`);
+      const run=button('Fix',`Fix detected issues on ${computer.name}`,()=>runBatch(repairTargets([computer])));run.className='computer-run';run.disabled=failed||active;
+      summary.append(dot(state),title,status);if(repairTargets([computer]).length)summary.append(run);section.append(summary);
+      if(sb)section.append(sb);
       else if(!computer.error)section.append(element('p','log-note','Update Switchboard on this computer to check its agents'));
       if(computer.error)section.append(element('p','log-note',computer.error));
-      else if(!computer.groups.length)section.append(element('p','log-note','No update tasks configured'));
-      for(const group of computer.groups){
-        const block=groupBlock(computer,group);
-        if(open.has(block.dataset.key))block.open=true;
-        section.append(block);
+      else if(!groups.length)section.append(element('p','log-note','No update tasks configured'));
+      for(const group of groups)section.append(groupBlock(computer,group));
+      for(const details of [section,...section.querySelectorAll('details[data-key]')]){
+        if(open.has(details.dataset.key))details.open=true;else if(closed.has(details.dataset.key))details.open=false;
       }
       return section;
     }));
-    for(const details of list.querySelectorAll('details.skill-details'))details.open=open.has(details.dataset.key);
+    const summary=byId('health-summary');if(summary)summary.textContent=failed?'Could not refresh · showing previous results':`${computers.length} computers · ${attention?`${attention} need attention${!active&&!repairTargets().length?' · expand for details':''}`:'all healthy'}`;
   }
   function renderNotices(){
     const list=byId('task-notices');if(!list)return;
@@ -255,16 +364,17 @@
     try{
       const response=await fetch('/api/tasks',{cache:'no-store'});
       if(!response.ok)throw Error('Update tasks unavailable');
-      computers=(await response.json()).computers||[];failed=false;
+      computers=(await response.json()).computers||[];failed=false;await updateBatch();
     }catch(_){failed=true;}
     finally{
       loading=false;list?.setAttribute('aria-busy','false');if(refresh)refresh.disabled=false;
       renderPanel();renderNotices();
       // Poll quickly while a setup runs, so its result shows without a refresh.
-      const busy=computers.some(computer=>['requested','applying'].includes(computer.switchboard?.updatePhase)||(computer.agents||[]).some(agent=>agent.state==='running'));
+      const busy=batch.some(job=>job.state==='running')||computers.some(computer=>['requested','applying'].includes(computer.switchboard?.updatePhase)||(computer.groups||[]).some(group=>group.running)||(computer.agents||[]).some(agent=>agent.state==='running'||agent.skillRepair?.running));
       if(busy&&!fast)fast=setInterval(load,2000);else if(!busy&&fast){clearInterval(fast);fast=null;}
     }
   }
+  const runAll=byId('fix-all-health');if(runAll)runAll.onclick=()=>runBatch(repairTargets());
   const refresh=byId('refresh-updates');if(refresh)refresh.onclick=load;
   globalThis.SwitchboardTasks={load};
   load();setInterval(load,60000);
