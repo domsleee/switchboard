@@ -466,13 +466,26 @@ mod tests {
         second.id = "other-app".into();
         state.artifact_proxies.add(second, &state).await.unwrap();
         assert_eq!(state.artifact_proxies.0.lock().await.running.len(), 2);
+        // A restarted process drops its connections too. Do not reuse a pooled
+        // connection to the old listener when checking the restored proxy.
+        drop(client);
         // Abort and await the listeners so their ports are free before restoring.
         for (_, running) in std::mem::take(&mut state.artifact_proxies.0.lock().await.running) {
             running.task.abort();
             let _ = running.task.await;
         }
         state.artifact_proxies.restore(path, &state).await;
-        assert_eq!(state.artifact_proxies.0.lock().await.running.len(), 2);
+        let client = Host::new(super::super::super::tests::config(&format!(
+            "http://127.0.0.1:{}",
+            reg.listen_port
+        )))
+        .unwrap();
+        assert_eq!(
+            state.artifact_proxies.0.lock().await.running.len(),
+            2,
+            "{}",
+            logs::local()
+        );
         assert_eq!(
             client
                 .raw_request(Method::GET, "/", Bytes::new(), "", None)
