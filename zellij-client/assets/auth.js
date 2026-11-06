@@ -141,6 +141,7 @@ export async function authorizedFetch(url, options = {}, { quiet = false, timeou
 export async function fetchSession(sessionFromPath, options = {}) {
     const baseUrl = getBaseUrl();
     const params = new URLSearchParams();
+    params.set("resumable", "true");
     if (sessionFromPath) {
         params.set("session", sessionFromPath);
     }

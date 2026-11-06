@@ -1002,8 +1002,14 @@ async fn proxy(
         )?
     );
     if let Ok(websocket) = websocket {
-        let viewer = crate::switchboard_viewers::viewer()
-            .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "Update in progress"))?;
+        // Resumable paths terminate in a retained attachment worker. Legacy
+        // terminal/control sockets still exclude destructive service updates.
+        let viewer = if path.split('?').next() == Some("/ws/resume") {
+            None
+        } else {
+            Some(crate::switchboard_viewers::viewer()
+                .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "Update in progress"))?)
+        };
         let upstream = tokio::time::timeout(Duration::from_secs(20), host.websocket(&path))
             .await
             .map_err(|_| (StatusCode::BAD_GATEWAY, "Host connection timed out"))?
@@ -1324,6 +1330,8 @@ fn app(state: RelayState) -> Router {
             get(|| async {
                 Json(json!({
                     "relay":"rust", "version":zellij_utils::consts::VERSION,
+                    "attachment_protocol":1,
+                    "attachment_workers":crate::web_client::attachment::worker_status(),
                     "commit":env!("SWITCHBOARD_COMMIT"),
                     "commit_date":env!("SWITCHBOARD_COMMIT_DATE"),
                     "commit_timestamp":env!("SWITCHBOARD_COMMIT_TIMESTAMP")

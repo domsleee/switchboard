@@ -23,6 +23,7 @@ const MODULE_ORDER: &[&str] = &[
     "touch",
     "input",
     "mobile-ui",
+    "resumable",
     "websockets",
     "index",
 ];
