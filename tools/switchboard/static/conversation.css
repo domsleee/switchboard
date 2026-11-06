@@ -1,33 +1,33 @@
-.conversation-toggle{position:absolute;right:12px;top:10px;z-index:5;min-height:36px;background:#263d36}
-.conversation-panel{position:absolute;inset:0;z-index:5;background:#f5f6f1;color:#202925;display:flex;flex-direction:column;color-scheme:light;font:16px/1.6 system-ui,sans-serif}
+.conversation-toggle{position:absolute;right:12px;top:10px;z-index:5;min-height:36px;background:#263d5f}
+.conversation-panel{position:absolute;inset:0;z-index:5;background:#111318;color:#e5e7eb;display:flex;flex-direction:column;color-scheme:dark;font:16px/1.6 system-ui,sans-serif}
 .conversation-panel[hidden]{display:none}
-.conversation-panel header{display:flex;gap:12px;align-items:center;flex-shrink:0;padding:10px 16px 10px 48px;background:white;border-bottom:1px solid #dfe4da}
+.conversation-panel header{display:flex;gap:12px;align-items:center;flex-shrink:0;padding:10px 16px 10px 48px;background:#1b202a;border-bottom:1px solid #2b3341}
 .conversation-panel header strong{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.conversation-panel button{background:white;color:#315c47;border:1px solid #ced8c8;min-height:44px;padding:8px 12px;font-size:13px}
+.conversation-panel button{background:#1b202a;color:#9dc2fa;border:1px solid #363e4d;min-height:44px;padding:8px 12px;font-size:13px}
 .conversation-panel button:disabled{opacity:.5}
-.conversation-notice{font-size:12px;color:#626c62;margin:0;padding:10px 20px;flex-shrink:0;max-height:110px;overflow:auto}
+.conversation-notice{font-size:12px;color:#a3aec0;margin:0;padding:10px 20px;flex-shrink:0;max-height:110px;overflow:auto}
 .conversation-picker{padding:0 20px 12px;display:flex;flex-wrap:wrap;gap:8px}
-.conversation-panel input,.conversation-panel select,.conversation-panel textarea{font:16px system-ui;color:#202925;background:white;border:1px solid #ced8c8;border-radius:8px;padding:10px;min-width:0}
+.conversation-panel input,.conversation-panel select,.conversation-panel textarea{font:16px system-ui;color:#e5e7eb;background:#1b202a;border:1px solid #363e4d;border-radius:8px;padding:10px;min-width:0}
 .conversation-picker input{flex:1;min-width:140px}
 .conversation-results{overflow:auto;padding:0 20px;min-height:0}
 .conversation-result{display:flex;flex-direction:column;width:100%;text-align:left;gap:5px;margin:0 0 8px;overflow-wrap:anywhere}
-.conversation-result small,.conversation-result span{font-size:12px;color:#626c62}
+.conversation-result small,.conversation-result span{font-size:12px;color:#a3aec0}
 .conversation-messages{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:0 max(20px,calc((100% - 720px)/2)) 20px}
 .conversation-message{margin:12px 0 25px;overflow-wrap:anywhere}
-.conversation-message.user{background:#eaf0e4;border:1px solid #dce3d6;border-radius:14px;padding:14px 16px;margin-left:24px}
-.conversation-label{font-size:11px;font-weight:650;text-transform:uppercase;color:#315c47;margin-bottom:8px}
+.conversation-message.user{background:#1c2c43;border:1px solid #314c70;border-radius:14px;padding:14px 16px;margin-left:24px}
+.conversation-label{font-size:11px;font-weight:650;text-transform:uppercase;color:#9dc2fa;margin-bottom:8px}
 .conversation-message p{margin:0 0 13px;white-space:pre-wrap}
 .conversation-message p:last-child{margin:0}
-.conversation-message code{font:13px ui-monospace,monospace;background:#e5eae0;padding:2px 4px;border-radius:4px}
-.conversation-message pre{overflow:auto;background:#202925;color:#e9f0e8;border-radius:10px;padding:14px;white-space:pre;overflow-wrap:normal}
+.conversation-message code{font:13px ui-monospace,monospace;background:#252d3b;padding:2px 4px;border-radius:4px}
+.conversation-message pre{overflow:auto;background:#0c0f14;color:#dce5f3;border-radius:10px;padding:14px;white-space:pre;overflow-wrap:normal}
 .conversation-message pre code{background:none;color:inherit;padding:0}
-.conversation-messages details{border-left:2px solid #d8dfd3;padding-left:12px}
-.conversation-messages summary{min-height:44px;cursor:pointer;font-size:13px;color:#626c62;padding:10px 0}
+.conversation-messages details{border-left:2px solid #363e4d;padding-left:12px}
+.conversation-messages summary{min-height:44px;cursor:pointer;font-size:13px;color:#a3aec0;padding:10px 0}
 .conversation-actions{display:flex;gap:8px;padding:8px 20px;flex-shrink:0}
 .conversation-actions button:last-child{margin-left:auto}
-.conversation-compose{border-top:1px solid #dfe4da;background:white;padding:12px 20px max(12px,env(safe-area-inset-bottom));display:flex;flex-wrap:wrap;gap:8px;flex-shrink:0}
+.conversation-compose{border-top:1px solid #2b3341;background:#1b202a;padding:12px 20px max(12px,env(safe-area-inset-bottom));display:flex;flex-wrap:wrap;gap:8px;flex-shrink:0}
 .conversation-compose textarea{flex:1;resize:vertical;max-height:150px}
-.conversation-compose small{flex-basis:100%;color:#737a73;font-size:11px}
+.conversation-compose small{flex-basis:100%;color:#a3aec0;font-size:11px}
 .conversation-panel [hidden]{display:none!important}
 @media(max-width:700px){.conversation-panel header{gap:6px;padding-right:8px}
 .conversation-panel header button{padding:6px;font-size:12px}
@@ -35,3 +35,6 @@
 .conversation-compose button{max-width:100px}
 .conversation-toggle{min-height:44px;top:8px}
 }
+
+.conversation-panel button:hover{background:#293448;border-color:#507bb3}
+.conversation-panel textarea::placeholder,.conversation-panel input::placeholder{color:#96a3b7}
