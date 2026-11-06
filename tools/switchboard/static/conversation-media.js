@@ -32,7 +32,7 @@
     previous.disabled=next.disabled=items.length<2;zoomButton.hidden=item.kind==='video';zoomButton.textContent='Zoom in';
     const media=node(item.kind==='video'?'video':'img');media.src=item.url;
     if(item.kind==='video'){media.controls=true;media.playsInline=true;media.preload='metadata';media.setAttribute('aria-label',item.label);}else media.alt=item.label;
-    media.onerror=()=>{stage.replaceChildren(node('p','Preview unavailable. Try Open original.'));};stage.append(media);
+    media.onerror=()=>{if(media.parentNode===stage)stage.replaceChildren(node('p','Preview unavailable. Try Open original.'));};stage.append(media);
   }
   function expand(gallery,selected){
     if(!dialog){dialog=node('dialog');dialog.className='conversation-media-dialog';dialog.setAttribute('aria-label','Media viewer');const header=node('header');counter=node('span');original=node('a','Open original');original.target='_blank';original.rel='noopener noreferrer';const dismiss=node('button','Close');dismiss.onclick=close;header.append(counter,original,dismiss);

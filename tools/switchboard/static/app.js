@@ -686,6 +686,8 @@ window.addEventListener('focus',()=>{
   if(current&&document.hasFocus())current.entry.frame.contentWindow.postMessage({type:'zellij-window-focus'},location.origin);
 });
 function focus(item,background=false) {
+  const conversationOpen=globalThis.SwitchboardConversation?.isOpen?.()||false;
+  if(conversationOpen&&!background)globalThis.SwitchboardConversation.focus();
   const activeElement=document.activeElement;
   // A sidebar click may wait for metadata with its button still focused.
   const fromTabButton=!!activeElement&&activeElement===tabButtons.get(tabKey(item.entry,item.tab));
@@ -711,7 +713,7 @@ function focus(item,background=false) {
   if(active?.pane_id!==pane.pane_id||active?.is_plugin!==pane.is_plugin)item.entry.frame.contentWindow.SwitchboardClipboard?.clearSelection();
   const focusId=item.entry.focusId=(item.entry.focusId||0)+1;
   if(item.entry.requestedPane || active?.pane_id!==pane.pane_id||active?.is_plugin!==pane.is_plugin)item.entry.requestedPane={pane_id:pane.pane_id,is_plugin:pane.is_plugin,focus_id:focusId};
-  const preserveFocus=background&&!!item.entry.focusInitialized&&!fromTabButton;
+  const preserveFocus=conversationOpen||(background&&!!item.entry.focusInitialized&&!fromTabButton);
   item.entry.focusInitialized=true;
   item.entry.frame.contentWindow.postMessage({type:'zellij-focus',pane_id:pane.pane_id,is_plugin:pane.is_plugin,focus_id:focusId,preserve_focus:preserveFocus},location.origin);
 }
@@ -743,7 +745,7 @@ function sidebarKeydown(event){
   if(number&&!document.querySelector('dialog[open]')){event.preventDefault();event.stopImmediatePropagation();selectTabNumber(number);return;}
   if(event.key==='Escape'&&event.target===$('tab-search')){
     event.preventDefault();
-    if($('tab-search').value){$('tab-search').value='';render();}else{sidebarOpen=false;updateSidebar();allTabs().find(item=>item.key===selected)?.entry.frame.focus();}
+    if($('tab-search').value){$('tab-search').value='';render();}else{sidebarOpen=false;updateSidebar();if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.focus();else allTabs().find(item=>item.key===selected)?.entry.frame.focus();}
     return;
   }
   if(event.target.closest?.('input,textarea,select,[contenteditable="true"]'))return;
@@ -758,6 +760,7 @@ function sidebarKeydown(event){
   if(event.key==='Escape'&&!event.altKey&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey){
     if(mobileSidebar.matches&&sidebarOpen){event.preventDefault();sidebarOpen=false;updateSidebar();$('sidebar-toggle').focus();return;}
     if(!$('artifact-preview').hidden){event.preventDefault();$('artifact-back').click();return;}
+    if(globalThis.SwitchboardConversation?.isOpen?.()){event.preventDefault();event.stopImmediatePropagation();globalThis.SwitchboardConversation.showTerminal();return;}
     const current=allTabs().find(item=>item.key===selected);
     if(current){event.preventDefault();event.stopImmediatePropagation();current.entry.frame.contentWindow.postMessage({type:'zellij-escape'},location.origin);current.entry.frame.focus();}
     return;

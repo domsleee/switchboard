@@ -20,7 +20,9 @@ test('Markdown media uses the owning host, expands galleries, and blocks active 
  assert.equal(await page.evaluate(()=>SwitchboardConversationMedia.resolve('data:image/svg+xml;base64,AAAA',{host:'ubuntu',project:'/repo'},true)),null);
  await page.getByRole('button',{name:'Preview out/first.png',exact:true}).click();await page.getByRole('dialog').waitFor();
  await page.getByRole('button',{name:'Zoom in',exact:true}).click();assert.equal(await page.getByRole('button',{name:'Fit image'}).count(),1);
- await page.getByRole('button',{name:'Next →'}).click();assert.match(await page.locator('.conversation-media-dialog header span').textContent(),/2 \/ 4/);
+ await page.evaluate(()=>{window.staleError=document.querySelector('.conversation-media-stage img').onerror;});
+ await page.getByRole('button',{name:'Next →'}).click();
+ await page.evaluate(()=>staleError());assert.equal(await page.locator('.conversation-media-stage img').count(),1);assert.match(await page.locator('.conversation-media-dialog header span').textContent(),/2 \/ 4/);
  await page.keyboard.press('Escape');assert.equal(await page.getByRole('dialog').count(),0);
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
  await page.waitForFunction(()=>document.querySelector('[aria-label="Preview out/missing.png"]').textContent==='Image unavailable');

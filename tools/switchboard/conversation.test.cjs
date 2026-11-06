@@ -11,13 +11,15 @@ test('conversation links stay pane-local, paginate, escape transcript HTML, and 
   </script>`);}
   const file=path.join(__dirname,'static',path.basename(url.pathname));res.setHeader('Content-Type',file.endsWith('.css')?'text/css':'application/javascript');res.end(fs.readFileSync(file));
  });await new Promise(r=>server.listen(0,'127.0.0.1',r));const browser=await chromium.launch();
- try{const page=await browser.newPage({viewport:{width:390,height:844}});const errors=[];page.on('pageerror',e=>errors.push(e.message));await page.goto(`http://127.0.0.1:${server.address().port}`);
+ try{const page=await browser.newPage({viewport:{width:390,height:844}});await page.addInitScript(()=>{window.intervals=[];window.setInterval=fn=>intervals.push(fn);});const errors=[];page.on('pageerror',e=>errors.push(e.message));await page.goto(`http://127.0.0.1:${server.address().port}`);
  await page.getByRole('button',{name:'Conversation',exact:true}).click();await page.getByRole('button',{name:'Search',exact:true}).click();await page.getByRole('button',{name:'Search next page'}).waitFor();assert.match(await page.locator('.conversation-notice').textContent(),/partial/);
  await page.getByRole('button',{name:'Search next page'}).click();await page.locator('.conversation-result').first().click();await page.locator('.conversation-message').first().waitFor();assert.equal(await page.locator('.conversation-message img').count(),0);assert.equal(await page.evaluate(()=>window.injected),undefined);assert.equal(await page.locator('details').count(),1);
  await page.getByRole('button',{name:'Load next messages'}).click();await page.getByText('Final answer',{exact:true}).waitFor();assert.equal(await page.locator('.conversation-message').count(),3);
  await page.evaluate(()=>{window.originalMessage=document.querySelector('.conversation-message');document.querySelector('details').open=true;});
  await Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/codex-one')),page.getByRole('button',{name:'Refresh',exact:true}).click()]);
  assert.equal(await page.evaluate(()=>originalMessage===document.querySelector('.conversation-message')),true);assert.equal(await page.locator('details[open]').count(),1);
+ await page.getByRole('button',{name:'Refresh',exact:true}).focus();
+ await Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/codex-one')),page.evaluate(()=>intervals.forEach(fn=>fn()))]);
  await page.getByLabel('Reply draft').fill('draft one');await page.getByRole('button',{name:'Reply in terminal'}).click();assert.equal(await page.evaluate(()=>sent[0].pane_id),1);
  await page.evaluate(()=>{const m=sent[0];window.dispatchEvent(new MessageEvent('message',{origin:location.origin,source:null,data:{type:'zellij-conversation-paste-result',id:m.id,ok:true}}));});assert.equal(await page.getByLabel('Reply draft').inputValue(),'draft one');
  await page.evaluate(()=>{current={...current,key:'pane2',pane:2};SwitchboardConversation.update();});assert.equal(await page.getByLabel('Reply draft').inputValue(),'');assert.equal(await page.locator('.conversation-message').count(),0);

@@ -27,7 +27,8 @@
     const binding=()=>target&&bindings.get(target.key);
     function status(text,quiet=false){notice.textContent=text;notice.hidden=quiet;}
     function busy(value){loading=value;query.disabled=agent.disabled=value;search.disabled=more.disabled=older.disabled=refresh.disabled=value;}
-    function show(value){if(!value){window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();}open=value;panel.hidden=!value;toggle.setAttribute('aria-expanded',String(value));if(value){document.getElementById('artifact-preview').hidden=true;update();if(binding()&&!messages.length)load(false);}else if(target)terminal(target);}
+    function focusSurface(){if(!panel.hidden&&!panel.contains(document.activeElement))back.focus({preventScroll:true});}
+    function show(value){if(!value){window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();}open=value;panel.hidden=!value;toggle.setAttribute('aria-expanded',String(value));if(value){document.getElementById('artifact-preview').hidden=true;update();if(binding()&&!messages.length)load(false);focusSurface();}else if(target)terminal(target);}
     toggle.onclick=()=>show(true);back.onclick=()=>show(false);
     change.onclick=()=>{picker.hidden=false;results.hidden=false;query.focus();};
     async function get(url){const response=await fetch(url);if(!response.ok)throw Error(`Request failed (${response.status})`);const data=await response.json();if(data.error)throw Error(data.error);return data;}
@@ -85,10 +86,10 @@
       if(target)drafts.set(target.key,draft.value);window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();target=current;generation++;lastPaint=null;busy(false);messages=[];readCursor=tailCursor=0;list.replaceChildren();results.replaceChildren();more.hidden=older.hidden=true;
       if(!target){panel.hidden=true;return;}title.textContent=target.title;draft.value=drafts.get(target.key)||'';
       picker.hidden=!!binding();results.hidden=!!binding();panel.hidden=!open;agent.value=target.agent||'codex';
-      status(binding()?'Loading conversation…':'Choose the chat running in this pane. Replies are inserted into this terminal.');if(open&&binding())load(false);
+      status(binding()?'Loading conversation…':'Choose the chat running in this pane. Replies are inserted into this terminal.');if(open){focusSurface();if(binding())load(false);}
     }
     // Poll only the visible transcript's last loaded page; never scan all history on a timer.
-    setInterval(()=>{if(open&&!document.hidden&&panel.contains(document.activeElement)===false)load(true);},5000);
-    window.SwitchboardConversation.update=update;update();
+    setInterval(()=>{if(open&&!document.hidden&&!panel.querySelector('input:focus,textarea:focus,select:focus,[contenteditable="true"]:focus'))load(true);},5000);
+    window.SwitchboardConversation.update=update;window.SwitchboardConversation.isOpen=()=>open&&!panel.hidden;window.SwitchboardConversation.focus=focusSurface;window.SwitchboardConversation.showTerminal=()=>show(false);update();
   }};
 })();
