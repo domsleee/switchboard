@@ -39,9 +39,25 @@ rows=screen(['shot: /tmp/a.png','','','x'.repeat(cols)]);
 boxes=place(rows);
 assert.equal(boxes[0].rows,3);
 rows=screen(['shot: /tmp/a.png','x'.repeat(cols)]);
-assert.deepEqual(place(rows),[],'Less than 3 free rows shows no thumbnail; hover still works');
+assert.equal(place(rows)[0].row,2,'A dense reply moves the thumbnail below its text');
 rows=screen(['x'.repeat(cols-10)+' /a/b.png']);
-assert.deepEqual(place(rows),[],'No blank room beside the path shows no thumbnail');
+assert.equal(place(rows)[0].row,1,'A long path uses the free rows below it');
+rows=['shot: /tmp/a.png',...Array(19).fill('x'.repeat(cols))];
+assert.deepEqual(place(rows),[],'No thumbnail appears when the screen has no free band');
+
+// A wide comparison video used to fill the only band and silently drop the other five clips.
+const clips=['grade/side-by-side.mp4','claude/task/after.avif','claude/task/after.mp4','codex/task/after.avif','codex/task/after.mp4','grade/reference.avif']
+  .map(path=>'/home/me/bench-runs/'+path);
+rows=[...clips,...Array(34).fill('')];
+const aspects=Object.fromEntries(clips.map(path=>[path,path.includes('side-by-side')?3.72:path.endsWith('.mp4')?16/9:1.24]));
+boxes=place(rows,undefined,aspects);
+assert.deepEqual(boxes.map(box=>box.path),clips,'All six previews remain visible after their dimensions load');
+assert.ok(new Set(boxes.map(box=>box.row)).size>1,'Clips wrap into another band');
+for(const box of boxes){
+  assert.ok(box.row+box.rows<=rows.length&&box.col+box.cols<=cols-2);
+  for(let row=box.row;row<box.row+box.rows;row++)assert.ok(box.col>=rows[row].length+2,'A wrapped preview never covers text');
+  for(const other of boxes)if(other!==box)assert.ok(box.row+box.rows<=other.row||other.row+other.rows<=box.row||box.col+box.cols<=other.col||other.col+other.cols<=box.col,'Preview bands do not overlap');
+}
 
 // A pane frame's right edge is not text.
 rows=screen(['│ shot: /tmp/a.png'.padEnd(cols-1)+'│','│'.padEnd(cols-1)+'│','│'.padEnd(cols-1)+'│','│'.padEnd(cols-1)+'│']);
@@ -62,10 +78,14 @@ if(process.env.PLAYWRIGHT_MODULE)(async()=>{
   const browser=await chromium.launch({headless:true});
   try{
     const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEUlEQVR4nGP4z8DwH4QZGBgAEPYD/WQ/5WMAAAAASUVORK5CYII=','base64');
+    const gif=Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7','base64');
     const page=await browser.newPage({viewport:{width:1000,height:400}});
     await page.route('**/*',route=>{
       const url=new URL(route.request().url());
-      if(url.pathname.startsWith('/api/hosts/laptop/file'))return url.searchParams.get('path').includes('missing')?route.fulfill({status:404}):route.fulfill({contentType:'image/png',body:png});
+      if(url.pathname.startsWith('/api/hosts/laptop/file')){
+        const path=url.searchParams.get('path');
+        return path.includes('missing')?route.fulfill({status:404}):route.fulfill({contentType:path.endsWith('.gif')?'image/gif':'image/png',body:path.endsWith('.gif')?gif:png});
+      }
       if(url.pathname==='/xterm.js')return route.fulfill({contentType:'application/javascript',body:fs.readFileSync(__dirname+'/../../zellij-client/assets/xterm.js')});
       if(url.pathname==='/xterm.css')return route.fulfill({contentType:'text/css',body:fs.readFileSync(__dirname+'/../../zellij-client/assets/xterm.css')});
       if(url.pathname.endsWith('.js'))return route.fulfill({contentType:'application/javascript',body:fs.readFileSync(__dirname+'/static'+url.pathname)});
@@ -94,6 +114,21 @@ if(process.env.PLAYWRIGHT_MODULE)(async()=>{
     assert.deepEqual(await page.evaluate(()=>window.opened),[['laptop','/tmp/before.png']],'Clicking a thumbnail opens its file');
     await write('\x1b[2J\x1b[H');
     await frame.waitForFunction(()=>!document.querySelector('.switchboard-thumbnails > div'));
-    console.log('Headless browser: thumbnails appear beside media paths, follow the setting, open on click and leave with the text.');
+    await write('/tmp/loop.gif\r\n');
+    await frame.waitForFunction(()=>document.querySelector('.switchboard-thumbnails img')?.naturalWidth);
+    const loop=frame.locator('.switchboard-thumbnails > div');
+    await loop.click();
+    assert.deepEqual(await page.evaluate(()=>window.opened.at(-1)),['laptop','/tmp/loop.gif'],'Plain GIF clicks retain the file viewer');
+    for(const modifier of ['Control','Meta']){
+      const count=page.context().pages().length,ready=page.context().waitForEvent('page');
+      await loop.click({modifiers:[modifier]});
+      const popup=await ready;
+      await popup.waitForURL('**/api/hosts/laptop/file?path=%2Ftmp%2Floop.gif');
+      assert.equal(page.context().pages().length,count+1,'Each modified thumbnail click opens exactly one tab');
+      assert.equal(await popup.evaluate(()=>window.opener),null);
+      assert.equal(await page.evaluate(()=>window.opened.length),2,'Modified GIF clicks bypass the in-page viewer');
+      await popup.close();
+    }
+    console.log('Headless browser: thumbnails load, follow the setting, open on click and leave with the text; Ctrl/Cmd-click opens a GIF once in a new tab.');
   }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});
