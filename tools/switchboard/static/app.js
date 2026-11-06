@@ -64,7 +64,7 @@ $('dismiss-status').onclick=()=>{
   }
   if(statusErrors.some(error=>error.host))localStorage.setItem('switchboard-dismissed-offline',JSON.stringify(dismissedOffline));
   $('status').classList.remove('has-error');
-  if($('artifact-preview').hidden)$('terminals').querySelector('iframe.active')?.focus();
+  if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.focus();else if($('artifact-preview').hidden)$('terminals').querySelector('iframe.active')?.focus();
 };
 // Work only or Home only, so a browser opens on its own group: Settings → Show tabs from.
 function focusGroup(){
@@ -1033,6 +1033,7 @@ $('select-text').onclick=()=>{
   if(item.key!==selected)activate(item,false);
   const api=item.entry.frame.contentWindow.SwitchboardClipboard;
   if(!api){setStatus('Terminal clipboard is unavailable; refresh this page.',true);return;}
+  if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.showTerminal();
   api.setSelectionMode(true);updateSelectionTools();
   sidebarOpen=false;updateSidebar();item.entry.frame.focus();
 };
@@ -1049,6 +1050,7 @@ $('copy-title').onclick=async()=>{
   }
 };
 $('exit-selection').onclick=()=>{
+  if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.showTerminal();
   const current=allTabs().find(item=>item.key===selected),api=current?.entry.frame.contentWindow.SwitchboardClipboard;
   api?.setSelectionMode(false);api?.clearSelection();updateSelectionTools();current?.entry.frame.focus();
 };
@@ -1176,6 +1178,7 @@ $('new-tab-form').onsubmit=event=>{
     const [id,name]=JSON.parse(key),host=hosts.get(id);
     if(!host||host.error||host.sessions?.length!==0)return;
     if(entry&&!entry.starting){entry.frame.remove();sessions.delete(key);}
+    if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.showTerminal();
     const created=connectSession(host,name,true);created.selectOnStart=true;
     if(filter!=='all'&&groups[id]!==filter)setFilter('all');$('tab-search').value='';
     // Closing the dialog returns focus to +; give it to the new terminal instead.
@@ -1183,6 +1186,7 @@ $('new-tab-form').onsubmit=event=>{
   }
   if(!sessionTabs(entry).length)return;
   if(entry.pendingNewTab||entry.requestedPane||entry.focusPending){setStatus('Wait for the terminal to receive focus before creating a tab.',true);return;}
+  if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.showTerminal();
   const pending=entry.pendingNewTab=new Set(sessionTabs(entry).map(tab=>tabKey(entry,tab)));
   pending.requestId=entry.newTabRequestId=(entry.newTabRequestId||0)+1;
   pending.startedAt=performance.timeOrigin+performance.now();
@@ -1486,7 +1490,7 @@ $('hide-tab').onclick=()=>{
   setHidden(item,!item.hidden);
   closeTabMenu();render();
   tabButtons.get(item.key)?.scrollIntoView({block:'nearest',inline:'nearest'});
-  allTabs().find(t=>t.key===selected)?.entry.frame.focus();
+  if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.focus();else allTabs().find(t=>t.key===selected)?.entry.frame.focus();
 };
 document.addEventListener('pointerdown',event=>{if(!$('tab-menu').contains(event.target))closeTabMenu();},true);
 window.addEventListener('blur',closeTabMenu);
@@ -1512,7 +1516,7 @@ $('sidebar-toggle').onclick=()=>{
 $('sidebar-backdrop').onclick=()=>{sidebarOpen=false;updateSidebar();};
 mobileSidebar.addEventListener('change',()=>{sidebarOpen=false;updateSidebar();});
 $('tab-search').oninput=render;
-$('tab-search').onkeydown=event=>{if(event.key==='Enter'){const item=listedTabs()[0];if(item){event.preventDefault();activate(item);item.entry.frame.focus();}}};
+$('tab-search').onkeydown=event=>{if(event.key==='Enter'){const item=listedTabs()[0];if(item){event.preventDefault();activate(item);if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.focus();else item.entry.frame.focus();}}};
 let sidebarWidth=Number(localStorage.getItem('switchboard-sidebar-width'))||242;
 function setSidebarWidth(width){
   sidebarWidth=Math.max(180,Math.min(420,width,Math.max(180,innerWidth-320)));

@@ -13,7 +13,7 @@
     const root=document.getElementById('terminals'),bindings=new Map(),drafts=new Map();
     let target=null,open=false,generation=0,searchCursor=0,readCursor=0,tailCursor=0,messages=[],pending=null,loading=false,lastPaint=null;
     const toggle=el('button','Conversation','conversation-toggle');toggle.type='button';toggle.hidden=true;root.append(toggle);
-    const panel=el('section',undefined,'conversation-panel');panel.hidden=true;panel.setAttribute('aria-label','Agent conversation');
+    const panel=el('section',undefined,'conversation-panel');panel.hidden=true;panel.tabIndex=-1;panel.setAttribute('aria-label','Agent conversation');
     const header=el('header'),back=el('button','Terminal'),title=el('strong','Conversation'),change=el('button','Choose chat');header.append(back,title,change);
     const notice=el('p','Choose the conversation running in this terminal.','conversation-notice');notice.setAttribute('role','status');
     const picker=el('form',undefined,'conversation-picker'),query=el('input'),agent=el('select'),search=el('button','Search'),more=el('button','Search next page');
@@ -27,7 +27,7 @@
     const binding=()=>target&&bindings.get(target.key);
     function status(text,quiet=false){notice.textContent=text;notice.hidden=quiet;}
     function busy(value){loading=value;query.disabled=agent.disabled=value;search.disabled=more.disabled=older.disabled=refresh.disabled=value;}
-    function focusSurface(){if(!panel.hidden&&!panel.contains(document.activeElement))back.focus({preventScroll:true});}
+    function focusSurface(){if(!panel.hidden&&!panel.contains(document.activeElement))panel.focus({preventScroll:true});}
     function show(value){if(!value){window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();}open=value;panel.hidden=!value;toggle.setAttribute('aria-expanded',String(value));if(value){document.getElementById('artifact-preview').hidden=true;update();if(binding()&&!messages.length)load(false);focusSurface();}else if(target)terminal(target);}
     toggle.onclick=()=>show(true);back.onclick=()=>show(false);
     change.onclick=()=>{picker.hidden=false;results.hidden=false;query.focus();};

@@ -209,12 +209,17 @@ test('headless browser keeps iframe, selection, URL and input focus through fail
     await page.evaluate(()=>activate(allTabs().find(item=>item.entry.host==='mac')));
     await page.waitForTimeout(100); // Allow the real bridge's focus acknowledgement to arrive.
     assert.equal(await page.evaluate(()=>!!document.activeElement.closest('.conversation-panel')),true);
+    await page.locator('#tab-search').fill('mac');await page.locator('#tab-search').press('Enter');
+    await page.waitForTimeout(100);
+    assert.equal(await page.evaluate(()=>!!document.activeElement.closest('.conversation-panel')),true);
     await page.keyboard.type('not terminal input');
+    assert.equal(await page.locator('.conversation-panel').isVisible(),true);
     assert.equal(await page.frameLocator('iframe[title="Mac: main"]').locator('#terminal-input').inputValue(),'');
     await page.keyboard.press('Escape');
     await page.waitForFunction(()=>document.activeElement===document.querySelector('iframe[title="Mac: main"]'));
     assert.equal(await page.locator('.conversation-panel').isVisible(),false);
     assert.equal(await page.frameLocator('iframe[title="Mac: main"]').locator('#terminal-input').inputValue(),'');
+    await page.locator('#tab-search').fill('');
     await page.evaluate(()=>activate(allTabs().find(item=>item.entry.host==='windows')));
     await page.waitForFunction(()=>document.activeElement===document.querySelector('iframe[title="Windows: main"]'));
 
