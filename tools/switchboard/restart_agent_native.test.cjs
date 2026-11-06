@@ -29,7 +29,8 @@ let native,relay,browser,tokenName,created=false;
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
-int main(int argc,char**argv){FILE*f=fopen(${JSON.stringify(path.join('/PLACEHOLDER','launches'))},"a");fprintf(f,"%d",getpid());for(int i=1;i<argc;i++)fprintf(f,"|%s",argv[i]);fprintf(f,"\\n");fclose(f);char previous[64]="";for(;;){char mode[64]="ready";f=fopen(${JSON.stringify(path.join('/PLACEHOLDER','mode'))},"r");if(f){fgets(mode,64,f);fclose(f);}if(strcmp(mode,previous)){printf("\\033[2J\\033[H\\033]0;codex - Restart fixture\\007Worked for 1s\\r\\n\\r\\n› %s\\r\\nGPT-6 · ? for shortcuts\\r\\n",strcmp(mode,"draft")==0?"unsent draft":"Ask Codex to do anything");fflush(stdout);strcpy(previous,mode);}usleep(100000);}}`.replaceAll('/PLACEHOLDER',dir));
+#include <fcntl.h>
+int main(int argc,char**argv){fcntl(0,F_SETFL,O_NONBLOCK);FILE*f=fopen(${JSON.stringify(path.join('/PLACEHOLDER','launches'))},"a");fprintf(f,"%d",getpid());for(int i=1;i<argc;i++)fprintf(f,"|%s",argv[i]);fprintf(f,"\\n");fclose(f);char previous[64]="";for(;;){char input[4096];int count=read(0,input,sizeof(input));if(count>0){f=fopen(${JSON.stringify(path.join('/PLACEHOLDER','input'))},"a");fwrite(input,1,count,f);fclose(f);previous[0]=0;}char mode[64]="ready";f=fopen(${JSON.stringify(path.join('/PLACEHOLDER','mode'))},"r");if(f){fgets(mode,64,f);fclose(f);}if(strcmp(mode,previous)){printf("\\033[2J\\033[H\\033]0;codex - Restart fixture\\007Worked for 1s\\r\\n\\r\\n› %s\\r\\nGPT-6 · ? for shortcuts\\r\\n",strcmp(mode,"draft")==0?"unsent draft":strcmp(mode,"multiline")==0?"\\r\\n  unsent draft":"Ask Codex to do anything");fflush(stdout);strcpy(previous,mode);}usleep(100000);}}`.replaceAll('/PLACEHOLDER',dir));
     execFileSync(process.platform==='darwin'?'xcrun':'cc',process.platform==='darwin'?['clang','-isysroot',execFileSync('xcrun',['--sdk','macosx','--show-sdk-path'],{encoding:'utf8'}).trim(),c,'-o',fixture]:[c,'-o',fixture]);
     cli('attach','--create-background',name,'--','/bin/bash','--noprofile','--norc','-c','exec codex --model fixture "initial prompt"');created=true;
     let first;
@@ -51,7 +52,7 @@ int main(int argc,char**argv){FILE*f=fopen(${JSON.stringify(path.join('/PLACEHOL
     const sid='11111111-2222-4333-8444-555555555555';
     const transcript=path.join(env.CODEX_HOME,'sessions','fixture.jsonl');fs.mkdirSync(path.dirname(transcript),{recursive:true});
     fs.writeFileSync(transcript,JSON.stringify({type:'session_meta',payload:{id:sid,cwd:dir}})+'\n');
-    const hook=async event=>{const response=await fetch(url+'/api/agent-hook',{method:'POST',headers:{'Content-Type':'application/json','x-agent':'codex','x-zellij-session':name,'x-zellij-pane':String(first.id)},body:JSON.stringify({hook_event_name:event,session_id:sid,transcript_path:transcript,cwd:dir})});assert.equal(response.status,204);};
+    const hook=async (event,paneId=first.id)=>{const response=await fetch(url+'/api/agent-hook',{method:'POST',headers:{'Content-Type':'application/json','x-agent':'codex','x-zellij-session':name,'x-zellij-pane':String(paneId)},body:JSON.stringify({hook_event_name:event,session_id:sid,transcript_path:transcript,cwd:dir})});assert.equal(response.status,204);};
     await hook('Stop');
     let state;await until(async()=>{const data=await(await fetch(url+'/api/attention')).json();state=data.panes.find(p=>p.pane_id===first.id&&p.session===name);return state?.restart_available;},'Agent process was not bound to its pane');
     const target={session:name,pane_id:first.id,tab_id:first.tab_id,chat_id:state.chat_id};
@@ -61,6 +62,9 @@ int main(int argc,char**argv){FILE*f=fopen(${JSON.stringify(path.join('/PLACEHOL
     fs.writeFileSync(path.join(dir,'mode'),'draft');
     await until(()=>cli('-s',name,'action','dump-screen','-p',String(first.id)).includes('unsent draft'),'Draft did not render');
     assert.equal((await restart(target)).status,409);
+    fs.writeFileSync(path.join(dir,'mode'),'multiline');
+    await until(()=>/› *\n +unsent draft/.test(cli('-s',name,'action','dump-screen','-p',String(first.id))),'Multiline draft did not render');
+    assert.equal((await restart(target)).status,409);
     fs.writeFileSync(path.join(dir,'mode'),'ready');
     await until(()=>!cli('-s',name,'action','dump-screen','-p',String(first.id)).includes('unsent draft'),'Draft did not clear');
     const untouched=panes[1],launches=()=>fs.readFileSync(path.join(dir,'launches'),'utf8').trim().split('\n');
@@ -68,7 +72,9 @@ int main(int argc,char**argv){FILE*f=fopen(${JSON.stringify(path.join('/PLACEHOL
     browser=await chromium.launch({headless:true});const page=await browser.newPage({viewport:{width:1200,height:800}});
     await page.goto(url+'/?host=fixture&session='+name+'&tab='+first.tab_id);
     await page.waitForSelector('#tabs .tab-select');
-    await page.evaluate(id=>{const item=allTabs().find(i=>i.tab.id===id);openTabMenu(item,220,70);},first.tab_id);
+    await page.evaluate(id=>activate(allTabs().find(i=>i.tab.id===id)),first.tab_id);
+    await until(()=>page.evaluate(id=>allTabs().find(i=>i.key===selected)?.entry.state?.active_pane?.pane_id===id,first.id),'Fixture agent was not selected');
+    await page.evaluate(id=>openTabMenu(allTabs().find(i=>i.tab.id===id),220,70),first.tab_id);
     await until(()=>page.locator('#restart-agent').isEnabled(),'Menu restart did not enable');
     await page.locator('#tab-menu').screenshot({path:path.join(dir,'restart-menu.png')});
     await page.locator('#restart-agent').evaluate(el=>el.hidden=true);
@@ -86,6 +92,14 @@ int main(int argc,char**argv){FILE*f=fopen(${JSON.stringify(path.join('/PLACEHOL
     assert.equal(after.length,2);assert.ok(after.some(p=>p.id===untouched.id&&p.tab_id===untouched.tab_id));
     assert.ok(after.some(p=>p.id===restarted.pane_id&&p.tab_id===first.tab_id));
     assert.equal((await restart(target)).status,409,'Duplicate stale request cannot restart the replacement');
+    await hook('Stop',restarted.pane_id);
+    await until(async()=>{await page.evaluate(()=>refreshAttention(true));return page.evaluate(id=>[...paneAttention.values()].some(p=>p.pane_id===id&&p.chat_id),restarted.pane_id);},'Resumed agent did not bind its conversation');
+    await page.getByRole('button',{name:'Conversation',exact:true}).click();
+    await page.getByLabel('Reply draft').fill('native conversation reply');
+    await page.getByLabel('Reply draft').press('Enter');
+    await until(()=>fs.existsSync(path.join(dir,'input'))&&fs.readFileSync(path.join(dir,'input'),'utf8').includes('native conversation reply\n'),'Conversation Send did not submit to the native agent');
+    await until(async()=>await page.getByLabel('Reply draft').inputValue()==='','Sent draft did not clear');
+    assert.equal(await page.locator('.conversation-panel').isVisible(),true);
     console.log('PASS: real menu + endpoint restarted only the intended agent, retained tab and other pane, resumed exact UUID and flags, rejected busy/draft/stale targets. Screenshots: '+dir);
   }catch(error){console.error('Private fixture logs:',dir);throw error;}
   finally{if(browser)await browser.close();if(created)try{cli('kill-session',name);}catch{}await stop(relay);await stop(native);if(tokenName)try{cli('web','--revoke-token',tokenName);}catch{}fs.rmSync(path.join(dir,'token'),{force:true});}

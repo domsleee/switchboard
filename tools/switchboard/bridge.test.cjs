@@ -661,3 +661,24 @@ test('terminal shortcuts use the stock input gate, never the socket directly',()
   assert.deepEqual(gated,['\x0c','\x17','\x1b[1;5D','\x1b[1;5C']);
   assert.deepEqual(socket.sent,[]);
 });
+
+test('conversation Send submits once and rejects unsent multiline input or a shell',()=>{
+  const h=harness(),writes=[];
+  new h.window.WebSocket('ws://localhost:8090/hosts/windows/ws/terminal');
+  let lines=['› Ask Codex to do anything','GPT-6 · ? for shortcuts'];
+  h.window.term.rows=lines.length;h.window.term.buffer.active={baseY:0,viewportY:0,getLine:i=>({translateToString:()=>lines[i]||''})};
+  h.window.term.modes={bracketedPasteMode:true};h.window.term.paste=text=>writes.push(['paste',text]);h.window.term.input=text=>writes.push(['input',text]);
+  h.state({active_pane:{pane_id:7,is_plugin:false}});
+  const send=()=>h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-conversation-paste',id:'send',pane_id:7,agent:'codex',submit:true,text:'hello\nworld'}});
+  send();assert.deepEqual(writes,[['paste','hello\nworld'],['input','\r']]);
+  lines=['› ','  unsent draft','GPT-6 · ? for shortcuts'];h.window.term.rows=3;send();assert.equal(writes.length,2);assert.equal(h.messages.at(-1).ok,false);
+  lines=['$ '];h.window.term.rows=1;send();assert.equal(writes.length,2);assert.equal(h.messages.at(-1).ok,false);
+});
+
+test('Copilot Send checks the live boxed composer, including multiline drafts',()=>{
+ const h=harness(),writes=[];new h.window.WebSocket('ws://localhost/ws/terminal');
+ let lines=['old ❯ message','╻▄▄▄▄▄▄','┃','╹▀▀▀▀▀','Interactive · / commands · ? help'];
+ h.window.term.rows=5;h.window.term.buffer.active={baseY:0,viewportY:0,getLine:i=>({translateToString:()=>lines[i]||''})};h.window.term.modes={bracketedPasteMode:true};h.window.term.paste=t=>writes.push(t);h.window.term.input=t=>writes.push(t);h.state({active_pane:{pane_id:7,is_plugin:false}});
+ const send=()=>h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-conversation-paste',id:'c',pane_id:7,agent:'copilot',submit:true,text:'reply'}});
+ send();assert.deepEqual(writes,['reply','\r']);lines[2]='┃ unsent draft';send();assert.equal(writes.length,2);assert.equal(h.messages.at(-1).ok,false);
+});
