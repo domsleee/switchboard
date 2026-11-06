@@ -49,6 +49,8 @@ jobs:
       - name: Check browser reconnection and rollback
         # Replaces the executable with the same build and restarts connection
         # services. This checks handoff behavior, not mixed-version compatibility.
+        env:
+          SWITCHBOARD_TEST_IN_PLACE_RECONNECT: '1'
         run: node acceptance/switchboard/run.cjs browser target/dev-opt/zellij target/dev-opt/zellij
       - name: Save private acceptance diagnostics on failure
         if: failure()

@@ -4,14 +4,14 @@ const vm=require('node:vm');
 const fs=require('node:fs');
 const source=fs.readFileSync(__dirname+'/static/bridge.js','utf8');
 function harness(withDiagnostics=false,platform='MacIntel',predict){
-  const handlers={},messages=[],properties=new Map(),classes=new Set(),frames=[],resizes=[],timers=new Map();let timerId=0;
+  const handlers={},messages=[],properties=new Map(),classes=new Set(),frames=[],resizes=[],timers=new Map();let timerId=0, terminal;
   let modal=false,focused=false,browserFocused=false,frameActive=true,bottomRows=2,firstRow='Zellij (main)',now=0;
-  class Socket{constructor(){this.handlers={};this.readyState=1;this.sent=[];}addEventListener(type,fn){this.handlers[type]=fn;}send(data){this.sent.push(data);}}
+  class Socket{constructor(url){if(String(url).includes('/ws/terminal'))terminal=this;this.handlers={};this.readyState=1;this.sent=[];}addEventListener(type,fn){this.handlers[type]=fn;}send(data){this.sent.push(data);}}
   const parent={postMessage:data=>messages.push(data)};
   const window={WebSocket:Socket,addEventListener:(type,fn)=>handlers[type]=fn,dispatchEvent:()=>resizes.push(1),innerWidth:800,innerHeight:600,
     frameElement:{classList:{contains:()=>frameActive}},SwitchboardPredictiveEcho:predict,
     __switchboardBottomRows:()=>bottomRows,
-    term:{options:{disableStdin:false},element:{contains:()=>focused,style:{pointerEvents:""}},blur(){},buffer:{active:{viewportY:0,getLine:()=>({translateToString:()=>firstRow})}},_core:{_renderService:{dimensions:{css:{cell:{height:18,width:8}}}}},onRender(){},onResize(){},focus(){}}};
+    term:{input(data){if(!this.options.disableStdin)terminal?.send(data);},options:{disableStdin:false},element:{contains:()=>focused,style:{pointerEvents:""}},blur(){},buffer:{active:{viewportY:0,getLine:()=>({translateToString:()=>firstRow})}},_core:{_renderService:{dimensions:{css:{cell:{height:18,width:8}}}}},onRender(){},onResize(){},focus(){}}};
   const document={createElement:()=>({style:{},setAttribute(){}}),head:{append(){}},querySelector:()=>modal?{}:null,
     activeElement:{},visibilityState:'visible',hasFocus:()=>browserFocused,getElementById:()=>null,
     body:{append(){},classList:{contains:c=>classes.has(c),toggle:(c,on)=>on?classes.add(c):classes.delete(c)}},
@@ -640,4 +640,24 @@ test('conversation drafts require the exact active pane and never submit Enter',
   h.window.term.modes.bracketedPasteMode=true;send('$my-skill /compact\nsecond');assert.deepEqual(pastes,['$my-skill /compact\nsecond']);assert.equal(h.messages.at(-1).ok,true);
   socket.readyState=3;send('offline');assert.equal(pastes.length,1);
   socket.readyState=1;h.setFrameActive(false);send('hidden');assert.equal(pastes.length,1);
+});
+
+test('control loss retains a pending selected pane for the stock reconnect handler',()=>{
+  const h=harness();
+  const control=new h.window.WebSocket('ws://localhost/ws/control');
+  control.handlers.message({data:JSON.stringify({type:'MobileState',payload:{active_pane:{pane_id:1,is_plugin:false}}})});
+  h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-focus',pane_id:9,is_plugin:false}});
+  control.handlers.close();
+  assert.equal(h.window.__zjReconnectPane().pane_id,9);
+});
+
+test('terminal shortcuts use the stock input gate, never the socket directly',()=>{
+  const h=harness();h.setFocus(true);
+  const socket=new h.window.WebSocket('ws://localhost/ws/terminal/main');
+  const gated=[];h.window.term.input=data=>gated.push(data);
+  h.key('KeyL',{ctrlKey:true,altKey:false});
+  h.key('Backspace',{ctrlKey:true,altKey:false});
+  h.key('ArrowLeft');h.key('ArrowRight');
+  assert.deepEqual(gated,['\x0c','\x17','\x1b[1;5D','\x1b[1;5C']);
+  assert.deepEqual(socket.sent,[]);
 });

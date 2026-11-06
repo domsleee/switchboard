@@ -1,4 +1,5 @@
-import { handleReconnection, handleDisconnected, markConnectionEstablished } from "./connection.js";
+import { handleReconnection, handleDisconnected, markConnectionEstablished, setReconnectHandler, showConnectionStatus } from "./connection.js";
+import { authorizedFetch } from "./auth.js";
 import { fineScrolling } from "./wheel.js";
 import {
     getBaseUrl,
@@ -46,7 +47,7 @@ function getMobileRenderSizing() {
 }
 
 function sendSizeUpdate(wsControl, ownWebClientId, term, rows, cols, force = false) {
-    if (!wsControl || !ownWebClientId) {
+    if (!wsControl || wsControl.readyState !== WebSocket.OPEN || !ownWebClientId) {
         return;
     }
     const viewport = window.__zjViewport?.dimensions();
@@ -94,8 +95,15 @@ function sendSizeUpdate(wsControl, ownWebClientId, term, rows, cols, force = fal
 }
 
 export function initWebSockets(boot, term, fitAddon) {
-    const ownWebClientId = boot.web_client_id;
-    const sessionName = boot.session_name;
+    let ownWebClientId = boot.web_client_id;
+    let sessionName = boot.session_name;
+    let ready = false;
+    let lastPane = null;
+    let restorePane = null;
+    let focusSent = false;
+    let missingPanePrompt = null;
+    let stopped = false;
+    let settleConnection = null;
     let wsTerminal;
     let wsControl;
     const userConfig = { blink: false, style: false };
@@ -108,116 +116,220 @@ export function initWebSockets(boot, term, fitAddon) {
         }
     }
 
-    const wsBaseUrl = getWebSocketBaseUrl();
-    const url =
-        !sessionName || sessionName === ""
-            ? `${wsBaseUrl}/ws/terminal`
-            : `${wsBaseUrl}/ws/terminal/${encodeURIComponent(sessionName)}`;
-
-    const fitDimensions = fitAddon.proposeDimensions() || {
-        rows: term.rows,
-        cols: term.cols,
+    // xterm's public onData combines keyboard input and protocol replies. The
+    // bundled core supplies an explicit user-input flag before they are combined.
+    // Route replies separately so focus restoration cannot deadlock terminal queries.
+    const coreService = term._core?.coreService;
+    const triggerDataEvent = coreService?.triggerDataEvent;
+    if (triggerDataEvent) coreService.triggerDataEvent = function (data, wasUserInput = false) {
+        if (wasUserInput) return triggerDataEvent.call(this, data, true);
+        if (wsTerminal?.readyState === WebSocket.OPEN) wsTerminal.send(data);
     };
-    if (
-        fitDimensions.rows !== term.rows ||
-        fitDimensions.cols !== term.cols
-    ) {
-        term.resize(fitDimensions.cols, fitDimensions.rows);
-    }
-    const cell = getCellPixelDimensions(term);
-    let queryString = `?web_client_id=${encodeURIComponent(ownWebClientId)}&rows=${term.rows}&cols=${term.cols}`;
-    if (cell) {
-        const cellWidth = Math.round(cell.width);
-        const cellHeight = Math.round(cell.height);
-        queryString += `&cell_width=${cellWidth}&cell_height=${cellHeight}`;
-        lastSentCellDimensions = { width: cellWidth, height: cellHeight };
-    }
-    // Fine scrolling: the wheel handler sends one report per line, so Zellij
-    // scrolls one line per report instead of three.
-    if (fineScrolling()) queryString += "&wheel_lines=1";
-    const wsTerminalUrl = `${url}${queryString}`;
 
-    wsTerminal = new WebSocket(wsTerminalUrl);
-
-    wsControl = new WebSocket(
-        `${wsBaseUrl}/ws/control?web_client_id=${encodeURIComponent(ownWebClientId)}`
-    );
-    startWsControl(wsControl, term, fitAddon, ownWebClientId, userConfig);
-    window.__zjSendControl = function (payload) {
-        if (wsControl && wsControl.readyState === WebSocket.OPEN) {
-            wsControl.send(
-                JSON.stringify({
-                    web_client_id: ownWebClientId,
-                    payload,
-                })
-            );
+    function closeSockets() {
+        restorePane ||= window.__zjReconnectPane?.() || lastPane;
+        window.__zjLastMobileState = undefined;
+        ready = false;
+        for (const socket of [wsTerminal, wsControl]) {
+            if (!socket) continue;
+            socket.onclose = socket.onmessage = socket.onopen = null;
+            socket.close();
         }
-    };
+        settleConnection?.(false);
+    }
 
-    wsTerminal.onopen = function () {
-        markConnectionEstablished();
-    };
+    function connect(nextBoot) {
+        closeSockets();
+        ownWebClientId = nextBoot.web_client_id;
+        sessionName = nextBoot.session_name;
+        lastSentCellDimensions = null;
+        focusSent = false;
+        let missingPaneReported = false;
+        const connectionResult = new Promise(resolve => {
+            const timeout = setTimeout(() => { closeSockets(); }, 5000);
+            settleConnection = (ok) => {
+                clearTimeout(timeout);
+                settleConnection = null;
+                resolve(ok);
+            };
+        });
+        const wsBaseUrl = getWebSocketBaseUrl();
+        const url =
+            !sessionName || sessionName === ""
+                ? `${wsBaseUrl}/ws/terminal`
+                : `${wsBaseUrl}/ws/terminal/${encodeURIComponent(sessionName)}`;
 
-    wsTerminal.onmessage = function (event) {
-        let data = event.data;
+        const fitDimensions = fitAddon.proposeDimensions() || {
+            rows: term.rows,
+            cols: term.cols,
+        };
+        if (
+            fitDimensions.rows !== term.rows ||
+            fitDimensions.cols !== term.cols
+        ) {
+            term.resize(fitDimensions.cols, fitDimensions.rows);
+        }
+        const cell = getCellPixelDimensions(term);
+        let queryString = `?web_client_id=${encodeURIComponent(ownWebClientId)}&rows=${term.rows}&cols=${term.cols}`;
+        if (cell) {
+            const cellWidth = Math.round(cell.width);
+            const cellHeight = Math.round(cell.height);
+            queryString += `&cell_width=${cellWidth}&cell_height=${cellHeight}`;
+            lastSentCellDimensions = { width: cellWidth, height: cellHeight };
+        }
+        // Fine scrolling: the wheel handler sends one report per line, so Zellij
+        // scrolls one line per report instead of three.
+        if (fineScrolling()) queryString += "&wheel_lines=1";
+        const wsTerminalUrl = `${url}${queryString}`;
 
-        if (typeof data === "string") {
-            // Handle ANSI title change sequences
-            const titleRegex = /\x1b\]0;([^\x07\x1b]*?)(?:\x07|\x1b\\)/g;
-            let match;
-            while ((match = titleRegex.exec(data)) !== null) {
-                document.title = match[1];
+        wsTerminal = new WebSocket(wsTerminalUrl);
+
+        wsControl = new WebSocket(
+            `${wsBaseUrl}/ws/control?web_client_id=${encodeURIComponent(ownWebClientId)}`
+        );
+        startWsControl(wsControl, term, fitAddon, ownWebClientId, userConfig, payload => {
+            lastPane = payload.active_pane || null;
+            if (restorePane && lastPane) {
+                if (lastPane.pane_id === restorePane.pane_id && lastPane.is_plugin === restorePane.is_plugin) {
+                    restorePane = null;
+                } else if (Array.isArray(payload.panes) && !payload.panes.some(pane => pane.pane_id === restorePane.pane_id && pane.is_plugin === restorePane.is_plugin)) {
+                    // The connection is healthy, but the old target no longer
+                    // exists. Keep input paused until the user acknowledges the
+                    // currently displayed terminal.
+                    if (!missingPaneReported) {
+                        missingPaneReported = true;
+                        const missing = restorePane, control = wsControl;
+                        settleConnection?.(true);
+                        missingPanePrompt ||= showErrorModal("Terminal closed", "The terminal you were viewing has closed. Acknowledge to continue in the currently displayed terminal.").finally(() => { missingPanePrompt = null; });
+                        missingPanePrompt.then(() => {
+                            if (control !== wsControl || stopped) return;
+                            if (restorePane?.pane_id === missing.pane_id && restorePane.is_plugin === missing.is_plugin) restorePane = null;
+                            connected();
+                        });
+                    }
+                } else if (!focusSent) {
+                    window.__zjSendControl({ type: "FocusPane", pane_id: restorePane.pane_id, is_plugin: restorePane.is_plugin });
+                }
+            }
+            connected();
+        });
+        window.__zjSendControl = function (payload) {
+            // A tab selection made during recovery supersedes the old target,
+            // including when its control request must wait for a socket.
+            if (restorePane && payload.type === "FocusPane") {
+                restorePane = { pane_id: payload.pane_id, is_plugin: payload.is_plugin };
+                focusSent = false;
+            }
+            if (wsControl && wsControl.readyState === WebSocket.OPEN) {
+                wsControl.send(
+                    JSON.stringify({
+                        web_client_id: ownWebClientId,
+                        payload,
+                    })
+                );
+                if (restorePane && payload.type === "FocusPane") focusSent = true;
+            }
+        };
+
+        const connected = () => {
+            if (!ready && !restorePane && !missingPanePrompt && wsTerminal.readyState === WebSocket.OPEN && wsControl.readyState === WebSocket.OPEN) {
+                ready = true;
+                markConnectionEstablished();
+                settleConnection?.(true);
+            }
+        };
+        wsTerminal.onopen = connected;
+        wsControl.onopen = connected;
+
+        wsTerminal.onmessage = function (event) {
+            let data = event.data;
+
+            if (typeof data === "string") {
+                // Handle ANSI title change sequences
+                const titleRegex = /\x1b\]0;([^\x07\x1b]*?)(?:\x07|\x1b\\)/g;
+                let match;
+                while ((match = titleRegex.exec(data)) !== null) {
+                    document.title = match[1];
+                }
+
+                if ((userConfig.blink || userConfig.style) && (
+                    data.includes("\x1b[0 q") ||
+                    data.includes("\x1b[1 q") ||
+                    data.includes("\x1b[2 q") ||
+                    data.includes("\x1b[3 q") ||
+                    data.includes("\x1b[4 q") ||
+                    data.includes("\x1b[5 q") ||
+                    data.includes("\x1b[6 q")
+                )) {
+                    data = data.replace(/\x1b\[([0-6]) q/g, (match, p1) => {
+                        const id = parseInt(p1);
+
+                        // Decode app-requested blink and shape from DECSCUSR id
+                        // id 0 = reset-to-default (null = no preference)
+                        const appBlink = id === 0 ? null : (id % 2 === 1);
+                        const appShapes = [null, "block", "block", "underline", "underline", "bar", "bar"];
+                        const appShape  = appShapes[id];
+
+                        // Apply user overrides only for what was explicitly configured;
+                        // otherwise pass through the app's value (or fall back to term.options)
+                        const effectiveBlink = userConfig.blink ? term.options.cursorBlink
+                                                                : (appBlink !== null ? appBlink : term.options.cursorBlink);
+                        const effectiveShape = userConfig.style ? term.options.cursorStyle
+                                                                : (appShape !== null ? appShape : term.options.cursorStyle);
+
+                        if (effectiveShape === "block")     return effectiveBlink ? "\x1b[1 q" : "\x1b[2 q";
+                        if (effectiveShape === "underline") return effectiveBlink ? "\x1b[3 q" : "\x1b[4 q";
+                        if (effectiveShape === "bar")       return effectiveBlink ? "\x1b[5 q" : "\x1b[6 q";
+                        return match;
+                    });
+                }
             }
 
-            if ((userConfig.blink || userConfig.style) && (
-                data.includes("\x1b[0 q") ||
-                data.includes("\x1b[1 q") ||
-                data.includes("\x1b[2 q") ||
-                data.includes("\x1b[3 q") ||
-                data.includes("\x1b[4 q") ||
-                data.includes("\x1b[5 q") ||
-                data.includes("\x1b[6 q")
-            )) {
-                data = data.replace(/\x1b\[([0-6]) q/g, (match, p1) => {
-                    const id = parseInt(p1);
+            term.write(data);
+        };
 
-                    // Decode app-requested blink and shape from DECSCUSR id
-                    // id 0 = reset-to-default (null = no preference)
-                    const appBlink = id === 0 ? null : (id % 2 === 1);
-                    const appShapes = [null, "block", "block", "underline", "underline", "bar", "bar"];
-                    const appShape  = appShapes[id];
-
-                    // Apply user overrides only for what was explicitly configured;
-                    // otherwise pass through the app's value (or fall back to term.options)
-                    const effectiveBlink = userConfig.blink ? term.options.cursorBlink
-                                                            : (appBlink !== null ? appBlink : term.options.cursorBlink);
-                    const effectiveShape = userConfig.style ? term.options.cursorStyle
-                                                            : (appShape !== null ? appShape : term.options.cursorStyle);
-
-                    if (effectiveShape === "block")     return effectiveBlink ? "\x1b[1 q" : "\x1b[2 q";
-                    if (effectiveShape === "underline") return effectiveBlink ? "\x1b[3 q" : "\x1b[4 q";
-                    if (effectiveShape === "bar")       return effectiveBlink ? "\x1b[5 q" : "\x1b[6 q";
-                    return match;
-                });
+        const closed = (event) => {
+            closeSockets();
+            if (event.code === 4001) {
+                stopped = true;
+                handleDisconnected();
+            } else if (!stopped) {
+                handleReconnection();
             }
-        }
+        };
+        wsTerminal.onclose = closed;
+        wsControl.onclose = closed;
+        return connectionResult;
+    }
 
-        term.write(data);
-    };
-
-    wsTerminal.onclose = function (event) {
-        if (event.code === 4001) {
-            handleDisconnected();
-        } else {
-            handleReconnection();
-        }
-    };
+    setReconnectHandler(async () => {
+        if (stopped) return false;
+        // Session switching updates the URL without recreating this terminal.
+        const currentSession = decodeURIComponent(location.pathname.split("/").pop()) || sessionName;
+        const base = getBaseUrl();
+        const recovery = { quiet: true, timeoutMs: 5000 };
+        const catalog = await authorizedFetch(`${base}/session-list`, {}, recovery);
+        if (!catalog.ok) return false;
+        const { sessions } = await catalog.json();
+        if (!sessions.some(session => session.name === currentSession && session.web_clients_allowed)) return false;
+        const response = await authorizedFetch(`${base}/session?session=${encodeURIComponent(currentSession)}&welcome=false`, {
+            method: "POST",
+        }, recovery);
+        if (!response.ok || stopped) return false;
+        return connect(await response.json());
+    });
+    connect(boot).then(ok => { if (!ok && !stopped) handleReconnection(); });
 
     const sendAnsiKey = (ansiKey) => {
         let payload = ansiKey;
         if (typeof window.__zjMobileMergeKey === "function") {
             payload = window.__zjMobileMergeKey(payload);
         }
+        if (!ready) {
+            showConnectionStatus();
+            return;
+        }
+        if (term.options.disableStdin) return;
         wsTerminal.send(payload);
     };
 
@@ -229,22 +341,19 @@ export function initWebSockets(boot, term, fitAddon) {
     );
 
     return {
-        wsTerminal,
+        get wsTerminal() { return wsTerminal; },
         getWsControl: () => wsControl,
         getOwnWebClientId: () => ownWebClientId,
         sendAnsiKey,
         cleanup: () => {
-            if (wsTerminal) {
-                wsTerminal.close();
-            }
-            if (wsControl) {
-                wsControl.close();
-            }
+            stopped = true;
+            closeSockets();
+            if (triggerDataEvent) coreService.triggerDataEvent = triggerDataEvent;
         },
     };
 }
 
-function startWsControl(wsControl, term, fitAddon, ownWebClientId, userConfig) {
+function startWsControl(wsControl, term, fitAddon, ownWebClientId, userConfig, onState) {
     wsControl.onmessage = function (event) {
         const msg = JSON.parse(event.data);
         if (msg.type === "SetConfig") {
@@ -309,6 +418,7 @@ function startWsControl(wsControl, term, fitAddon, ownWebClientId, userConfig) {
             const { payload } = msg;
             if (payload) {
                 window.__zjLastMobileState = payload;
+                onState(payload);
                 if (window.__zjMobileUi) {
                     window.__zjMobileUi.setData(payload);
                 }
@@ -316,13 +426,7 @@ function startWsControl(wsControl, term, fitAddon, ownWebClientId, userConfig) {
         }
     };
 
-    wsControl.onclose = function (event) {
-        if (event.code === 4001) {
-            handleDisconnected();
-        } else {
-            handleReconnection();
-        }
-    };
+
 }
 
 export function setupResizeHandler(
@@ -456,7 +560,7 @@ function setupSoftKeyboardVisibilityTracker(getWsControl, getOwnWebClientId) {
 
         const wsControl = getWsControl();
         const ownWebClientId = getOwnWebClientId();
-        if (!wsControl || ownWebClientId === "") {
+        if (!wsControl || wsControl.readyState !== WebSocket.OPEN || ownWebClientId === "") {
             return;
         }
         wsControl.send(

@@ -11,12 +11,13 @@ const root = path.resolve(__dirname, '../..');
 const newBinary = path.resolve(process.argv[3] || path.join(root, 'target/release/zellij'));
 const oldBinary = path.resolve(process.argv[2] || newBinary);
 const recoveryMode=process.env.SWITCHBOARD_TEST_RECOVERY_ADAPTER==='1';
+const inPlace = process.env.SWITCHBOARD_TEST_IN_PLACE_RECONNECT === '1';
 const dir = fs.mkdtempSync('/tmp/switchboard-browser-update-');
 const installed = path.join(dir, 'zellij');
 const config = path.join(dir, 'config.kdl');
 const name = `update-acceptance-${crypto.randomBytes(8).toString('hex')}`;
 const env = {...process.env, HOME:dir, ZELLIJ_SOCKET_DIR:path.join(dir,'sockets'),
-    SWITCHBOARD_RELEASES_DIR:path.join(dir,'releases'), TERM:'xterm-256color'};
+    SWITCHBOARD_RELEASES_DIR:path.join(dir,'releases'), SWITCHBOARD_VIEWER_LOCK:path.join(dir,'viewers.lock'), TERM:'xterm-256color'};
 for (const key of ['ZELLIJ','ZELLIJ_SESSION_NAME','ZELLIJ_CONFIG_FILE','ZELLIJ_CONFIG_DIR']) delete env[key];
 env.ZELLIJ_CONFIG_FILE = config;
 const cli = (...args) => execFileSync(installed, ['--config',config,...args], {env,encoding:'utf8',timeout:15000,stdio:['ignore','pipe','pipe']});
@@ -47,7 +48,7 @@ function processes() {
 const identities = () => JSON.parse(cli('-s',name,'action','list-panes','--json','--all')).map(p=>[p.is_plugin,p.id,p.tab_id]).sort();
 let native, relay, browser, tokenName, readOnlyTokenName, created=false, otherCreated=false;
 const otherName='excluded-'+name.slice(-16);
-let recoveryPanes;
+let recoveryPanes, reconnectTarget;
 (async()=>{
     try {
         fs.mkdirSync(path.join(dir,'git','switchboard'),{recursive:true});
@@ -93,6 +94,14 @@ let recoveryPanes;
             assert.ok(sessions.find(s=>s.name===name)?.sharing_recovery,'Catalog identifies temporary adapter recovery');
             assert.ok(!sessions.find(s=>s.name===otherName)?.web_clients_allowed,'Recovery excludes other Off sessions');
         }
+        if (inPlace && !recoveryMode) {
+            cli('-s',name,'action','new-tab','--name','Reconnect target','--','/bin/bash','--noprofile','--norc');
+            await waitFor(() => {
+                const panes = JSON.parse(cli('-s',name,'action','list-panes','--json','--all')).filter(p=>!p.is_plugin).sort((a,b)=>a.tab_position-b.tab_position);
+                reconnectTarget = panes[1];
+                return !!reconnectTarget;
+            }, 'Second private terminal did not start');
+        }
         const beforeIdentities=identities();
         const names=()=>JSON.parse(cli('-s',name,'action','list-tabs','--json'))
             .map(tab=>[tab.tab_id,tab.name]).sort((a,b)=>a[0]-b[0]);
@@ -110,7 +119,27 @@ let recoveryPanes;
             const Original=window.WebSocket;
             window.__acceptanceSockets=[];
             window.WebSocket=class extends Original {
-                constructor(...args){super(...args);window.__acceptanceSockets.push(this);}
+                constructor(...args){
+                    super(...args);window.__acceptanceSockets.push(this);
+                    const replacementControl = String(args[0]).includes('/ws/control') && window.__acceptanceSockets.filter(s=>s.url.includes('/ws/control')).length > 1;
+                    if (replacementControl) this.addEventListener('message', event => {
+                        if (!window.__acceptanceReconnectCommand || window.__acceptanceInjected || JSON.parse(event.data).type !== 'MobileState') return;
+                        // Both sockets are open, but the sidebar has not seen the
+                        // new client's default first-tab state or restored focus.
+                        window.__acceptanceInjected = true;
+                        event.stopImmediatePropagation();
+                        window.term.input(window.__acceptanceReconnectCommand);
+                        for (const event of [
+                            {code:'KeyL',ctrlKey:true}, {code:'Backspace',ctrlKey:true},
+                            {code:'ArrowLeft',altKey:true}, {code:'ArrowRight',altKey:true},
+                        ]) window.term.textarea.dispatchEvent(new KeyboardEvent('keydown', {...event,bubbles:true,cancelable:true}));
+                        this.dispatchEvent(new MessageEvent('message', {data:event.data}));
+                    });
+                }
+                send(data) {
+                    if (window.__acceptanceInjected && ['\x0c','\x17','\x1b[1;5D','\x1b[1;5C'].includes(data)) window.__acceptanceShortcutLeaked = true;
+                    return super.send(data);
+                }
             };
         });
         await page.goto(url);
@@ -177,7 +206,15 @@ let recoveryPanes;
                 if(!term) return false;
                 for(let n=0;n<term.buffer.active.length;n++)if(term.buffer.active.getLine(n)?.translateToString().includes(marker))return true;
                 return false;
-            },expected);
+            },expected).catch(async error => {
+                console.error('Terminal command diagnostics:', JSON.stringify(await target.evaluate(() => {
+                    const w=document.querySelector('#terminals>iframe.active')?.contentWindow;
+                    return {state:w?.__zjLastMobileState,disabled:w?.term?.options.disableStdin,status:w?.document.body.innerText,
+                        sockets:w?.__acceptanceSockets?.map(s=>({url:s.url,state:s.readyState})),
+                        screen:w?.term && Array.from({length:w.term.buffer.active.length},(_,n)=>w.term.buffer.active.getLine(n)?.translateToString()).filter(s=>s?.trim()).slice(-15)};
+                })));
+                throw error;
+            });
         }
         async function selectedPane(pane,target=page){
             await target.waitForFunction(expected=>{
@@ -253,7 +290,7 @@ let recoveryPanes;
             await command(`printf '%s%s\\n' "REFRESHED_" "$SB_STATE"`,'REFRESHED_'+marker);
         }
         await command(`SB_STATE=${marker}; printf '%s%s\\n' "BEFORE_" "$SB_STATE"`,'BEFORE_'+marker);
-        const selected=await page.evaluate(()=>location.href);
+        let selected=await page.evaluate(()=>location.href);
         if(!recoveryMode){
         const quote=value=>"'"+value.replaceAll("'","'\\''")+"'";
         const counter=path.join(dir,'failed-probe-count');
@@ -268,14 +305,51 @@ let recoveryPanes;
         execFileSync('/bin/bash',[path.join(__dirname,'update_local.sh'),'--binary-only',newBinary,installed],{env,timeout:60000,stdio:'pipe'});
         await command(`printf '%s%s\\n' "UPDATED_" "$SB_STATE"`,'UPDATED_'+marker);
         }
+        // The rollback fixture temporarily reports an empty catalog. Select the
+        // second terminal after those probes, before testing transport recovery.
+        if (reconnectTarget) {
+            await selectPane(reconnectTarget);
+            await command(`SB_STATE=${marker}; printf '%s%s\\n' "SECOND_READY_" "$SB_STATE"`, 'SECOND_READY_'+marker);
+            selected=await page.evaluate(()=>location.href);
+        }
+        // In-place recovery must retain the actual iframe document and xterm instance.
+        const viewerLockBusy = () => {
+            const result = spawnSync('python3', ['-c', `import fcntl,sys
+with open(sys.argv[1], 'a+') as lock:
+    try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError: sys.exit(2)
+`, env.SWITCHBOARD_VIEWER_LOCK], {encoding:'utf8'});
+            assert.ok([0,2].includes(result.status), result.stderr);
+            return result.status === 2;
+        };
+        if (inPlace) assert.ok(viewerLockBusy(), 'A browser connection excludes an updater in another process');
+        const misplacedInput = path.join(dir, 'misplaced-input');
+        if (inPlace) await page.evaluate(command => {
+            const w = document.querySelector('#terminals>iframe.active').contentWindow;
+            window.savedTerminalDocument = w.document;
+            window.savedTerminal = w.term;
+            w.__acceptanceReconnectCommand = command;
+        }, `printf misplaced > '${misplacedInput}'\r`);
         // Restart only the connection services, leaving the existing shell and browser alone.
         await stop(native);native=null;await stop(relay);relay=null;
+        if (inPlace) assert.ok(!viewerLockBusy(), 'Stopping connection services releases their viewer locks');
         await sleep(500);
         native=startNative();relay=startRelay();
         await waitFor(async()=> (await fetch(url)).ok,'Connection services did not recover');
         await connected();
         if(recoveryMode)await selectedPane(recoveryPanes[1]);
+        if(reconnectTarget)await selectedPane(reconnectTarget);
         await command(`printf '%s%s\\n' "RECONNECTED_" "$SB_STATE"`,'RECONNECTED_'+marker);
+        if (inPlace) {
+            assert.ok(await page.evaluate(() => document.querySelector('#terminals>iframe.active').contentWindow.__acceptanceInjected), 'Typing was attempted before the first restored-pane metadata');
+            assert.ok(!await page.evaluate(() => document.querySelector('#terminals>iframe.active').contentWindow.__acceptanceShortcutLeaked), 'Shortcuts cannot bypass pane restoration');
+            assert.ok(!fs.existsSync(misplacedInput), 'Input before pane restoration never reaches the first tab or gets replayed');
+            assert.ok(viewerLockBusy(), 'Reconnected viewers protect the new services');
+        }
+        if (inPlace) assert.ok(await page.evaluate(() => {
+            const w = document.querySelector('#terminals>iframe.active').contentWindow;
+            return w.document === window.savedTerminalDocument && w.term === window.savedTerminal;
+        }), 'Reconnect preserves the terminal document and xterm instance');
         assert.equal(await page.evaluate(()=>location.href),selected,'Selected terminal URL survives');
         assert.deepEqual(identities(),beforeIdentities,'Tab and pane identities survive');
         assert.deepEqual(names(),beforeNames,'Native tab names survive updates and reconnection');

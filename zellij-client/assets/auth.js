@@ -96,15 +96,17 @@ function authenticate() {
  * Perform a request, authenticating and retrying for as long as it is rejected.
  * @param {string} url - Absolute URL to request
  * @param {Object} options - fetch options, merged over the credentialed defaults
- * @returns {Promise<Response>} The successful response
+ * @param {Object} recovery - quiet returns non-auth failures for background retry; timeoutMs applies per request
+ * @returns {Promise<Response>} The successful response (or non-auth failure when quiet)
  */
-export async function authorizedFetch(url, options = {}) {
+export async function authorizedFetch(url, options = {}, { quiet = false, timeoutMs } = {}) {
     while (true) {
         const generation = authenticationGeneration;
 
         const response = await fetch(url, {
             credentials: "include",
             ...options,
+            ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
         });
 
         if (response.ok) {
@@ -112,6 +114,7 @@ export async function authorizedFetch(url, options = {}) {
         }
 
         if (response.status !== 401) {
+            if (quiet) return response;
             await showErrorModal(
                 "Error",
                 `Error ${response.status} connecting to server.`

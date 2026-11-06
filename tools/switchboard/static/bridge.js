@@ -5,6 +5,10 @@
   const NativeSocket = window.WebSocket;
   const host = location.pathname.split('/')[2];
   let latest;
+  let disconnectedPane;
+  // Retain the requested pane even if control closes before the stock handler
+  // captures its reconnect target. Socket-open alone must not enable typing.
+  window.__zjReconnectPane = () => desiredFocus || latest?.active_pane || disconnectedPane;
   let escapeStatus;
   let pendingFocus, desiredFocus, focusInputState, focusId, focusTimeout, focusAttempts=0;
   const focusMaxAttempts=3, focusTimeoutMs=5000;
@@ -319,7 +323,7 @@
       // sends the same clear-screen input if the browser keeps Ctrl+L itself.
       event.preventDefault();event.stopImmediatePropagation();
       if(pendingFocus||pendingNewTab||window.term?.options.disableStdin)return;
-      if(terminalSocket?.readyState===1)terminalSocket.send('\x0c');
+      if(terminalSocket?.readyState===1)window.term?.input('\x0c');
       return;
     }
     if(event.code==='Backspace'&&(event.ctrlKey!==event.altKey)&&!event.metaKey&&!event.shiftKey
@@ -329,7 +333,7 @@
       // sequences, including when the shell runs through Windows ConPTY.
       event.preventDefault();event.stopImmediatePropagation();
       if(pendingFocus||pendingNewTab||window.term?.options.disableStdin)return;
-      if(terminalSocket?.readyState===1)terminalSocket.send('\x17');
+      if(terminalSocket?.readyState===1)window.term?.input('\x17');
       return;
     }
     if(!event.altKey||event.ctrlKey||event.metaKey||event.isComposing)return;
@@ -338,7 +342,7 @@
       if(pendingFocus||pendingNewTab||window.term?.options.disableStdin)return;
       if(terminalSocket?.readyState!==1)return;
       // Send standard word movement rather than Zellij's Alt+Arrow pane bindings.
-      terminalSocket.send(event.code==='ArrowLeft'?'\x1b[1;5D':'\x1b[1;5C');
+      window.term?.input(event.code==='ArrowLeft'?'\x1b[1;5D':'\x1b[1;5C');
       return;
     }
     // Physical key codes also work with macOS Option producing ˙ and ¬.
@@ -472,6 +476,7 @@
         });
         this.addEventListener('close', () => {
           if(controlSocket!==this)return;
+          disconnectedPane = desiredFocus || latest?.active_pane || disconnectedPane;
           latest = undefined;
           diagnostics?.finish('disconnected');
           lastViewport=null;claimedViewportTab=null;updateViewport();
