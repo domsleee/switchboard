@@ -85,3 +85,5 @@
 .conversation-media-stage{flex:1;min-height:0;overflow:auto;display:grid;place-items:center;padding:12px;background:#0c0d10}
 .conversation-media-stage img,.conversation-media-stage video{max-width:100%;max-height:100%;object-fit:contain}
 @media(max-width:700px){.conversation-media-dialog{width:100vw;height:100dvh;border:0;border-radius:0}.conversation-media-dialog header{gap:8px;padding:8px}.conversation-media img,.conversation-media video{max-height:280px}}
+
+.conversation-compose .conversation-send-notice{grid-column:1/-1;grid-row:3;color:#c4c7d2;font-size:12px}
