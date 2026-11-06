@@ -802,6 +802,16 @@ impl PollState {
             self.dirty = true;
             return;
         }
+        // Claude's next PostToolUse arrives when the approved tool finishes. Its
+        // working screen can show that approval was given before that hook arrives.
+        // Keep the hook for unreadable screens and dialogs that appear again.
+        if hooked.agent == "claude"
+            && hooked.state == "approval"
+            && row["agent"] == "claude"
+            && row["state"] == "working"
+        {
+            return;
+        }
         let row = row.as_object_mut().unwrap();
         row.remove("deferred");
         row.insert("state".into(), json!(hooked.state));
@@ -1579,6 +1589,51 @@ esac
             "each finished turn is a new result"
         );
     }
+    #[test]
+    fn claude_approval_does_not_hide_a_running_approved_tool() {
+        let pane =
+            json!({"id":21,"tab_id":21,"pane_command":"claude","title":"✳ Demo benchmark mining"});
+        // Claude Code 2.1.318, excerpt captured from this pane with dump-screen.
+        let running = "● Rendering each run's transcript as a readable log\n\
+            · Herding… (1m 0s · ↓ 3.8k tokens)\n\
+            ──────────\n\
+            ❯ \n\
+            ──────────\n\
+              ⏵⏵ bypass permissions on (shift+tab to cycle) · ⧉ demo-video-benchmarks · esc to interrupt";
+        assert_eq!(classify(&pane, running)["state"], "working");
+        let scan = |screen: &str| {
+            snapshot(
+                "main",
+                std::slice::from_ref(&pane),
+                &HashMap::from([(21, screen.to_owned())]),
+                false,
+            )
+        };
+        let mut poll = PollState::default();
+        poll.hooks.insert(
+            ("main".into(), 21),
+            hook_status("claude", &json!({"hook_event_name":"PermissionRequest"})).unwrap(),
+        );
+        let mut unreadable = scan("");
+        poll.update("windows", &mut unreadable);
+        assert_eq!(unreadable["panes"][0]["state"], "approval");
+
+        // Approval has been given, but PostToolUse will not arrive until the tool ends.
+        let mut approved = scan(running);
+        poll.update("windows", &mut approved);
+        assert_eq!(approved["panes"][0]["state"], "working");
+
+        // Keep the hook as a fallback if the dialog is unreadable or appears again.
+        let dialog = "Do you want to proceed?\n❯ 1. Yes\n  2. No\nEsc to cancel";
+        assert_eq!(classify(&pane, dialog)["state"], "approval");
+        let mut awaiting = scan(dialog);
+        poll.update("windows", &mut awaiting);
+        assert_eq!(awaiting["panes"][0]["state"], "approval");
+        let mut unreadable = scan("");
+        poll.update("windows", &mut unreadable);
+        assert_eq!(unreadable["panes"][0]["state"], "approval");
+    }
+
     #[tokio::test]
     async fn hook_status_replaces_the_screen_for_its_own_claude_pane_only() {
         let state = RelayState {
