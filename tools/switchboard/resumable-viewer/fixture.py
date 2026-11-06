@@ -3,12 +3,23 @@ import os, sys, threading, time, json
 root = sys.argv[1]
 if os.name == 'nt':
     import ctypes, msvcrt
-    kernel = ctypes.windll.kernel32
-    mode = ctypes.c_ulong()
-    handle = kernel.GetStdHandle(-10)
-    kernel.GetConsoleMode(handle, ctypes.byref(mode))
-    kernel.SetConsoleMode(handle, (mode.value & ~7) | 0x200)
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.GetStdHandle.argtypes = [wintypes.DWORD]
+    kernel.GetStdHandle.restype = wintypes.HANDLE
+    kernel.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel.GetConsoleMode.restype = wintypes.BOOL
+    kernel.SetConsoleMode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.SetConsoleMode.restype = wintypes.BOOL
+    for standard, clear, enable in [(-10, 7, 0x200), (-11, 0, 4)]:
+        mode = wintypes.DWORD()
+        handle = kernel.GetStdHandle(standard & 0xffffffff)
+        if not kernel.GetConsoleMode(handle, ctypes.byref(mode)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not kernel.SetConsoleMode(handle, (mode.value & ~clear) | enable):
+            raise ctypes.WinError(ctypes.get_last_error())
     msvcrt.setmode(sys.stdin.fileno(), os.O_BINARY)
+    msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)
 else:
     import tty
     tty.setraw(sys.stdin.fileno())
