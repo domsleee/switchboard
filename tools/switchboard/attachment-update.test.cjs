@@ -77,6 +77,11 @@ let native, relay, browser, updateController, created=false;
   fs.writeFileSync(path.join(dir,'go'),'');
   let expected='';
   const send=async text=>{expected+=text;await page.evaluate(text=>document.querySelector('#terminals>iframe.active').contentWindow.term.input(text),text);};
+  // An idle already-focused pane emits no new native MobileState.
+  for(let i=0;i<2;i++) {
+    await page.evaluate(()=>{const w=document.querySelector('#terminals>iframe.active').contentWindow,pair=w.testPair,pane=w.__zjLastMobileState.active_pane;pair.control.send(JSON.stringify({web_client_id:pair.control.owner.viewer,payload:{type:'FocusPane',pane_id:pane.pane_id,is_plugin:pane.is_plugin}}));});
+    await page.waitForFunction(()=>document.querySelector('#terminals>iframe.active').contentWindow.testPair.terminal.owner.pending.length===0);
+  }
   await send('before|');
   await waitFor(()=>fs.readFileSync(path.join(dir,'input.bin'),'utf8')===expected,'Initial typing failed');
   await page.evaluate(()=>{
@@ -139,21 +144,41 @@ let native, relay, browser, updateController, created=false;
   assert.ok(await page.evaluate(()=>{const w=document.querySelector('#terminals>iframe.active').contentWindow;return w.term===window.savedTerm&&w.document===window.savedDocument;}),'Document and renderer survive');
   await page.waitForFunction(()=>document.querySelector('#terminals>iframe.active').contentWindow.testOutput.includes('OUT:000400'));
   assert.equal(fs.readFileSync(path.join(dir,'input.bin'),'utf8'),expected);
+  const otherDir=path.join(dir,'other');fs.mkdirSync(otherDir);
+  cli('-s',name,'action','new-tab','--name','Other','--',process.env.PYTHON||(process.platform==='win32'?'python':'python3'),'-u',path.join(root,'tools/switchboard/resumable-viewer/fixture.py'),otherDir);
+  await waitFor(()=>fs.existsSync(path.join(otherDir,'input.bin')),'Second raw terminal started');
+  const oldPane=before.find(p=>!p[0])[1],otherPane=identities().find(p=>!p[0]&&p[1]!==oldPane)[1];
+  const focus=async pane=>{
+    await page.evaluate(id=>{const pair=document.querySelector('#terminals>iframe.active').contentWindow.testPair;pair.control.send(JSON.stringify({web_client_id:pair.control.owner.viewer,payload:{type:'FocusPane',pane_id:id,is_plugin:false}}));},pane);
+    await page.waitForFunction(()=>{const o=document.querySelector('#terminals>iframe.active').contentWindow.testPair.terminal.owner;return !o.stopped&&o.pending.length===0;});
+  };
+  await focus(oldPane);await send('returned|');
+  await page.evaluate(()=>document.querySelector('#terminals>iframe.active').contentWindow.testPair.terminal.owner.socket.close());
+  await focus(otherPane);
+  await page.evaluate(()=>document.querySelector('#terminals>iframe.active').contentWindow.testPair.terminal.send('other|'));
+  await waitFor(()=>fs.readFileSync(path.join(otherDir,'input.bin'),'utf8')==='other|','Typing follows confirmed target after reconnect');
+  await focus(oldPane);
+  assert.equal(fs.readFileSync(path.join(dir,'input.bin'),'utf8'),expected);
+  console.log('PASS: repeated idle focus and real pane switches survive reconnect with typing sent only to the target');
   if(recoveryMode) {
-    const originalViewer=await page.evaluate(()=>document.querySelector('#terminals>iframe.active').contentWindow.testPair.terminal.owner.viewer);
+    const resume=await page.evaluate(()=>{const o=document.querySelector('#terminals>iframe.active').contentWindow.testPair.terminal.owner;window.savedOwner=o;return {session:o.session,web_client_id:o.viewer,generation:o.generation,nonce:'revoked-recovery',applied:o.applied};});
     await stop(native);native=null;delete env.SWITCHBOARD_RECOVER_UNSHARED_SESSION;
+    await page.evaluate(()=>window.savedOwner.terminal.send('REVOKED_INPUT'));
     native=start(['--config',config,'web','--port',String(nativePort)],'native');
-    await waitFor(async()=> !(await(await fetch(url+'/api/hosts/test')).json()).sessions?.find(s=>s.name===name)?.web_clients_allowed,'Recovery revoked');
-    await page.evaluate(()=>document.querySelector('#terminals>iframe.active').contentWindow.testPair.terminal.send('REVOKED_INPUT'));
-    const fresh=await context.newPage();
+    await waitFor(async()=> (await(await fetch(url+'/api/hosts/test')).json()).sessions?.find(s=>s.name===name)?.web_clients_allowed===false,'Recovery revoked');
+    const denied=await page.evaluate(async query=>new Promise(resolve=>{const ws=new WebSocket(location.origin.replace('http','ws')+'/hosts/test/ws/resume?'+new URLSearchParams(query));ws.onopen=()=>{resolve(false);ws.close();};ws.onerror=()=>resolve(true);}),resume);
+    assert.ok(denied,'Removed recovery cannot resume an existing retained viewer');
+    const freshContext=await browser.newContext(),nativeUrl=`http://127.0.0.1:${nativePort}`;
+    assert.equal((await freshContext.request.post(nativeUrl+'/command/login',{data:{auth_token:fs.readFileSync(tokenPath,'utf8'),remember_me:true}})).status(),200);
+    const fresh=await freshContext.newPage();
     await fresh.addInitScript(()=>window.addEventListener('zellij-resumable-sockets',e=>window.testPair=e.detail));
-    await fresh.goto(url);
-    await sleep(3000);
+    await fresh.goto(nativeUrl+'/'+name);
+    await fresh.waitForFunction(()=>window.__zjResumeFailure);
     assert.equal(fs.readFileSync(path.join(dir,'input.bin'),'utf8'),expected,'Removed recovery cannot forward buffered input');
-    assert.ok(await page.evaluate(id=>{const o=document.querySelector('#terminals>iframe.active').contentWindow.testPair.terminal.owner;return o.viewer===id&&!o.connected;},originalViewer));
-    await fresh.close();console.log('PASS: removing recovery authorization blocks retained and new viewers');
+    await freshContext.close();console.log('PASS: removing recovery authorization blocks retained and new viewers');
   } else {
   // A different credential cannot take over this retained viewer.
+  const beforeReadonly=identities();
   const roLine=cli('web','--create-read-only-token').split('\n').find(line=>line.includes(': '));
   const roName=roLine.slice(0,roLine.indexOf(': '));
   const roToken=roLine.slice(roLine.indexOf(': ')+2).replace(/ \(read-only\)\s*$/,'').trim();
@@ -165,7 +190,7 @@ let native, relay, browser, updateController, created=false;
   await roPage.waitForFunction(()=>window.testPair?.terminal.readyState===1);
   await roPage.evaluate(()=>{window.testPair.terminal.send('FORBIDDEN');const pair=window.testPair;pair.control.send(JSON.stringify({web_client_id:pair.control.owner.viewer,payload:{type:'NewTab'}}));});
   await sleep(300);assert.equal(fs.readFileSync(path.join(dir,'input.bin'),'utf8'),expected,'Read-only input rejected');
-  assert.deepEqual(identities(),before,'Read-only controls cannot create a tab');
+  assert.deepEqual(identities(),beforeReadonly,'Read-only controls cannot create a tab');
   const resume=await page.evaluate(()=>{const o=document.querySelector('#terminals>iframe.active').contentWindow.testPair.terminal.owner;return {session:o.session,web_client_id:o.viewer,generation:o.generation,nonce:'wrong-owner',applied:o.applied};});
   const denied=await roPage.evaluate(async query=>new Promise(resolve=>{const ws=new WebSocket(location.origin.replace('http','ws')+'/ws/resume?'+new URLSearchParams(query));ws.onopen=()=>{resolve(false);ws.close();};ws.onerror=()=>resolve(true);}),resume);
   assert.ok(denied,'Another credential cannot resume the viewer');

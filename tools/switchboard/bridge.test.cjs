@@ -705,3 +705,14 @@ test('Conversation blocks stock fallback and forced TerminalResize but keeps con
   socket.send(input);assert.deepEqual(socket.sent,[input]);
   open=false;socket.send(resize);assert.deepEqual(socket.sent,[input,resize]);
 });
+
+test('resumable already-focused confirmation settles the matching sidebar request',()=>{
+  const h=harness();h.window.__zjSendControl=()=>{};
+  const control=new h.window.WebSocket('ws://localhost:8090/ws/control');control.resumable=true;
+  const emit=message=>control.handlers.message({data:JSON.stringify(message)});
+  emit({type:'MobileState',payload:{active_pane:{pane_id:1,is_plugin:false}}});
+  h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-focus',pane_id:1,is_plugin:false,focus_id:8}});
+  assert.equal(h.window.term.options.disableStdin,false,'Typing stays in the retained ordered stream');
+  emit({type:'FocusConfirmed',payload:{pane_id:1,is_plugin:false}});
+  assert.equal(h.messages.at(-1).focus_id,8);assert.equal(h.messages.at(-1).focus_pending,false);
+});
