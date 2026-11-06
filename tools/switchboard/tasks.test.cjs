@@ -164,6 +164,18 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
     await page.waitForFunction(()=>document.querySelector('#updates .switchboard-group .task-state')?.textContent==='All set');
     await mac.evaluate(el=>el.open=true);
     if(process.env.SKILL_HEALTH_SCREENSHOTS)await page.screenshot({path:'/tmp/skill-health-before.png',clip:await page.locator('#updates .task-computer').first().boundingBox()});
+    if(process.env.INSTALL_HEALTH_SCREENSHOTS)await mac.screenshot({path:process.env.INSTALL_HEALTH_SCREENSHOTS+'/before.png'});
+    tasks.computers[0].agents[2].installation={state:'attention',manager:'npm',detail:'Codex uses an npm installation on Windows. Updates can fail with EBUSY.',command:'powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"'};
+    await page.evaluate(()=>SwitchboardTasks.load());
+    await page.waitForFunction(()=>document.querySelector('#updates .switchboard-group .task-state')?.textContent==='Codex: installation needs attention');
+    assert.equal(await macRows.nth(2).getAttribute('data-status'),'attention');
+    assert.match(await mac.locator('.installation-warning').textContent(),/EBUSY/);
+    assert.match(await mac.locator('.installation-command').textContent(),/install.ps1/);
+    assert.equal(await macRows.nth(2).getByRole('button').count(),0,'migration must not run hook setup');
+    if(process.env.INSTALL_HEALTH_SCREENSHOTS)await mac.screenshot({path:process.env.INSTALL_HEALTH_SCREENSHOTS+'/after.png'});
+    delete tasks.computers[0].agents[2].installation;
+    await page.evaluate(()=>SwitchboardTasks.load());
+    await page.waitForFunction(()=>document.querySelector('#updates .switchboard-group .task-state')?.textContent==='All set');
     tasks.computers[0].agents[2].skills={state:'attention',scope:'Codex user skills and enabled local marketplace plugins; remote and project skills not checked',warnings:[
       'pr-description-style@dotfiles: cached skills differ from source. Refresh with codex plugin add pr-description-style@dotfiles',
       'Conflicting skill pr-description-style: ~/.agents/skills/pr-description-style/SKILL.md and ~/.codex/plugins/cache/dotfiles/pr-description-style/local/skills/pr-description-style/SKILL.md']};

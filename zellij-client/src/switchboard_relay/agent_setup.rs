@@ -131,6 +131,7 @@ fn usual_folders() -> Vec<PathBuf> {
             ("APPDATA", vec!["npm"]),
             ("LOCALAPPDATA", vec!["Microsoft", "WinGet", "Links"]),
             ("LOCALAPPDATA", vec!["Programs", "copilot"]),
+            ("LOCALAPPDATA", vec!["Programs", "OpenAI", "Codex", "bin"]),
         ] {
             if let Some(base) = std::env::var_os(variable) {
                 folders.push(tail.iter().fold(PathBuf::from(base), |p, c| p.join(c)));
@@ -176,6 +177,35 @@ fn find_program(name: &str, folders: &[PathBuf]) -> Option<PathBuf> {
 }
 
 // --- Checks -----------------------------------------------------------------------
+
+// Inspect package metadata, not the launcher extension: custom wrappers are not npm.
+fn codex_installation(program: Option<&Path>, windows: bool) -> Value {
+    if !windows {
+        return Value::Null;
+    }
+    let Some(program) = program else {
+        return Value::Null;
+    };
+    let is_codex_package =
+        |path: &Path| read_json(path).is_some_and(|package| package["name"] == "@openai/codex");
+    let npm = program.parent().is_some_and(|directory| {
+        is_codex_package(&directory.join("node_modules/@openai/codex/package.json"))
+    }) || program
+        .ancestors()
+        .skip(1)
+        .take(12)
+        .any(|directory| is_codex_package(&directory.join("package.json")));
+    if !npm {
+        return Value::Null;
+    }
+    json!({
+        "state": "attention",
+        "manager": "npm",
+        "path": program,
+        "detail": "Codex uses an npm installation on Windows. Updates can fail with EBUSY while Codex sessions are running, leaving repeated update prompts. Use the standalone Windows installer from a new PowerShell window, remove the npm installation after its sessions exit, and check that Get-Command codex selects the standalone installation.",
+        "command": "powershell -ExecutionPolicy ByPass -c \"irm https://chatgpt.com/codex/install.ps1 | iex\""
+    })
+}
 
 #[derive(Debug, PartialEq)]
 struct Check {
@@ -867,6 +897,7 @@ fn describe(agent: Agent) -> Value {
         "state": if setup.running { "running" } else { check.state },
         "detail": if setup.running { "Setting up…".to_string() } else { check.detail },
         "lastReport": report,
+        "installation": if agent == Agent::Codex { codex_installation(program.as_deref(), cfg!(windows)) } else { Value::Null },
         "skills": if agent == Agent::Codex && check.state != "absent" { skill_health::codex(&dir, &home()) } else { Value::Null },
         "setupError": setup.error,
         "setupFinished": setup.finished,
@@ -1173,5 +1204,37 @@ mod tests {
             Some(dir.path().join(name))
         );
         assert_eq!(find_program("codex", &folders), None);
+    }
+    #[test]
+    fn switchboard_codex_installation_health_checks_selected_package() {
+        let dir = tempfile::tempdir().unwrap();
+        let npm = dir.path().join("node");
+        let launcher = npm.join("codex.cmd");
+        write(&launcher, "npm wrapper");
+        write(
+            &npm.join("node_modules/@openai/codex/package.json"),
+            r#"{"name":"@openai/codex"}"#,
+        );
+        assert_eq!(
+            codex_installation(Some(&launcher), true)["state"],
+            "attention"
+        );
+        let binary = npm.join(
+            "node_modules/@openai/codex/node_modules/@openai/codex-win32-x64/vendor/bin/codex.exe",
+        );
+        assert_eq!(codex_installation(Some(&binary), true)["manager"], "npm");
+        assert!(codex_installation(Some(&launcher), false).is_null());
+        assert!(codex_installation(None, true).is_null());
+        let standalone = dir.path().join("standalone/bin/codex.exe");
+        write(&standalone, "standalone");
+        assert!(codex_installation(Some(&standalone), true).is_null());
+        let wrapper = dir.path().join("custom/codex.cmd");
+        write(&wrapper, "custom wrapper");
+        assert!(codex_installation(Some(&wrapper), true).is_null());
+        write(
+            &dir.path().join("node_modules/@openai/codex/package.json"),
+            r#"{"name":"@openai/codex"}"#,
+        );
+        assert!(codex_installation(Some(&standalone), true).is_null());
     }
 }
