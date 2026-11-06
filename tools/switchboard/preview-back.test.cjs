@@ -11,15 +11,16 @@ test('Back, including a mouse back button, closes a file preview and stays on Sw
   const browser=await chromium.launch({headless:true});
   try{
     const context=await browser.newContext({viewport:{width:1280,height:900}});
-    const page=await context.newPage(),pageErrors=[];page.setDefaultTimeout(5000);
+    const page=await context.newPage(),pageErrors=[],externalOpens=[];page.setDefaultTimeout(5000);
     page.on('pageerror',error=>pageErrors.push(error.message));
     await page.addInitScript(()=>{window.setInterval=()=>0;});
     await context.route('**/*',async route=>{
       const url=new URL(route.request().url()),pathname=url.pathname;
       const json=value=>route.fulfill({contentType:'application/json',body:JSON.stringify(value)});
-      if(pathname==='/api/hosts/windows/file')return route.fulfill({contentType:'text/plain',body:'File preview'});
+      if(pathname==='/api/open-file'){externalOpens.push(route.request().postDataJSON());return json({});}
+      if(/^\/api\/hosts\/(windows|mac)\/file$/.test(pathname))return route.fulfill({contentType:'text/plain',body:'File preview'});
       if(pathname==='/api/hosts')return json([{id:'mac',name:'Mac',local:true},{id:'windows',name:'Windows'}]);
-      if(pathname.startsWith('/api/hosts/'))return json({id:pathname.split('/')[3],name:pathname.endsWith('mac')?'Mac':'Windows',sessions:[{name:'main',web_clients_allowed:true}]});
+      if(pathname.startsWith('/api/hosts/'))return json({id:pathname.split('/')[3],local:pathname.endsWith('mac'),name:pathname.endsWith('mac')?'Mac':'Windows',sessions:[{name:'main',web_clients_allowed:true}]});
       if(pathname==='/api/attention')return json({tabs:[tab('mac',1),tab('windows',42)],panes:[],errors:[]});
       if(pathname==='/api/mesh')return json({configured:true,computer:{name:'Mac'},mesh:{name:'My computers'},administrator:true,requests:[],members:[]});
       if(pathname.startsWith('/api/'))return json({});
@@ -73,6 +74,19 @@ test('Back, including a mouse back button, closes a file preview and stays on Sw
       await close();await closed();
       assert.equal(await page.evaluate(()=>document.querySelector('#artifact-frame').contentWindow.location.href),'about:blank');
     }
+    // Local Markdown previews without launching a desktop app; opening externally is explicit.
+    const localPath='/Users/dom/git/switchboard-docs-navigation/README.md';
+    await page.evaluate(path=>window.SwitchboardOpenFile('mac',path),localPath);
+    await page.waitForFunction(()=>document.querySelector('#artifact-frame').contentWindow.location.href.includes('README.md'));
+    assert.equal((await preview()).open,true);
+    assert.deepEqual(externalOpens,[]);
+    await Promise.all([page.waitForResponse(response=>response.url().endsWith('/api/open-file')),
+      page.getByRole('button',{name:'Open externally',exact:true}).click()]);
+    assert.deepEqual(externalOpens,[{path:localPath}]);
+    assert.equal((await preview()).open,true,'Opening externally keeps the preview available');
+    await open('C:\\shots\\after.txt');
+    assert.equal(await page.locator('#artifact-open-local').isVisible(),false,'Remote files never launch on the relay computer');
+    await page.locator('#artifact-back').click();await closed();
     // Direct file opens, including files from this computer, share the media overlay.
     for(const host of ['windows','mac']){
       await page.evaluate(host=>window.SwitchboardOpenFile(host,'/tmp/clip.webm'),host);
