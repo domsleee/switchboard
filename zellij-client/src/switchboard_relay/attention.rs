@@ -804,10 +804,12 @@ impl PollState {
         }
         // Claude's next PostToolUse arrives when the approved tool finishes. Its
         // working screen can show that approval was given before that hook arrives.
-        // Keep the hook for unreadable screens and dialogs that appear again.
-        if hooked.agent == "claude"
-            && hooked.state == "approval"
-            && row["agent"] == "claude"
+        // Codex can compact a follow-up before UserPromptSubmit replaces the old Stop.
+        // Keep the hook as a fallback when the screen no longer shows active work.
+        if matches!(
+            (hooked.agent, hooked.state),
+            ("claude", "approval") | ("codex", "ready")
+        ) && row["agent"] == hooked.agent
             && row["state"] == "working"
         {
             return;
@@ -1634,6 +1636,63 @@ esac
         let mut unreadable = scan("");
         poll.update("windows", &mut unreadable);
         assert_eq!(unreadable["panes"][0]["state"], "approval");
+    }
+
+    #[test]
+    fn codex_compaction_does_not_inherit_the_previous_turns_stop() {
+        let pane = json!({"id":39,"tab_id":38,"pane_command":"codex","title":"Find Muse mobile support chat | switchboard"});
+        // Captured with dump-screen on 2026-11-06, while a follow-up compacted
+        // context before UserPromptSubmit replaced the preceding turn's Stop.
+        let compacting = "Worked for 20m 50s • 10:03 PM\n\
+            › how do the terminals look on such a small screen tho? Render it.\n\
+            • Compacting context (1m 07s • esc to interrupt)\n\
+              └ Making room to continue.\n\
+            • Messages to be submitted after next tool call (press esc to interrupt and send immediately)\n\
+              ↳ take screenshots for me but dont post it ...\n\
+            › Ask Codex to do anything\n\
+              GPT-6-Astra medium · ~/git/switchboard/tools/switchboard · Find Muse mobile support chat\n\
+              ? for shortcuts                                            ⚠ 2 warnings · f2 to view";
+        assert_eq!(classify(&pane, compacting)["state"], "working");
+        let idle = "Worked for 20m 50s • 10:03 PM\n› Ask Codex to do anything\nGPT-6-Astra medium\n? for shortcuts";
+        let scan = |pane: &Value, screen: Option<&str>| {
+            snapshot(
+                "main",
+                std::slice::from_ref(pane),
+                &screen
+                    .map(|s| HashMap::from([(39, s.to_owned())]))
+                    .unwrap_or_default(),
+                screen.is_none(),
+            )
+        };
+        let mut poll = PollState::default();
+        poll.hooks.insert(
+            ("main".into(), 39),
+            hook_status(
+                "codex",
+                &json!({"hook_event_name":"Stop","turn_id":"previous"}),
+            )
+            .unwrap(),
+        );
+        let mut finished = scan(&pane, Some(idle));
+        poll.update("mac", &mut finished);
+        let token = finished["panes"][0]["token"].clone();
+        for titled in [false, true] {
+            let mut pane = pane.clone();
+            if titled {
+                pane["title"] = json!("⠦ Find Muse mobile support chat | switchboard");
+            }
+            let mut running = scan(&pane, Some(compacting));
+            poll.update("mac", &mut running);
+            assert_eq!(running["panes"][0]["state"], "working");
+            assert!(running["panes"][0].get("token").is_none());
+        }
+        // Retain the completed result when no active screen is available.
+        for screen in [None, Some(idle)] {
+            let mut finished = scan(&pane, screen);
+            poll.update("mac", &mut finished);
+            assert_eq!(finished["panes"][0]["state"], "ready");
+            assert_eq!(finished["panes"][0]["token"], token);
+        }
     }
 
     #[tokio::test]

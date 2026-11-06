@@ -11,7 +11,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
     const page=await context.newPage(),errors=[];
     page.on('pageerror',error=>errors.push(error.message));
     let created=0,catalog=0,failed=false,closes=0,frameBoots=0,connected=!emptyMachine,catalogReady=!emptyMachine;
-    const diagnostics=[];
+    const diagnostics=[];let projectError=false,delayProjects=false,releaseProjects;
     const nativeTabs=()=>Array.from({length:catalog+1},(_,i)=>({host:'windows',session:'main',id:i?89+i:42,position:i,name:i?'New shell '+i:'Original',panes:[{pane_id:i?8+i:7,is_plugin:false,tab_position:i}]}));
     await page.addInitScript(()=>{window.setInterval=()=>0;});
     await context.route('**/*',async route=>{
@@ -23,12 +23,14 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
       if(path==='/api/attention')return json({tabs:failed||!catalogReady?[]:nativeTabs(),panes:[],errors:failed?[{host:'windows',message:'Unavailable'}]:[]});
       if(path==='/api/diagnostics/new-tab'){diagnostics.push(route.request().postDataJSON());return route.fulfill({status:204});}
       if(path==='/api/hosts/windows/close-tab'){closes++;return json({ok:true});}
+      if(path==='/hosts/windows/project-list'){if(delayProjects)await new Promise(resolve=>releaseProjects=resolve);return projectError?route.fulfill({status:503,body:'unavailable'}):json(['dotfiles','switchboard','switchboard-tools']);}
+      if(path==='/hosts/other/project-list')return json(['other-project']);
       if(path.startsWith('/hosts/')){connected=true;frameBoots++;return route.fulfill({contentType:'text/html',body:`<div id="terminal"><input id="terminal-input"></div><script>
         window.WebSocket=class extends EventTarget {constructor(){super();this.readyState=1;}send(){}};
         const input=document.querySelector('input');let count=${created},active=count;
         window.term={element:document.querySelector('#terminal'),options:{disableStdin:false},focus(){input.focus()},blur(){input.blur()},
           _core:{_renderService:{dimensions:{css:{cell:{width:8,height:16}}}}},buffer:{active:{viewportY:0,getLine:()=>({translateToString:()=>''})}},onRender(){},onResize(){}};
-        window.__zjSendControl=message=>{if(message.type==='NewTab'&&window.controlSocket.readyState===1){window.creationRequested=true;window.creationElevated=message.elevated;}};
+        window.__zjSendControl=message=>{if(message.type==='NewTab'&&window.controlSocket.readyState===1){window.creationRequested=true;window.creationElevated=message.elevated;window.creationLaunch={project:message.project,command:message.command};}};
       </script><script src="/bridge.js"></script><script>
         const socket=window.controlSocket=new WebSocket('wss://switchboard.test/ws/control');
         function state(){const panes=Array.from({length:count+1},(_,i)=>({pane_id:i?8+i:7,is_plugin:false,tab_position:i,title:'~'}));socket.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'MobileState',payload:{session_name:'main',panes,active_pane:panes[active],tabs:panes.map((p,i)=>({position:i,name:i?'New shell '+i:'Original',active:i===active}))}})}));}
@@ -54,24 +56,24 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
       // The + dialog offers the empty machine and creates its session.
       await page.locator('#new-tab').click();assert.equal(await page.locator('#new-tab-target option').count(),1);
       await page.locator('#new-tab-form button[type="submit"]').click();
+      await page.waitForFunction(()=>document.querySelector('iframe.active')?.contentWindow.creationRequested);
+      const input=page.frameLocator('iframe[title="Windows: main"]').locator('#terminal-input');
+      assert.deepEqual(await input.evaluate(()=>window.creationLaunch),{project:'switchboard',command:'c'});
+      await input.evaluate(()=>window.confirmCreation());
+      await page.waitForFunction(()=>document.querySelector('#tabs .selected .tab-name')?.textContent==='New shell 1');
+      assert.equal(frameBoots,1);
+      assert.equal(await input.evaluate(i=>document.activeElement===i&&!window.term.options.disableStdin),true);
+      await page.keyboard.type('first command');assert.equal(await input.inputValue(),'first command');
+      await page.evaluate(()=>refresh());assert.equal(frameBoots,1);
+      await page.locator('#new-tab').click();assert.equal(await page.locator('#new-tab-target option').count(),1);
+      await page.locator('#cancel-new-tab').click();
+      assert.deepEqual(errors,[]);return;
     }
     const frame=page.frameLocator('iframe[title="Windows: main"]'),input=frame.locator('#terminal-input');
     await page.waitForFunction(()=>document.querySelector('#tabs .selected')?.textContent.includes('Original'));
     await page.waitForFunction(()=>document.activeElement===document.querySelector('#terminals>iframe.active'));
-    if(emptyMachine){
-      assert.equal(frameBoots,1);
-      assert.equal(new URL(page.url()).searchParams.get('pane'),'7');
-      assert.equal(await input.evaluate(i=>document.activeElement===i&&!window.term.options.disableStdin),true);
-      await page.keyboard.type('first shell');assert.equal(await input.inputValue(),'first shell');
-      await input.fill('');
-      await page.evaluate(()=>refresh());assert.equal(frameBoots,1);
-      // Adding a second tab is already available before the first catalog scan.
-      await page.locator('#new-tab').click();assert.equal(await page.locator('#new-tab-target option').count(),1);
-      await page.locator('#cancel-new-tab').click();
-      catalogReady=true;await page.evaluate(()=>refreshAttention());
-      await page.waitForFunction(()=>new URL(location.href).searchParams.get('tab')==='42');
-    }
     async function create(number){
+      if(number===1)await page.evaluate(()=>{const entry=[...sessions.values()][0];sessions.set(sessionKey(entry.host,'other'),{...entry,name:'other'});});
       if(number===1)await input.evaluate(()=>{window.controlSocket.readyState=0;});
       // The second tab comes from the shield button and asks for administrator.
       if(number===2){
@@ -83,10 +85,35 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
       }else await page.keyboard.press('Control+Alt+KeyT');
       await page.waitForFunction(()=>document.querySelector('#new-tab-dialog').open);
       assert.equal(await page.locator('#new-tab-title').textContent(),number===2?'New administrator tab':'New tab');
-      assert.equal(await page.locator('#new-tab-form button[type="submit"]').evaluate(button=>document.activeElement===button),true,'Create tab is focused so Enter confirms the default target');
-      assert.equal(await page.locator('#new-tab-form button[type="submit"]').evaluate(button=>{
-        const style=getComputedStyle(button);return style.outlineStyle==='solid'&&style.outlineWidth==='2px';
-      }),true,'The default action is visibly highlighted');
+      assert.deepEqual(await page.locator('#new-tab-command').evaluate(input=>({focused:document.activeElement===input,selected:input.value.slice(input.selectionStart,input.selectionEnd)})),{focused:true,selected:'c'});
+      assert.equal(await page.locator('#new-tab-target option').count(),1,'One option per computer even with multiple sessions');
+      assert.equal(await page.locator('#new-tab-target option').first().textContent(),'Windows');
+      if(number===1)await page.evaluate(()=>sessions.delete(sessionKey('windows','other')));
+      assert.equal(await page.locator('#new-tab-project').inputValue(),'switchboard');
+      if(number===1){
+        await page.locator('#new-tab-lookup').click();
+        assert.deepEqual(await page.locator('#new-tab-commands [role=option] span').allTextContents(),['c','castra','csol']);
+        await page.getByRole('option',{name:'csol Codex · Sol',exact:true}).click();
+        assert.equal(await page.locator('#new-tab-command').inputValue(),'csol');
+        await page.locator('#new-tab-lookup').click();await page.keyboard.press('Escape');
+        assert.equal(await page.locator('#new-tab-dialog').evaluate(el=>el.open),true);
+        assert.equal(await page.locator('#new-tab-command').getAttribute('aria-expanded'),'false');
+        await page.locator('#new-tab-command').fill('custom --flag');
+        assert.equal(await page.locator('#new-tab-command').getAttribute('aria-expanded'),'false');
+        await page.locator('#new-tab-command').fill('c');await page.keyboard.press('Escape');
+      }
+      if(number===2){
+        await page.locator('#new-tab-command').fill('cast');
+        assert.deepEqual(await page.locator('#new-tab-commands [role=option] span').allTextContents(),['castra']);
+        await page.keyboard.press('ArrowDown');await page.keyboard.press('Enter');
+        assert.equal(await page.locator('#new-tab-command').inputValue(),'castra');
+        assert.equal(await page.locator('#new-tab-dialog').evaluate(el=>el.open),true,'Picking a suggestion does not submit');
+        await page.locator('#new-tab-project').fill('dot');
+        await page.getByRole('option',{name:'dotfiles',exact:true}).click();
+        assert.equal(await page.locator('#new-tab-project').inputValue(),'dotfiles');
+        assert.equal(await page.locator('#new-tab-project-help').textContent(),'~/git/dotfiles');
+        await page.locator('#new-tab-command').focus();
+      }
       await page.keyboard.press('Enter');
       await page.waitForFunction(()=>document.querySelector('#tabs .selected .tab-name')?.textContent==='Creating tab…');
       if(number===1){
@@ -99,6 +126,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
       await page.evaluate(()=>refreshAttention());
       assert.equal(await page.locator('#tabs .selected .tab-name').textContent(),'Creating tab…');
       assert.equal(await input.evaluate(()=>window.creationElevated),number===2);
+      assert.deepEqual(await input.evaluate(()=>window.creationLaunch),number===2?{project:'dotfiles',command:'castra'}:{project:'switchboard',command:'c'});
       await input.evaluate(()=>window.confirmCreation());created=number;
       await page.waitForFunction(n=>document.querySelector('#tabs .selected .tab-name')?.textContent==='New shell '+n,number);
       assert.equal(new URL(page.url()).searchParams.get('pane'),String(8+number));
@@ -107,6 +135,29 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
       await page.keyboard.type('draft '+number);
       assert.ok((await input.inputValue()).endsWith('draft '+number),'Typing reaches the new terminal without an extra click');
     }
+    // A lookup must follow the selected computer, including a late reply from the previous one.
+    await page.locator('#new-tab').click();
+    await page.waitForFunction(()=>newTabProjects.includes('dotfiles'));
+    await page.evaluate(()=>{const option=document.createElement('option');option.value=JSON.stringify(['other','main']);option.textContent='Other';document.querySelector('#new-tab-target').append(option);});
+    delayProjects=true;
+    await page.evaluate(()=>{loadNewTabProjects();});
+    for(let i=0;!releaseProjects&&i<200;i++)await new Promise(resolve=>setTimeout(resolve,5));
+    assert.ok(releaseProjects);
+    await page.locator('#new-tab-target').selectOption(JSON.stringify(['other','main']));
+    await page.locator('#new-tab-project-lookup').click();
+    await page.getByRole('option',{name:'other-project',exact:true}).waitFor();
+    releaseProjects();delayProjects=false;
+    await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,50)));
+    assert.deepEqual(await page.locator('#new-tab-projects [role=option] span').allTextContents(),['other-project']);
+    projectError=true;
+    await page.locator('#new-tab-target').selectOption(JSON.stringify(['windows','main']));
+    await page.locator('#new-tab-project-lookup').click();
+    await page.getByRole('status').filter({hasText:'Projects unavailable. Type a project name.'}).waitFor();
+    await page.locator('#new-tab-project').fill('manual-project');
+    assert.equal(await page.locator('#new-tab-project-help').textContent(),'~/git/manual-project');
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#new-tab-dialog').evaluate(el=>el.open),true);
+    projectError=false;await page.locator('#cancel-new-tab').click();
     await create(1);
     await page.locator('#tabs .selected').click({button:'right'});
     await page.locator('#ready').click();

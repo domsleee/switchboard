@@ -4,6 +4,7 @@ pub(crate) mod artifacts;
 pub(crate) mod askpass;
 pub(crate) mod attention;
 pub use attention::forward_hook;
+mod chats;
 mod control;
 mod hostname;
 pub(crate) mod interactive;
@@ -1174,7 +1175,9 @@ async fn asset(request: Request) -> Response {
         "index.html" | "computers.html" | "messages.html" => "text/html; charset=utf-8",
         "manifest.webmanifest" => "application/manifest+json; charset=utf-8",
         "icon-192.png" | "icon-512.png" => "image/png",
-        "style.css" | "messages.css" | "gallery.css" => "text/css; charset=utf-8",
+        "style.css" | "messages.css" | "gallery.css" | "conversation.css" => {
+            "text/css; charset=utf-8"
+        },
         "app.js"
         | "startup-cache.js"
         | "bridge.js"
@@ -1193,6 +1196,8 @@ async fn asset(request: Request) -> Response {
         | "tasks.js"
         | "notifications.js"
         | "sw.js"
+        | "conversation-media.js"
+        | "conversation.js"
         | "predict.js" => "application/javascript",
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
@@ -1306,6 +1311,8 @@ fn app(state: RelayState) -> Router {
         .route("/api/askpass", post(askpass::ask))
         .route("/api/askpass/answer", post(askpass::answer))
         .route("/api/interactive", post(interactive::wait))
+        .route("/api/chats/search", get(chats::search))
+        .route("/api/chats/{id}", get(chats::read))
         .route("/api/logs", get(logs::handler))
         .route("/api/tasks", get(tasks::handler))
         .route("/api/tasks/action", post(tasks::action))
@@ -2511,6 +2518,9 @@ mod tests {
             ("/terminal-diagnostics.js", "application/javascript"),
             ("/predict.js", "application/javascript"),
             ("/thumbnails.js", "application/javascript"),
+            ("/conversation.js", "application/javascript"),
+            ("/conversation-media.js", "application/javascript"),
+            ("/conversation.css", "text/css; charset=utf-8"),
         ] {
             let response = app
                 .clone()

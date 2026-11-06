@@ -1,6 +1,6 @@
 {
   "name": "switchboard",
-  "description": "Reports each Copilot CLI turn to the local Switchboard relay through `zellij agent-hook`, and adds a message-board skill for reading and sending Switchboard messages.",
+  "description": "Reports each Copilot CLI turn to the local Switchboard relay through `zellij agent-hook`, and adds skills for Switchboard messages and closing the current tab on request, including 'if successful, close the tab'.",
   "author": {
     "name": "Dom Slee"
   },

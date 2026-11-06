@@ -50,6 +50,23 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.deepEqual(await order(),names.slice(1));
     assert.equal(await snoozed.getAttribute('aria-expanded'),'false');
     assert.equal(await snoozed.locator('.count').textContent(),'1');
+    if(process.env.SWITCHBOARD_UX_SCREENSHOTS)await page.locator('#sidebar').screenshot({path:process.env.SWITCHBOARD_UX_SCREENSHOTS+'/snoozed.png'});
+    const groupBounds=()=>page.evaluate(()=>[$('tabs'),$('snoozed-toggle'),$('hidden-toggle')].map(el=>el?.getBoundingClientRect().toJSON()));
+    let [tabList,snoozedGroup]=await groupBounds();
+    assert.ok(Math.abs(tabList.bottom-6-snoozedGroup.bottom)<1,'Snoozed sits at the bottom of a short list');
+    await page.evaluate(()=>{setHidden(allTabs().find(item=>item.tab.name==='ssb orchestrator'),true);render();});
+    let hiddenGroup;
+    [tabList,snoozedGroup,hiddenGroup]=await groupBounds();
+    assert.ok(Math.abs(tabList.bottom-6-hiddenGroup.bottom)<1,'Hidden stays at the bottom');
+    assert.ok(Math.abs(hiddenGroup.top-snoozedGroup.bottom-3)<1,'Snoozed sits directly above Hidden');
+    // With overflow, both headers remain visible without covering one another.
+    await page.locator('#tabs .tab-row').evaluate(row=>row.style.minHeight='1000px');
+    await page.evaluate(()=>{$('tabs').scrollTop=0;});
+    [tabList,snoozedGroup,hiddenGroup]=await groupBounds();
+    assert.ok(snoozedGroup.top>=tabList.top&&Math.abs(hiddenGroup.bottom-tabList.bottom)<1,'Both headers pin within the scrolling list');
+    assert.ok(Math.abs(hiddenGroup.top-snoozedGroup.bottom-3)<1,'Pinned headers do not overlap');
+    await page.locator('#tabs .tab-row').evaluate(row=>row.style.minHeight='');
+    await page.evaluate(()=>{setHidden(allTabs().find(item=>item.hidden),false);render();});
     await page.evaluate(()=>openPanel('settings'));
     const moveWorking=page.locator('#move-working-to-snoozed');
     assert.equal(await moveWorking.getAttribute('aria-pressed'),'true');
@@ -57,7 +74,8 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.equal(await snoozed.count(),0);
     assert.deepEqual(await order(),names);
     await moveWorking.click();
-    assert.deepEqual(await order(),names.slice(1));
+    await page.evaluate(()=>activate(allTabs()[0]));
+    assert.deepEqual(await order(),[...names.slice(1),names[0]]);
     await page.locator('#close-panel').click();
     assert.equal(await page.locator('#tab-count').textContent(),'3 tabs');
     await snoozed.click();
@@ -69,17 +87,18 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     const selectedBefore=await page.evaluate(()=>selected);
     await snoozed.click();
     assert.equal(await page.evaluate(()=>selected),selectedBefore);
+    assert.deepEqual(await order(),[...names.slice(1),names[0]]);
     await page.evaluate(()=>stepTab(1));
     assert.equal(await page.locator('#tabs .selected .tab-name').textContent(),names[1]);
     await page.evaluate(()=>{activate(allTabs()[0]);stepTab(-1);});
     assert.equal(await page.locator('#tabs .selected .tab-name').textContent(),names[2]);
     await page.evaluate(()=>activate(allTabs()[0]));
-    assert.equal(await page.evaluate(()=>localStorage.getItem('switchboard-snoozed-open')),'false');
+    assert.equal(await page.evaluate(()=>localStorage.getItem('switchboard-snoozed-open:all')),'false');
     await page.locator('#tab-search').fill('switchboard');
     assert.deepEqual(await order(),[names[0]]);
     assert.equal(await snoozed.getAttribute('aria-expanded'),'true');
     await page.locator('#tab-search').fill('');
-    assert.deepEqual(await order(),names.slice(1));
+    assert.deepEqual(await order(),[...names.slice(1),names[0]]);
     // Enter opens the first displayed search result, ahead of matching snoozed tabs.
     await page.locator('#tab-search').fill('Mac');
     assert.deepEqual(await order(),[names[1],names[0]]);
@@ -89,7 +108,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     await page.evaluate(()=>activate(allTabs()[0]));
     // Attention and status failures take precedence over automatic snoozing.
     for(const state of ['ready','approval','input']){
-      await page.evaluate(state=>{paneAttention.get(attentionKey('mac','main',1)).state=state;render();},state);
+      await page.evaluate(state=>{Object.assign(paneAttention.get(attentionKey('mac','main',1)),{state,token:'new-review',seen:false});render();},state);
       assert.equal(await snoozed.count(),0);
       assert.deepEqual(await order(),names);
     }
@@ -101,6 +120,9 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     await page.evaluate(()=>{setHidden(allTabs().find(item=>item.hidden),false);render();});
     assert.equal(await snoozed.count(),1);
     working=false;await page.evaluate(()=>refreshAttention());
+    assert.equal(await snoozed.count(),1);
+    await page.clock.setFixedTime(new Date('2026-10-27T23:59:03+11:00'));
+    await page.evaluate(()=>render());
     await page.waitForFunction(()=>!document.querySelector('#snoozed-toggle'));
     assert.deepEqual(await order(),names);
     assert.equal(await page.locator('#sidebar-summary').isVisible(),true);
@@ -160,7 +182,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.deepEqual(await order(),['switchboard','ssb orchestrator']);
     await toggle.click();
     assert.deepEqual(await order(),['switchboard','ssb orchestrator','Online shopping']);
-    assert.equal(await page.evaluate(()=>localStorage.getItem('switchboard-hidden-open')),'true');
+    assert.equal(await page.evaluate(()=>localStorage.getItem('switchboard-hidden-open:all')),'true');
     if(process.env.SWITCHBOARD_UX_SCREENSHOTS)await page.locator('#sidebar').screenshot({path:process.env.SWITCHBOARD_UX_SCREENSHOTS+'/hidden.png'});
     const hiddenRow=page.locator('.tab-row.hidden-tab');
     await hiddenRow.hover();await hiddenRow.locator('.tab-actions').click();
@@ -501,6 +523,76 @@ test('group URLs restore All, Home and Work on reload, including an empty group'
     await page.goto('https://switchboard.test/?group=home&host=windows&session=main&tab=90');await shows('home',['Home shell']);
     assert.equal(new URL(page.url()).searchParams.get('group'),'home');
     assert.equal(new URL(page.url()).searchParams.get('host'),'mac');
+    assert.deepEqual(errors,[]);
+  }finally{await browser.close();}
+});
+
+test('Hidden and Snoozed remember independent expansion in All, Work and Home across reloads',
+  {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
+  const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
+  const browser=await chromium.launch({headless:true});
+  try{
+    const context=await browser.newContext({viewport:{width:1280,height:800}}),page=await context.newPage(),errors=[];
+    page.setDefaultTimeout(5000);page.on('pageerror',error=>errors.push(error.message));
+    const tabs=['home','work'].flatMap((host,i)=>['Shell','Working','Hidden'].map((name,position)=>({
+      host,session:'main',id:i*3+position+1,position,name:`${host} ${name}`,
+      panes:[{pane_id:i*3+position+1,is_plugin:false,tab_position:position}]})));
+    await context.addInitScript(()=>{
+      window.setInterval=()=>0;
+      localStorage.setItem('switchboard-groups',JSON.stringify({home:'home',work:'work'}));
+      localStorage.setItem('switchboard-hidden',JSON.stringify({
+        '["home","main","tab",3]':1,'["work","main","tab",6]':1}));
+    });
+    await context.route('**/*',async route=>{
+      const path=new URL(route.request().url()).pathname;
+      const json=value=>route.fulfill({contentType:'application/json',body:JSON.stringify(value)});
+      if(path==='/api/hosts')return json(['home','work'].map(id=>({id,name:id})));
+      if(path.startsWith('/api/hosts/'))return json({id:path.split('/').at(-1),sessions:[{name:'main',web_clients_allowed:true}]});
+      if(path==='/api/attention')return json({tabs,panes:tabs.filter(tab=>tab.position===1).map(tab=>({
+        host:tab.host,session:'main',pane_id:tab.panes[0].pane_id,state:'working'})),errors:[]});
+      if(path.startsWith('/api/'))return json({});
+      if(path.startsWith('/hosts/')){
+        const panes=tabs.filter(tab=>tab.host===path.split('/')[2]).flatMap(tab=>tab.panes);
+        return route.fulfill({contentType:'text/html',body:`<script>
+          const panes=${JSON.stringify(panes)};
+          function state(focus_id,pane=panes[0]){parent.postMessage({type:'zellij-state',focus_id,payload:{session_name:'main',panes,active_pane:pane,tab_viewport:{is_owner:true}}},location.origin);}
+          addEventListener('message',event=>{if(event.data.type==='zellij-focus')state(event.data.focus_id,panes.find(pane=>pane.pane_id===event.data.pane_id))});state();
+        </script>`});
+      }
+      const file=path==='/'?'index.html':path.slice(1);
+      if(!['index.html','app.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
+      return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
+    });
+    async function check(hidden,snoozed){
+      await page.waitForFunction(()=>hostsLoaded&&!loading&&sessions.size===2&&[...sessions.values()].every(entry=>entry.state));
+      await page.evaluate(()=>refreshAttention());
+      assert.equal(await page.locator('#hidden-toggle').getAttribute('aria-expanded'),String(hidden));
+      assert.equal(await page.locator('#snoozed-toggle').getAttribute('aria-expanded'),String(snoozed));
+      assert.equal(await page.locator('.hidden-tab').count(),hidden?(new URL(page.url()).searchParams.has('group')?1:2):0);
+    }
+    const go=group=>page.locator(`#filters [data-filter="${group}"]`).click();
+    await page.goto('https://switchboard.test/');await check(false,false);
+    await page.locator('#hidden-toggle').click();await page.locator('#snoozed-toggle').click();
+    await go('work');await check(false,false);
+    await page.locator('#hidden-toggle').click();await check(true,false);
+    await go('home');await check(false,false);
+    await page.locator('#snoozed-toggle').click();await check(false,true);
+    for(const [group,hidden,snoozed] of [['all',true,true],['work',true,false],['home',false,true]]){
+      await go(group);await check(hidden,snoozed);await page.reload();await check(hidden,snoozed);
+    }
+    // Search expands matching sections temporarily without changing the saved choices.
+    await page.locator('#tab-search').fill('home');await check(true,true);
+    await page.locator('#tab-search').fill('');await check(false,true);
+    // Existing browser-wide preferences seed views until each view is changed.
+    await page.evaluate(()=>{
+      for(const group of ['all','work','home'])for(const section of ['hidden','snoozed'])localStorage.removeItem(`switchboard-${section}-open:${group}`);
+      for(const section of ['hidden','snoozed'])localStorage.setItem(`switchboard-${section}-open`,'true');
+    });
+    await page.reload();await check(true,true);
+    await page.locator('#hidden-toggle').click();await page.locator('#snoozed-toggle').click();
+    await go('all');await check(true,true);
+    await go('work');await check(true,true);
+    await go('home');await check(false,false);await page.reload();await check(false,false);
     assert.deepEqual(errors,[]);
   }finally{await browser.close();}
 });

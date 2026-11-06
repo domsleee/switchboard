@@ -181,7 +181,7 @@
     }
     // Unlike focus, creation is not idempotent. Retry only an unsent request.
     pendingNewTab.sentAt=performance.timeOrigin+performance.now();
-    try{window.__zjSendControl({type:'NewTab',elevated:pendingNewTab.elevated});}
+    try{window.__zjSendControl({type:'NewTab',elevated:pendingNewTab.elevated,project:pendingNewTab.project,command:pendingNewTab.command});}
     catch(_){releaseNewTab('send-failed');}
   }
   function holdFocusInput() {
@@ -490,7 +490,14 @@
   window.addEventListener('message', event => {
     if (event.origin !== location.origin || event.source !== parent) return;
     const message = event.data;
-    if (message?.type === 'zellij-focus') {
+    if (message?.type === 'zellij-conversation-paste') {
+      const reply=(ok,error)=>parent.postMessage({type:'zellij-conversation-paste-result',id:message.id,ok,error},location.origin);
+      if(typeof message.id!=='string'||typeof message.text!=='string'||!message.text||message.text.length>16000||/[\x00-\x08\x0b-\x1f\x7f]/.test(message.text))return reply(false,'Invalid terminal draft.');
+      if(pendingFocus||pendingNewTab||latest?.active_pane?.is_plugin||latest?.active_pane?.pane_id!==message.pane_id||!window.frameElement?.classList.contains('active'))return reply(false,'The terminal pane changed. Open the intended terminal before replying.');
+      if(terminalSocket?.readyState!==1||!window.term||window.term.options.disableStdin)return reply(false,'The terminal is disconnected or not ready.');
+      if(message.text.includes('\n')&&!window.term.modes.bracketedPasteMode)return reply(false,'This terminal cannot safely paste a multiline reply. Open the terminal instead.');
+      try{window.term.paste(message.text);reply(true);}catch{reply(false,'Could not insert the draft. Check the terminal before retrying.');}
+    } else if (message?.type === 'zellij-focus') {
       diagnostics?.start(message,window.term,!!pendingFocus||latest?.active_pane?.pane_id!==message.pane_id||latest?.active_pane?.is_plugin!==message.is_plugin);
       // An already active pane gets no new state; its current size is the size on arrival.
       if(latest)diagnostics?.state(latest);
@@ -538,7 +545,7 @@
       preserveFocus=false;
       const receivedAt=performance.timeOrigin+performance.now();
       pendingNewTab={requestId:message.request_id??0,startedAt:Number.isFinite(message.started_at)&&message.started_at<=receivedAt?message.started_at:receivedAt,
-        elevated:message.elevated===true,receivedAt,sentAt:null,focusOrigin:parent.document.activeElement,panes:new Set((latest.panes||[]).filter(pane=>!pane.is_plugin).map(pane=>pane.pane_id)),disabled:window.term.options.disableStdin};
+        elevated:message.elevated===true,project:message.project,command:message.command,receivedAt,sentAt:null,focusOrigin:parent.document.activeElement,panes:new Set((latest.panes||[]).filter(pane=>!pane.is_plugin).map(pane=>pane.pane_id)),disabled:window.term.options.disableStdin};
       pendingNewTab.panes.add(latest.active_pane.pane_id);
       window.term.options.disableStdin=true;
       pendingNewTab.timeout=setTimeout(()=>releaseNewTab('timeout'),30000);

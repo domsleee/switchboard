@@ -195,7 +195,7 @@ test('headless browser keeps iframe, selection, URL and input focus through fail
         </script>`});
       }
       const file=pathname==='/'?'index.html':pathname.slice(1);
-      if(!['index.html','app.js','bridge.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
+      if(!['index.html','app.js','bridge.js','close.js','titles.js','style.css','conversation.js','conversation.css'].includes(file))return route.fulfill({status:404,body:''});
       return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
     });
     const requested='https://switchboard.test/?host=windows&session=main&tab=42';
@@ -204,6 +204,25 @@ test('headless browser keeps iframe, selection, URL and input focus through fail
     await page.evaluate(()=>{window.originalFrame=document.querySelector('iframe.active');});
     const input=page.frameLocator('iframe[title="Windows: main"]').locator('#terminal-input');
     await input.fill('typed before failure');
+    // Transcript focus must never type into the covered native terminal.
+    await page.getByRole('button',{name:'Conversation',exact:true}).click();
+    await page.evaluate(()=>activate(allTabs().find(item=>item.entry.host==='mac')));
+    await page.waitForTimeout(100); // Allow the real bridge's focus acknowledgement to arrive.
+    assert.equal(await page.evaluate(()=>!!document.activeElement.closest('.conversation-panel')),true);
+    await page.locator('#tab-search').fill('mac');await page.locator('#tab-search').press('Enter');
+    await page.waitForTimeout(100);
+    assert.equal(await page.evaluate(()=>!!document.activeElement.closest('.conversation-panel')),true);
+    await page.keyboard.type('not terminal input');
+    assert.equal(await page.locator('.conversation-panel').isVisible(),true);
+    assert.equal(await page.frameLocator('iframe[title="Mac: main"]').locator('#terminal-input').inputValue(),'');
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(()=>document.activeElement===document.querySelector('iframe[title="Mac: main"]'));
+    assert.equal(await page.locator('.conversation-panel').isVisible(),false);
+    assert.equal(await page.frameLocator('iframe[title="Mac: main"]').locator('#terminal-input').inputValue(),'');
+    await page.locator('#tab-search').fill('');
+    await page.evaluate(()=>activate(allTabs().find(item=>item.entry.host==='windows')));
+    await page.waitForFunction(()=>document.activeElement===document.querySelector('iframe[title="Windows: main"]'));
+
     async function unchanged(){
       assert.equal(page.url(),requested);
       assert.deepEqual(await page.evaluate(()=>({same:originalFrame===document.querySelector('iframe.active'),focused:document.activeElement===originalFrame&&originalFrame.contentDocument.activeElement.id==='terminal-input',selection:document.querySelector('#tabs .selected')?._item.key,value:originalFrame.contentDocument.querySelector('input').value})),
@@ -426,6 +445,16 @@ for(const touchscreen of [false,true])test(`sidebar selection supports immediate
     };
     await paste('direct terminal paste');
     const button=id=>page.locator('#tabs .tab-select').filter({hasText:'Terminal '+id});
+    // Passive sidebar clicks must leave the real xterm/soft-keyboard input ready
+    // for both typing and native paste, without another terminal click.
+    await page.evaluate(()=>{setHidden(allTabs().find(item=>item.tab.id===42),true);render();});
+    await page.locator('#hidden-toggle').click();
+    assert.equal(await page.evaluate(()=>document.activeElement===document.querySelector('iframe.active')),true);
+    await terminal.evaluate(()=>{sent.length=0;});
+    await page.keyboard.type('after Hidden');
+    assert.equal(await terminal.evaluate(()=>sent.join('')),'after Hidden');
+    await paste('paste after Hidden');
+    await page.evaluate(()=>{setHidden(allTabs().find(item=>item.tab.id===42),false);render();});
     for(const id of [42,42,41]){
       await button(id).click();
       await page.waitForFunction(id=>{
@@ -457,11 +486,11 @@ for(const touchscreen of [false,true])test(`sidebar selection supports immediate
   }finally{await browser.close();}
 });
 
-async function browserFocusFixture({mismatch=null,acknowledge=true,platform}={}){
+async function browserFocusFixture({mismatch=null,acknowledge=true,platform,hasTouch=false}={}){
   const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
   const browser=await chromium.launch({headless:true});
   try{
-    const context=await browser.newContext({viewport:{width:1280,height:900}});
+    const context=await browser.newContext({viewport:{width:1280,height:900},hasTouch});
     const page=await context.newPage(),pageErrors=[],closes=[];
     page.on('pageerror',error=>pageErrors.push(error.message));
     await page.addInitScript(platform=>{
@@ -507,6 +536,96 @@ async function browserFocusFixture({mismatch=null,acknowledge=true,platform}={})
     throw error;
   }
 }
+
+test('passive mouse clicks keep terminal typing and selection without switching native focus',
+  {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
+  const {browser,page,input,pageErrors}=await browserFocusFixture();
+  try{
+    page.setDefaultTimeout(5000);
+    await input.fill('terminal text');
+    await input.evaluate(input=>input.setSelectionRange(0,8));
+    await page.evaluate(()=>{
+      groups.mac='work';
+      setHidden(allTabs().find(item=>item.tab.id===42),true);
+      paneAttention.set(attentionKey('mac','main',7),{state:'working'});
+      render();setStatus('Fixture notification',true);
+    });
+    const focusId=await page.evaluate(()=>sessions.get(sessionKey('mac','main')).focusId);
+    for(const selector of ['#hidden-toggle .chevron','#hidden-toggle','#snoozed-toggle','#snoozed-toggle',
+      '#filters [data-filter="work"]','#filters [data-filter="all"]','#tab-count','.sidebar-brand strong',
+      '#status-message','#dismiss-status','#sidebar-toggle','#sidebar-toggle']){
+      if(selector==='#status-message'||selector==='#dismiss-status')await page.evaluate(()=>setStatus('Fixture notification',true));
+      await page.locator(selector).click();
+      assert.equal(await page.evaluate(()=>{const frame=document.querySelector('iframe.active');
+        return document.activeElement===frame&&frame.contentDocument.activeElement.id==='terminal-input';}),true,selector);
+      assert.deepEqual(await input.evaluate(input=>[input.selectionStart,input.selectionEnd]),[0,8],selector+' preserves selection');
+    }
+    assert.equal(await page.evaluate(()=>sessions.get(sessionKey('mac','main')).focusId),focusId);
+    assert.deepEqual(await input.evaluate(()=>controlMessages),[],'Passive clicks never send native focus commands');
+    await page.keyboard.type('still typing');
+    assert.equal(await input.inputValue(),'still typing text');
+
+    // Keyboard users deliberately move focus to buttons and can keep it there.
+    await page.locator('#hidden-toggle').focus();
+    const expanded=await page.locator('#hidden-toggle').getAttribute('aria-expanded');
+    await page.keyboard.press('Space');
+    assert.notEqual(await page.locator('#hidden-toggle').getAttribute('aria-expanded'),expanded);
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'hidden-toggle');
+    await page.keyboard.press('Tab');
+    assert.notEqual(await page.evaluate(()=>document.activeElement.id),'hidden-toggle');
+
+    await page.locator('#tab-search').click();await page.keyboard.type('Terminal');
+    assert.equal(await page.locator('#tab-search').inputValue(),'Terminal');
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'tab-search');
+    await page.locator('#tab-search').fill('');
+    // Native selects and editable areas must retain their normal mouse focus.
+    await page.evaluate(()=>{
+      const select=document.querySelector('#filter-more');select.hidden=false;select.add(new Option('All','all'));
+      const editor=document.createElement('div');editor.id='fixture-editor';editor.contentEditable='true';editor.textContent='Edit me';
+      document.querySelector('#sidebar-tools').append(editor);
+    });
+    await input.focus();await page.locator('#filter-more').click();await page.keyboard.press('Escape');
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'filter-more');
+    await input.focus();await page.locator('#fixture-editor').click();
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'fixture-editor');
+    await input.focus();await page.locator('#settings').click();
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'panel-tab-settings');
+    await page.locator('#close-panel').click();
+    await page.evaluate(()=>{paneAttention.clear();render();});
+    await page.locator('#tabs .tab-actions').first().click();
+    assert.equal(await page.evaluate(()=>document.activeElement.closest('#tab-menu')?.id),'tab-menu');
+    await page.keyboard.press('Escape');
+    await input.focus();await page.locator('#new-tab').click();
+    assert.equal(await page.locator('#new-tab-dialog').evaluate(dialog=>dialog.open),true);
+    assert.equal(await page.evaluate(()=>document.activeElement.closest('dialog')?.id),'new-tab-dialog');
+    await page.locator('#cancel-new-tab').click();
+    await input.focus();
+    await page.evaluate(()=>SwitchboardOpenFile('mac','/tmp/focus-fixture.txt'));
+    await page.locator('#hidden-toggle').click();
+    assert.notEqual(await page.evaluate(()=>document.activeElement===document.querySelector('iframe.active')),true,'Preview keeps ownership');
+    assert.equal(await page.locator('#artifact-preview').isVisible(),true);
+    assert.deepEqual(pageErrors,[]);
+  }finally{await browser.close();}
+});
+
+test('touch taps keep native focus behavior even without sourceCapabilities',
+  {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
+  const {browser,page,input,pageErrors}=await browserFocusFixture({hasTouch:true});
+  try{
+    await page.evaluate(()=>{
+      Object.defineProperty(MouseEvent.prototype,'sourceCapabilities',{get:()=>undefined});
+      setHidden(allTabs().find(item=>item.tab.id===42),true);render();
+      document.addEventListener('mousedown',event=>{window.fixtureMousePrevented=event.defaultPrevented;});
+    });
+    await page.locator('#hidden-toggle').tap();
+    assert.equal(await page.locator('#hidden-toggle').getAttribute('aria-expanded'),'true');
+    assert.equal(await page.evaluate(()=>window.fixtureMousePrevented),false,'Touch compatibility events keep their default behavior');
+    await input.focus();await page.locator('#hidden-toggle').click();
+    assert.equal(await page.evaluate(()=>window.fixtureMousePrevented),true,'A subsequent mouse click still preserves terminal focus');
+    assert.equal(await page.evaluate(()=>document.activeElement===document.querySelector('iframe.active')),true);
+    assert.deepEqual(pageErrors,[]);
+  }finally{await browser.close();}
+});
 
 test('headless browser completes a sidebar switch after catalog metadata catches up without taking search or dialog focus',
   {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE to run the isolated browser focus check'},async()=>{
