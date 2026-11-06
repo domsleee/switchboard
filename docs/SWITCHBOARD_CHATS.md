@@ -43,7 +43,9 @@ curl -G 'http://127.0.0.1:8090/api/chats/CHAT_ID' \
 
 Here `cursor` is a message offset. Use the search result's `message_cursor` to
 jump to a match, or subtract a few to include preceding context. The response
-contains `messages` and `next_cursor`. Each message has `role`, `text`,
+contains `messages`, `start_cursor`, `previous_cursor` and `next_cursor`.
+Use `tail=true` to read the latest page immediately, then `before=previous_cursor`
+to load preceding messages. Forward reads still use `cursor`. Each message has `role`, `text`,
 `timestamp` and `truncated`. Codex assistant messages also include `phase`
 (`commentary` or `final`) when present in the source; other messages return null. Text is capped at 4,000 characters per message;
 search excerpts are capped at 401 characters. Tool calls, tool output, reasoning, and provider credentials are excluded.
@@ -60,7 +62,9 @@ of the agent's current compacted context or active rewind branch.
 ## Current terminal conversation
 
 The sidebar's **Conversation** button opens the selected pane's transcript directly;
-**Terminal** returns to the same pane. Agent hooks supply `transcript_path`, which the
+**Terminal** returns to the same pane. The chat opens at the latest messages, loads
+earlier messages as you scroll up, and omits session setup messages from the view.
+Incoming replies preserve existing message elements and your reading position. Agent hooks supply `transcript_path`, which the
 relay maps to an opaque `chat_id` in the pane's attention record. This uses the same
 history roots and read endpoint, including the owning computer's authenticated gateway.
 It does not search by project/title or start a provider process. Codex and Claude hooks

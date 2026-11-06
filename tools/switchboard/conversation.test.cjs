@@ -5,7 +5,7 @@ test('current conversation opens directly, stays pane-local, and follows a new c
   const url=new URL(req.url,'http://localhost');const json=value=>{res.setHeader('Content-Type','application/json');res.end(JSON.stringify(value));};
   if(url.pathname==='/api/chats/search'){queries++;return json({error:'Unexpected history search'});}
   if(url.pathname==='/api/chats/claude-two'){assert.equal(url.searchParams.get('host'),'peer');return json({title:'Remote Claude',messages:[{role:'assistant',text:'Remote Claude answer'}],next_cursor:null});}
-  if(url.pathname==='/api/chats/codex-one'){if(hold){hold=false;held=()=>json({messages:[{role:'assistant',text:'Stale response'}],next_cursor:null});return;}assert.equal(url.searchParams.get('host'),'local');const cursor=Number(url.searchParams.get('cursor'));return json({title:'Actual chat',messages:cursor?[{role:'assistant',text:answer}]:[{role:'user',text:'<img src=x onerror="window.injected=true">'},{role:'assistant',phase:'commentary',text:'Working on it'}],next_cursor:cursor?null:2});}
+  if(url.pathname==='/api/chats/codex-one'){if(hold){hold=false;held=()=>json({messages:[{role:'assistant',text:'Stale response'}],next_cursor:null});return;}assert.equal(url.searchParams.get('host'),'local');const cursor=Number(url.searchParams.get('cursor'));return json({title:'Actual chat',messages:[{role:'user',text:'<img src=x onerror="window.injected=true">'},{role:'assistant',phase:'commentary',text:'Working on it'},{role:'assistant',text:answer}],start_cursor:0,next_cursor:null});}
   if(url.pathname==='/'){res.setHeader('Content-Type','text/html; charset=utf-8');return res.end(`<link rel="stylesheet" href="/conversation.css"><style>body{margin:0}#terminals{position:relative;height:100vh}</style><iframe id="terminal" hidden></iframe><main id="terminals"><section id="artifact-preview" hidden></section></main><script src="/conversation.js"></script><script>
   window.sent=[];window.returned=0;window.current={key:'pane1',host:'mac',chatHost:'local',pane:1,title:'Test agent',agent:'codex',state:'ready',chatId:'codex-one',frame:document.getElementById('terminal')};
   current.frame.contentWindow.postMessage=data=>sent.push(data);
@@ -17,19 +17,19 @@ test('current conversation opens directly, stays pane-local, and follows a new c
  const terminalMode=page.getByRole('button',{name:'Terminal',exact:true}),conversationMode=page.getByRole('button',{name:'Conversation',exact:true});
  const checkModes=async()=>{const a=await terminalMode.boundingBox(),b=await conversationMode.boundingBox();assert.ok(a&&b);assert.equal(a.y,b.y);assert.ok(a.x<b.x);assert.ok(b.y<20&&b.x+b.width<=page.viewportSize().width&&b.x+b.width>=page.viewportSize().width-20);};
  await checkModes();assert.equal(await conversationMode.getAttribute('aria-pressed'),'true');
- await page.getByRole('button',{name:'Conversation',exact:true}).click();await page.locator('.conversation-message').first().waitFor();assert.equal(queries,0);assert.equal(await page.getByRole('button',{name:'Search',exact:true}).count(),0);assert.equal(await page.locator('.conversation-message img').count(),0);assert.equal(await page.evaluate(()=>window.injected),undefined);assert.equal(await page.locator('details').count(),1);
+ await page.getByRole('button',{name:'Conversation',exact:true}).click();await page.locator('.conversation-message').first().waitFor();assert.equal(queries,0);assert.equal(await page.getByRole('button',{name:'Search',exact:true}).count(),0);assert.equal(await page.locator('.conversation-message img').count(),0);assert.equal(await page.evaluate(()=>window.injected),undefined);assert.equal(await page.locator('details').count(),0);assert.equal(await page.getByText('Working on it',{exact:true}).isVisible(),true);
  await checkModes();assert.equal(await conversationMode.getAttribute('aria-pressed'),'true');
  if(process.env.MODE_SCREENSHOTS)await page.screenshot({path:process.env.MODE_SCREENSHOTS+'/conversation.png'});
  await page.getByLabel('Reply draft').focus();await page.evaluate(()=>intervals.forEach(fn=>fn()));await page.getByText('Final answer',{exact:true}).waitFor();assert.equal(await page.locator('.conversation-message').count(),3);
- await page.evaluate(()=>{window.originalMessage=document.querySelector('.conversation-message');document.querySelector('details').open=true;});
- await Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/codex-one')),page.getByRole('button',{name:'Refresh',exact:true}).click()]);
- assert.equal(await page.evaluate(()=>originalMessage===document.querySelector('.conversation-message')),true);assert.equal(await page.locator('details[open]').count(),1);
- await page.getByRole('button',{name:'Refresh',exact:true}).focus();
+ await page.evaluate(()=>{window.originalMessage=document.querySelector('.conversation-message');});
  await Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/codex-one')),page.evaluate(()=>intervals.forEach(fn=>fn()))]);
- // New history continues arriving while the composer has focus, preserving expanded progress.
+ assert.equal(await page.evaluate(()=>originalMessage===document.querySelector('.conversation-message')),true);assert.equal(await page.evaluate(()=>originalMessage===document.querySelector('.conversation-message')),true);
+ await page.locator('.conversation-panel').focus();
+ await Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/codex-one')),page.evaluate(()=>intervals.forEach(fn=>fn()))]);
+ // New history continues arriving while the composer has focus, preserving existing message nodes.
  answer='Updated answer';await page.getByLabel('Reply draft').fill('keep typing');
  await page.evaluate(()=>intervals.forEach(fn=>fn()));await page.getByText('Updated answer',{exact:true}).waitFor();
- assert.equal(await page.locator('details[open]').count(),1);assert.equal(await page.getByLabel('Reply draft').inputValue(),'keep typing');
+ assert.equal(await page.evaluate(()=>originalMessage===document.querySelector('.conversation-message')),true);assert.equal(await page.getByLabel('Reply draft').inputValue(),'keep typing');
  await page.getByLabel('Reply draft').fill('draft one');await page.getByLabel('Reply draft').press('Shift+Enter');assert.equal(await page.evaluate(()=>sent.length),0);await page.getByLabel('Reply draft').fill('draft one');await page.getByLabel('Reply draft').press('Enter');assert.equal(await page.evaluate(()=>sent[0].pane_id),1);assert.equal(await page.evaluate(()=>sent[0].submit),true);
  await page.evaluate(()=>{const m=sent[0];window.dispatchEvent(new MessageEvent('message',{origin:location.origin,source:null,data:{type:'zellij-conversation-paste-result',id:m.id,ok:true}}));});assert.equal(await page.getByLabel('Reply draft').inputValue(),'draft one');
  // Only an acknowledgement from this terminal clears the sent draft.
@@ -54,7 +54,7 @@ test('current conversation opens directly, stays pane-local, and follows a new c
  await page.locator('.conversation-message').first().waitFor();assert.equal(queries,0);
  // A late response from the previous chat must not paint into the selected peer's chat.
  hold=true;
- await page.getByRole('button',{name:'Refresh',exact:true}).click();
+ await page.evaluate(()=>intervals.forEach(fn=>fn()));
  while(!held)await new Promise(r=>setTimeout(r,10));
  await page.evaluate(()=>{current={...current,key:'peer/main/1',host:'peer',chatHost:'peer',pane:1,agent:'claude',chatId:'claude-two'};SwitchboardConversation.update();});
  await page.getByText('Remote Claude answer',{exact:true}).waitFor();held();
@@ -64,4 +64,54 @@ test('current conversation opens directly, stays pane-local, and follows a new c
  for(const viewport of [{width:360,height:800},{width:844,height:390}]){await page.setViewportSize(viewport);await checkModes();assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);}
  await page.getByRole('button',{name:'Terminal',exact:true}).click();assert.equal(await page.evaluate(()=>returned),1);await checkModes();assert.equal(await terminalMode.getAttribute('aria-pressed'),'true');if(process.env.MODE_SCREENSHOTS)await page.screenshot({path:process.env.MODE_SCREENSHOTS+'/terminal.png'});await page.reload();assert.equal(await terminalMode.getAttribute('aria-pressed'),'true');await conversationMode.click();await page.reload();assert.equal(await conversationMode.getAttribute('aria-pressed'),'true');assert.deepEqual(errors,[]);
  }finally{await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));}
+});
+
+test('phone chat opens the latest page, hides setup, and preserves messages and reading position',{skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
+ const {chromium}=require(process.env.PLAYWRIGHT_MODULE),requests=[];
+ const history=Array.from({length:503},(_,i)=>({role:i%2?'assistant':'user',text:`Message ${i}: ${'Conversation content. '.repeat(12)}`}));
+ history[480]={role:'user',text:'# AGENTS.md instructions for /example\nInternal setup'};
+ history[481]={role:'user',text:'<environment_context>Internal environment</environment_context>'};
+ history[502]={role:'assistant',phase:'commentary',text:'Checking the final result…'};
+ const browser=await chromium.launch();
+ try{
+  const page=await browser.newPage({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+  await page.addInitScript(()=>{window.intervals=[];window.setInterval=fn=>intervals.push(fn);});
+  await page.route('http://chat.test/**',route=>{
+   const url=new URL(route.request().url());
+   if(url.pathname.startsWith('/api/chats/')){
+    requests.push(Object.fromEntries(url.searchParams));
+    const end=url.searchParams.has('before')?Number(url.searchParams.get('before')):history.length;
+    const start=url.searchParams.has('tail')||url.searchParams.has('before')?Math.max(0,end-50):Number(url.searchParams.get('cursor'));
+    const messages=history.slice(start,Math.min(start+50,end)),next=start+messages.length;
+    return route.fulfill({json:{messages,start_cursor:start,previous_cursor:start||null,next_cursor:next<end?next:null}});
+   }
+   if(url.pathname==='/')return route.fulfill({contentType:'text/html',body:`<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/conversation.css"><style>body{margin:0}#terminals{position:relative;height:100dvh}</style><iframe id="terminal" hidden></iframe><main id="terminals"><section id="artifact-preview" hidden></section></main><script src="/conversation.js"></script><script>window.current={key:'pane1',host:'local',pane:1,agent:'codex',state:'working',chatId:'codex-long',frame:document.getElementById('terminal')};SwitchboardConversation.install({selection:()=>current,terminal:()=>{}});</script>`});
+   return route.fulfill({contentType:url.pathname.endsWith('.css')?'text/css':'application/javascript',path:path.join(__dirname,'static',path.basename(url.pathname))});
+  });
+  await page.goto('http://chat.test/');
+  await page.getByText('Checking the final result…',{exact:true}).waitFor();
+  assert.equal(requests.length,1);assert.equal(requests[0].tail,'true');
+  assert.equal(await page.locator('.conversation-message').count(),48);
+  assert.equal(await page.getByText(/Session instructions|Internal setup|Internal environment|Enter to send/).count(),0);
+  assert.equal(await page.getByText('Working…',{exact:true}).isVisible(),true);
+  assert.ok(await page.evaluate(()=>{const n=document.querySelector('.conversation-messages');return n.scrollHeight-n.scrollTop-n.clientHeight<3;}));
+  await page.getByLabel('Reply draft').fill('A mobile draft');await page.getByLabel('Reply draft').press('Enter');
+  assert.equal(await page.getByLabel('Reply draft').inputValue(),'A mobile draft\n');
+  const bounds=await page.locator('.conversation-compose').boundingBox();assert.ok(bounds.height<130);
+  await page.evaluate(()=>{window.savedMessage=document.querySelector('.conversation-message:last-child');document.querySelector('.conversation-messages').scrollTop=100;window.savedTop=document.querySelector('.conversation-messages').scrollTop;});
+  history.push({role:'assistant',text:'The result is ready.'});
+  await page.evaluate(()=>intervals.forEach(fn=>fn()));await page.getByText('The result is ready.',{exact:true}).waitFor({state:'attached'});
+  assert.equal(await page.evaluate(()=>savedMessage.isConnected),true);
+  assert.equal(await page.evaluate(()=>document.querySelector('.conversation-messages').scrollTop),100);
+  await page.evaluate(()=>{document.querySelector('.conversation-messages').scrollTop=0;window.anchor=document.querySelector('.conversation-message');window.anchorY=anchor.getBoundingClientRect().y;});
+  await page.waitForFunction(()=>document.querySelectorAll('.conversation-message').length===99);
+  assert.equal(requests.at(-1).before,'453');
+  assert.ok(await page.evaluate(()=>Math.abs(anchor.getBoundingClientRect().y-anchorY)<3));
+  await page.getByRole('button',{name:'Scroll to bottom',exact:true}).click();
+  assert.ok(await page.evaluate(()=>{const n=document.querySelector('.conversation-messages');return n.scrollHeight-n.scrollTop-n.clientHeight<3;}));
+  await page.evaluate(()=>{current.state='ready';SwitchboardConversation.update();});
+  assert.equal(await page.locator('.conversation-activity').textContent(),'codex');
+  assert.equal(await page.getByRole('button',{name:/Load.*messages/}).count(),0);
+  if(process.env.MODE_SCREENSHOTS)await page.screenshot({path:process.env.MODE_SCREENSHOTS+'/phone-chat.png'});
+ }finally{await browser.close();}
 });

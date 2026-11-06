@@ -24,6 +24,9 @@ pub(super) struct Params {
     #[serde(default)]
     cursor: usize,
     limit: Option<usize>,
+    #[serde(default)]
+    tail: bool,
+    before: Option<usize>,
     project: Option<String>,
 }
 impl Params {
@@ -34,6 +37,7 @@ impl Params {
                 .agent
                 .as_ref()
                 .is_none_or(|a| AGENTS.contains(&a.as_str()))
+            && self.before.is_none_or(|n| n <= 10_000_000)
             && self.cursor <= 10_000_000
             && self.limit.is_none_or(|n| (1..=50).contains(&n))
     }
@@ -518,17 +522,24 @@ fn markdown_events(source: &str) -> Vec<Value> {
 
 fn read_page(chat: &Chat, p: &Params) -> Value {
     let mut result = chat.summary();
-    let page:Vec<_>=chat.messages.iter().skip(p.cursor).take(p.limit()).map(|m| {
+    let end = p
+        .before
+        .unwrap_or(chat.messages.len())
+        .min(chat.messages.len());
+    let start = if p.tail || p.before.is_some() {
+        end.saturating_sub(p.limit())
+    } else {
+        p.cursor.min(end)
+    };
+    let page:Vec<_>=chat.messages[start..end].iter().take(p.limit()).map(|m| {
         let text=m["text"].as_str().unwrap_or_default();
         json!({"role":m["role"],"timestamp":m["timestamp"],"text":clip(text,4000),"truncated":text.chars().count()>4000,"phase":m["phase"],"attachments":m["attachments"],"markdown":markdown_events(&clip(text,4000))})
     }).collect();
-    let next = p.cursor.saturating_add(page.len());
+    let next = start.saturating_add(page.len());
+    result["start_cursor"] = json!(start);
+    result["previous_cursor"] = if start > 0 { json!(start) } else { Value::Null };
     result["messages"] = json!(page);
-    result["next_cursor"] = if next < chat.messages.len() {
-        json!(next)
-    } else {
-        Value::Null
-    };
+    result["next_cursor"] = if next < end { json!(next) } else { Value::Null };
     result
 }
 
@@ -752,6 +763,12 @@ async fn remote(host: &Host, p: &Params, id: Option<&str>) -> Value {
         if let Some(n) = p.limit {
             query.append_pair("limit", &n.to_string());
         }
+        if p.tail {
+            query.append_pair("tail", "true");
+        }
+        if let Some(before) = p.before {
+            query.append_pair("before", &before.to_string());
+        }
         if let Some(project) = &p.project {
             query.append_pair("project", project);
         }
@@ -766,6 +783,9 @@ async fn remote(host: &Host, p: &Params, id: Option<&str>) -> Value {
     {
         Ok(Ok(r)) if r.status == StatusCode::OK => serde_json::from_slice(&r.body)
             .unwrap_or_else(|_| json!({"error":"invalid_peer_response"})),
+        Ok(Ok(r)) if r.status == StatusCode::BAD_REQUEST && (p.tail || p.before.is_some()) => {
+            json!({"error":"This computer needs an update to show recent messages first."})
+        },
         Ok(Ok(r)) if r.status == StatusCode::NOT_FOUND => {
             json!({"error":"unsupported_peer_version"})
         },
@@ -1130,6 +1150,62 @@ mod tests {
             )["messages"][0]["text"],
             "reply"
         );
+    }
+    #[test]
+    fn switchboard_chats_tail_and_previous_pages() {
+        let mut chat = Chat::default();
+        for i in 0..503 {
+            chat.push("user", format!("Message {i}"), Value::Null);
+        }
+        let p = Params {
+            tail: true,
+            limit: Some(50),
+            ..Params::default()
+        };
+        let page = read_page(&chat, &p);
+        assert_eq!(page["start_cursor"], 453);
+        assert_eq!(page["previous_cursor"], 453);
+        assert_eq!(page["next_cursor"], Value::Null);
+        assert_eq!(page["messages"][49]["text"], "Message 502");
+        let older = read_page(
+            &chat,
+            &Params {
+                before: Some(453),
+                ..p.clone()
+            },
+        );
+        assert_eq!(older["start_cursor"], 403);
+        assert_eq!(older["messages"][49]["text"], "Message 452");
+        let first = read_page(
+            &chat,
+            &Params {
+                before: Some(3),
+                ..p.clone()
+            },
+        );
+        assert_eq!(first["start_cursor"], 0);
+        assert_eq!(first["previous_cursor"], Value::Null);
+        assert_eq!(first["messages"].as_array().unwrap().len(), 3);
+        assert_eq!(read_page(&Chat::default(), &p)["messages"], json!([]));
+        assert_eq!(
+            read_page(
+                &chat,
+                &Params {
+                    before: Some(0),
+                    ..p.clone()
+                }
+            )["messages"],
+            json!([])
+        );
+        let forward = read_page(
+            &chat,
+            &Params {
+                cursor: 500,
+                ..Params::default()
+            },
+        );
+        assert_eq!(forward["start_cursor"], 500);
+        assert_eq!(forward["messages"][0]["text"], "Message 500");
     }
     #[test]
     fn switchboard_chats_opencode_readonly_sqlite() {
