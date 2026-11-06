@@ -1158,7 +1158,7 @@ function openNewTabDialog(elevated){
   $('new-tab-title').textContent=elevated?'New administrator tab':'New tab';
   $('new-tab-command').value='c';newTabCommandLookup.close();newTabProjectLookup.close();
   $('new-tab-project').value='switchboard';updateNewTabProject();
-  $('new-tab-note').textContent=elevated?'Opens an administrator shell on the selected machine. Someone there approves it: a UAC prompt on Windows, a sudo password elsewhere.':'Enter to create and launch.';
+  $('new-tab-note').textContent=elevated?'Opens an administrator shell on the selected machine. Someone there approves it: a UAC prompt on Windows, a sudo password elsewhere.':'';
   const select=$('new-tab-target');select.replaceChildren();
   const current=allTabs().find(t=>t.key===selected)?.entry;
   for(const [key,entry] of [...sessions].sort((a,b)=>Number(b[1]===current)-Number(a[1]===current)||Number(b[1].name==='main')-Number(a[1].name==='main'))){
@@ -1206,7 +1206,8 @@ function newTabLookup(inputId,listId,buttonId,items,emptyText,onChange=()=>{}){
   return {close,refresh(){if(!list.hidden)open(showAll);}};
 }
 function updateNewTabProject(){
-  $('new-tab-project-help').textContent='~/git/'+$('new-tab-project').value.trim();
+  const folder='~/git/'+$('new-tab-project').value.trim();
+  $('new-tab-project-help').textContent=folder;$('new-tab-project').title=folder;
 }
 const newTabCommandLookup=newTabLookup('new-tab-command','new-tab-commands','new-tab-lookup',()=>[['c','Claude'],['castra','Codex · Astra'],['csol','Codex · Sol']]);
 let newTabProjects=[],newTabProjectMessage='',newTabProjectRequest;
