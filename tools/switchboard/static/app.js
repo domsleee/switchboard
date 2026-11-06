@@ -10,7 +10,7 @@ fetch('/api/health',{cache:'no-store'}).then(response=>response.ok?response.json
   if(build&&/^[a-f0-9]{7,40}$/.test(build.commit)&&/^\d{4}-\d{2}-\d{2}$/.test(build.commit_date)){
     $('build-version').textContent=`${build.commit} · ${build.commit_date}`;
     const when=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})$/.test(build.commit_timestamp)?new Date(build.commit_timestamp):null;
-    $('settings').title=$('build-version').title=`Commit ${build.commit} · ${when?humanTime(when):build.commit_date}`;
+    $('build-version').title=`Commit ${build.commit} · ${when?humanTime(when):build.commit_date}`;
   }
 }).catch(()=>{});
 const hosts = new Map(), sessions = new Map();
@@ -545,6 +545,14 @@ snoozedHeader.onclick=()=>{
   if(dragging||Date.now()<suppressTabClickUntil)return;
   snoozedOpen=!snoozedOpen;localStorage.setItem(`switchboard-snoozed-open:${filter}`,String(snoozedOpen));render();
 };
+function updateTabTooltips(){
+  for(const name of $('tabs').querySelectorAll('.tab-name')){
+    const button=name.parentElement;
+    if(name.scrollWidth>name.clientWidth)button.title=name.textContent;
+    else button.removeAttribute('title');
+  }
+}
+new ResizeObserver(updateTabTooltips).observe($('tabs'));
 function render() {
   // Live metadata arrives while dragging; keep the source element mounted.
   if(dragging)return;
@@ -609,7 +617,6 @@ function render() {
     const status=unavailable?'Status unavailable':stateLabel==='Ready'?'':stateLabel;
     const duplicate=titleCounts.get(JSON.stringify([item.entry.host,title]))>1;
     const subtitle=`${machine}${duplicate?' · '+item.entry.name:''}${status?' · '+status:''}${flagged?' · For review':''}${isPinned(item.key)?' · Pinned':''}`;
-    button.title=`${title} · ${machine} · ${item.entry.name}\n${status||'No pending attention'}${flagged?' · Flagged for review':''}\nDrag to reorder · Alt+Shift+H/L moves this tab · Middle-click to close · Right-click for actions`;
     button.className='tab-select'+(item.key===selected?' selected':'')+(starred?' needs-attention':'')+(elevated?' elevated':'');
     button.setAttribute('aria-pressed',String(item.key===selected));
     button.setAttribute('aria-label',`${title}${elevated&&title!=='Administrator'?', Administrator':''}, ${machine}, ${item.entry.name}${status?', '+status:''}${flagged?', Flagged for review':''}`);
@@ -622,7 +629,7 @@ function render() {
     row.classList.toggle('active',item.key===selected);
     row.classList.toggle('hidden-tab',item.hidden);
     actions.setAttribute('aria-label',`Actions for ${title} · ${machine}`);
-    actions.title=`Actions for ${title}`;
+    actions.title='Tab actions';
     actions.setAttribute('aria-expanded',String(!$('tab-menu').hidden&&contextItem?.key===item.key));
     nodes.push(row);
   }
@@ -637,6 +644,7 @@ function render() {
   for(const button of tabButtons.values())if(!shownKeys.has(button._item.key))button._row.remove();
   let cursor=$('tabs').firstChild;
   for(const node of nodes){if(node!==cursor)$('tabs').insertBefore(node,cursor);else cursor=cursor.nextSibling;}
+  updateTabTooltips();
   const visibleCount=tabs.length-hiddenTabs.length,visibleShown=shown.length-hiddenShown.length;
   $('tab-count').textContent=`${visibleShown}${visibleShown!==visibleCount?' / '+visibleCount:''} tabs`;
   const emptyHint=renderSidebarEmpty(tabs,shown);
@@ -1574,7 +1582,7 @@ function updateTabMenu(){
   if(!item){closeTabMenu(true);return;}
   contextItem=item;
   $('tab-menu-target').textContent=tabTitle(item);
-  $('tab-menu-target').title=`${tabTitle(item)} · ${hosts.get(item.entry.host)?.name||item.entry.host} · ${item.entry.name}`;
+  $('tab-menu-details').textContent=`${hosts.get(item.entry.host)?.name||item.entry.host} · ${item.entry.name} · ${tabButtons.get(item.key)?.dataset.agentState||autoLabel(item)||'No pending attention'}`;
   $('ready').disabled=!!item.tab.pending&&!Number.isInteger(item.tab.id);
   const pin=$('pin-tab'),isPin=isPinned(item.key);
   pin.disabled=!!item.tab.pending&&!Number.isInteger(item.tab.id);
