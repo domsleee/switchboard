@@ -381,8 +381,8 @@ test('pasting an image file uploads it, while text pastes stay native', async ()
 test('clipboard diagnostics distinguish remote drags, OSC52 and denied writes without contents', async () => {
   const h = harness({write: async () => { throw Object.assign(Error('private clipboard content'), {name: 'NotAllowedError'}); }});
   h.term.modes = {mouseTrackingMode: 'vt200'};
-  h.event('mousedown', {button: 0, clientX: 10, clientY: 10});
-  h.event('mouseup', {clientX: 90, clientY: 10});
+  h.event('mousedown', {button: 0, ctrlKey: true, clientX: 10, clientY: 10});
+  h.event('mouseup', {ctrlKey: true, clientX: 90, clientY: 10});
   assert.equal(h.diagnostics[0].outcome, 'drag');
   assert.equal(h.diagnostics[0].chars, 0);
   assert.equal(h.diagnostics[0].mouse_tracking, true);

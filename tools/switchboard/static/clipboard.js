@@ -5,6 +5,7 @@
   let terminal, pending = null, surface, manualText, notice, revision = 0;
   let selectionMode = false, selecting = false, selectedText = '';
   let dragStart;
+  let deferredPress, localDrag = false, replayingPress = false;
 
   function diagnostic(outcome, chars = 0, attempt = revision) {
     const term = terminal || window.term;
@@ -24,6 +25,7 @@
   }
   function clearSelection() {
     selectedText = ''; selecting = false;
+    deferredPress = null; localDrag = false;
     (terminal || window.term)?.clearSelection?.();
     selectionChanged();
   }
@@ -40,10 +42,39 @@
     if (!service?.shouldForceSelection || service.__switchboardSelection) return;
     const nativeForce = service.shouldForceSelection;
     service.shouldForceSelection = function(event) {
-      return selectionMode || nativeForce.call(this, event);
+      return selectionMode || localDrag || nativeForce.call(this, event);
     };
     service.__switchboardSelection = true;
   }
+  // Apps on a paired desktop can copy to that desktop's clipboard without
+  // emitting OSC52. Keep plain drags in the browser, but deliver ordinary clicks
+  // to the app once we know they were clicks. Modified gestures remain native.
+  function replayPress() {
+    const press = deferredPress;
+    deferredPress = null;
+    replayingPress = true;
+    try { press.target.dispatchEvent(new MouseEvent('mousedown', press)); }
+    finally { replayingPress = false; }
+  }
+  window.addEventListener('mousedown', event => {
+    const term = terminal || window.term;
+    installSelectionMode(term);
+    if (replayingPress || event.button !== 0 || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
+        !term?.element?.contains(event.target) || !term?.modes?.mouseTrackingMode || term.modes.mouseTrackingMode === 'none' || selectionMode) return;
+    deferredPress = {target: event.target, bubbles: true, cancelable: true, button: 0, buttons: 1,
+      clientX: event.clientX, clientY: event.clientY, detail: event.detail, view: window};
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    term.focus();
+  }, true);
+  window.addEventListener('mousemove', event => {
+    if (!deferredPress || Math.hypot(event.clientX - deferredPress.clientX, event.clientY - deferredPress.clientY) < 4) return;
+    localDrag = true;
+    replayPress();
+  }, true);
+  window.addEventListener('mouseup', event => {
+    if (event.button === 0 && deferredPress) replayPress();
+  }, true);
   window.addEventListener('mousedown', event => {
     const term = terminal || window.term;
     if (event.button !== 0 || !term?.element?.contains(event.target)) return;
@@ -59,8 +90,10 @@
       if (selectedText) void copyText(selectedText, 'selection');
     }
     selecting = false;
+    localDrag = false;
     selectionChanged();
   }, true);
+  window.addEventListener('blur', () => { deferredPress = null; localDrag = false; });
 
   function report(result) {
     diagnostic(result.ok ? 'success' : 'failed');

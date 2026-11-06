@@ -390,10 +390,11 @@ which the terminal relay rejects. See [ARTIFACT_SERVING_PLAN.md](ARTIFACT_SERVIN
 
 ## Copying text
 
-Click **Select text**, drag over terminal text, then use **Copy**, Cmd+C on Mac,
-or Ctrl+Shift+C on Windows/Linux. You can also hold Option while dragging on Mac
-or Shift on Windows/Linux without enabling selection mode. Releasing the drag also
-copies, like Zellij's own and agent selections. The selected text is
+Drag over terminal text to select and copy to the viewing computer's clipboard,
+including when a remote app would otherwise copy to its own desktop. Plain clicks
+still reach the terminal app, as do scrolling and Ctrl-drag mouse gestures.
+You can also click **Select text**, or hold Option on Mac or Shift on Windows/Linux,
+then drag and use **Copy**, Cmd+C on Mac, or Ctrl+Shift+C on Windows/Linux. The selected text is
 retained through agent redraws and cleared when switching panes.
 Ctrl+C without a local selection still interrupts the terminal process. Remote
 OSC52 copies use this browser’s clipboard; denied permissions show a manual
