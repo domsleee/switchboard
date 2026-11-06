@@ -136,8 +136,16 @@
       if(agent.installation.command)row.append(element('pre','task-tail installation-command',agent.installation.command));
     }
     if(agent.skills){
-      row.append(element('p','task-note',agent.skills.scope));
-      for(const warning of agent.skills.warnings||[])row.append(element('p','task-note skill-warning',warning));
+      const warnings=agent.skills.warnings||[];
+      const note=element('p','task-note',agent.skills.state==='checking'?'Checking user skills…':warnings.length?'User skills need attention':'User skills up to date');
+      note.title=agent.skills.scope||'';row.append(note);
+      if(warnings.length){
+        const details=element('details','skill-details');details.dataset.key=JSON.stringify([computer.host||'',agent.agent,'skills']);
+        details.append(element('summary','',`Show ${warnings.length} diagnostic${warnings.length===1?'':'s'}`));
+        if(agent.skills.scope)details.append(element('p','task-note',agent.skills.scope));
+        for(const warning of warnings)details.append(element('p','task-note skill-warning',warning));
+        row.append(details);
+      }
     }
     if(agent.state==='ready'&&agent.lastReport==null)row.append(element('p','task-note',`Restart running ${agent.name} sessions to start reporting.`));
     if(agent.setupError&&agent.state!=='ready'&&agent.state!=='running')row.append(element('pre','task-tail',agent.setupError));
@@ -182,7 +190,7 @@
   }
   function renderPanel(){
     const list=byId('updates');if(!list)return;
-    const open=new Set([...list.querySelectorAll('details.task-group[open]')].map(node=>node.dataset.key));
+    const open=new Set([...list.querySelectorAll('details[data-key][open]')].map(node=>node.dataset.key));
     if(failed&&!computers.length){list.replaceChildren(element('p','log-note','Update tasks unavailable; refresh to try again.'));return;}
     const closed=new Set([...list.querySelectorAll('details.switchboard-group:not([open])')].map(node=>node.dataset.key));
     list.replaceChildren(...computers.map(computer=>{
@@ -202,6 +210,7 @@
       }
       return section;
     }));
+    for(const details of list.querySelectorAll('details.skill-details'))details.open=open.has(details.dataset.key);
   }
   function renderNotices(){
     const list=byId('task-notices');if(!list)return;

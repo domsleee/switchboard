@@ -185,6 +185,14 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
     assert.equal(await mac.locator('.task-state').textContent(),'Codex: skills need attention');
     assert.equal(await mac.getAttribute('data-status'),'attention');
     assert.equal(await mac.locator('.skill-warning').count(),2);
+    assert.equal(await mac.locator('.skill-warning').first().isVisible(),false,'raw diagnostics are collapsed');
+    assert.equal(await mac.getByText('User skills need attention',{exact:true}).isVisible(),true);
+    if(process.env.HEALTH_SUMMARY_SCREENSHOTS)await mac.screenshot({path:process.env.HEALTH_SUMMARY_SCREENSHOTS+'/after.png'});
+    await mac.locator('.skill-details summary').click();
+    assert.equal(await mac.locator('.skill-warning').first().isVisible(),true);
+    await page.evaluate(()=>SwitchboardTasks.load());
+    assert.equal(await mac.locator('.skill-warning').first().isVisible(),true,'polling preserves expanded diagnostics');
+
     assert.equal(await macRows.nth(2).getByRole('button').count(),0);
     if(process.env.SKILL_HEALTH_SCREENSHOTS)await page.screenshot({path:'/tmp/skill-health-after.png',clip:await page.locator('#updates .task-computer').first().boundingBox()});
     tasks.computers[0].agents[1].state='setup';tasks.computers[0].agents[2].state='approve';
