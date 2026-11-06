@@ -73,6 +73,8 @@ test('a fresh page uses the relay catalog when a host scan is unavailable',async
 test('native panes recover a cold catalog and reconcile pane keys with stable tab IDs',async()=>{
   const {context,windows,other,mac}=monitorContext();
   Object.assign(context,{ready:{},hidden:{},tabOrder:[],saveReady(){},localStorage:{setItem(){}}});
+  context.pinned={};
+  vm.runInContext(source.slice(source.indexOf('function isPinned('),source.indexOf('// Tabs in the Hidden')),context);
   vm.runInContext(source.slice(source.indexOf('function sessionKey('),source.indexOf('function attentionKey(')),context);
   context.tabCatalog=[];windows.catalog=[];other.catalog=[];mac.catalog=[];
   windows.state={session_name:'main',tabs:[{position:0,name:'First'},{position:1,name:'Second'}],
