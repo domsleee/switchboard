@@ -21,6 +21,41 @@ Opening Switchboard automatically starts a shell on each connected machine that
 has no sessions. Existing sessions are reused. Closing the last tab leaves the
 workspace empty until you use **+ New tab** or open Switchboard again.
 
+## HTTPS and terminal API
+
+The sidebar (`8090`), local native web service (`8082`), artifact listener (`8091`)
+and peer gateway forwarding use TLS. The local installer creates a private
+`~/.config/switchboard/tls` identity and installs its CA in the user's trust store.
+Rust clients trust that CA explicitly; scripts can pass `--cacert` with `ca.pem`.
+The CA signing key is discarded after issuing the localhost certificate. Keys
+stay in the private directory; rerunning installation preserves the identity.
+Linux browser trust needs NSS `certutil` (`libnss3-tools`); browsers with a separate
+trust store must import `ca.pem`. Node-based agents using their own CA bundle
+need `NODE_EXTRA_CA_CERTS` set to this CA path before they start, including Claude
+HTTP hooks. Existing agents retain their startup environment. No certificate-check
+bypass is supported.
+Use `https://switchboard.localhost:8090` directly; an optional external reverse
+proxy must also verify its HTTPS upstream, rather than forward over HTTP.
+
+`POST /api/hosts/{host}/terminal` accepts `list`, `read`, `input`, `key` and
+`close`, with an explicit `session`; all but `list` require a numeric `pane_id`.
+`input` takes `text` (32 KiB maximum), and `key` takes `enter`, `escape`, `tab`,
+`backspace` or `interrupt`. `close` closes the pane's whole tab. Use a native
+long-lived token as a Bearer credential; unknown/revoked credentials fail with
+401, read-only credentials cannot mutate, and browser Origin requests fail with
+403. The host configuration's `token_file` supplies the local installation's
+credential. Remote requests use the paired gateway credential over pinned TLS;
+they do not forward the caller's local token. The gateway rechecks membership
+and the engine's token permissions before native operations.
+
+Listings return `panes`, reads return `screen`, and mutations return `ok`.
+Input uses bracketed paste when supported; Enter is a separate key operation.
+An application without bracketed paste can execute newlines in input. A timeout
+leaves delivery uncertain: inspect before retrying. These requests and attention
+subscriptions use native IPC without creating a terminal viewer or child CLI.
+Final-session cleanup uses filesystem operations after repeated engine-absence checks.
+External application/service launches still start the requested programs.
+
 ## Running the relay by hand
 
 Run on the Mac:
@@ -29,7 +64,7 @@ Run on the Mac:
 zellij serve --host-config ~/.config/zellij/switchboard-hosts.json
 ```
 
-Open https://switchboard.localhost (Portless), or http://127.0.0.1:8090. Use **Settings → Machines** to assign work/home groups or refresh sessions.
+Open https://switchboard.localhost (Portless), or https://127.0.0.1:8090. Use **Settings → Machines** to assign work/home groups or refresh sessions.
 
 ## Pairing details
 
@@ -91,7 +126,7 @@ This installs a current-user **Switchboard** Startup shortcut and a tray icon
 (reinstalling without `-Config` keeps the running tray's `-Config`),
 starts the embedded Rust relay, and starts native daemon mode only
 if the server is offline. The tray supervises the relay and web server and opens
-the actual sidebar at **http://switchboard.localhost:8090** on loopback port 8090.
+the actual sidebar at **https://switchboard.localhost:8090** on loopback port 8090.
 Use `-RelayPort PORT` to choose another port. Reinstalls and updates preserve the
 running tray's port, including older installations whose relay still uses port 80.
 Logs are in `~/.config/switchboard`. Quitting the tray leaves terminals running.
@@ -120,7 +155,7 @@ Example `~/.config/zellij/switchboard-hosts.json`:
     {
       "id": "mac",
       "name": "Mac",
-      "url": "http://127.0.0.1:8082",
+      "url": "https://127.0.0.1:8082",
       "token_file": "~/.config/zellij/mac-token"
     }
   ]
@@ -220,7 +255,7 @@ Smaller plain terminals and older browsers still constrain the layout because th
 ## Attention detection
 
 The relay automatically checks Codex/Claude/Copilot panes on each host, including
-background tabs, using native `list-panes` and `dump-screen`. It recognizes live
+background tabs, using native pane catalogs and screen subscriptions over IPC. It recognizes live
 input and approval prompts and running status. Ready results get an attention badge until you view the tab; pending
 approvals/questions retain their badge until resolved. A new observed working-to-ready transition raises a new notification. Notification
 identities are saved beside the relay configuration as `.attention.json`, so a

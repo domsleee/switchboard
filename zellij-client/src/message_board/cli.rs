@@ -44,8 +44,8 @@ impl Client {
             _ => false,
         };
         anyhow::ensure!(
-            config.url.scheme() == "https" || loopback,
-            "Use HTTPS for a board on another computer"
+            config.url.scheme() == "https" || cfg!(test) && loopback,
+            "Use HTTPS for the board"
         );
         let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
         resolve_path(parent, &mut config.token_file);
@@ -127,21 +127,18 @@ impl Client {
         };
         anyhow::ensure!(
             loopback
-                && matches!(origin.scheme(), "http" | "https")
+                && (origin.scheme() == "https" || cfg!(test) && origin.scheme() == "http")
                 && origin.username().is_empty()
                 && origin.password().is_none()
                 && origin.path() == "/"
                 && origin.query().is_none()
                 && origin.fragment().is_none(),
-            "Relay URL must be a loopback HTTP(S) origin"
+            "Relay URL must be a loopback HTTPS origin"
         );
         Ok(Self {
             origin,
             token: None,
-            http: HttpClient::builder()
-                .timeout(Duration::from_secs(15))
-                .redirect_policy(RedirectPolicy::None)
-                .build()?,
+            http: crate::switchboard_relay::tls::http_client()?,
         })
     }
 }
@@ -184,7 +181,7 @@ fn default_relay_url(registration: &std::path::Path) -> String {
         .and_then(|file| serde_json::from_reader::<_, RegisteredPort>(file.take(64 * 1024)).ok())
         .map(|value| value.port.get())
         .unwrap_or(8090);
-    format!("http://127.0.0.1:{port}")
+    format!("https://127.0.0.1:{port}")
 }
 /// The local relay: `explicit` (`--relay-url` or `SWITCHBOARD_RELAY_URL`), else the
 /// port this computer's native web server registered.
@@ -421,17 +418,17 @@ mod tests {
     fn message_board_cli_discovers_registered_relay_port_without_overriding_explicit_url() {
         let dir = tempfile::tempdir().unwrap();
         let registration = dir.path().join("registration.json");
-        assert_eq!(relay_url(None, &registration), "http://127.0.0.1:8090");
+        assert_eq!(relay_url(None, &registration), "https://127.0.0.1:8090");
         assert!(!registration.exists());
         for port in [80, 8090] {
             std::fs::write(&registration, format!(r#"{{"port":{port},"key":"private credential","endpoint":"https://untrusted.invalid"}}"#)).unwrap();
             assert_eq!(
                 relay_url(None, &registration),
-                format!("http://127.0.0.1:{port}")
+                format!("https://127.0.0.1:{port}")
             );
             assert_eq!(
-                relay_url(Some("http://127.0.0.1:8181"), &registration),
-                "http://127.0.0.1:8181"
+                relay_url(Some("https://127.0.0.1:8181"), &registration),
+                "https://127.0.0.1:8181"
             );
         }
         for invalid in [
@@ -444,17 +441,17 @@ mod tests {
             "invalid",
         ] {
             std::fs::write(&registration, invalid).unwrap();
-            assert_eq!(relay_url(None, &registration), "http://127.0.0.1:8090");
+            assert_eq!(relay_url(None, &registration), "https://127.0.0.1:8090");
         }
         assert_eq!(
-            relay_url(Some("http://127.0.0.1:8181"), &registration),
-            "http://127.0.0.1:8181"
+            relay_url(Some("https://127.0.0.1:8181"), &registration),
+            "https://127.0.0.1:8181"
         );
     }
 
     #[test]
     fn message_board_relay_client_only_accepts_loopback_origins() {
-        assert!(Client::relay("http://127.0.0.1:8090").is_ok());
+        assert!(Client::relay("https://127.0.0.1:8090").is_ok());
         assert!(Client::relay("http://[::1]:8090").is_ok());
         for url in [
             "http://192.0.2.1:8090",

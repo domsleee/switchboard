@@ -45,7 +45,7 @@ change group administration or membership.
 
 The CLI discovers the current relay port from its local native-web registration
 (`switchboard-peer-8082/registration.json` in the Zellij cache), falling back to
-`http://127.0.0.1:8090` when no registration is available. Set
+`https://127.0.0.1:8090` when no registration is available. Set
 `SWITCHBOARD_RELAY_URL` or `--relay-url` to override this with another **loopback**
 relay address. An installation using a different native-web port should set
 that override. It is the local relay that
@@ -114,7 +114,8 @@ Generate a distinct random token of at least 32 printable bytes for each
 computer and keep those files private. Each client receives only its own token.
 Use a trusted certificate or configure a private CA certificate in the client;
 there is no option to disable certificate validation. LAN listeners require TLS.
-An isolated loopback fixture can omit `tls_cert` and `tls_key` and use HTTP.
+Loopback listeners also require `tls_cert` and `tls_key`; clients must trust the
+certificate through `ca_cert` or their system trust store.
 The board listener exposes only authenticated `/api/message-board/` routes,
 with no terminal, login or anonymous artifact routes. Browser Origin requests
 are rejected; a future human view needs a trusted server-side board proxy.

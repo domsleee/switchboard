@@ -68,7 +68,7 @@ final class Switchboard: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuWillOpen(_ menu: NSMenu) {
-        URLSession.shared.dataTask(with: URL(string: "http://127.0.0.1:8090/")!) { _, response, _ in
+        URLSession.shared.dataTask(with: URL(string: "https://127.0.0.1:8090/")!) { _, response, _ in
             let online = (response as? HTTPURLResponse)?.statusCode == 200
             DispatchQueue.main.async { self.status.title = online ? "Switchboard running" : "Switchboard offline" }
         }.resume()
@@ -80,7 +80,7 @@ final class Switchboard: NSObject, NSApplicationDelegate, NSMenuDelegate {
         run([zellij, "web", "--status", "--timeout", "2"]) { completion($0 == 0) }
     }
 
-    @objc func openBoard() { NSWorkspace.shared.open(URL(string: "https://switchboard.localhost/")!) }
+    @objc func openBoard() { NSWorkspace.shared.open(URL(string: "https://switchboard.localhost:8090/")!) }
     @objc func openLogs() { NSWorkspace.shared.open(log) }
     @objc func startRelay() {
         // launchd owns the relay; starting an already running job leaves it alone.

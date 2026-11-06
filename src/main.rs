@@ -439,13 +439,17 @@ fn main() {
             {
                 config_options.web_server_ip = Some(std::net::Ipv4Addr::LOCALHOST.into());
             }
-            let has_certificate = config_options.web_server_cert.is_some();
+            let mut certificate = config_options.web_server_cert.clone();
+            #[cfg(feature = "web_server_capability")]
+            if certificate.is_none()
+                && config_options
+                    .web_server_ip
+                    .is_none_or(|ip| ip.is_loopback())
+            {
+                certificate = zellij_client::switchboard_relay::local_ca_certificate().ok();
+            }
             let web_server_base_url = web_server_base_url_from_config(config_options);
-            match commands::web_server_status(
-                &web_server_base_url,
-                web_opts.timeout,
-                has_certificate,
-            ) {
+            match commands::web_server_status(&web_server_base_url, web_opts.timeout, certificate) {
                 Ok(version) => {
                     let version = version.trim();
                     println!(

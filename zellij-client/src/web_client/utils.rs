@@ -24,24 +24,12 @@ pub fn get_mime_type(ext: Option<&str>) -> &str {
 pub fn should_use_https(
     ip: IpAddr,
     has_certificate: bool,
-    enforce_https_for_localhost: bool,
+    _enforce_https_for_localhost: bool,
 ) -> Result<bool, String> {
-    let is_loopback = match ip {
-        IpAddr::V4(ipv4) => ipv4.is_loopback(),
-        IpAddr::V6(ipv6) => ipv6.is_loopback(),
-    };
-
-    if is_loopback && !enforce_https_for_localhost {
-        Ok(has_certificate)
-    } else if is_loopback {
-        Err(format!("Cannot bind without an SSL certificate."))
-    } else if has_certificate {
+    if has_certificate {
         Ok(true)
     } else {
-        Err(format!(
-            "Cannot bind to non-loopback IP: {} without an SSL certificate.",
-            ip
-        ))
+        Err(format!("Cannot bind to {} without a TLS certificate.", ip))
     }
 }
 

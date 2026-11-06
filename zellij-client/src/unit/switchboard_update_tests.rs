@@ -267,7 +267,18 @@ esac
         } else {
             let script =
                 Path::new(env!("CARGO_MANIFEST_DIR")).join("../tools/switchboard/update_local.sh");
+            // This state-machine fixture owns an HTTP stub; TLS verification is covered
+            // by the relay transport tests. Keep the executable production script HTTPS-only.
+            let fixture_script = self.root.join("fixture-update.sh");
+            if self.launchd {
+                let source = fs::read_to_string(&script)
+                    .unwrap()
+                    .replace("https://127.0.0.1:", "http://127.0.0.1:")
+                    .replace("--cacert \"$HOME/.config/switchboard/tls/ca.pem\" ", "");
+                write_executable(&fixture_script, &source);
+            }
             let update_local = if self.launchd {
+                let script = &fixture_script;
                 format!(
                     "#!/bin/bash\nexport PATH='{root}/fakebin':\"$PATH\" SWITCHBOARD_RELEASES_DIR='{root}/retained' SWITCHBOARD_UPDATE_SERVICE_TIMEOUT=4\n\
                      echo \"{version} update_local.sh\" >> '{root}/events'\n\

@@ -228,7 +228,7 @@ pub enum SwitchboardCommand {
         #[clap(
             long,
             env = "SWITCHBOARD_RELAY_URL",
-            default_value = "http://127.0.0.1:8090"
+            default_value = "https://127.0.0.1:8090"
         )]
         relay_url: String,
     },
@@ -242,7 +242,7 @@ pub enum SwitchboardCommand {
         #[clap(
             long,
             env = "SWITCHBOARD_RELAY_URL",
-            default_value = "http://127.0.0.1:8090"
+            default_value = "https://127.0.0.1:8090"
         )]
         relay_url: String,
     },
@@ -258,7 +258,7 @@ pub enum SwitchboardCommand {
         #[clap(
             long,
             env = "SWITCHBOARD_RELAY_URL",
-            default_value = "http://127.0.0.1:8090"
+            default_value = "https://127.0.0.1:8090"
         )]
         relay_url: String,
         /// One argument is a shell command line; several are a program and its arguments
@@ -1968,14 +1968,14 @@ mod tests {
             "zellij",
             "message",
             "--relay-url",
-            "http://127.0.0.1:8181",
+            "https://127.0.0.1:8181",
             "inboxes",
         ])
         .unwrap();
         let Some(Command::Message(message)) = cli.command else {
             panic!("Expected message command")
         };
-        assert_eq!(message.relay_url.as_deref(), Some("http://127.0.0.1:8181"));
+        assert_eq!(message.relay_url.as_deref(), Some("https://127.0.0.1:8181"));
         for target in ["--to", "--broadcast"] {
             assert!(CliArgs::try_parse_from([
                 "zellij",

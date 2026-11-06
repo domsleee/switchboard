@@ -391,3 +391,18 @@ pub fn validate_token(token: &str) -> Result<bool> {
     )?;
     Ok(count > 0)
 }
+
+/// Inspect a long-lived API credential without minting a browser session.
+/// Unknown credentials fail closed, including when used for a read.
+pub fn token_read_only(token: &str) -> Result<Option<bool>> {
+    let conn = open_db()?;
+    match conn.query_row(
+        "SELECT read_only FROM tokens WHERE token_hash = ?1",
+        [hash_token(token)],
+        |row| row.get::<_, bool>(0),
+    ) {
+        Ok(read_only) => Ok(Some(read_only)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}

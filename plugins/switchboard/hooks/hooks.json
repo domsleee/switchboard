@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "http",
-            "url": "http://127.0.0.1:8090/api/agent-hook",
+            "url": "https://127.0.0.1:8090/api/agent-hook",
             "timeout": 5,
             "headers": {
               "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
@@ -37,7 +37,7 @@
         "hooks": [
           {
             "type": "http",
-            "url": "http://127.0.0.1:8090/api/agent-hook",
+            "url": "https://127.0.0.1:8090/api/agent-hook",
             "timeout": 5,
             "headers": {
               "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
@@ -58,7 +58,7 @@
         "hooks": [
           {
             "type": "http",
-            "url": "http://127.0.0.1:8090/api/agent-hook",
+            "url": "https://127.0.0.1:8090/api/agent-hook",
             "timeout": 5,
             "headers": {
               "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
@@ -79,7 +79,7 @@
         "hooks": [
           {
             "type": "http",
-            "url": "http://127.0.0.1:8090/api/agent-hook",
+            "url": "https://127.0.0.1:8090/api/agent-hook",
             "timeout": 5,
             "headers": {
               "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
@@ -100,7 +100,7 @@
         "hooks": [
           {
             "type": "http",
-            "url": "http://127.0.0.1:8090/api/agent-hook",
+            "url": "https://127.0.0.1:8090/api/agent-hook",
             "timeout": 5,
             "headers": {
               "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
@@ -121,7 +121,7 @@
         "hooks": [
           {
             "type": "http",
-            "url": "http://127.0.0.1:8090/api/agent-hook",
+            "url": "https://127.0.0.1:8090/api/agent-hook",
             "timeout": 5,
             "headers": {
               "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
@@ -142,7 +142,7 @@
         "hooks": [
           {
             "type": "http",
-            "url": "http://127.0.0.1:8090/api/agent-hook",
+            "url": "https://127.0.0.1:8090/api/agent-hook",
             "timeout": 5,
             "headers": {
               "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
@@ -163,7 +163,7 @@
         "hooks": [
           {
             "type": "http",
-            "url": "http://127.0.0.1:8090/api/agent-hook",
+            "url": "https://127.0.0.1:8090/api/agent-hook",
             "timeout": 5,
             "headers": {
               "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",

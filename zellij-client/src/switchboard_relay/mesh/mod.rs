@@ -4,7 +4,7 @@ mod crypto;
 mod direct;
 pub(super) mod discovery;
 mod inboxes;
-mod storage;
+pub(super) mod storage;
 mod sync;
 #[cfg(test)]
 mod tests;
@@ -309,6 +309,7 @@ impl Mesh {
                 .port_or_known_default()
                 .unwrap_or(8082),
         ))?;
+        storage.bytes("relay-ca.pem", &std::fs::read(tls::certificate_path()?)?)?;
         *self.bridge.write().unwrap() = Some((storage, port, secret()));
         Ok(())
     }

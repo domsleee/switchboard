@@ -69,7 +69,7 @@ pub(in crate::switchboard_relay) async fn open(
             created: Instant::now(),
         },
     );
-    Ok(Json(json!({"url": format!("http://127.0.0.1:{PORT}/html/{ticket}/{}", urlencoding::encode(name))})).into_response())
+    Ok(Json(json!({"url": format!("https://127.0.0.1:{PORT}/html/{ticket}/{}", urlencoding::encode(name))})).into_response())
 }
 
 #[derive(Deserialize)]

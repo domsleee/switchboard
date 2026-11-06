@@ -17,7 +17,7 @@ Read the guide for the task:
 
 ## Inspecting the running system
 
-Read the live relay before guessing. It answers on `http://127.0.0.1:8090`:
+Read the live relay before guessing. It answers on `https://127.0.0.1:8090`:
 
 - `/api/health`: the commit this relay is running.
 - `/api/hosts`: machines, their build commit, sessions and session age.

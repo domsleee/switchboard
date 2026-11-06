@@ -136,11 +136,15 @@ async fn proxy(root: PathBuf, request: Request) -> anyhow::Result<Response> {
     let target = format!("/__switchboard_peer{path}");
     let tcp = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, registration.port)).await?;
     tcp.set_nodelay(true)?;
-    let socket: Stream = Box::new(tcp);
+    let connector = tokio_rustls::TlsConnector::from(tls::client_with_ca(&std::fs::read(
+        root.join("relay-ca.pem"),
+    )?)?);
+    let server_name = rustls_pki_types::ServerName::try_from("localhost")?;
+    let socket: Stream = Box::new(connector.connect(server_name, tcp).await?);
     let websocket = WebSocketUpgrade::from_request_parts(&mut parts, &()).await;
     if let Ok(websocket) = websocket {
         let mut upstream =
-            format!("ws://127.0.0.1:{}{target}", registration.port).into_client_request()?;
+            format!("wss://127.0.0.1:{}{target}", registration.port).into_client_request()?;
         for name in [
             header::HOST,
             header::AUTHORIZATION,

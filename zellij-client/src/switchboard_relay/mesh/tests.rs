@@ -813,9 +813,26 @@ async fn recovered_gateway_health_keeps_signed_authority_without_locking_gateway
     };
     let storage = storage::Storage::open(&temp.path().join("bridge")).unwrap();
     storage.write("registration.json", &registration).unwrap();
+    let (cert, key) = tls::ensure_at(&temp.path().join("tls")).unwrap();
+    storage
+        .bytes(
+            "relay-ca.pem",
+            &std::fs::read(temp.path().join("tls/ca.pem")).unwrap(),
+        )
+        .unwrap();
+    let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key)
+        .await
+        .unwrap();
     let router = peer_bridge::relay_router(mesh.clone(), registration.id.clone());
     let internal_task = tokio::spawn(async move {
-        axum::serve(internal_listener, router).await.unwrap();
+        tls::serve(
+            internal_listener,
+            router,
+            axum_server::Handle::new(),
+            tls_config,
+        )
+        .await
+        .unwrap();
     });
     let mut active = Some(("old-address".into(), axum_server::Handle::new()));
     let (certificate, current_endpoint) = peer_bridge::prepare_at(
@@ -1024,9 +1041,21 @@ async fn gateway_roundtrip(shared: bool) {
         };
         let storage = storage::Storage::open(&temp.path().join("bridge")).unwrap();
         storage.write("registration.json", &registration).unwrap();
+        let (cert, key) = tls::ensure_at(&temp.path().join("local-tls")).unwrap();
+        storage
+            .bytes(
+                "relay-ca.pem",
+                &std::fs::read(temp.path().join("local-tls/ca.pem")).unwrap(),
+            )
+            .unwrap();
+        let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key)
+            .await
+            .unwrap();
         let internal = peer_bridge::relay_router(mac.clone(), registration.id);
         bridge_task = Some(tokio::spawn(async move {
-            axum::serve(listener, internal).await.unwrap();
+            tls::serve(listener, internal, axum_server::Handle::new(), tls_config)
+                .await
+                .unwrap();
         }));
         let root = storage.root.clone();
         Router::new()
@@ -1085,6 +1114,26 @@ async fn gateway_roundtrip(shared: bool) {
             .await
             .unwrap()
             .status()
+    }
+    for (credential, origin, expected) in [
+        (None, false, StatusCode::UNAUTHORIZED),
+        (Some("not-a-peer"), false, StatusCode::UNAUTHORIZED),
+        (Some(bearer.as_str()), true, StatusCode::FORBIDDEN),
+        (Some(bearer.as_str()), false, StatusCode::BAD_REQUEST),
+    ] {
+        assert_eq!(
+            request(
+                &client,
+                &authority,
+                credential,
+                origin,
+                Method::POST,
+                "/switchboard/terminal",
+                Bytes::from_static(b"{\"action\":\"arbitrary-command\"}")
+            )
+            .await,
+            expected
+        );
     }
     if shared {
         assert_eq!(

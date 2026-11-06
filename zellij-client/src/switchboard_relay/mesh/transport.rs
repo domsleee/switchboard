@@ -781,6 +781,9 @@ async fn terminal_response(
     if path == "/switchboard/logs" && request.method() == Method::GET {
         return Ok(Json(logs::local()).into_response());
     }
+    if path == "/switchboard/terminal" && request.method() == Method::POST {
+        return terminal::gateway(&host, request).await;
+    }
     if path == "/switchboard/control" && request.method() == Method::POST {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]

@@ -1,3 +1,5 @@
+const secure = require('./tls-fixture.cjs')(() => env);
+const fetch = secure.fetch;
 // Opt-in Windows acceptance. Only this run's private session/connection services
 // are started/stopped. No tray, startup shortcut, live service or user shell is used.
 // Usage: PLAYWRIGHT_MODULE=... node update_windows_browser.test.cjs OLD_BINARY NEW_BINARY
@@ -19,7 +21,7 @@ const store = path.join(dir, 'releases'), config = path.join(dir, 'config.kdl');
 const agentScript = path.join(dir,'codex','fixture.cjs');
 const name = 'update-acceptance-' + crypto.randomBytes(8).toString('hex');
 const powershell = process.env.POWERSHELL_BINARY || path.join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe');
-const env = {...process.env, ZELLIJ_SOCKET_DIR:path.join(dir,'sockets'), ZELLIJ_CONFIG_FILE:config, TERM:'xterm-256color'};
+const env = {...process.env, HOME:dir, USERPROFILE:dir, ZELLIJ_SOCKET_DIR:path.join(dir,'sockets'), ZELLIJ_CONFIG_FILE:config, TERM:'xterm-256color'};
 for(const key of Object.keys(env))if(key.toLowerCase()==='psmodulepath')delete env[key];
 for (const key of ['ZELLIJ','ZELLIJ_SESSION_NAME','ZELLIJ_CONFIG_DIR']) delete env[key];
 const ps = value => "'" + value.replaceAll("'", "''") + "'";
@@ -68,10 +70,10 @@ function start(binary,args,label) {
         assert.ok(tokenLine,'Fixture token was created');
         tokenName=tokenLine.split(': ')[0];
         const tokenPath=path.join(dir,'token');fs.writeFileSync(tokenPath,tokenLine.slice(tokenName.length+2).trim());
-        const nativePort=await port(),relayPort=await port(), url=`http://127.0.0.1:${relayPort}`;
+        const nativePort=await port(),relayPort=await port(), url=`https://127.0.0.1:${relayPort}`;
         fs.appendFileSync(config,`web_server_port ${nativePort}\n`);
         const relayConfig=path.join(dir,'hosts.json');
-        fs.writeFileSync(relayConfig,JSON.stringify({hosts:[{id:'test',name:'Acceptance',url:`http://127.0.0.1:${nativePort}`,token_file:tokenPath,zellij_binary:selectedBinary(),escape_transport:'local'}]}));
+        fs.writeFileSync(relayConfig,JSON.stringify({hosts:[{id:'test',name:'Acceptance',url:`https://127.0.0.1:${nativePort}`,token_file:tokenPath,zellij_binary:selectedBinary(),escape_transport:'local'}]}));
         const startServices=()=>{
             native=start(selectedBinary(),['--config',config,'web','--start','--port',String(nativePort)],'native');
             relay=start(selectedBinary(),['serve','--host-config',relayConfig,'--port',String(relayPort)],'relay');
@@ -85,7 +87,7 @@ function start(binary,args,label) {
         let second;
         await wait(()=>{second=panes().find(p=>!p.is_plugin&&p.tab_id!==first.tab_id);return !!second;},'Second private shell did not start');
         await wait(async()=> (await (await fetch(url+'/api/hosts/test')).json()).sessions?.some(s=>s.name===name&&s.web_clients_allowed),'Private session is not shared');
-        browser=await chromium.launch({headless:true,...(process.env.PLAYWRIGHT_CHANNEL?{channel:process.env.PLAYWRIGHT_CHANNEL}:{})});page=await browser.newPage({viewport:{width:1200,height:800}});
+        browser=await secure.launch(chromium,{headless:true,...(process.env.PLAYWRIGHT_CHANNEL?{channel:process.env.PLAYWRIGHT_CHANNEL}:{})});page=await browser.newPage({viewport:{width:1200,height:800}});
         page.setDefaultTimeout(45000);
         await page.addInitScript(()=>{
             const Original=window.WebSocket;window.__acceptanceSockets=[];

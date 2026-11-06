@@ -1,3 +1,5 @@
+const secure = require('./tls-fixture.cjs')(() => env);
+const fetch = secure.fetch;
 // Native sharing CLI acceptance against private sessions and a private web service.
 // Usage: node sharing_native.test.cjs [BINARY]
 const assert = require('node:assert/strict');
@@ -12,7 +14,7 @@ const dir = fs.mkdtempSync('/tmp/sbn-');
 const suffix = crypto.randomBytes(6).toString('hex');
 const names = ['off', 'disabled'].map(mode => `__switchboard_control_sharing_${mode}_${suffix}`);
 const configs = names.map((_, index) => path.join(dir, `${index}.kdl`));
-const env = {...process.env, ZELLIJ_SOCKET_DIR: path.join(dir, 'sockets'), TERM: 'xterm-256color'};
+const env = {...process.env, HOME:dir, USERPROFILE:dir, ZELLIJ_SOCKET_DIR: path.join(dir, 'sockets'), TERM: 'xterm-256color'};
 for (const key of ['ZELLIJ','ZELLIJ_SESSION_NAME','ZELLIJ_CONFIG_FILE','ZELLIJ_CONFIG_DIR','SWITCHBOARD_RECOVER_UNSHARED_SESSION']) delete env[key];
 const run = (index, ...args) => execFileSync(binary, ['--config', configs[index], ...args], {env, encoding:'utf8', timeout:15000, stdio:['ignore','pipe','pipe']});
 const action = (index, ...args) => run(index, '-s', names[index], 'action', ...args);
@@ -77,7 +79,7 @@ const created = [];
         tokenName = line.split(': ')[0];
         const authToken = line.slice(tokenName.length+2).trim();
         const nativePort = await port();
-        const url = `http://127.0.0.1:${nativePort}`;
+        const url = `https://127.0.0.1:${nativePort}`;
         web = spawn(binary, ['--config',configs[0],'web','--port',String(nativePort)], {env, stdio:['ignore',fs.openSync(path.join(dir,'web.log'),'a'),fs.openSync(path.join(dir,'web-error.log'),'a')]});
         await waitFor(async () => (await fetch(url+'/info/version')).ok, 'Private web service did not start');
         const login = await fetch(url+'/command/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({auth_token:authToken,remember_me:false})});
@@ -105,7 +107,7 @@ const created = [];
         const readOnlyToken=readOnlyLine.slice(readOnlyTokenName.length+2).replace(/ \(read-only\)\s*$/,'').trim();
         const clients=()=>new Set(action(0,'list-clients').split('\n').map(line=>line.trim().split(/\s+/)[0]).filter(id=>/^\d+$/.test(id)));
         const originalClients=clients();
-        browser=await chromium.launch({headless:true});
+        browser=await secure.launch(chromium,{headless:true});
         async function viewer(token){
             const context=await browser.newContext({viewport:{width:1200,height:800}});
             assert.equal((await context.request.post(url+'/command/login',{data:{auth_token:token,remember_me:false}})).status(),200);

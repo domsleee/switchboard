@@ -39,7 +39,7 @@ try {
         [pscustomobject]@{Code=$(if ($Arguments -contains '--status' -and !$script:webOnline) { 1 } else { 0 }); Output=''; Error=''}
     }
     function Invoke-WebRequest([string]$Uri, $Headers) {
-        Assert ($Uri -eq "http://127.0.0.1:$RelayPort/api/health") 'Tray health checked the wrong relay port'
+        Assert ($Uri -eq "https://127.0.0.1:$RelayPort/api/health") 'Tray health checked the wrong relay port'
         Assert ($Headers.Host -eq "switchboard.localhost:$RelayPort") 'Tray health used the wrong Host authority'
         if ($script:health -eq 'offline') { throw 'Private HTTP fixture offline' }
         [pscustomobject]@{StatusCode=200; Content=('{"relay":"' + $script:health + '"}')}

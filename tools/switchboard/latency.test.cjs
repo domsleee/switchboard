@@ -1,3 +1,5 @@
+const secure = require('./tls-fixture.cjs')(() => env);
+const fetch = secure.fetch;
 // Keystroke echo latency in a private throwaway session; never types into user terminals.
 // Opt-in (not run in CI): PLAYWRIGHT_MODULE=/path/to/playwright node latency.test.cjs BINARY [options]
 //   --keys N          keystrokes to measure (default 60)
@@ -78,15 +80,15 @@ let native,relay,browser,tokenName,created=false,failed=false;const burners=[];
     const tokenLine=cli('web','--create-token').split('\n').find(line=>line.includes(': '));
     tokenName=tokenLine.split(': ')[0];
     const token=path.join(dir,'token');fs.writeFileSync(token,tokenLine.slice(tokenName.length+2).trim(),{mode:0o600});
-    const nativePort=await port(),relayPort=await port(),url='http://127.0.0.1:'+relayPort;
-    const host={id:'fixture',name:'Private fixture',url:(tls?'https':'http')+'://127.0.0.1:'+nativePort,token_file:token,zellij_binary:installed};
+    const nativePort=await port(),relayPort=await port(),url='https://127.0.0.1:'+relayPort;
+    const host={id:'fixture',name:'Private fixture',url:'https://127.0.0.1:'+nativePort,token_file:token,zellij_binary:installed};
     if(fingerprint)host.tls_fingerprint=fingerprint;
     const hosts=path.join(dir,'hosts.json');fs.writeFileSync(hosts,JSON.stringify({hosts:[host]}),{mode:0o600});
     const log=file=>fs.openSync(path.join(dir,file),'a');
     native=spawn(installed,['--config',config,'web','--port',String(nativePort)],{env:{...env,SWITCHBOARD_RECOVER_UNSHARED_SESSION:name},stdio:['ignore',log('native.log'),log('native-error.log')]});
     relay=spawn(installed,['serve','--host-config',hosts,'--port',String(relayPort)],{env,stdio:['ignore',log('relay.log'),log('relay-error.log')]});
     await until(async()=>{const data=await (await fetch(url+'/api/hosts/fixture')).json();return data.sessions?.some(s=>s.name===name&&s.web_clients_allowed);},'Private session did not appear through the relay');
-    browser=await chromium.launch({headless:true});
+    browser=await secure.launch(chromium,{headless:true});
     const page=await browser.newPage({viewport:{width:1200,height:800}});page.setDefaultTimeout(30000);
     await page.addInitScript(()=>{
       // Digit sent on the terminal socket -> first parsed frame whose cursor line shows it after the "> " prompt

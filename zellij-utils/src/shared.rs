@@ -177,20 +177,13 @@ pub fn version_number(mut version: &str) -> usize {
 pub fn web_server_base_url(
     web_server_ip: IpAddr,
     web_server_port: u16,
-    has_certificate: bool,
-    enforce_https_for_localhost: bool,
+    _has_certificate: bool,
+    _enforce_https_for_localhost: bool,
 ) -> String {
-    let is_loopback = match web_server_ip {
-        IpAddr::V4(ipv4) => ipv4.is_loopback(),
-        IpAddr::V6(ipv6) => ipv6.is_loopback(),
-    };
-
-    let url_prefix = if is_loopback && !enforce_https_for_localhost && !has_certificate {
-        "http"
-    } else {
-        "https"
-    };
-    format!("{}://{}:{}", url_prefix, web_server_ip, web_server_port)
+    format!(
+        "https://{}",
+        std::net::SocketAddr::new(web_server_ip, web_server_port)
+    )
 }
 
 pub fn web_server_base_url_from_config(config_options: Options) -> String {
