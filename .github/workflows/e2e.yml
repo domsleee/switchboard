@@ -66,6 +66,10 @@ jobs:
           cp target/dev-opt/zellij "$RUNNER_TEMP/switchboard-update-candidate"
           SWITCHBOARD_COMMIT=0000000000000000000000000000000000000000 cargo build --profile dev-opt --locked
           node acceptance/switchboard/run.cjs browser target/dev-opt/zellij "$RUNNER_TEMP/switchboard-update-candidate"
+      - name: Check automatic activation with retained viewers and rollback
+        env:
+          SWITCHBOARD_TEST_COMMIT: ${{ github.sha }}
+        run: node tools/switchboard/attachment-update.test.cjs target/dev-opt/zellij "$RUNNER_TEMP/switchboard-update-candidate"
       - name: Save private acceptance diagnostics on failure
         if: failure()
         uses: actions/upload-artifact@v7
@@ -123,6 +127,8 @@ jobs:
           # CI checks recovery and integrity with scheduling headroom. Local proof stays at 250 ms.
           RESUME_PROOF_LATENCY_MS: "1000"
         run: node tools/switchboard/resumable-viewer.test.cjs target/dev-opt/zellij${{ runner.os == 'Windows' && '.exe' || '' }}
+      - name: Prove production attachment survives connection service replacement
+        run: node tools/switchboard/attachment-update.test.cjs target/dev-opt/zellij${{ runner.os == 'Windows' && '.exe' || '' }} target/dev-opt/zellij${{ runner.os == 'Windows' && '.exe' || '' }}
       - name: Preserve proof evidence
         if: always()
         uses: actions/upload-artifact@v7
@@ -133,5 +139,6 @@ jobs:
             ${{ runner.os == 'Windows' && runner.temp || '/tmp' }}/sbr-*/*.jsonl
             ${{ runner.os == 'Windows' && runner.temp || '/tmp' }}/sbr-*/*.txt
             ${{ runner.os == 'Windows' && runner.temp || '/tmp' }}/sbr-*/*.log
+            ${{ runner.os == 'Windows' && runner.temp || '/tmp' }}/sba-*/*.log
           if-no-files-found: ignore
           retention-days: 7
