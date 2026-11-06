@@ -4,6 +4,17 @@
   const host = location.pathname.split('/')[2];
   let terminal, pending = null, surface, manualText, notice, revision = 0;
   let selectionMode = false, selecting = false, selectedText = '';
+  let dragStart;
+
+  function diagnostic(outcome, chars = 0, attempt = revision) {
+    const term = terminal || window.term;
+    if (parent !== window) parent.postMessage({type: 'zellij-clipboard-diagnostic', diagnostic: {
+      outcome, chars, attempt, selection_mode: selectionMode,
+      mouse_tracking: !!term?.modes?.mouseTrackingMode && term.modes.mouseTrackingMode !== 'none',
+      focused: !!document.hasFocus?.(), secure: !!window.isSecureContext,
+      clipboard_api: typeof navigator.clipboard?.writeText === 'function'
+    }}, location.origin);
+  }
 
   function selectionText() {
     return selectedText || (terminal || window.term)?.getSelection() || '';
@@ -37,10 +48,13 @@
     const term = terminal || window.term;
     if (event.button !== 0 || !term?.element?.contains(event.target)) return;
     selectedText = ''; selecting = true;
+    dragStart = {x: event.clientX, y: event.clientY};
   }, true);
-  window.addEventListener('mouseup', () => {
+  window.addEventListener('mouseup', event => {
     if (selecting) {
       selectedText = (terminal || window.term)?.getSelection() || '';
+      if (selectedText || dragStart && (event.clientX !== dragStart.x || event.clientY !== dragStart.y))
+        diagnostic('drag', selectedText.length);
       // Copy on select, like Zellij's own selection and agent TUIs (both via OSC52).
       if (selectedText) void copyText(selectedText, 'selection');
     }
@@ -49,6 +63,7 @@
   }, true);
 
   function report(result) {
+    diagnostic(result.ok ? 'success' : 'failed');
     if (parent !== window) parent.postMessage({type: 'zellij-clipboard', host, ...result}, location.origin);
     return result;
   }
@@ -116,6 +131,7 @@
 
   async function copyText(text, source) {
     const attempt = ++revision;
+    diagnostic('attempt', text.length);
     let error = 'Browser clipboard access is unavailable.';
     // The app's Copy button focuses the parent document, while terminal copies
     // happen with focus inside this iframe. Either document may be the one the
@@ -127,18 +143,23 @@
       if (typeof clipboard?.writeText !== 'function') continue;
       try {
         await clipboard.writeText(text);
+        diagnostic('api-success', text.length, attempt);
         if (attempt !== revision) return {ok: true, source, method: 'clipboard'};
         clearFallback();
         return report({ok: true, source, method: 'clipboard'});
       } catch (failure) {
+        diagnostic(failure?.name === 'NotAllowedError' ? 'permission-denied' : 'api-failed', 0, attempt);
         error = `Browser clipboard access was denied (${failure?.name || 'Error'}: ${failure?.message || 'no details'}).`;
       }
     }
     if (attempt !== revision) return {ok: false, source, error, superseded: true};
+    diagnostic('fallback');
     if (legacyCopy(text)) {
+      diagnostic('fallback-success');
       clearFallback();
       return report({ok: true, source, method: 'browser-copy'});
     }
+    diagnostic('manual');
     pending = {text, source};
     fallback(text, error);
     return report({ok: false, source, error, manual: true});
@@ -185,6 +206,7 @@
     const commandCopy = event.metaKey && !event.ctrlKey && !event.shiftKey;
     const controlCopy = event.ctrlKey && !event.metaKey;
     if (!commandCopy && !controlCopy) return;
+    diagnostic('copy-key', selectionText().length);
     const selected = selectionText();
     // A cached drag survives TUI redraws for explicit Copy/Ctrl+Shift+C. Plain
     // Ctrl+C only copies a current visible selection; stale text must not eat
@@ -312,11 +334,12 @@
       });
       this._terminal = term;
       this._disposable = term.parser.registerOscHandler(52, data => {
+        diagnostic('osc52');
         const separator = data.indexOf(';');
         if (separator < 0) return true;
         const target = data.slice(0, separator), encoded = data.slice(separator + 1);
         // Empty Pc means the default clipboard; p/s alone are X11 selections.
-        if (target && !target.includes('c')) return true;
+        if (target && !target.includes('c')) { diagnostic('osc52-ignored'); return true; }
         // Queries are answered empty without exposing the viewing clipboard remotely.
         if (encoded === '?') { term.input(`\x1b]52;${target};\x07`, false); return true; }
         if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}(?:==)?|[A-Za-z0-9+/]{3}=?)?$/.test(encoded)) {

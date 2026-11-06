@@ -853,6 +853,7 @@ function recordTerminalDiagnostic(entry,type,diagnostic){
     'control_tracking','focus_commands','terminal_metrics','cell_size_changes','first_cell_width_px','first_cell_height_px','last_cell_width_px','last_cell_height_px','min_cell_width_px','min_cell_height_px','max_cell_width_px','max_cell_height_px']:
     type==='new-tab'?['request_id','outcome','elapsed_ms','delivery_ms','sent_ms','pane_id','control_socket']:
     type==='terminal-load'?['outcome','elapsed_ms','page_ms','socket_ms','frame_ms','render_ms','visible']:
+    type==='clipboard'?['outcome','chars','attempt','selection_mode','mouse_tracking','focused','secure','clipboard_api']:
     type==='instant-typing'?['outcome','pane_id','is_plugin','pending','typed','confirmed','frames','age_ms','srtt_ms','since_input_ms','since_write_ms','run_row','cursor_row','cursor_col','expected_col','cursor_hidden']:
     ['pane_id','is_plugin','shift','ctrl','alt','meta','repeat','held_ms','released_ms'];
   const body={host:entry.host};
@@ -943,6 +944,8 @@ window.addEventListener('message',event=>{
     }catch(_){setStatus('Invalid artifact link.',true);}
   }else if(event.data?.type==='zellij-selection-changed'){
     if(entry.frame.classList.contains('active'))updateSelectionTools();
+  }else if(event.data?.type==='zellij-clipboard-diagnostic'){
+    recordTerminalDiagnostic(entry,'clipboard',event.data.diagnostic);
   }else if(event.data?.type==='zellij-clipboard'){
     setStatus(event.data.ok?'Copied to this browser.':event.data.error||'Copy failed; use the terminal’s clipboard panel.',!event.data.ok);
   }else if(event.data?.type==='zellij-disconnected'){entry.disconnected=true;entry.needsFocus=true;render();}

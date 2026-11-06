@@ -6,7 +6,7 @@ const source = fs.readFileSync(__dirname + '/static/clipboard.js', 'utf8');
 const stockAddon = fs.readFileSync(__dirname + '/../../zellij-client/assets/addon-clipboard.js', 'utf8');
 
 function harness({write = async () => {}, read = null, legacy = false, lateSelectionService = false} = {}) {
-  const handlers = {}, messages = [], writes = [], inputs = [], nodes = [], pastes = [];
+  const handlers = {}, diagnostics = [], messages = [], writes = [], inputs = [], nodes = [], pastes = [];
   let selection = '', osc, disposed = false, selectionChanged;
   const document = {activeElement: null};
   function element(tag) {
@@ -35,7 +35,10 @@ function harness({write = async () => {}, read = null, legacy = false, lateSelec
     }}};
   document.activeElement = textarea;
   if(lateSelectionService)delete term._core._selectionService;
-  const parent = {postMessage: (message, origin) => messages.push({message, origin})};
+  const parent = {postMessage: (message, origin) => {
+    if (message.type === "zellij-clipboard-diagnostic") diagnostics.push(message.diagnostic);
+    else messages.push({message, origin});
+  }};
   const window = {term, addEventListener(type, callback) { (handlers[type] ||= []).push(callback); }};
   const context = {window, self: window, document, parent,
     location: {origin: 'http://localhost:8090', pathname: '/hosts/mac/main'},
@@ -54,7 +57,7 @@ function harness({write = async () => {}, read = null, legacy = false, lateSelec
     for (const callback of handlers[type] || []) callback(e);
     return e;
   }
-  return {window, context, document, nodes, term, addon, messages, writes, inputs, pastes, event,
+  return {window, context, document, nodes, term, addon, diagnostics, messages, writes, inputs, pastes, event,
     setSelection(text) { selection = text; selectionChanged?.(); }, osc: text => osc(text),
     get disposed() { return disposed; }, api: window.SwitchboardClipboard};
 }
@@ -292,6 +295,8 @@ test('late failures from old writes cannot replace newer successful copy with st
   assert.equal(h.api.hasPending, false);
   assert.equal(h.messages.length, 1);
   assert.equal(h.messages[0].message.ok, true);
+  assert.equal(h.diagnostics.find(d => d.outcome === 'api-failed').attempt, 1);
+  assert.equal(h.diagnostics.find(d => d.outcome === 'api-success').attempt, 2);
 });
 
 test('right-click copies and clears a selection, otherwise pastes through xterm, never in other UI', async () => {
@@ -370,4 +375,35 @@ test('pasting an image file uploads it, while text pastes stay native', async ()
   assert.deepEqual(h.pasted, ['/home/me/.cache/zellij/pasted-images/a.png']);
   const mixed = h.event('paste', {clipboardData: {items: [image, {kind: 'string', type: 'text/plain'}]}});
   assert.equal(mixed.prevented, undefined);
+});
+
+
+test('clipboard diagnostics distinguish remote drags, OSC52 and denied writes without contents', async () => {
+  const h = harness({write: async () => { throw Object.assign(Error('private clipboard content'), {name: 'NotAllowedError'}); }});
+  h.term.modes = {mouseTrackingMode: 'vt200'};
+  h.event('mousedown', {button: 0, clientX: 10, clientY: 10});
+  h.event('mouseup', {clientX: 90, clientY: 10});
+  assert.equal(h.diagnostics[0].outcome, 'drag');
+  assert.equal(h.diagnostics[0].chars, 0);
+  assert.equal(h.diagnostics[0].mouse_tracking, true);
+  h.osc('c;' + base64('secret text'));
+  await settle();
+  assert.deepEqual(h.diagnostics.map(d => d.outcome),
+    ['drag', 'osc52', 'attempt', 'permission-denied', 'fallback', 'manual', 'failed']);
+  assert.equal(h.diagnostics.find(d => d.outcome === 'attempt').chars, 11);
+  assert.doesNotMatch(JSON.stringify(h.diagnostics), /secret|private/);
+});
+
+test('local drag logs selection size and successful browser write, plain clicks stay quiet', async () => {
+  const h = harness();
+  h.event('mousedown', {button: 0, clientX: 10, clientY: 10});
+  h.event('mouseup', {clientX: 10, clientY: 10});
+  assert.equal(h.diagnostics.length, 0);
+  h.event('mousedown', {button: 0, clientX: 10, clientY: 10});
+  h.setSelection('secret');
+  h.event('mouseup', {clientX: 90, clientY: 10});
+  await settle();
+  assert.deepEqual(h.diagnostics.map(d => d.outcome), ['drag', 'attempt', 'api-success', 'success']);
+  assert.equal(h.diagnostics[0].chars, 6);
+  assert.doesNotMatch(JSON.stringify(h.diagnostics), /secret/);
 });
