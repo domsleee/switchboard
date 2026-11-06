@@ -83,7 +83,7 @@ async function bridge(version,origin,port=0,drop=0){
  // scrollback in the engine, so the browser buffer need not retain old rows.
  await waitFor(()=>fs.readFileSync(path.join(dir,'output.txt'),'utf8').split('\n').length>120,'continuous output fixture stopped');
  fs.writeFileSync(path.join(dir,'stop'),'');await sleep(50);
- const emitted=fs.readFileSync(path.join(dir,'output.txt'),'utf8').trim().split('\n');
+ const emitted=fs.readFileSync(path.join(dir,'output.txt'),'utf8').trim().split(/\r?\n/);
  await waitFor(async()=>{const s=await page.evaluate(()=>proofState());return emitted.every(line=>s.evidence.seenOutput[line])},'output missing from retained terminal');
  const final=await page.evaluate(()=>proofState());
  const history=cli('-s',name,'action','dump-screen','--full','--pane-id',String(pane));
@@ -110,6 +110,7 @@ async function bridge(version,origin,port=0,drop=0){
  const report={engine_pid:endpoint.engine_pid,fixture_pid:fixturePid,bridges:[first.pid,lostResume.pid,second.pid,rollback.pid],accepted_records:state.evidence.acks.length,input_bytes:state.evidence.bytes.length,output_records_checked:emitted.length,max_input_ack_ms:Math.ceil(state.evidence.maxAckMs),max_input_delivery_ms:Math.ceil(maxInputMs),max_output_delivery_ms:Math.ceil(maxOutputMs),faults,platform:process.platform};
  fs.writeFileSync(path.join(dir,'proof.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));console.log('Proof artifacts: '+dir);
 }finally{
+ if(page){try{fs.writeFileSync(path.join(dir,'browser-final.json'),JSON.stringify(await page.evaluate(()=>proofState()),null,2))}catch{}}
  if(browser)await browser.close();for(const child of children){if(child.exitCode===null)child.kill()}
  if(server)await new Promise(r=>server.close(r));
  if(created){try{cli('kill-session',name);fs.rmSync(endpointFile,{force:true})}catch(e){console.error('Private session cleanup:',e.message)}}

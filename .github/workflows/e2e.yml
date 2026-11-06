@@ -112,13 +112,9 @@ jobs:
         with:
           name: resumable-viewer-proof-${{ matrix.os }}
           path: |
-            /tmp/sbr-*/*.json
-            /tmp/sbr-*/*.jsonl
-            /tmp/sbr-*/*.txt
-            /tmp/sbr-*/*.log
-            ${{ runner.temp }}/sbr-*/*.json
-            ${{ runner.temp }}/sbr-*/*.jsonl
-            ${{ runner.temp }}/sbr-*/*.txt
-            ${{ runner.temp }}/sbr-*/*.log
+            ${{ runner.os == 'Windows' && runner.temp || '/tmp' }}/sbr-*/*.json
+            ${{ runner.os == 'Windows' && runner.temp || '/tmp' }}/sbr-*/*.jsonl
+            ${{ runner.os == 'Windows' && runner.temp || '/tmp' }}/sbr-*/*.txt
+            ${{ runner.os == 'Windows' && runner.temp || '/tmp' }}/sbr-*/*.log
           if-no-files-found: ignore
           retention-days: 7
