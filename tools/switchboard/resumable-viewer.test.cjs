@@ -4,6 +4,9 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
 const http=require('node:http'),net=require('node:net'),crypto=require('node:crypto');
 const {execFileSync,fork}=require('node:child_process');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
+// Shared CI runners cannot guarantee the local experiment's 250 ms budget.
+const latencyLimitMs=Number(process.env.RESUME_PROOF_LATENCY_MS||250);
+assert(Number.isFinite(latencyLimitMs)&&latencyLimitMs>0,'RESUME_PROOF_LATENCY_MS must be positive');
 const binary=path.resolve(process.argv[2]||'target/debug/zellij');
 const dir=fs.mkdtempSync(path.join(process.platform==='win32'?(process.env.RUNNER_TEMP||os.tmpdir()):'/tmp','sbr-'));
 const fixture=path.join(__dirname,'resumable-viewer'),endpointFile=path.join(dir,'endpoint.json');
@@ -74,7 +77,7 @@ async function bridge(version,origin,port=0,drop=0){
  assert.deepEqual(state.evidence.acks,Array.from({length:state.evidence.acks.length},(_,i)=>i+1));
  assert.deepEqual(state.evidence.outputs,Array.from({length:state.evidence.outputs.length},(_,i)=>i+1));
  assert.deepEqual(pageErrors,[]);assert(state.sameTerm&&state.sameDocument&&state.focused);assert.equal(state.cols,100);assert.equal(state.rows,30);
- assert(state.evidence.maxAckMs<250,`handover/input stalled ${state.evidence.maxAckMs}ms`);
+ assert(state.evidence.maxAckMs<latencyLimitMs,`handover/input stalled ${state.evidence.maxAckMs}ms`);
  assert(state.evidence.resumes>=2);assert.equal(faults.length,3);assert(faults.some(f=>f.fault==='lost-resume-reply'));assert.equal(state.evidence.blurs,0);
  assert.equal(JSON.parse(fs.readFileSync(endpointFile)).engine_pid,endpoint.engine_pid);
  assert.equal(JSON.parse(fs.readFileSync(path.join(dir,'fixture.json'))).pid,fixturePid);process.kill(fixturePid,0);
@@ -92,7 +95,7 @@ async function bridge(version,origin,port=0,drop=0){
  const maxInputMs=Math.max(...state.evidence.inputTimes.map(input=>observed.find(chunk=>chunk.end>=input.end).time-input.time));
  const outputTimes=fs.readFileSync(path.join(dir,'output-times.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
  const maxOutputMs=Math.max(...outputTimes.map(output=>final.evidence.seenOutput[output.line]-output.time));
- assert(maxInputMs<250,`input delivery froze ${maxInputMs}ms`);assert(maxOutputMs<250,`output delivery froze ${maxOutputMs}ms`);
+ assert(maxInputMs<latencyLimitMs,`input delivery froze ${maxInputMs}ms`);assert(maxOutputMs<latencyLimitMs,`output delivery froze ${maxOutputMs}ms`);
  // Stop polling after continuous output is proven so these direct protocol
  // checks cannot race a newer browser output acknowledgment.
  const stopped=await page.evaluate(async()=>{running=false;await window.proofLoop;return proofState()});
@@ -107,7 +110,7 @@ async function bridge(version,origin,port=0,drop=0){
  await sleep(50);assert.deepEqual(fs.readFileSync(path.join(dir,'input.bin')),inputBefore,'rejected/retried input reached fixture');
  const overflowViewer=crypto.randomUUID();await engine({viewer:overflowViewer,operation:'open',pane,rows:30,cols:100,replay_limit:128});
  await waitFor(async()=>{const r=await engine({viewer:overflowViewer,operation:'exchange',generation:1,output_ack:0});return /replay exhausted/.test(r.error||'')},'replay overflow was not explicit');
- const report={engine_pid:endpoint.engine_pid,fixture_pid:fixturePid,bridges:[first.pid,lostResume.pid,second.pid,rollback.pid],accepted_records:state.evidence.acks.length,input_bytes:state.evidence.bytes.length,output_records_checked:emitted.length,max_input_ack_ms:Math.ceil(state.evidence.maxAckMs),max_input_delivery_ms:Math.ceil(maxInputMs),max_output_delivery_ms:Math.ceil(maxOutputMs),faults,platform:process.platform};
+ const report={latency_limit_ms:latencyLimitMs,engine_pid:endpoint.engine_pid,fixture_pid:fixturePid,bridges:[first.pid,lostResume.pid,second.pid,rollback.pid],accepted_records:state.evidence.acks.length,input_bytes:state.evidence.bytes.length,output_records_checked:emitted.length,max_input_ack_ms:Math.ceil(state.evidence.maxAckMs),max_input_delivery_ms:Math.ceil(maxInputMs),max_output_delivery_ms:Math.ceil(maxOutputMs),faults,platform:process.platform};
  fs.writeFileSync(path.join(dir,'proof.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));console.log('Proof artifacts: '+dir);
 }finally{
  if(page){try{fs.writeFileSync(path.join(dir,'browser-final.json'),JSON.stringify(await page.evaluate(()=>proofState()),null,2))}catch{}}

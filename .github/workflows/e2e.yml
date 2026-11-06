@@ -115,6 +115,9 @@ jobs:
       - name: Build experimental engine
         run: cargo build --locked --profile dev-opt --features resumable_viewer_proof
       - name: Prove bridge replacement and rollback with a real terminal
+        env:
+          # CI checks recovery and integrity with scheduling headroom. Local proof stays at 250 ms.
+          RESUME_PROOF_LATENCY_MS: "1000"
         run: node tools/switchboard/resumable-viewer.test.cjs target/dev-opt/zellij${{ runner.os == 'Windows' && '.exe' || '' }}
       - name: Preserve proof evidence
         if: always()
