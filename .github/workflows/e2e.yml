@@ -62,3 +62,60 @@ jobs:
             /tmp/sbn-*/*.log
           if-no-files-found: ignore
           retention-days: 7
+
+  resumable-viewer-proof:
+    name: Resumable viewer proof (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          rustflags: ""
+          cache-shared-key: resumable-viewer-proof
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: false
+      - uses: ilammy/setup-nasm@v1.5.2
+        if: runner.os == 'Windows'
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install isolated browser
+        run: |
+          npm install --prefix "$RUNNER_TEMP/resume-browser" playwright
+          "$RUNNER_TEMP/resume-browser/node_modules/.bin/playwright" install --with-deps chromium
+          echo "PLAYWRIGHT_MODULE=$RUNNER_TEMP/resume-browser/node_modules/playwright" >> "$GITHUB_ENV"
+      - name: Check input and replay bounds
+        run: |
+          cargo test --locked -p zellij-utils ipc_flush_failure --lib
+          cargo test --locked -p zellij-server --features resumable_viewer_proof resumable_proof --lib
+      - name: Build experimental engine
+        run: cargo build --locked --profile dev-opt --features resumable_viewer_proof
+      - name: Prove bridge replacement and rollback with a real terminal
+        run: node tools/switchboard/resumable-viewer.test.cjs target/dev-opt/zellij${{ runner.os == 'Windows' && '.exe' || '' }}
+      - name: Preserve proof evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: resumable-viewer-proof-${{ matrix.os }}
+          path: |
+            /tmp/sbr-*/*.json
+            /tmp/sbr-*/*.jsonl
+            /tmp/sbr-*/*.txt
+            /tmp/sbr-*/*.log
+            ${{ runner.temp }}/sbr-*/*.json
+            ${{ runner.temp }}/sbr-*/*.jsonl
+            ${{ runner.temp }}/sbr-*/*.txt
+            ${{ runner.temp }}/sbr-*/*.log
+          if-no-files-found: ignore
+          retention-days: 7

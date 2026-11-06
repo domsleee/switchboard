@@ -480,3 +480,37 @@ fn socket_directory_enumeration_finds_sockets() {
     assert_eq!(entries.len(), 1, "should find exactly one socket");
     assert_eq!(entries[0], "test-session");
 }
+
+#[test]
+fn ipc_flush_failure_is_not_reported_as_successful_delivery() {
+    struct RejectFlush;
+    impl std::io::Read for RejectFlush {
+        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+            Ok(0)
+        }
+    }
+    impl std::io::Write for RejectFlush {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "delivery failed",
+            ))
+        }
+    }
+    impl crate::ipc::IpcStream for RejectFlush {
+        fn try_clone_stream(&self) -> std::io::Result<Box<dyn crate::ipc::IpcStream>> {
+            Ok(Box::new(RejectFlush))
+        }
+    }
+    let mut client = IpcSenderWithContext::<ClientToServerMsg>::from_boxed(Box::new(RejectFlush));
+    assert!(client
+        .send_client_msg(ClientToServerMsg::ClientExited)
+        .is_err());
+    let mut server = IpcSenderWithContext::<ServerToClientMsg>::from_boxed(Box::new(RejectFlush));
+    assert!(server
+        .send_server_msg(ServerToClientMsg::Connected)
+        .is_err());
+}

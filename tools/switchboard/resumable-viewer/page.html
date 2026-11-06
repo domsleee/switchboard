@@ -1,0 +1,41 @@
+<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/xterm.css"><div id="terminal"></div><script src="/xterm.js"></script><script>
+const term=new Terminal({cols:100,rows:30,scrollback:2000,convertEol:false});term.open(document.getElementById('terminal'));term.focus();
+const originalTerm=term,originalDocument=document,viewer=crypto.randomUUID();
+let bridges=[],access='',active=0,generation=0,outputAck=0,nextInput=1,queue=[],running=true,opened=false,pane,resuming=false,resumeId=null;
+const evidence={bytes:[],acks:[],outputs:[],bridges:[],failures:[],maxAckMs:0,resumes:0,seenOutput:{},inputTimes:[],records:[],blurs:0};
+term.textarea.addEventListener("blur",()=>evidence.blurs++);
+term.onData(data=>sendProof(Array.from(new TextEncoder().encode(data))));
+function sendProof(bytes){const input={sequence:nextInput++,bytes};queue.push({...input,started:performance.now()});evidence.records.push(input);evidence.bytes.push(...bytes);evidence.inputTimes.push({end:evidence.bytes.length,time:Date.now()});return input.sequence}
+async function rpc(body){
+ const response=await fetch(bridges[active]+'/exchange',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+access},body:JSON.stringify({viewer,...body}),signal:AbortSignal.timeout(1000)});
+ if(!response.ok)throw Error('transport '+response.status);
+ const reply=await response.json();if(reply.error)throw Object.assign(Error(reply.error),{protocol:true});return reply;
+}
+async function apply(reply){
+ generation=reply.generation;
+ if(evidence.bridges.at(-1)!==reply.bridge_version)evidence.bridges.push(reply.bridge_version);
+ while(queue.length&&queue[0].sequence<=reply.input_ack){const item=queue.shift();evidence.maxAckMs=Math.max(evidence.maxAckMs,performance.now()-item.started);evidence.acks.push(item.sequence)}
+ for(const frame of reply.output){
+  if(frame.sequence<=outputAck)continue;
+  if(frame.sequence!==outputAck+1)throw Object.assign(Error('output gap'),{protocol:true});
+  await new Promise(resolve=>term.write(frame.text,resolve));outputAck=frame.sequence;evidence.outputs.push(frame.sequence);
+  const screen=Array.from({length:term.buffer.active.length},(_,i)=>term.buffer.active.getLine(i).translateToString(true)).join("\n");
+  for(const match of screen.matchAll(/OUT:\d{6}/g))if(!evidence.seenOutput[match[0]])evidence.seenOutput[match[0]]=Date.now();
+ }
+}
+async function startProof(config){bridges=config.bridges;access=config.access;pane=config.pane;
+ while(running){
+  try{
+   if(!opened){await apply(await rpc({operation:'open',pane,rows:30,cols:100}));opened=true}
+   if(resuming){await apply(await rpc({operation:'resume',generation,resume_id:resumeId,output_ack:outputAck}));resuming=false;evidence.resumes++}
+   const item=queue[0];await apply(await rpc({operation:'exchange',generation,output_ack:outputAck,input:item?{sequence:item.sequence,bytes:item.bytes}:null}));
+  }catch(error){
+   if(error.protocol){evidence.failures.push(error.message);running=false;break}
+   active=(active+1)%bridges.length;
+   if(opened){if(!resuming)resumeId=crypto.randomUUID();resuming=true}
+  }
+  await new Promise(resolve=>setTimeout(resolve,5));
+ }
+}
+function proofState(){return {evidence,viewer,generation,outputAck,pending:queue.length,opened,running,sameTerm:term===originalTerm,sameDocument:document===originalDocument,focused:document.activeElement===term.textarea,cols:term.cols,rows:term.rows,text:Array.from({length:term.buffer.active.length},(_,i)=>term.buffer.active.getLine(i).translateToString(true)).join('\n')}}
+</script>
