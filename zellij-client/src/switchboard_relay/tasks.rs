@@ -1199,7 +1199,15 @@ pub(super) async fn setup(State(state): State<RelayState>, request: Request) -> 
             host.request(
                 Method::POST,
                 "/switchboard/tasks/setup",
-                Bytes::from(json!({"agent": setup.agent}).to_string()),
+                Bytes::from(
+                    match setup.action {
+                        agent_setup::SetupAction::Setup => json!({"agent": setup.agent}),
+                        agent_setup::SetupAction::FixSkills => {
+                            json!({"agent": setup.agent, "action": setup.action})
+                        },
+                    }
+                    .to_string(),
+                ),
                 "application/json",
             ),
         )

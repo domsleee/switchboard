@@ -172,24 +172,24 @@ fn skills(root: &Path, warnings: &mut Vec<String>) -> BTreeMap<String, (PathBuf,
     result
 }
 
+type Cached = Option<(PathBuf, PathBuf, std::time::Instant, Value)>;
+static CACHE: std::sync::LazyLock<std::sync::Mutex<(u64, Cached)>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new((0, None)));
+
 pub(super) fn codex(dir: &Path, home: &Path) -> Value {
-    use std::sync::{LazyLock, Mutex};
     use std::time::{Duration, Instant};
-    type Cached = Option<(PathBuf, PathBuf, Instant, Value)>;
-    static CACHE: LazyLock<Mutex<Cached>> = LazyLock::new(|| Mutex::new(None));
     let mut cache = CACHE.lock().unwrap();
-    if let Some((cached_dir, cached_home, at, value)) = cache.as_ref() {
+    if let Some((cached_dir, cached_home, at, value)) = cache.1.as_ref() {
         if cached_dir == dir && cached_home == home && at.elapsed() < Duration::from_secs(60) {
             return value.clone();
         }
     }
-    let value = cache
-        .as_ref()
-        .map(|(_, _, _, value)| value.clone())
-        .unwrap_or_else(
-            || json!({"state":"checking", "scope":"Checking Codex skills…", "warnings":[]}),
-        );
-    *cache = Some((
+    let value = cache.1.as_ref().map(|(_, _, _, v)| v.clone()).unwrap_or_else(
+        || json!({"state":"checking", "scope":"Checking Codex skills…", "warnings":[], "refreshPlugins":[]}),
+    );
+    cache.0 += 1;
+    let generation = cache.0;
+    cache.1 = Some((
         dir.to_path_buf(),
         home.to_path_buf(),
         Instant::now(),
@@ -199,14 +199,39 @@ pub(super) fn codex(dir: &Path, home: &Path) -> Value {
     let home = home.to_path_buf();
     std::thread::spawn(move || {
         let value = inspect(&dir, &home);
-        *CACHE.lock().unwrap() = Some((dir, home, Instant::now(), value));
+        publish(generation, dir, home, value);
     });
     value
 }
 
-fn inspect(dir: &Path, home: &Path) -> Value {
+fn publish(generation: u64, dir: PathBuf, home: PathBuf, value: Value) {
+    let mut cache = CACHE.lock().unwrap();
+    if cache.0 == generation {
+        cache.1 = Some((dir, home, std::time::Instant::now(), value));
+    }
+}
+
+// Invalidate in-flight polling before rechecking a completed repair.
+pub(super) fn recheck(dir: &Path, home: &Path) -> Value {
+    let generation = {
+        let mut cache = CACHE.lock().unwrap();
+        cache.0 += 1;
+        cache.0
+    };
+    let value = inspect(dir, home);
+    publish(
+        generation,
+        dir.to_path_buf(),
+        home.to_path_buf(),
+        value.clone(),
+    );
+    value
+}
+
+pub(super) fn inspect(dir: &Path, home: &Path) -> Value {
     let mut warnings = Vec::<String>::new();
     let mut active = Vec::new();
+    let mut refresh_plugins = Vec::new();
     for root in [dir.join("skills"), home.join(".agents/skills")] {
         active.extend(skills(&root, &mut warnings).into_values());
     }
@@ -285,18 +310,25 @@ fn inspect(dir: &Path, home: &Path) -> Value {
                         .join(market)
                         .join(plugin)
                         .join(version);
+                    let before_cache = warnings.len();
                     let cache = plugin_skills(&cache_plugin, &mut warnings);
+                    let cache_failed = warnings.len() != before_cache;
                     active.extend(cache.clone().into_values());
+                    let before_source = warnings.len();
                     let source = plugin_skills(&source_root, &mut warnings);
-                    if source
+                    let source_ok = warnings.len() == before_source;
+                    let differs = source
                         .iter()
                         .map(|(k, (_, b))| (k, b))
                         .collect::<BTreeMap<_, _>>()
                         != cache
                             .iter()
                             .map(|(k, (_, b))| (k, b))
-                            .collect::<BTreeMap<_, _>>()
-                    {
+                            .collect::<BTreeMap<_, _>>();
+                    if source_ok && (cache_failed || differs) {
+                        refresh_plugins.push(id.clone());
+                    }
+                    if differs {
                         warnings.push(format!("{id}: cached skills differ from source. Refresh with codex plugin add {id}"));
                     }
                 }
@@ -320,7 +352,7 @@ fn inspect(dir: &Path, home: &Path) -> Value {
     }
     json!({"state": if warnings.is_empty() {"ok"} else {"attention"},
         "scope": "Codex user skills and enabled local marketplace plugins; remote and project skills not checked",
-        "warnings": warnings})
+        "warnings": warnings, "refreshPlugins": refresh_plugins})
 }
 
 #[cfg(test)]
@@ -359,9 +391,11 @@ mod tests {
         );
         let report = inspect(&dir, home);
         assert_eq!(report["warnings"].as_array().unwrap().len(), 2);
+        assert_eq!(report["refreshPlugins"], json!(["example@test"]));
         assert!(report.to_string().contains("cached skills differ"));
         assert!(report.to_string().contains("Conflicting skill example"));
         write(&cached, skill);
+        assert_eq!(inspect(&dir, home)["refreshPlugins"], json!([]));
         assert_eq!(inspect(&dir, home)["state"], "ok");
         write(
             &source.join("plugin/skills/example/reference.txt"),
@@ -426,6 +460,12 @@ mod tests {
             .contains("cached skills differ"));
         std::fs::remove_file(cache.join(".codex-plugin/plugin.json")).unwrap();
         assert!(inspect(&dir, home).to_string().contains("Cannot inspect"));
+        assert_eq!(
+            inspect(&dir, home)["refreshPlugins"],
+            json!(["example@test"])
+        );
+        std::fs::remove_file(source.join("plugin/.codex-plugin/plugin.json")).unwrap();
+        assert_eq!(inspect(&dir, home)["refreshPlugins"], json!([]));
     }
     #[test]
     fn switchboard_skill_health_unreadable_config_is_not_healthy() {

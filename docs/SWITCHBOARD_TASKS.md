@@ -89,8 +89,11 @@ Health checks Codex user skills (`CODEX_HOME/skills` and `~/.agents/skills`) and
 explicitly enabled plugins from local Codex marketplaces separately from status
 hooks. It compares cached skill instructions and supporting files with the local
 source, and names conflicting copies of a skill. Identical copies are ignored.
-Refresh a stale local plugin with the `codex plugin add name@marketplace` command
-shown in Health; restart agent sessions to load the refreshed instructions.
+Use **Fix skills** on the affected computer to refresh stale or missing plugin
+copies with `codex plugin add`, then recheck immediately. Progress and failures
+appear in Health, with a retry button on failure. Conflicting user-written skills
+and unavailable marketplace sources still need manual attention. Start a new
+Codex conversation to load refreshed instructions.
 
 Inspection runs in the background and results are cached for one minute. Missing
 sources, unreadable files and inspection limits produce warnings. Remote
