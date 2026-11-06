@@ -637,7 +637,7 @@ test('conversation drafts require the exact active pane and never submit Enter',
   send('hello',7,{});assert.equal(pastes.length,0);
   send('hello\x1b[201~');assert.equal(pastes.length,0);
   h.window.term.modes.bracketedPasteMode=false;send('first\nsecond');assert.equal(pastes.length,0);
-  h.window.term.modes.bracketedPasteMode=true;send('first\nsecond');assert.deepEqual(pastes,['first\nsecond']);assert.equal(h.messages.at(-1).ok,true);
+  h.window.term.modes.bracketedPasteMode=true;send('$my-skill /compact\nsecond');assert.deepEqual(pastes,['$my-skill /compact\nsecond']);assert.equal(h.messages.at(-1).ok,true);
   socket.readyState=3;send('offline');assert.equal(pastes.length,1);
   socket.readyState=1;h.setFrameActive(false);send('hidden');assert.equal(pastes.length,1);
 });

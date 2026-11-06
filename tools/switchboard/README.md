@@ -181,3 +181,21 @@ approval, start an SDK session, or resume the saved chat. A wrong pane, disconne
 terminal, control characters, or multiline input without bracketed-paste support
 is rejected. Drafts stay available when insertion fails. If confirmation times out,
 check the terminal before retrying. Approval prompts remain in the terminal.
+
+The conversation view renders Markdown headings, lists, tables, fenced code,
+links, and media without executing transcript HTML. Image references open an
+expandable gallery with zoom; video references use inline playback controls.
+Local and relative paths are read from the selected chat's computer, with relative
+paths based on the chat's recorded project directory. HTTP(S) media URLs load in
+the viewing browser; loopback URLs are not treated as phone-local media.
+
+Claude and Codex image/video content parts are preserved when their transcripts
+retain a path or URL. Supported embedded PNG/JPEG/GIF/WebP images have a 2 MiB
+encoded-data budget per chat and at most eight attachments per message. Missing,
+unsupported, invalid, and oversized attachments show an unavailable state. This
+is media viewing, not attachment uploading. Other providers still expose their
+text messages and Markdown media references.
+
+Reply drafts remain literal text, including `$skill-name` and `/commands`.
+Switchboard does not translate command names between providers. Native command
+and skill autocomplete is not implemented in this view.
