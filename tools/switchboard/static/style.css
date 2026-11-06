@@ -312,3 +312,10 @@ body.sidebar-collapsed #artifact-preview header{padding-left:42px}
 #new-tab-form button[type=submit]{background:#30466b;border-color:#507bb3}
 
 @media(pointer:coarse){button,select,.sidebar-actions a{min-height:44px}#tabs .tab-actions{opacity:1}}
+
+@media(max-width:700px), (pointer:coarse){
+  #new-tab-form input,#new-tab-form select{height:46px;font-size:16px}
+  #new-tab-form .new-tab-combobox input{padding-right:50px}
+  #new-tab-form .new-tab-combobox>button{width:44px;height:44px}
+  #new-tab-form .dialog-actions button{height:44px;font-size:13px}
+}

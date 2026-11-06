@@ -283,6 +283,7 @@ fn alerts(snapshot: &Value) -> Vec<Alert> {
         let machine = snapshot["computer_names"][host].as_str().unwrap_or(host);
         let key = json!([host, session, id]).to_string();
         let query = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("group", "all")
             .append_pair("host", host)
             .append_pair("session", session)
             .append_pair("pane", &id.to_string())
@@ -682,7 +683,7 @@ mod tests {
         assert_eq!(alert.payload["title"], "Build the app");
         assert_eq!(
             alert.payload["url"],
-            "/?host=linux&session=work+%26+home&pane=7"
+            "/?group=all&host=linux&session=work+%26+home&pane=7"
         );
         snapshot["panes"][0]["seen"] = json!(true);
         assert!(alerts(&snapshot).is_empty());

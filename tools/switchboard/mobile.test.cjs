@@ -16,6 +16,7 @@ test('phone sidebar, actions, Settings, Computers and Messages fit without horiz
     if (name==='/api/mesh') return json({configured:false,members:[],incoming:[],sent:[],requests:[]});
     if (name==='/api/mesh/defaults') return json({computer_name:'Mac',name:'My computers',address:'https://192.0.2.1:8082',addresses:['https://192.0.2.1:8082'],requires_choice:false});
     if (name.startsWith('/api/')) return json({});
+    if (name==='/hosts/mac/project-list') return json(['switchboard']);
     if (name.startsWith('/hosts/')) {
       res.setHeader('Content-Type','text/html');
       return res.end(`<body style="background:#111318;color:#b5bfd0;font:14px monospace"><pre>Fixture terminal\n\n❯ Ready for your next task</pre><script>
@@ -49,6 +50,24 @@ test('phone sidebar, actions, Settings, Computers and Messages fit without horiz
       const newTab=await page.locator('#new-tab').boundingBox(),admin=await page.locator('#new-admin-tab').boundingBox(),toggle=await page.locator('#sidebar-toggle').boundingBox();
       assert.ok(newTab.x+newTab.width<=admin.x && admin.x+admin.width<=toggle.x,'top actions must not overlap');
       if (viewport.width<=1000) assert.equal(await page.locator('#tab-search').evaluate(el=>getComputedStyle(el).fontSize),'16px');
+      await page.waitForFunction(()=>[...sessions.values()].some(entry=>entry.state));
+      await page.locator('#new-tab').click();
+      await page.locator('#new-tab-dialog').waitFor({state:'visible'});
+      if (viewport.width<1000) {
+        for (const selector of ['#new-tab-target','#new-tab-project','#new-tab-command']) {
+          const input=page.locator(selector),box=await input.boundingBox();
+          assert.ok(box.height>=44,`${selector} must fit a touch target`);
+          assert.equal(await input.evaluate(el=>getComputedStyle(el).fontSize),'16px');
+        }
+        for (const selector of ['#new-tab-project-lookup','#new-tab-lookup']) {
+          const button=page.locator(selector),box=await button.boundingBox();
+          assert.ok(box.width>=44&&box.height>=44,`${selector} must fit a touch target`);
+          assert.equal(await button.evaluate(el=>{const r=el.getBoundingClientRect();return document.elementFromPoint(r.x+r.width/2,r.bottom-1)===el;}),true,`${selector} must not overlap another control`);
+        }
+        const project=await page.locator('#new-tab-project-lookup').boundingBox(),command=await page.locator('#new-tab-command').boundingBox();
+        assert.ok(project.y+project.height<=command.y,'project dropdown must stay above the command field');
+      }
+      await page.locator('#cancel-new-tab').click();
       await page.locator('.tab-actions').first().click();
       await page.locator('#tab-menu').waitFor({state:'visible'});
       const menu=await page.locator('#tab-menu').boundingBox();assert.ok(menu.x>=0&&menu.x+menu.width<=viewport.width);
@@ -71,6 +90,18 @@ test('phone sidebar, actions, Settings, Computers and Messages fit without horiz
       }
       await context.close();
     }
+    const context=await browser.newContext({viewport:{width:390,height:844},hasTouch:true,isMobile:true});
+    await context.addInitScript(()=>{
+      localStorage.setItem('switchboard-focus-group','work');
+      localStorage.setItem('switchboard-groups',JSON.stringify({mac:'home'}));
+    });
+    const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));
+    // Push links must open their pane even when this device normally shows another group.
+    await page.goto(origin+'/?group=all&host=mac&session=main&pane=2');
+    await page.waitForFunction(()=>document.querySelector('#tabs .selected .tab-name')?.textContent==='Build finished');
+    assert.equal(await page.evaluate(()=>filter),'all');
+    assert.equal(await page.evaluate(()=>localStorage.getItem('switchboard-focus-group')),'work');
+    await context.close();
     assert.deepEqual(errors,[]);
   } finally {await browser.close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 });
