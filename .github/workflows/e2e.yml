@@ -52,6 +52,16 @@ jobs:
         env:
           SWITCHBOARD_TEST_IN_PLACE_RECONNECT: '1'
         run: node acceptance/switchboard/run.cjs browser target/dev-opt/zellij target/dev-opt/zellij
+      - name: Check explicit activation with connected viewers
+        # Distinct build identities exercise the real updater's version checks.
+        # Both executables use this revision; this is not cross-release coverage.
+        env:
+          SWITCHBOARD_TEST_IN_PLACE_RECONNECT: '1'
+          SWITCHBOARD_TEST_EXPLICIT_UPDATE: '1'
+        run: |
+          cp target/dev-opt/zellij "$RUNNER_TEMP/switchboard-update-candidate"
+          SWITCHBOARD_COMMIT=0000000000000000000000000000000000000000 cargo build --profile dev-opt --locked
+          node acceptance/switchboard/run.cjs browser target/dev-opt/zellij "$RUNNER_TEMP/switchboard-update-candidate"
       - name: Save private acceptance diagnostics on failure
         if: failure()
         uses: actions/upload-artifact@v7

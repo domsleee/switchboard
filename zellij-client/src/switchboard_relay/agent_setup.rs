@@ -1121,22 +1121,74 @@ pub(super) fn automatic_updates() -> bool {
     }
 }
 
-/// Why the last automatic update did not install, from the updater's state file.
-fn last_update_error() -> Option<String> {
-    let state = read_json(&home().join(".local/share/switchboard/automatic-updates/state.json"))?;
-    state["error"].as_str().map(str::to_owned)
+/// A journal survives crashes; only the held updater lock proves a job is running.
+fn update_running(directory: &std::path::Path) -> bool {
+    let Ok(lock) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(directory.join("automatic.lock"))
+    else {
+        return false;
+    };
+    match lock.try_lock() {
+        Ok(()) => {
+            let _ = lock.unlock();
+            false
+        },
+        Err(std::fs::TryLockError::WouldBlock) => true,
+        Err(_) => false,
+    }
+}
+
+fn update_phase(state: &Value, requested: bool, running: bool) -> &'static str {
+    if !state["pending"].is_null() && running {
+        "applying"
+    } else if requested {
+        "requested"
+    } else if !state["error"].is_null() {
+        "failed"
+    } else if !state["pending"].is_null() {
+        "recovery"
+    } else if !state["ready"].is_null() {
+        "waiting"
+    } else {
+        "current"
+    }
 }
 
 /// The build this relay runs, whether it updates itself and whether its last update failed.
 fn switchboard() -> Value {
     let automatic = automatic_updates();
+    let update_state =
+        read_json(&home().join(".local/share/switchboard/automatic-updates/state.json"))
+            .unwrap_or(Value::Null);
+    let request =
+        read_json(&home().join(".local/share/switchboard/automatic-updates/activate.json"))
+            .unwrap_or(Value::Null);
+    let request_active = [&request, &update_state["activation"]]
+        .iter()
+        .any(|request| {
+            request["expires"]
+                .as_u64()
+                .is_some_and(|expires| expires >= now() / 1000 && expires <= now() / 1000 + 300)
+        });
+    let phase = update_phase(
+        &update_state,
+        request_active,
+        update_running(&home().join(".local/share/switchboard/automatic-updates")),
+    );
     json!({
+        "updatePhase": phase,
         "commit": env!("SWITCHBOARD_COMMIT"),
         "commitDate": env!("SWITCHBOARD_COMMIT_DATE"),
         "automaticUpdates": automatic,
         // Windows has no update job to start; its tray checks every 2 minutes.
         "updateNow": automatic && cfg!(any(target_os = "linux", target_os = "macos")),
-        "lastUpdateError": last_update_error(),
+        "lastUpdateError": update_state["error"],
+        "updateNotice": update_state["notice"],
+        "readyUpdate": update_state["ready"],
+        "activationTarget": update_state["ready"]["commit"].as_str().or(update_state["pending"]["target"].as_str()),
+        "activateUpdate": automatic && cfg!(any(target_os = "linux", target_os = "macos")),
     })
 }
 
@@ -1180,6 +1232,24 @@ pub(super) fn set_up_locally(request: &SetupRequest) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switchboard_update_pending_journal_is_not_a_running_job() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock = std::fs::File::create(directory.path().join("automatic.lock")).unwrap();
+        let state = json!({"pending":{"target":"b".repeat(40)}});
+        assert_eq!(
+            update_phase(&state, false, update_running(directory.path())),
+            "recovery"
+        );
+        lock.lock().unwrap();
+        assert_eq!(
+            update_phase(&state, false, update_running(directory.path())),
+            "applying"
+        );
+        lock.unlock().unwrap();
+        assert_eq!(update_phase(&state, true, false), "requested");
+    }
 
     fn write(path: &Path, text: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

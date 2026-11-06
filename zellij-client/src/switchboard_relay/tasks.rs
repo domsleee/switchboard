@@ -1060,7 +1060,7 @@ pub(super) async fn gateway(request: Request) -> Response {
                 return StatusCode::BAD_REQUEST.into_response();
             };
             match serde_json::from_slice::<UpdateRequest>(&bytes) {
-                Ok(update) if update.host.is_none() => update_locally().await,
+                Ok(update) if update.host.is_none() => update_locally(update.activate).await,
                 _ => (StatusCode::BAD_REQUEST, "Invalid update request").into_response(),
             }
         },
@@ -1220,11 +1220,27 @@ pub(super) async fn setup(State(state): State<RelayState>, request: Request) -> 
 pub(super) struct UpdateRequest {
     #[serde(default)]
     host: Option<String>,
+    #[serde(default)]
+    activate: Option<String>,
 }
 
-async fn update_locally() -> Response {
+async fn update_locally(activate: Option<String>) -> Response {
+    if let Some(commit) = &activate {
+        let directory = std::env::home_dir()
+            .unwrap_or_default()
+            .join(".local/share/switchboard/automatic-updates");
+        if let Err(error) = crate::switchboard_update::request_activation(&directory, &commit) {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({"error":error.to_string()})),
+            )
+                .into_response();
+        }
+    }
     match super::update_watch::update_now().await {
         Ok(()) => (StatusCode::ACCEPTED, Json(json!({"ok": true}))).into_response(),
+        Err(error) if activate.is_some() => (StatusCode::ACCEPTED,
+            Json(json!({"ok":true,"warning":format!("Request queued, but the update job could not start: {error}. Retry or wait; request expires in 5 minutes.")}))).into_response(),
         Err(error) => (StatusCode::CONFLICT, Json(json!({ "error": error }))).into_response(),
     }
 }
@@ -1238,7 +1254,7 @@ pub(super) async fn update(State(state): State<RelayState>, request: Request) ->
         return (StatusCode::BAD_REQUEST, "Invalid update request").into_response();
     };
     let Some(id) = update.host else {
-        return update_locally().await;
+        return update_locally(update.activate).await;
     };
     let Some(host) = peer_host(&state, &id) else {
         return (StatusCode::NOT_FOUND, "Unknown computer").into_response();
@@ -1249,7 +1265,14 @@ pub(super) async fn update(State(state): State<RelayState>, request: Request) ->
             host.request(
                 Method::POST,
                 "/switchboard/tasks/update",
-                Bytes::from("{}"),
+                serde_json::to_vec(
+                    &update
+                        .activate
+                        .map(|commit| json!({"activate":commit}))
+                        .unwrap_or_else(|| json!({})),
+                )
+                .unwrap()
+                .into(),
                 "application/json",
             ),
         )
