@@ -819,7 +819,7 @@ function sidebarKeydown(event){
   }
   if(event.target.closest?.('input,textarea,select,[contenteditable="true"]'))return;
   if(document.querySelector('dialog[open]'))return;
-  if(event.code==='KeyT'&&(event.ctrlKey!==event.metaKey)&&event.altKey&&!event.shiftKey&&!event.isComposing){event.preventDefault();event.stopImmediatePropagation();if(!event.repeat)$('new-tab').click();return;}
+  if(event.code==='KeyT'&&!event.ctrlKey&&!event.metaKey&&event.altKey&&!event.shiftKey&&!event.isComposing){event.preventDefault();event.stopImmediatePropagation();if(!event.repeat)$('new-tab').click();return;}
   if(event.code==='KeyD'&&event.ctrlKey&&!event.metaKey&&!event.altKey&&!event.shiftKey&&!event.isComposing){
     event.preventDefault();event.stopImmediatePropagation();
     if(!event.repeat)closeSelectedTab();
@@ -840,12 +840,10 @@ function sidebarKeydown(event){
   event.preventDefault();event.stopImmediatePropagation();
   if(event.shiftKey)moveSelected(direction);else stepTab(direction);
 }
-// Windows uses Alt+1–9 so Ctrl+digits stay with the browser. Other platforms use
-// Ctrl+digits; 1–8 pick the visible sidebar tab and 9 picks the last.
+// Alt+1–8 pick the visible sidebar tab and Alt+9 picks the last on every platform.
 function tabNumber(event){
   if(event.metaKey||event.shiftKey||!/^Digit[1-9]$/.test(event.code))return 0;
-  const modifier=navigator.platform.startsWith('Win')?event.altKey&&!event.ctrlKey:event.ctrlKey&&!event.altKey;
-  return modifier?+event.code.slice(5):0;
+  return event.altKey&&!event.ctrlKey?+event.code.slice(5):0;
 }
 function selectTabNumber(number){
   const tabs=listedTabs(),item=number===9?tabs.at(-1):tabs[number-1];

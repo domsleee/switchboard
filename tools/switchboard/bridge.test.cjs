@@ -240,7 +240,7 @@ test('failed New tab creation restores input on timeout or disconnect',()=>{
     assert.equal(h.window.term.options.disableStdin,false);assert.equal(h.timers.size,0);
   }
 });
-for(const [platform,modifier] of [['MacIntel','metaKey'],['Win32','ctrlKey']])test(`${platform}: browser digits bypass old peer terminal handlers`,()=>{
+for(const [platform,modifier] of [['MacIntel','metaKey'],['MacIntel','ctrlKey'],['Win32','ctrlKey'],['Linux x86_64','ctrlKey']])test(`${platform}: browser digits bypass old peer terminal handlers`,()=>{
   const h=harness(false,platform);h.setFocus(true);
   for(const modal of [false,true]){
     h.setModal(modal);
@@ -538,23 +538,21 @@ test('a superseded control connection cannot acknowledge or cancel a new switch'
   assert.equal(h.window.term.options.disableStdin,false);assert.equal(h.timers.size,0);
 });
 
-test('Cmd/Ctrl+Alt+T opens New tab once only from terminal focus',()=>{
-  const h=harness();h.setFocus(true);
-  const key=h.key('KeyT',{ctrlKey:true});
+for(const platform of ['MacIntel','Win32','Linux x86_64'])test(`${platform}: Alt+T opens New tab once only from terminal focus`,()=>{
+  const h=harness(false,platform);h.setFocus(true);
+  const key=h.key('KeyT');
   assert.equal(key.prevented,true);assert.equal(key.stopped,true);
   assert.equal(h.messages.length,1);assert.equal(h.messages[0].type,'zellij-open-new-tab');assert.equal(h.messages[0].host,'windows');
-  const repeat=h.key('KeyT',{ctrlKey:true,repeat:true});
+  const repeat=h.key('KeyT',{repeat:true});
   assert.equal(repeat.prevented,true);assert.equal(repeat.stopped,true);assert.equal(h.messages.length,1);
-  for(const extra of [{ctrlKey:false},{metaKey:true},{shiftKey:true},{isComposing:true}]){
-    assert.equal(h.key('KeyT',{ctrlKey:true,...extra}).prevented,undefined);
+  for(const extra of [{ctrlKey:true},{metaKey:true},{altKey:false},{shiftKey:true},{isComposing:true}]){
+    assert.equal(h.key('KeyT',extra).prevented,undefined);
   }
-  assert.equal(h.key('KeyT',{altKey:false,metaKey:true}).prevented,undefined);
-  const mac=h.key('KeyT',{metaKey:true});assert.equal(mac.prevented,true);assert.equal(mac.stopped,true);assert.equal(h.messages.length,2);
-  assert.equal(h.key('KeyN',{ctrlKey:true}).prevented,undefined);
-  h.setFocus(false);assert.equal(h.key('KeyT',{ctrlKey:true}).prevented,undefined);
-  h.setFocus(true);h.setModal(true);assert.equal(h.key('KeyT',{ctrlKey:true}).prevented,undefined);
+  assert.equal(h.key('KeyN').prevented,undefined);
+  h.setFocus(false);assert.equal(h.key('KeyT').prevented,undefined);
+  h.setFocus(true);h.setModal(true);assert.equal(h.key('KeyT').prevented,undefined);
   h.setModal(false);h.parent.document={querySelector:()=>({})};
-  assert.equal(h.key('KeyT',{ctrlKey:true}).prevented,undefined);assert.equal(h.messages.length,2);
+  assert.equal(h.key('KeyT').prevented,undefined);assert.equal(h.messages.length,1);
 });
 
 test('plain Ctrl+T reaches the terminal: web keys no longer enter Zellij modes',()=>{

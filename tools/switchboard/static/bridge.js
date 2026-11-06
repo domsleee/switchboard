@@ -280,11 +280,11 @@
     escapeStatus.hidden = !message;
   }
   window.addEventListener('keydown',event=>{
-    const digit=/^Digit[1-9]$/.test(event.code),windows=digit&&navigator.platform.startsWith('Win');
+    const digit=/^Digit[1-9]$/.test(event.code);
     // Keep browser tab shortcuts away from older peers' terminal handlers:
-    // Command+digits everywhere and Ctrl+digits on Windows, without preventDefault.
+    // Ctrl/Cmd+digits on every platform, without preventDefault.
     if(digit&&!event.altKey&&!event.shiftKey&&
-        ((event.metaKey&&!event.ctrlKey)||(windows&&event.ctrlKey&&!event.metaKey))){
+        (event.metaKey!==event.ctrlKey)){
       event.stopImmediatePropagation();return;
     }
     if(event.key==='Shift'&&!event.repeat)shiftPressedAt=performance.now();
@@ -295,7 +295,7 @@
         held_ms:shiftPressedAt===null?null:Math.round(now-shiftPressedAt),released_ms:shiftReleasedAt===null?null:Math.round(now-shiftReleasedAt)}},location.origin);
     }
     if(hasDialog())return;
-    if(event.code==='KeyT'&&(event.ctrlKey!==event.metaKey)&&event.altKey&&!event.shiftKey&&!event.isComposing&&terminalFocused()){
+    if(event.code==='KeyT'&&!event.ctrlKey&&!event.metaKey&&event.altKey&&!event.shiftKey&&!event.isComposing&&terminalFocused()){
       event.preventDefault();event.stopImmediatePropagation();
       if(!event.repeat)parent.postMessage({type:'zellij-open-new-tab',host},location.origin);return;
     }
@@ -306,9 +306,9 @@
       // Closing uses the parent's selected tab ID, independently of native focus.
       parent.postMessage({type:'zellij-close-tab',host},location.origin);return;
     }
-    // Match the sidebar: Alt+digits on Windows, Ctrl+digits elsewhere, before xterm/Zellij.
+    // Match the sidebar: Alt+digits on every platform, before xterm/Zellij.
     if(digit&&!event.metaKey&&!event.shiftKey&&
-        (windows?event.altKey&&!event.ctrlKey:event.ctrlKey&&!event.altKey)){
+        event.altKey&&!event.ctrlKey){
       event.preventDefault();event.stopImmediatePropagation();
       parent.postMessage({type:'zellij-tab-number',host,number:+event.code.slice(5)},location.origin);return;
     }

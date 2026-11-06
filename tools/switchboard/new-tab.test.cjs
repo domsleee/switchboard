@@ -77,12 +77,12 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
       if(number===1)await input.evaluate(()=>{window.controlSocket.readyState=0;});
       // The second tab comes from the shield button and asks for administrator.
       if(number===2){
-        await page.keyboard.press('Meta+Alt+KeyT');
+        await page.keyboard.press('Alt+KeyT');
         await page.waitForFunction(()=>document.querySelector('#new-tab-dialog').open);
         assert.equal(await page.locator('#new-tab-title').textContent(),'New tab');
         await page.keyboard.press('Escape');
         await page.locator('#new-admin-tab').click();
-      }else await page.keyboard.press('Control+Alt+KeyT');
+      }else await page.keyboard.press('Alt+KeyT');
       await page.waitForFunction(()=>document.querySelector('#new-tab-dialog').open);
       assert.equal(await page.locator('#new-tab-title').textContent(),number===2?'New administrator tab':'New tab');
       assert.deepEqual(await page.locator('#new-tab-command').evaluate(input=>({focused:document.activeElement===input,selected:input.value.slice(input.selectionStart,input.selectionEnd)})),{focused:true,selected:'c'});

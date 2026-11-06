@@ -666,7 +666,7 @@ test('headless browser Ctrl+D closes the selected stable tab exactly once while 
   {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE to run the isolated browser focus check'},async()=>{
   const {browser,page,input,pageErrors,closes}=await browserFocusFixture({acknowledge:false});
   try{
-    const tabModifier=await page.evaluate(()=>navigator.platform.startsWith('Win')?'Alt':'Control');
+    const tabModifier='Alt';
     await page.keyboard.press(tabModifier+'+Digit2');
     await page.waitForFunction(()=>{const frame=document.querySelector('iframe.active'),entry=sessions.get(JSON.stringify(['mac','main']));
       return selected===JSON.stringify(['mac','main','tab',42])&&entry.requestedPane?.pane_id===8&&document.activeElement===frame&&frame.contentDocument.activeElement===frame.contentDocument.body&&frame.contentWindow.term.options.disableStdin;});
@@ -690,7 +690,7 @@ for(const platform of ['Win32','MacIntel','Linux x86_64'])test(`${platform}: una
   const {browser,page,input,pageErrors}=await browserFocusFixture({platform});
   try{
     const frame=page.frames().find(frame=>frame.url().includes('/hosts/mac/main')),closes=[];
-    const modifier=platform==='Win32'?'Alt':'Control';
+    const modifier='Alt';
     const key=id=>JSON.stringify(['mac','main','tab',id]);
     await page.bringToFront();
     await page.route('**/hosts/mac/main*',route=>new URL(route.request().url()).searchParams.has('unbridged')
