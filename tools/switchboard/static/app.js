@@ -1080,8 +1080,8 @@ window.SwitchboardOpenBrowserPage=url=>{
 };
 // Terminal frames call this on a modified click of a file path.
 window.SwitchboardOpenFile=(host,path)=>{
-  if(/\.(?:png|jpe?g|gif|webp|avif|svg)$/i.test(path)&&window.SwitchboardOpenImages){
-    window.SwitchboardOpenImages(host,path);return;
+  if(/\.(?:png|jpe?g|gif|webp|avif|svg|mp4|webm|mov|m4v)$/i.test(path)&&window.SwitchboardOpenMedia){
+    window.SwitchboardOpenMedia(host,path);return;
   }
   if(hosts.get(host)?.local){
     fetch('/api/open-file',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})})

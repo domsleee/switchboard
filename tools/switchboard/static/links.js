@@ -109,8 +109,8 @@
   }});
   // Modifiers belong to the viewing browser, regardless of the terminal host OS.
   const linkGesture = event => event.button===0 && !event.altKey && (event.metaKey || event.ctrlKey || event.shiftKey);
-  function openImage(path){
-    if(window.parent===window||!parent.SwitchboardOpenImages)return false;
+  function openMedia(path){
+    if(window.parent===window||!(parent.SwitchboardOpenMedia||parent.SwitchboardOpenImages))return false;
     const buffer=window.term?.buffer?.active,paths=[],seen=new Set();
     // Keep the carousel tied to the current terminal, including its recent scrollback.
     for(let row=Math.max(0,(buffer?.length||0)-10000);row<(buffer?.length||0);){
@@ -122,12 +122,12 @@
       }while(row<buffer.length);
       const found=pathsIn(line);
       for(const entry of [...found.media,...found.plain,...found.relative].sort((a,b)=>a.index-b.index)){
-        if(!imageFile.test(entry.text)||seen.has(entry.text))continue;
+        if(!(imageFile.test(entry.text)||videoFile.test(entry.text))||seen.has(entry.text))continue;
         seen.add(entry.text);paths.push({path:entry.text,relative:relativeFile(entry.text)});
       }
     }
     if(!seen.has(path))paths.push({path,relative:relativeFile(path)});
-    hidePreview();parent.SwitchboardOpenImages(host,path,paths,locate);return true;
+    hidePreview();(parent.SwitchboardOpenMedia||parent.SwitchboardOpenImages)(host,path,paths,locate);return true;
   }
   function open(event,uri) {
     if (!linkGesture(event)) return;
@@ -138,8 +138,8 @@
         parent.SwitchboardOpenBrowserPage(uri);return;
       }
       const path=filePathOf(uri),newTab=event.metaKey||event.ctrlKey,relative=!path&&relativeFile(uri);
-      if((path||relative)&&imageFile.test(path||uri)&&openImage(path||uri))return;
-      // Cmd/Ctrl-click plays videos and animated images in a tab, streamed from this terminal's computer.
+      if((path||relative)&&(imageFile.test(path||uri)||videoFile.test(path||uri))&&openMedia(path||uri))return;
+      // Standalone terminal viewers can still open media in a browser tab.
       if((path||relative)&&!(newTab&&(tabFile.test(path||uri)||htmlFile.test(path||uri)))){
         if(window.parent===window||!parent.SwitchboardOpenFile)throw Error('Files open from the Switchboard page');
         if(path){parent.SwitchboardOpenFile(host,path);return;}
@@ -229,7 +229,7 @@
     url:path=>`/api/hosts/${encodeURIComponent(host)}/file?path=${encodeURIComponent(path)}`,
     isVideo:path=>videoFile.test(path),
     open:(path,event)=>{
-      if(imageFile.test(path)&&openImage(path))return;
+      if((imageFile.test(path)||videoFile.test(path))&&openMedia(path))return;
       if(event?.metaKey||event?.ctrlKey)open(event,path);
       else if(window.parent!==window)parent.SwitchboardOpenFile?.(host,path);
     },
