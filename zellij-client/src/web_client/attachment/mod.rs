@@ -365,11 +365,13 @@ async fn attachment(
         }
         tokio::select! {
             Some(delivery)=input.recv()=>{
+                let mut accepted=false;
                 let result=async {
                     let focus;
                     {
                         let journal=viewer.journal.lock().unwrap();
                         if !journal.accepts(delivery.generation,&delivery.input)? { return Ok(journal.input_ack()); }
+                        accepted=true;
                         if delivery.input.channel=="terminal" {
                             if !viewer.read_only { parse_stdin(delivery.input.data.as_bytes(),os.clone(),&mut mouse,&mut stdin); }
                             held_since=Instant::now();focus=None;
@@ -378,7 +380,18 @@ async fn attachment(
                             if stdin.pending_finalize() { stdin.finalize(&*os,&mut mouse); }
                             ensure!(!stdin.has_pending_bytes(),"Incomplete terminal sequence before a control command; attachment stopped to preserve its target pane");
                             focus=match &payload {WebClientToWebServerControlMessagePayload::FocusPane{pane_id,is_plugin}=>Some((*pane_id,*is_plugin)),_=>None};
-                            if let Some(message)=control_payload_to_server_msg(payload,app.config.lock().unwrap().options.default_shell.clone()) { os.send_to_server(message); }
+                            if let Some(message)=control_payload_to_server_msg(payload,app.config.lock().unwrap().options.default_shell.clone()) {
+                                os.send_to_server(message.clone());
+                                if focus.is_some() {
+                                    // An idempotent second focus gives explicit native
+                                    // confirmation even when MobileState is unchanged.
+                                    os.send_to_server(message);
+                                    os.send_to_server(ClientToServerMsg::Action {
+                                        action:zellij_utils::input::actions::Action::CurrentTabInfo{output_json:false},
+                                        terminal_id:None,client_id:None,is_cli_client:false,
+                                    });
+                                }
+                            }
                             if focus.is_some() {if let Some(refresh)=app.connection_table.lock().unwrap().client_id_to_channels.get(&id).and_then(|c|c.recovery_metadata_refresh.clone()){refresh.request();}}
                         }
                         ensure!(os.send_failure().is_none(),"Terminal IPC failed; input delivery is uncertain");
@@ -393,7 +406,7 @@ async fn attachment(
                     journal.input=Some(delivery.input);
                     Ok(journal.input_ack())
                 }.await;
-                if let Err(error)=&result { viewer.journal.lock().unwrap().failure=Some(format!("{error}"));viewer.notify.notify_waiters(); }
+                if let Err(error)=&result { viewer.journal.lock().unwrap().delivery_failed(accepted,error.to_string());viewer.notify.notify_waiters(); }
                 let _=delivery.done.send(result);
             },
             Some(text)=output.recv()=>{viewer.journal.lock().unwrap().emit("terminal",text);viewer.notify.notify_waiters();},
@@ -427,9 +440,11 @@ async fn attachment(
     worker.views.lock().unwrap().remove(&id);
 }
 
-/// FIFO requests alone cannot establish focus: a stale target is a native no-op.
-/// Do not acknowledge this control or process subsequent typing until the engine
-/// confirms the destination. Native output continues to drain into its journal.
+/// Every focus transaction issues two identical focus actions, followed by this
+/// connection's reserved plain CurrentTabInfo query. The second action reports
+/// "already focused" only after the engine actually selects that pane. Drain to
+/// the query response before acknowledging so no duplicate reply leaks into the
+/// next transaction. Cached MobileState is never evidence of focus success.
 async fn confirm_focus(
     viewer: &Viewer,
     target: (u32, bool),
@@ -439,6 +454,7 @@ async fn confirm_focus(
     let deadline = tokio::time::sleep(Duration::from_secs(10));
     tokio::pin!(deadline);
     let mut permission = tokio::time::interval(Duration::from_secs(1));
+    let mut confirmation = FocusConfirmation::new(target);
     loop {
         ensure!(
             viewer.journal.lock().unwrap().failure.is_none(),
@@ -451,16 +467,122 @@ async fn confirm_focus(
             message=controls.recv()=>{
                 let Some(Message::Text(text))=message else {anyhow::bail!("Terminal ended while selecting pane");};
                 let value:serde_json::Value=serde_json::from_str(&text)?;
+                match confirmation.consume(&value)? {
+                    FocusReply::Private=>continue,
+                    FocusReply::Complete=>{
+                        viewer.journal.lock().unwrap().emit("control",json!({"type":"FocusConfirmed","payload":{"pane_id":target.0,"is_plugin":target.1}}).to_string());
+                        viewer.notify.notify_waiters();return Ok(());
+                    },
+                    FocusReply::Forward=>{},
+                }
                 viewer.journal.lock().unwrap().emit("control",text.to_string());viewer.notify.notify_waiters();
-                if value["type"]=="MobileState" {
-                    let active=&value["payload"]["active_pane"];
-                    if active["pane_id"].as_u64()==Some(target.0 as u64) && active["is_plugin"].as_bool()==Some(target.1) { return Ok(()); }
-                }
-                if value["type"]=="LogError" {
-                    let missing=format!("Could not find pane with id: {}({})",if target.1{"Plugin"}else{"Terminal"},target.0);
-                    ensure!(!value["lines"].as_array().is_some_and(|lines|lines.iter().any(|line|line.as_str().is_some_and(|line|line.contains(&missing)))),"Requested terminal pane no longer exists; queued typing was not sent");
-                }
             }
         }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum FocusReply {
+    Forward,
+    Private,
+    Complete,
+}
+struct FocusConfirmation {
+    pane: String,
+    positive: String,
+    confirmed: bool,
+}
+impl FocusConfirmation {
+    fn new(target: (u32, bool)) -> Self {
+        let pane = format!(
+            "{}({})",
+            if target.1 { "Plugin" } else { "Terminal" },
+            target.0
+        );
+        Self {
+            positive: format!("Pane {pane} is already focused"),
+            pane,
+            confirmed: false,
+        }
+    }
+    fn consume(&mut self, value: &serde_json::Value) -> Result<FocusReply> {
+        if value["type"] == "LogError" {
+            for line in value["lines"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|line| line.as_str())
+            {
+                if line == self.positive {
+                    self.confirmed = true;
+                } else {
+                    ensure!(
+                        !line.contains(&self.pane),
+                        "Requested terminal pane could not be selected; queued typing was not sent"
+                    );
+                }
+            }
+            if value["lines"].as_array().is_some_and(|lines| {
+                !lines.is_empty()
+                    && lines
+                        .iter()
+                        .all(|line| line.as_str() == Some(&self.positive))
+            }) {
+                return Ok(FocusReply::Private);
+            }
+        }
+        if value["type"] == "Log" && focus_marker(&value["lines"]) {
+            ensure!(
+                self.confirmed,
+                "Engine did not confirm terminal pane selection; queued typing was not sent"
+            );
+            return Ok(FocusReply::Complete);
+        }
+        Ok(FocusReply::Forward)
+    }
+}
+
+fn focus_marker(lines: &serde_json::Value) -> bool {
+    let Some(lines) = lines.as_array() else {
+        return false;
+    };
+    lines.len() == 3
+        && lines[0].as_str().is_some_and(|s| s.starts_with("name: "))
+        && lines[1]
+            .as_str()
+            .and_then(|s| s.strip_prefix("id: "))
+            .is_some_and(|s| s.parse::<u64>().is_ok())
+        && lines[2]
+            .as_str()
+            .and_then(|s| s.strip_prefix("position: "))
+            .is_some_and(|s| s.parse::<u64>().is_ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn switchboard_attachment_focus_ignores_stale_state_and_drains_duplicate_confirmations() {
+        let marker = json!({"type":"Log","lines":["name: tab","id: 0","position: 0"]});
+        let stale =
+            json!({"type":"MobileState","payload":{"active_pane":{"pane_id":7,"is_plugin":false}}});
+        let mut focus = FocusConfirmation::new((7, false));
+        assert_eq!(focus.consume(&stale).unwrap(), FocusReply::Forward);
+        assert!(
+            focus.consume(&marker).is_err(),
+            "Cached metadata cannot prove focus"
+        );
+        let yes = json!({"type":"LogError","lines":["Pane Terminal(7) is already focused"]});
+        assert_eq!(focus.consume(&yes).unwrap(), FocusReply::Private);
+        assert_eq!(focus.consume(&yes).unwrap(), FocusReply::Private);
+        assert_eq!(focus.consume(&marker).unwrap(), FocusReply::Complete);
+        let mut missing = FocusConfirmation::new((7, false));
+        missing.consume(&yes).unwrap();
+        assert!(missing
+            .consume(&json!({"type":"LogError","lines":["Pane with id Terminal(7) not found"]}))
+            .is_err());
+        let mut wrong = FocusConfirmation::new((8, false));
+        wrong.consume(&yes).unwrap();
+        assert!(wrong.consume(&marker).is_err());
     }
 }
