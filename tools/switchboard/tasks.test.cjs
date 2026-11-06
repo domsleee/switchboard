@@ -102,7 +102,7 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
     const absent=[agent('claude','Claude Code','absent','Not installed'),agent('copilot','Copilot CLI','absent','Not installed'),agent('codex','Codex','absent','Not installed')];
     const tasks={computers:[
       {name:'Mac',local:true,groups:[],error:null,switchboard:build('0c60c7f','2026-11-04T20:21:14+11:00'),agents:[
-        agent('claude','Claude Code','ready','Plugin installed and auto-updating',{lastReport:now-120e3}),
+        agent('claude','Claude Code','ready','Plugin installed · auto-updates enabled',{lastReport:now-120e3}),
         agent('copilot','Copilot CLI','setup','Plugin not installed · Auto-update off'),
         agent('codex','Codex','approve','Codex has not trusted the status hooks yet')]},
       {name:'Dom-PC',host:'mesh-dompc',groups:[],error:null,switchboard:build('ca42095','2026-11-04T20:04:27+11:00',{automaticUpdates:false}),agents:[
@@ -147,7 +147,13 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
     assert.equal(await mac.locator('.task-state').textContent(),'Copilot CLI: needs setup · Codex: hooks not trusted');
     const macRows=mac.locator('.agent-row');
     assert.deepEqual(await macRows.locator('.task-name').allTextContents(),['Claude Code','Copilot CLI','Codex']);
-    assert.equal(await macRows.nth(0).locator('.task-meta').textContent(),'reported 2m ago');
+    assert.equal(await macRows.nth(0).locator('.task-meta').textContent(),'Plugin installed · auto-updates enabled · reported 2m ago');
+    if(process.env.AUTO_UPDATE_SCREENSHOTS){
+      await page.screenshot({path:process.env.AUTO_UPDATE_SCREENSHOTS+'/after.png',clip:await macRows.nth(0).boundingBox()});
+      await macRows.nth(0).locator('.task-meta').evaluate(el=>el.textContent='reported 2m ago');
+      await page.screenshot({path:process.env.AUTO_UPDATE_SCREENSHOTS+'/before.png',clip:await macRows.nth(0).boundingBox()});
+      await macRows.nth(0).locator('.task-meta').evaluate(el=>el.textContent='Plugin installed · auto-updates enabled · reported 2m ago');
+    }
     assert.equal(await macRows.nth(0).getByRole('button',{name:'Set up'}).count(),0);
     assert.equal(await macRows.nth(1).locator('.task-meta').textContent(),'Plugin not installed · Auto-update off');
     assert.equal(await macRows.nth(2).getByRole('button',{name:'Set up'}).count(),0);
