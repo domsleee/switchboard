@@ -93,7 +93,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     await page.evaluate(()=>{activate(allTabs()[0]);stepTab(-1);});
     assert.equal(await page.locator('#tabs .selected .tab-name').textContent(),names[2]);
     await page.evaluate(()=>activate(allTabs()[0]));
-    assert.equal(await page.evaluate(()=>localStorage.getItem('switchboard-snoozed-open')),'false');
+    assert.equal(await page.evaluate(()=>localStorage.getItem('switchboard-snoozed-open:all')),'false');
     await page.locator('#tab-search').fill('switchboard');
     assert.deepEqual(await order(),[names[0]]);
     assert.equal(await snoozed.getAttribute('aria-expanded'),'true');
@@ -182,7 +182,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.deepEqual(await order(),['switchboard','ssb orchestrator']);
     await toggle.click();
     assert.deepEqual(await order(),['switchboard','ssb orchestrator','Online shopping']);
-    assert.equal(await page.evaluate(()=>localStorage.getItem('switchboard-hidden-open')),'true');
+    assert.equal(await page.evaluate(()=>localStorage.getItem('switchboard-hidden-open:all')),'true');
     if(process.env.SWITCHBOARD_UX_SCREENSHOTS)await page.locator('#sidebar').screenshot({path:process.env.SWITCHBOARD_UX_SCREENSHOTS+'/hidden.png'});
     const hiddenRow=page.locator('.tab-row.hidden-tab');
     await hiddenRow.hover();await hiddenRow.locator('.tab-actions').click();
@@ -523,6 +523,76 @@ test('group URLs restore All, Home and Work on reload, including an empty group'
     await page.goto('https://switchboard.test/?group=home&host=windows&session=main&tab=90');await shows('home',['Home shell']);
     assert.equal(new URL(page.url()).searchParams.get('group'),'home');
     assert.equal(new URL(page.url()).searchParams.get('host'),'mac');
+    assert.deepEqual(errors,[]);
+  }finally{await browser.close();}
+});
+
+test('Hidden and Snoozed remember independent expansion in All, Work and Home across reloads',
+  {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
+  const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
+  const browser=await chromium.launch({headless:true});
+  try{
+    const context=await browser.newContext({viewport:{width:1280,height:800}}),page=await context.newPage(),errors=[];
+    page.setDefaultTimeout(5000);page.on('pageerror',error=>errors.push(error.message));
+    const tabs=['home','work'].flatMap((host,i)=>['Shell','Working','Hidden'].map((name,position)=>({
+      host,session:'main',id:i*3+position+1,position,name:`${host} ${name}`,
+      panes:[{pane_id:i*3+position+1,is_plugin:false,tab_position:position}]})));
+    await context.addInitScript(()=>{
+      window.setInterval=()=>0;
+      localStorage.setItem('switchboard-groups',JSON.stringify({home:'home',work:'work'}));
+      localStorage.setItem('switchboard-hidden',JSON.stringify({
+        '["home","main","tab",3]':1,'["work","main","tab",6]':1}));
+    });
+    await context.route('**/*',async route=>{
+      const path=new URL(route.request().url()).pathname;
+      const json=value=>route.fulfill({contentType:'application/json',body:JSON.stringify(value)});
+      if(path==='/api/hosts')return json(['home','work'].map(id=>({id,name:id})));
+      if(path.startsWith('/api/hosts/'))return json({id:path.split('/').at(-1),sessions:[{name:'main',web_clients_allowed:true}]});
+      if(path==='/api/attention')return json({tabs,panes:tabs.filter(tab=>tab.position===1).map(tab=>({
+        host:tab.host,session:'main',pane_id:tab.panes[0].pane_id,state:'working'})),errors:[]});
+      if(path.startsWith('/api/'))return json({});
+      if(path.startsWith('/hosts/')){
+        const panes=tabs.filter(tab=>tab.host===path.split('/')[2]).flatMap(tab=>tab.panes);
+        return route.fulfill({contentType:'text/html',body:`<script>
+          const panes=${JSON.stringify(panes)};
+          function state(focus_id,pane=panes[0]){parent.postMessage({type:'zellij-state',focus_id,payload:{session_name:'main',panes,active_pane:pane,tab_viewport:{is_owner:true}}},location.origin);}
+          addEventListener('message',event=>{if(event.data.type==='zellij-focus')state(event.data.focus_id,panes.find(pane=>pane.pane_id===event.data.pane_id))});state();
+        </script>`});
+      }
+      const file=path==='/'?'index.html':path.slice(1);
+      if(!['index.html','app.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
+      return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
+    });
+    async function check(hidden,snoozed){
+      await page.waitForFunction(()=>hostsLoaded&&!loading&&sessions.size===2&&[...sessions.values()].every(entry=>entry.state));
+      await page.evaluate(()=>refreshAttention());
+      assert.equal(await page.locator('#hidden-toggle').getAttribute('aria-expanded'),String(hidden));
+      assert.equal(await page.locator('#snoozed-toggle').getAttribute('aria-expanded'),String(snoozed));
+      assert.equal(await page.locator('.hidden-tab').count(),hidden?(new URL(page.url()).searchParams.has('group')?1:2):0);
+    }
+    const go=group=>page.locator(`#filters [data-filter="${group}"]`).click();
+    await page.goto('https://switchboard.test/');await check(false,false);
+    await page.locator('#hidden-toggle').click();await page.locator('#snoozed-toggle').click();
+    await go('work');await check(false,false);
+    await page.locator('#hidden-toggle').click();await check(true,false);
+    await go('home');await check(false,false);
+    await page.locator('#snoozed-toggle').click();await check(false,true);
+    for(const [group,hidden,snoozed] of [['all',true,true],['work',true,false],['home',false,true]]){
+      await go(group);await check(hidden,snoozed);await page.reload();await check(hidden,snoozed);
+    }
+    // Search expands matching sections temporarily without changing the saved choices.
+    await page.locator('#tab-search').fill('home');await check(true,true);
+    await page.locator('#tab-search').fill('');await check(false,true);
+    // Existing browser-wide preferences seed views until each view is changed.
+    await page.evaluate(()=>{
+      for(const group of ['all','work','home'])for(const section of ['hidden','snoozed'])localStorage.removeItem(`switchboard-${section}-open:${group}`);
+      for(const section of ['hidden','snoozed'])localStorage.setItem(`switchboard-${section}-open`,'true');
+    });
+    await page.reload();await check(true,true);
+    await page.locator('#hidden-toggle').click();await page.locator('#snoozed-toggle').click();
+    await go('all');await check(true,true);
+    await go('work');await check(true,true);
+    await go('home');await check(false,false);await page.reload();await check(false,false);
     assert.deepEqual(errors,[]);
   }finally{await browser.close();}
 });

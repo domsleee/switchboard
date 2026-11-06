@@ -26,8 +26,13 @@ const ready = load('switchboard-ready');
 // Tabs in the Hidden group at the bottom of the sidebar. The group shares them like the
 // tab order; tabs archived before Hidden existed join it.
 const hidden = localStorage.getItem('switchboard-hidden')===null?load('switchboard-archived'):load('switchboard-hidden');
-let snoozedOpen = localStorage.getItem('switchboard-snoozed-open')==='true';
-let hiddenOpen = localStorage.getItem('switchboard-hidden-open')==='true';
+function sectionExpanded(section){
+  const key=`switchboard-${section}-open`;
+  // Keep the old browser-wide preference until this view gets its own choice.
+  return (localStorage.getItem(`${key}:${filter}`)??localStorage.getItem(key))==='true';
+}
+let snoozedOpen = sectionExpanded('snoozed');
+let hiddenOpen = sectionExpanded('hidden');
 const seenAttention = load('switchboard-attention-seen');
 let attentionLoaded=false,paneAttention=new Map(),tabCatalog=[],attentionErrors=[],attentionLoading=false,attentionRefreshPending=false,attentionVersion=0;
 let contextItem = null, menuTrigger = null;
@@ -501,7 +506,7 @@ hiddenHeader.id='hidden-toggle';hiddenHeader._hiddenGroup=true;
 hiddenHeader.innerHTML='<span class="chevron" aria-hidden="true">›</span><span>Hidden</span><span class="star attention" aria-hidden="true"></span><span class="count"></span>';
 hiddenHeader.onclick=()=>{
   if(dragging||Date.now()<suppressTabClickUntil)return;
-  hiddenOpen=!hiddenOpen;localStorage.setItem('switchboard-hidden-open',String(hiddenOpen));render();
+  hiddenOpen=!hiddenOpen;localStorage.setItem(`switchboard-hidden-open:${filter}`,String(hiddenOpen));render();
 };
 function renderHiddenHeader(tabs,shown,searching){
   const expanded=hiddenOpen||searching,attention=tabs.some(isReady),count=searching?`${shown.length} / ${tabs.length}`:String(tabs.length);
@@ -517,7 +522,7 @@ snoozedHeader.innerHTML='<span class="chevron" aria-hidden="true">›</span><spa
 snoozedHeader.title='Working tabs keep running here and return when they finish or need you.';
 snoozedHeader.onclick=()=>{
   if(dragging||Date.now()<suppressTabClickUntil)return;
-  snoozedOpen=!snoozedOpen;localStorage.setItem('switchboard-snoozed-open',String(snoozedOpen));render();
+  snoozedOpen=!snoozedOpen;localStorage.setItem(`switchboard-snoozed-open:${filter}`,String(snoozedOpen));render();
 };
 function render() {
   // Live metadata arrives while dragging; keep the source element mounted.
@@ -1078,6 +1083,7 @@ function setFilter(value){
   const previous=selected;
   if(selected)filterSelection[filter]=selected;
   filter=value;
+  snoozedOpen=sectionExpanded('snoozed');hiddenOpen=sectionExpanded('hidden');
   const tabs=allTabs();
   if(!tabs.some(t=>t.key===selected)&&tabs.some(t=>t.key===filterSelection[value]))selected=filterSelection[value];
   renderFilter();render();
