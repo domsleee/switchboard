@@ -1564,14 +1564,26 @@ function restartAgentTarget(item){
   const pane=panes.length===1?panes[0]:panes.find(p=>p.pane_id===active?.pane_id);
   if(!pane)return null;
   const state=paneAttention.get(attentionKey(item.entry.host,item.entry.name,pane.pane_id));
-  if(!state?.restart_available||state.state!=='ready'||!state.chat_id)return null;
-  return {session:item.entry.name,pane_id:pane.pane_id,tab_id:item.tab.id,chat_id:state.chat_id};
+  if(!state?.restart_available||!['ready','working'].includes(state.state)||!state.chat_id)return null;
+  return {session:item.entry.name,pane_id:pane.pane_id,tab_id:item.tab.id,chat_id:state.chat_id,working:state.state==='working'};
 }
 $('restart-agent').onclick=async()=>{
   const item=contextItem,target=restartAgentTarget(item);if(!target||restartingAgents.has(item.key))return;
+  if(target.working){
+    closeTabMenu();
+    const dialog=$('restart-agent-dialog');
+    dialog.returnValue='';
+    dialog.showModal();
+    const confirmed=await new Promise(resolve=>{
+      dialog.addEventListener('close',()=>resolve(dialog.returnValue==='restart'),{once:true});
+    });
+    if(!confirmed)return;
+  }
   restartingAgents.add(item.key);closeTabMenu();setStatus(`Restarting ${tabTitle(item)}…`);
   try{
-    const response=await fetch(`/api/hosts/${encodeURIComponent(item.entry.host)}/restart-agent`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(target),signal:AbortSignal.timeout(120000)});
+    const {working,...request}=target;
+    if(working)request.confirm_interrupt=true;
+    const response=await fetch(`/api/hosts/${encodeURIComponent(item.entry.host)}/restart-agent`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(request),signal:AbortSignal.timeout(120000)});
     if(!response.ok)throw Error(await response.text()||'Agent restart failed');
     setStatus(`Resuming ${tabTitle(item)} in the same tab`);await refreshAttention(true);
   }catch(error){setStatus(error.name==='TimeoutError'?'No restart confirmation. Check the terminal before trying again.':error.message);}
@@ -1593,7 +1605,7 @@ function updateTabMenu(){
   hide.textContent=item.hidden?'Show in list':'Hide';
   hide.title=item.hidden?'Move back among your tabs':'Move to Hidden; keep processes running';
   $('restart-agent').disabled=!restartAgentTarget(item)||restartingAgents.has(item.key);
-  $('restart-agent').title=$('restart-agent').disabled?'Available after Codex or Claude finishes a turn and reports its conversation. Select the tab to choose among multiple panes.':'Restart only this agent and resume the same conversation';
+  $('restart-agent').title=$('restart-agent').disabled?'Available after Codex or Claude reports its conversation. Select the tab to choose among multiple panes.':'Restart only this agent and resume the same conversation';
   $('close-tab').disabled=!closeTabTarget(item);
   $('close-tab').title=$('close-tab').disabled?'Waiting for the terminal to finish connecting':'Close this tab and stop its processes · Ctrl+D';
   $('select-text').disabled=!item.entry.frame.contentWindow.SwitchboardClipboard;
