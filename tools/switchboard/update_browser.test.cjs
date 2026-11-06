@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const net = require('node:net');
+const http = require('node:http');
 const crypto = require('node:crypto');
 const {execFileSync, spawn, spawnSync} = require('node:child_process');
 const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
@@ -12,6 +13,7 @@ const newBinary = path.resolve(process.argv[3] || path.join(root, 'target/releas
 const oldBinary = path.resolve(process.argv[2] || newBinary);
 const recoveryMode=process.env.SWITCHBOARD_TEST_RECOVERY_ADAPTER==='1';
 const inPlace = process.env.SWITCHBOARD_TEST_IN_PLACE_RECONNECT === '1';
+const explicitUpdate = process.env.SWITCHBOARD_TEST_EXPLICIT_UPDATE === '1';
 const dir = fs.mkdtempSync('/tmp/switchboard-browser-update-');
 const installed = path.join(dir, 'zellij');
 const config = path.join(dir, 'config.kdl');
@@ -46,7 +48,7 @@ function processes() {
     }).filter(Boolean);
 }
 const identities = () => JSON.parse(cli('-s',name,'action','list-panes','--json','--all')).map(p=>[p.is_plugin,p.id,p.tab_id]).sort();
-let native, relay, browser, tokenName, readOnlyTokenName, created=false, otherCreated=false;
+let updateController, native, relay, browser, tokenName, readOnlyTokenName, created=false, otherCreated=false;
 const otherName='excluded-'+name.slice(-16);
 let recoveryPanes, reconnectTarget;
 (async()=>{
@@ -67,7 +69,7 @@ let recoveryPanes, reconnectTarget;
         fs.writeFileSync(relayConfig,JSON.stringify({hosts:[{id:'test',name:'Acceptance',url:`http://127.0.0.1:${nativePort}`,token_file:tokenPath,zellij_binary:installed}]}),{mode:0o600});
         let recoveryEnabled=false;
         const startNative=()=>spawn(recoveryMode?newBinary:installed,['--config',config,'web','--port',String(nativePort)],{env:{...env,...(recoveryEnabled?{SWITCHBOARD_RECOVER_UNSHARED_SESSION:name}:{})},stdio:['ignore',fs.openSync(path.join(dir,'native.log'),'a'),fs.openSync(path.join(dir,'native-error.log'),'a')]});
-        const startRelay=()=>spawn(newBinary,['serve','--host-config',relayConfig,'--port',String(relayPort)],{env,stdio:['ignore',fs.openSync(path.join(dir,'relay.log'),'a'),fs.openSync(path.join(dir,'relay-error.log'),'a')]});
+        const startRelay=()=>spawn(explicitUpdate?installed:newBinary,['serve','--host-config',relayConfig,'--port',String(relayPort)],{env,stdio:['ignore',fs.openSync(path.join(dir,'relay.log'),'a'),fs.openSync(path.join(dir,'relay-error.log'),'a')]});
         native=startNative(); relay=startRelay();
         await waitFor(async()=> (await fetch(url)).ok,'Private services did not start');
         cli('attach','--create-background',name,'--','/bin/bash','--noprofile','--norc');created=true;
@@ -302,7 +304,7 @@ let recoveryPanes, reconnectTarget;
         assert.match(rejected.stderr,/restoring the previous executable/);
         assert.ok(fs.readFileSync(installed).equals(beforeBytes),'Rollback restores the exact binary');
         await command(`printf '%s%s\\n' "ROLLED_BACK_" "$SB_STATE"`,'ROLLED_BACK_'+marker);
-        execFileSync('/bin/bash',[path.join(__dirname,'update_local.sh'),'--binary-only',newBinary,installed],{env,timeout:60000,stdio:'pipe'});
+        if(!explicitUpdate)execFileSync('/bin/bash',[path.join(__dirname,'update_local.sh'),'--binary-only',newBinary,installed],{env,timeout:60000,stdio:'pipe'});
         await command(`printf '%s%s\\n' "UPDATED_" "$SB_STATE"`,'UPDATED_'+marker);
         }
         // The rollback fixture temporarily reports an empty catalog. Select the
@@ -330,12 +332,60 @@ with open(sys.argv[1], 'a+') as lock:
             window.savedTerminal = w.term;
             w.__acceptanceReconnectCommand = command;
         }, `printf misplaced > '${misplacedInput}'\r`);
+        if(explicitUpdate){
+            // Native updater with a private service adapter, never launchd/systemd or user services.
+            const helpers=path.join(dir,'helpers'),source=path.join(dir,'release'),state=path.join(dir,'update-state');
+            for(const folder of [helpers,source,state])fs.mkdirSync(folder);
+            const originalCommit=(await(await fetch(url+'/api/health')).json()).commit;
+            let failNext=true,installs=0;
+            updateController=http.createServer(async(req,res)=>{
+                try{
+                    const chunks=[];for await(const chunk of req)chunks.push(chunk);
+                    const candidate=Buffer.concat(chunks).toString();assert.ok(candidate.startsWith(dir+'/'));
+                    await stop(native);native=null;await stop(relay);relay=null;
+                    fs.copyFileSync(candidate,installed+'.next');fs.chmodSync(installed+'.next',0o755);fs.renameSync(installed+'.next',installed);
+                    native=startNative();relay=startRelay();
+                    await waitFor(async()=> (await fetch(url+'/api/health')).ok,'Private services did not restart');
+                    installs++;
+                    if(failNext){failNext=false;res.writeHead(500);res.end('Injected handoff failure');}else res.end('ok');
+                }catch(error){res.writeHead(500);res.end(error.message);}
+            });
+            await new Promise(resolve=>updateController.listen(0,'127.0.0.1',resolve));
+            const helper=`#!/bin/bash\nset -euo pipefail\ncurl -fsS --max-time 40 -X POST --data-binary "$1" http://127.0.0.1:${updateController.address().port}/restart\n`;
+            fs.writeFileSync(path.join(helpers,'update_local.sh'),helper);
+            const platform=process.platform==='darwin'?(process.arch==='arm64'?'macos-arm64':'macos-x86_64'):(process.arch==='arm64'?'linux-arm64':'linux-x86_64');
+            const files=process.platform==='darwin'?['auto_update.py','install_service.py','menu_bar.swift','update_local.sh','zellij']:['update_local.sh','zellij'];
+            const commit=execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim(),hashes={};
+            for(const file of files){
+                const bytes=file==='zellij'?fs.readFileSync(newBinary):Buffer.from(file==='update_local.sh'?helper:'# private unused fixture helper\n');
+                fs.writeFileSync(path.join(source,`switchboard-${platform}-${file}`),bytes);
+                hashes[file]=crypto.createHash('sha256').update(bytes).digest('hex');
+                if(file!=='zellij')fs.writeFileSync(path.join(helpers,file),bytes);
+            }
+            fs.writeFileSync(path.join(source,`switchboard-${platform}-bundle.json`),JSON.stringify({schema:1,commit,platform,run_number:1,files:hashes}));
+            const runUpdate=extra=>new Promise((resolve,reject)=>{
+                const child=spawn(newBinary,['switchboard','update','--config',config,'--host-config',relayConfig,'--port',String(relayPort),'--binary',installed,'--helper-directory',helpers,'--state-directory',state,'--source',source,...extra],{env,stdio:['ignore',fs.openSync(path.join(dir,'update.log'),'a'),fs.openSync(path.join(dir,'update-error.log'),'a')]});
+                child.on('error',reject);child.on('exit',resolve);
+            });
+            assert.ok(viewerLockBusy());
+            assert.equal(await runUpdate([]),0);assert.equal(installs,0,'Automatic run waits for viewers');
+            assert.equal(JSON.parse(fs.readFileSync(path.join(state,'state.json'))).ready.commit,commit);
+            assert.notEqual(await runUpdate(['--activate',commit]),0,'Injected handoff fails');
+            assert.equal(installs,2,'Failed handoff runs rollback');
+            await connected();await command(`printf '%s%s\\n' "ROLLBACK_LIVE_" "$SB_STATE"`,'ROLLBACK_LIVE_'+marker);
+            assert.equal((await(await fetch(url+'/api/health')).json()).commit,originalCommit);
+            assert.equal(await runUpdate([]),0);assert.equal(installs,2,'Failed activation does not force a later automatic attempt');
+            assert.equal(await runUpdate(['--activate',commit]),0);
+            assert.equal(installs,3);assert.ok(commit.startsWith((await(await fetch(url+'/api/health')).json()).commit));
+            console.log('PASS: automatic update deferred with live viewers; exact explicit activation reconnected them; failed handoff rolled back; later automatic retry remained gated.');
+        }else{
         // Restart only the connection services, leaving the existing shell and browser alone.
         await stop(native);native=null;await stop(relay);relay=null;
         if (inPlace) assert.ok(!viewerLockBusy(), 'Stopping connection services releases their viewer locks');
         await sleep(500);
         native=startNative();relay=startRelay();
         await waitFor(async()=> (await fetch(url)).ok,'Connection services did not recover');
+        }
         await connected();
         if(recoveryMode)await selectedPane(recoveryPanes[1]);
         if(reconnectTarget)await selectedPane(reconnectTarget);
@@ -418,6 +468,7 @@ with open(sys.argv[1], 'a+') as lock:
         if(created)try{cli('kill-session',name);}catch{}
         if(otherCreated)try{cli('kill-session',otherName);}catch{}
         await stop(relay);await stop(native);
+        if(updateController){updateController.closeAllConnections();await new Promise(resolve=>updateController.close(resolve));}
         if(tokenName)try{cli('web','--revoke-token',tokenName);}catch{}
         if(readOnlyTokenName)try{cli('web','--revoke-token',readOnlyTokenName);}catch{}
         fs.rmSync(path.join(dir,'token'),{force:true});

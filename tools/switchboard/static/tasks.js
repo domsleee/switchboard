@@ -198,12 +198,16 @@
   // Starts that computer's update job; the updater installs only a newer build.
   async function updateNow(computer){
     const body=computer.host?{host:computer.host}:{};
+    const activate=computer.switchboard?.activateUpdate&&(computer.switchboard?.activationTarget||computer.switchboard?.readyUpdate?.commit);
+    if(activate)body.activate=activate;
+    let message;
     try{
       const response=await fetch('/api/tasks/update',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
       const reply=await response.json().catch(()=>null);
-      alertStatus(response.ok?`Checking for a newer build on ${computer.name}…`:reply?.error||`Could not start the update on ${computer.name}`);
-    }catch(_){alertStatus(`Could not start the update on ${computer.name}`);}
+      message=reply?.warning||(response.ok?(activate?`Update requested on ${computer.name}; terminals will briefly reconnect…`:`Checking for a newer build on ${computer.name}…`):reply?.error||`Could not start the update on ${computer.name}`);
+    }catch(_){message=`Could not start the update on ${computer.name}`;}
     await load();
+    alertStatus(message);
   }
   // Each agent row: ready agents show when they last reported; others say what is missing.
   const agentStatus={ready:'ok',setup:'failed',approve:'attention',running:'running'};
@@ -254,20 +258,22 @@
   function switchboardBlock(computer){
     const sb=computer.switchboard,agents=(computer.agents||[]).filter(agent=>agent.state!=='absent');
     // Builds before automaticUpdates existed leave it out: shown as unknown, not off.
-    const updates=sb.automaticUpdates===true?(sb.lastUpdateError?'attention':'ok'):sb.automaticUpdates===false?'failed':'never';
+    const updating=['requested','applying'].includes(sb.updatePhase);
+    const updates=updating?'running':sb.automaticUpdates===true?((sb.lastUpdateError||sb.readyUpdate||sb.updatePhase==='recovery')?'attention':'ok'):sb.automaticUpdates===false?'failed':'never';
     const installWarnings=agents.filter(agent=>agent.installation?.state==='attention');
     const pluginWarnings=agents.filter(agent=>agent.plugins?.state==='attention');
     const skillWarnings=agents.filter(agent=>agent.skills?.state==='attention'||agent.skillRepair?.error);
     const repairing=agents.some(agent=>agent.skillRepair?.running);
     const waiting=agents.filter(agent=>agent.state!=='ready');
-    const status=updates==='failed'||waiting.some(agent=>agent.state==='setup')?'failed':repairing||waiting.some(agent=>agent.state==='running')?'running':waiting.length||pluginWarnings.length||skillWarnings.length||installWarnings.length||updates==='attention'||updates==='never'?'attention':'ok';
+    const status=updates==='failed'||waiting.some(agent=>agent.state==='setup')?'failed':updating||repairing||waiting.some(agent=>agent.state==='running')?'running':waiting.length||pluginWarnings.length||skillWarnings.length||installWarnings.length||updates==='attention'||updates==='never'?'attention':'ok';
     const block=element('details','task-group switchboard-group');block.dataset.status=status;
     block.dataset.key=`${computer.host||''}\n\u0000switchboard`;
     const summary=element('summary');
     const title=element('span','task-title');title.append(element('strong','','Switchboard'),element('small','',`build ${sb.commit}${sb.commitDate?` · ${sb.commitDate}`:''}`));
     let text='All set';
-    if(updates==='failed')text='Automatic updates are off';
-    else if(updates==='attention')text='Last update failed';
+    if(updating)text=sb.updatePhase==='applying'?'Installing update…':'Update requested…';
+    else if(updates==='failed')text='Automatic updates are off';
+    else if(updates==='attention')text=sb.lastUpdateError?'Last update failed':sb.updatePhase==='recovery'?'Interrupted update · recovery waiting':'Update ready · terminals connected';
     else if(updates==='never')text='Update status unknown';
     else if(waiting.length)text=waiting.map(agent=>`${agent.name}: ${agent.state==='approve'?'hooks not trusted':agent.state==='running'?'setting up…':'needs setup'}`).join(' · ');
     if(installWarnings.length)text=(text==='All set'?'':text+' · ')+installWarnings.map(agent=>`${agent.name}: installation needs attention`).join(' · ');
@@ -279,13 +285,16 @@
     block.append(summary);
     const update=element('div','task-row');update.dataset.status=updates;
     const head=element('div','task-head');
-    head.append(dot(updates),element('span','task-name','Automatic updates'),element('small','task-meta',updates==='ok'?'on':updates==='attention'?'on · last update failed':updates==='failed'?'off':'unknown on this build'));
+    head.append(dot(updates),element('span','task-name','Automatic updates'),element('small','task-meta',updating?'on · updating':updates==='ok'?'on':updates==='attention'?(sb.lastUpdateError?'on · last update failed':'on · update waiting'):updates==='failed'?'off':'unknown on this build'));
     if(sb.updateNow){
       const actions=element('span','task-links');
-      const run=button('Update now',`Install the newest build on ${computer.name} now, if there is one`,()=>updateNow(computer));run.className='task-run';
+      const activate=sb.activateUpdate&&(sb.activationTarget||sb.readyUpdate?.commit);
+      const run=button(activate?'Update now':'Check for updates',activate?`Activate ${activate.slice(0,7)} on ${computer.name}; terminals briefly reconnect`:`Check for a newer build on ${computer.name}`,()=>updateNow(computer));run.className='task-run';run.disabled=updating;
       actions.append(run);head.append(actions);
     }
     update.append(head);
+    if(sb.readyUpdate)update.append(element('p','task-note',`Build ${sb.readyUpdate.commit.slice(0,7)} ready${sb.readyUpdate.since?` · downloaded ${ago(sb.readyUpdate.since*1000)}`:''}. ${sb.activateUpdate?'Terminals briefly reconnect; running commands continue.':'This computer needs a newer updater to activate while terminals are connected.'}`));
+    else if(sb.updateNotice)update.append(element('p','task-note',sb.updateNotice));
     if(sb.lastUpdateError)update.append(element('pre','task-tail',sb.lastUpdateError));
     block.append(update,...agents.map(agent=>agentRow(computer,agent)));
     if(!agents.length)block.append(element('p','task-note agent-none','No Claude Code, Copilot CLI or Codex on this computer'));
@@ -360,8 +369,8 @@
     finally{
       loading=false;list?.setAttribute('aria-busy','false');if(refresh)refresh.disabled=false;
       renderPanel();renderNotices();
-      // Follow task completion and setup progress without requiring a manual refresh.
-      const busy=batch.some(job=>job.state==='running')||computers.some(computer=>(computer.groups||[]).some(group=>group.running)||(computer.agents||[]).some(agent=>agent.state==='running'||agent.skillRepair?.running));
+      // Poll quickly while a setup runs, so its result shows without a refresh.
+      const busy=batch.some(job=>job.state==='running')||computers.some(computer=>['requested','applying'].includes(computer.switchboard?.updatePhase)||(computer.groups||[]).some(group=>group.running)||(computer.agents||[]).some(agent=>agent.state==='running'||agent.skillRepair?.running));
       if(busy&&!fast)fast=setInterval(load,2000);else if(!busy&&fast){clearInterval(fast);fast=null;}
     }
   }

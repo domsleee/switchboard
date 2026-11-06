@@ -159,6 +159,7 @@ impl Harness {
                 windows,
                 platform: platform.into(),
                 check: false,
+                activation: RefCell::default(),
                 config: None,
                 host_config: root.join("hosts.json"),
                 port,
@@ -541,6 +542,7 @@ fn updater_preserves_the_windows_relay_port_and_honors_an_override() {
     let temp = tempfile::tempdir().unwrap();
     let helper = temp.path().join("update_services_windows.ps1");
     let cli = SwitchboardUpdateCli {
+        activate: None,
         check: true,
         config: Some(temp.path().join("host.kdl")),
         host_config: Some(temp.path().join("hosts.json")),
@@ -605,6 +607,158 @@ mod orchestration {
         harness.updater.run().unwrap();
         assert_eq!(harness.state()["commit"], full('b'));
         assert_eq!(harness.calls().lines().count(), 1);
+    }
+
+    fn held_viewer(harness: &Harness) -> fs::File {
+        let viewer = fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(harness.updater.state_directory.join("viewers.lock"))
+            .unwrap();
+        viewer.lock_shared().unwrap();
+        viewer
+    }
+
+    #[serial]
+    #[test]
+    fn switchboard_update_explicit_activation_is_one_shot_and_serialized() {
+        let harness = Harness::new(false);
+        let _viewer = held_viewer(&harness);
+        harness.publish(&full('b'), 5, "");
+        harness.updater.run().unwrap();
+        assert_eq!(harness.state()["ready"]["commit"], full('b'));
+        request_activation(&harness.updater.state_directory, &full('b')).unwrap();
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(harness.updater.state_directory.join("automatic.lock"))
+            .unwrap();
+        lock.lock().unwrap();
+        assert!(harness.updater.run().is_err());
+        assert!(harness
+            .updater
+            .state_directory
+            .join("activate.json")
+            .exists());
+        lock.unlock().unwrap();
+        harness.updater.run().unwrap();
+        assert_eq!(harness.state()["commit"], full('b'));
+        assert_eq!(harness.calls().lines().count(), 1);
+        assert!(!harness
+            .updater
+            .state_directory
+            .join("activate.json")
+            .exists());
+        harness.publish(&full('c'), 6, "");
+        harness.updater.run().unwrap();
+        assert_eq!(harness.state()["commit"], full('b'));
+        assert_eq!(harness.state()["ready"]["commit"], full('c'));
+        assert_eq!(harness.calls().lines().count(), 1);
+    }
+
+    #[serial]
+    #[test]
+    fn switchboard_update_expired_or_superseded_activation_never_authorizes_a_later_build() {
+        let harness = Harness::new(false);
+        let _viewer = held_viewer(&harness);
+        harness.publish(&full('b'), 5, "");
+        harness.updater.run().unwrap();
+        fs::write(
+            harness.updater.state_directory.join("activate.json"),
+            serde_json::to_vec(&Activation {
+                commit: full('b'),
+                expires: epoch() - 1,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(harness.updater.run().is_err());
+        request_activation(&harness.updater.state_directory, &full('b')).unwrap();
+        harness.publish(&full('c'), 6, "");
+        assert!(harness
+            .updater
+            .run()
+            .unwrap_err()
+            .to_string()
+            .contains("superseded"));
+        harness.updater.run().unwrap();
+        assert_eq!(harness.state()["ready"]["commit"], full('c'));
+        assert!(harness.calls().is_empty());
+    }
+
+    #[serial]
+    #[test]
+    fn switchboard_update_explicit_activation_keeps_preflight_checks() {
+        let harness = Harness::new(false);
+        let _viewer = held_viewer(&harness);
+        harness.publish(&full('b'), 5, "");
+        harness.updater.run().unwrap();
+        request_activation(&harness.updater.state_directory, &full('b')).unwrap();
+        let installed = harness.updater.binary.clone();
+        fs::write(
+            &installed,
+            fs::read_to_string(&installed)
+                .unwrap()
+                .replace("token-1", "token-2"),
+        )
+        .unwrap();
+        assert!(harness.updater.run().is_err());
+        assert!(
+            harness.calls().is_empty(),
+            "incompatible authentication must not change services"
+        );
+        assert!(harness.state().get("pending").is_none());
+        assert!(!harness
+            .updater
+            .state_directory
+            .join("activate.json")
+            .exists());
+    }
+
+    #[serial]
+    #[test]
+    fn switchboard_update_explicit_activation_recovers_interrupted_update_with_viewers() {
+        let harness = Harness::new(false);
+        let _viewer = held_viewer(&harness);
+        harness.interrupted("6666666", "");
+        let mut state = harness.state();
+        state["pending"]["target"] = full('b').into();
+        fs::write(harness.updater.state_path(), state.to_string()).unwrap();
+        harness.publish(&full('b'), 4, "");
+        fs::remove_file(harness.root.join("running")).unwrap();
+        harness.updater.run().unwrap();
+        assert!(harness.calls().is_empty());
+        assert!(harness.state()["notice"]
+            .as_str()
+            .unwrap()
+            .contains("Recovery waiting"));
+        assert!(request_activation(&harness.updater.state_directory, &full('c')).is_err());
+        request_activation(&harness.updater.state_directory, &full('b')).unwrap();
+        harness.updater.run().unwrap();
+        assert!(harness.state().get("pending").is_none());
+        assert!(harness.calls().starts_with("rollback "));
+        assert!(harness.read("running").contains("6666666"));
+    }
+
+    #[serial]
+    #[test]
+    fn switchboard_update_explicit_activation_still_rolls_back_failed_health() {
+        let harness = Harness::new(false);
+        let _viewer = held_viewer(&harness);
+        harness.publish(&full('b'), 5, "broken");
+        harness.updater.run().unwrap();
+        request_activation(&harness.updater.state_directory, &full('b')).unwrap();
+        assert!(harness.updater.run().is_err());
+        assert!(harness.calls().contains("/rollback-"));
+        let calls = harness.calls();
+        harness.updater.run().unwrap();
+        assert_eq!(
+            harness.calls(),
+            calls,
+            "automatic retry still waits for viewers"
+        );
     }
 
     #[serial]

@@ -20,7 +20,7 @@ test('Update tasks show per computer, flag failures and changes in the sidebar, 
       lastStart:now-60e3,lastEnd:now-30e3,nextRun:now+6*3600e3,tasks:[task('pull + install',{changed:['nushell 0.104']})]};
     let tasks={computers:[
       {name:'Mac',local:true,groups:[dotfiles,tools],error:null},
-      {name:'Dom-PC',host:'mesh-dompc',groups:[windows],error:null},
+      {name:'Workstation',host:'mesh-workstation',groups:[windows],error:null},
       {name:'Old PC',host:'mesh-old',groups:[],error:"Update tasks unavailable on this computer's version"}]};
     await page.addInitScript(()=>{window.setInterval=()=>0;});
     await page.route('**/*',async route=>{
@@ -43,12 +43,12 @@ test('Update tasks show per computer, flag failures and changes in the sidebar, 
 
     const notices=page.locator('#task-notices .task-notice-open');
     await page.waitForFunction(()=>document.querySelectorAll('#task-notices .task-notice').length===2);
-    assert.deepEqual(await notices.allTextContents(),['Mac · dotfiles ✗ agent plugins: codex failed','Dom-PC · dotfiles ↑ nushell 0.104']);
+    assert.deepEqual(await notices.allTextContents(),['Mac · dotfiles ✗ agent plugins: codex failed','Workstation · dotfiles ↑ nushell 0.104']);
 
     await notices.first().click();
     assert.equal(await page.locator('#panel-title').textContent(),'Health');
     const computers=page.locator('#updates .task-computer');
-    assert.deepEqual(await computers.locator('h4').allTextContents(),['Mac','Dom-PC','Old PC']);
+    assert.deepEqual(await computers.locator('h4').allTextContents(),['Mac','Workstation','Old PC']);
     assert.equal(await computers.nth(2).locator('.log-note').textContent(),"Update tasks unavailable on this computer's version");
     await computers.nth(0).locator('.computer-summary').click();
     await computers.nth(1).locator('.computer-summary').click();
@@ -66,7 +66,7 @@ test('Update tasks show per computer, flag failures and changes in the sidebar, 
     assert.equal(await rows.nth(1).locator('.task-tail').textContent(),'claude ok\ncodex failed');
     assert.match(await rows.nth(1).locator('.task-meta').textContent(),/2h ago · 4s · exit 1 · when agents are idle/);
     assert.equal(await rows.nth(1).getByRole('link',{name:'Log'}).getAttribute('href'),'/api/tasks/log?group=dotfiles&task=agent+plugins');
-    assert.equal(await computers.nth(1).locator('.task-group .task-row a').getAttribute('href'),'/api/tasks/log?group=dotfiles&task=pull+%2B+install&host=mesh-dompc');
+    assert.equal(await computers.nth(1).locator('.task-group .task-row a').getAttribute('href'),'/api/tasks/log?group=dotfiles&task=pull+%2B+install&host=mesh-workstation');
 
     // Actions go to the computer that owns the group; local groups carry no host.
     await rows.nth(1).getByRole('button',{name:'Run'}).click();
@@ -79,8 +79,8 @@ test('Update tasks show per computer, flag failures and changes in the sidebar, 
     await page.waitForFunction(()=>document.querySelectorAll('#task-notices .task-notice').length===1);
     assert.deepEqual(actions,[
       {group:'dotfiles',action:'run',task:'agent plugins'},
-      {group:'dotfiles',action:'run',host:'mesh-dompc'},
-      {group:'dotfiles',action:'clear',host:'mesh-dompc'}]);
+      {group:'dotfiles',action:'run',host:'mesh-workstation'},
+      {group:'dotfiles',action:'clear',host:'mesh-workstation'}]);
 
     tasks={computers:[{name:'Mac',local:true,groups:[],error:null,switchboard:{commit:'abc1234'},agents:[]}]};
     await page.waitForFunction(()=>document.querySelector('#updates')?.getAttribute('aria-busy')==='false');
@@ -97,7 +97,7 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
   const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
   const browser=await chromium.launch({headless:true});
   try{
-    const page=await browser.newPage({viewport:{width:1280,height:900}}),errors=[],setups=[],updates=[],repairs=[];page.setDefaultTimeout(5000);
+    const page=await browser.newPage({viewport:{width:1280,height:900}}),errors=[],setups=[],updates=[],repairs=[];let updateWarning;page.setDefaultTimeout(5000);
     page.on('pageerror',e=>errors.push(e.message));
     const now=Date.now();
     const build=(commit,at,extra={})=>({commit,commitDate:at.slice(0,10),automaticUpdates:true,...extra});
@@ -108,7 +108,7 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
         agent('claude','Claude Code','ready','Plugin installed · auto-updates enabled',{lastReport:now-120e3}),
         agent('copilot','Copilot CLI','setup','Plugin not installed · Auto-update off'),
         agent('codex','Codex','approve','Codex has not trusted the status hooks yet')]},
-      {name:'Dom-PC',host:'mesh-dompc',groups:[],error:null,switchboard:build('ca42095','2026-11-04T20:04:27+11:00',{automaticUpdates:false}),agents:[
+      {name:'Workstation',host:'mesh-workstation',groups:[],error:null,switchboard:build('ca42095','2026-11-04T20:04:27+11:00',{automaticUpdates:false}),agents:[
         ...absent.slice(0,2),agent('codex','Codex','setup','Status hooks not installed',{setupError:'Could not save hooks.json: denied'})]},
       {name:'Linux',host:'mesh-linux',groups:[],error:null,switchboard:build('ca42095','2026-11-04T20:04:27+11:00',{automaticUpdates:undefined}),agents:absent},
       {name:'Old PC',host:'mesh-old',groups:[],error:null},
@@ -118,7 +118,7 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
       const request=route.request(),path=new URL(request.url()).pathname;
       const json=(value,status=200)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(value)});
       if(path==='/api/tasks')return json(tasks);
-      if(path==='/api/tasks/update'){updates.push(JSON.parse(request.postData()));return json({ok:true},202);}
+      if(path==='/api/tasks/update'){updates.push(JSON.parse(request.postData()));return json({ok:true,warning:updateWarning},202);}
       if(path==='/api/tasks/setup'){
         const body=JSON.parse(request.postData());
         if(body.action==='fix-skills'){
@@ -251,7 +251,7 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
     assert.equal(await mac.getByText('Skills refreshed. Start a new Codex conversation to use them.').count(),1);
     await pc.getByRole('button',{name:'Fix skills',exact:true}).click();
     await pc.getByRole('button',{name:'Fixing skills…'}).waitFor({state:'visible'});
-    assert.deepEqual(repairs,[{agent:'codex',action:'fix-skills'},{agent:'codex',action:'fix-skills'},{agent:'codex',action:'fix-skills',host:'mesh-dompc'}]);
+    assert.deepEqual(repairs,[{agent:'codex',action:'fix-skills'},{agent:'codex',action:'fix-skills'},{agent:'codex',action:'fix-skills',host:'mesh-workstation'}]);
     delete remote.skillRepair;delete remote.skills;delete codex.skillRepair;
     tasks.computers[0].agents[1].state='setup';tasks.computers[0].agents[2].state='approve';
     delete tasks.computers[0].agents[2].skills;
@@ -265,15 +265,45 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
     await page.waitForFunction(()=>document.querySelectorAll('#updates .switchboard-group').length===4);
     await page.locator('#updates .switchboard-group').nth(0).locator('.agent-row[data-agent=codex]').getByRole('button',{name:'Trust hooks'}).click();
     await page.waitForFunction(()=>document.querySelectorAll('#updates .switchboard-group').length===4);
-    assert.deepEqual(setups,[{agent:'copilot'},{agent:'codex',host:'mesh-dompc'},{agent:'codex'}]);
+    assert.deepEqual(setups,[{agent:'copilot'},{agent:'codex',host:'mesh-workstation'},{agent:'codex'}]);
     // A failed update shows why, and Update now starts that computer's update job.
     assert.equal(await laptop.locator('.task-state').textContent(),'Last update failed');
     assert.equal(await laptop.getAttribute('open'),'');
     assert.equal(await laptop.locator('.task-row').first().locator('.task-tail').textContent(),'This build cannot reach paired computers yet');
     assert.equal(await mac.getByRole('button',{name:'Update now'}).count(),0,'no button without an update job to start');
-    await laptop.getByRole('button',{name:'Update now'}).click();
+    await laptop.getByRole('button',{name:'Check for updates'}).click();
     await page.waitForFunction(()=>document.querySelectorAll('#updates .switchboard-group').length===4);
     assert.deepEqual(updates,[{host:'mesh-laptop'}]);
+    const sb=tasks.computers.find(c=>c.host==='mesh-laptop').switchboard;
+    sb.lastUpdateError=null;sb.activateUpdate=true;sb.readyUpdate={commit:'b'.repeat(40),since:Math.floor(Date.now()/1000)-120};sb.updatePhase='waiting';
+    await page.evaluate(()=>SwitchboardTasks.load());
+    await page.waitForFunction(()=>document.querySelectorAll('#updates .switchboard-group')[3]?.textContent.includes('Update ready'));
+    assert.match(await laptop.textContent(),/Terminals briefly reconnect; running commands continue/);
+    assert.equal(await laptop.locator('.task-state').textContent(),'Update ready · terminals connected');
+    if(process.env.UPDATE_ACTIVATION_SCREENSHOTS){
+      await laptop.screenshot({path:process.env.UPDATE_ACTIVATION_SCREENSHOTS+'/ready.png'});
+      await page.addScriptTag({content:require('node:child_process').execFileSync('git',['show','origin/main:tools/switchboard/static/tasks.js'],{cwd:__dirname,encoding:'utf8'})});
+      await page.evaluate(()=>SwitchboardTasks.load());
+      await laptop.screenshot({path:process.env.UPDATE_ACTIVATION_SCREENSHOTS+'/before.png'});
+      await page.addScriptTag({content:fs.readFileSync(__dirname+'/static/tasks.js','utf8')});
+      await page.evaluate(()=>SwitchboardTasks.load());
+    }
+    await laptop.getByRole('button',{name:'Update now',exact:true}).click();
+    assert.deepEqual(updates.at(-1),{host:'mesh-laptop',activate:'b'.repeat(40)});
+    sb.updatePhase='requested';
+    await page.evaluate(()=>SwitchboardTasks.load());
+    await page.waitForFunction(()=>document.querySelectorAll('#updates .switchboard-group')[3]?.textContent.includes('Update requested'));
+    assert.equal(await laptop.getByRole('button',{name:'Update now',exact:true}).isDisabled(),true);
+    updateWarning='Request queued, but the update job could not start: job unavailable. Retry or wait; request expires in 5 minutes.';
+    sb.updatePhase='recovery';sb.activationTarget=sb.readyUpdate.commit;sb.readyUpdate=null;
+    sb.updateNotice='Recovery waiting for terminal viewers to disconnect';
+    await page.evaluate(()=>SwitchboardTasks.load());
+    assert.equal(await laptop.locator('.task-state').textContent(),'Interrupted update · recovery waiting');
+    assert.equal(await laptop.getByRole('button',{name:'Update now',exact:true}).isDisabled(),false);
+    await laptop.getByRole('button',{name:'Update now',exact:true}).click();
+    assert.deepEqual(updates.at(-1),{host:'mesh-laptop',activate:'b'.repeat(40)});
+    await page.waitForFunction(message=>document.querySelector('#status-message')?.textContent===message,updateWarning);
+
     assert.deepEqual(errors,[]);
   }finally{await browser.close();}
 });
