@@ -18,5 +18,3 @@ keeps your terminal sessions running while you close the browser or switch
 computers. The command-line executable is still called `zellij`.
 
 For technical details and development guides, see the [documentation](docs/README.md).
-
-[License](LICENSE.md)
