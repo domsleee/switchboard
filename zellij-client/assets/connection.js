@@ -74,6 +74,7 @@ export function initConnectionHandlers() {
 
 export function markConnectionEstablished() {
     connectedAt = Date.now();
+    clearConnectionStatus();
 }
 
 export function resetConnectionState() {

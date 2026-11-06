@@ -7,10 +7,13 @@ const read = name => fs.readFileSync(__dirname + '/../../zellij-client/assets/' 
 const source = name => read(name).replace(/^import[\s\S]*?from ["'][^"']+["'];\s*/gm, '').replace(/^export /gm, '');
 
 function fixture() {
-  let now = 1000, serial = 0;
+  let now = 1000, serial = 0, signalSerial = 0;
   const timers = new Map(), sockets = [], nodes = [], requests = [];
   const listeners = new Map();
   const term = { rows: 24, cols: 80, options: {}, writes: [], resize(cols, rows) { this.cols = cols; this.rows = rows; }, write(data) { this.writes.push(data); } };
+  term._core = { coreService: { triggerDataEvent(data, user = false) {
+    if (!term.options.disableStdin) client.sendAnsiKey(data);
+  } } };
   const fit = { proposeDimensions: () => ({ rows: 24, cols: 80 }) };
   class Socket {
     static OPEN = 1;
@@ -22,7 +25,7 @@ function fixture() {
     drop(code = 1006) { this.readyState = 3; this.onclose?.({ code }); }
   }
   const ctx = {
-    Date: { now: () => now }, AbortSignal, URLSearchParams, console,
+    Date: { now: () => now }, AbortSignal: { timeout: () => ({ id: ++signalSerial }) }, URLSearchParams, console,
     setTimeout(fn, ms) { const id = ++serial; timers.set(id, { fn, at: now + ms }); return id; },
     clearTimeout(id) { timers.delete(id); },
     WebSocket: Socket, location: { pathname: '/hosts/mac/main' },
@@ -36,17 +39,26 @@ function fixture() {
     getBaseUrl: () => '/hosts/mac', getWebSocketBaseUrl: () => 'ws://fixture/hosts/mac',
     fineScrolling: () => false, isCurrentLocation: () => true,
     setSoftKeyboard() {}, terminalConfigOptions: () => ({}), applyTerminalBackground() {},
-    showErrorModal: async () => { ctx.disconnected = true; },
+    showErrorModal: async (title) => {
+      if (title === 'Terminal closed') { ctx.closedPaneNotices = (ctx.closedPaneNotices || 0) + 1; await new Promise(resolve => { ctx.acknowledgePane = resolve; }); }
+      else ctx.disconnected = true;
+    },
+    getSecurityToken: async () => { ctx.prompts++; return { token: "replacement", remember: false }; },
+    prompts: 0,
+    activePane: { pane_id: 1, is_plugin: false },
     fetch: async (url, options) => {
       requests.push({ url, options });
       if (ctx.offline) throw Error('offline');
+      if (url.endsWith('/command/login')) { ctx.authExpired = false; return { ok: true, status: 200 }; }
+      if (ctx.authExpired && (!ctx.expiredPath || url.includes(ctx.expiredPath))) return { ok: false, status: 401 };
+      if (ctx.httpError) return { ok: false, status: ctx.httpError };
       if (url.endsWith('/session-list')) return { ok: true, json: async () => ({ sessions: ctx.sessions }) };
       return { ok: true, json: async () => ({ web_client_id: 'client-' + requests.length, session_name: decodeURIComponent(ctx.location.pathname.split('/').pop()) }) };
     },
     sessions: [{ name: 'main', web_clients_allowed: true }],
   };
   vm.createContext(ctx);
-  vm.runInContext(source('connection.js') + '\n' + source('websockets.js') + '\nObject.assign(globalThis, {initWebSockets,initConnectionHandlers,getReconnectionDelay});', ctx);
+  vm.runInContext(source('connection.js') + '\n' + source('auth.js') + '\n' + source('websockets.js') + '\nObject.assign(globalThis, {initWebSockets,initConnectionHandlers,getReconnectionDelay});', ctx);
   ctx.initConnectionHandlers();
   const client = ctx.initWebSockets({ web_client_id: 'initial', session_name: 'main' }, term, fit);
   const flush = async () => { for (let n = 0; n < 12; n++) await Promise.resolve(); };
@@ -61,7 +73,7 @@ function fixture() {
   }
   async function attach() {
     const [terminal, control] = sockets.slice(-2);
-    terminal.open(); control.open(); terminal.message('screen'); await flush();
+    terminal.open(); control.open(); control.message(JSON.stringify({type:'MobileState',payload:{active_pane:ctx.activePane}})); terminal.message('screen'); await flush();
   }
   return { ctx, sockets, client, term, nodes, requests, listeners, advance, attach, flush };
 }
@@ -78,6 +90,7 @@ test('reconnect replaces both sockets and keeps the terminal and input closure',
   send('before');
   const old = f.sockets.slice();
   old[0].drop();
+  assert.equal(f.ctx.window.__zjLastMobileState, undefined, 'old pane metadata cannot signal that the replacement connection is ready');
   assert.equal(old[1].readyState, 3);
   await f.advance(250);
   assert.equal(f.sockets.length, 4);
@@ -103,12 +116,68 @@ test('control loss also reconnects the pair; input waits for both sockets', asyn
   assert.deepEqual(f.sockets[2].sent, ['once'], 'input from the outage is never replayed');
 });
 
-test('input resumes when both sockets open, without waiting for a redraw', async () => {
+test('reconnect holds typing until the previous pane is confirmed, while protocol replies flow', async () => {
   const f = fixture(); await f.attach();
   f.sockets[0].drop(); await f.advance(250);
-  f.sockets[2].open(); f.sockets[3].open(); await f.flush();
-  f.client.sendAnsiKey('immediate');
-  assert.deepEqual(f.sockets[2].sent, ['immediate']);
+  const [terminal, control] = f.sockets.slice(-2);
+  terminal.open(); control.open();
+  f.client.sendAnsiKey('before-metadata');
+  f.term._core.coreService.triggerDataEvent('\x1b[1;1R');
+  assert.deepEqual(terminal.sent, ['\x1b[1;1R']);
+  control.message(JSON.stringify({type:'MobileState',payload:{active_pane:{pane_id:0,is_plugin:false}}}));
+  assert.equal(JSON.parse(control.sent.at(-1)).payload.pane_id, 1);
+  f.client.sendAnsiKey('wrong-pane');
+  assert.deepEqual(terminal.sent, ['\x1b[1;1R']);
+  control.message(JSON.stringify({type:'MobileState',payload:{active_pane:f.ctx.activePane}}));
+  await f.flush();
+  f.client.sendAnsiKey('correct-pane');
+  assert.deepEqual(terminal.sent, ['\x1b[1;1R','correct-pane']);
+  assert.equal(f.nodes.length, 0);
+});
+
+test('a newer tab selection supersedes the pane being restored', async () => {
+  const f = fixture(); await f.attach();
+  f.sockets[1].drop(); await f.advance(250);
+  const [terminal, control] = f.sockets.slice(-2);
+  terminal.open(); control.open();
+  f.ctx.window.__zjSendControl({type:'FocusPane',pane_id:9,is_plugin:false});
+  control.message(JSON.stringify({type:'MobileState',payload:{active_pane:f.ctx.activePane}}));
+  f.client.sendAnsiKey('stale-ack');
+  assert.deepEqual(terminal.sent, []);
+  control.message(JSON.stringify({type:'MobileState',payload:{active_pane:{pane_id:9,is_plugin:false}}}));
+  f.client.sendAnsiKey('new-target');
+  assert.deepEqual(terminal.sent, ['new-target']);
+});
+
+test('the badge from early typing clears when the initial connection succeeds', async () => {
+  const f = fixture();
+  f.client.sendAnsiKey('early'); assert.equal(f.nodes.length, 1);
+  await f.attach();
+  assert.equal(f.nodes.length, 0);
+  f.client.sendAnsiKey('ready');
+  assert.deepEqual(f.sockets[0].sent, ['ready']);
+});
+
+for (const expiredPath of ['/session-list', '/session?']) test(`expired authentication at ${expiredPath} prompts and resumes in place`, async () => {
+  const f = fixture(); await f.attach();
+  f.ctx.authExpired = true; f.ctx.expiredPath = expiredPath;
+  f.sockets[0].drop(); await f.advance(250); await f.flush();
+  assert.equal(f.ctx.prompts, 1);
+  const attempts = f.requests.filter(r=>r.url.includes(expiredPath));
+  assert.equal(attempts.length, 2);
+  assert.notEqual(attempts[0].options.signal, attempts[1].options.signal, 'login does not reuse an expired request deadline');
+  await f.attach();
+  f.client.sendAnsiKey('after-login');
+  assert.deepEqual(f.sockets[2].sent, ['after-login']);
+});
+
+test('temporary HTTP errors retry quietly without asking for credentials', async () => {
+  const f = fixture(); await f.attach(); f.ctx.httpError = 503;
+  f.sockets[0].drop(); await f.advance(1000);
+  assert.equal(f.ctx.prompts, 0); assert.equal(f.ctx.disconnected, undefined);
+  f.ctx.httpError = null; await f.advance(250); await f.attach();
+  f.client.sendAnsiKey('recovered');
+  assert.deepEqual(f.sockets[2].sent, ['recovered']);
 });
 
 test('long outages show a non-focusing status and recover without a page reload', async () => {
@@ -155,4 +224,31 @@ test('unloading stops retrying and an initial stalled socket pair can recover', 
   f.sockets[2].drop(); f.listeners.get('pagehide')();
   await f.advance(30000);
   assert.equal(f.sockets.length, 4);
+});
+
+for (const fallback of [false, true]) test(`a missing pane keeps healthy sockets and requires acknowledgement (automatic fallback: ${fallback})`, async () => {
+  const f = fixture(); await f.attach();
+  f.sockets[0].drop(); await f.advance(250);
+  const [terminal, control] = f.sockets.slice(-2);
+  terminal.open(); control.open();
+  const active = {pane_id:2,is_plugin:false};
+  control.message(JSON.stringify({type:'MobileState',payload:{active_pane:active,panes:[active]}}));
+  await f.advance(16000);
+  assert.equal(f.sockets.length,4);
+  assert.equal(f.ctx.closedPaneNotices,1);
+  f.client.sendAnsiKey('before-ack'); assert.deepEqual(terminal.sent,[]);
+  f.ctx.window.__zjSendControl({type:'FocusPane',pane_id:fallback ? 2 : 1,is_plugin:false});
+  if (fallback) control.message(JSON.stringify({type:'MobileState',payload:{active_pane:active,panes:[active]}}));
+  f.client.sendAnsiKey('still-before-ack'); assert.deepEqual(terminal.sent,[]);
+  f.ctx.acknowledgePane(); await f.flush();
+  f.client.sendAnsiKey('after-ack'); assert.deepEqual(terminal.sent,['after-ack']);
+  assert.equal(f.nodes.length,0);
+});
+
+test('custom input respects sidebar focus suspension while protocol replies continue', async () => {
+  const f = fixture(); await f.attach();
+  f.term.options.disableStdin = true;
+  f.client.sendAnsiKey('custom-key');
+  f.term._core.coreService.triggerDataEvent('\x1b[1;1R');
+  assert.deepEqual(f.sockets[0].sent, ['\x1b[1;1R']);
 });

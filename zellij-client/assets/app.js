@@ -149,6 +149,7 @@ function initConnectionHandlers() {
 
 function markConnectionEstablished() {
     connectedAt = Date.now();
+    clearConnectionStatus();
 }
 
 function resetConnectionState() {
@@ -256,15 +257,17 @@ function authenticate() {
  * Perform a request, authenticating and retrying for as long as it is rejected.
  * @param {string} url - Absolute URL to request
  * @param {Object} options - fetch options, merged over the credentialed defaults
- * @returns {Promise<Response>} The successful response
+ * @param {Object} recovery - quiet returns non-auth failures for background retry; timeoutMs applies per request
+ * @returns {Promise<Response>} The successful response (or non-auth failure when quiet)
  */
-async function authorizedFetch(url, options = {}) {
+async function authorizedFetch(url, options = {}, { quiet = false, timeoutMs } = {}) {
     while (true) {
         const generation = authenticationGeneration;
 
         const response = await fetch(url, {
             credentials: "include",
             ...options,
+            ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
         });
 
         if (response.ok) {
@@ -272,6 +275,7 @@ async function authorizedFetch(url, options = {}) {
         }
 
         if (response.status !== 401) {
+            if (quiet) return response;
             await showErrorModal(
                 "Error",
                 `Error ${response.status} connecting to server.`
@@ -3279,6 +3283,10 @@ function initWebSockets(boot, term, fitAddon) {
     let ownWebClientId = boot.web_client_id;
     let sessionName = boot.session_name;
     let ready = false;
+    let lastPane = null;
+    let restorePane = null;
+    let focusSent = false;
+    let missingPanePrompt = null;
     let stopped = false;
     let settleConnection = null;
     let wsTerminal;
@@ -3293,7 +3301,19 @@ function initWebSockets(boot, term, fitAddon) {
         }
     }
 
+    // xterm's public onData combines keyboard input and protocol replies. The
+    // bundled core supplies an explicit user-input flag before they are combined.
+    // Route replies separately so focus restoration cannot deadlock terminal queries.
+    const coreService = term._core?.coreService;
+    const triggerDataEvent = coreService?.triggerDataEvent;
+    if (triggerDataEvent) coreService.triggerDataEvent = function (data, wasUserInput = false) {
+        if (wasUserInput) return triggerDataEvent.call(this, data, true);
+        if (wsTerminal?.readyState === WebSocket.OPEN) wsTerminal.send(data);
+    };
+
     function closeSockets() {
+        restorePane ||= window.__zjReconnectPane?.() || lastPane;
+        window.__zjLastMobileState = undefined;
         ready = false;
         for (const socket of [wsTerminal, wsControl]) {
             if (!socket) continue;
@@ -3308,6 +3328,8 @@ function initWebSockets(boot, term, fitAddon) {
         ownWebClientId = nextBoot.web_client_id;
         sessionName = nextBoot.session_name;
         lastSentCellDimensions = null;
+        focusSent = false;
+        let missingPaneReported = false;
         const connectionResult = new Promise(resolve => {
             const timeout = setTimeout(() => { closeSockets(); }, 5000);
             settleConnection = (ok) => {
@@ -3350,8 +3372,39 @@ function initWebSockets(boot, term, fitAddon) {
         wsControl = new WebSocket(
             `${wsBaseUrl}/ws/control?web_client_id=${encodeURIComponent(ownWebClientId)}`
         );
-        startWsControl(wsControl, term, fitAddon, ownWebClientId, userConfig);
+        startWsControl(wsControl, term, fitAddon, ownWebClientId, userConfig, payload => {
+            lastPane = payload.active_pane || null;
+            if (restorePane && lastPane) {
+                if (lastPane.pane_id === restorePane.pane_id && lastPane.is_plugin === restorePane.is_plugin) {
+                    restorePane = null;
+                } else if (Array.isArray(payload.panes) && !payload.panes.some(pane => pane.pane_id === restorePane.pane_id && pane.is_plugin === restorePane.is_plugin)) {
+                    // The connection is healthy, but the old target no longer
+                    // exists. Keep input paused until the user acknowledges the
+                    // currently displayed terminal.
+                    if (!missingPaneReported) {
+                        missingPaneReported = true;
+                        const missing = restorePane, control = wsControl;
+                        settleConnection?.(true);
+                        missingPanePrompt ||= showErrorModal("Terminal closed", "The terminal you were viewing has closed. Acknowledge to continue in the currently displayed terminal.").finally(() => { missingPanePrompt = null; });
+                        missingPanePrompt.then(() => {
+                            if (control !== wsControl || stopped) return;
+                            if (restorePane?.pane_id === missing.pane_id && restorePane.is_plugin === missing.is_plugin) restorePane = null;
+                            connected();
+                        });
+                    }
+                } else if (!focusSent) {
+                    window.__zjSendControl({ type: "FocusPane", pane_id: restorePane.pane_id, is_plugin: restorePane.is_plugin });
+                }
+            }
+            connected();
+        });
         window.__zjSendControl = function (payload) {
+            // A tab selection made during recovery supersedes the old target,
+            // including when its control request must wait for a socket.
+            if (restorePane && payload.type === "FocusPane") {
+                restorePane = { pane_id: payload.pane_id, is_plugin: payload.is_plugin };
+                focusSent = false;
+            }
             if (wsControl && wsControl.readyState === WebSocket.OPEN) {
                 wsControl.send(
                     JSON.stringify({
@@ -3359,11 +3412,12 @@ function initWebSockets(boot, term, fitAddon) {
                         payload,
                     })
                 );
+                if (restorePane && payload.type === "FocusPane") focusSent = true;
             }
         };
 
         const connected = () => {
-            if (!ready && wsTerminal.readyState === WebSocket.OPEN && wsControl.readyState === WebSocket.OPEN) {
+            if (!ready && !restorePane && !missingPanePrompt && wsTerminal.readyState === WebSocket.OPEN && wsControl.readyState === WebSocket.OPEN) {
                 ready = true;
                 markConnectionEstablished();
                 settleConnection?.(true);
@@ -3438,14 +3492,14 @@ function initWebSockets(boot, term, fitAddon) {
         // Session switching updates the URL without recreating this terminal.
         const currentSession = decodeURIComponent(location.pathname.split("/").pop()) || sessionName;
         const base = getBaseUrl();
-        const options = { credentials: "include", signal: AbortSignal.timeout(5000) };
-        const catalog = await fetch(`${base}/session-list`, options);
+        const recovery = { quiet: true, timeoutMs: 5000 };
+        const catalog = await authorizedFetch(`${base}/session-list`, {}, recovery);
         if (!catalog.ok) return false;
         const { sessions } = await catalog.json();
         if (!sessions.some(session => session.name === currentSession && session.web_clients_allowed)) return false;
-        const response = await fetch(`${base}/session?session=${encodeURIComponent(currentSession)}&welcome=false`, {
-            ...options, method: "POST",
-        });
+        const response = await authorizedFetch(`${base}/session?session=${encodeURIComponent(currentSession)}&welcome=false`, {
+            method: "POST",
+        }, recovery);
         if (!response.ok || stopped) return false;
         return connect(await response.json());
     });
@@ -3460,6 +3514,7 @@ function initWebSockets(boot, term, fitAddon) {
             showConnectionStatus();
             return;
         }
+        if (term.options.disableStdin) return;
         wsTerminal.send(payload);
     };
 
@@ -3478,11 +3533,12 @@ function initWebSockets(boot, term, fitAddon) {
         cleanup: () => {
             stopped = true;
             closeSockets();
+            if (triggerDataEvent) coreService.triggerDataEvent = triggerDataEvent;
         },
     };
 }
 
-function startWsControl(wsControl, term, fitAddon, ownWebClientId, userConfig) {
+function startWsControl(wsControl, term, fitAddon, ownWebClientId, userConfig, onState) {
     wsControl.onmessage = function (event) {
         const msg = JSON.parse(event.data);
         if (msg.type === "SetConfig") {
@@ -3547,6 +3603,7 @@ function startWsControl(wsControl, term, fitAddon, ownWebClientId, userConfig) {
             const { payload } = msg;
             if (payload) {
                 window.__zjLastMobileState = payload;
+                onState(payload);
                 if (window.__zjMobileUi) {
                     window.__zjMobileUi.setData(payload);
                 }
