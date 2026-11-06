@@ -14,10 +14,11 @@ Closing the tab stops every process in it, including you. Finish the work and
 report the result, with any useful links, before making the close call as your
 last action.
 
-1. Read `ZELLIJ_SESSION_NAME` and `ZELLIJ_PANE_ID` from your shell environment.
-   If either is missing, leave the tab open and explain that you cannot identify
-   your Switchboard terminal.
-2. Run `zellij -s "$ZELLIJ_SESSION_NAME" action list-panes --json --tab`.
+1. Set `switchboard_session="${ZELLIJ_SESSION_NAME:-main}"`. Switchboard uses
+   `main` when the shell does not expose a session name; use this default without
+   asking the user. Read `ZELLIJ_PANE_ID` from the shell environment. If it is
+   missing, leave the tab open and explain that you cannot identify your pane.
+2. Run `zellij -s "$switchboard_session" action list-panes --json --tab`.
    Find the entry with `is_plugin: false` and `id` equal to your numeric
    `ZELLIJ_PANE_ID`. Use that entry's `tab_id`, which is a stable ID;
    `tab_position`, `tab_name` and `is_focused` do not identify your tab.
@@ -25,7 +26,7 @@ last action.
 3. Close that explicit tab, replacing `<tab_id>` with the ID you just found:
 
    ```sh
-   zellij -s "$ZELLIJ_SESSION_NAME" action close-tab --tab-id <tab_id>
+   zellij -s "$switchboard_session" action close-tab --tab-id <tab_id>
    ```
 
 Always supply the session and tab ID: the user may have focused another tab.
