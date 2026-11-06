@@ -242,13 +242,6 @@ fn inspect(dir: &Path, home: &Path) -> Value {
                     let Some(base) = source.get("source").and_then(|v| v.as_str()) else {
                         continue;
                     };
-                    let cache_plugin = dir
-                        .join("plugins/cache")
-                        .join(market)
-                        .join(plugin)
-                        .join("local");
-                    let cache = plugin_skills(&cache_plugin, &mut warnings);
-                    active.extend(cache.clone().into_values());
                     let base = PathBuf::from(base);
                     let manifest =
                         std::fs::read_to_string(base.join(".agents/plugins/marketplace.json"))
@@ -258,12 +251,43 @@ fn inspect(dir: &Path, home: &Path) -> Value {
                         .as_ref()
                         .and_then(|m| m["plugins"].as_array())
                         .and_then(|p| p.iter().find(|p| p["name"] == plugin))
-                        .and_then(|p| p["source"].as_str());
+                        .and_then(|p| {
+                            p["source"].as_str().or_else(|| {
+                                (p["source"]["source"] == "local")
+                                    .then(|| p["source"]["path"].as_str())
+                                    .flatten()
+                            })
+                        });
                     let Some(source) = source else {
                         warnings.push(format!("{id}: local marketplace source unavailable"));
                         continue;
                     };
-                    let source = plugin_skills(&base.join(source), &mut warnings);
+                    let source_root = base.join(source);
+                    // Local plugins with a declared version use that cache directory,
+                    // not "local". Never select an arbitrary historical cache version.
+                    let plugin_manifest =
+                        bounded_read(&source_root.join(".codex-plugin/plugin.json"), 1024 * 1024)
+                            .ok()
+                            .and_then(|s| serde_json::from_slice::<Value>(&s).ok());
+                    let version = plugin_manifest
+                        .as_ref()
+                        .and_then(|m| m["version"].as_str())
+                        .unwrap_or("local");
+                    if version.is_empty()
+                        || version.contains(['/', '\\'])
+                        || matches!(version, "." | "..")
+                    {
+                        warnings.push(format!("{id}: invalid local plugin version"));
+                        continue;
+                    }
+                    let cache_plugin = dir
+                        .join("plugins/cache")
+                        .join(market)
+                        .join(plugin)
+                        .join(version);
+                    let cache = plugin_skills(&cache_plugin, &mut warnings);
+                    active.extend(cache.clone().into_values());
+                    let source = plugin_skills(&source_root, &mut warnings);
                     if source
                         .iter()
                         .map(|(k, (_, b))| (k, b))
@@ -373,6 +397,35 @@ mod tests {
         warnings.clear();
         assert!(plugin_skills(&root.join("tool"), &mut warnings).is_empty());
         assert!(warnings.is_empty());
+    }
+    #[test]
+    fn switchboard_skill_health_checks_versioned_local_object_sources() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        let dir = home.join(".codex");
+        let source = home.join("source");
+        write(&dir.join("config.toml"), &format!("[marketplaces.test]\nsource_type='local'\nsource={:?}\n[plugins.'example@test']\nenabled=true\n", source.to_str().unwrap()));
+        write(
+            &source.join(".agents/plugins/marketplace.json"),
+            r#"{"plugins":[{"name":"example","source":{"source":"local","path":"./plugin"}}]}"#,
+        );
+        let manifest = r#"{"version":"26.1103.10131","skills":"./skills/"}"#;
+        let skill = "---\nname: example\n---\nCurrent instructions";
+        write(&source.join("plugin/.codex-plugin/plugin.json"), manifest);
+        write(&source.join("plugin/skills/example/SKILL.md"), skill);
+        let cache = dir.join("plugins/cache/test/example/26.1103.10131");
+        write(&cache.join(".codex-plugin/plugin.json"), manifest);
+        write(&cache.join("skills/example/SKILL.md"), skill);
+        assert_eq!(inspect(&dir, home)["state"], "ok");
+        write(
+            &cache.join("skills/example/SKILL.md"),
+            "---\nname: example\n---\nStale",
+        );
+        assert!(inspect(&dir, home)
+            .to_string()
+            .contains("cached skills differ"));
+        std::fs::remove_file(cache.join(".codex-plugin/plugin.json")).unwrap();
+        assert!(inspect(&dir, home).to_string().contains("Cannot inspect"));
     }
     #[test]
     fn switchboard_skill_health_unreadable_config_is_not_healthy() {

@@ -472,6 +472,37 @@ async fn explicit_approval_installs_bilateral_credentials_and_survives_restart()
     let admin_status = mac.status().await;
     assert_eq!(member_status["can_invite"], true);
     assert_eq!(admin_status["can_invite"], true);
+    for status in [&member_status, &admin_status] {
+        let members = status["members"].as_array().unwrap();
+        assert_eq!(members.len(), 2);
+        assert!(members.iter().all(|member| member["state"] == "paired"));
+    }
+    // A remote member without incoming credentials must still report pending.
+    let mac_id = invitation.administrator.id.clone();
+    let incoming = windows
+        .database
+        .lock()
+        .await
+        .incoming
+        .remove(&mac_id)
+        .unwrap();
+    let pending_status = windows.status().await;
+    let members = pending_status["members"].as_array().unwrap();
+    assert_eq!(
+        members.iter().find(|m| m["local"] == true).unwrap()["state"],
+        "paired"
+    );
+    assert_eq!(
+        members.iter().find(|m| m["local"] == false).unwrap()["state"],
+        "credential_distribution_pending"
+    );
+    windows
+        .database
+        .lock()
+        .await
+        .incoming
+        .insert(mac_id, incoming);
+
     let status = member_status.to_string();
     assert!(!status.contains("isolated-terminal") && !status.contains(&invitation.secret));
     let mac_id = invitation.administrator.id;
