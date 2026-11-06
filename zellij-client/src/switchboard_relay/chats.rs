@@ -50,6 +50,7 @@ struct Chat {
     project: String,
     messages: Vec<Value>,
     partial: bool,
+    muse_deliveries: std::collections::HashSet<String>,
 }
 fn clip(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
@@ -126,6 +127,20 @@ impl Chat {
                 match e["kind"].as_str() {
                     Some("started") => {
                         self.push("user", content(&e["prompt"]), v["recorded_at"].clone())
+                    },
+                    // Accepted intents and queued records describe the same input;
+                    // include only its delivered copy in the conversation.
+                    Some("inbox_item_drained")
+                        if e["delivery_snapshot"]["source"]["source"] == "user_steer" =>
+                    {
+                        let item = e["item_id"].as_str();
+                        if item.is_none_or(|id| self.muse_deliveries.insert(id.to_owned())) {
+                            self.push(
+                                "user",
+                                content(&e["delivery_snapshot"]["payload"]["prompt"]),
+                                v["recorded_at"].clone(),
+                            );
+                        }
                     },
                     Some("assistant_message_committed") => {
                         self.push("assistant", content(&e["text"]), v["recorded_at"].clone())
@@ -313,7 +328,18 @@ fn excerpt(text: &str, q: &str) -> String {
     let lower = text.to_lowercase();
     let at = lower
         .find(q)
-        .map(|i| lower[..i].chars().count())
+        .map(|byte_offset| {
+            // Lowercasing can expand a character (İ becomes i + combining dot).
+            // Map the matched lowercase byte back to its original character.
+            let mut lowered_bytes = 0;
+            chars
+                .iter()
+                .position(|c| {
+                    lowered_bytes += c.to_lowercase().map(char::len_utf8).sum::<usize>();
+                    lowered_bytes > byte_offset
+                })
+                .unwrap_or(chars.len())
+        })
         .unwrap_or(0)
         .min(chars.len());
     let start = at.saturating_sub(80);
@@ -444,6 +470,26 @@ fn opencode(path: &Path, p: &Params, id: Option<&str>) -> Value {
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )?;
         db.busy_timeout(Duration::from_millis(200))?;
+        // Newer storage families must never silently look like an empty legacy database.
+        let newer: i64 = db.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name='session_v2'",
+            [],
+            |r| r.get(0),
+        )?;
+        let mut newer_storage = newer > 0;
+        let has_messages: i64 = db.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name='session_message'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_messages > 0 {
+            let has_new: bool = db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM session_message LIMIT 1)",
+                [],
+                |r| r.get(0),
+            )?;
+            newer_storage |= has_new;
+        }
         let mut stmt =
             db.prepare("SELECT id,title,directory FROM session WHERE (?3 IS NULL OR id=?3) ORDER BY id LIMIT ?1 OFFSET ?2")?;
         let sessions = stmt.query_map(
@@ -466,7 +512,7 @@ fn opencode(path: &Path, p: &Params, id: Option<&str>) -> Value {
         )?;
         let mut results = Vec::new();
         let mut count = 0;
-        let mut partial = false;
+        let mut partial = newer_storage;
         let mut scanned_bytes = 0usize;
         for row in sessions {
             let (sid, title, project) = row?;
@@ -481,6 +527,7 @@ fn opencode(path: &Path, p: &Params, id: Option<&str>) -> Value {
                 agent: "opencode".into(),
                 title: clip(&title, 120),
                 project,
+                partial: newer_storage,
                 ..Chat::default()
             };
             let mut messages=db.prepare("SELECT json_extract(m.data,'$.role'),substr(json_extract(p.data,'$.text'),1,1048576),m.time_created,length(json_extract(p.data,'$.text')) FROM message m JOIN part p ON p.message_id=m.id WHERE m.session_id=?1 AND json_extract(p.data,'$.type')='text' AND coalesce(json_extract(p.data,'$.synthetic'),0)=0 AND coalesce(json_extract(p.data,'$.ignored'),0)=0 AND json_extract(m.data,'$.role') IN ('user','assistant') ORDER BY m.time_created,m.id,p.time_created,p.id LIMIT 50001")?;
@@ -512,29 +559,11 @@ fn opencode(path: &Path, p: &Params, id: Option<&str>) -> Value {
             }
         }
         if id.is_some() {
-            return Ok(json!({"error":"not_found"}));
+            return Ok(
+                json!({"error":if newer_storage {"unsupported_storage"} else {"not_found"}}),
+            );
         }
         let total: i64 = db.query_row("SELECT count(*) FROM session", [], |r| r.get(0))?;
-        // Newer storage families must never silently look like an empty legacy database.
-        let newer: i64 = db.query_row(
-            "SELECT count(*) FROM sqlite_master WHERE name='session_v2'",
-            [],
-            |r| r.get(0),
-        )?;
-        partial |= newer > 0;
-        let has_messages: i64 = db.query_row(
-            "SELECT count(*) FROM sqlite_master WHERE name='session_message'",
-            [],
-            |r| r.get(0),
-        )?;
-        if has_messages > 0 {
-            let has_new: bool = db.query_row(
-                "SELECT EXISTS(SELECT 1 FROM session_message LIMIT 1)",
-                [],
-                |r| r.get(0),
-            )?;
-            partial |= has_new;
-        }
         let next = p.cursor + count;
         Ok(
             json!({"agent":"opencode","status":if partial{"partial"}else{"ok"},"results":results,
@@ -756,6 +785,53 @@ mod tests {
         assert_eq!(c.session_id, "m1");
     }
     #[test]
+    fn switchboard_chats_muse_inflight_followups_are_searchable_once() {
+        let delivery = json!({"recorded_at":3,"payload":{"kind":"run","event":{
+            "kind":"inbox_item_drained","item_id":"input-1","delivery_snapshot":{
+                "source":{"source":"user_steer"},"payload":{"prompt":"Check pairing on Windows too"}
+            }
+        }}});
+        let mut queued = delivery.clone();
+        queued["payload"]["event"]["kind"] = json!("inbox_item_queued");
+        let mut peer = delivery.clone();
+        peer["payload"]["event"]["item_id"] = json!("peer-1");
+        peer["payload"]["event"]["delivery_snapshot"]["source"]["source"] = json!("peer_message");
+        let c = chat(
+            "muse",
+            vec![
+                json!({"payload":{"kind":"run","event":{"kind":"started","prompt":"Fix reconnect"}}}),
+                json!({"payload_type":"runtime.user_intent.accepted","payload":{"refill_blocks":[{"kind":"text","text":"Check pairing on Windows too"}]}}),
+                queued,
+                delivery.clone(),
+                delivery,
+                peer,
+                json!({"payload":{"kind":"run","event":{"kind":"assistant_message_committed","text":"Done"}}}),
+            ],
+        );
+        assert_eq!(c.messages.len(), 3);
+        assert_eq!(c.messages[1]["text"], "Check pairing on Windows too");
+        assert_eq!(c.messages[1]["timestamp"], 3);
+        let p = Params {
+            q: "pairing".into(),
+            ..Params::default()
+        };
+        let mut hits = Vec::new();
+        add_result(&c, &p, &mut hits);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0]["message_cursor"], 1);
+        assert_eq!(
+            read_page(
+                &c,
+                &Params {
+                    cursor: 1,
+                    limit: Some(1),
+                    ..Params::default()
+                }
+            )["messages"][0]["role"],
+            "user"
+        );
+    }
+    #[test]
     fn switchboard_chats_search_read_pagination_and_coverage() {
         let dir = tempfile::tempdir().unwrap();
         for n in 0..3 {
@@ -816,6 +892,9 @@ mod tests {
     }
     #[test]
     fn switchboard_chats_unicode_and_bounded_read() {
+        let expanded = format!("{}Needle{}", "İ".repeat(500), "x".repeat(1000));
+        assert!(excerpt(&expanded, "needle").contains("Needle"));
+
         let mut c = Chat::default();
         c.push("user", format!("{}Needle", "é".repeat(5000)), Value::Null);
         c.push("assistant", "reply".into(), Value::Null);
@@ -864,6 +943,28 @@ mod tests {
         );
         assert_eq!(result["messages"].as_array().unwrap().len(), 1);
         assert_eq!(fs::read(&path).unwrap(), before);
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE session_message(id TEXT,session_id TEXT); INSERT INTO session_message VALUES('new','ses_1');").unwrap();
+        let result = local(
+            vec![("opencode", path.clone())],
+            &Params::default(),
+            Some("opencode-ses_1"),
+        );
+        assert_eq!(result["partial"], true);
+        db.execute_batch("DELETE FROM session_message; CREATE TABLE session_v2(id TEXT);")
+            .unwrap();
+        let result = local(
+            vec![("opencode", path.clone())],
+            &Params::default(),
+            Some("opencode-ses_1"),
+        );
+        assert_eq!(result["partial"], true);
+        let result = local(
+            vec![("opencode", path)],
+            &Params::default(),
+            Some("opencode-ses_new"),
+        );
+        assert_eq!(result["error"], "unsupported_storage");
     }
     #[test]
     #[ignore = "reads this account's installed agent histories; prints only coverage"]
