@@ -82,3 +82,16 @@ them no new access. Pause is saved in `state.json`, not the file.
 - Switchboard's own self-update does not appear as a group yet. It keeps its own
   schedule and handoff ([SWITCHBOARD_UPDATES.md](SWITCHBOARD_UPDATES.md)).
 - On Windows, tasks stop when the tray exits, like the self-update checks.
+
+## Skill health
+
+Health checks Codex user skills (`CODEX_HOME/skills` and `~/.agents/skills`) and
+explicitly enabled plugins from local Codex marketplaces separately from status
+hooks. It compares cached skill instructions and supporting files with the local
+source, and names conflicting copies of a skill. Identical copies are ignored.
+Refresh a stale local plugin with the `codex plugin add name@marketplace` command
+shown in Health; restart agent sessions to load the refreshed instructions.
+
+Inspection runs in the background and results are cached for one minute. Missing
+sources, unreadable files and inspection limits produce warnings. Remote
+marketplaces and project skills are not checked; Health states this scope.

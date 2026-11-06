@@ -3,6 +3,7 @@ mod agent_setup;
 pub(crate) mod artifacts;
 pub(crate) mod askpass;
 pub(crate) mod attention;
+mod skill_health;
 pub use attention::forward_hook;
 mod chats;
 mod control;
