@@ -604,6 +604,8 @@ test('a recreated session keeps its tabs where they were dragged, though Zellij 
   const key=(host,id)=>JSON.stringify([host,'main','tab',id]);
   const before=view([5,7,9],1000);
   before.context.hidden[key('mesh-24',7)]=1;
+  before.context.setPinned({key:key('mesh-24',9)},true);
+  before.context.setPinned({key:key('mesh-d1',0)},true);
   before.context.applyTabOrder({tab_order:{keys:[key('mesh-24',9),key('mesh-d1',0),key('mesh-24',5),key('mesh-d1',1),key('mesh-24',7)],updated:1}},{id:'me'});
   for(const entry of before.sessions.values())before.context.setCatalog(entry,entry.catalog);
   const dragged=['Windows-C','Mac-0','Windows-A','Mac-1','Windows-B'];
@@ -614,10 +616,18 @@ test('a recreated session keeps its tabs where they were dragged, though Zellij 
   const waiting=before.posted.length;before.restart([0,1,2]);assert.equal(before.posted.length,waiting,'a catalog ahead of the start time waits');
   before.restart([0,1,2],9000);
   assert.deepEqual(before.names(),dragged);
+  assert.equal(before.context.isPinned(key('mesh-24',2)),true);
+  assert.equal(before.context.isPinned(key('mesh-24',9)),false);
+  assert.equal(before.context.isPinned(key('mesh-d1',0)),true);
   // The hidden tab stays hidden under its new number, and no other tab takes its place.
   assert.deepEqual(Object.keys(before.context.hidden),[key('mesh-24',1)]);
   assert.deepEqual(Array.from(before.context.allTabs().filter(item=>item.hidden),item=>item.tab.name),['Windows-B']);
   const shared=before.posted.at(-1);
+  // Overlapping old/new IDs must migrate from a snapshot, without moving a pin twice.
+  before.restart([1,2,3],18000);
+  assert.equal(before.context.isPinned(key('mesh-24',3)),true);
+  assert.equal(before.context.isPinned(key('mesh-24',2)),false);
+  assert.equal(before.context.isPinned(key('mesh-d1',0)),true);
   // Another browser that hears the remapped order after the restart leaves it alone.
   const after=view([0,1,2],9000);
   after.context.applyTabOrder({tab_order:{keys:shared,updated:2000}},{id:'me'});

@@ -50,6 +50,19 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.deepEqual(await order(),names.slice(1));
     assert.equal(await snoozed.getAttribute('aria-expanded'),'false');
     assert.equal(await snoozed.locator('.count').textContent(),'1');
+    async function pinProof(name,target,label){
+      if(!process.env.SWITCHBOARD_PIN_SCREENSHOTS)return;
+      await target.evaluate(el=>el.style.outline='2px solid #ef4444');
+      await page.evaluate(text=>{
+        const note=document.createElement('div');note.id='pin-proof-note';note.textContent=text;
+        note.style.cssText='position:absolute;top:360px;left:12px;width:210px;color:#ef4444;font:600 14px sans-serif;z-index:9999';
+        document.querySelector('#sidebar').append(note);
+      },label);
+      await page.locator('#sidebar').screenshot({path:process.env.SWITCHBOARD_PIN_SCREENSHOTS+'/'+name+'.png'});
+      await target.evaluate(el=>el.style.outline='');
+      await page.locator('#pin-proof-note').evaluate(el=>el.remove());
+    }
+    await pinProof('before',snoozed,'Working tab moves to Snoozed');
     await snoozed.click();
     const workingTab=page.locator('#tabs .tab-select').filter({has:page.locator('.tab-name', {hasText:'switchboard'})});
     await workingTab.click({button:'right'});
@@ -59,6 +72,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.equal(await snoozed.count(),0);
     assert.ok(await page.evaluate(()=>Object.keys(JSON.parse(localStorage.getItem('switchboard-pinned'))).length===1));
     assert.match(await workingTab.locator('small').textContent(),/Pinned/);
+    await pinProof('after',workingTab,'Pinned tab stays here while working');
     await workingTab.click({button:'right'});
     assert.equal(await page.locator('#pin-tab').textContent(),'UnpinAllow automatic snoozing');
     await page.locator('#pin-tab').click();

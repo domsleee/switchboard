@@ -297,6 +297,17 @@ function followRestart(entry,tabs){
     const placed=new Set(next.filter(mine)),extra=ids.map(id=>JSON.stringify([host,name,'tab',id])).filter(key=>!placed.has(key));
     const last=next.findLastIndex(mine);
     next.splice(last<0?next.length:last+1,0,...extra);
+    // Pins follow the same tab positions when native IDs reset.
+    const pinnedKeys=Object.keys(pinned).map(canonKey);
+    if(pinnedKeys.some(mine)){
+      for(const key of Object.keys(pinned))delete pinned[key];
+      for(const key of pinnedKeys){
+        if(!mine(key)){pinned[key]=1;continue;}
+        const [,,kind,id]=JSON.parse(key);
+        if(kind==='tab'&&moved.get(id)!==undefined)pinned[JSON.stringify([host,name,'tab',moved.get(id)])]=1;
+      }
+      savePinned();
+    }
     // Hidden tabs follow their positions the same way.
     const hiddenKeys=Object.keys(hidden).map(canonKey);
     if(hiddenKeys.some(mine))saveHidden(hiddenKeys.flatMap(key=>{
