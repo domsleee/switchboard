@@ -439,6 +439,7 @@ mod tests {
             artifact: None,
             askpass: Default::default(),
             html_previews: Default::default(),
+            artifact_proxies: Default::default(),
             push: None,
             browser_origin: None,
         };
@@ -518,6 +519,7 @@ mod tests {
             artifact: None,
             askpass: Default::default(),
             html_previews: Default::default(),
+            artifact_proxies: Default::default(),
             push: None,
             browser_origin: None,
         };

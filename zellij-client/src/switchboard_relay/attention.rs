@@ -1469,6 +1469,7 @@ echo [{"id":1,"tab_id":4,"tab_position":0,"tab_name":"T","title":"x","pane_comma
             artifact: None,
             askpass: Default::default(),
             html_previews: Default::default(),
+            artifact_proxies: Default::default(),
             push: None,
             browser_origin: None,
         };
@@ -1775,6 +1776,7 @@ esac
             artifact: None,
             askpass: Default::default(),
             html_previews: Default::default(),
+            artifact_proxies: Default::default(),
             push: None,
             browser_origin: None,
         };
@@ -1869,6 +1871,7 @@ esac
             artifact: None,
             askpass: Default::default(),
             html_previews: Default::default(),
+            artifact_proxies: Default::default(),
             push: None,
             browser_origin: None,
         };

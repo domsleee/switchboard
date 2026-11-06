@@ -377,7 +377,8 @@ The Windows gallery on port 8765 uses the separate HTTPS origin
 on 127.0.0.1:8091. It streams GET/HEAD responses from the configured
 `artifact_proxy.target`. Its cookie jar and origin are separate from the
 authenticated terminal relay. This supports the current gallery; WebSocket
-artifacts or multiple artifact servers need a proper host tunnel when required.
+artifacts need a proper host tunnel when required. Multiple read-only servers can
+use the named proxy API described below.
 Portless aliases `switchboard -> 8090` and `zellij-gallery -> 8091` persist; exact
 `.local` would require changing the existing proxy/DNS setup. Each relay remains local to its own machine.
 
@@ -387,6 +388,13 @@ on every paired computer: the 8091 listener serves this computer's files directl
 and reads another computer's through its paired gateway. Video seeks with byte
 ranges and Markdown renders as a page. Artifact pages run on the 8091 origin,
 which the terminal relay rejects. See [ARTIFACT_SERVING_PLAN.md](ARTIFACT_SERVING_PLAN.md).
+
+Existing HTTP artifact servers can be registered with `POST /api/artifact-proxies`
+from a local CLI. Each gets a separate loopback listener and an explicit public
+HTTPS origin, suitable for private Tailscale Serve. `GET /api/artifact-proxies`
+lists them. The `artifact-proxy` skill covers registration and verification;
+[the artifact plan](ARTIFACT_SERVING_PLAN.md#proxy-existing-servers) records the API
+and limitations. Registration starts immediately and persists across relay restarts.
 
 ## Copying text
 

@@ -108,6 +108,7 @@ struct RelayState {
     // sudo password requests waiting for an answer in this computer's sidebar.
     askpass: Arc<askpass::Prompts>,
     html_previews: artifacts::html::Previews,
+    artifact_proxies: Arc<artifacts::named::Registry>,
     push: Option<Arc<push::Push>>,
     browser_origin: Option<String>,
 }
@@ -767,7 +768,7 @@ fn trusted_browser_origin(headers: &HeaderMap, origin: &str) -> bool {
         && headers.get(header::ORIGIN).is_none_or(|h| h == origin)
         && !headers
             .get("sec-fetch-site")
-            .is_some_and(|h| h == "cross-site")
+            .is_some_and(|h| h != "same-origin" && h != "none")
 }
 
 // Opening the sidebar from a link in another app is a cross-site navigation,
@@ -946,6 +947,7 @@ fn artifact_links(state: &RelayState, host: &Host) -> Value {
 }
 
 async fn link_config(State(state): State<RelayState>) -> Response {
+    let proxies = state.artifact_proxies.links().await;
     let data: serde_json::Map<String, Value> = state.all_hosts().iter().map(|host| {
         let local = host.is_local_engine();
         (host.config.id.clone(), json!({"origin": host.config.url, "local": local, "artifacts": artifact_links(&state, host)}))
@@ -953,8 +955,9 @@ async fn link_config(State(state): State<RelayState>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/javascript")],
         format!(
-            "window.__switchboardLinkHosts={};",
-            Value::Object(data).to_string().replace('<', "\\u003c")
+            "window.__switchboardLinkHosts={};window.__switchboardArtifactProxies={};",
+            Value::Object(data).to_string().replace('<', "\\u003c"),
+            proxies.to_string().replace('<', "\\u003c")
         ),
     )
         .into_response()
@@ -1284,6 +1287,7 @@ async fn state(config: &RelayConfig, port: u16) -> anyhow::Result<RelayState> {
         artifact: config.artifact_proxy.clone(),
         askpass: Default::default(),
         html_previews: Default::default(),
+        artifact_proxies: Default::default(),
         push: None,
         browser_origin: config.browser_origin.clone(),
     })
@@ -1375,6 +1379,10 @@ fn app(state: RelayState) -> Router {
         .route("/api/open-link", post(control::open_link))
         .route("/api/open-file", post(control::open_file))
         .route("/api/open-browser-page", post(control::open_browser_page))
+        .route(
+            "/api/artifact-proxies",
+            get(artifacts::named::list).post(artifacts::named::register),
+        )
         .route("/api/hosts/{host}/file", get(artifacts::file))
         .route("/api/hosts/{host}/html", post(artifacts::html::open))
         .route(
@@ -1502,6 +1510,10 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
     }
     let pairing = mesh::discovery::start(state.clone());
     let artifact = artifacts::start(config.artifact_proxy, state.clone()).await?;
+    state
+        .artifact_proxies
+        .restore(config_path.with_extension("artifact-proxies.json"), &state)
+        .await;
     let failures_file = config_path.with_extension("logs.json");
     let failures = logs::start(failures_file.clone()).await;
     let polling =
@@ -1518,6 +1530,7 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
     let result = axum::serve(listener, app(state.clone()))
         .with_graceful_shutdown(shutdown())
         .await;
+    state.artifact_proxies.stop().await;
     pairing.abort();
     if let Some(task) = also {
         task.abort();
@@ -2283,6 +2296,7 @@ mod tests {
             }),
             askpass: Default::default(),
             html_previews: Default::default(),
+            artifact_proxies: Default::default(),
             push: None,
             browser_origin: None,
         };

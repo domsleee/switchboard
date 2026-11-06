@@ -6,6 +6,15 @@
   function resolve(uri) {
     const url = new URL(uri, location.href);
     if (!['http:','https:','mailto:'].includes(url.protocol)) throw Error('Unsupported link type');
+    // Loopback belongs to the terminal's computer, not necessarily this gateway.
+    const source = new URL(url);
+    if (localHost(source.hostname) && config && !config.local) source.hostname = new URL(config.origin).hostname;
+    const proxy = (!localHost(source.hostname) || config?.local) && window.__switchboardArtifactProxies?.[source.origin];
+    if (proxy) {
+      const target = new URL(proxy);
+      target.pathname = url.pathname; target.search = url.search; target.hash = url.hash;
+      return target.href;
+    }
     if (config && (localHost(url.hostname) || url.hostname === new URL(config.origin).hostname)) {
       const target = config.artifacts?.[url.port || (url.protocol==='https:'?'443':'80')];
       if (target) {
