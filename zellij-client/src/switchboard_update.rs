@@ -443,6 +443,7 @@ pub struct Updater {
     binary: PathBuf,
     release_directory: PathBuf,
     state_directory: PathBuf,
+    viewer_lock: PathBuf,
     helpers: PathBuf,
     source: String,
     menu_app: PathBuf,
@@ -509,6 +510,7 @@ impl Updater {
                 .state_directory
                 .clone()
                 .unwrap_or_else(|| share.join("automatic-updates")),
+            viewer_lock: crate::switchboard_viewers::path(&share.join("automatic-updates")),
             helpers,
             source: cli.source.clone().unwrap_or_else(|| RELEASE_URL.to_owned()),
             menu_app: home.join("Applications/Switchboard.app/Contents/MacOS/Switchboard"),
@@ -549,6 +551,9 @@ impl Updater {
             let mut state = State::load(&self.state_path())?;
             if let Some(pending) = state.pending.clone() {
                 self.settle_pending(&mut state, &pending)?;
+                if state.pending.is_some() {
+                    return Ok(());
+                }
             }
             self.update(&mut state)
         })();
@@ -584,6 +589,11 @@ impl Updater {
                     !self.check,
                     "Interrupted update requires recovery before checking another build"
                 );
+                let Some(_viewers) = crate::switchboard_viewers::update(&self.viewer_lock)? else {
+                    state.notice =
+                        Some("Recovery waiting for terminal viewers to disconnect".into());
+                    return state.save(&self.state_path());
+                };
                 let result = self.with_handoff(|| self.recover(pending));
                 // Reported once: a failed recovery never blocks later builds.
                 state.pending = None;
@@ -630,32 +640,45 @@ impl Updater {
                     state.attempts = None;
                     state.commit = Some(manifest.commit.clone());
                     state.error = None;
+                    state.notice = None;
                     println!("Already running {}", manifest.commit);
                     return state.save(&self.state_path());
                 }
             }
         }
-        let staging = tempfile::Builder::new()
-            .prefix("download-")
-            .tempdir_in(&self.state_directory)?;
-        let downloaded = manifest.files.keys().try_for_each(|name| {
-            fs::write(staging.path().join(name), self.fetch(&asset(name))?)
-                .map_err(anyhow::Error::from)
-        });
-        if let Err(error) = downloaded.and_then(|()| verify_files(staging.path(), &manifest)) {
-            // The manifest is uploaded last, so this is usually a newer upload
-            // replacing assets. Skip without recording the build; retry next run.
-            println!("Release assets are not ready ({error:#}); retrying on the next run.");
-            return Ok(());
+        // Keep one verified bundle while viewers defer activation. Always fetch the
+        // current manifest first, so a later release supersedes the waiting one.
+        let ready = self.state_directory.join("ready");
+        if verify_files(&ready, &manifest).is_err() {
+            let staging = tempfile::Builder::new()
+                .prefix("download-")
+                .tempdir_in(&self.state_directory)?;
+            let downloaded = manifest.files.keys().try_for_each(|name| {
+                fs::write(staging.path().join(name), self.fetch(&asset(name))?)
+                    .map_err(anyhow::Error::from)
+            });
+            if let Err(error) = downloaded.and_then(|()| verify_files(staging.path(), &manifest)) {
+                println!("Release assets are not ready ({error:#}); retrying on the next run.");
+                return Ok(());
+            }
+            if ready.exists() {
+                fs::remove_dir_all(&ready)?;
+            }
+            fs::rename(staging.path(), &ready)?;
         }
         if self.check {
             println!("Verified update {}", manifest.commit);
             return Ok(());
         }
+        // Avoid expensive preflight while occupied. apply() checks again and
+        // holds the lock across the actual handoff to close the admission race.
+        if crate::switchboard_viewers::update(&self.viewer_lock)?.is_none() {
+            return self.defer(state, &manifest);
+        }
         let before = (state.run_number, state.attempts);
         self.timings.borrow_mut().clear();
         let (started, start) = (SystemTime::now(), Instant::now());
-        let result = self.with_handoff(|| self.apply(staging.path(), &manifest, state));
+        let result = self.with_handoff(|| self.apply(&ready, &manifest, state));
         // The log has no timestamps; Unix seconds match the relay's /api/logs times.
         println!(
             "Update timing for {} at {}: {}",
@@ -664,7 +687,8 @@ impl Updater {
             timing_line(&self.timings.borrow(), start.elapsed())
         );
         match &result {
-            Ok(()) => {
+            Ok(false) => return self.defer(state, &manifest),
+            Ok(true) => {
                 state.error = None;
                 state.notice = None;
                 println!("Updated connection services to {}", manifest.commit);
@@ -689,7 +713,20 @@ impl Updater {
             },
         }
         state.save(&self.state_path())?;
-        result
+        result.map(|_| ())
+    }
+
+    fn defer(&self, state: &mut State, manifest: &Manifest) -> Result<()> {
+        let notice = format!(
+            "Update {} ready; waiting for terminal viewers to disconnect",
+            manifest.commit
+        );
+        if state.notice.as_deref() != Some(&notice) {
+            println!("{notice}");
+        }
+        state.notice = Some(notice);
+        state.error = None;
+        state.save(&self.state_path())
     }
 
     /// The Windows tray yields service supervision while this names a live process.
@@ -701,7 +738,7 @@ impl Updater {
         result
     }
 
-    fn apply(&self, bundle: &Path, manifest: &Manifest, state: &mut State) -> Result<()> {
+    fn apply(&self, bundle: &Path, manifest: &Manifest, state: &mut State) -> Result<bool> {
         let sessions = self.timed("catalog", || self.catalog())?;
         let old_commit = self.health()?.commit;
         let old = self.selected_binary()?;
@@ -715,6 +752,9 @@ impl Updater {
                 self.local_json("/api/hosts", Duration::from_secs(30))
             })?);
         }
+        let Some(_viewers) = crate::switchboard_viewers::update(&self.viewer_lock)? else {
+            return Ok(false);
+        };
         let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let backup = self.state_directory.join(format!("rollback-{nanos}"));
         fs::create_dir(&backup)?;
@@ -777,7 +817,8 @@ impl Updater {
         state.pending = None;
         state.attempts = None;
         state.commit = Some(manifest.commit.clone());
-        state.save(&self.state_path())
+        state.save(&self.state_path())?;
+        Ok(true)
     }
 
     fn handoff(

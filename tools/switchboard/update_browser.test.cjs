@@ -16,7 +16,7 @@ const installed = path.join(dir, 'zellij');
 const config = path.join(dir, 'config.kdl');
 const name = `update-acceptance-${crypto.randomBytes(8).toString('hex')}`;
 const env = {...process.env, HOME:dir, ZELLIJ_SOCKET_DIR:path.join(dir,'sockets'),
-    SWITCHBOARD_RELEASES_DIR:path.join(dir,'releases'), TERM:'xterm-256color'};
+    SWITCHBOARD_RELEASES_DIR:path.join(dir,'releases'), SWITCHBOARD_VIEWER_LOCK:path.join(dir,'viewers.lock'), TERM:'xterm-256color'};
 for (const key of ['ZELLIJ','ZELLIJ_SESSION_NAME','ZELLIJ_CONFIG_FILE','ZELLIJ_CONFIG_DIR']) delete env[key];
 env.ZELLIJ_CONFIG_FILE = config;
 const cli = (...args) => execFileSync(installed, ['--config',config,...args], {env,encoding:'utf8',timeout:15000,stdio:['ignore','pipe','pipe']});
@@ -268,14 +268,37 @@ let recoveryPanes;
         execFileSync('/bin/bash',[path.join(__dirname,'update_local.sh'),'--binary-only',newBinary,installed],{env,timeout:60000,stdio:'pipe'});
         await command(`printf '%s%s\\n' "UPDATED_" "$SB_STATE"`,'UPDATED_'+marker);
         }
+        // In-place recovery must retain the actual iframe document and xterm instance.
+        const inPlace = process.env.SWITCHBOARD_TEST_IN_PLACE_RECONNECT === '1';
+        const viewerLockBusy = () => {
+            const result = spawnSync('python3', ['-c', `import fcntl,sys
+with open(sys.argv[1], 'a+') as lock:
+    try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError: sys.exit(2)
+`, env.SWITCHBOARD_VIEWER_LOCK], {encoding:'utf8'});
+            assert.ok([0,2].includes(result.status), result.stderr);
+            return result.status === 2;
+        };
+        if (inPlace) assert.ok(viewerLockBusy(), 'A browser connection excludes an updater in another process');
+        if (inPlace) await page.evaluate(() => {
+            const w = document.querySelector('#terminals>iframe.active').contentWindow;
+            window.savedTerminalDocument = w.document;
+            window.savedTerminal = w.term;
+        });
         // Restart only the connection services, leaving the existing shell and browser alone.
         await stop(native);native=null;await stop(relay);relay=null;
+        if (inPlace) assert.ok(!viewerLockBusy(), 'Stopping connection services releases their viewer locks');
         await sleep(500);
         native=startNative();relay=startRelay();
         await waitFor(async()=> (await fetch(url)).ok,'Connection services did not recover');
         await connected();
         if(recoveryMode)await selectedPane(recoveryPanes[1]);
         await command(`printf '%s%s\\n' "RECONNECTED_" "$SB_STATE"`,'RECONNECTED_'+marker);
+        if (inPlace) assert.ok(viewerLockBusy(), 'Reconnected viewers protect the new services');
+        if (inPlace) assert.ok(await page.evaluate(() => {
+            const w = document.querySelector('#terminals>iframe.active').contentWindow;
+            return w.document === window.savedTerminalDocument && w.term === window.savedTerminal;
+        }), 'Reconnect preserves the terminal document and xterm instance');
         assert.equal(await page.evaluate(()=>location.href),selected,'Selected terminal URL survives');
         assert.deepEqual(identities(),beforeIdentities,'Tab and pane identities survive');
         assert.deepEqual(names(),beforeNames,'Native tab names survive updates and reconnection');

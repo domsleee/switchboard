@@ -932,6 +932,8 @@ async fn proxy(
         )?
     );
     if let Ok(websocket) = websocket {
+        let viewer = crate::switchboard_viewers::viewer()
+            .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "Update in progress"))?;
         let upstream = tokio::time::timeout(Duration::from_secs(20), host.websocket(&path))
             .await
             .map_err(|_| (StatusCode::BAD_GATEWAY, "Host connection timed out"))?
@@ -944,8 +946,9 @@ async fn proxy(
         return Ok(websocket
             .max_message_size(LIMIT)
             .max_frame_size(LIMIT)
-            .on_upgrade(move |downstream| {
-                pump_with_output_diagnostics(downstream, upstream, source)
+            .on_upgrade(move |downstream| async move {
+                let _viewer = viewer;
+                pump_with_output_diagnostics(downstream, upstream, source).await
             }));
     }
     let method = request.method().clone();

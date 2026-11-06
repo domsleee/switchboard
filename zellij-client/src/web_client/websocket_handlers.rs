@@ -49,7 +49,13 @@ pub async fn ws_handler_control(
         );
         return StatusCode::FORBIDDEN.into_response();
     }
-    ws.on_upgrade(move |socket| handle_ws_control(socket, params, state))
+    let Ok(viewer) = crate::switchboard_viewers::viewer() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    ws.on_upgrade(move |socket| async move {
+        let _viewer = viewer;
+        handle_ws_control(socket, params, state).await
+    })
 }
 
 pub async fn ws_handler_terminal(
@@ -58,9 +64,13 @@ pub async fn ws_handler_terminal(
     Query(params): Query<TerminalParams>,
     State(state): State<AppState>,
     axum::Extension(session_token_hash): axum::Extension<SessionTokenHash>,
-) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| {
-        handle_ws_terminal(socket, session_name, params, state, session_token_hash)
+) -> Response {
+    let Ok(viewer) = crate::switchboard_viewers::viewer() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    ws.on_upgrade(move |socket| async move {
+        let _viewer = viewer;
+        handle_ws_terminal(socket, session_name, params, state, session_token_hash).await
     })
 }
 

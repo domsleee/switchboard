@@ -33,6 +33,28 @@ the manifest over HTTPS first and installs only a run number newer than the last
 one it tried. Assets whose checksum does not match (normally a newer upload in
 progress) are skipped and retried on the next run.
 
+Updates download and verify immediately, but `zellij switchboard update` waits
+while any terminal WebSocket uses this computer's relay or web service. This
+includes paired computers' viewers and connected background browser tabs; it is
+not based on typing, focus, or whether agents are working. Close those viewers
+to allow activation on the next scheduled check. Shells and agents keep running.
+The verified bundle is cached in `automatic-updates/ready`; each check fetches
+the latest manifest, so newer releases replace the waiting release. Deferral
+appears in `state.json`'s `notice` and does not consume an update attempt.
+
+Relay and web connections hold shared locks on `automatic-updates/viewers.lock`.
+The updater takes an exclusive lock immediately before mutation and holds it
+through readiness checks and rollback. A viewer arriving during that interval
+retries until activation finishes. Locks are released by the OS on process exit;
+never delete the lock file. Isolated tests can set `SWITCHBOARD_VIEWER_LOCK` to a
+private path in both services and the updater. Changing `--state-directory`
+alone does not change which viewers the updater protects.
+
+Both connection services must already contain this protection. The first upgrade
+from an older build still uses that build's restart behaviour. Direct manual
+`update_local.sh` and PowerShell helper invocations remain explicit, disruptive
+handoffs; use `zellij switchboard update` for viewer-aware activation.
+
 On macOS the bundled `update_local.sh` does the handoff: compatibility probes,
 atomic install, `zellij web --stop`, then `launchctl kickstart -k` of
 `dev.zellij.switchboard`. Services restart only through launchd; the updater
@@ -55,8 +77,9 @@ A relay on another port, such as an older installation on port 80, also answers 
 8090 so agent hooks and the CLI reach it.
 
 Healthy existing sessions retain their engines, shells and agents, including new
-tabs created inside those sessions. A browser reconnect is expected. New sessions
-use the selected release when started through the updated services/launcher.
+tabs created inside those sessions. Automatic updates wait for viewers to
+disconnect. New sessions use the selected release when started through the
+updated services/launcher.
 On Windows a separate old `zellij.exe` on PATH is not overwritten; use the
 installed `windows_cli.ps1` launcher to follow the selected release.
 
@@ -128,8 +151,12 @@ tab identity and sharing. Runtime health/catalog checks do not inject terminal
 input into user sessions.
 
 Updating Switchboard must preserve running shells, Codex, Claude, builds, and
-other terminal processes. A short browser reconnect is acceptable. Automatically
-closing or recreating sessions is not.
+other terminal processes. Automatic updates must defer while viewers are
+connected. Automatically closing or recreating sessions is not acceptable. Unexpected transport failures reconnect
+the terminal and control sockets in place, preserving the terminal document and
+input handlers instead of reloading the page. A small status appears after 1.5
+seconds, or immediately on attempted input while disconnected. Input is paused,
+not queued or replayed; intentional host disconnects still stop reconnection.
 
 Switchboard is intended for long-term use across multiple machines. Sessions
 may live through many releases, and machines may return after weeks offline.
@@ -200,8 +227,11 @@ real browser input/output before and after a failed-update rollback, installing 
 only the web daemon and relay. It checks automatic reconnection, preserved shell
 variables, server and terminal process IDs/start times, stable tab/pane IDs,
 selected terminal URL, and sharing. Both terminal and control WebSockets must
-actually be open before input is tested. This covers connection-service restarts,
-not a session-engine restart, automatic deployment, or Windows behavior.
+actually be open before input is tested. Set
+`SWITCHBOARD_TEST_IN_PLACE_RECONNECT=1` with the new build on both sides to
+also require the iframe document and xterm instance to survive reconnecting.
+This covers connection-service restarts, not a session-engine restart, automatic
+deployment, or Windows behavior.
 
 ## Select a Windows release without stopping terminals
 

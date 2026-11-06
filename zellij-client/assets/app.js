@@ -73,160 +73,91 @@ function isMobileViewport() {
 function getWebSocketBaseUrl() {
     return getBaseUrl().replace(/^https?/, is_https() ? "wss" : "ws");
 }
-/**
- * Connection-related utility functions and management
- */
-
-
-// Connection state
+/** Reconnect the sockets in place; the terminal and its input handlers survive. */
 let reconnectionAttempt = 0;
 let isReconnecting = false;
 let isDisconnected = false;
-let reconnectionTimeout = null;
-let hasConnectedBefore = false;
 let isPageUnloading = false;
-
-// An upgrade restarts the web server and relay for about a second, so retry
-// every 250 ms for the first 10 seconds before backing off.
+let reconnectHandler = null;
+let connectionStatus = null;
+let statusTimer = null;
+let connectedAt = 0;
 const QUICK_ATTEMPTS = 40;
 
-/**
- * Get the delay for reconnection attempts: quick retries, then exponential backoff
- * @param {number} attempt - The current attempt number (1-based)
- * @returns {number} The delay in seconds
- */
 function getReconnectionDelay(attempt) {
-    if (attempt <= QUICK_ATTEMPTS) {
-        return 0.25;
-    }
+    if (attempt <= QUICK_ATTEMPTS) return 0.25;
     const delays = [1, 2, 4, 8, 16];
     return delays[Math.min(attempt - QUICK_ATTEMPTS - 1, delays.length - 1)];
 }
 
-// A page that reloaded itself and soon lost its connection again (the session
-// refuses web clients, for example) resumes the backoff instead of reloading
-// every 250 ms.
-const RELOAD_KEY = "zellij-reconnect-reload";
-
-function resumedAttempts() {
-    try {
-        const saved = JSON.parse(sessionStorage.getItem(RELOAD_KEY));
-        return Date.now() - saved.at < 30000 ? Math.max(saved.attempt, QUICK_ATTEMPTS) : 0;
-    } catch (_) {
-        return 0;
-    }
+function setReconnectHandler(handler) {
+    reconnectHandler = handler;
 }
 
-/**
- * Check if the server connection is available
- * @returns {Promise<boolean>} true if connection is OK, false otherwise
- */
-async function checkConnection() {
-    try {
-        const baseUrl = getBaseUrl();
-        const response = await fetch(`${baseUrl}/info/version`, {
-            method: "GET",
-            signal: AbortSignal.timeout?.(5000),
-        });
-        return response.ok;
-    } catch (error) {
-        return false;
-    }
+function showConnectionStatus() {
+    if (connectionStatus || isPageUnloading || isDisconnected) return;
+    connectionStatus = document.createElement("div");
+    connectionStatus.setAttribute("role", "status");
+    connectionStatus.textContent = "Reconnecting… Input paused";
+    connectionStatus.style.cssText = "position:fixed;right:12px;top:12px;z-index:10000;padding:6px 10px;border-radius:6px;background:#252525;color:#eee;font:13px sans-serif;pointer-events:none";
+    document.body.appendChild(connectionStatus);
 }
 
-/**
- * Handle intentional disconnection by the host (close code 4001)
- * @returns {Promise<void>}
- */
+function clearConnectionStatus() {
+    clearTimeout(statusTimer);
+    statusTimer = null;
+    connectionStatus?.remove();
+    connectionStatus = null;
+}
+
 async function handleDisconnected() {
-    if (isDisconnected || isPageUnloading) {
-        return;
-    }
+    if (isDisconnected || isPageUnloading) return;
     isDisconnected = true;
+    isReconnecting = false;
+    clearConnectionStatus();
     await showErrorModal("Disconnected", "You have been disconnected by the host.");
-    isDisconnected = false;
 }
 
-/**
- * Handle reconnection attempts with exponential backoff
- * @returns {Promise<void>}
- */
 async function handleReconnection() {
-    if (isReconnecting || !hasConnectedBefore || isPageUnloading) {
-        return;
-    }
-
+    if (isReconnecting || isDisconnected || isPageUnloading || !reconnectHandler) return;
     isReconnecting = true;
-    reconnectionAttempt = resumedAttempts();
-    let currentModal = null;
-
-    while (isReconnecting) {
-        reconnectionAttempt++;
-        const delaySeconds = getReconnectionDelay(reconnectionAttempt);
-
-        const result = await showReconnectionModal(
-            reconnectionAttempt,
-            delaySeconds
-        );
-
-        if (result.action === "cancel") {
-            if (result.cleanup) result.cleanup();
-            isReconnecting = false;
-            reconnectionAttempt = 0;
-            return;
-        }
-
-        if (result.action === "reconnect") {
-            currentModal = result.modal;
-            const connectionOk = await checkConnection();
-
-            if (connectionOk) {
-                if (result.cleanup) result.cleanup();
+    // Repeated immediately rejected attachments must eventually back off too.
+    if (connectedAt && Date.now() - connectedAt > 30000) reconnectionAttempt = 0;
+    statusTimer = setTimeout(showConnectionStatus, 1500);
+    while (isReconnecting && !isPageUnloading && !isDisconnected) {
+        await new Promise(resolve => setTimeout(resolve, getReconnectionDelay(++reconnectionAttempt) * 1000));
+        if (isPageUnloading || isDisconnected) break;
+        try {
+            if (await reconnectHandler()) {
                 isReconnecting = false;
-                try {
-                    sessionStorage.setItem(RELOAD_KEY, JSON.stringify({ at: Date.now(), attempt: reconnectionAttempt }));
-                } catch (_) {}
-                reconnectionAttempt = 0;
-                window.location.reload();
+                clearConnectionStatus();
                 return;
-            } else {
-                if (result.cleanup) result.cleanup();
-                continue;
             }
+        } catch (_) {
+            // A failed bootstrap or socket pair retries without rebuilding the page.
         }
     }
+    isReconnecting = false;
+    clearConnectionStatus();
 }
 
-/**
- * Initialize connection handlers and event listeners
- */
 function initConnectionHandlers() {
-    window.addEventListener("beforeunload", () => {
-        isPageUnloading = true;
-    });
-
-    window.addEventListener("pagehide", () => {
-        isPageUnloading = true;
-    });
+    const unload = () => { isPageUnloading = true; clearConnectionStatus(); };
+    window.addEventListener("beforeunload", unload);
+    window.addEventListener("pagehide", unload);
 }
 
-/**
- * Mark that a connection has been established
- */
 function markConnectionEstablished() {
-    hasConnectedBefore = true;
+    connectedAt = Date.now();
 }
 
-/**
- * Reset connection state
- */
 function resetConnectionState() {
     reconnectionAttempt = 0;
     isReconnecting = false;
     isDisconnected = false;
-    reconnectionTimeout = null;
-    hasConnectedBefore = false;
     isPageUnloading = false;
+    connectedAt = 0;
+    clearConnectionStatus();
 }
 /**
  * Authentication logic and token management
@@ -3297,7 +3228,7 @@ function getMobileRenderSizing() {
 }
 
 function sendSizeUpdate(wsControl, ownWebClientId, term, rows, cols, force = false) {
-    if (!wsControl || !ownWebClientId) {
+    if (!wsControl || wsControl.readyState !== WebSocket.OPEN || !ownWebClientId) {
         return;
     }
     const viewport = window.__zjViewport?.dimensions();
@@ -3345,8 +3276,11 @@ function sendSizeUpdate(wsControl, ownWebClientId, term, rows, cols, force = fal
 }
 
 function initWebSockets(boot, term, fitAddon) {
-    const ownWebClientId = boot.web_client_id;
-    const sessionName = boot.session_name;
+    let ownWebClientId = boot.web_client_id;
+    let sessionName = boot.session_name;
+    let ready = false;
+    let stopped = false;
+    let settleConnection = null;
     let wsTerminal;
     let wsControl;
     const userConfig = { blink: false, style: false };
@@ -3359,115 +3293,172 @@ function initWebSockets(boot, term, fitAddon) {
         }
     }
 
-    const wsBaseUrl = getWebSocketBaseUrl();
-    const url =
-        !sessionName || sessionName === ""
-            ? `${wsBaseUrl}/ws/terminal`
-            : `${wsBaseUrl}/ws/terminal/${encodeURIComponent(sessionName)}`;
-
-    const fitDimensions = fitAddon.proposeDimensions() || {
-        rows: term.rows,
-        cols: term.cols,
-    };
-    if (
-        fitDimensions.rows !== term.rows ||
-        fitDimensions.cols !== term.cols
-    ) {
-        term.resize(fitDimensions.cols, fitDimensions.rows);
-    }
-    const cell = getCellPixelDimensions(term);
-    let queryString = `?web_client_id=${encodeURIComponent(ownWebClientId)}&rows=${term.rows}&cols=${term.cols}`;
-    if (cell) {
-        const cellWidth = Math.round(cell.width);
-        const cellHeight = Math.round(cell.height);
-        queryString += `&cell_width=${cellWidth}&cell_height=${cellHeight}`;
-        lastSentCellDimensions = { width: cellWidth, height: cellHeight };
-    }
-    // Fine scrolling: the wheel handler sends one report per line, so Zellij
-    // scrolls one line per report instead of three.
-    if (fineScrolling()) queryString += "&wheel_lines=1";
-    const wsTerminalUrl = `${url}${queryString}`;
-
-    wsTerminal = new WebSocket(wsTerminalUrl);
-
-    wsControl = new WebSocket(
-        `${wsBaseUrl}/ws/control?web_client_id=${encodeURIComponent(ownWebClientId)}`
-    );
-    startWsControl(wsControl, term, fitAddon, ownWebClientId, userConfig);
-    window.__zjSendControl = function (payload) {
-        if (wsControl && wsControl.readyState === WebSocket.OPEN) {
-            wsControl.send(
-                JSON.stringify({
-                    web_client_id: ownWebClientId,
-                    payload,
-                })
-            );
+    function closeSockets() {
+        ready = false;
+        for (const socket of [wsTerminal, wsControl]) {
+            if (!socket) continue;
+            socket.onclose = socket.onmessage = socket.onopen = null;
+            socket.close();
         }
-    };
+        settleConnection?.(false);
+    }
 
-    wsTerminal.onopen = function () {
-        markConnectionEstablished();
-    };
+    function connect(nextBoot) {
+        closeSockets();
+        ownWebClientId = nextBoot.web_client_id;
+        sessionName = nextBoot.session_name;
+        lastSentCellDimensions = null;
+        const connectionResult = new Promise(resolve => {
+            const timeout = setTimeout(() => { closeSockets(); }, 5000);
+            settleConnection = (ok) => {
+                clearTimeout(timeout);
+                settleConnection = null;
+                resolve(ok);
+            };
+        });
+        const wsBaseUrl = getWebSocketBaseUrl();
+        const url =
+            !sessionName || sessionName === ""
+                ? `${wsBaseUrl}/ws/terminal`
+                : `${wsBaseUrl}/ws/terminal/${encodeURIComponent(sessionName)}`;
 
-    wsTerminal.onmessage = function (event) {
-        let data = event.data;
+        const fitDimensions = fitAddon.proposeDimensions() || {
+            rows: term.rows,
+            cols: term.cols,
+        };
+        if (
+            fitDimensions.rows !== term.rows ||
+            fitDimensions.cols !== term.cols
+        ) {
+            term.resize(fitDimensions.cols, fitDimensions.rows);
+        }
+        const cell = getCellPixelDimensions(term);
+        let queryString = `?web_client_id=${encodeURIComponent(ownWebClientId)}&rows=${term.rows}&cols=${term.cols}`;
+        if (cell) {
+            const cellWidth = Math.round(cell.width);
+            const cellHeight = Math.round(cell.height);
+            queryString += `&cell_width=${cellWidth}&cell_height=${cellHeight}`;
+            lastSentCellDimensions = { width: cellWidth, height: cellHeight };
+        }
+        // Fine scrolling: the wheel handler sends one report per line, so Zellij
+        // scrolls one line per report instead of three.
+        if (fineScrolling()) queryString += "&wheel_lines=1";
+        const wsTerminalUrl = `${url}${queryString}`;
 
-        if (typeof data === "string") {
-            // Handle ANSI title change sequences
-            const titleRegex = /\x1b\]0;([^\x07\x1b]*?)(?:\x07|\x1b\\)/g;
-            let match;
-            while ((match = titleRegex.exec(data)) !== null) {
-                document.title = match[1];
+        wsTerminal = new WebSocket(wsTerminalUrl);
+
+        wsControl = new WebSocket(
+            `${wsBaseUrl}/ws/control?web_client_id=${encodeURIComponent(ownWebClientId)}`
+        );
+        startWsControl(wsControl, term, fitAddon, ownWebClientId, userConfig);
+        window.__zjSendControl = function (payload) {
+            if (wsControl && wsControl.readyState === WebSocket.OPEN) {
+                wsControl.send(
+                    JSON.stringify({
+                        web_client_id: ownWebClientId,
+                        payload,
+                    })
+                );
+            }
+        };
+
+        const connected = () => {
+            if (!ready && wsTerminal.readyState === WebSocket.OPEN && wsControl.readyState === WebSocket.OPEN) {
+                ready = true;
+                markConnectionEstablished();
+                settleConnection?.(true);
+            }
+        };
+        wsTerminal.onopen = connected;
+        wsControl.onopen = connected;
+
+        wsTerminal.onmessage = function (event) {
+            let data = event.data;
+
+            if (typeof data === "string") {
+                // Handle ANSI title change sequences
+                const titleRegex = /\x1b\]0;([^\x07\x1b]*?)(?:\x07|\x1b\\)/g;
+                let match;
+                while ((match = titleRegex.exec(data)) !== null) {
+                    document.title = match[1];
+                }
+
+                if ((userConfig.blink || userConfig.style) && (
+                    data.includes("\x1b[0 q") ||
+                    data.includes("\x1b[1 q") ||
+                    data.includes("\x1b[2 q") ||
+                    data.includes("\x1b[3 q") ||
+                    data.includes("\x1b[4 q") ||
+                    data.includes("\x1b[5 q") ||
+                    data.includes("\x1b[6 q")
+                )) {
+                    data = data.replace(/\x1b\[([0-6]) q/g, (match, p1) => {
+                        const id = parseInt(p1);
+
+                        // Decode app-requested blink and shape from DECSCUSR id
+                        // id 0 = reset-to-default (null = no preference)
+                        const appBlink = id === 0 ? null : (id % 2 === 1);
+                        const appShapes = [null, "block", "block", "underline", "underline", "bar", "bar"];
+                        const appShape  = appShapes[id];
+
+                        // Apply user overrides only for what was explicitly configured;
+                        // otherwise pass through the app's value (or fall back to term.options)
+                        const effectiveBlink = userConfig.blink ? term.options.cursorBlink
+                                                                : (appBlink !== null ? appBlink : term.options.cursorBlink);
+                        const effectiveShape = userConfig.style ? term.options.cursorStyle
+                                                                : (appShape !== null ? appShape : term.options.cursorStyle);
+
+                        if (effectiveShape === "block")     return effectiveBlink ? "\x1b[1 q" : "\x1b[2 q";
+                        if (effectiveShape === "underline") return effectiveBlink ? "\x1b[3 q" : "\x1b[4 q";
+                        if (effectiveShape === "bar")       return effectiveBlink ? "\x1b[5 q" : "\x1b[6 q";
+                        return match;
+                    });
+                }
             }
 
-            if ((userConfig.blink || userConfig.style) && (
-                data.includes("\x1b[0 q") ||
-                data.includes("\x1b[1 q") ||
-                data.includes("\x1b[2 q") ||
-                data.includes("\x1b[3 q") ||
-                data.includes("\x1b[4 q") ||
-                data.includes("\x1b[5 q") ||
-                data.includes("\x1b[6 q")
-            )) {
-                data = data.replace(/\x1b\[([0-6]) q/g, (match, p1) => {
-                    const id = parseInt(p1);
+            term.write(data);
+        };
 
-                    // Decode app-requested blink and shape from DECSCUSR id
-                    // id 0 = reset-to-default (null = no preference)
-                    const appBlink = id === 0 ? null : (id % 2 === 1);
-                    const appShapes = [null, "block", "block", "underline", "underline", "bar", "bar"];
-                    const appShape  = appShapes[id];
-
-                    // Apply user overrides only for what was explicitly configured;
-                    // otherwise pass through the app's value (or fall back to term.options)
-                    const effectiveBlink = userConfig.blink ? term.options.cursorBlink
-                                                            : (appBlink !== null ? appBlink : term.options.cursorBlink);
-                    const effectiveShape = userConfig.style ? term.options.cursorStyle
-                                                            : (appShape !== null ? appShape : term.options.cursorStyle);
-
-                    if (effectiveShape === "block")     return effectiveBlink ? "\x1b[1 q" : "\x1b[2 q";
-                    if (effectiveShape === "underline") return effectiveBlink ? "\x1b[3 q" : "\x1b[4 q";
-                    if (effectiveShape === "bar")       return effectiveBlink ? "\x1b[5 q" : "\x1b[6 q";
-                    return match;
-                });
+        const closed = (event) => {
+            closeSockets();
+            if (event.code === 4001) {
+                stopped = true;
+                handleDisconnected();
+            } else if (!stopped) {
+                handleReconnection();
             }
-        }
+        };
+        wsTerminal.onclose = closed;
+        wsControl.onclose = closed;
+        return connectionResult;
+    }
 
-        term.write(data);
-    };
-
-    wsTerminal.onclose = function (event) {
-        if (event.code === 4001) {
-            handleDisconnected();
-        } else {
-            handleReconnection();
-        }
-    };
+    setReconnectHandler(async () => {
+        if (stopped) return false;
+        // Session switching updates the URL without recreating this terminal.
+        const currentSession = decodeURIComponent(location.pathname.split("/").pop()) || sessionName;
+        const base = getBaseUrl();
+        const options = { credentials: "include", signal: AbortSignal.timeout(5000) };
+        const catalog = await fetch(`${base}/session-list`, options);
+        if (!catalog.ok) return false;
+        const { sessions } = await catalog.json();
+        if (!sessions.some(session => session.name === currentSession && session.web_clients_allowed)) return false;
+        const response = await fetch(`${base}/session?session=${encodeURIComponent(currentSession)}&welcome=false`, {
+            ...options, method: "POST",
+        });
+        if (!response.ok || stopped) return false;
+        return connect(await response.json());
+    });
+    connect(boot).then(ok => { if (!ok && !stopped) handleReconnection(); });
 
     const sendAnsiKey = (ansiKey) => {
         let payload = ansiKey;
         if (typeof window.__zjMobileMergeKey === "function") {
             payload = window.__zjMobileMergeKey(payload);
+        }
+        if (!ready) {
+            showConnectionStatus();
+            return;
         }
         wsTerminal.send(payload);
     };
@@ -3480,17 +3471,13 @@ function initWebSockets(boot, term, fitAddon) {
     );
 
     return {
-        wsTerminal,
+        get wsTerminal() { return wsTerminal; },
         getWsControl: () => wsControl,
         getOwnWebClientId: () => ownWebClientId,
         sendAnsiKey,
         cleanup: () => {
-            if (wsTerminal) {
-                wsTerminal.close();
-            }
-            if (wsControl) {
-                wsControl.close();
-            }
+            stopped = true;
+            closeSockets();
         },
     };
 }
@@ -3567,13 +3554,7 @@ function startWsControl(wsControl, term, fitAddon, ownWebClientId, userConfig) {
         }
     };
 
-    wsControl.onclose = function (event) {
-        if (event.code === 4001) {
-            handleDisconnected();
-        } else {
-            handleReconnection();
-        }
-    };
+
 }
 
 function setupResizeHandler(
@@ -3707,7 +3688,7 @@ function setupSoftKeyboardVisibilityTracker(getWsControl, getOwnWebClientId) {
 
         const wsControl = getWsControl();
         const ownWebClientId = getOwnWebClientId();
-        if (!wsControl || ownWebClientId === "") {
+        if (!wsControl || wsControl.readyState !== WebSocket.OPEN || ownWebClientId === "") {
             return;
         }
         wsControl.send(

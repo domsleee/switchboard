@@ -27,6 +27,8 @@ pub mod switchboard_relay;
 #[cfg(feature = "web_server_capability")]
 pub mod switchboard_update;
 #[cfg(feature = "web_server_capability")]
+mod switchboard_viewers;
+#[cfg(feature = "web_server_capability")]
 pub mod web_client;
 
 use anyhow::Context;
