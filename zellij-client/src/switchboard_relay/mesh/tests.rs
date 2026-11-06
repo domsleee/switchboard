@@ -2400,6 +2400,7 @@ async fn attention_reviews_live_with_the_owner_and_every_peer_sees_them() {
         candidates: Default::default(),
         artifact: None,
         askpass: Default::default(),
+        html_previews: Default::default(),
     };
     let (mac, laptop) = (relay(&viewers[0]), relay(&viewers[1]));
     async fn shown(relay: &super::super::RelayState, host: &str) -> Value {

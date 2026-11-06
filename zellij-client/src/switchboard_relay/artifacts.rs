@@ -1,6 +1,7 @@
 use super::*;
 use axum::{extract::Query, http::HeaderValue};
 use http_body_util::BodyExt;
+pub(super) mod html;
 
 #[derive(Clone, Deserialize)]
 pub struct ArtifactConfig {
@@ -146,6 +147,7 @@ fn router(config: ArtifactConfig, port: u16) -> anyhow::Result<Router> {
 fn app(config: Option<ArtifactConfig>, relay: RelayState) -> anyhow::Result<Router> {
     let files = Router::new()
         .route("/artifacts/{machine}/{*path}", get(serve))
+        .route("/html/{ticket}/{*path}", get(html::serve))
         .with_state(relay);
     Ok(match config {
         Some(config) => files.merge(router(config, PORT)?),
@@ -975,13 +977,13 @@ mod tests {
         upstream_task.abort();
     }
 
-    async fn read(response: Response) -> (StatusCode, HeaderMap, Bytes) {
+    pub(super) async fn read(response: Response) -> (StatusCode, HeaderMap, Bytes) {
         let (parts, body) = response.into_parts();
         let body = to_bytes(body, LIMIT).await.unwrap();
         (parts.status, parts.headers, body)
     }
 
-    fn fixture() -> tempfile::TempDir {
+    pub(super) fn fixture() -> tempfile::TempDir {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("artifacts");
         std::fs::create_dir_all(root.join("clip/images")).unwrap();

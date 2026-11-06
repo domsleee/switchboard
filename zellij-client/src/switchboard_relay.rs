@@ -99,6 +99,7 @@ struct RelayState {
     artifact: Option<artifacts::ArtifactConfig>,
     // sudo password requests waiting for an answer in this computer's sidebar.
     askpass: Arc<askpass::Prompts>,
+    html_previews: artifacts::html::Previews,
 }
 
 impl RelayState {
@@ -1131,7 +1132,7 @@ async fn asset(request: Request) -> Response {
     let name = if name.is_empty() { "index.html" } else { name };
     let mime = match name {
         "index.html" | "computers.html" | "messages.html" => "text/html; charset=utf-8",
-        "style.css" | "messages.css" => "text/css; charset=utf-8",
+        "style.css" | "messages.css" | "gallery.css" => "text/css; charset=utf-8",
         "app.js"
         | "startup-cache.js"
         | "bridge.js"
@@ -1141,6 +1142,7 @@ async fn asset(request: Request) -> Response {
         | "askpass.js"
         | "links.js"
         | "thumbnails.js"
+        | "gallery.js"
         | "titles.js"
         | "computers.js"
         | "pairing-notice.js"
@@ -1196,6 +1198,7 @@ async fn state(config: &RelayConfig, port: u16) -> anyhow::Result<RelayState> {
         candidates: Arc::new(candidates),
         artifact: config.artifact_proxy.clone(),
         askpass: Default::default(),
+        html_previews: Default::default(),
     })
 }
 
@@ -1278,6 +1281,7 @@ fn app(state: RelayState) -> Router {
         .route("/api/open-file", post(control::open_file))
         .route("/api/open-browser-page", post(control::open_browser_page))
         .route("/api/hosts/{host}/file", get(artifacts::file))
+        .route("/api/hosts/{host}/html", post(artifacts::html::open))
         .route(
             "/api/hosts/{host}/resolve-file",
             get(artifacts::resolve_file),
@@ -1966,6 +1970,7 @@ mod tests {
                 target: "http://192.0.2.69:8765".into(),
             }),
             askpass: Default::default(),
+            html_previews: Default::default(),
         };
         let paired = Host::new(config("https://192.0.2.69:8082")).unwrap();
         assert_eq!(

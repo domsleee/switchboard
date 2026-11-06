@@ -20,7 +20,7 @@ async function fixture(run) {
       }
       if (url.pathname === '/api/hosts') return route.fulfill({contentType:'application/json',body:JSON.stringify([{id:'local-mac',local:true}])});
       const name = url.pathname.slice(1);
-      if (!['messages.html','messages.js','messages.css'].includes(name)) return route.fulfill({status:404,body:''});
+      if (!['messages.html','messages.js','messages.css','gallery.js','gallery.css'].includes(name)) return route.fulfill({status:404,body:''});
       return route.fulfill({contentType:name.endsWith('.js')?'text/javascript':name.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+name,'utf8')});
     });
     await run({page,calls,respond(fn){handler=fn;}});
@@ -246,6 +246,13 @@ test('media paths render inline from the sender computer and plain text stays te
       '/api/hosts/mesh-windows/file?path=D%3A%5CProgram%20Files%5Crun%20(1).mp4',
       '/api/hosts/mesh-windows/file?path=%5C%5Cnas%5Cshare%5Ca.png',
     ]);
+    await page.locator('figure img').first().press('Enter');
+    const carousel=page.getByRole('dialog',{name:'Image carousel'});
+    await page.waitForFunction(()=>document.querySelector('.gallery-count')?.textContent==='1 / 2');
+    assert.equal(await carousel.locator('img').getAttribute('src'),'/api/hosts/local-mac/file?path=~%2Fshot.png');
+    await page.keyboard.press('ArrowRight');
+    assert.equal(await carousel.locator('img').getAttribute('src'),'/api/hosts/local-mac/file?path=%2Ftmp%2Fb.png');
+    await page.keyboard.press('Escape');
     // A missing file falls back to its path.
     await page.unroute('**/api/hosts/*/file*');
     await Promise.all(held.map(route => route.fulfill({status:404,body:''})));

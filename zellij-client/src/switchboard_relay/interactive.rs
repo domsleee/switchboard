@@ -438,6 +438,7 @@ mod tests {
             candidates: Default::default(),
             artifact: None,
             askpass: Default::default(),
+            html_previews: Default::default(),
         };
         let app = axum::Router::new()
             .route("/api/interactive", axum::routing::post(wait))
@@ -514,6 +515,7 @@ mod tests {
             candidates: Default::default(),
             artifact: None,
             askpass: Default::default(),
+            html_previews: Default::default(),
         };
         let mut headers = HeaderMap::new();
         headers.insert(header::ORIGIN, "http://127.0.0.1:8090".parse().unwrap());

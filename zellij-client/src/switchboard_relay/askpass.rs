@@ -393,6 +393,7 @@ mod tests {
             candidates: Default::default(),
             artifact: None,
             askpass: Default::default(),
+            html_previews: Default::default(),
         }
     }
 
