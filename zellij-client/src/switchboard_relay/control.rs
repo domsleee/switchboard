@@ -36,6 +36,7 @@ pub(super) fn validate_session(session: &str) -> Result<(), Error> {
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn binary(host: &Host) -> anyhow::Result<PathBuf> {
     host.config
         .zellij_binary
@@ -77,14 +78,46 @@ pub(super) async fn run_local(
     args: &[&str],
     timeout: Duration,
 ) -> anyhow::Result<String> {
-    let mut command = tokio::process::Command::new(binary(host)?);
-    command
-        .args(["-s", session, "action"])
-        .args(args)
-        .kill_on_drop(true);
-    let output = tokio::time::timeout(timeout, command.output()).await??;
-    anyhow::ensure!(output.status.success(), "Terminal command failed");
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    use zellij_utils::{data::PaneId, input::actions::Action};
+    // Older unit fixtures explicitly supply a mock executable. Production never executes it.
+    #[cfg(test)]
+    if host.config.zellij_binary.is_some() {
+        let output = tokio::time::timeout(
+            timeout,
+            tokio::process::Command::new(binary(host)?)
+                .args(["-s", session, "action"])
+                .args(args)
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await??;
+        anyhow::ensure!(output.status.success(), "Terminal command failed");
+        return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+    }
+    let _ = host;
+    let action = match args {
+        ["list-panes", "--json"] | ["list-panes", "--json", "--all"] => Action::ListPanes {
+            show_tab: false,
+            show_command: false,
+            show_state: false,
+            show_geometry: false,
+            show_all: args.len() == 3,
+            output_json: true,
+        },
+        ["dump-screen", "-p", id] => Action::DumpScreen {
+            file_path: None,
+            include_scrollback: false,
+            pane_id: Some(PaneId::Terminal(id.parse()?)),
+            ansi: false,
+        },
+        ["close-tab", "--tab-id", id] => Action::CloseTabById { id: id.parse()? },
+        ["write", "-p", id, "27"] => Action::WriteToPaneId {
+            bytes: vec![27],
+            pane_id: PaneId::Terminal(id.parse()?),
+        },
+        _ => anyhow::bail!("Unsupported terminal operation"),
+    };
+    engine::action(session, action, timeout).await
 }
 
 /// A session's panes. Closing a pane or tab tells every client of the session to unblock, so a
@@ -541,9 +574,7 @@ pub(super) async fn execute_host(
             &host.config.name,
             &format!("Closed the last tab of session '{session}'; the session ended"),
         );
-        if let Ok(binary) = binary(host) {
-            tokio::spawn(forget_closed_session(binary, session.to_owned()));
-        }
+        tokio::spawn(forget_closed_session(session.to_owned()));
     }
     Ok(())
 }
@@ -583,22 +614,46 @@ async fn session_ended(host: &Host, session: &str) -> bool {
 
 /// Closing a session's final tab ends it, but Zellij keeps its last layout, so the next start
 /// of that name (Switchboard auto-starts `main`) resurrected the very tab just closed.
-/// Plain `delete-session` refuses while the engine runs, so a tab opened meanwhile keeps it.
-async fn forget_closed_session(binary: PathBuf, session: String) {
-    for _ in 0..20 {
-        let deleted = tokio::time::timeout(
-            Duration::from_secs(5),
-            tokio::process::Command::new(&binary)
-                .args(["delete-session", &session])
-                .kill_on_drop(true)
-                .output(),
+/// Wait for the native endpoint to disappear before removing the saved layout.
+async fn forget_closed_session(session: String) {
+    let path = zellij_utils::consts::session_info_folder_for_session(&session);
+    forget_when_absent(path, || async {
+        match tokio::time::timeout(
+            Duration::from_secs(2),
+            engine::Connection::connect(&session),
         )
-        .await;
-        // 0: deleted; 2: nothing was kept to resurrect. 1 means the engine is still running.
-        if let Ok(Ok(output)) = deleted {
-            if matches!(output.status.code(), Some(0 | 2)) {
-                return;
+        .await
+        {
+            Ok(Err(error)) => error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                )
+            }),
+            _ => false,
+        }
+    })
+    .await;
+}
+
+async fn forget_when_absent<F: Future<Output = bool>>(
+    path: PathBuf,
+    mut is_absent: impl FnMut() -> F,
+) {
+    // Congestion, permission failures and timeouts are not proof that an engine stopped.
+    let mut absent = 0;
+    for _ in 0..20 {
+        absent = if is_absent().await { absent + 1 } else { 0 };
+        if absent >= 3 {
+            if let Err(error) = tokio::fs::remove_dir_all(&path).await {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    logs::record(
+                        "relay",
+                        &format!("Could not forget closed session: {error}"),
+                    );
+                }
             }
+            return;
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
@@ -775,27 +830,29 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 3);
     }
 
-    #[cfg(unix)]
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn closed_final_tab_is_forgotten_only_after_its_engine_exits() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
-        let (fake, log) = (dir.path().join("zellij"), dir.path().join("calls"));
-        // Mimics `delete-session`: refuses (1) twice while the engine still runs, then deletes.
-        std::fs::write(
-            &fake,
-            format!(
-                "#!/bin/sh\necho \"$*\" >> '{0}'\n[ $(wc -l < '{0}') -gt 2 ]\n",
-                log.display()
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-        forget_closed_session(fake, "main".into()).await;
-        assert_eq!(
-            std::fs::read_to_string(&log).unwrap(),
-            "delete-session main\n".repeat(3),
-            "never forces a running engine, and stops once deleted"
+        let saved = dir.path().join("session");
+        std::fs::create_dir(&saved).unwrap();
+        std::fs::write(saved.join("layout.kdl"), "layout").unwrap();
+        let mut observations = [false, true, false, true, true, true].into_iter();
+        forget_when_absent(saved.clone(), || {
+            assert!(
+                saved.exists(),
+                "a live or uncertain engine must keep its layout"
+            );
+            std::future::ready(observations.next().unwrap())
+        })
+        .await;
+        assert!(!saved.exists());
+        assert!(observations.next().is_none());
+
+        std::fs::create_dir(&saved).unwrap();
+        forget_when_absent(saved.clone(), || std::future::ready(false)).await;
+        assert!(
+            saved.exists(),
+            "a replacement or unresponsive engine retains its layout"
         );
     }
 }

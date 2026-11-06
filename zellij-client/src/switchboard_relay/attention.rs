@@ -1,9 +1,7 @@
 use super::*;
 use axum::extract::Query;
-use std::process::Stdio;
 use std::sync::LazyLock;
 use std::{collections::BTreeMap, path::PathBuf};
-use tokio::io::AsyncBufReadExt;
 
 fn tail(text: &str, count: usize) -> &str {
     text.char_indices()
@@ -400,7 +398,7 @@ struct Subscription {
 
 impl Drop for Subscription {
     fn drop(&mut self) {
-        // The reader owns the child, which is killed when the reader is dropped.
+        // Aborting the reader closes its native subscription pipes.
         self.reader.abort();
     }
 }
@@ -514,39 +512,65 @@ fn subscribe(
     panes: Vec<u64>,
     changed: Arc<tokio::sync::Notify>,
 ) -> anyhow::Result<Subscription> {
-    let mut child = tokio::process::Command::new(control::binary(host)?)
-        .args(["-s", session, "subscribe", "--format", "json", "--pane-id"])
-        .args(panes.iter().map(u64::to_string))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()?;
-    let stdout = child.stdout.take().unwrap();
+    use zellij_utils::{
+        data::PaneId,
+        ipc::{ClientToServerMsg, ServerToClientMsg},
+    };
+    let _ = host;
+    #[cfg(test)]
+    let fixture_socket = host
+        .config
+        .zellij_binary
+        .as_ref()
+        .and_then(|binary| Path::new(binary).parent())
+        .map(|p| p.join("engine"));
     let screens: Arc<std::sync::Mutex<HashMap<u64, String>>> = Default::default();
     let shared = screens.clone();
+    let session = session.to_owned();
+    let pane_ids = panes
+        .iter()
+        .map(|id| u32::try_from(*id).map(PaneId::Terminal))
+        .collect::<Result<Vec<_>, _>>()?;
     let reader = tokio::spawn(async move {
-        let _child = child;
-        let mut lines = tokio::io::BufReader::new(stdout).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            let Ok(update) = serde_json::from_str::<Value>(&line) else {
-                continue;
+        let opened = tokio::time::timeout(Duration::from_secs(3), async {
+            #[cfg(test)]
+            let mut connection = match fixture_socket.as_deref() {
+                Some(path) => engine::Connection::at(path).await?,
+                None => engine::Connection::connect(&session).await?,
             };
-            let id = update["pane_id"]
-                .as_str()
-                .and_then(|id| id.strip_prefix("terminal_"))
-                .and_then(|id| id.parse::<u64>().ok());
-            let (Some(id), Some(rows)) = (id, update["viewport"].as_array()) else {
-                continue;
-            };
-            // Rows are padded to the pane width; dump-screen trims them.
-            let mut screen = String::new();
-            for row in rows.iter().filter_map(Value::as_str) {
-                screen.push_str(row.trim_end());
-                screen.push('\n');
+            #[cfg(not(test))]
+            let mut connection = engine::Connection::connect(&session).await?;
+            connection
+                .send(ClientToServerMsg::SubscribeToPaneRenders {
+                    pane_ids,
+                    scrollback: None,
+                    ansi: false,
+                })
+                .await?;
+            Ok::<_, anyhow::Error>(connection)
+        })
+        .await;
+        let Ok(Ok(mut connection)) = opened else {
+            return;
+        };
+        while let Ok(update) = connection.receive().await {
+            match update {
+                ServerToClientMsg::PaneRenderUpdate {
+                    pane_id: PaneId::Terminal(id),
+                    viewport,
+                    ..
+                } => {
+                    let mut screen = String::new();
+                    for row in viewport {
+                        screen.push_str(row.trim_end());
+                        screen.push('\n');
+                    }
+                    shared.lock().unwrap().insert(u64::from(id), screen);
+                    changed.notify_one();
+                },
+                ServerToClientMsg::Exit { .. } => break,
+                _ => {},
             }
-            shared.lock().unwrap().insert(id, screen);
-            changed.notify_one();
         }
     });
     Ok(Subscription {
@@ -1254,7 +1278,11 @@ pub fn forward_hook(agent: &str, input: impl std::io::Read) {
     let env = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
     let relay = crate::message_board::local_relay_url(env("SWITCHBOARD_RELAY_URL").as_deref());
     if let Some(request) = hook_request(agent, input, env, &relay) {
-        let _ = isahc::send(request).map(|mut response| response.consume());
+        if relay.starts_with("https://") {
+            if let Ok(client) = tls::http_client() {
+                let _ = client.send(request).map(|mut response| response.consume());
+            }
+        }
     }
 }
 
@@ -1473,6 +1501,28 @@ echo [{"id":1,"tab_id":4,"tab_position":0,"tab_name":"T","title":"x","pane_comma
     #[cfg(unix)]
     #[tokio::test]
     async fn live_screens_replace_dumps_and_update_status_between_listings() {
+        use interprocess::local_socket::traits::tokio::Listener as _;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use zellij_utils::prost::Message as _;
+        let session = format!("sb-{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
+        let dir = tempfile::tempdir().unwrap();
+        let native = zellij_utils::consts::ipc_bind_async(&dir.path().join("engine")).unwrap();
+        let native_task = tokio::spawn(async move {
+            let mut stream = native.accept().await.unwrap();
+            let length = stream.read_u32_le().await.unwrap();
+            let mut bytes = vec![0; length as usize];
+            stream.read_exact(&mut bytes).await.unwrap();
+            let update: zellij_utils::client_server_contract::client_server_contract::ServerToClientMsg =
+                zellij_utils::ipc::ServerToClientMsg::PaneRenderUpdate {
+                    pane_id: zellij_utils::data::PaneId::Terminal(1),
+                    viewport: vec!["(3s esc to interrupt)   ".into(), "> x   ".into(), "gpt-5 tab to queue message   ".into()],
+                    scrollback: None, is_initial: true,
+                }.into();
+            let bytes = update.encode_to_vec();
+            stream.write_u32_le(bytes.len() as u32).await.unwrap();
+            stream.write_all(&bytes).await.unwrap();
+            let _ = stream.read_u8().await;
+        });
         let upstream = Router::new()
             .route(
                 "/command/login",
@@ -1480,14 +1530,16 @@ echo [{"id":1,"tab_id":4,"tab_position":0,"tab_name":"T","title":"x","pane_comma
             )
             .route(
                 "/session-list",
-                get(|| async {
-                    Json(json!({"sessions":[{"name":"main","web_clients_allowed":true}]}))
+                get(move || {
+                    let session = session.clone();
+                    async move {
+                        Json(json!({"sessions":[{"name":session,"web_clients_allowed":true}]}))
+                    }
                 }),
             );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
-        let dir = tempfile::tempdir().unwrap();
         let token = dir.path().join("token");
         std::fs::write(&token, "t").unwrap();
         let (cli, dumps) = (dir.path().join("zellij"), dir.path().join("dumps"));
@@ -1524,6 +1576,7 @@ esac
         assert_eq!(second["panes"][0]["state"], "working");
         assert_eq!(dumped(), before, "a live screen is not dumped again");
         server.abort();
+        native_task.abort();
     }
     #[test]
     fn claude_hook_events_map_to_status() {

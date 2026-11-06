@@ -70,8 +70,51 @@ pub(super) fn install(binary: &Path) -> Result<()> {
     })? {
         println!("Created {}", config.display());
     }
+    crate::switchboard_relay::tls::ensure()?;
+    trust_local_certificate(&home)?;
     platform_install(&home, binary)?;
     println!("Connect your computers in Settings → Computers.");
+    Ok(())
+}
+
+/// Install trust for this user's browser; never disable certificate validation.
+fn trust_local_certificate(home: &Path) -> Result<()> {
+    let cert = crate::switchboard_relay::tls::certificate_path()?;
+    #[cfg(target_os = "macos")]
+    {
+        let mut command = Command::new("security");
+        command
+            .args(["add-trusted-cert", "-r", "trustRoot", "-k"])
+            .arg(home.join("Library/Keychains/login.keychain-db"))
+            .arg(&cert);
+        run_command(command, Duration::from_secs(60))?;
+    }
+    #[cfg(windows)]
+    {
+        let mut command = Command::new("certutil.exe");
+        command.args(["-user", "-addstore", "Root"]).arg(&cert);
+        run_command(command, Duration::from_secs(30))?;
+        let _ = home;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let nss = home.join(".pki/nssdb");
+        fs::create_dir_all(&nss)?;
+        if !nss.join("cert9.db").exists() {
+            let mut init = Command::new("certutil");
+            init.args(["-N", "--empty-password", "-d"])
+                .arg(format!("sql:{}", nss.display()));
+            run_command(init, Duration::from_secs(30))
+                .context("Install NSS certutil (libnss3-tools) to configure browser HTTPS trust")?;
+        }
+        let mut command = Command::new("certutil");
+        command
+            .args(["-A", "-n", "Switchboard local services", "-t", "C,,", "-d"])
+            .arg(format!("sql:{}", nss.display()))
+            .arg("-i")
+            .arg(&cert);
+        run_command(command, Duration::from_secs(30))?;
+    }
     Ok(())
 }
 
@@ -104,7 +147,7 @@ fn ensure_host_config(
     let mut host = serde_json::json!({
         "id": if windows { "windows" } else { "mac" },
         "name": name,
-        "url": "http://127.0.0.1:8082",
+        "url": "https://127.0.0.1:8082",
         "token_file": token_file,
     });
     if windows {
@@ -202,7 +245,7 @@ fn platform_install(home: &Path, binary: &Path) -> Result<()> {
     for (label, job) in mac_jobs(home, binary, &menu, &helpers, &shell, &start) {
         install_job(&agents, label, job)?;
     }
-    println!("Switchboard installed: http://127.0.0.1:8090");
+    println!("Switchboard installed: https://127.0.0.1:8090");
     Ok(())
 }
 
@@ -324,7 +367,7 @@ fn platform_install(home: &Path, binary: &Path) -> Result<()> {
             "Switchboard stops when you log out; keep it running with: sudo loginctl enable-linger $USER ({error:#})"
         );
     }
-    println!("Switchboard installed: http://127.0.0.1:8090");
+    println!("Switchboard installed: https://127.0.0.1:8090");
     Ok(())
 }
 
@@ -540,7 +583,7 @@ mod tests {
             (host["id"].as_str(), host["name"].as_str()),
             (Some("windows"), Some("Desk"))
         );
-        assert_eq!(host["url"], "http://127.0.0.1:8082");
+        assert_eq!(host["url"], "https://127.0.0.1:8082");
         assert_eq!(Path::new(host["token_file"].as_str().unwrap()), token);
         assert_eq!(host["escape_transport"], "local");
         // Re-running keeps both files and creates no new token.

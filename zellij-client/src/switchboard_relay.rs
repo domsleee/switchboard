@@ -7,6 +7,7 @@ mod skill_health;
 pub use attention::forward_hook;
 mod chats;
 mod control;
+mod engine;
 mod hostname;
 pub(crate) mod interactive;
 mod logs;
@@ -14,6 +15,8 @@ mod mesh;
 mod output_diagnostics;
 pub(crate) mod peer_bridge;
 mod tasks;
+mod terminal;
+pub(crate) mod tls;
 mod update_watch;
 use axum::{
     body::{to_bytes, Body, Bytes},
@@ -198,8 +201,24 @@ fn fingerprint(value: &str) -> anyhow::Result<[u8; 32]> {
 }
 
 impl Host {
-    fn new(config: HostConfig) -> anyhow::Result<Self> {
-        let origin = url::Url::parse(&config.url)?;
+    fn new(mut config: HostConfig) -> anyhow::Result<Self> {
+        let mut origin = url::Url::parse(&config.url)?;
+        // Migrate only the installed loopback engine URL; never downgrade or rewrite a peer.
+        if !cfg!(test)
+            && origin.scheme() == "http"
+            && origin
+                .host_str()
+                .is_some_and(|h| matches!(h, "127.0.0.1" | "localhost" | "[::1]"))
+        {
+            origin
+                .set_scheme("https")
+                .map_err(|_| anyhow::anyhow!("Invalid engine URL"))?;
+            config.url = origin.as_str().trim_end_matches('/').to_owned();
+        }
+        anyhow::ensure!(
+            cfg!(test) || origin.scheme() == "https",
+            "HTTPS is required"
+        );
         anyhow::ensure!(
             config.gateway_token_file.is_none()
                 || (origin.scheme() == "https" && config.tls_fingerprint.is_some()),
@@ -229,6 +248,16 @@ impl Host {
                     .with_no_client_auth()
             } else {
                 let mut roots = rustls::RootCertStore::empty();
+                if origin
+                    .host_str()
+                    .is_some_and(|h| matches!(h, "127.0.0.1" | "localhost" | "[::1]"))
+                {
+                    use rustls_pki_types::pem::PemObject;
+                    let pem = std::fs::read(tls::certificate_path()?)?;
+                    for cert in rustls_pki_types::CertificateDer::pem_slice_iter(&pem) {
+                        roots.add(cert?)?;
+                    }
+                }
                 roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
                 builder.with_root_certificates(roots).with_no_client_auth()
             };
@@ -704,6 +733,9 @@ fn trusted(headers: &HeaderMap, port: u16) -> bool {
         "switchboard.localhost:80".into(),
     ];
     let origins = [
+        format!("https://127.0.0.1:{port}"),
+        format!("https://localhost:{port}"),
+        format!("https://switchboard.localhost:{port}"),
         format!("http://127.0.0.1:{port}"),
         format!("http://localhost:{port}"),
         format!("http://switchboard.localhost:{port}"),
@@ -723,8 +755,11 @@ fn trusted(headers: &HeaderMap, port: u16) -> bool {
             .get(header::ORIGIN)
             .map(|h| {
                 h.to_str().ok().is_some_and(|origin| {
-                    origins.iter().any(|o| o == origin)
-                        || (port == 80 && matches!(origin, "http://127.0.0.1" | "http://localhost"))
+                    (cfg!(test) || origin.starts_with("https://"))
+                        && origins.iter().any(|o| o == origin)
+                        || (cfg!(test)
+                            && port == 80
+                            && matches!(origin, "http://127.0.0.1" | "http://localhost"))
                 })
             })
             .unwrap_or(true)
@@ -1288,6 +1323,7 @@ fn app(state: RelayState) -> Router {
         )
         .route("/api/message-board/{*path}", any(message_board))
         .route("/api/hosts/{host}/close-tab", post(control::close_tab))
+        .route("/api/hosts/{host}/terminal", post(terminal::handler))
         .route("/api/hosts/{host}/escape", post(control::escape))
         .route("/api/open-link", post(control::open_link))
         .route("/api/open-file", post(control::open_file))
@@ -1320,7 +1356,11 @@ pub const DEFAULT_PORT: u16 = 8090;
 
 /// Serves the relay on `port` as well, retrying while another process holds it
 /// (such as the relay this one replaces during an update).
-async fn serve_also_on(mut state: RelayState, port: u16) {
+async fn serve_also_on(
+    mut state: RelayState,
+    port: u16,
+    tls_config: axum_server::tls_rustls::RustlsConfig,
+) {
     let address = (std::net::Ipv4Addr::LOCALHOST, port);
     let mut reported = false;
     let listener = loop {
@@ -1343,16 +1383,16 @@ async fn serve_also_on(mut state: RelayState, port: u16) {
     };
     // Requests on this listener must name this port, as on the main one.
     state.port = port;
-    let listener = axum::serve::ListenerExt::tap_io(listener, |stream| {
-        let _ = stream.set_nodelay(true);
-    });
-    if let Err(error) = axum::serve(listener, app(state)).await {
+    if let Err(error) =
+        tls::serve(listener, app(state), axum_server::Handle::new(), tls_config).await
+    {
         log::warn!("The relay stopped serving on port {port}: {error}");
     }
 }
 
 /// Start the relay on loopback. Never restarts user terminal engines.
 pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
+    let tls_config = tls::server().await?;
     let config: RelayConfig = serde_json::from_slice(&tokio::fs::read(config_path).await?)?;
     let address = (std::net::Ipv4Addr::LOCALHOST, port);
     let listener = match tokio::net::TcpListener::bind(address).await {
@@ -1424,16 +1464,25 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
     let polling =
         attention::start(state.clone(), config_path.with_extension("attention.json")).await;
     let update_tasks = tasks::start(state.clone()).await;
-    let also =
-        (port != DEFAULT_PORT).then(|| tokio::spawn(serve_also_on(state.clone(), DEFAULT_PORT)));
+    let also = (port != DEFAULT_PORT).then(|| {
+        tokio::spawn(serve_also_on(
+            state.clone(),
+            DEFAULT_PORT,
+            tls_config.clone(),
+        ))
+    });
     let update_watch = tokio::spawn(update_watch::watch());
     // Keystrokes and echoes are tiny writes; Nagle plus delayed ACK can hold each one back.
-    let listener = axum::serve::ListenerExt::tap_io(listener, |stream| {
-        let _ = stream.set_nodelay(true);
+    let handle = axum_server::Handle::new();
+    let stop = tokio::spawn({
+        let handle = handle.clone();
+        async move {
+            shutdown().await;
+            handle.graceful_shutdown(Some(Duration::from_secs(5)));
+        }
     });
-    let result = axum::serve(listener, app(state.clone()))
-        .with_graceful_shutdown(shutdown())
-        .await;
+    let result = tls::serve(listener, app(state.clone()), handle, tls_config).await;
+    stop.abort();
     pairing.abort();
     if let Some(task) = also {
         task.abort();
@@ -2266,24 +2315,37 @@ mod tests {
             .local_addr()
             .unwrap()
             .port();
-        let task = tokio::spawn(serve_also_on(relay, port));
-        let post = |host: String| async move {
-            let body = r#"{"hook_event_name":"SessionEnd"}"#;
-            let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await?;
-            stream
-                .write_all(
-                    format!(
+        let dir = tempfile::tempdir().unwrap();
+        let (cert, key) = tls::ensure_at(dir.path()).unwrap();
+        let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key)
+            .await
+            .unwrap();
+        let client =
+            tls::client_with_ca(&std::fs::read(dir.path().join("ca.pem")).unwrap()).unwrap();
+        let task = tokio::spawn(serve_also_on(relay, port, tls_config));
+        let post = |host: String| {
+            let client = client.clone();
+            async move {
+                let body = r#"{"hook_event_name":"SessionEnd"}"#;
+                let tcp = tokio::net::TcpStream::connect(("127.0.0.1", port)).await?;
+                let mut stream = tokio_rustls::TlsConnector::from(client)
+                    .connect("localhost".try_into().unwrap(), tcp)
+                    .await?;
+                stream
+                    .write_all(
+                        format!(
                         "POST /api/agent-hook HTTP/1.1\r\nHost: {host}\r\nX-Zellij-Session: s\r\n\
                          X-Zellij-Pane: 1\r\nContent-Type: application/json\r\n\
                          Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
                         body.len()
                     )
-                    .as_bytes(),
-                )
-                .await?;
-            let mut response = String::new();
-            stream.read_to_string(&mut response).await?;
-            std::io::Result::Ok(response.lines().next().unwrap_or_default().to_owned())
+                        .as_bytes(),
+                    )
+                    .await?;
+                let mut response = String::new();
+                stream.read_to_string(&mut response).await?;
+                std::io::Result::Ok(response.lines().next().unwrap_or_default().to_owned())
+            }
         };
         let mut status = String::new();
         for _ in 0..100 {
@@ -2840,4 +2902,9 @@ mod tests {
         assert!(wrong.raw_websocket("/ws", "test=cookie").await.is_err());
         task.abort();
     }
+}
+
+/// CA used to verify this computer's local HTTPS services.
+pub fn local_ca_certificate() -> anyhow::Result<std::path::PathBuf> {
+    tls::certificate_path()
 }

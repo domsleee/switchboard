@@ -74,7 +74,7 @@ async fn proxy(State(state): State<ArtifactState>, request: Request) -> Result<R
                 .map_err(|_| (StatusCode::BAD_GATEWAY, "Invalid artifact redirect"))?,
         );
     }
-    headers.insert("content-security-policy","frame-ancestors https://switchboard.localhost http://switchboard.localhost http://127.0.0.1:8090 http://localhost:8090".parse().unwrap());
+    headers.insert("content-security-policy","frame-ancestors https://switchboard.localhost https://switchboard.localhost https://127.0.0.1:8090 https://localhost:8090".parse().unwrap());
     headers.insert("x-content-type-options", "nosniff".parse().unwrap());
     let status = response.status();
     Ok((status, headers, stream(response.into_body())).into_response())
@@ -172,21 +172,23 @@ pub(super) async fn start(
             return Ok(None);
         },
     };
+    let tls_config = tls::server().await?;
     Ok(Some(tokio::spawn(async move {
-        if let Err(error) = axum::serve(listener, app).await {
+        if let Err(error) = tls::serve(listener, app, axum_server::Handle::new(), tls_config).await
+        {
             log::error!("Artifact relay stopped: {error}");
         }
     })))
 }
 
 // Files under ~/.switchboard/artifacts/, readable from every paired computer at
-// http://127.0.0.1:8091/artifacts/<computer>/<artifact>/<file>. The separate port keeps
+// https://127.0.0.1:8091/artifacts/<computer>/<artifact>/<file>. The separate port keeps
 // artifact pages, including their scripts, on an origin the terminal relay rejects.
 // Peers read through the paired gateway, with the same credential as terminals.
 
 const PORT: u16 = 8091;
 const MARKDOWN_LIMIT: usize = 4 * 1024 * 1024;
-const FRAME: &str = "frame-ancestors 'self' https://switchboard.localhost http://switchboard.localhost http://127.0.0.1:8090 http://localhost:8090";
+const FRAME: &str = "frame-ancestors 'self' https://switchboard.localhost https://switchboard.localhost https://127.0.0.1:8090 https://localhost:8090";
 /// Rendered Markdown never runs scripts.
 const DOCUMENT: &str = "sandbox allow-same-origin allow-popups allow-popups-to-escape-sandbox";
 
@@ -867,7 +869,7 @@ pub(crate) fn publish(
     })?;
     let file: Vec<_> = paths[0].split('/').map(urlencoding::encode).collect();
     println!(
-        "http://127.0.0.1:{PORT}/artifacts/{}/{}/{}",
+        "https://127.0.0.1:{PORT}/artifacts/{}/{}/{}",
         urlencoding::encode(&computer),
         urlencoding::encode(&id),
         file.join("/")

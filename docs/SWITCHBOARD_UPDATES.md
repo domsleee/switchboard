@@ -3,6 +3,24 @@
 Windows and macOS installers enable automatic connection-service updates.
 The manual guarded updaters remain available for release selection and recovery.
 
+## First HTTPS-only installation
+
+This is a transport migration, not a drop-in update for an HTTP-only controller.
+An old updater probes the new services over HTTP and will roll them back. Prepare
+and test the new installer/updater on each platform before publishing this build
+to the rolling release. Install the local CA trust and restart the web daemon,
+relay and updater together using the new build; retain the previous build and
+configuration for rollback. Restart connection services only, preserving session
+engines and shell/agent PIDs. Existing HTTP listeners cannot be converted by
+changing a URL; they must be replaced. Portless or other external reverse proxies
+must also be configured to verify an HTTPS upstream, or use the direct
+`https://switchboard.localhost:8090` address.
+
+Validate HTTPS health, peer pairing, browser certificate trust, hook delivery,
+artifact previews and unchanged terminal identities before enabling automatic
+updates again. Never work around a failed migration by disabling verification
+or enabling an HTTP fallback.
+
 ## Automatic updates
 
 Each push to `main` builds Windows, Apple Silicon and Intel Mac bundles: the

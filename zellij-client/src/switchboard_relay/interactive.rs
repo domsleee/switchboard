@@ -255,6 +255,7 @@ fn run_command(command: &[String], timeout: Duration, relay_url: &str) -> anyhow
 
     // The badge is a courtesy: a relay that is down or older leaves the run unmarked.
     let request = serde_json::json!({ "session": session, "pane_id": pane_id }).to_string();
+    anyhow::ensure!(relay_url.starts_with("https://"), "HTTPS is required");
     let url = format!("{}/api/interactive", relay_url.trim_end_matches('/'));
     std::thread::spawn(move || {
         use isahc::config::Configurable;
@@ -263,7 +264,9 @@ fn run_command(command: &[String], timeout: Duration, relay_url: &str) -> anyhow
             .timeout(MAX_WAIT)
             .body(request)
         {
-            let _ = isahc::send(request);
+            if let Ok(client) = crate::switchboard_relay::tls::http_client() {
+                let _ = client.send(request);
+            }
         }
     });
 

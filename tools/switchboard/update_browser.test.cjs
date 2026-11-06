@@ -1,3 +1,5 @@
+const secure = require('./tls-fixture.cjs')(() => env);
+const fetch = secure.fetch;
 // Real browser acceptance. Never attach to or restart the user's sessions.
 // Usage: PLAYWRIGHT_MODULE=/path/to/playwright node update_browser.test.cjs [OLD_BINARY] [NEW_BINARY]
 const assert = require('node:assert/strict');
@@ -62,9 +64,9 @@ let recoveryPanes, reconnectTarget;
         const tokenPath=path.join(dir,'token');
         fs.writeFileSync(tokenPath,tokenLine.slice(tokenName.length+2).trim(),{mode:0o600});
         const nativePort=await availablePort(), relayPort=await availablePort();
-        const url=`http://127.0.0.1:${relayPort}`;
+        const url=`https://127.0.0.1:${relayPort}`;
         const relayConfig=path.join(dir,'hosts.json');
-        fs.writeFileSync(relayConfig,JSON.stringify({hosts:[{id:'test',name:'Acceptance',url:`http://127.0.0.1:${nativePort}`,token_file:tokenPath,zellij_binary:installed}]}),{mode:0o600});
+        fs.writeFileSync(relayConfig,JSON.stringify({hosts:[{id:'test',name:'Acceptance',url:`https://127.0.0.1:${nativePort}`,token_file:tokenPath,zellij_binary:installed}]}),{mode:0o600});
         let recoveryEnabled=false;
         const startNative=()=>spawn(recoveryMode?newBinary:installed,['--config',config,'web','--port',String(nativePort)],{env:{...env,...(recoveryEnabled?{SWITCHBOARD_RECOVER_UNSHARED_SESSION:name}:{})},stdio:['ignore',fs.openSync(path.join(dir,'native.log'),'a'),fs.openSync(path.join(dir,'native-error.log'),'a')]});
         const startRelay=()=>spawn(newBinary,['serve','--host-config',relayConfig,'--port',String(relayPort)],{env,stdio:['ignore',fs.openSync(path.join(dir,'relay.log'),'a'),fs.openSync(path.join(dir,'relay-error.log'),'a')]});
@@ -110,7 +112,7 @@ let recoveryPanes, reconnectTarget;
         assert.ok(server,'Private session server exists');
         const children=processes().filter(p=>p.ppid===server.pid);
         assert.ok(children.length,'Session owns terminal processes');
-        browser=await chromium.launch({headless:true});
+        browser=await secure.launch(chromium,{headless:true});
         const context=await browser.newContext({viewport:{width:1200,height:800}});
         const page=await context.newPage();
         page.setDefaultTimeout(30000);
@@ -163,7 +165,7 @@ let recoveryPanes, reconnectTarget;
             const roLine=roOutput.split('\n').find(line=>line.includes(': '));
             readOnlyTokenName=roLine.split(': ')[0];
             const roContext=await browser.newContext();
-            const nativeUrl=`http://127.0.0.1:${nativePort}`;
+            const nativeUrl=`https://127.0.0.1:${nativePort}`;
             assert.equal((await fetch(nativeUrl+'/session-list')).status,401,'Recovery does not allow unauthenticated session discovery');
             assert.equal((await roContext.request.post(nativeUrl+'/command/login',{data:{auth_token:roLine.slice(readOnlyTokenName.length+2).replace(/ \(read-only\)\s*$/,'').trim(),remember_me:false}})).status(),200);
             const roCatalog=await (await roContext.request.get(nativeUrl+'/session-list')).json();

@@ -24,7 +24,7 @@ cargo install --path .
 zellij switchboard install
 ```
 
-Then open http://127.0.0.1:8090. A menu bar icon opens Switchboard and shows
+Then open https://127.0.0.1:8090. A menu bar icon opens Switchboard and shows
 its status. Quitting it leaves your terminals running.
 
 ## Install on Windows
@@ -39,7 +39,7 @@ its status. Quitting it leaves your terminals running.
    zellij switchboard install
    ```
 
-Then open http://switchboard.localhost:8090. A tray icon starts with Windows.
+Then open https://switchboard.localhost:8090. A tray icon starts with Windows.
 Quitting it leaves your terminals running.
 
 The first install sets up this computer's login on its own. Running it again

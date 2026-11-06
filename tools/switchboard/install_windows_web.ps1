@@ -17,7 +17,7 @@ if (!$Config -or !$ReleaseDirectory -or !$RelayPort) {
     if (!$RelayPort) { $RelayPort = $running.relayPort }
 }
 if (!$RelayPort) { $RelayPort = 8090 }
-$relayUrl = "http://switchboard.localhost:$RelayPort"
+$relayUrl = "https://switchboard.localhost:$RelayPort"
 if (!$ReleaseDirectory) { $ReleaseDirectory = Get-SwitchboardReleaseDirectory }
 if (Test-Path -LiteralPath (Join-Path $ReleaseDirectory 'current.json')) {
     $Binary = Get-SwitchboardCurrentBinary $ReleaseDirectory
@@ -150,7 +150,7 @@ function Start-Servers {
             if ($ready.Code -ne 0) { throw 'Zellij web started but is not ready (see logs)' }
         }
         try {
-            $response = Invoke-WebRequest "http://127.0.0.1:$RelayPort/api/health" -Headers @{Host="switchboard.localhost:$RelayPort"} -UseBasicParsing -TimeoutSec 2
+            $response = Invoke-WebRequest "https://127.0.0.1:$RelayPort/api/health" -Headers @{Host="switchboard.localhost:$RelayPort"} -UseBasicParsing -TimeoutSec 2
             if ($response.StatusCode -eq 200 -and ($response.Content | ConvertFrom-Json).relay -eq 'rust') { $status.Text = 'Switchboard running'; return }
         } catch {}
         if ($script:relay -and !$script:relay.HasExited) { $status.Text = 'Switchboard starting...'; return }

@@ -337,6 +337,39 @@ fn is_due(state: &State, run_number: u64) -> bool {
     run_number > last || (run_number == last && state.attempts.is_some_and(|a| a < ATTEMPTS))
 }
 
+fn fetch_https(url: &str, timeout: Duration) -> Result<Vec<u8>> {
+    let mut url = url::Url::parse(url)?;
+    for _ in 0..=10 {
+        ensure!(
+            url.scheme() == "https"
+                || cfg!(test) && url.scheme() == "http" && url.host_str() == Some("127.0.0.1"),
+            "Update downloads require HTTPS"
+        );
+        let request = Request::get(url.as_str())
+            .redirect_policy(RedirectPolicy::None)
+            .timeout(timeout)
+            .body(())?;
+        let mut response =
+            isahc::send(request).with_context(|| format!("Cannot download {url}"))?;
+        if response.status().is_redirection() {
+            let location = response
+                .headers()
+                .get("location")
+                .context("Missing download redirect")?
+                .to_str()?;
+            url = url.join(location)?;
+            continue;
+        }
+        ensure!(
+            response.status().is_success(),
+            "Download {url} returned {}",
+            response.status()
+        );
+        return Ok(response.bytes()?);
+    }
+    anyhow::bail!("Too many download redirects")
+}
+
 /// Whether a published main build is due on this computer. The relay asks every two
 /// minutes and starts the update job early, so updates do not wait for its schedule.
 pub fn newer_build_published() -> Result<bool> {
@@ -344,18 +377,8 @@ pub fn newer_build_published() -> Result<bool> {
     let platform = target_platform()?;
     let state = State::load(&home.join(".local/share/switchboard/automatic-updates/state.json"))?;
     let url = format!("{RELEASE_URL}switchboard-{platform}-bundle.json");
-    let request = Request::get(&url)
-        .redirect_policy(RedirectPolicy::Limit(10))
-        .timeout(Duration::from_secs(30))
-        .body(())?;
-    let mut response = isahc::send(request).with_context(|| format!("Cannot download {url}"))?;
-    ensure!(
-        response.status().is_success(),
-        "Download {url} returned {}",
-        response.status()
-    );
-    let manifest: Manifest =
-        serde_json::from_slice(&response.bytes()?).context("Invalid release manifest")?;
+    let manifest: Manifest = serde_json::from_slice(&fetch_https(&url, Duration::from_secs(30))?)
+        .context("Invalid release manifest")?;
     validate_manifest(&manifest, platform)?;
     Ok(is_due(&state, manifest.run_number))
 }
@@ -967,29 +990,27 @@ impl Updater {
             let path = Path::new(&self.source).join(asset);
             return fs::read(&path).with_context(|| format!("Cannot read {}", path.display()));
         }
-        let url = format!("{}/{asset}", self.source.trim_end_matches('/'));
-        let request = Request::get(&url)
-            .redirect_policy(RedirectPolicy::Limit(10))
-            .timeout(Duration::from_secs(300))
-            .body(())?;
-        let mut response =
-            isahc::send(request).with_context(|| format!("Cannot download {url}"))?;
-        ensure!(
-            response.status().is_success(),
-            "Download {url} returned {}",
-            response.status()
-        );
-        Ok(response.bytes()?)
+        fetch_https(
+            &format!("{}/{asset}", self.source.trim_end_matches('/')),
+            Duration::from_secs(300),
+        )
     }
 
     fn local_json<T: DeserializeOwned>(&self, path: &str, timeout: Duration) -> Result<T> {
         // Tokens stay in the relay; only build and session identity cross here.
-        let request = Request::get(format!("http://127.0.0.1:{}{path}", self.port))
+        // Orchestration unit fixtures model service state with a loopback HTTP server;
+        // production and TLS transport tests use authenticated HTTPS.
+        let scheme = if cfg!(test) { "http" } else { "https" };
+        let request = Request::get(format!("{scheme}://127.0.0.1:{}{path}", self.port))
             .header("Host", "switchboard.localhost")
             .proxy(None::<isahc::http::Uri>)
             .timeout(timeout)
             .body(())?;
-        let mut response = isahc::send(request)?;
+        let mut response = if cfg!(test) {
+            isahc::send(request)?
+        } else {
+            crate::switchboard_relay::tls::http_client()?.send(request)?
+        };
         ensure!(
             response.status().is_success(),
             "{path} returned {}",

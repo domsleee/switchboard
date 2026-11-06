@@ -172,3 +172,18 @@ These tests run on Windows in the native-binaries checks and on Unix locally.
 For release acceptance, run concurrent `list-panes`, `list-tabs` and
 `list-clients` against a disposable updated Windows session while attaching a
 browser; each must return its own response. Keep existing user engines running.
+
+## HTTPS terminal API acceptance
+
+Run `node tools/switchboard/terminal_api.test.cjs BINARY` against the new executable
+in an isolated fixture. It checks real credential validation and revocation,
+read-only denial, targeted screen/input/key/close operations and unchanged geometry.
+The fixture uses PowerShell on Windows and Bash on Unix.
+Browser/update executable fixtures now require HTTPS-capable old and new builds;
+the first migration from an HTTP-only controller is a separate rollout test
+(see the update guide). Local transport unit tests verify plaintext refusal,
+certificate identity persistence, wrong-CA rejection and hostname verification.
+
+Mac validation covers the TLS/IPC path; Windows named-pipe and browser trust
+acceptance remain required before shipping. PowerShell tray fixtures exercise the
+HTTPS URL but do not establish Windows certificate-store behavior.

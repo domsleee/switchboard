@@ -113,7 +113,7 @@ if ($Action -eq 'Stop') {
         } while (!$listening -and [DateTime]::UtcNow -lt $deadline)
         if (!$listening) { throw "Restarted service is not listening: $($identity.id)" }
     }
-    $health = Invoke-WebRequest "http://127.0.0.1:$RelayPort/api/health" -Headers @{Host='switchboard.localhost'} -UseBasicParsing -TimeoutSec 5
+    $health = Invoke-WebRequest "https://127.0.0.1:$RelayPort/api/health" -Headers @{Host='switchboard.localhost'} -UseBasicParsing -TimeoutSec 5
     if (($health.Content | ConvertFrom-Json).relay -ne 'rust') { throw 'Restarted relay is not answering' }
     & $module { param($Baseline) Assert-SwitchboardProcesses $Baseline } $state.protected
     $selected = Get-SwitchboardCurrentBinary $ReleaseDirectory

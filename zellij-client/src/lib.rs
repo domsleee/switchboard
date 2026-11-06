@@ -1017,8 +1017,8 @@ pub fn start_client(
         .web_server_ip
         .unwrap_or_else(|| IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
     let web_server_port = config_options.web_server_port.unwrap_or_else(|| 8082);
-    let has_certificate =
-        config_options.web_server_cert.is_some() && config_options.web_server_key.is_some();
+    let has_certificate = web_server_ip.is_loopback()
+        || config_options.web_server_cert.is_some() && config_options.web_server_key.is_some();
     let enforce_https_for_localhost = config_options.enforce_https_for_localhost.unwrap_or(false);
 
     let terminal_teardown = TerminalTeardown {

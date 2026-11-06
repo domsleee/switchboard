@@ -61,7 +61,7 @@ const freePort = () => new Promise(resolve => {
 });
 // A fresh connection each time: services restart between requests.
 const health = port => new Promise((resolve, reject) => {
-    require('node:http').get({host:'127.0.0.1', port, path:'/api/health', agent:false, timeout:2000, headers:{host:'switchboard.localhost'}}, response => {
+    require('node:https').get({ca:fs.readFileSync(path.join(dir,'.config/switchboard/tls/ca.pem')),host:'127.0.0.1', port, path:'/api/health', agent:false, timeout:2000, headers:{host:'switchboard.localhost'}}, response => {
         let body = ''; response.on('data', chunk => body += chunk);
         response.on('end', () => { try { resolve(JSON.parse(body)); } catch (error) { reject(error); } });
     }).on('error', reject).on('timeout', function () { this.destroy(Error('timeout')); });

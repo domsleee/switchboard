@@ -346,11 +346,14 @@ pub fn run(prompt: Option<&str>, relay_url: &str) -> anyhow::Result<()> {
         "prompt": truncate(prompt.unwrap_or("Password:"), 256),
         "command": truncate(&parent_command(), 4096),
     });
+    anyhow::ensure!(relay_url.starts_with("https://"), "HTTPS is required");
     let request = isahc::Request::post(format!("{}/api/askpass", relay_url.trim_end_matches('/')))
         .header("content-type", "application/json")
         .timeout(TIMEOUT + Duration::from_secs(10))
         .body(body.to_string())?;
-    let response = isahc::send(request).context("The Switchboard relay did not answer")?;
+    let response = crate::switchboard_relay::tls::http_client()?
+        .send(request)
+        .context("The Switchboard relay did not answer")?;
     let ok = response.status().is_success();
     let reply: Value = serde_json::from_reader(response.into_body()).unwrap_or_default();
     match reply["password"].as_str() {

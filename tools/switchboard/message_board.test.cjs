@@ -7,7 +7,7 @@ const os=require('node:os');
 const path=require('node:path');
 const crypto=require('node:crypto');
 const net=require('node:net');
-const {spawn}=require('node:child_process');
+const {spawn,execFileSync}=require('node:child_process');
 const binary=process.env.SWITCHBOARD_TEST_BINARY;
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function port(){const socket=net.createServer();await new Promise(resolve=>socket.listen(0,'127.0.0.1',resolve));const value=socket.address().port;await new Promise(resolve=>socket.close(resolve));return value;}
@@ -23,15 +23,20 @@ test('message board CLI exchanges multiline threads, preserves delivery across r
   let server;
   try{
     assert.ok(fs.existsSync(binary),'Choose an existing test executable');
-    const address='http://127.0.0.1:'+await port(),hostConfig=path.join(dir,'host.json');
+    const address='https://127.0.0.1:'+await port(),hostConfig=path.join(dir,'host.json');
+    const tlsDir=path.join(dir,'.config/switchboard/tls');fs.mkdirSync(tlsDir,{recursive:true});
+    const cert=path.join(tlsDir,'localhost.pem'),key=path.join(tlsDir,'localhost-key.pem');
+    execFileSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-keyout',key,'-out',cert,'-days','1','-subj','/CN=localhost','-addext','subjectAltName=DNS:localhost,IP:127.0.0.1'],{stdio:'ignore'});
+    fs.copyFileSync(cert,path.join(tlsDir,'ca.pem'));
+    const fetch=require('./tls-fixture.cjs')(()=>({HOME:dir,USERPROFILE:dir})).fetch;
     const credentials=['mac','windows'].map(id=>({id,name:id==='mac'?'Mac':'Windows',token:crypto.randomBytes(32).toString('hex')}));
     const clients={};
     for(const machine of credentials){
       const tokenFile=path.join(dir,machine.id+'.token');fs.writeFileSync(tokenFile,machine.token,{mode:0o600});
       clients[machine.id]=path.join(dir,machine.id+'.json');
-      fs.writeFileSync(clients[machine.id],JSON.stringify({url:address,token_file:tokenFile}),{mode:0o600});
+      fs.writeFileSync(clients[machine.id],JSON.stringify({url:address,token_file:tokenFile,ca_cert:cert}),{mode:0o600});
     }
-    fs.writeFileSync(hostConfig,JSON.stringify({listen:new URL(address).host,database:path.join(dir,'board.sqlite3'),
+    fs.writeFileSync(hostConfig,JSON.stringify({listen:new URL(address).host,tls_cert:cert,tls_key:key,database:path.join(dir,'board.sqlite3'),
       machines:credentials.map(({id,name})=>({id,name,token_file:path.join(dir,id+'.token')}))}),{mode:0o600});
     async function start(){
       server=spawn(path.resolve(binary),['message','serve','--board-config',hostConfig],{windowsHide:true,stdio:['ignore','ignore','pipe']});

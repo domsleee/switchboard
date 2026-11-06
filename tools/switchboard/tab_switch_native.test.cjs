@@ -1,3 +1,5 @@
+const secure = require('./tls-fixture.cjs')(() => env);
+const fetch = secure.fetch;
 // Real terminal timing in a private recovered session; never attach to user terminals.
 // PLAYWRIGHT_MODULE=/path/to/playwright node tab_switch_native.test.cjs BINARY [--measure]
 const assert=require('node:assert/strict');
@@ -12,7 +14,7 @@ const measureOnly=process.argv.includes('--measure');
 const dir=fs.mkdtempSync('/tmp/switchboard-tab-switch-');
 const installed=path.join(dir,'zellij'),config=path.join(dir,'config.kdl');
 const name='tab-switch-'+crypto.randomBytes(8).toString('hex');
-const env={...process.env,ZELLIJ_SOCKET_DIR:path.join(dir,'sockets'),TERM:'xterm-256color',ZELLIJ_CONFIG_FILE:config};
+const env={...process.env,HOME:dir,USERPROFILE:dir,ZELLIJ_SOCKET_DIR:path.join(dir,'sockets'),TERM:'xterm-256color',ZELLIJ_CONFIG_FILE:config};
 for(const key of ['ZELLIJ','ZELLIJ_SESSION_NAME','ZELLIJ_CONFIG_DIR'])delete env[key];
 const cli=(...args)=>execFileSync(installed,['--config',config,...args],{env,encoding:'utf8',timeout:15000,stdio:['ignore','pipe','pipe']});
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -36,12 +38,12 @@ let native,relay,browser,tokenName,created=false;
     const tokenLine=cli('web','--create-token').split('\n').find(line=>line.includes(': '));
     assert.ok(tokenLine);tokenName=tokenLine.split(': ')[0];
     const token=path.join(dir,'token');fs.writeFileSync(token,tokenLine.slice(tokenName.length+2).trim(),{mode:0o600});
-    const nativePort=await port(),relayPort=await port(),url='http://127.0.0.1:'+relayPort;
-    const hosts=path.join(dir,'hosts.json');fs.writeFileSync(hosts,JSON.stringify({hosts:[{id:'fixture',name:'Private fixture',url:'http://127.0.0.1:'+nativePort,token_file:token,zellij_binary:installed}]}),{mode:0o600});
+    const nativePort=await port(),relayPort=await port(),url='https://127.0.0.1:'+relayPort;
+    const hosts=path.join(dir,'hosts.json');fs.writeFileSync(hosts,JSON.stringify({hosts:[{id:'fixture',name:'Private fixture',url:'https://127.0.0.1:'+nativePort,token_file:token,zellij_binary:installed}]}),{mode:0o600});
     native=spawn(installed,['--config',config,'web','--port',String(nativePort)],{env:{...env,SWITCHBOARD_RECOVER_UNSHARED_SESSION:name},stdio:['ignore',fs.openSync(path.join(dir,'native.log'),'a'),fs.openSync(path.join(dir,'native-error.log'),'a')]});
     relay=spawn(installed,['serve','--host-config',hosts,'--port',String(relayPort)],{env,stdio:['ignore',fs.openSync(path.join(dir,'relay.log'),'a'),fs.openSync(path.join(dir,'relay-error.log'),'a')]});
     await until(async()=>{const data=await (await fetch(url+'/api/hosts/fixture')).json();return data.sessions?.some(s=>s.name===name&&s.sharing_recovery&&s.web_clients_allowed);},'Private recovered session did not start');
-    browser=await chromium.launch({headless:true});
+    browser=await secure.launch(chromium,{headless:true});
     const page=await browser.newPage({viewport:{width:1200,height:800}});page.setDefaultTimeout(15000);
     const errors=[];page.on('pageerror',error=>errors.push(error.message));
     await page.addInitScript(()=>{

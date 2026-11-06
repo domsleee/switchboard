@@ -120,7 +120,7 @@ services_ready() {
     snapshot_services services-after
     grep -q ' web$' "$work/services-after" && grep -q ' serve$' "$work/services-after" || return 1
     probe "$installed" web --status --timeout 2 > /dev/null 2>&1 || return 1
-    curl -fsS --max-time 3 -H 'Host: switchboard.localhost' "http://127.0.0.1:$relay_port/api/health" > "$work/health" 2>/dev/null || return 1
+    curl --cacert "$HOME/.config/switchboard/tls/ca.pem" -fsS --max-time 3 -H 'Host: switchboard.localhost' "https://127.0.0.1:$relay_port/api/health" > "$work/health" 2>/dev/null || return 1
     jq -e --arg expected "$expected_commit" '.relay == "rust" and (.commit | type == "string") and
         ($expected == "" or (.commit as $c | ($expected | startswith($c)) or ($c | startswith($expected))))' "$work/health" > /dev/null
 }

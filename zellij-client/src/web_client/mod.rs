@@ -109,8 +109,20 @@ pub fn start_web_client(
     });
     let web_server_port =
         custom_port.unwrap_or_else(|| config_options.web_server_port.unwrap_or_else(|| 8082));
-    let web_server_cert = custom_server_cert.or_else(|| config.options.web_server_cert.clone());
-    let web_server_key = custom_server_key.or_else(|| config.options.web_server_key.clone());
+    let mut web_server_cert = custom_server_cert.or_else(|| config.options.web_server_cert.clone());
+    let mut web_server_key = custom_server_key.or_else(|| config.options.web_server_key.clone());
+    if web_server_cert.is_none() && web_server_key.is_none() && web_server_ip.is_loopback() {
+        match crate::switchboard_relay::tls::ensure() {
+            Ok((cert, key)) => {
+                web_server_cert = Some(cert);
+                web_server_key = Some(key);
+            },
+            Err(error) => {
+                eprintln!("Cannot initialize HTTPS: {error}");
+                return;
+            },
+        }
+    }
     config.options.web_server_cert = web_server_cert.clone();
     config.options.web_server_key = web_server_key.clone();
     let has_https_certificate = web_server_cert.is_some() && web_server_key.is_some();
@@ -201,6 +213,10 @@ pub async fn serve_web_client(
     web_server_ip: IpAddr,
     web_server_port: u16,
 ) {
+    if !cfg!(test) && rustls_config.is_none() {
+        log::error!("Refusing a plaintext web listener; configure HTTPS");
+        return;
+    }
     let Some(config_file_path) = config_file_path.or_else(|| Config::default_config_file_path())
     else {
         log::error!("Failed to find default config file path");

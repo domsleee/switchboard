@@ -77,8 +77,9 @@ pub(super) fn load_host(path: &FilePath) -> anyhow::Result<HostConfig> {
 }
 pub(super) fn router(config: &HostConfig) -> anyhow::Result<Router> {
     anyhow::ensure!(
-        config.listen.ip().is_loopback() || (config.tls_cert.is_some() && config.tls_key.is_some()),
-        "A LAN board listener requires a TLS certificate and key"
+        (cfg!(test) && config.listen.ip().is_loopback())
+            || (config.tls_cert.is_some() && config.tls_key.is_some()),
+        "A board listener requires a TLS certificate and key"
     );
     anyhow::ensure!(
         config.tls_cert.is_some() == config.tls_key.is_some(),

@@ -1,34 +1,23 @@
 ---
 name: close-tab
-description: Close the current Switchboard terminal tab when the user asks, including "if successful, close the tab". For conditional requests, close only after the requested work succeeds.
+description: Close this Switchboard tab when requested, including "if successful, close the tab" after the requested work and checks succeed.
 ---
 
-# Close the Switchboard tab
+Finish the work and report its result before closing: this stops every process
+in the tab, including you. Keep it open if work failed or remains incomplete.
+Discussing this skill is not a request to close a tab.
 
-Treat "if successful, close the tab" as permission to close this agent's tab
-once the requested work and its required checks have succeeded. Keep it open
-if work fails, remains incomplete, or needs the user's input. Discussing or
-editing this skill is not a request to close a tab.
+Use the authenticated HTTPS API described in [terminal](../terminal/SKILL.md).
+Find this computer's `local: true` host in `/api/hosts`. Use
+`ZELLIJ_SESSION_NAME` (default `main`) and the numeric `ZELLIJ_PANE_ID`.
+If the pane ID is unavailable, leave the tab open and explain why.
 
-Closing the tab stops every process in it, including you. Finish the work and
-report the result, with any useful links, before making the close call as your
-last action.
+As your last action, POST to `/api/hosts/<local-host-id>/terminal`:
 
-1. Set `switchboard_session="${ZELLIJ_SESSION_NAME:-main}"`. Switchboard uses
-   `main` when the shell does not expose a session name; use this default without
-   asking the user. Read `ZELLIJ_PANE_ID` from the shell environment. If it is
-   missing, leave the tab open and explain that you cannot identify your pane.
-2. Run `zellij -s "$switchboard_session" action list-panes --json --tab`.
-   Find the entry with `is_plugin: false` and `id` equal to your numeric
-   `ZELLIJ_PANE_ID`. Use that entry's `tab_id`, which is a stable ID;
-   `tab_position`, `tab_name` and `is_focused` do not identify your tab.
-   If there is no unique match or no `tab_id`, leave it open and report why.
-3. Close that explicit tab, replacing `<tab_id>` with the ID you just found:
+```json
+{"action":"close","session":"main","pane_id":17}
+```
 
-   ```sh
-   zellij -s "$switchboard_session" action close-tab --tab-id <tab_id>
-   ```
-
-Always supply the session and tab ID: the user may have focused another tab.
-If delivery fails or is uncertain and you are still running, read the pane
-list again before any retry; stop if your original pane is gone.
+Use your actual session and pane ID. The server closes that pane's tab even if
+the user has focused another. After uncertain delivery, refresh the pane list
+before any retry; stop if the original pane is gone.
