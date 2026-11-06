@@ -20,12 +20,12 @@
     query.placeholder='Search chat text or title';query.setAttribute('aria-label','Search conversations');query.maxLength=512;
     for(const name of ['codex','claude','muse','copilot','opencode']){const option=el('option',name);option.value=name;agent.append(option);}agent.setAttribute('aria-label','Agent');
     search.type='submit';more.type='button';more.hidden=true;picker.append(query,agent,search,more);
-    const results=el('div',undefined,'conversation-results'),list=el('div',undefined,'conversation-messages'),older=el('button','Load next messages'),refresh=el('button','Refresh'),latest=el('button','↓ Bottom');older.hidden=true;
+    const results=el('div',undefined,'conversation-results'),list=el('div',undefined,'conversation-messages'),older=el('button','Load next messages'),refresh=el('button','↻'),latest=el('button','↓');refresh.setAttribute('aria-label','Refresh');refresh.title='Refresh conversation';latest.setAttribute('aria-label','Scroll to bottom');latest.title='Scroll to bottom';older.hidden=true;
     const actions=el('div',undefined,'conversation-actions');actions.append(older,refresh,latest);
-    const form=el('form',undefined,'conversation-compose'),draft=el('textarea'),insert=el('button','Reply in terminal'),help=el('small','Inserts your draft into this terminal. Review it there, then press Enter.');draft.rows=2;draft.maxLength=16000;draft.placeholder='Write a reply…';draft.setAttribute('aria-label','Reply draft');insert.type='submit';form.append(draft,insert,help);
+    const form=el('form',undefined,'conversation-compose'),draft=el('textarea'),insert=el('button','Reply in terminal'),help=el('small','Review in the terminal, then press Enter.');draft.rows=2;draft.maxLength=16000;draft.placeholder='Reply to this conversation…';draft.setAttribute('aria-label','Reply draft');insert.type='submit';form.append(draft,insert,help);
     panel.append(header,notice,picker,results,list,actions,form);root.append(panel);
     const binding=()=>target&&bindings.get(target.key);
-    function status(text){notice.textContent=text;}
+    function status(text,quiet=false){notice.textContent=text;notice.hidden=quiet;}
     function busy(value){loading=value;query.disabled=agent.disabled=value;search.disabled=more.disabled=older.disabled=refresh.disabled=value;}
     function show(value){open=value;panel.hidden=!value;toggle.setAttribute('aria-expanded',String(value));if(value){document.getElementById('artifact-preview').hidden=true;update();if(binding()&&!messages.length)load(false);}else if(target)terminal(target);}
     toggle.onclick=()=>show(true);back.onclick=()=>show(false);
@@ -57,7 +57,7 @@
       const cursor=poll?tailCursor:readCursor;
       try{const data=await get('/api/chats/'+encodeURIComponent(chat.id)+'?'+new URLSearchParams({host:target.host,cursor,limit:50}));if(version!==generation)return;
         const page=data.messages||[];messages=messages.slice(0,cursor).concat(page);tailCursor=cursor;readCursor=data.next_cursor??messages.length;older.hidden=data.next_cursor==null;
-        paint();status(`${data.title||chat.title||'Conversation'}${data.partial?' · History is incomplete':''}${data.next_cursor!=null?' · More messages available':''}. Replies go through the terminal.`);
+        paint();status(`${data.title||chat.title||'Conversation'}${data.partial?' · History is incomplete':''}${data.next_cursor!=null?' · More messages available':''}. Replies go through the terminal.`,!data.partial&&data.next_cursor==null);
       }catch(error){if(version===generation)status(error.message);}finally{if(version===generation)busy(false);}
     }
     older.onclick=()=>load(false);refresh.onclick=()=>load(true);latest.onclick=()=>{list.scrollTop=list.scrollHeight;};
