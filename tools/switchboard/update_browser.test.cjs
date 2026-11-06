@@ -167,6 +167,7 @@ let recoveryPanes, reconnectTarget;
             const roLine=roOutput.split('\n').find(line=>line.includes(': '));
             readOnlyTokenName=roLine.split(': ')[0];
             const roContext=await browser.newContext();
+            await roContext.route(/\/session\?/, route=>{const url=new URL(route.request().url());url.searchParams.delete("resumable");return route.continue({url:url.href});});
             const nativeUrl=`http://127.0.0.1:${nativePort}`;
             assert.equal((await fetch(nativeUrl+'/session-list')).status,401,'Recovery does not allow unauthenticated session discovery');
             assert.equal((await roContext.request.post(nativeUrl+'/command/login',{data:{auth_token:roLine.slice(readOnlyTokenName.length+2).replace(/ \(read-only\)\s*$/,'').trim(),remember_me:false}})).status(),200);
