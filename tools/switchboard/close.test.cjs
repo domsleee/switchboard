@@ -20,6 +20,7 @@ test('Close (menu or Ctrl+D) closes the clicked tab immediately and restores it 
   let clicked;$('close-tab').click=()=>{clicked=$('close-tab').onclick();};
   context.AbortSignal=AbortSignal;
   vm.createContext(context);
+  context.listedTabs=()=>context.allTabs();
   vm.runInContext(fs.readFileSync(__dirname+'/static/close.js','utf8'),context);
   const source=fs.readFileSync(__dirname+'/static/app.js','utf8');
   const start=source.indexOf('function closeSelectedTab(){');
@@ -50,6 +51,7 @@ test('close removes the selected tab before the request finishes, keeps stale ca
   context.AbortSignal=AbortSignal;
   vm.createContext(context);
   vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function moveSelected(')),context);
+  context.listedTabs=()=>context.allTabs();
   vm.runInContext(fs.readFileSync(__dirname+'/static/close.js','utf8'),context);
   const original=entry.catalog.slice();context.selected=context.tabKey(entry,original[0]);context.contextItem=context.allTabs()[0];
   const pending=$('close-tab').onclick();
@@ -82,6 +84,7 @@ test('close resolves a provisional tab by its live pane, without closing a tab w
     fetch:(url,options)=>{calls.push([url,JSON.parse(options.body)]);return new Promise(resolve=>finish=resolve);},AbortSignal};
   vm.createContext(context);
   vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function moveSelected(')),context);
+  context.listedTabs=()=>context.allTabs();
   vm.runInContext(fs.readFileSync(__dirname+'/static/close.js','utf8'),context);
   context.selected=context.tabKey(entry,provisional);
   context.contextItem=context.allTabs().find(item=>item.tab.pending);
@@ -249,4 +252,20 @@ test('middle-click closes the clicked sidebar tab without selecting it, preservi
     assert.equal(calls.length,4);assert.equal(await selected(),'Second');
     assert.deepEqual(errors,[]);
   }finally{await browser.close();}
+});
+
+
+test('closing a tab selects a visible neighbor, skipping collapsed working tabs',async()=>{
+  for(const selected of ['active','working']){
+    const entry={host:'mac',name:'main',state:{panes:[]}};
+    const tabs=['active','working','next'].map((key,id)=>({key,entry,tab:{id}}));
+    const button={},context={selected,contextItem:tabs.find(t=>t.key===selected),$:()=>button,
+      allTabs:()=>tabs,listedTabs:()=>[tabs[0],tabs[2]],closeTabMenu(){},render(){},
+      activate:item=>{context.selected=item.key;},fetch:async()=>({ok:true}),
+      ready:{},saveReady(){},isHidden:()=>false,AbortSignal};
+    vm.createContext(context);
+    vm.runInContext(fs.readFileSync(__dirname+'/static/close.js','utf8'),context);
+    await button.onclick();
+    assert.equal(context.selected,selected==='active'?'next':'active');
+  }
 });

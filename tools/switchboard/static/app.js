@@ -727,7 +727,7 @@ function stepTab(direction) {
   const tabs=listedTabs();
   if(!tabs.length)return;
   const index=tabs.findIndex(t=>t.key===selected);
-  activate(tabs[(Math.max(index,0)+direction+tabs.length)%tabs.length]);
+  activate(tabs[index<0?(direction>0?0:tabs.length-1):(index+direction+tabs.length)%tabs.length]);
 }
 function closeSelectedTab(){
   const item=allTabs().find(item=>item.key===selected);
@@ -1471,7 +1471,7 @@ $('sidebar-toggle').onclick=()=>{
 $('sidebar-backdrop').onclick=()=>{sidebarOpen=false;updateSidebar();};
 mobileSidebar.addEventListener('change',()=>{sidebarOpen=false;updateSidebar();});
 $('tab-search').oninput=render;
-$('tab-search').onkeydown=event=>{if(event.key==='Enter'){const item=allTabs().filter(matchesSearch)[0];if(item){event.preventDefault();activate(item);item.entry.frame.focus();}}};
+$('tab-search').onkeydown=event=>{if(event.key==='Enter'){const item=listedTabs()[0];if(item){event.preventDefault();activate(item);item.entry.frame.focus();}}};
 let sidebarWidth=Number(localStorage.getItem('switchboard-sidebar-width'))||242;
 function setSidebarWidth(width){
   sidebarWidth=Math.max(180,Math.min(420,width,Math.max(180,innerWidth-320)));

@@ -69,12 +69,24 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     const selectedBefore=await page.evaluate(()=>selected);
     await snoozed.click();
     assert.equal(await page.evaluate(()=>selected),selectedBefore);
+    await page.evaluate(()=>stepTab(1));
+    assert.equal(await page.locator('#tabs .selected .tab-name').textContent(),names[1]);
+    await page.evaluate(()=>{activate(allTabs()[0]);stepTab(-1);});
+    assert.equal(await page.locator('#tabs .selected .tab-name').textContent(),names[2]);
+    await page.evaluate(()=>activate(allTabs()[0]));
     assert.equal(await page.evaluate(()=>localStorage.getItem('switchboard-snoozed-open')),'false');
     await page.locator('#tab-search').fill('switchboard');
     assert.deepEqual(await order(),[names[0]]);
     assert.equal(await snoozed.getAttribute('aria-expanded'),'true');
     await page.locator('#tab-search').fill('');
     assert.deepEqual(await order(),names.slice(1));
+    // Enter opens the first displayed search result, ahead of matching snoozed tabs.
+    await page.locator('#tab-search').fill('Mac');
+    assert.deepEqual(await order(),[names[1],names[0]]);
+    await page.locator('#tab-search').press('Enter');
+    assert.equal(await page.locator('#tabs .selected .tab-name').textContent(),names[1]);
+    await page.locator('#tab-search').fill('');
+    await page.evaluate(()=>activate(allTabs()[0]));
     // Attention and status failures take precedence over automatic snoozing.
     for(const state of ['ready','approval','input']){
       await page.evaluate(state=>{paneAttention.get(attentionKey('mac','main',1)).state=state;render();},state);
