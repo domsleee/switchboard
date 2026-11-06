@@ -49,6 +49,14 @@ Test UI changes against local fixtures (see the browser-sizing rules in
 [architecture](docs/ARCHITECTURE.md)), never the live sidebar at `switchboard.localhost:8090`:
 a focused browser viewer claims the terminal size of the user's real sessions.
 
+## Windows process startup and transport
+
+Some paired Windows machines run Defender, which can make `CreateProcessA` slow.
+Prefer existing authenticated HTTPS APIs and persistent connections over spawning CLI
+processes for polling or individual actions. Use HTTPS where supported, preserving
+certificate verification and pairing pins; check the deployed build before relying on
+new endpoints. See the [internals](docs/SWITCHBOARD_INTERNALS.md) for transport details.
+
 ## Changing code
 
 - Branch from `origin/main` in a separate worktree, and read code from `origin/main`. The main

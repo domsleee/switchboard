@@ -802,6 +802,12 @@ impl PollState {
             self.dirty = true;
             return;
         }
+        if let Some(id) = &hooked.chat_id {
+            row["chat_id"] = json!(id);
+        }
+        if hooked.state == "unknown" {
+            return;
+        }
         // Claude's next PostToolUse arrives when the approved tool finishes. Its
         // working screen can show that approval was given before that hook arrives.
         // Codex can compact a follow-up before UserPromptSubmit replaces the old Stop.
@@ -899,7 +905,9 @@ impl PollState {
         let hooks: Vec<_> = self
             .hooks
             .iter()
-            .map(|((session, pane), h)| json!([session, pane, h.agent, h.state, h.token]))
+            .map(|((session, pane), h)| {
+                json!([session, pane, h.agent, h.state, h.token, h.chat_id])
+            })
             .collect();
         saved.insert("hooks".into(), json!(hooks));
         Value::Object(saved)
@@ -917,12 +925,19 @@ impl PollState {
             else {
                 continue;
             };
-            let Some(state) = ["approval", "input", "waiting", "ready"]
-                .into_iter()
-                .find(|s| row[3] == *s)
-            else {
+            let Some(mut state) = [
+                "approval", "input", "waiting", "ready", "working", "unknown",
+            ]
+            .into_iter()
+            .find(|s| row[3] == *s) else {
                 continue;
             };
+            if matches!(state, "working" | "unknown") {
+                if row[5].as_str().is_none() {
+                    continue;
+                }
+                state = "unknown";
+            }
             let token = row[4].as_str().map(str::to_owned);
             self.hooks.insert(
                 (session.to_owned(), pane),
@@ -930,6 +945,7 @@ impl PollState {
                     agent,
                     state,
                     token,
+                    chat_id: row[5].as_str().map(str::to_owned),
                 },
             );
         }
@@ -1158,12 +1174,14 @@ struct Hooked {
     agent: &'static str,
     state: &'static str,
     token: Option<String>,
+    chat_id: Option<String>,
 }
 
 /// What a hook event says about its pane, if anything. Claude Code, Codex and
 /// Copilot's PascalCase hooks share these event names and fields.
 fn hook_status(agent: &'static str, event: &Value) -> Option<Hooked> {
     let state = match event["hook_event_name"].as_str()? {
+        "Interrupt" => "unknown",
         "UserPromptSubmit" | "PostToolUse" | "PostToolUseFailure" => "working",
         "PermissionRequest" => "approval",
         "Notification" => match event["notification_type"].as_str()? {
@@ -1201,6 +1219,7 @@ fn hook_status(agent: &'static str, event: &Value) -> Option<Hooked> {
         agent,
         state,
         token,
+        chat_id: super::chats::hook_chat_id(agent, event),
     })
 }
 
@@ -1232,13 +1251,14 @@ pub(super) async fn hook(
     let key = (session.to_owned(), pane);
     let mut poll = state.poll.lock().await;
     // An interrupted Codex turn has no Stop; the screen shows what it left.
-    if matches!(
-        event["hook_event_name"].as_str(),
-        Some("SessionEnd" | "Interrupt")
-    ) {
+    if matches!(event["hook_event_name"].as_str(), Some("SessionEnd")) {
         poll.dirty |= poll.hooks.remove(&key).is_some();
     } else if let Some(hooked) = hook_status(agent, &event) {
-        poll.dirty |= poll.hooks.insert(key, hooked.clone()).as_ref() != Some(&hooked);
+        if hooked.state == "unknown" && hooked.chat_id.is_none() {
+            poll.dirty |= poll.hooks.remove(&key).is_some();
+        } else {
+            poll.dirty |= poll.hooks.insert(key, hooked.clone()).as_ref() != Some(&hooked);
+        }
     } else {
         return StatusCode::NO_CONTENT;
     }
@@ -1875,6 +1895,54 @@ esac
         assert!(state.poll.lock().await.hooks.is_empty());
     }
     #[test]
+    fn switchboard_conversation_identity_follows_hooks_and_survives_restart() {
+        let root = std::env::var_os("CODEX_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::home_dir().unwrap().join(".codex"));
+        // Fields captured from the real Codex pane 65 PostToolUse event.
+        let mut event = json!({"hook_event_name":"PostToolUse",
+            "session_id":"01a1b11f-09b6-75b2-aea2-e1108e1424e1",
+            "transcript_path":root.join("sessions/2026/11/07/rollout-2026-11-07T00-49-23-01a1b11f-09b6-75b2-aea2-e1108e1424e1.jsonl")});
+        let hooked = hook_status("codex", &event).unwrap();
+        let id = hooked.chat_id.clone().expect("exact transcript ID");
+        let mut poll = PollState::default();
+        poll.hooks.insert(("main".into(), 65), hooked);
+        let row = || json!({"session":"main","pane_id":65,"agent":"codex","state":"working"});
+        let mut pane = row();
+        poll.apply_hook(&mut pane, &json!("codex"));
+        assert_eq!(pane["chat_id"], id);
+        let mut other = json!({"session":"main","pane_id":66,"state":"unknown"});
+        poll.apply_hook(&mut other, &json!("codex"));
+        assert!(other["chat_id"].is_null());
+        let mut restarted = PollState::default();
+        restarted.restore_hooks(&poll.persisted()["hooks"]);
+        let mut pane = row();
+        pane["state"] = json!("ready");
+        restarted.apply_hook(&mut pane, &json!("codex"));
+        assert_eq!(pane["chat_id"], id);
+        assert_eq!(
+            pane["state"], "ready",
+            "restoring identity must not restore stale working status"
+        );
+        for name in ["Stop", "Interrupt"] {
+            event["hook_event_name"] = json!(name);
+            poll.hooks
+                .insert(("main".into(), 65), hook_status("codex", &event).unwrap());
+            let mut pane = row();
+            poll.apply_hook(&mut pane, &json!("codex"));
+            assert_eq!(pane["chat_id"], id);
+            assert_eq!(
+                pane["state"], "working",
+                "screen still controls active work"
+            );
+        }
+        let mut pane = row();
+        poll.apply_hook(&mut pane, &json!("zsh"));
+        assert!(pane["chat_id"].is_null());
+        assert!(poll.hooks.is_empty(), "exited agents lose their binding");
+    }
+
+    #[test]
     fn forwarded_hooks_name_their_pane_and_agent() {
         let zellij = |name: &str| match name {
             "ZELLIJ_SESSION_NAME" => Some("main".to_owned()),
@@ -2388,6 +2456,7 @@ esac
             agent: "claude",
             state,
             token: token.map(str::to_owned),
+            chat_id: None,
         };
         let mut poll = PollState::default();
         poll.hooks

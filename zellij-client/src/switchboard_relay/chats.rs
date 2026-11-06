@@ -379,6 +379,31 @@ fn file_id(agent: &str, root: &Path, file: &Path) -> String {
     format!("{agent}-{hash}")
 }
 
+// Use only paths within the history roots already exposed by the read-only API.
+// The ID is computed without opening the transcript or spawning a provider process.
+pub(super) fn hook_chat_id(agent: &str, event: &Value) -> Option<String> {
+    let (_, root) = roots().into_iter().find(|(a, _)| *a == agent)?;
+    transcript_id(agent, &root, Path::new(event["transcript_path"].as_str()?))
+}
+
+fn transcript_id(agent: &str, root: &Path, path: &Path) -> Option<String> {
+    let relative = path.strip_prefix(root).ok()?;
+    if relative
+        .components()
+        .any(|c| !matches!(c, std::path::Component::Normal(_)))
+        || path.extension().is_none_or(|e| e != "jsonl")
+    {
+        return None;
+    }
+    if agent == "codex"
+        && !relative.starts_with("sessions")
+        && !relative.starts_with("archived_sessions")
+    {
+        return None;
+    }
+    Some(file_id(agent, root, path))
+}
+
 fn read_file(agent: &str, root: &Path, path: &Path) -> std::io::Result<Chat> {
     let mut chat = Chat {
         id: file_id(agent, root, path),
@@ -855,6 +880,28 @@ mod tests {
         }
         c
     }
+    #[test]
+    fn switchboard_chat_hook_uses_exact_transcript_without_search() {
+        for (agent, root, file) in [
+            ("codex", "/home/test/.codex", "sessions/2026/11/07/rollout-2026-11-07T00-49-23-01a1b11f-09b6-75b2-aea2-e1108e1424e1.jsonl"),
+            ("claude", "/home/test/.claude/projects", "-repo/session.jsonl"),
+        ] {
+            let root = Path::new(root);
+            let path = root.join(file);
+            assert_eq!(transcript_id(agent, root, &path), Some(file_id(agent, root, &path)));
+            assert_eq!(transcript_id(agent, root, &root.join("../outside.jsonl")), None);
+            assert_eq!(transcript_id(agent, root, Path::new("/outside.jsonl")), None);
+        }
+        assert_eq!(
+            transcript_id(
+                "codex",
+                Path::new("/codex"),
+                Path::new("/codex/config.jsonl")
+            ),
+            None
+        );
+    }
+
     #[test]
     fn switchboard_chats_media_parts_and_markdown_are_bounded_and_inert() {
         let c = chat(
