@@ -116,7 +116,7 @@
   // Each agent row: ready agents show when they last reported; others say what is missing.
   const agentStatus={ready:'ok',setup:'failed',approve:'attention',running:'running'};
   function agentRow(computer,agent){
-    const row=element('div','task-row agent-row');row.dataset.status=agent.skills?.state==='attention'?'attention':agentStatus[agent.state]||'never';row.dataset.agent=agent.agent;
+    const row=element('div','task-row agent-row');row.dataset.status=(agent.skills?.state==='attention'||agent.installation?.state==='attention')?'attention':agentStatus[agent.state]||'never';row.dataset.agent=agent.agent;
     const head=element('div','task-head');
     head.append(dot(row.dataset.status),element('span','task-name',agent.name));
     const meta=agent.state==='ready'?(agent.lastReport?`reported ${ago(agent.lastReport)}`:'no report yet'):agent.detail;
@@ -131,6 +131,10 @@
       head.append(actions);
     }
     row.append(head);
+    if(agent.installation?.state==='attention'){
+      row.append(element('p','task-note installation-warning',agent.installation.detail));
+      if(agent.installation.command)row.append(element('pre','task-tail installation-command',agent.installation.command));
+    }
     if(agent.skills){
       row.append(element('p','task-note',agent.skills.scope));
       for(const warning of agent.skills.warnings||[])row.append(element('p','task-note skill-warning',warning));
@@ -143,9 +147,10 @@
     const sb=computer.switchboard,agents=(computer.agents||[]).filter(agent=>agent.state!=='absent');
     // Builds before automaticUpdates existed leave it out: shown as unknown, not off.
     const updates=sb.automaticUpdates===true?(sb.lastUpdateError?'attention':'ok'):sb.automaticUpdates===false?'failed':'never';
+    const installWarnings=agents.filter(agent=>agent.installation?.state==='attention');
     const skillWarnings=agents.filter(agent=>agent.skills?.state==='attention');
     const waiting=agents.filter(agent=>agent.state!=='ready');
-    const status=updates==='failed'||waiting.some(agent=>agent.state==='setup')?'failed':waiting.some(agent=>agent.state==='running')?'running':waiting.length||skillWarnings.length||updates==='attention'?'attention':'ok';
+    const status=updates==='failed'||waiting.some(agent=>agent.state==='setup')?'failed':waiting.some(agent=>agent.state==='running')?'running':waiting.length||skillWarnings.length||installWarnings.length||updates==='attention'?'attention':'ok';
     const block=element('details','task-group switchboard-group');block.dataset.status=status;
     block.dataset.key=`${computer.host||''}\n\u0000switchboard`;
     const summary=element('summary');
@@ -154,6 +159,7 @@
     if(updates==='failed')text='Automatic updates are off';
     else if(updates==='attention')text='Last update failed';
     else if(waiting.length)text=waiting.map(agent=>`${agent.name}: ${agent.state==='approve'?'hooks not trusted':agent.state==='running'?'setting up…':'needs setup'}`).join(' · ');
+    if(installWarnings.length)text=(text==='All set'?'':text+' · ')+installWarnings.map(agent=>`${agent.name}: installation needs attention`).join(' · ');
     if(skillWarnings.length)text=(text==='All set'?'':text+' · ')+skillWarnings.map(agent=>`${agent.name}: skills need attention`).join(' · ');
     const state=element('span','task-state',text);state.title=text;
     summary.append(dot(status),title,state);
