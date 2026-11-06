@@ -1,5 +1,6 @@
 //! Loopback Switchboard relay. Terminal engines remain independent processes.
 mod agent_setup;
+mod agent_skills;
 pub(crate) mod artifacts;
 pub(crate) mod askpass;
 pub(crate) mod attention;

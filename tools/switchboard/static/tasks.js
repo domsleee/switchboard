@@ -120,7 +120,7 @@
     const row=element('div','task-row agent-row');row.dataset.status=agent.skillRepair?.running?'running':agent.skillRepair?.error?'attention':(agent.skills?.state==='attention'||agent.installation?.state==='attention')?'attention':agentStatus[agent.state]||'never';row.dataset.agent=agent.agent;
     const head=element('div','task-head');
     head.append(dot(row.dataset.status),element('span','task-name',agent.name));
-    const meta=agent.state==='ready'?(agent.lastReport?`reported ${ago(agent.lastReport)}`:'no report yet'):agent.detail;
+    const meta=agent.state==='ready'?`${agent.detail} · ${agent.lastReport?`reported ${ago(agent.lastReport)}`:'no report yet'}`:agent.detail;
     head.append(element('small','task-meta',meta));
     if(agent.state==='setup'||agent.state==='approve'){
       const actions=element('span','task-links');

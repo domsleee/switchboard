@@ -219,7 +219,7 @@ impl Check {
         if missing.is_empty() {
             Check {
                 state: "ready",
-                detail: "Plugin installed and auto-updating".into(),
+                detail: "Plugin installed · auto-updates enabled".into(),
             }
         } else {
             Check {
@@ -231,19 +231,30 @@ impl Check {
 }
 
 fn check_claude(dir: &Path) -> Check {
-    let installed = read_json(&dir.join("plugins").join("installed_plugins.json"))
-        .and_then(|v| v["plugins"][PLUGIN].as_array().map(|a| !a.is_empty()))
-        .unwrap_or(false);
+    let records = read_json(&dir.join("plugins/installed_plugins.json"))
+        .and_then(|v| v["plugins"][PLUGIN].as_array().cloned())
+        .unwrap_or_default();
+    // The relay can inspect only the user-wide install. Project overrides belong to their session.
+    let installed = records.iter().find(|v| v["scope"] == "user");
     let settings = read_json(&dir.join("settings.json")).unwrap_or(Value::Null);
     let known =
         read_json(&dir.join("plugins").join("known_marketplaces.json")).unwrap_or(Value::Null);
-    let automatic = settings["extraKnownMarketplaces"]["switchboard"]["autoUpdate"] == true
-        || known["switchboard"]["autoUpdate"] == true;
+    let automatic = settings["extraKnownMarketplaces"]["switchboard"]["autoUpdate"]
+        .as_bool()
+        .unwrap_or(known["switchboard"]["autoUpdate"] == true);
     let mut missing = Vec::new();
-    if !installed {
+    if installed.is_none() {
         missing.push("Plugin not installed");
     } else if settings["enabledPlugins"][PLUGIN] == false {
         missing.push("Plugin turned off");
+    }
+    if let Some(record) = installed {
+        if !record["installPath"]
+            .as_str()
+            .is_some_and(|p| super::agent_skills::plugin_current(Path::new(p)))
+        {
+            missing.push("Plugin skills missing or out of date");
+        }
     }
     if !automatic {
         missing.push("Auto-update off");
@@ -261,7 +272,7 @@ fn check_copilot(dir: &Path) -> Check {
     });
     let settings = read_json(&dir.join("settings.json")).unwrap_or(Value::Null);
     let mut missing = Vec::new();
-    match plugin {
+    match &plugin {
         None => missing.push("Plugin not installed"),
         Some(plugin)
             if plugin["enabled"] == false || settings["enabledPlugins"][PLUGIN] == false =>
@@ -269,6 +280,13 @@ fn check_copilot(dir: &Path) -> Check {
             missing.push("Plugin turned off")
         },
         Some(_) => {},
+    }
+    if plugin.as_ref().is_some_and(|p| {
+        !p["cache_path"]
+            .as_str()
+            .is_some_and(|root| super::agent_skills::plugin_current(Path::new(root)))
+    }) {
+        missing.push("Plugin skills missing or out of date");
     }
     if settings["extraKnownMarketplaces"]["switchboard"]["autoUpdate"] != true {
         missing.push("Auto-update off");
@@ -752,6 +770,12 @@ async fn set_up(agent: Agent) -> Result<(), String> {
                 .await?;
             }
             let check = check_claude(&dir);
+            run(
+                &claude,
+                &["plugin", "marketplace", "update", "switchboard"],
+                &folders,
+            )
+            .await?;
             if check.detail.contains("not installed") {
                 run(
                     &claude,
@@ -761,6 +785,14 @@ async fn set_up(agent: Agent) -> Result<(), String> {
                 .await?;
             } else if check.detail.contains("turned off") {
                 run(&claude, &["plugin", "enable", PLUGIN], &folders).await?;
+            }
+            if !check.detail.contains("not installed") {
+                run(
+                    &claude,
+                    &["plugin", "update", PLUGIN, "--scope", "user"],
+                    &folders,
+                )
+                .await?;
             }
             turn_on_auto_update(
                 &dir.join("settings.json"),
@@ -781,6 +813,9 @@ async fn set_up(agent: Agent) -> Result<(), String> {
                 run(&copilot, &["plugin", "install", PLUGIN], &folders).await?;
             } else if check.detail.contains("turned off") {
                 run(&copilot, &["plugin", "enable", PLUGIN], &folders).await?;
+            }
+            if !check.detail.contains("not installed") {
+                run(&copilot, &["plugin", "update", PLUGIN], &folders).await?;
             }
             turn_on_auto_update(
                 &dir.join("settings.json"),
@@ -1158,8 +1193,14 @@ mod tests {
         );
         write(
             &dir.join("plugins/installed_plugins.json"),
-            r#"{"version":2,"plugins":{"switchboard@switchboard":[{"scope":"user"}]}}"#,
+            &json!({"version":2,"plugins":{PLUGIN:[{"scope":"user","installPath":dir.join("active-plugin")}]}}).to_string(),
         );
+        for (name, body) in super::super::agent_skills::SKILLS {
+            write(
+                &dir.join("active-plugin/skills").join(name).join("SKILL.md"),
+                body,
+            );
+        }
         write(
             &dir.join("settings.json"),
             r#"{"enabledPlugins":{"switchboard@switchboard":false}}"#,
@@ -1177,16 +1218,31 @@ mod tests {
             r#"{"enabledPlugins":{"switchboard@switchboard":true}}"#,
         );
         assert_eq!(check_claude(dir).state, "ready");
+        std::fs::remove_file(dir.join("active-plugin/skills/close-tab/SKILL.md")).unwrap();
+        assert!(check_claude(dir).detail.contains("skills missing"));
+        write(
+            &dir.join("settings.json"),
+            r#"{"enabledPlugins":{"switchboard@switchboard":true},"extraKnownMarketplaces":{"switchboard":{"autoUpdate":false}}}"#,
+        );
+        assert!(check_claude(dir).detail.contains("Auto-update off"));
     }
 
     #[test]
     fn switchboard_agent_setup_reads_copilot_config_with_comments() {
         let dir = tempfile::tempdir().unwrap();
         let dir = dir.path();
-        // Copilot CLI 1.0.105 after `plugin marketplace add` and `plugin install`.
+        for (name, body) in super::super::agent_skills::SKILLS {
+            write(
+                &dir.join("active-plugin/skills").join(name).join("SKILL.md"),
+                body,
+            );
+        }
         write(
             &dir.join("config.json"),
-            "// User settings belong in settings.json.\n// This file is managed automatically.\n{\n  \"installedPlugins\": [{\"name\": \"switchboard\", \"marketplace\": \"switchboard\", \"enabled\": true}]\n}\n",
+            &format!(
+                "// managed config\n{}",
+                json!({"installedPlugins":[{"name":"switchboard","marketplace":"switchboard","enabled":true,"cache_path":dir.join("active-plugin")}]})
+            ),
         );
         write(
             &dir.join("settings.json"),
