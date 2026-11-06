@@ -4,6 +4,7 @@ pub(crate) mod artifacts;
 pub(crate) mod askpass;
 pub(crate) mod attention;
 pub use attention::forward_hook;
+mod chats;
 mod control;
 mod hostname;
 pub(crate) mod interactive;
@@ -1250,6 +1251,8 @@ fn app(state: RelayState) -> Router {
         .route("/api/askpass", post(askpass::ask))
         .route("/api/askpass/answer", post(askpass::answer))
         .route("/api/interactive", post(interactive::wait))
+        .route("/api/chats/search", get(chats::search))
+        .route("/api/chats/{id}", get(chats::read))
         .route("/api/logs", get(logs::handler))
         .route("/api/tasks", get(tasks::handler))
         .route("/api/tasks/action", post(tasks::action))

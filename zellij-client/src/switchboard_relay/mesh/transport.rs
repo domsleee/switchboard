@@ -775,6 +775,9 @@ async fn terminal_response(
     {
         return Ok(tasks::gateway(request).await);
     }
+    if request.uri().path().starts_with("/switchboard/chats/") {
+        return Ok(chats::gateway(request).await);
+    }
     if path == "/switchboard/logs" && request.method() == Method::GET {
         return Ok(Json(logs::local()).into_response());
     }

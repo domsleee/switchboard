@@ -84,6 +84,13 @@ claude plugin install switchboard@switchboard
 If this computer has the earlier `switchboard-status` plugin, remove it first with
 `claude plugin uninstall switchboard-status@switchboard`.
 
+## Search agent chat history
+
+Agents can search and read Claude Code, Codex, Muse Code, Copilot CLI and
+OpenCode history across paired computers through the relay's HTTP endpoints.
+See [Chat history API](../../docs/SWITCHBOARD_CHATS.md) for curl examples,
+pagination and coverage limits.
+
 ## Resume agent chats after a restart
 
 Run this once with the updated executable on each computer:
