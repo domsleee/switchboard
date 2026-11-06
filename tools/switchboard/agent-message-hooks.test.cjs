@@ -6,18 +6,20 @@ const os=require('node:os');
 const path=require('node:path');
 const crypto=require('node:crypto');
 const net=require('node:net');
+const http=require('node:http');
 const {spawn}=require('node:child_process');
 const binary=process.env.SWITCHBOARD_TEST_BINARY;
 const children=new Set();
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function waitFor(check,label){const until=Date.now()+15000;while(Date.now()<until){if(await check())return;await sleep(50);}throw Error('Timed out: '+label);}
 async function stop(child){if(!child||child.exitCode!==null||child.signalCode!==null)return;const done=new Promise(r=>child.once('exit',r));child.kill('SIGTERM');const timer=setTimeout(()=>child.kill('SIGKILL'),3000);await done;clearTimeout(timer);}
-function run(args,env,input){
+function run(args,env,input,pauseStderr=false){
   const child=spawn(path.resolve(binary),args,{env,windowsHide:true,stdio:['pipe','pipe','pipe']});
   children.add(child);
   const timer=args.includes('serve')?null:setTimeout(()=>child.kill('SIGKILL'),20000);
   let stdout='',stderr='';child.stdout.on('data',b=>stdout+=b);child.stderr.on('data',b=>stderr+=b);child.stdin.end(input);
-  const done=new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',code=>{clearTimeout(timer);children.delete(child);resolve({code,stdout,stderr});});});
+  if(pauseStderr)child.stderr.pause();
+  const done=new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',code=>{clearTimeout(timer);children.delete(child);resolve({code,stdout,stderr});});});
   return {child,done};
 }
 test('agent hooks deliver and reply across machines, suppress duplicates, preserve receipts and wake idle agents',
@@ -101,4 +103,59 @@ test('agent hooks deliver and reply across machines, suppress duplicates, preser
     await stop(board);board=null;
     const offline=await hook('codex').done;assert.equal(offline.code,0);assert.equal(offline.stdout,'','offline messaging never blocks the agent');
   }finally{await stop(watcher?.child);await stop(board);for(const child of children)await stop(child);fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('SessionEnd hands retirement to a watcher holding the session lock',
+  {skip:!binary&&'Set SWITCHBOARD_TEST_BINARY for the isolated executable check',timeout:30000},async()=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'switchboard-hook-end-'));
+  const session=crypto.randomUUID(),participant={id:crypto.randomUUID(),cursor:1,machine_id:'fixture',machine_name:'Fixture',name:'agent',project:'fixture',terminal:null,active:true,created_at:1};
+  let hold=false,reading=false,release,retirements=0,watcher,mail=false;
+  const messages=Array.from({length:20},(_,index)=>({cursor:index+1,id:crypto.randomUUID(),sender:crypto.randomUUID(),sender_name:'peer',sender_machine_id:'other',sender_machine_name:'Other',project:'fixture',thread_id:crypto.randomUUID(),reply_to:null,body:'🦀'.repeat(1600),created_at:1,deliveries:[]}));
+  const barrier=new Promise(resolve=>release=resolve);
+  const server=http.createServer(async(req,res)=>{
+    req.resume();
+    if(req.url==='/api/agent-hook'){res.writeHead(204).end();return;}
+    let value;
+    if(req.url==='/api/message-board/participants'){value=participant;}
+    else if(req.url.endsWith('/retire')){retirements++;value={...participant,active:false};}
+    else {
+      if(hold&&req.url.includes('/participants/')){reading=true;await barrier;}
+      value={items:mail?(req.url.includes('/machines/')?messages.slice(10):messages.slice(0,10)):[],next_cursor:null};
+    }
+    res.writeHead(200,{'Content-Type':'application/json'}).end(JSON.stringify(value));
+  });
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const origin='http://127.0.0.1:'+server.address().port,config=path.join(root,'client.json'),token=path.join(root,'token');
+  fs.writeFileSync(token,'f'.repeat(64));fs.writeFileSync(config,JSON.stringify({url:origin,token_file:token}));
+  const env={...process.env,SWITCHBOARD_BOARD_CONFIG:config,SWITCHBOARD_RELAY_URL:origin,SWITCHBOARD_MESSAGE_STATE_DIR:path.join(root,'state'),SWITCHBOARD_MESSAGE_PROJECT:'fixture',ZELLIJ_SESSION_NAME:'fixture',ZELLIJ_PANE_ID:'1'};
+  delete env.CLAUDECODE;
+  const hook=(event,wait=false,pause=false)=>run(['agent-hook','--agent','claude',...(wait?['--wait']:[])],env,JSON.stringify({session_id:session,cwd:root,hook_event_name:event}),pause);
+  try{
+    assert.equal((await hook('SessionStart').done).code,0);
+    hold=true;watcher=hook('Stop',true);
+    await waitFor(()=>reading,'watcher holds lock during its unread request');
+    assert.equal((await hook('SessionEnd').done).code,0);
+    assert.equal(retirements,0,'the end event arrived while the watcher still held the lock');
+    release();
+    assert.equal((await watcher.done).code,0,'retirement ends the watcher without waking Claude');watcher=null;
+    assert.equal(retirements,1,'the watcher completes the contended retirement');
+    const namespace=fs.readdirSync(path.join(root,'state'))[0];
+    const state=JSON.parse(fs.readFileSync(path.join(root,'state',namespace,'claude-'+session+'.json'),'utf8'));
+    assert.equal(state.participant.active,false);
+    assert.equal((await hook('PostToolUse').done).stdout,'','late tools cannot reactivate an ended conversation');
+    const resumed=await hook('SessionStart').done;assert.ok(resumed.stdout.includes(participant.id),'explicit resume restores the same identity');
+    // End during a blocked stderr write: already emitted context still needs
+    // Claude's exit-2 wake signal even after completing retirement.
+    hold=false;mail=true;const before=retirements;
+    watcher=hook('Stop',true,true);
+    await waitFor(()=>watcher.child.stderr.readableLength>0,'watcher emitting context into the paused pipe');
+    assert.equal(watcher.child.exitCode,null,'large context keeps the emitter in progress');
+    assert.equal((await hook('SessionEnd').done).code,0);
+    assert.equal(retirements,before,'retirement waits for the emitting lock owner');
+    watcher.child.stderr.resume();
+    const emitted=await watcher.done;watcher=null;
+    assert.equal(emitted.code,2,'emitted context must retain the native wake signal');
+    assert.ok(emitted.stderr.includes(messages[19].id));
+    assert.equal(retirements,before+1);
+  }finally{release();await stop(watcher?.child);for(const child of children)await stop(child);await new Promise(resolve=>server.close(resolve));fs.rmSync(root,{recursive:true,force:true});}
 });

@@ -181,8 +181,17 @@ fn message_context(session: &Session, messages: &[(&Message, bool)], notificatio
 }
 
 fn queue(session_id: &str, text: &str) -> anyhow::Result<()> {
+    let folders = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let codex = crate::switchboard_relay::find_program("codex", &folders)
+        .context("Cannot find Codex on PATH")?;
+    queue_program(&codex, session_id, text)
+}
+
+fn queue_program(program: &Path, session_id: &str, text: &str) -> anyhow::Result<()> {
     use std::process::Stdio;
-    let mut command = std::process::Command::new("codex");
+    let mut command = std::process::Command::new(program);
     command
         .args(["queue", "--thread", session_id, "--message", text])
         .stdin(Stdio::null())
@@ -220,6 +229,31 @@ fn output(event: &str, context: &str, has_messages: bool) -> serde_json::Value {
     }
 }
 
+fn retire(client: &Client, file: &Path, state: &mut Session) -> anyhow::Result<Delivery> {
+    // Persist the local end before the network call, so failed retirement cannot
+    // reactivate delivery. The end marker keeps retirement retryable.
+    state.participant.active = false;
+    save(file, state)?;
+    client.request(
+        "POST",
+        &format!("participants/{}/retire", state.participant.id),
+        None,
+    )?;
+    Ok(Delivery::Ended)
+}
+
+fn mark_ended(path: &Path) -> anyhow::Result<()> {
+    let mut options = OpenOptions::new();
+    options.create(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)?.sync_all()?;
+    Ok(())
+}
+
 /// One bounded read, shared by synchronous hooks and the long-lived watcher.
 /// No board acknowledgement is made here. Failed output/queueing leaves cursors
 /// unchanged so the next hook can try again.
@@ -231,20 +265,30 @@ fn deliver(
     wait: bool,
 ) -> anyhow::Result<Delivery> {
     let key = format!("{agent}-{}", event.session_id);
+    let ended = dir.join(format!("{key}.ended"));
+    if event.hook_event_name == "SessionEnd" {
+        std::fs::create_dir_all(dir)?;
+        // Publish before taking the session lock. Its current owner must handle
+        // retirement even when this short-lived SessionEnd hook cannot acquire it.
+        mark_ended(&ended)?;
+    }
+    if event.hook_event_name == "SessionStart" && !wait {
+        // Publish an explicit resume even if the old watcher still owns the
+        // lock. A later prompt can then restore this conversation's identity.
+        match std::fs::remove_file(&ended) {
+            Ok(()) => {},
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Err(error) => return Err(error.into()),
+        }
+    }
     let Some(_guard) = lock(dir, &key)? else {
         return Ok(Delivery::Waiting);
     };
     let file = dir.join(format!("{key}.json"));
     let previous: Option<Session> = load(&file)?;
-    if event.hook_event_name == "SessionEnd" {
+    if ended.exists() {
         if let Some(mut state) = previous {
-            client.request(
-                "POST",
-                &format!("participants/{}/retire", state.participant.id),
-                None,
-            )?;
-            state.participant.active = false;
-            save(&file, &state)?;
+            return retire(client, &file, &mut state);
         }
         return Ok(Delivery::Ended);
     }
@@ -285,6 +329,9 @@ fn deliver(
         &state.participant.machine_id,
         computer_cursor,
     )?;
+    if ended.exists() {
+        return retire(client, &file, &mut state);
+    }
     let messages: Vec<_> = own
         .items
         .iter()
@@ -336,6 +383,15 @@ fn deliver(
     }
     if computer_cursor != before.1 {
         save(&computer_file, &computer_cursor)?;
+    }
+    if ended.exists() {
+        let retirement = retire(client, &file, &mut state);
+        // Emitted Claude context still needs exit 2 to reach the conversation.
+        // Retirement must not turn an already emitted notification into exit 0.
+        if has_messages {
+            return Ok(Delivery::Sent);
+        }
+        return retirement;
     }
     Ok(if has_messages {
         Delivery::Sent
@@ -403,10 +459,24 @@ pub(crate) fn run(agent: &str, input: &[u8], wait: bool) {
                 }
                 return;
             },
-            Ok(_) if !wait => return,
             // Messaging is optional. An unconfigured/offline board never blocks
             // normal agent work; a watcher retries without waking the model.
-            Err(_) if !wait => return,
+            Ok(_) | Err(_) if !wait => {
+                // A pending SessionEnd may have arrived during a failed HTTP
+                // read. Release the old guard and attempt its handoff once.
+                if dir
+                    .join(format!("{agent}-{}.ended", event.session_id))
+                    .exists()
+                {
+                    let end = Event {
+                        session_id: event.session_id.clone(),
+                        cwd: event.cwd.clone(),
+                        hook_event_name: "SessionEnd".into(),
+                    };
+                    let _ = deliver(&client, &dir, agent, &end, false);
+                }
+                return;
+            },
             _ => {},
         }
         std::thread::sleep(POLL);
@@ -416,6 +486,26 @@ pub(crate) fn run(agent: &str, input: &[u8], wait: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn message_board_hook_queues_with_a_windows_cmd_launcher() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("npm bin");
+        std::fs::create_dir(&folder).unwrap();
+        let marker = folder.join("queued.txt");
+        std::fs::write(
+            folder.join("codex.cmd"),
+            format!("@echo %1 %2 %3 %4 %5>\"{}\"\r\n", marker.display()),
+        )
+        .unwrap();
+        let program = crate::switchboard_relay::find_program("codex", &[folder.clone()]).unwrap();
+        assert_eq!(program, folder.join("codex.cmd"));
+        queue_program(&program, "fixture-session", "fixture-message").unwrap();
+        assert!(std::fs::read_to_string(marker)
+            .unwrap()
+            .contains("queue --thread fixture-session --message fixture-message"));
+    }
 
     #[test]
     fn message_board_hook_stop_continues_for_mail_and_context_preserves_event() {

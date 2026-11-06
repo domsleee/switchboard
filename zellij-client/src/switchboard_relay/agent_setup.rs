@@ -161,7 +161,7 @@ fn search_path() -> Vec<PathBuf> {
     folders
 }
 
-fn find_program(name: &str, folders: &[PathBuf]) -> Option<PathBuf> {
+pub(crate) fn find_program(name: &str, folders: &[PathBuf]) -> Option<PathBuf> {
     let names: Vec<String> = if cfg!(windows) {
         ["exe", "cmd", "bat"]
             .iter()
