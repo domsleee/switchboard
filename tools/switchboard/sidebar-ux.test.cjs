@@ -50,6 +50,38 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.deepEqual(await order(),names.slice(1));
     assert.equal(await snoozed.getAttribute('aria-expanded'),'false');
     assert.equal(await snoozed.locator('.count').textContent(),'1');
+    async function pinProof(name,target,label){
+      if(!process.env.SWITCHBOARD_PIN_SCREENSHOTS)return;
+      await target.evaluate(el=>el.style.outline='2px solid #ef4444');
+      await page.evaluate(text=>{
+        const note=document.createElement('div');note.id='pin-proof-note';note.textContent=text;
+        note.style.cssText='position:absolute;top:360px;left:12px;width:210px;color:#ef4444;font:600 14px sans-serif;z-index:9999';
+        document.querySelector('#sidebar').append(note);
+      },label);
+      await page.locator('#sidebar').screenshot({path:process.env.SWITCHBOARD_PIN_SCREENSHOTS+'/'+name+'.png'});
+      await target.evaluate(el=>el.style.outline='');
+      await page.locator('#pin-proof-note').evaluate(el=>el.remove());
+    }
+    // Keep a different tab selected: selected snoozed tabs intentionally stay visible.
+    await page.locator('#tabs .tab-select').filter({has:page.locator('.tab-name',{hasText:'Online shopping'})}).click();
+    await page.waitForFunction(()=>{const item=allTabs().find(item=>item.key===selected);return item?.tab.name==='Online shopping'&&activeTab(item.entry)?.id===item.tab.id&&!item.entry.needsFocus&&!item.entry.requestedPane&&!item.entry.focusPending;});
+    await pinProof('before',snoozed,'Working tab moves to Snoozed');
+    await snoozed.click();
+    const workingTab=page.locator('#tabs .tab-select').filter({has:page.locator('.tab-name', {hasText:'switchboard'})});
+    await workingTab.click({button:'right'});
+    assert.equal(await page.locator('#pin-tab').textContent(),'PinKeep in the list while working');
+    await page.locator('#pin-tab').click();
+    assert.deepEqual(await order(),names);
+    assert.equal(await snoozed.count(),0);
+    assert.ok(await page.evaluate(()=>Object.keys(JSON.parse(localStorage.getItem('switchboard-pinned'))).length===1));
+    assert.match(await workingTab.locator('small').textContent(),/Pinned/);
+    await pinProof('after',workingTab,'Pinned tab stays here while working');
+    await workingTab.click({button:'right'});
+    assert.equal(await page.locator('#pin-tab').textContent(),'UnpinAllow automatic snoozing');
+    await page.locator('#pin-tab').click();
+    assert.equal(await snoozed.count(),1);
+    await snoozed.click();
+    assert.deepEqual(await order(),names.slice(1));
     if(process.env.SWITCHBOARD_UX_SCREENSHOTS)await page.locator('#sidebar').screenshot({path:process.env.SWITCHBOARD_UX_SCREENSHOTS+'/snoozed.png'});
     const groupBounds=()=>page.evaluate(()=>[$('tabs'),$('snoozed-toggle'),$('hidden-toggle')].map(el=>el?.getBoundingClientRect().toJSON()));
     let [tabList,snoozedGroup]=await groupBounds();
@@ -147,6 +179,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     if(process.env.SWITCHBOARD_UX_SCREENSHOTS)await page.screenshot({path:process.env.SWITCHBOARD_UX_SCREENSHOTS+'/tab-menu.png'});
     await page.keyboard.press('End');assert.equal(await page.evaluate(()=>document.activeElement.id),'close-tab');
     await page.keyboard.press('ArrowUp');assert.equal(await page.evaluate(()=>document.activeElement.id),'hide-tab');
+    await page.keyboard.press('ArrowUp');assert.equal(await page.evaluate(()=>document.activeElement.id),'pin-tab');
     await page.keyboard.press('ArrowUp');assert.equal(await page.evaluate(()=>document.activeElement.id),'select-text');
     await page.keyboard.press('Home');assert.equal(await page.evaluate(()=>document.activeElement.id),'ready');
     await page.keyboard.press('Escape');assert.equal(await action.evaluate(e=>document.activeElement===e),true);
