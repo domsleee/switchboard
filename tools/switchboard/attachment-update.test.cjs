@@ -46,11 +46,12 @@ async function stop(child) {
     await Promise.race([done,sleep(5000).then(()=>{if(child.exitCode===null)child.kill('SIGKILL');})]);
 }
 const identities = () => JSON.parse(cli('-s',name,'action','list-panes','--json','--all')).map(p=>[p.is_plugin,p.id,p.tab_id]).sort();
+const recoveryMode=process.env.SWITCHBOARD_TEST_RECOVERY==='1';
 let native, relay, browser, updateController, created=false;
 (async()=>{
  try {
   console.log('Private fixture:',dir);
-  fs.writeFileSync(config,'web_sharing "on"\nshow_startup_tips false\nsession_serialization false\n');
+  fs.writeFileSync(config,`web_sharing "${recoveryMode?'off':'on'}"\nshow_startup_tips false\nsession_serialization false\n`);
   fs.copyFileSync(oldBinary,installed);fs.chmodSync(installed,0o755);
   const tokenLine=cli('web','--create-token').split('\n').find(line=>line.includes(': '));
   const tokenPath=path.join(dir,'token');fs.writeFileSync(tokenPath,tokenLine.slice(tokenLine.indexOf(': ')+2).trim(),{mode:0o600});
@@ -59,9 +60,10 @@ let native, relay, browser, updateController, created=false;
   fs.writeFileSync(relayConfig,JSON.stringify({hosts:[{id:'test',name:'Acceptance',url:`http://127.0.0.1:${nativePort}`,token_file:tokenPath,zellij_binary:installed}]}));
   const start=(args,label)=>spawn(installed,args,{env,stdio:['ignore',fs.openSync(path.join(dir,label+'.log'),'a'),fs.openSync(path.join(dir,label+'-error.log'),'a')]});
   const startServices=()=>{native=start(['--config',config,'web','--port',String(nativePort)],'native');relay=start(['serve','--host-config',relayConfig,'--port',String(relayPort)],'relay');};
-  startServices();await waitFor(async()=> (await fetch(url)).ok,'Services failed');
   cliWith(process.env.SWITCHBOARD_TEST_ENGINE||installed,'attach','--create-background',name,'--',process.env.PYTHON||(process.platform==='win32'?'python':'python3'),'-u',path.join(root,'tools/switchboard/resumable-viewer/fixture.py'),dir);created=true;
   await waitFor(()=>fs.existsSync(path.join(dir,'fixture.json')),'Raw fixture failed');
+  if(recoveryMode)env.SWITCHBOARD_RECOVER_UNSHARED_SESSION=name;
+  startServices();await waitFor(async()=> (await fetch(url)).ok,'Services failed');
   const fixturePid=JSON.parse(fs.readFileSync(path.join(dir,'fixture.json'))).pid;
   const before=identities();
   browser=await chromium.launch({headless:true, executablePath:process.env.CHROMIUM_EXECUTABLE});const context=await browser.newContext({viewport:{width:1200,height:800}});const page=await context.newPage();
@@ -98,6 +100,8 @@ let native, relay, browser, updateController, created=false;
         await send(`handoff:${++installs}|`);
         fs.copyFileSync(candidate,installed+'.next');fs.chmodSync(installed+'.next',0o755);fs.renameSync(installed+'.next',installed);
         startServices();await waitFor(async()=> (await fetch(url+'/api/health')).ok,'Private services did not restart');
+        await waitFor(async()=> (await(await fetch(url+'/api/hosts/test')).json()).sessions?.some(s=>s.name===name),'Candidate catalog ready');
+        assert.equal((await fetch(url+'/hosts/test/session?resumable=true&session='+name,{method:'POST'})).status,503,'Bootstrap fenced throughout activation/rollback');
         if(failNext){failNext=false;res.writeHead(500);res.end('Injected handoff failure');}else res.end('ok');
       }catch(error){res.writeHead(500);res.end(error.message);}
     });
@@ -135,6 +139,20 @@ let native, relay, browser, updateController, created=false;
   assert.ok(await page.evaluate(()=>{const w=document.querySelector('#terminals>iframe.active').contentWindow;return w.term===window.savedTerm&&w.document===window.savedDocument;}),'Document and renderer survive');
   await page.waitForFunction(()=>document.querySelector('#terminals>iframe.active').contentWindow.testOutput.includes('OUT:000400'));
   assert.equal(fs.readFileSync(path.join(dir,'input.bin'),'utf8'),expected);
+  if(recoveryMode) {
+    const originalViewer=await page.evaluate(()=>document.querySelector('#terminals>iframe.active').contentWindow.testPair.terminal.owner.viewer);
+    await stop(native);native=null;delete env.SWITCHBOARD_RECOVER_UNSHARED_SESSION;
+    native=start(['--config',config,'web','--port',String(nativePort)],'native');
+    await waitFor(async()=> !(await(await fetch(url+'/api/hosts/test')).json()).sessions?.find(s=>s.name===name)?.web_clients_allowed,'Recovery revoked');
+    await page.evaluate(()=>document.querySelector('#terminals>iframe.active').contentWindow.testPair.terminal.send('REVOKED_INPUT'));
+    const fresh=await context.newPage();
+    await fresh.addInitScript(()=>window.addEventListener('zellij-resumable-sockets',e=>window.testPair=e.detail));
+    await fresh.goto(url);
+    await sleep(3000);
+    assert.equal(fs.readFileSync(path.join(dir,'input.bin'),'utf8'),expected,'Removed recovery cannot forward buffered input');
+    assert.ok(await page.evaluate(id=>{const o=document.querySelector('#terminals>iframe.active').contentWindow.testPair.terminal.owner;return o.viewer===id&&!o.connected;},originalViewer));
+    await fresh.close();console.log('PASS: removing recovery authorization blocks retained and new viewers');
+  } else {
   // A different credential cannot take over this retained viewer.
   const roLine=cli('web','--create-read-only-token').split('\n').find(line=>line.includes(': '));
   const roName=roLine.slice(0,roLine.indexOf(': '));
@@ -155,6 +173,17 @@ let native, relay, browser, updateController, created=false;
   await roPage.waitForFunction(()=>window.testPair.terminal.readyState===3);
   await roContext.close();
   console.log('PASS: read-only input blocked, different credentials rejected, revocation closes retained viewer');
+  // A stale sidebar target must never send queued typing to the old pane.
+  await page.evaluate(()=>{
+    const pair=document.querySelector('#terminals>iframe.active').contentWindow.testPair;
+    pair.terminal.owner.socket.close();
+    pair.control.send(JSON.stringify({web_client_id:pair.control.owner.viewer,payload:{type:'FocusPane',pane_id:4294967294,is_plugin:false}}));
+    pair.terminal.send('WRONG_PANE');
+  });
+  await page.waitForFunction(()=>document.querySelector('#terminals>iframe.active')?.contentWindow.__zjResumeFailure);
+  assert.equal(fs.readFileSync(path.join(dir,'input.bin'),'utf8'),expected,'Failed focus cannot deliver input to the prior pane');
+  console.log('PASS: stale focus during reconnect fails without sending queued typing to the old pane');
+  }
   console.log('PASS: production parser, retained attachment, same engine/pane/browser, lossless typing and numbered output across web+relay restart');
  } finally {
   if(updateController)await new Promise(resolve=>updateController.close(resolve));
