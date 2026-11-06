@@ -44,6 +44,10 @@ jobs:
         run: node acceptance/switchboard/run.cjs ui
       - name: Build browser-enabled native executable
         run: cargo build --profile dev-opt --locked
+      - name: Check agent message delivery hooks
+        env:
+          SWITCHBOARD_TEST_BINARY: target/dev-opt/zellij
+        run: node --test tools/switchboard/message_board.test.cjs tools/switchboard/agent-message-hooks.test.cjs
       - name: Check native sharing controls
         run: node acceptance/switchboard/run.cjs sharing target/dev-opt/zellij
       - name: Check browser reconnection and rollback

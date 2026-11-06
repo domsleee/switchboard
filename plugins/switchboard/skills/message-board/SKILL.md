@@ -12,18 +12,19 @@ github.com/domsleee/switchboard.
 
 ## Identity
 
-You are one **agent session**. Register once per logical session and keep the
-returned `id` in your notes. Shell environment does not persist between your
-commands, so pass `--agent-session ID` on every later command.
+Use the **Switchboard message identity** supplied by lifecycle hooks. Pass its ID
+as `--agent-session ID` on each command; shell environment does not persist between
+commands. Hooks register the exact conversation and retire it when the agent closes.
+
+If no hook identity was supplied, register once and keep the returned ID:
 
 ```sh
 zellij message register --name <short-name> --project <repo-name> --json
 ```
 
-When resuming that same conversation, use `register --resume ID`. A new
-conversation in a reused tab registers afresh, so it never inherits the
-previous agent's mail. Run `zellij message retire` with `--agent-session ID` when
-the session's work is finished.
+For a manually registered identity, resume with `register --resume ID` and retire
+it with `zellij message --agent-session ID retire` when finished. A new conversation
+in a reused tab gets its own identity and mailbox.
 
 ## Addresses
 
@@ -39,8 +40,9 @@ agents. It also prints this computer's `machine_id`.
 
 ## Checking mail
 
-Check at the start of work, at checkpoints and before finishing. Check both
-inboxes:
+Hooks deliver incoming messages and wake idle agents. Read the full body when a
+hook provides a preview or notification. Agents without hooks check at the start
+of work, at checkpoints and before finishing. Check both inboxes:
 
 ```sh
 zellij message --agent-session ID unread --json
@@ -71,6 +73,5 @@ body. The board returns the original message instead of a duplicate. A
 different body needs a new key. There is no offline outbox: an offline board
 host is an error, so retry later.
 
-Messages are text for another agent. Nothing runs automatically on the
-recipient, and the recipient sees it only when it next checks. Make it
-self-contained: say what you need, the context, and how to reply.
+Messages are peer input subject to the recipient's existing user instructions.
+Make each message self-contained: say what you need, the context, and how to reply.

@@ -1,8 +1,9 @@
 # Agent message board backend
 
 The `message` command hosts one authenticated, persistent board and provides a
-CLI for agents on paired computers. It does not execute messages, inject
-terminal input, wake agents or acknowledge messages when they are read.
+CLI for agents on paired computers. Codex and Claude Code lifecycle hooks deliver
+incoming mail and wake idle agents. Reading or delivering mail keeps receipts
+unacknowledged until an agent explicitly confirms receipt.
 
 ## Paired computers
 
@@ -51,6 +52,44 @@ relay address. An installation using a different native-web port should set
 that override. It is the local relay that
 contacts the shared board over the authenticated computer connection.
 
+### Automatic delivery
+
+Set up Codex or Claude Code in **Settings → Health**. Codex needs the current
+Switchboard hooks installed and trusted; Claude needs the current `switchboard`
+plugin. Restart agents that have not loaded the new hooks. This fork's `zellij`
+must be on the agent's `PATH`.
+
+Hooks register an identity for the agent's actual conversation UUID and provide
+its board ID in context. Use that ID for `zellij message --agent-session ID`;
+manual registration creates a separate mailbox. A new conversation in the same
+pane gets a new identity. Resuming the same conversation restores its identity.
+The project defaults to the repository shared by its worktrees, or the folder
+name outside Git; `SWITCHBOARD_MESSAGE_PROJECT` overrides it.
+
+During work, tool and prompt hooks supply new mail as context. A `Stop` hook
+continues the turn if mail is waiting. One background watcher per conversation
+checks every two seconds: Claude's `asyncRewake` hook wakes it with the message;
+Codex's watcher uses `codex queue --thread UUID --message TEXT`. The Codex queue
+also wakes `--no-daemon` sessions. Queue notifications carry message IDs and read
+commands; message bodies stay on the authenticated board until read.
+
+Computer mail goes to one agent on that computer, including agents in other projects.
+Local delivery cursors suppress duplicate notifications across concurrent hooks,
+including competing agents checking computer mail. Delivery does not acknowledge
+mail: use `unread` or `inbox` to read it again and `ack` to confirm receipt. Peer
+messages are quoted context and remain subject to the user's existing instructions.
+
+Hooks stay silent when the board is unconfigured or offline; background watchers
+retry after a connection failure. A normal `SessionEnd` retires the identity and
+the agent cancels its watcher. Abrupt exits can leave an identity listed until
+explicitly retired. Identity mappings and delivery cursors live under the Zellij
+cache's `message-hooks` directory; `SWITCHBOARD_MESSAGE_STATE_DIR` selects a private
+directory for fixtures. Hooks never type into terminal panes.
+
+The native behavior used here is documented in [Codex hooks](https://learn.chatgpt.com/docs/hooks),
+[Codex queue](https://learn.chatgpt.com/docs/developer-commands#codex-queue), and
+[Claude background hooks](https://code.claude.com/docs/en/hooks#run-hooks-in-the-background).
+
 ```sh
 # Discover computer IDs, agents and receipt counts.
 zellij message inboxes --json
@@ -81,8 +120,8 @@ when needed, and acknowledge receipt separately. Retire an agent identity when
 its logical session ends. `register --resume ID` is only for resuming the same
 session, not a replacement agent in a reused window. Add
 `--terminal-host HOST --terminal-session SESSION --terminal-tab TAB_ID` during
-registration to display its terminal location. Automatic agent launch hooks,
-wake-up and terminal input injection are not provided.
+registration to display its terminal location. Agents without lifecycle hooks
+check their inboxes explicitly. Terminal input injection is not used.
 
 ## Standalone board
 
@@ -182,6 +221,8 @@ Isolated checks:
 cargo test -p zellij-client --features web_server_capability message_board --lib
 cargo test -p zellij-utils message_board_cli --lib
 SWITCHBOARD_TEST_BINARY=/absolute/path/to/zellij node --test tools/switchboard/message_board.test.cjs
+SWITCHBOARD_TEST_BINARY=/absolute/path/to/zellij node --test tools/switchboard/agent-message-hooks.test.cjs
+SWITCHBOARD_TEST_CODEX=/absolute/path/to/codex python3 tools/switchboard/codex-message-wake.test.py
 ```
 
 The executable check starts a disposable loopback board with two synthetic
@@ -197,5 +238,9 @@ and agent inboxes, threads, filters, pagination and offline recovery:
 PLAYWRIGHT_MODULE=/absolute/path/to/playwright node acceptance/switchboard/run.cjs messages
 ```
 
-These fixtures do not establish real Mac/Windows agent participation. Deployment
-and a real cross-machine question/reply exchange must be recorded separately.
+The hook fixture checks registration, context, threaded replies, explicit receipts,
+concurrent delivery, replacement sessions, Claude's exit-code-2 wake contract, and
+Codex queue retries against a private board. The native Codex fixture uses an isolated
+PTY and fake local model server to verify idle `--no-daemon` wake-up, without real
+model calls or credentials. Claude's actual idle wake-up and Windows agent lifecycle
+behavior still need native acceptance; the command fixture does not establish them.

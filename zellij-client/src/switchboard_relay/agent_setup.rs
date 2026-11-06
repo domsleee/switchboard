@@ -4,7 +4,7 @@
 //!
 //! Browsers and paired computers can only ask for an agent's setup by name. What it
 //! runs is fixed here: the `switchboard` plugin for Claude Code and Copilot CLI, and
-//! command hooks in `~/.codex/hooks.json` for Codex, whose plugins can't carry hooks.
+//! command hooks in `~/.codex/hooks.json` for Codex.
 use super::*;
 use std::{
     collections::BTreeMap,
@@ -20,7 +20,8 @@ const SETUP_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const SAVE_EVERY_MS: u64 = 60_000;
 /// The Codex events `attention::hook` reads, with the name Codex gives each in its
 /// hook trust keys. Codex caps `Interrupt` and `SessionEnd` hooks at 3 seconds.
-const CODEX_EVENTS: [(&str, &str, u64); 6] = [
+const CODEX_EVENTS: [(&str, &str, u64); 7] = [
+    ("SessionStart", "session_start", 5),
     ("UserPromptSubmit", "user_prompt_submit", 5),
     ("PostToolUse", "post_tool_use", 5),
     ("PermissionRequest", "permission_request", 5),
@@ -264,12 +265,12 @@ fn launcher_text(binary: &Path) -> String {
     let binary = binary.to_string_lossy();
     if cfg!(windows) {
         format!(
-            "@\"{}\" agent-hook --agent codex\r\n",
+            "@\"{}\" agent-hook --agent codex %*\r\n",
             binary.replace('%', "%%")
         )
     } else {
         format!(
-            "#!/bin/sh\nexec '{}' agent-hook --agent codex\n",
+            "#!/bin/sh\nexec '{}' agent-hook --agent codex \"$@\"\n",
             binary.replace('\'', "'\\''")
         )
     }
@@ -296,11 +297,16 @@ pub(super) fn install_codex_launcher(home: &Path, binary: &Path) -> std::io::Res
 /// Codex hooks run through a shell, as `zellij agent-resume install`'s do; Windows
 /// PowerShell gets the payload as UTF-8 and pipes it to the launcher.
 fn codex_command(launcher: &Path) -> String {
+    codex_command_with_wait(launcher, false)
+}
+
+fn codex_command_with_wait(launcher: &Path, wait: bool) -> String {
     let launcher = launcher.to_string_lossy();
+    let args = if wait { " --wait" } else { "" };
     if cfg!(windows) {
         use base64::{engine::general_purpose::STANDARD, Engine};
         let script = format!(
-            "$utf8=New-Object System.Text.UTF8Encoding($false); [Console]::InputEncoding=$utf8; $OutputEncoding=$utf8; $payload=[Console]::In.ReadToEnd(); $payload | & '{}'; exit 0",
+            "$utf8=New-Object System.Text.UTF8Encoding($false); [Console]::InputEncoding=$utf8; $OutputEncoding=$utf8; $payload=[Console]::In.ReadToEnd(); $payload | & '{}'{args}; exit 0",
             launcher.replace('\'', "''")
         );
         let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
@@ -309,7 +315,7 @@ fn codex_command(launcher: &Path) -> String {
             STANDARD.encode(bytes)
         )
     } else {
-        format!("'{}'", launcher.replace('\'', "'\\''"))
+        format!("'{}'{args}", launcher.replace('\'', "'\\''"))
     }
 }
 
@@ -501,6 +507,18 @@ fn check_codex(dir: &Path, launcher: &Path, reported_since_setup: bool) -> Check
         hooks
             .iter()
             .any(|(e, _, _, command)| e == event && *command == expected)
+    }) && ["SessionStart", "Stop"].iter().all(|event| {
+        config["hooks"][event]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|group| {
+                group["hooks"].as_array().into_iter().flatten().any(|hook| {
+                    hook["command"] == codex_command_with_wait(launcher, true)
+                        && hook["async"] == true
+                        && hook["timeout"] == crate::message_board::hooks::WATCH_TIMEOUT
+                })
+            })
     });
     if hooks.is_empty() {
         return Check {
@@ -598,7 +616,7 @@ fn turn_on_auto_update(settings_file: &Path, source: Value) -> Result<(), String
 }
 
 /// Replace Switchboard's Codex hooks with current ones, keeping every other hook.
-fn install_codex_hooks(file: &Path, command: &str) -> Result<(), String> {
+fn install_codex_hooks(file: &Path, command: &str, wait_command: &str) -> Result<(), String> {
     let mut config = match std::fs::read_to_string(file) {
         Ok(text) => serde_json::from_str::<Value>(&text)
             .map_err(|e| format!("{} is not valid JSON: {e}", file.display()))?,
@@ -626,6 +644,15 @@ fn install_codex_hooks(file: &Path, command: &str) -> Result<(), String> {
         });
         groups
             .push(json!({"hooks": [{"type": "command", "command": command, "timeout": timeout}]}));
+        if matches!(event, "SessionStart" | "Stop") {
+            groups.last_mut().unwrap()["hooks"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({
+                    "type":"command", "command":wait_command, "async":true,
+                    "timeout":crate::message_board::hooks::WATCH_TIMEOUT
+                }));
+        }
     }
     back_up(file);
     write_json(file, &config).map_err(|e| format!("Could not save {}: {e}", file.display()))
@@ -736,6 +763,7 @@ async fn set_up(agent: Agent) -> Result<(), String> {
             install_codex_hooks(
                 &dir.join("hooks.json"),
                 &codex_command(&codex_launcher(&home())),
+                &codex_command_with_wait(&codex_launcher(&home()), true),
             )?;
             let codex = find_program("codex", &folders).ok_or("Codex not found")?;
             trust_codex_hooks(&codex, &folders).await.map_err(|error| {
@@ -1038,14 +1066,14 @@ mod tests {
             r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"'/z' agent-resume record --agent codex","timeout":10}]}],"Stop":[{"hooks":[{"type":"command","command":"say done"}]}]}}"#,
         );
         assert_eq!(check_codex(dir, &launcher, false).state, "setup");
-        install_codex_hooks(&file, &command).unwrap();
+        install_codex_hooks(&file, &command, &codex_command_with_wait(&launcher, true)).unwrap();
         assert_eq!(
             check_codex(dir, &launcher, false).detail,
             "Status hook launcher missing"
         );
         install_codex_launcher(dir, Path::new("/opt/switch board/zellij")).unwrap();
         // Installing again replaces Switchboard's hooks instead of adding more.
-        install_codex_hooks(&file, &command).unwrap();
+        install_codex_hooks(&file, &command, &codex_command_with_wait(&launcher, true)).unwrap();
         let config = read_json(&file).unwrap();
         assert_eq!(
             config["hooks"]["SessionStart"][0]["hooks"][0]["command"],
@@ -1057,7 +1085,7 @@ mod tests {
             "say done"
         );
         assert_eq!(config["hooks"]["Interrupt"][0]["hooks"][0]["timeout"], 3);
-        assert_eq!(codex_hooks(&config).len(), CODEX_EVENTS.len());
+        assert_eq!(codex_hooks(&config).len(), CODEX_EVENTS.len() + 2);
 
         let check = check_codex(dir, &launcher, false);
         assert_eq!(check.state, "approve", "{check:?}");
@@ -1098,10 +1126,10 @@ mod tests {
             check_codex(dir, &launcher, false).detail,
             "Status hooks are out of date"
         );
-        install_codex_hooks(&file, &command).unwrap();
+        install_codex_hooks(&file, &command, &codex_command_with_wait(&launcher, true)).unwrap();
         assert_eq!(
             codex_hooks(&read_json(&file).unwrap()).len(),
-            CODEX_EVENTS.len()
+            CODEX_EVENTS.len() + 2
         );
     }
 
@@ -1150,7 +1178,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("hooks.json");
         write(&file, "{not json");
-        assert!(install_codex_hooks(&file, "x agent-hook --agent codex").is_err());
+        assert!(install_codex_hooks(
+            &file,
+            "x agent-hook --agent codex",
+            "x agent-hook --agent codex --wait"
+        )
+        .is_err());
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "{not json");
         let settings = dir.path().join("settings.json");
         write(&settings, "[]");
