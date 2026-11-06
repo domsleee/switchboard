@@ -45,6 +45,45 @@ Quitting it leaves your terminals running.
 The first install sets up this computer's login on its own. Running it again
 keeps your settings.
 
+## Open on an Android phone
+
+Use an HTTPS address on your private network. With Tailscale installed and signed
+in on this computer and your phone, [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve)
+provides HTTPS for the computer's `*.ts.net` name. Keep the computer awake while
+using its relay, including for background notifications.
+
+1. Get the computer's DNS name from `tailscale status --json` → `Self.DNSName`
+   (omit its trailing dot).
+2. Add `"browser_origin": "https://YOUR-COMPUTER.YOUR-TAILNET.ts.net"` at the top
+   level of the existing host configuration, keeping its other fields. On Mac it
+   is `~/.config/zellij/switchboard-hosts.json`; on Windows it is
+   `~/.config/switchboard/hosts.json`. Restart only the relay service so it reads
+   the new setting; leave terminal session servers running.
+3. Run `tailscale serve --bg http://127.0.0.1:8090`. Enable HTTPS in the Tailscale
+   admin console if the command asks. Use the relay's actual port if different.
+   This gives devices allowed by your tailnet access to your terminal controls;
+   use Serve within your private tailnet.
+4. Open the printed HTTPS URL in Chrome on Android. In **Settings → This
+   device**, choose **Install Switchboard**, or use Chrome's **Add to Home screen
+   → Install** menu. Turn on **Attention notifications**, allow Chrome's permission
+   request, then press **Send test notification**.
+
+The relay sends encrypted Web Push when an agent needs approval or input, or has
+a new result to review. Alerts work with the page closed; tapping one opens the
+matching terminal. Each device opts in separately. The relay needs internet
+access to the browser's push service; the phone needs Tailscale when opening the
+terminal. Switching a device off removes its subscription. Plain HTTP LAN/IP
+addresses cannot enable notifications or installation.
+
+Push keys, subscriptions and delivery receipts persist beside the host config in
+its `.push.json` file, readable only by its owner on Unix. Preserve this file
+across updates. Terminal screens and password requests are never sent through
+the push service. Existing unread results do not alert when you first opt in.
+
+To remove phone access, run `tailscale serve --https=443 off`, remove
+`browser_origin`, and restart only the relay. Other configured Serve paths or
+ports should be preserved.
+
 ## Exact agent status
 
 Switchboard reads each tab's screen to tell whether an agent is working. Claude Code,

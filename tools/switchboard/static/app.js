@@ -15,7 +15,7 @@ fetch('/api/health',{cache:'no-store'}).then(response=>response.ok?response.json
 }).catch(()=>{});
 const hosts = new Map(), sessions = new Map();
 const tabButtons=new Map();
-const mobileSidebar=matchMedia("(max-width:700px)");
+const mobileSidebar=matchMedia("(max-width:700px), (pointer:coarse) and (max-width:1000px)");
 let sidebarCollapsed=localStorage.getItem("switchboard-sidebar-collapsed")==="true",sidebarOpen=false;
 let filter = requestedFilter(), selected = requestedTab(), restoringTab=!!selected, loading = false, dragging = false, hostsLoaded = false;
 const dragType='application/x-zellij-switchboard-tab';
@@ -603,7 +603,7 @@ function render() {
   $('notifications').classList.toggle('has-notifications',notifications>0);
   $('notifications').hidden=notifications===0;
   document.title=`${notifications?'('+notifications+') ':''}`+(current?`${tabTitle(current)} · ${hosts.get(current.entry.host)?.name} · Switchboard`:'Switchboard');
-  globalThis.SwitchboardNotifications?.check(allTabs(true).filter(isReady).map(item=>({key:item.key,active:item.key===selected,title:tabTitle(item),machine:hosts.get(item.entry.host)?.name||item.entry.host,label:autoLabel(item),sig:statesForTab(item).filter(needsAttention).map(state=>`${state.key}:${state.state}:${state.token||''}`).join('|')||autoLabel(item)})));
+  globalThis.SwitchboardNotifications?.check(allTabs(true).filter(isReady));
   const startingEntry=[...sessions.values()].find(entry=>entry.starting&&(filter==='all'||groups[entry.host]===filter));
   const currentEntry=current?.entry||(waitingForRequestedTab()?sessions.get(sessionKey(...JSON.parse(selected).slice(0,2))):startingEntry);
   for (const entry of sessions.values()) entry.frame.classList.toggle('active',entry===currentEntry);

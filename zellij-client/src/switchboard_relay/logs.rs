@@ -995,6 +995,7 @@ mod tests {
         use tower::ServiceExt;
         let app = router(
             RelayConfig {
+                browser_origin: None,
                 hosts: vec![super::super::tests::config("http://127.0.0.1:8082")],
                 artifact_proxy: None,
             },
@@ -1346,6 +1347,7 @@ mod tests {
         use tower::ServiceExt;
         let app = router(
             RelayConfig {
+                browser_origin: None,
                 hosts: vec![super::super::tests::config("http://127.0.0.1:8082")],
                 artifact_proxy: None,
             },
@@ -1586,6 +1588,7 @@ mod tests {
         use tower::ServiceExt;
         let app = router(
             RelayConfig {
+                browser_origin: None,
                 hosts: vec![],
                 artifact_proxy: None,
             },
@@ -1733,6 +1736,7 @@ mod tests {
         record("test-host", "Remote control unavailable for api test");
         use tower::ServiceExt;
         let config = RelayConfig {
+            browser_origin: None,
             hosts: vec![],
             artifact_proxy: None,
         };

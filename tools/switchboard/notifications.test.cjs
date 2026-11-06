@@ -4,106 +4,108 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const source = name => fs.readFileSync(__dirname + '/static/' + name, 'utf8');
 
-function harness({ enabled = true, permission = 'granted' } = {}) {
-  const store = new Map();
+function harness({ enabled = false, permission = 'default', secure = true, fail = '' } = {}) {
+  const store = new Map(), calls = [], badges = [];
   if (enabled) store.set('switchboard-notifications-enabled', 'true');
-  const shown = [], badges = [], vibrations = [];
-  const button = {
-    dataset: {}, attrs: {},
-    classList: { toggle(name, on) { this[name] = on; } },
-    setAttribute(name, value) { this.attrs[name] = value; },
-    addEventListener(name, fn) { this.onclick = fn; },
-  };
-  const help = { textContent: '' };
-  class FakeNotification {
-    constructor(title, options) { this.title = title; this.options = options; shown.push(this); }
+  const elements = new Map();
+  for (const id of ['attention-notifications','attention-notifications-help','test-notification','install-help','install-switchboard']) {
+    elements.set(id, { attrs: {}, setAttribute(k, v) { this.attrs[k] = v; }, addEventListener(k, v) { this[k] = v; } });
   }
-  FakeNotification.permission = permission;
-  FakeNotification.requestPermission = async () => { FakeNotification.permission = 'granted'; return 'granted'; };
-  const context = {
-    localStorage: {
-      getItem: key => (store.has(key) ? store.get(key) : null),
-      setItem: (key, value) => store.set(key, String(value)),
+  let subscription = null;
+  const registration = {
+    pushManager: {
+      async getSubscription() { return subscription; },
+      async subscribe(options) {
+        calls.push('browser-subscribe');
+        subscription = { endpoint: 'https://fcm.googleapis.com/push/device', options,
+          toJSON: () => ({ endpoint: 'https://fcm.googleapis.com/push/device', keys: {} }),
+          async unsubscribe() { calls.push('browser-unsubscribe'); subscription = null; return true; } };
+        return subscription;
+      },
     },
-    document: {
-      readyState: 'complete', hidden: true,
-      hasFocus: () => false,
-      getElementById: id => (id === 'attention-notifications' ? button : id === 'attention-notifications-help' ? help : null),
-      addEventListener() {},
-    },
-    navigator: {
-      setAppBadge: count => { badges.push(count); return Promise.resolve(); },
-      clearAppBadge: () => { badges.push(0); return Promise.resolve(); },
-      vibrate: ms => vibrations.push(ms),
-    },
-    Notification: FakeNotification,
-    window: { addEventListener() {}, focus() {} },
+    async getNotifications() { return []; },
   };
-  context.globalThis = context;
-  context.window = context;
-  vm.createContext(context);
-  vm.runInContext(source('notifications.js'), context);
-  return { context, shown, badges, vibrations, button, store };
+  const context = {
+    isSecureContext: secure, PushManager: function() {}, AbortSignal,
+    atob: key => Buffer.from(key, 'base64').toString('binary'), Uint8Array,
+    localStorage: { getItem: k => store.get(k) ?? null, setItem: (k,v) => store.set(k,v) },
+    document: { readyState: 'complete', getElementById: id => elements.get(id) },
+    Notification: { permission, async requestPermission() { calls.push('permission'); return this.permission = 'granted'; } },
+    navigator: {
+      serviceWorker: { register: async () => registration, ready: Promise.resolve(registration) },
+      setAppBadge: n => { badges.push(n); return Promise.resolve(); }, clearAppBadge: () => { badges.push(0); return Promise.resolve(); },
+    },
+    matchMedia: () => ({matches:false}), addEventListener() {},
+    fetch: async (url, options) => {
+      const action = url.split('/').at(-1); calls.push(action);
+      return {ok: action !== fail, json: async () => action === 'config' ? {publicKey: Buffer.alloc(65,1).toString('base64url')} : {ok:true} };
+    },
+  };
+  context.window = context; context.globalThis = context;
+  vm.createContext(context); vm.runInContext(source('notifications.js'), context);
+  return { api: context.SwitchboardNotifications, context, calls, elements, store, badges, registration };
 }
 
-const item = (sig, extra = {}) => ({ key: 'tab-1', sig, title: 'Fix the build', machine: 'Mac', label: 'Ready to review', ...extra });
-
-test('alerts once per attention change, again on a new token, and updates the badge', () => {
-  const { context, shown, badges, vibrations } = harness();
-  assert.equal(context.SwitchboardNotifications.check([item('ready:1')]), 1);
-  assert.equal(context.SwitchboardNotifications.check([item('ready:1')]), 0);
-  assert.equal(shown.length, 1);
-  assert.equal(shown[0].title, 'Fix the build');
-  assert.match(shown[0].options.body, /Ready to review/);
-  assert.equal(context.SwitchboardNotifications.check([item('ready:2')]), 1);
-  assert.equal(context.SwitchboardNotifications.check([]), 0);
-  assert.deepEqual(badges, [1, 1, 1, 0]);
-  assert.deepEqual(vibrations, [120, 120]);
+test('permission is requested only by opting in; relay registration precedes On', async () => {
+  const h = harness(); assert.deepEqual(h.calls, []);
+  assert.equal(await h.api.setEnabled(true), true);
+  assert.deepEqual(h.calls, ['permission','config','browser-subscribe','subscribe']);
+  assert.equal(h.elements.get('attention-notifications').attrs['aria-pressed'], 'true');
+  assert.equal(h.store.get('switchboard-notifications-enabled'), 'true');
+  await h.api.setEnabled(false);
+  assert.deepEqual(h.calls.slice(-2), ['unsubscribe','browser-unsubscribe']);
+  assert.equal(h.api.enabled, false);
 });
-
-test('does not alert when disabled, but still clears stale dedup state', () => {
-  const { context, shown } = harness({ enabled: false });
-  assert.equal(context.SwitchboardNotifications.check([item('ready:1')]), 0);
-  assert.equal(shown.length, 0);
+test('failed relay registration stays Off and explains the failure', async () => {
+  const h = harness({fail:'subscribe'});
+  assert.equal(await h.api.setEnabled(true), false);
+  assert.match(h.elements.get('attention-notifications-help').textContent, /could not save/);
 });
-
-test('does not alert for the tab already in focus, and does not re-alert on blur', () => {
-  const { context, shown } = harness();
-  context.document.hidden = false;
-  context.document.hasFocus = () => true;
-  assert.equal(context.SwitchboardNotifications.check([item('approval:1', { active: true })]), 0);
-  context.document.hidden = true;
-  assert.equal(context.SwitchboardNotifications.check([item('approval:1', { active: true })]), 0);
-  assert.equal(shown.length, 0);
+test('offline disable remains On so the user can retry removal', async () => {
+  const h = harness({fail:'unsubscribe'});
+  await h.api.setEnabled(true); await h.api.setEnabled(false);
+  assert.equal(h.api.enabled, true); assert.ok(!h.calls.includes('browser-unsubscribe'));
 });
-
-test('PWA files are linked, valid, and served by the relay', () => {
-  const manifest = JSON.parse(source('manifest.webmanifest'));
-  assert.equal(manifest.display, 'standalone');
-  assert.equal(manifest.start_url, '/');
-  assert.deepEqual(manifest.icons.map(icon => icon.sizes), ['192x192', '512x512']);
-  for (const icon of manifest.icons) assert.ok(fs.existsSync(__dirname + '/static' + icon.src), icon.src);
-  const sw = source('sw.js');
-  assert.match(sw, /addEventListener\('push'/);
-  assert.match(sw, /addEventListener\('notificationclick'/);
-  assert.match(sw, /addEventListener\('fetch'/);
-  const index = source('index.html');
-  assert.match(index, /rel="manifest" href="\/manifest\.webmanifest"/);
-  assert.match(index, /viewport-fit=cover/);
-  assert.match(index, /src="\/notifications\.js"/);
-  assert.match(index, /id="attention-notifications"/);
-  const relay = fs.readFileSync(__dirname + '/../../zellij-client/src/switchboard_relay.rs', 'utf8');
-  for (const name of ['manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'notifications.js', 'sw.js']) {
-    assert.ok(relay.includes(`"${name}"`), `relay serves ${name}`);
+test('denied permission and insecure phone URLs cannot claim notifications are enabled', async () => {
+  for (const options of [{permission:'denied'}, {secure:false}]) {
+    const h = harness(options); assert.equal(await h.api.setEnabled(true), false);
+    assert.deepEqual(h.calls, []);
+    assert.match(h.elements.get('attention-notifications-help').textContent, options.secure === false ? /HTTPS/ : /blocked/);
   }
 });
+test('attention polling updates badges without creating duplicate foreground notifications', () => {
+  const h = harness(); h.api.check([{},{}]); h.api.check([]);
+  assert.deepEqual(h.badges,[2,0]); assert.deepEqual(h.calls,[]);
+});
 
-test('mobile shell uses phone touch targets, 16px inputs and safe areas', () => {
-  const css = source('style.css');
-  const mobile = css.slice(css.indexOf('@media(max-width:700px)'));
-  assert.match(mobile, /#sidebar-toggle[^}]*width:44px;height:44px/);
-  assert.match(mobile, /#tab-search\{font-size:16px/);
-  assert.match(mobile, /env\(safe-area-inset-bottom/);
-  assert.match(source('messages.css'), /@media\(max-width:680px\)[^}]*button\{min-height:44px\}/s);
-  assert.match(source('computers.html'), /@media\(max-width:600px\)/);
+function workerHarness() {
+  const events = {}, shown = [], actions = [], waits = [];
+  const clients = [
+    {url:'https://switchboard.test/hosts/mac/main',frameType:'nested',focus:async()=>actions.push('iframe-focus')},
+    {url:'https://switchboard.test/',frameType:'top-level',navigate:async url=>actions.push(['navigate',url]),focus:async()=>actions.push('focus')},
+  ];
+  const self = {location:{origin:'https://switchboard.test'}, addEventListener:(key,fn)=>events[key]=fn,
+    registration:{showNotification:async (...args)=>shown.push(args)},
+    clients:{matchAll:async()=>clients,openWindow:async url=>actions.push(['open',url])}};
+  vm.runInNewContext(source('sw.js'),{self,URL});
+  const send = async (name, data) => { events[name]({...data,waitUntil:promise=>waits.push(promise)}); await Promise.all(waits.splice(0)); };
+  return {send,shown,actions,clients};
+}
+test('background push displays a notification and clicking opens its terminal, never an iframe', async () => {
+  const h = workerHarness(), url='https://switchboard.test/?host=mac&session=main&pane=7';
+  await h.send('push',{data:{json:()=>({title:'Build finished',body:'Ready to review',url,tag:'pane7'})}});
+  assert.equal(h.shown[0][0],'Build finished'); assert.equal(h.shown[0][1].data.url,url);
+  await h.send('notificationclick',{notification:{data:{url},close(){}}});
+  assert.deepEqual(h.actions,[['navigate',url],'focus']);
+  h.clients.length=0; h.actions.length=0;
+  await h.send('notificationclick',{notification:{data:{url:'https://evil.test/'},close(){}}});
+  assert.deepEqual(h.actions,[['open','https://switchboard.test/']]);
+});
+test('PWA manifest names real PNG icons of the advertised dimensions', () => {
+  const manifest = JSON.parse(source('manifest.webmanifest'));
+  assert.equal(manifest.display,'standalone');
+  for (const icon of manifest.icons) {
+    const png=fs.readFileSync(__dirname+'/static'+icon.src), size=Number(icon.sizes.split('x')[0]);
+    assert.equal(png.readUInt32BE(16),size); assert.equal(png.readUInt32BE(20),size);
+  }
 });

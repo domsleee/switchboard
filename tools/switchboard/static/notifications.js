@@ -1,119 +1,116 @@
-// Attention notifications for this browser/device only. Permission and the
-// on/off choice are never shared with paired computers: each phone decides
-// for itself. Foreground path uses the Notification API while the page is
-// open (including backgrounded on Android); sw.js handles future push events.
+// Installation and notification permission belong to this device, never to the mesh.
 (() => {
-  const ENABLED_KEY = 'switchboard-notifications-enabled';
-  const NOTIFIED_KEY = 'switchboard-notified-attention';
-  const load = key => { try { return JSON.parse(localStorage.getItem(key)) || {}; } catch (_) { return {}; } };
-  const save = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); } catch (_) {} };
-  let enabled = false;
-  try { enabled = localStorage.getItem(ENABLED_KEY) === 'true'; } catch (_) {}
-  let notified = load(NOTIFIED_KEY);
-  let ready = false;
-
-  const supported = () => typeof Notification !== 'undefined';
-  const granted = () => supported() && Notification.permission === 'granted';
+  const KEY = 'switchboard-notifications-enabled';
+  const $ = id => document.getElementById(id);
+  let enabled = false, busy = false, failure = '', installPrompt;
+  try { enabled = localStorage.getItem(KEY) === 'true'; } catch (_) {}
+  const supported = () => globalThis.isSecureContext && 'Notification' in globalThis && 'serviceWorker' in navigator && 'PushManager' in globalThis;
+  const remember = value => { enabled = value; try { localStorage.setItem(KEY, String(value)); } catch (_) {} };
+  const on = () => enabled && supported() && Notification.permission === 'granted';
+  // Start registration early; Android shows notifications through the worker.
+  const worker = navigator.serviceWorker && globalThis.isSecureContext
+    ? navigator.serviceWorker.register('/sw.js', { scope: '/' }).then(() => navigator.serviceWorker.ready)
+    : Promise.resolve(null);
+  // Keep startup rejection handled until the user opens Settings.
+  worker.catch(() => {});
 
   function syncToggle() {
-    const button = document.getElementById('attention-notifications');
+    const button = $('attention-notifications'), help = $('attention-notifications-help');
     if (!button) return;
-    const on = enabled && granted();
-    button.setAttribute('aria-pressed', String(on));
-    button.classList.toggle('selected', on);
-    const help = document.getElementById('attention-notifications-help');
-    if (help) {
-      help.textContent = !supported()
-        ? 'This browser does not support notifications. On Android, install Switchboard from Chrome and open the installed app.'
-        : Notification.permission === 'denied'
-          ? 'Notifications are blocked for this site. Allow them in the browser site settings, then turn this on again.'
-          : 'On this device only. Alerts when a tab needs approval or input, or is ready to review, while Switchboard is open or in the background.';
-    }
+    button.setAttribute('aria-pressed', String(on()));
+    button.disabled = busy || !supported();
+    if ($('test-notification')) $('test-notification').disabled = busy || !on();
+    help.textContent = failure || (!globalThis.isSecureContext
+      ? 'Open Switchboard over HTTPS to install it and enable notifications on your phone.'
+      : !supported() ? 'Push notifications are unavailable in this browser.'
+      : Notification.permission === 'denied' ? 'Notifications are blocked. Allow them in this site’s browser settings, then turn this on.'
+      : 'On this device only. Alerts from all paired computers for approval, input, and results ready to review, even when Switchboard is closed.');
   }
-
+  async function api(path, body) {
+    const response = await fetch('/api/push/' + path, {
+      method: body ? 'POST' : 'GET', headers: body ? { 'Content-Type': 'application/json' } : {},
+      ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok) throw Error('The relay could not save or deliver notifications. Try again.');
+    return response.json();
+  }
+  const bytes = key => Uint8Array.from(atob(key.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+  async function subscribe() {
+    const registration = await worker;
+    if (!registration) throw Error('Notifications need HTTPS and a supported browser.');
+    const config = await api('config');
+    let subscription = await registration.pushManager.getSubscription();
+    if (subscription) {
+      const previous = new Uint8Array(subscription.options.applicationServerKey || []), current = bytes(config.publicKey);
+      if (previous.length !== current.length || previous.some((value, i) => value !== current[i])) {
+        await subscription.unsubscribe(); subscription = null;
+      }
+    }
+    subscription ||= await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: bytes(config.publicKey) });
+    await api('subscribe', subscription.toJSON());
+  }
   async function setEnabled(next) {
-    if (!next) { enabled = false; try { localStorage.setItem(ENABLED_KEY, 'false'); } catch (_) {} syncToggle(); return false; }
-    if (!supported()) { syncToggle(); return false; }
-    let permission = Notification.permission;
-    if (permission === 'default') { try { permission = await Notification.requestPermission(); } catch (_) {} }
-    enabled = permission === 'granted';
-    try { localStorage.setItem(ENABLED_KEY, String(enabled)); } catch (_) {}
-    syncToggle();
-    return enabled;
-  }
-
-  function bindToggle() {
-    const button = document.getElementById('attention-notifications');
-    if (!button || button.dataset.bound) return;
-    button.dataset.bound = 'true';
-    button.addEventListener('click', () => { setEnabled(!(enabled && granted())); });
-    syncToggle();
-  }
-
-  function show(item) {
-    const options = {
-      body: `${item.label || 'Needs your attention'} · ${item.machine || ''}`.replace(/ · $/, ''),
-      icon: '/icon-192.png',
-      badge: '/icon-192.png',
-      tag: item.key,
-      data: { url: '/' },
-    };
+    if (busy) return on();
+    busy = true; failure = ''; syncToggle();
     try {
-      const note = new Notification(item.title || 'Switchboard', options);
-      note.onclick = () => { try { window.focus(); } catch (_) {} note.close(); };
-      return true;
-    } catch (_) {
-      if (navigator.serviceWorker && navigator.serviceWorker.ready) {
-        navigator.serviceWorker.ready.then(reg => reg.showNotification(item.title || 'Switchboard', options)).catch(() => {});
-        return true;
+      if (next) {
+        if (!supported()) throw Error('Notifications need HTTPS and a supported browser.');
+        // Called directly by a click, before any awaits, preserving user activation.
+        const permission = Notification.permission === 'default' ? await Notification.requestPermission() : Notification.permission;
+        if (permission !== 'granted') { remember(false); return false; }
+        await subscribe(); remember(true);
+      } else {
+        const registration = await worker;
+        const subscription = await registration?.pushManager.getSubscription();
+        if (subscription) {
+          // Remove server state before reporting Off. Offline disable stays retryable.
+          await api('unsubscribe', { endpoint: subscription.endpoint });
+          await subscription.unsubscribe();
+        }
+        remember(false);
+        for (const notification of await registration?.getNotifications() || []) notification.close();
       }
-      return false;
-    }
+    } catch (error) { failure = error.message || 'Could not change notifications. Try again.'; }
+    finally { busy = false; syncToggle(); }
+    return on();
   }
-
-  // items: [{key, sig, title, machine, label}] for tabs that need the user now.
-  // A tab alerts once per sig; it can alert again when its token/state changes.
+  async function testNotification() {
+    busy = true; failure = ''; syncToggle();
+    try {
+      const subscription = await (await worker).pushManager.getSubscription();
+      if (!subscription) throw Error('Turn notifications off and on to reconnect this device.');
+      await api('test', { endpoint: subscription.endpoint });
+      failure = 'Test sent. Check your device’s notifications.';
+    } catch (error) { failure = error.message; }
+    finally { busy = false; syncToggle(); }
+  }
   function check(items) {
-    const list = Array.isArray(items) ? items : [];
-    if (navigator.setAppBadge) {
-      try {
-        const result = list.length ? navigator.setAppBadge(list.length) : navigator.clearAppBadge();
-        if (result && result.catch) result.catch(() => {});
-      } catch (_) {}
-    }
-    const present = new Set(list.map(item => item.key));
-    let changed = false;
-    for (const key of Object.keys(notified)) {
-      if (!present.has(key)) { delete notified[key]; changed = true; }
-    }
-    if (!enabled || !granted()) { if (changed) save(NOTIFIED_KEY, notified); return 0; }
-    let shown = 0;
-    for (const item of list) {
-      const sig = item.sig || item.label || 'attention';
-      if (notified[item.key] === sig) continue;
-      // Remember before showing so a burst or a failed show cannot repeat.
-      notified[item.key] = sig; changed = true;
-      // Do not alert for the tab the user is already looking at.
-      if (item.active && !document.hidden && document.hasFocus()) continue;
-      if (show(item)) {
-        shown++;
-        try { navigator.vibrate && navigator.vibrate(120); } catch (_) {}
-      }
-    }
-    if (changed) save(NOTIFIED_KEY, notified);
-    return shown;
+    try {
+      const count = items?.length || 0;
+      const result = count ? navigator.setAppBadge?.(count) : navigator.clearAppBadge?.();
+      result?.catch(() => {});
+    } catch (_) {}
   }
-
-  function registerServiceWorker() {
-    if (!('serviceWorker' in navigator)) return;
-    const register = () => navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {});
-    if (document.readyState === 'complete') register();
-    else window.addEventListener('load', register, { once: true });
+  function syncInstall() {
+    const installed = matchMedia('(display-mode: standalone)').matches;
+    if ($('install-switchboard')) $('install-switchboard').hidden = installed || !installPrompt;
+    if ($('install-help')) $('install-help').textContent = installed ? 'Switchboard is installed on this device.'
+      : !globalThis.isSecureContext ? 'Open Switchboard over HTTPS to install it on your phone.'
+      : 'On Android, use your browser menu → Add to Home screen → Install.';
   }
-
-  globalThis.SwitchboardNotifications = { check, setEnabled, syncToggle, get enabled() { return enabled && granted(); } };
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bindToggle);
-  else bindToggle();
-  registerServiceWorker();
-  ready = true;
+  window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); installPrompt = event; syncInstall(); });
+  window.addEventListener('appinstalled', () => { installPrompt = null; syncInstall(); });
+  function bind() {
+    $('attention-notifications')?.addEventListener('click', () => setEnabled(!on()));
+    $('test-notification')?.addEventListener('click', testNotification);
+    $('install-switchboard')?.addEventListener('click', async () => {
+      const prompt = installPrompt; if (!prompt) return;
+      installPrompt = null; await prompt.prompt(); await prompt.userChoice; syncInstall();
+    });
+    syncToggle(); syncInstall();
+    // Refresh persisted relay registration after reconnect/restart, never prompt automatically.
+    if (on()) subscribe().catch(() => { failure = 'Could not reconnect notifications. Turn them off and on to retry.'; syncToggle(); });
+  }
+  globalThis.SwitchboardNotifications = { check, setEnabled, syncToggle, get enabled() { return on(); } };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bind); else bind();
 })();
