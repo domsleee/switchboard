@@ -5,13 +5,21 @@ const http=require('node:http'),net=require('node:net'),crypto=require('node:cry
 const {execFileSync,fork}=require('node:child_process');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const binary=path.resolve(process.argv[2]||'target/debug/zellij');
-const dir=fs.mkdtempSync(path.join(process.platform==='win32'?os.tmpdir():'/tmp','sbr-'));
+const dir=fs.mkdtempSync(path.join(process.platform==='win32'?(process.env.RUNNER_TEMP||os.tmpdir()):'/tmp','sbr-'));
 const fixture=path.join(__dirname,'resumable-viewer'),endpointFile=path.join(dir,'endpoint.json');
 const name='resume-proof-'+crypto.randomBytes(5).toString('hex'),config=path.join(dir,'config.kdl');
 const env={...process.env,ZELLIJ_SOCKET_DIR:path.join(dir,'sockets'),XDG_CACHE_HOME:path.join(dir,'cache'),SWITCHBOARD_RESUME_PROOF_ENDPOINT:endpointFile,TERM:'xterm-256color'};
 for(const key of ['ZELLIJ','ZELLIJ_SESSION_NAME','ZELLIJ_CONFIG_FILE','ZELLIJ_CONFIG_DIR'])delete env[key];
 fs.writeFileSync(config,'show_startup_tips false\nsession_serialization false\n');
-const cli=(...args)=>execFileSync(binary,['--config',config,...args],{env,encoding:'utf8',timeout:15000,stdio:['ignore','pipe','pipe']});
+let cliSequence=0;
+const cli=(...args)=>{
+ // Background Windows engines inherit handles: pipes keep spawnSync waiting
+ // after the launcher exits. Files also preserve diagnostics on CI failures.
+ const prefix=path.join(dir,`cli-${++cliSequence}`),output=prefix+'.log';
+ const out=fs.openSync(output,'w'),err=fs.openSync(prefix+'-error.log','w');
+ try{execFileSync(binary,['--config',config,...args],{env,windowsHide:true,timeout:15000,stdio:['ignore',out,err]});return fs.readFileSync(output,'utf8')}
+ finally{fs.closeSync(out);fs.closeSync(err)}
+};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function waitFor(check,label,timeout=15000){const deadline=Date.now()+timeout;while(Date.now()<deadline){if(await check())return;await sleep(20)}throw Error(label)}
 const access=crypto.randomUUID();let browser,page,server,endpoint,pane,created=false;const children=[],faults=[];
