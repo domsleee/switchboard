@@ -7,16 +7,13 @@
   function create(){
     dialog=document.createElement('dialog');dialog.id='image-gallery';
     dialog.setAttribute('aria-label','Media carousel');
-    dialog.innerHTML='<header><span class="gallery-count" aria-live="polite"></span><span class="gallery-path"></span><a target="_blank" rel="noopener noreferrer">Open original</a><button type="button" class="gallery-close" aria-label="Close media carousel" autofocus>✕</button></header><div class="gallery-stage"><button type="button" class="gallery-prev" aria-label="Previous media">‹</button><div class="gallery-image"><img alt="" hidden><video controls playsinline preload="metadata" hidden></video><p role="status"></p></div><button type="button" class="gallery-next" aria-label="Next media">›</button></div><footer>← → to browse · Escape to return to terminal</footer>';
+    dialog.innerHTML='<button type="button" class="gallery-close" aria-label="Close media carousel" title="Close · Escape" autofocus>✕</button><div class="gallery-stage"><button type="button" class="gallery-prev" aria-label="Previous media">‹</button><div class="gallery-image"><img alt="" hidden><video controls playsinline preload="metadata" hidden></video><p role="status"></p><footer><span class="gallery-path"></span><span class="gallery-count" aria-live="polite"></span><a target="_blank" rel="noopener noreferrer">Open original</a></footer></div><button type="button" class="gallery-next" aria-label="Next media">›</button></div>';
     document.body.append(dialog);
     dialog.querySelector('.gallery-close').onclick=close;
     dialog.querySelector('.gallery-prev').onclick=()=>step(-1);
     dialog.querySelector('.gallery-next').onclick=()=>step(1);
     let pressedOutside=false;
-    const outside=event=>{
-      const bounds=dialog.getBoundingClientRect();
-      return event.target===dialog&&(event.clientX<bounds.left||event.clientX>bounds.right||event.clientY<bounds.top||event.clientY>bounds.bottom);
-    };
+    const outside=event=>event.target===dialog||event.target.classList.contains('gallery-stage')||event.target.classList.contains('gallery-image');
     dialog.addEventListener('pointerdown',event=>{pressedOutside=outside(event);});
     dialog.addEventListener('click',event=>{if(pressedOutside&&outside(event))close();pressedOutside=false;});
     dialog.addEventListener('cancel',event=>{event.preventDefault();if(!document.fullscreenElement)close();});
@@ -58,7 +55,8 @@
   function show(){
     const item=items[index],img=dialog.querySelector('img'),video=dialog.querySelector('video'),status=dialog.querySelector('[role="status"]');
     dialog.querySelector('.gallery-count').textContent=`${index+1} / ${items.length}`;
-    dialog.querySelector('.gallery-path').textContent=item.path;
+    dialog.querySelector('.gallery-count').hidden=items.length<2;
+    dialog.querySelector('.gallery-path').textContent=item.path.split(/[\\/]/).pop();
     dialog.querySelector('.gallery-path').title=item.path;
     dialog.querySelector('a').href=item.url;
     for(const button of dialog.querySelectorAll('.gallery-prev,.gallery-next')){button.disabled=items.length<2;button.hidden=items.length<2;}

@@ -1,17 +1,24 @@
-#image-gallery{box-sizing:border-box;width:92vw;max-width:1200px;height:86dvh;max-height:none;padding:0;border:1px solid #465674;border-radius:10px;background:rgb(17 19 24 / .94);color:#e3e8f0;box-shadow:0 16px 80px #0009;font:14px system-ui}
-#image-gallery[open]{display:flex;flex-direction:column}
-#image-gallery::backdrop{background:#0007}
-#image-gallery header{display:flex;align-items:center;gap:16px;padding:10px 14px;border-bottom:1px solid #2b303b}
-#image-gallery .gallery-count{white-space:nowrap;font-variant-numeric:tabular-nums;color:#a9b9d0}
-#image-gallery .gallery-path{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#image-gallery a{color:#b5d2ff;white-space:nowrap}
-#image-gallery button{background:#252c38;color:#e3e8f0;border:1px solid #465674;border-radius:6px;cursor:pointer;min-width:40px;min-height:40px;font:24px system-ui}
-#image-gallery button:disabled{opacity:.3;cursor:default}
-#image-gallery :focus-visible{outline:2px solid #8fbfff;outline-offset:3px}
-#image-gallery .gallery-stage{display:flex;align-items:center;gap:12px;flex:1;min-height:0;padding:12px}
-#image-gallery .gallery-image{display:flex;justify-content:center;align-items:center;flex:1;min-width:0;height:100%;overflow:auto;background:#0b0d11;border-radius:6px}
-#image-gallery img,#image-gallery video{display:block;max-width:100%;max-height:100%;object-fit:contain}
+#image-gallery{box-sizing:border-box;width:92vw;max-width:none;height:92dvh;max-height:none;padding:0;border:0;background:transparent;color:#fff;box-shadow:none;overflow:visible;font:14px system-ui}
+#image-gallery[open]{display:flex;align-items:center;justify-content:center}
+#image-gallery::backdrop{background:rgb(0 0 0 / .75)}
+#image-gallery .gallery-stage{position:relative;display:flex;align-items:center;justify-content:center;width:100%;height:100%;min-height:0}
+#image-gallery .gallery-image{display:flex;flex-direction:column;align-items:center;min-width:0;max-width:calc(92vw - 96px);max-height:100%}
+#image-gallery img,#image-gallery video{display:block;flex-shrink:1;min-height:0;max-width:100%;max-height:min(86dvh,calc(100dvh - 160px));object-fit:contain;border-radius:8px;border:1px solid #ffffff30;box-shadow:0 16px 64px #0008}
+#image-gallery footer{display:flex;align-items:center;justify-content:center;gap:8px;margin-top:8px;max-width:100%;color:#fffc;font-size:12px}
+#image-gallery .gallery-path{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#image-gallery .gallery-count{white-space:nowrap;font-variant-numeric:tabular-nums}
+#image-gallery .gallery-count::before{content:'('}
+#image-gallery .gallery-count::after{content:')'}
+#image-gallery a{color:inherit;white-space:nowrap;text-underline-offset:3px}
+#image-gallery a:hover{color:#fff}
+#image-gallery button{color:#fffe;border:1px solid transparent;border-radius:6px;cursor:pointer;width:40px;height:40px;padding:0;background:transparent;font:28px system-ui}
+#image-gallery button:hover{background:#ffffff1a;color:#fff}
+#image-gallery .gallery-close{position:absolute;right:0;top:0;z-index:2;background:#000a;border-color:#ffffff30;font-size:22px}
+#image-gallery .gallery-close:hover{background:#000d}
+#image-gallery .gallery-prev,#image-gallery .gallery-next{position:absolute;top:50%;transform:translateY(-50%);z-index:1}
+#image-gallery .gallery-prev{left:0}
+#image-gallery .gallery-next{right:0}
+#image-gallery :focus-visible{outline:2px solid #b5d2ff;outline-offset:3px}
 #image-gallery [hidden]{display:none!important}
-#image-gallery [role=status]{color:#a9b9d0;padding:16px;text-align:center}
-#image-gallery footer{padding:6px 12px 12px;text-align:center;color:#a9b9d0;font-size:12px}
-@media(max-width:600px){#image-gallery{width:calc(100vw - 16px);height:calc(100dvh - 16px);border-radius:10px}#image-gallery header{gap:8px;padding:8px}#image-gallery .gallery-stage{gap:4px;padding:4px}#image-gallery .gallery-prev,#image-gallery .gallery-next{min-width:30px}}
+#image-gallery [role=status]{display:flex;align-items:center;justify-content:center;min-height:180px;width:min(480px,100%);padding:24px;margin:0;border-radius:8px;border:1px solid #ffffff30;background:#000;color:#fffc;text-align:center;box-shadow:0 16px 64px #0008}
+@media(max-width:600px){#image-gallery .gallery-image{max-width:92vw}#image-gallery .gallery-prev,#image-gallery .gallery-next{top:auto;bottom:0;transform:none}#image-gallery footer{padding:0 42px}}

@@ -120,7 +120,7 @@ test('videos share the floating carousel, keep native seeking, and Escape return
   assert.equal(await page.evaluate(()=>history.length),length+1);
   await video.evaluate(video=>video.play());
   await video.focus();await page.keyboard.press('ArrowLeft');
-  assert.equal(await gallery.locator('.gallery-path').textContent(),'/tmp/clip.webm','Native seeking cannot change carousel items');
+  assert.equal(await gallery.locator('.gallery-path').textContent(),'clip.webm','Native seeking cannot change carousel items');
   await page.keyboard.press('Escape');await gallery.waitFor({state:'hidden'});
   await page.waitForFunction(()=>document.activeElement.id==='terminal-frame'&&!history.state?.switchboardMedia);
   assert.deepEqual(await video.evaluate(video=>({paused:video.paused,src:video.getAttribute('src')})),{paused:true,src:null});
@@ -136,7 +136,8 @@ test('videos share the floating carousel, keep native seeking, and Escape return
   // Plain thumbnail clicks use the same mixed-media list.
   await frame.evaluate(()=>window.__switchboardMedia.open('/tmp/clip.webm',{button:0}));
   await video.waitFor();
-  await page.mouse.click(1,1);await gallery.waitFor({state:'hidden'});
+  // Empty space inside the transparent lightbox also dismisses it.
+  await page.mouse.click(90,70);await gallery.waitFor({state:'hidden'});
   await page.waitForFunction(()=>!history.state?.switchboardMedia);
 }));
 test('resolving carousel siblings preserves video playback, and late results cannot reopen it', {skip:!enabled},()=>fixture(async({page})=>{
@@ -157,4 +158,17 @@ test('resolving carousel siblings preserves video playback, and late results can
   await page.evaluate(async()=>{window.resolveLate('/tmp/clip.webm');await window.opening;});
   assert.equal(await page.locator('#image-gallery').evaluate(dialog=>dialog.open),false);
   assert.equal(await video.getAttribute('src'),null);
+}));
+
+test('the media lightbox fits a narrow viewport and media clicks keep it open', {skip:!enabled},()=>fixture(async({page,click})=>{
+  await page.setViewportSize({width:390,height:844});
+  await click('/tmp/first.png');
+  const gallery=page.locator('#image-gallery'),image=gallery.locator('img');
+  await image.waitFor({state:'visible'});
+  const bounds=await image.boundingBox();
+  assert.ok(bounds.x>=0&&bounds.x+bounds.width<=390);
+  assert.ok(bounds.y>=0&&bounds.y+bounds.height<=844);
+  await image.click();assert.equal(await gallery.evaluate(dialog=>dialog.open),true,'Media clicks keep the lightbox open');
+  await gallery.locator('footer').waitFor({state:'visible'});
+  await page.keyboard.press('Escape');await gallery.waitFor({state:'hidden'});
 }));
