@@ -410,7 +410,7 @@ with open(sys.argv[1], 'a+') as lock:
         assert.ok(host.sessions.some(s=>s.name===name&&s.web_clients_allowed),'Sharing survives connection-service restart');
         if(!recoveryMode){
             const previousTabIds=names().map(([id])=>id);
-            await page.keyboard.press('Control+Alt+KeyT');
+            await page.keyboard.press('Alt+KeyT');
             await page.waitForFunction(()=>document.querySelector('#new-tab-dialog').open);
             // This private test has no dotfiles aliases; keep a plain shell for the input checks.
             await page.locator('#new-tab-command').fill('exec /bin/bash --noprofile --norc');

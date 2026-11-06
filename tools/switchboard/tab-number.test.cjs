@@ -2,12 +2,11 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
 
-// Windows uses Alt+digits for the sidebar and leaves Ctrl+digits to Chrome.
-// Mac/Linux keep Ctrl+digits for the sidebar. Cmd+digits always stay with Chrome.
+// Alt+digits select sidebar tabs on every platform. Ctrl/Cmd+digits stay with the browser.
 for(const platform of ['MacIntel','Win32','Linux x86_64'])test(`${platform}: sidebar tab selection and browser digit passthrough`,
   {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
   const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
-  const windows=platform==='Win32',tabModifier=windows?'Alt':'Control';
+  const tabModifier='Alt';
   const browser=await chromium.launch({headless:true});
   try{
     const context=await browser.newContext({viewport:{width:1280,height:900}});
@@ -63,10 +62,8 @@ for(const platform of ['MacIntel','Win32','Linux x86_64'])test(`${platform}: sid
     // Parent page: sidebar focused.
     await page.locator('#tabs .selected').focus();
     for(const digit of [1,2,3,4,5,6,7,8,9])await page.keyboard.press('Meta+Digit'+digit);
-    if(windows){
-      for(const digit of [1,2,3,4,5,6,7,8,9])await page.keyboard.press('Control+Digit'+digit);
-      assert.equal(await selectedName(),'Alpha','Ctrl+digits never select a Switchboard tab on Windows');
-    }
+    for(const digit of [1,2,3,4,5,6,7,8,9])await page.keyboard.press('Control+Digit'+digit);
+    assert.equal(await selectedName(),'Alpha','Ctrl+digits never select a Switchboard tab');
     await page.keyboard.press(tabModifier+'+Digit2');await settle();
     assert.equal(await selectedName(),'Bravo');
     await page.keyboard.press(tabModifier+'+Digit9');await settle();assert.equal(await selectedName(),'Charlie','9 selects the last tab');
@@ -80,12 +77,12 @@ for(const platform of ['MacIntel','Win32','Linux x86_64'])test(`${platform}: sid
     await page.keyboard.press(tabModifier+'+Digit1');await settle();assert.equal(await selectedName(),'Bravo');
     await page.locator('#tab-search').fill('');await page.keyboard.press('Escape');
     const browserDigits=[1,2,3,4,5,6,7,8,9].map(d=>`Digit${d}:false`);
-    assert.deepEqual(await page.evaluate(()=>keys),[...browserDigits,...(windows?browserDigits:[]),'KeyR:false'],'browser digit shortcuts and typing reach the page bubble without preventDefault');
+    assert.deepEqual(await page.evaluate(()=>keys),[...browserDigits,...browserDigits,'KeyR:false'],'browser digit shortcuts and typing reach the page bubble without preventDefault');
     // Selecting a tab focuses its terminal, so later presses land in whichever frame has focus.
     const ctrlDigits=(await Promise.all(page.frames().map(f=>f.evaluate(()=>window.ctrlDigits||[])))).flat();
-    assert.deepEqual(ctrlDigits.sort(),windows?browserDigits:['Digit1:true','Digit2:true','Digit5:true','Digit9:true']);
+    assert.deepEqual(ctrlDigits.sort(),browserDigits);
     const altDigits=(await Promise.all(page.frames().map(f=>f.evaluate(()=>window.altDigits||[])))).flat();
-    assert.deepEqual(altDigits.sort(),windows?['Digit1:true','Digit2:true','Digit5:true','Digit9:true']:[],'sidebar digits are prevented, even past the last tab');
+    assert.deepEqual(altDigits.sort(),['Digit1:true','Digit2:true','Digit5:true','Digit9:true'],'sidebar digits are prevented, even past the last tab');
     await Promise.all(page.frames().map(f=>f.evaluate(()=>{window.ctrlDigits=[];window.altDigits=[];})));
 
     // Terminal iframe: sidebar digits reach the parent; browser digits bypass xterm/Zellij.
@@ -95,10 +92,8 @@ for(const platform of ['MacIntel','Win32','Linux x86_64'])test(`${platform}: sid
     await input.evaluate(()=>new Promise(resolve=>{const wait=()=>window.term.options.disableStdin?setTimeout(wait,10):resolve();wait();}));
     await input.focus();await input.evaluate(()=>{window.keys=[];window.sent=[];window.ctrlDigits=[];window.altDigits=[];});
     for(const digit of [1,2,3,4,5,6,7,8,9])await page.keyboard.press('Meta+Digit'+digit);
-    if(windows){
-      for(const digit of [1,2,3,4,5,6,7,8,9])await page.keyboard.press('Control+Digit'+digit);
-      assert.equal(await selectedName(),'Alpha','Ctrl+digits never select a Switchboard tab from its Windows terminal');
-    }
+    for(const digit of [1,2,3,4,5,6,7,8,9])await page.keyboard.press('Control+Digit'+digit);
+    assert.equal(await selectedName(),'Alpha','Ctrl+digits never select a Switchboard tab from its terminal');
     // Browser tab shortcuts can move focus. Restore the terminal target before
     // checking its ordinary modifier handler, independently of digit passthrough.
     await input.focus();
@@ -109,8 +104,8 @@ for(const platform of ['MacIntel','Win32','Linux x86_64'])test(`${platform}: sid
     const inner=await input.evaluate(()=>({keys,sent,ctrlDigits,altDigits}));
     assert.deepEqual(inner.keys,['KeyA:true','KeyR:false','KeyR:false'],'Cmd+R reload reaches the browser; digit shortcuts bypass the peer handler');
     assert.deepEqual(inner.sent,['\x1b[97;9u'],'sidebar and browser digits never reach xterm or Zellij');
-    assert.deepEqual(inner.ctrlDigits,windows?browserDigits:['Digit1:true']);
-    assert.deepEqual(inner.altDigits,windows?['Digit1:true']:[]);
+    assert.deepEqual(inner.ctrlDigits,browserDigits);
+    assert.deepEqual(inner.altDigits,['Digit1:true']);
     assert.equal(await selectedName(),'Delta');
     assert.deepEqual(errors,[]);
   }finally{await browser.close();}

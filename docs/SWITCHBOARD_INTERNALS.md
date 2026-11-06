@@ -140,11 +140,9 @@ loopback and rejects cross-site requests. Each relay serves its own desktop; it 
 **Alt+H / Alt+L** move to the previous/next visible tab across machines, wrapping
 at either end. They work from inside the terminal and follow the current group
 filter. **Alt+Left / Alt+Right** move between words inside the terminal.
-On Windows, **Alt+1…Alt+8** select the visible sidebar tab at that position and **Alt+9**
+On every platform, **Alt+1…Alt+8** select the visible sidebar tab at that position and **Alt+9**
 the last, following the current order, filter and search, also from inside the terminal.
-**Ctrl+1…9** stay with the browser's own tab switching.
-Mac and Linux use **Ctrl+1…Ctrl+8** and **Ctrl+9** for the same Switchboard navigation.
-On Mac, **Cmd+1…9** stay with the browser's own tab switching.
+**Ctrl+1…9** and **Cmd+1…9** stay with the browser's own tab switching.
 Sidebar shortcuts also work inside blank or failed terminal pages, even before
 the terminal bridge loads. Native dialogs keep their shortcuts, and **Ctrl+D**
 does not close a tab while a form input is focused.
@@ -160,7 +158,7 @@ The Hidden group starts collapsed and remembers whether it was left open in this
 browser. Dragging a tab below its header hides the tab; dragging it above shows it
 again. Hidden tabs still count as notifications, and the header shows the amber dot
 when one needs attention. Search finds hidden tabs while the group is collapsed;
-Alt+H/L and Ctrl+1–9 skip them unless it is open. Paired computers share the hidden
+Alt+H/L and Alt+1–9 skip them unless it is open. Paired computers share the hidden
 tabs like the tab order (`/api/mesh/hidden-tabs`), and they follow a recreated
 session to the new tab numbers the same way. Tabs archived in this browser before
 Hidden existed become hidden tabs.
@@ -187,7 +185,7 @@ Tab labels and the browser window title follow live Codex/Claude/Copilot pane ti
 including `/rename` updates. Agent spinner prefixes are stripped from labels.
 Keys typed in the browser go to the program, not to Zellij's shortcuts, so Ctrl+T,
 Ctrl+O, Ctrl+G and the other Zellij mode keys reach Claude as in a terminal window.
-Use **+ New tab** or **Ctrl+Alt+T** (Windows) / **Cmd+Alt+T** (Mac) to open a shell in a chosen machine/session.
+Use **+ New tab** or **Alt+T** on any platform to open a shell in a chosen machine/session.
 **Create tab** is focused by default, so **Enter** creates a tab in the selected
 machine/session. The new tab is selected automatically.
 The 🛡️ button next to **+** opens an administrator tab: the default shell through `gsudo` on Windows (install it with
