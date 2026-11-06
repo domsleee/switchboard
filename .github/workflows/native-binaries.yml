@@ -111,15 +111,16 @@ jobs:
           target: ${{ matrix.target }}
           rustflags: ""
           # Both macOS legs now share one runner image; keep their caches apart.
-          cache-key: ${{ matrix.target }}
+          # Refresh Intel's cache to retain the newly added host installer tests.
+          cache-key: ${{ matrix.target }}${{ matrix.platform == 'macos-x86_64' && '-installer-v1' || '' }}
           # A manual run on another branch must not evict main's caches.
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: false
       - uses: mozilla-actions/sccache-action@v0.0.11
-      # The installer test only compiles for the host; running it again in
-      # the cross leg would just repeat the ARM leg's work.
+      # Both legs run on ARM hosts. Keep the host-only installer test on the
+      # faster Intel cross-build leg; publishing still waits for both legs.
       - name: Check installer
-        if: matrix.platform == 'macos-arm64'
+        if: matrix.platform == 'macos-x86_64'
         run: cargo test -p zellij-client --features web_server_capability switchboard_update::install --lib
       - name: Build native server and relay
         run: cargo build --release --features web_server_capability --target ${{ matrix.target }}
