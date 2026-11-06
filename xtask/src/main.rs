@@ -1,10 +1,4 @@
-//! See <https://github.com/matklad/cargo-xtask/>.
-//!
-//! This binary defines various auxiliary build commands, which are not expressible with just
-//! `cargo`. Notably, it provides tests via `cargo test -p xtask` for code generation and `cargo
-//! xtask install` for installation of rust-analyzer server and client.
-//!
-//! This binary is integrated into the `cargo` command line by using an alias in `.cargo/config`.
+//! Auxiliary build and test commands for Switchboard.
 
 mod assets;
 mod build;
@@ -74,7 +68,6 @@ fn main() -> anyhow::Result<()> {
         flags::XtaskCmd::Install(flags) => pipelines::install(shell, flags),
         flags::XtaskCmd::Run(flags) => pipelines::run(shell, flags),
         flags::XtaskCmd::Ci(flags) => ci::main(shell, flags),
-        flags::XtaskCmd::Publish(flags) => pipelines::publish(shell, flags),
     }?;
 
     let elapsed = now.elapsed().as_secs();
@@ -134,7 +127,6 @@ anything!
 | make run                        | xtask run                     |
 | make run -l strider             | xtask run -- -l strider       |
 | make install /path/to/binary    | xtask install /path/to/binary |
-| make publish                    | xtask publish                 |
 
 
 In order to disable xtask during the transitioning period: Delete/comment the

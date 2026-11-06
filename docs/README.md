@@ -10,6 +10,8 @@ Use `cargo build --release --timings` to write a build report to
 
 | Guide | Contents |
 | --- | --- |
+| [Chat history API](SWITCHBOARD_CHATS.md) | Search earlier conversations across paired computers; read matching messages and check coverage. |
+| [Computer tasks](SWITCHBOARD_TASKS.md) | Configure tasks run after updates and inspect their results. |
 | [Shared message board](MESSAGE_BOARD_USAGE.md) | Computer and agent inboxes, paired-machine routing, CLI registration and acknowledgement. |
 | [Architecture](ARCHITECTURE.md) | Native session workers, tabs, panes, Grid, browser sizing, web daemon, Rust relay and desktop helpers. |
 | [Terminology](TERMINOLOGY.md) | Sessions, clients, PTYs, Windows ConPTY, ANSI/VT sequences and viewport ownership. |

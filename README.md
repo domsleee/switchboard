@@ -11,11 +11,10 @@ All your terminal tabs, on all your computers, in one browser window.
 
 [Set up Switchboard](tools/switchboard/README.md) on each computer, then pair them.
 
-## More
+## About
 
-- [All docs](docs/README.md): Switchboard guides and inherited Zellij references.
-- [Zellij documentation](https://zellij.dev/documentation/) · [License](LICENSE.md)
+Switchboard is built on [Zellij](https://github.com/zellij-org/zellij), which
+keeps your terminal sessions running while you close the browser or switch
+computers. The command-line executable is still called `zellij`.
 
-## Under the hood
-
-Switchboard is a fork of [Zellij](https://github.com/zellij-org/zellij) 0.45.1. The terminal engine, web server and sidebar relay are native Rust in a single executable. Zellij's WASM plugin runtime and bundled plugins are removed; older layouts still open, without their plugin bars.
+For technical details and development guides, see the [documentation](docs/README.md).

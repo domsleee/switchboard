@@ -2,8 +2,8 @@
 name = "zellij"
 build = "src/build.rs"
 authors = ["Aram Drevekenin <aram@poor.dev>"]
-description = "A terminal workspace with batteries included"
-homepage = "https://zellij.dev"
+description = "Terminal tabs from all your computers in one browser sidebar"
+homepage = "https://github.com/domsleee/switchboard"
 include = ["src/**/*", "assets/layouts/*", "assets/config/*", "LICENSE.md", "README.md", "!**/*_test.*", "!**/tests/**/*"]
 # See 'workspace.package' for concrete values
 license.workspace = true
@@ -49,7 +49,7 @@ members = [
 [workspace.package]
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/zellij-org/zellij"
+repository = "https://github.com/domsleee/switchboard"
 version = "0.45.1"
 # NOTE: When updating this, modify `channel` in `rust-toolchain.toml` accordingly
 rust-version = "1.95"
@@ -114,14 +114,8 @@ depends = "$auto"
 license-file = ["LICENSE.md", "4"]
 assets = [
   ["target/release/zellij", "usr/bin/zellij", "755"],
-  ["GOVERNANCE.md", "usr/share/doc/zellij/GOVERNANCE.md", "644"],
   ["README.md", "usr/share/doc/zellij/README.md", "644"],
 ]
-
-[package.metadata.binstall]
-pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.tar.gz"
-bin-dir = "{ bin }{ binary-ext }"
-pkg-fmt = "tgz"
 
 [features]
 # See remarks in zellij_utils/Cargo.toml
