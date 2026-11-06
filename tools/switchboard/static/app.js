@@ -69,7 +69,7 @@ $('dismiss-status').onclick=()=>{
   }
   if(statusErrors.some(error=>error.host))localStorage.setItem('switchboard-dismissed-offline',JSON.stringify(dismissedOffline));
   $('status').classList.remove('has-error');
-  if($('artifact-preview').hidden)$('terminals').querySelector('iframe.active')?.focus();
+  if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.focus();else if($('artifact-preview').hidden)$('terminals').querySelector('iframe.active')?.focus();
 };
 // Work only or Home only, so a browser opens on its own group: Settings → Show tabs from.
 function focusGroup(){
@@ -631,6 +631,7 @@ function render() {
   const currentEntry=current?.entry||(waitingForRequestedTab()?sessions.get(sessionKey(...JSON.parse(selected).slice(0,2))):startingEntry);
   for (const entry of sessions.values()) entry.frame.classList.toggle('active',entry===currentEntry);
   updateSelectionTools(current);
+  window.SwitchboardConversation?.update?.();
   if(!$('tab-menu').hidden)updateTabMenu();
   if(!current){$('artifact-preview').hidden=true;$('artifact-frame').contentWindow?.location.replace('about:blank');}
   // The sidebar says why nothing is selected; the main area repeats only its
@@ -724,6 +725,8 @@ document.addEventListener('mousedown',event=>{
   event.preventDefault();
 },true);
 function focus(item,background=false) {
+  const conversationOpen=globalThis.SwitchboardConversation?.isOpen?.()||false;
+  if(conversationOpen&&!background)globalThis.SwitchboardConversation.focus();
   const activeElement=document.activeElement;
   // A sidebar click may wait for metadata with its button still focused.
   const fromTabButton=!!activeElement&&activeElement===tabButtons.get(tabKey(item.entry,item.tab));
@@ -749,7 +752,7 @@ function focus(item,background=false) {
   if(active?.pane_id!==pane.pane_id||active?.is_plugin!==pane.is_plugin)item.entry.frame.contentWindow.SwitchboardClipboard?.clearSelection();
   const focusId=item.entry.focusId=(item.entry.focusId||0)+1;
   if(item.entry.requestedPane || active?.pane_id!==pane.pane_id||active?.is_plugin!==pane.is_plugin)item.entry.requestedPane={pane_id:pane.pane_id,is_plugin:pane.is_plugin,focus_id:focusId};
-  const preserveFocus=background&&!!item.entry.focusInitialized&&!fromTabButton;
+  const preserveFocus=conversationOpen||(background&&!!item.entry.focusInitialized&&!fromTabButton);
   item.entry.focusInitialized=true;
   item.entry.frame.contentWindow.postMessage({type:'zellij-focus',pane_id:pane.pane_id,is_plugin:pane.is_plugin,focus_id:focusId,preserve_focus:preserveFocus},location.origin);
 }
@@ -781,7 +784,7 @@ function sidebarKeydown(event){
   if(number&&!document.querySelector('dialog[open]')){event.preventDefault();event.stopImmediatePropagation();selectTabNumber(number);return;}
   if(event.key==='Escape'&&event.target===$('tab-search')){
     event.preventDefault();
-    if($('tab-search').value){$('tab-search').value='';render();}else{sidebarOpen=false;updateSidebar();allTabs().find(item=>item.key===selected)?.entry.frame.focus();}
+    if($('tab-search').value){$('tab-search').value='';render();}else{sidebarOpen=false;updateSidebar();if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.focus();else allTabs().find(item=>item.key===selected)?.entry.frame.focus();}
     return;
   }
   if(event.target.closest?.('input,textarea,select,[contenteditable="true"]'))return;
@@ -796,6 +799,7 @@ function sidebarKeydown(event){
   if(event.key==='Escape'&&!event.altKey&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey){
     if(mobileSidebar.matches&&sidebarOpen){event.preventDefault();sidebarOpen=false;updateSidebar();$('sidebar-toggle').focus();return;}
     if(!$('artifact-preview').hidden){event.preventDefault();$('artifact-back').click();return;}
+    if(globalThis.SwitchboardConversation?.isOpen?.()){event.preventDefault();event.stopImmediatePropagation();globalThis.SwitchboardConversation.showTerminal();return;}
     const current=allTabs().find(item=>item.key===selected);
     if(current){event.preventDefault();event.stopImmediatePropagation();current.entry.frame.contentWindow.postMessage({type:'zellij-escape'},location.origin);current.entry.frame.focus();}
     return;
@@ -1034,6 +1038,7 @@ $('select-text').onclick=()=>{
   if(item.key!==selected)activate(item,false);
   const api=item.entry.frame.contentWindow.SwitchboardClipboard;
   if(!api){setStatus('Terminal clipboard is unavailable; refresh this page.',true);return;}
+  if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.showTerminal();
   api.setSelectionMode(true);updateSelectionTools();
   sidebarOpen=false;updateSidebar();item.entry.frame.focus();
 };
@@ -1050,6 +1055,7 @@ $('copy-title').onclick=async()=>{
   }
 };
 $('exit-selection').onclick=()=>{
+  if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.showTerminal();
   const current=allTabs().find(item=>item.key===selected),api=current?.entry.frame.contentWindow.SwitchboardClipboard;
   api?.setSelectionMode(false);api?.clearSelection();updateSelectionTools();current?.entry.frame.focus();
 };
@@ -1178,6 +1184,7 @@ $('new-tab-form').onsubmit=event=>{
     const [id,name]=JSON.parse(key),host=hosts.get(id);
     if(!host||host.error||host.sessions?.length!==0)return;
     if(entry&&!entry.starting){entry.frame.remove();sessions.delete(key);}
+    if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.showTerminal();
     const created=connectSession(host,name,true);created.selectOnStart=true;
     if(filter!=='all'&&groups[id]!==filter)setFilter('all');$('tab-search').value='';
     // Closing the dialog returns focus to +; give it to the new terminal instead.
@@ -1185,6 +1192,7 @@ $('new-tab-form').onsubmit=event=>{
   }
   if(!sessionTabs(entry).length)return;
   if(entry.pendingNewTab||entry.requestedPane||entry.focusPending){setStatus('Wait for the terminal to receive focus before creating a tab.',true);return;}
+  if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.showTerminal();
   const pending=entry.pendingNewTab=new Set(sessionTabs(entry).map(tab=>tabKey(entry,tab)));
   pending.requestId=entry.newTabRequestId=(entry.newTabRequestId||0)+1;
   pending.startedAt=performance.timeOrigin+performance.now();
@@ -1488,7 +1496,7 @@ $('hide-tab').onclick=()=>{
   setHidden(item,!item.hidden);
   closeTabMenu();render();
   tabButtons.get(item.key)?.scrollIntoView({block:'nearest',inline:'nearest'});
-  allTabs().find(t=>t.key===selected)?.entry.frame.focus();
+  if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.focus();else allTabs().find(t=>t.key===selected)?.entry.frame.focus();
 };
 document.addEventListener('pointerdown',event=>{if(!$('tab-menu').contains(event.target))closeTabMenu();},true);
 window.addEventListener('blur',closeTabMenu);
@@ -1514,7 +1522,7 @@ $('sidebar-toggle').onclick=()=>{
 $('sidebar-backdrop').onclick=()=>{sidebarOpen=false;updateSidebar();};
 mobileSidebar.addEventListener('change',()=>{sidebarOpen=false;updateSidebar();});
 $('tab-search').oninput=render;
-$('tab-search').onkeydown=event=>{if(event.key==='Enter'){const item=listedTabs()[0];if(item){event.preventDefault();activate(item);item.entry.frame.focus();}}};
+$('tab-search').onkeydown=event=>{if(event.key==='Enter'){const item=listedTabs()[0];if(item){event.preventDefault();activate(item);if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.focus();else item.entry.frame.focus();}}};
 let sidebarWidth=Number(localStorage.getItem('switchboard-sidebar-width'))||242;
 function setSidebarWidth(width){
   sidebarWidth=Math.max(180,Math.min(420,width,Math.max(180,innerWidth-320)));
@@ -1604,4 +1612,15 @@ const browserDiagnostics=window.SwitchboardBrowserDiagnostics?.(diagnostic=>{
   if(!current||!$('artifact-preview').hidden||document.querySelector('dialog[open]'))return false;
   current.entry.frame.contentWindow.postMessage({type:'zellij-browser-resume',id,started_at},location.origin);
   return true;
+});
+
+window.SwitchboardConversation?.install({
+  selection(){
+    const item=allTabs().find(item=>item.key===selected);if(!item)return null;
+    const active=item.entry.state?.active_pane,panes=tabPanes(item.entry,item.tab).filter(p=>!p.is_plugin);
+    const pane=panes.find(p=>p.pane_id===active?.pane_id)||panes[0];if(!pane)return null;
+    const state=paneAttention.get(attentionKey(item.entry.host,item.entry.name,pane.pane_id));
+    return {key:JSON.stringify([item.entry.host,item.entry.name,pane.pane_id]),host:item.entry.host,chatHost:hosts.get(item.entry.host)?.local?'local':item.entry.host,pane:pane.pane_id,frame:item.entry.frame,title:tabTitle(item),agent:state?.agent};
+  },
+  terminal(target){const item=allTabs().find(item=>item.key===selected);if(item&&item.entry.frame===target.frame)focus(item);}
 });

@@ -160,3 +160,42 @@ send the link, and paste it under **Have an invitation?** on the other. Choose
 
 How Switchboard works, its shortcuts and its diagnostics are in
 [Switchboard internals](../../docs/SWITCHBOARD_INTERNALS.md).
+
+### Conversation view
+
+Open **Conversation** above a terminal, choose the agent, and search for the chat
+running in that pane. Search stays on that computer. Select the matching chat;
+Switchboard reads saved messages without starting or resuming an agent. Chat
+links and reply drafts are kept separately per pane for the current page lifetime.
+Use **Choose chat** to correct a selection, and **Search next page** when the
+bounded history search has more files to scan. Coverage and truncated messages
+are shown explicitly. **Load next messages** advances through a longer transcript.
+The visible transcript's last loaded page refreshes every five seconds when you
+are not interacting with it; **Refresh** also checks it immediately. Codex progress
+messages collapse when phase metadata is available. Tool output is not exposed
+by the history API; use **Terminal** for full context.
+
+**Reply in terminal** inserts the draft into the exact active pane, then shows the
+terminal. Review it and press Enter there. It does not submit a prompt, answer an
+approval, start an SDK session, or resume the saved chat. A wrong pane, disconnected
+terminal, control characters, or multiline input without bracketed-paste support
+is rejected. Drafts stay available when insertion fails. If confirmation times out,
+check the terminal before retrying. Approval prompts remain in the terminal.
+
+The conversation view renders Markdown headings, lists, tables, fenced code,
+links, and media without executing transcript HTML. Image references open an
+expandable gallery with zoom; video references use inline playback controls.
+Local and relative paths are read from the selected chat's computer, with relative
+paths based on the chat's recorded project directory. HTTP(S) media URLs load in
+the viewing browser; loopback URLs are not treated as phone-local media.
+
+Claude and Codex image/video content parts are preserved when their transcripts
+retain a path or URL. Supported embedded PNG/JPEG/GIF/WebP images have a 2 MiB
+encoded-data budget per chat and at most eight attachments per message. Missing,
+unsupported, invalid, and oversized attachments show an unavailable state. This
+is media viewing, not attachment uploading. Other providers still expose their
+text messages and Markdown media references.
+
+Reply drafts remain literal text, including `$skill-name` and `/commands`.
+Switchboard does not translate command names between providers. Native command
+and skill autocomplete is not implemented in this view.
