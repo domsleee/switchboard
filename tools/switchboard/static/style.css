@@ -248,7 +248,9 @@ body.sidebar-collapsed #artifact-preview header{padding-left:42px}
 #tab-menu button{display:block;width:100%;text-align:left;padding:8px 10px;border-color:transparent;background:transparent;font-size:12px}
 #tab-menu button[hidden]{display:none}
 #tab-menu button:hover{background:#303949}
-#tab-menu-target{padding:8px 10px;color:#a3aec0;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#tab-menu-target{padding:8px 10px 3px;color:#e5e7eb;font-size:12px;overflow-wrap:anywhere}
+#tab-menu-details,#tab-menu-help{padding:0 10px 8px;color:#a3aec0;font-size:10px;line-height:1.5;overflow-wrap:anywhere}
+#tab-menu-help{padding-top:8px;border-top:1px solid #363e4d;margin-top:5px}
 #tab-menu hr{border:0;border-top:1px solid #363e4d;margin:5px}
 #tab-menu kbd{float:right;font-size:10px;color:#a3aec0}
 .danger{color:#ff9696}

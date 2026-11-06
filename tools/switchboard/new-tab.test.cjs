@@ -45,7 +45,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
     await page.locator('#settings').hover();
     // Exact times are shown in the viewer's locale with a relative age, e.g. "Sun, 4 Oct 2026, 1:24 pm (3 days ago)".
     const commitTitle=emptyMachine?/^Commit abc123def · \S+ .*2026.*\d:24.* \(.+\)$/:/^Commit abc123def · 2026-10-04$/;
-    assert.match(await page.locator('#settings').getAttribute('title'),commitTitle);
+    assert.equal(await page.locator('#settings').getAttribute('title'),null);
     assert.match(await page.locator('#build-version').getAttribute('title'),commitTitle);
     if(emptyMachine){
       // Switchboard never starts a session on its own, not even on another page load.
