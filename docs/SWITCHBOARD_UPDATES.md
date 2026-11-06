@@ -538,7 +538,8 @@ the credential identity, allowing the relay's session cookie to rotate after res
 Workers recheck credential permission changes while connected. Recovery attachments
 are discovered only under the current recovery authorization and pinned socket
 identity; removing that authorization on web restart prevents their reuse. Pane
-switches hold subsequent typing until native metadata confirms the destination. An IPC failure is explicit;
+switches hold subsequent typing until the engine explicitly confirms the destination
+and an ordered query reply completes the focus transaction. An IPC failure is explicit;
 uncertain input is never replayed into a newly created terminal.
 
 Limits are 1 MiB queued browser input, 4 MiB/4096 unacknowledged worker output records,
