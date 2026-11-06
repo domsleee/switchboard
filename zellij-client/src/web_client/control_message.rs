@@ -30,6 +30,10 @@ pub enum WebClientToWebServerControlMessagePayload {
     NewTab {
         #[serde(default)]
         elevated: bool,
+        #[serde(default)]
+        project: Option<String>,
+        #[serde(default)]
+        command: Option<String>,
     },
     SetMobileRenderPreferences {
         single_pane: bool,

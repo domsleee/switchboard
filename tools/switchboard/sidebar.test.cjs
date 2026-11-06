@@ -431,9 +431,9 @@ test('New tab cannot snapshot an unscanned or empty catalog',()=>{
   const elements=new Map(),$=id=>elements.get(id);
   const entry={host:'mac',name:'main',state:{tabs:[{position:0}]},catalog:[]};let sent=0;
   entry.frame={contentWindow:{postMessage(){sent++;}}};
-  elements.set('new-tab-form',{});elements.set('new-tab-target',{value:'main'});
+  elements.set('new-tab-form',{});elements.set('new-tab-target',{value:'main'});elements.set('new-tab-project',{value:'switchboard'});elements.set('new-tab-command',{value:'c'});
   elements.set('new-tab-dialog',{close(){}});
-  const context={$,sessions:new Map([['main',entry]]),sessionTabs:entry=>[...(entry.catalog||[]),...(entry.provisionalTabs||[])],location:{origin:'https://switchboard.localhost'},hosts:new Map([['mac',{name:'Mac'}]]),setStatus(){},setTimeout(){}};
+  const context={$,newTabElevated:false,sessions:new Map([['main',entry]]),sessionTabs:entry=>[...(entry.catalog||[]),...(entry.provisionalTabs||[])],location:{origin:'https://switchboard.localhost'},hosts:new Map([['mac',{name:'Mac'}]]),setStatus(){},setTimeout(){}};
   vm.createContext(context);const start=source.indexOf("$('new-tab-form').onsubmit=");
   vm.runInContext(source.slice(start,source.indexOf("$('ready').onclick=",start)),context);
   elements.get('new-tab-form').onsubmit({preventDefault(){}});assert.equal(sent,0);assert.equal(entry.pendingNewTab,undefined);

@@ -181,7 +181,7 @@
     }
     // Unlike focus, creation is not idempotent. Retry only an unsent request.
     pendingNewTab.sentAt=performance.timeOrigin+performance.now();
-    try{window.__zjSendControl({type:'NewTab',elevated:pendingNewTab.elevated});}
+    try{window.__zjSendControl({type:'NewTab',elevated:pendingNewTab.elevated,project:pendingNewTab.project,command:pendingNewTab.command});}
     catch(_){releaseNewTab('send-failed');}
   }
   function holdFocusInput() {
@@ -545,7 +545,7 @@
       preserveFocus=false;
       const receivedAt=performance.timeOrigin+performance.now();
       pendingNewTab={requestId:message.request_id??0,startedAt:Number.isFinite(message.started_at)&&message.started_at<=receivedAt?message.started_at:receivedAt,
-        elevated:message.elevated===true,receivedAt,sentAt:null,focusOrigin:parent.document.activeElement,panes:new Set((latest.panes||[]).filter(pane=>!pane.is_plugin).map(pane=>pane.pane_id)),disabled:window.term.options.disableStdin};
+        elevated:message.elevated===true,project:message.project,command:message.command,receivedAt,sentAt:null,focusOrigin:parent.document.activeElement,panes:new Set((latest.panes||[]).filter(pane=>!pane.is_plugin).map(pane=>pane.pane_id)),disabled:window.term.options.disableStdin};
       pendingNewTab.panes.add(latest.active_pane.pane_id);
       window.term.options.disableStdin=true;
       pendingNewTab.timeout=setTimeout(()=>releaseNewTab('timeout'),30000);

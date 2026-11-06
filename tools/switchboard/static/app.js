@@ -937,6 +937,10 @@ window.addEventListener('message',event=>{
     const previousPane=entry.state?.active_pane;
     entry.state=event.data.payload;
     updateCreatedTabs(entry);
+    if(entry.launchOnStart&&entry.state.active_pane&&sessionTabs(entry).length&&!event.data.focus_pending){
+      const launch=entry.launchOnStart;delete entry.launchOnStart;
+      createNewTab(sessionKey(entry.host,entry.name),launch);return;
+    }
     if(previousPane && (previousPane.pane_id!==entry.state.active_pane?.pane_id || previousPane.is_plugin!==entry.state.active_pane?.is_plugin))entry.frame.contentWindow.SwitchboardClipboard?.clearSelection();
     entry.focusPending=!!event.data.focus_pending;
     if(entry.requestedPane){
@@ -1152,20 +1156,78 @@ $('new-admin-tab').onclick=()=>openNewTabDialog(true);
 function openNewTabDialog(elevated){
   newTabElevated=elevated;
   $('new-tab-title').textContent=elevated?'New administrator tab':'New tab';
-  $('new-tab-note').textContent=elevated?'Opens an administrator shell on the selected machine. Someone there approves it: a UAC prompt on Windows, a sudo password elsewhere.':'Opens a shell on the selected machine.';
+  $('new-tab-command').value='c';newTabCommandLookup.close();newTabProjectLookup.close();
+  $('new-tab-project').value='switchboard';updateNewTabProject();
+  $('new-tab-note').textContent=elevated?'Opens an administrator shell on the selected machine. Someone there approves it: a UAC prompt on Windows, a sudo password elsewhere.':'';
   const select=$('new-tab-target');select.replaceChildren();
   const current=allTabs().find(t=>t.key===selected)?.entry;
-  for(const [key,entry] of sessions){
+  for(const [key,entry] of [...sessions].sort((a,b)=>Number(b[1]===current)-Number(a[1]===current)||Number(b[1].name==='main')-Number(a[1].name==='main'))){
+    if([...select.options].some(option=>JSON.parse(option.value)[0]===entry.host))continue;
     if(!entry.state||!sessionTabs(entry).length)continue;
-    const option=document.createElement('option');option.value=key;option.textContent=`${hosts.get(entry.host)?.name} · ${entry.name}`;option.selected=entry===current;select.append(option);
+    const option=document.createElement('option');option.value=key;option.textContent=hosts.get(entry.host)?.name||entry.host;option.selected=entry===current;select.append(option);
   }
   // A machine's first session starts a plain shell, so it cannot be elevated.
   if(!elevated)for(const host of hosts.values())if(!host.error&&host.sessions?.length===0&&![...select.options].some(option=>option.value===sessionKey(host.id,'main'))){
     const option=document.createElement('option');option.value=sessionKey(host.id,'main');option.textContent=host.name;select.append(option);
   }
   if(!select.options.length){setStatus(elevated&&hosts.size?'Open a regular tab on the machine first, then an administrator tab.':'No machines are connected. Check your machines in Settings.',true);return;}
+  loadNewTabProjects();
   $('new-tab-dialog').showModal();
+  $('new-tab-command').focus();$('new-tab-command').select();
 }
+function newTabLookup(inputId,listId,buttonId,items,emptyText,onChange=()=>{}){
+  const input=$(inputId),list=$(listId),button=$(buttonId);let index=-1,showAll=false;
+  function close(){list.hidden=true;index=-1;input.setAttribute('aria-expanded','false');button.setAttribute('aria-expanded','false');input.removeAttribute('aria-activedescendant');}
+  function highlight(next){index=next;[...list.querySelectorAll('[role=option]')].forEach((option,i)=>option.setAttribute('aria-selected',String(i===index)));const option=list.querySelectorAll('[role=option]')[index];if(option)input.setAttribute('aria-activedescendant',option.id);}
+  function choose(value){input.value=value;onChange();close();input.focus();input.select();}
+  function open(all=false){
+    showAll=all;const query=all?'':input.value.toLowerCase();list.replaceChildren();index=-1;input.removeAttribute('aria-activedescendant');
+    const matches=items().filter(([name,detail])=>(name+' '+detail).toLowerCase().includes(query));
+    matches.sort((a,b)=>Number(b[0].toLowerCase().startsWith(query))-Number(a[0].toLowerCase().startsWith(query)));
+    for(const [name,detail] of matches){
+      const option=document.createElement('div');option.id=listId+'-'+list.children.length;option.setAttribute('role','option');option.setAttribute('aria-selected','false');
+      const text=document.createElement('span'),description=document.createElement('small');text.textContent=name;description.textContent=detail;option.append(text,description);
+      option.onmousedown=event=>event.preventDefault();option.onclick=()=>choose(name);list.append(option);
+    }
+    if(!matches.length&&emptyText){const message=document.createElement('p');message.textContent=emptyText();message.setAttribute('role','status');list.append(message);}
+    list.hidden=!list.children.length;input.setAttribute('aria-expanded',String(!list.hidden));button.setAttribute('aria-expanded',String(!list.hidden));
+  }
+  input.oninput=()=>{onChange();open();};input.onblur=close;button.onmousedown=event=>event.preventDefault();
+  button.onclick=()=>{const shown=!list.hidden;input.focus();if(shown)close();else open(true);};
+  input.onkeydown=event=>{
+    if(event.isComposing)return;
+    if(event.key==='ArrowDown'||event.key==='ArrowUp'){
+      event.preventDefault();if(list.hidden)open(true);const count=list.querySelectorAll('[role=option]').length;
+      if(count)highlight(index<0?(event.key==='ArrowDown'?0:count-1):(index+(event.key==='ArrowDown'?1:count-1))%count);
+      list.querySelectorAll('[role=option]')[index]?.scrollIntoView({block:'nearest'});
+    }else if(event.key==='Escape'&&!list.hidden){event.preventDefault();event.stopPropagation();close();
+    }else if(event.key==='Enter'&&!list.hidden&&index>=0){event.preventDefault();choose(list.querySelectorAll('[role=option]')[index].firstChild.textContent);}
+  };
+  return {close,refresh(){if(!list.hidden)open(showAll);}};
+}
+function updateNewTabProject(){
+  const folder='~/git/'+$('new-tab-project').value.trim();
+  $('new-tab-project-help').textContent=folder;$('new-tab-project').title=folder;
+}
+const newTabCommandLookup=newTabLookup('new-tab-command','new-tab-commands','new-tab-lookup',()=>[['c','Claude'],['castra','Codex · Astra'],['csol','Codex · Sol']]);
+let newTabProjects=[],newTabProjectMessage='',newTabProjectRequest;
+const newTabProjectLookup=newTabLookup('new-tab-project','new-tab-projects','new-tab-project-lookup',()=>newTabProjects.map(name=>[name,'']),()=>newTabProjectMessage||'No matching folders in ~/git.',updateNewTabProject);
+async function loadNewTabProjects(){
+  newTabProjectRequest?.abort();const request=newTabProjectRequest=new AbortController();
+  newTabProjects=[];newTabProjectMessage='Loading projects…';newTabProjectLookup.refresh();
+  const host=JSON.parse($('new-tab-target').value)[0];
+  const timeout=setTimeout(()=>request.abort(),10000);
+  try{
+    const response=await fetch('/hosts/'+encodeURIComponent(host)+'/project-list',{signal:request.signal,cache:'no-store'});
+    if(!response.ok)throw new Error('Projects unavailable');
+    const names=await response.json();if(!Array.isArray(names)||!names.every(name=>typeof name==='string'))throw new Error('Invalid projects');
+    if(request!==newTabProjectRequest)return;
+    newTabProjects=names;newTabProjectMessage='';
+  }catch(_){if(request!==newTabProjectRequest)return;newTabProjectMessage='Projects unavailable. Type a project name.';}
+  finally{clearTimeout(timeout);}
+  newTabProjectLookup.refresh();
+}
+$('new-tab-target').onchange=()=>{newTabProjectLookup.close();loadNewTabProjects();};
 $('cancel-new-tab').onclick=()=>$('new-tab-dialog').close();
 // A click on the backdrop closes a dialog. Both press and release must land
 // outside, so selecting text inside and releasing outside keeps it open.
@@ -1179,13 +1241,17 @@ for(const dialog of document.querySelectorAll('dialog')){
   dialog.addEventListener('click',event=>{if(pressedOutside&&outside(event))dialog.close();pressedOutside=false;});
 }
 $('new-tab-form').onsubmit=event=>{
-  event.preventDefault();const key=$('new-tab-target').value;let entry=sessions.get(key);
+  event.preventDefault();createNewTab($('new-tab-target').value,{project:$('new-tab-project').value.trim(),command:$('new-tab-command').value.trim(),elevated:newTabElevated});
+};
+function createNewTab(key,launch){
+  if(!launch.project||!launch.command)return;
+  let entry=sessions.get(key);
   if(!entry?.state){
     const [id,name]=JSON.parse(key),host=hosts.get(id);
     if(!host||host.error||host.sessions?.length!==0)return;
     if(entry&&!entry.starting){entry.frame.remove();sessions.delete(key);}
     if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.showTerminal();
-    const created=connectSession(host,name,true);created.selectOnStart=true;
+    const created=connectSession(host,name,true);created.selectOnStart=true;created.launchOnStart=launch;
     if(filter!=='all'&&groups[id]!==filter)setFilter('all');$('tab-search').value='';
     // Closing the dialog returns focus to +; give it to the new terminal instead.
     $('new-tab-dialog').close();render();created.frame.focus();return;
@@ -1207,7 +1273,7 @@ $('new-tab-form').onsubmit=event=>{
   // Keyboard dismissal can leave focus on the hidden session selector, then
   // move it to the body. Hand focus to the frame before creation records it.
   entry.frame.focus();
-  entry.frame.contentWindow.postMessage({type:'zellij-new-tab',elevated:newTabElevated,request_id:pending.requestId,started_at:pending.startedAt},location.origin);
+  entry.frame.contentWindow.postMessage({type:'zellij-new-tab',...launch,request_id:pending.requestId,started_at:pending.startedAt},location.origin);
   setStatus(`Creating a tab on ${hosts.get(entry.host)?.name}…`);
   setTimeout(()=>failNewTab(entry,pending.requestId,'No new tab received. Check the connection and try again.'),30000);
 };
