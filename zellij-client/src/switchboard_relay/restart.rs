@@ -13,6 +13,7 @@ pub(super) struct Identity {
     pid: u32,
     started: u64,
     command: Vec<String>,
+    executable: PathBuf,
 }
 
 fn processes() -> System {
@@ -21,6 +22,7 @@ fn processes() -> System {
         ProcessesToUpdate::All,
         true,
         ProcessRefreshKind::nothing()
+            .with_exe(UpdateKind::Always)
             .with_cmd(UpdateKind::Always)
             .with_environ(UpdateKind::Always),
     );
@@ -67,6 +69,7 @@ pub(super) fn capture(agent: &str, event: &Value, session: &str, pane: u64) -> O
             pid: pid.as_u32(),
             started: p.start_time(),
             command,
+            executable: p.exe()?.to_path_buf(),
         })
     });
     let identity = candidates.next()?;
@@ -81,6 +84,7 @@ impl Identity {
             .process(Pid::from_u32(self.pid))
             .is_some_and(|p| {
                 p.start_time() == self.started
+                    && p.exe() == Some(self.executable.as_path())
                     && command(p) == self.command
                     && owns(p, session, pane.into())
             })
@@ -191,7 +195,7 @@ pub(super) async fn local(
         identity.cwd.clone(),
     )
     .map_err(|_| refused("This agent launch cannot be resumed safely"))?;
-    if !identity.cwd.is_dir() || !run.command.is_file() {
+    if !identity.cwd.is_dir() || !identity.executable.is_file() {
         return Err(refused(
             "The agent executable or working folder is no longer available",
         ));
@@ -236,7 +240,7 @@ pub(super) async fn local(
         "--cwd".into(),
         identity.cwd.to_string_lossy().into_owned(),
         "--".into(),
-        run.command.to_string_lossy().into_owned(),
+        identity.executable.to_string_lossy().into_owned(),
     ];
     args.extend(run.args);
     control::run_local(

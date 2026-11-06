@@ -12,7 +12,7 @@ const binary=path.resolve(process.argv[2]);
 const dir=fs.mkdtempSync('/tmp/switchboard-restart-agent-');
 const installed=path.join(dir,'zellij'),config=path.join(dir,'config.kdl');
 const name='restart-agent-'+crypto.randomBytes(8).toString('hex');
-const env={...process.env,HOME:dir,CODEX_HOME:path.join(dir,'.codex'),CLAUDE_CONFIG_DIR:path.join(dir,'.claude'),ZELLIJ_SOCKET_DIR:path.join(dir,'sockets'),TERM:'xterm-256color',ZELLIJ_CONFIG_FILE:config};
+const env={...process.env,PATH:dir+path.delimiter+process.env.PATH,HOME:dir,CODEX_HOME:path.join(dir,'.codex'),CLAUDE_CONFIG_DIR:path.join(dir,'.claude'),ZELLIJ_SOCKET_DIR:path.join(dir,'sockets'),TERM:'xterm-256color',ZELLIJ_CONFIG_FILE:config};
 for(const key of ['ZELLIJ','ZELLIJ_SESSION_NAME','ZELLIJ_PANE_ID','ZELLIJ_CONFIG_DIR'])delete env[key];
 const cli=(...args)=>execFileSync(installed,['--config',config,...args],{env,encoding:'utf8',timeout:15000,stdio:['ignore','pipe','pipe']});
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -31,7 +31,7 @@ let native,relay,browser,tokenName,created=false;
 #include <string.h>
 int main(int argc,char**argv){FILE*f=fopen(${JSON.stringify(path.join('/PLACEHOLDER','launches'))},"a");fprintf(f,"%d",getpid());for(int i=1;i<argc;i++)fprintf(f,"|%s",argv[i]);fprintf(f,"\\n");fclose(f);char previous[64]="";for(;;){char mode[64]="ready";f=fopen(${JSON.stringify(path.join('/PLACEHOLDER','mode'))},"r");if(f){fgets(mode,64,f);fclose(f);}if(strcmp(mode,previous)){printf("\\033[2J\\033[H\\033]0;codex - Restart fixture\\007Worked for 1s\\r\\n\\r\\n› %s\\r\\nGPT-6 · ? for shortcuts\\r\\n",strcmp(mode,"draft")==0?"unsent draft":"Ask Codex to do anything");fflush(stdout);strcpy(previous,mode);}usleep(100000);}}`.replaceAll('/PLACEHOLDER',dir));
     execFileSync(process.platform==='darwin'?'xcrun':'cc',process.platform==='darwin'?['clang','-isysroot',execFileSync('xcrun',['--sdk','macosx','--show-sdk-path'],{encoding:'utf8'}).trim(),c,'-o',fixture]:[c,'-o',fixture]);
-    cli('attach','--create-background',name,'--',fixture,'--model','fixture','initial prompt');created=true;
+    cli('attach','--create-background',name,'--','/bin/bash','--noprofile','--norc','-c','exec codex --model fixture "initial prompt"');created=true;
     let first;
     await until(()=>{first=JSON.parse(cli('-s',name,'action','list-panes','--json','--all')).find(p=>!p.is_plugin);return !!first;},'Private first terminal did not start');
     cli('-s',name,'action','rename-tab','--tab-id',String(first.tab_id),'Switchboard fixture');
