@@ -57,6 +57,18 @@ embedded attachment data. OpenCode text parts are
 returned as individual entries. This is a transcript view, not a reconstruction
 of the agent's current compacted context or active rewind branch.
 
+## Current terminal conversation
+
+The sidebar's **Conversation** button opens the selected pane's transcript directly;
+**Terminal** returns to the same pane. Agent hooks supply `transcript_path`, which the
+relay maps to an opaque `chat_id` in the pane's attention record. This uses the same
+history roots and read endpoint, including the owning computer's authenticated gateway.
+It does not search by project/title or start a provider process. Codex and Claude hooks
+report this path. A pane without a reported path shows an unavailable message and
+connects automatically when a hook arrives; it never guesses another chat. Chat identity
+survives relay restarts without restoring a stale working state, and is cleared when the
+agent exits or the pane's process changes.
+
 ## Coverage and bounds
 
 Always inspect coverage before concluding that a conversation does not exist:
