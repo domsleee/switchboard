@@ -627,7 +627,7 @@ impl Updater {
                 Err(std::fs::TryLockError::WouldBlock) if attempt < 2 => {
                     std::thread::sleep(Duration::from_millis(20))
                 },
-                Err(error) => return Err(anyhow!("Another automatic update is running: {error}")),
+                Err(_) => return Err(anyhow!("Another automatic update is running")),
             }
         }
         let previous_error = State::load(&self.state_path())
