@@ -101,7 +101,9 @@ needs it, on any computer. Setup does only this:
   auto-update in the agent's `settings.json`. The plugin also adds a `message-board`
   skill, so the agent can read, reply to and send
   [message board](../../docs/MESSAGE_BOARD_USAGE.md) messages.
-- **Codex:** Codex plugins can't carry hooks, so setup adds command hooks to
+- **Codex:** Setup installs the `switchboard@switchboard` skills plugin. Health
+  requires it to be enabled with all four skills present in the cache. Codex
+  plugins can't carry hooks, so setup also adds command hooks to
   `~/.codex/hooks.json`, keeping any others. They run a small launcher in
   `~/.local/share/switchboard/` that Switchboard keeps pointed at its current
   executable. Setup then trusts those hooks through `codex app-server`, as Codex's
