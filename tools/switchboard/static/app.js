@@ -603,6 +603,7 @@ function render() {
   $('notifications').classList.toggle('has-notifications',notifications>0);
   $('notifications').hidden=notifications===0;
   document.title=`${notifications?'('+notifications+') ':''}`+(current?`${tabTitle(current)} · ${hosts.get(current.entry.host)?.name} · Switchboard`:'Switchboard');
+  globalThis.SwitchboardNotifications?.check(allTabs(true).filter(isReady).map(item=>({key:item.key,active:item.key===selected,title:tabTitle(item),machine:hosts.get(item.entry.host)?.name||item.entry.host,label:autoLabel(item),sig:statesForTab(item).filter(needsAttention).map(state=>`${state.key}:${state.state}:${state.token||''}`).join('|')||autoLabel(item)})));
   const startingEntry=[...sessions.values()].find(entry=>entry.starting&&(filter==='all'||groups[entry.host]===filter));
   const currentEntry=current?.entry||(waitingForRequestedTab()?sessions.get(sessionKey(...JSON.parse(selected).slice(0,2))):startingEntry);
   for (const entry of sessions.values()) entry.frame.classList.toggle('active',entry===currentEntry);

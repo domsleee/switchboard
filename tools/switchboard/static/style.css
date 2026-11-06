@@ -202,13 +202,31 @@ dialog p{font-size:12px;color:#9ba7bd}
 .log-timing summary:hover{color:#b5bfd0}
 @media(prefers-reduced-motion:reduce){.toggle-state,.toggle-state::after{transition:none}#tab-empty::before,.task-dot{animation:none}.task-group summary::before{transition:none}}
 @media(max-width:700px){
-  body #artifact-preview header{padding-left:42px}
-  #sidebar-toggle,body.sidebar-collapsed #sidebar-toggle{left:8px}
-  body.sidebar-open #sidebar-toggle{left:calc(min(var(--sidebar-width,242px),85vw) - 37px)}
+  body #artifact-preview header{padding-left:52px;flex-wrap:wrap}
+  #sidebar-toggle,body.sidebar-collapsed #sidebar-toggle{left:8px;top:8px;width:44px;height:44px;font-size:18px}
+  body.sidebar-open #sidebar-toggle{left:calc(min(var(--sidebar-width,242px),85vw) - 52px)}
   #sidebar,body.sidebar-collapsed #sidebar{display:none;position:absolute;inset:0 auto 0 0;width:min(var(--sidebar-width,242px),85vw);z-index:5;box-shadow:8px 0 24px #0007}
   #sidebar-resize{display:none}
   body.sidebar-open #sidebar{display:flex}
   body.sidebar-open #sidebar-backdrop{display:block;position:absolute;inset:0;border:0;border-radius:0;background:#0008;z-index:4}
+  #sidebar-tools{padding-top:8px}
+  .sidebar-brand{padding-right:44px}
+  #new-tab,#new-admin-tab{width:40px;height:40px;flex-shrink:0}
+  #tab-search{font-size:16px;padding:10px}
+  #filters{overflow-x:auto;scrollbar-width:none;padding-bottom:2px}
+  #filters::-webkit-scrollbar{display:none}
+  #filters button,#filter-more{min-height:36px;padding:7px 10px;white-space:nowrap}
+  #tabs .tab-select{min-height:56px;padding-top:11px;padding-bottom:11px}
+  #tabs .tab-actions{width:40px;height:40px;top:8px;right:4px}
+  #sidebar-bottom{padding-bottom:calc(10px + env(safe-area-inset-bottom,0px))}
+  #sidebar-utilities a,#sidebar-utilities button{padding:10px 4px;font-size:12px}
+  #status{bottom:calc(12px + env(safe-area-inset-bottom,0px))}
+  dialog{width:calc(100vw - 24px);min-width:0;padding:18px 16px calc(18px + env(safe-area-inset-bottom,0px))}
+  dialog button,dialog select{min-height:44px}
+  dialog input{font-size:16px}
+  #tab-search,#new-tab-form select,#link-apps input,#machines select,#focus-row select{font-size:16px}
+  #tab-menu button{min-height:44px}
+  #selection-tools{flex-wrap:wrap}
 }
 #artifact-preview{position:absolute;inset:0;z-index:2;background:#111318;display:flex;flex-direction:column}
 #artifact-preview[hidden]{display:none}
@@ -256,8 +274,11 @@ body.sidebar-collapsed #artifact-preview header{padding-left:42px}
   #panel-nav{flex-shrink:0;padding:0 12px 10px;border-right:0;border-bottom:1px solid #2b303b}
   #panel-nav>strong{display:none}
   #panel-tabs{flex-direction:row;overflow-x:auto;scrollbar-width:none}
-  #panel-tabs [role=tab]{padding:7px 9px;font-size:12px}
-  .panel-section:not(.panel-page){padding:2px 16px 20px}
+  #panel-tabs [role=tab]{padding:10px 12px;font-size:13px;min-height:44px}
+  .panel-section:not(.panel-page){padding:2px 16px calc(20px + env(safe-area-inset-bottom,0px))}
+  .setting-toggle{min-height:48px}
+  #machines label,#focus-row,#link-apps label{flex-wrap:wrap}
+  #link-apps input{width:100%;flex-shrink:1}
 }
 
 @media(hover:none){#tabs .tab-actions{opacity:1}}
