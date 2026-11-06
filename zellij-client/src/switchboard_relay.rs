@@ -768,12 +768,36 @@ fn trusted_browser_origin(headers: &HeaderMap, origin: &str) -> bool {
             .is_some_and(|h| h == "cross-site")
 }
 
+// Opening the sidebar from a link in another app is a cross-site navigation,
+// not a cross-site API request. Keep the exception limited to the entry page.
+fn sidebar_navigation(request: &Request) -> bool {
+    request.method() == Method::GET
+        && request.uri().path() == "/"
+        && !request.headers().contains_key(header::ORIGIN)
+        && request
+            .headers()
+            .get("sec-fetch-mode")
+            .is_some_and(|h| h == "navigate")
+        && request
+            .headers()
+            .get("sec-fetch-dest")
+            .is_some_and(|h| h == "document")
+}
+
 async fn guard(State(state): State<RelayState>, request: Request, next: Next) -> Response {
-    if !trusted(request.headers(), state.port)
+    let mut navigation_headers;
+    let headers = if sidebar_navigation(&request) {
+        navigation_headers = request.headers().clone();
+        navigation_headers.remove("sec-fetch-site");
+        &navigation_headers
+    } else {
+        request.headers()
+    };
+    if !trusted(headers, state.port)
         && !state
             .browser_origin
             .as_deref()
-            .is_some_and(|origin| trusted_browser_origin(request.headers(), origin))
+            .is_some_and(|origin| trusted_browser_origin(headers, origin))
     {
         return (StatusCode::FORBIDDEN, "Untrusted relay request").into_response();
     }
@@ -1603,6 +1627,125 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn switchboard_external_sidebar_links_preserve_api_and_frame_protection() {
+        use tower::ServiceExt;
+        let relay = router(
+            RelayConfig {
+                hosts: vec![],
+                artifact_proxy: None,
+                browser_origin: Some("https://mac.tailnet.ts.net:8443".into()),
+            },
+            8090,
+        )
+        .await
+        .unwrap();
+        for (host, method, path, mode, dest, origin, expected) in [
+            (
+                "mac.tailnet.ts.net:8443",
+                "GET",
+                "/",
+                "navigate",
+                "document",
+                None,
+                StatusCode::OK,
+            ),
+            (
+                "switchboard.localhost",
+                "GET",
+                "/",
+                "navigate",
+                "document",
+                None,
+                StatusCode::OK,
+            ),
+            (
+                "evil.test",
+                "GET",
+                "/",
+                "navigate",
+                "document",
+                None,
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                "mac.tailnet.ts.net:8443",
+                "POST",
+                "/",
+                "navigate",
+                "document",
+                None,
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                "mac.tailnet.ts.net:8443",
+                "GET",
+                "/api/health",
+                "navigate",
+                "document",
+                None,
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                "mac.tailnet.ts.net:8443",
+                "GET",
+                "/",
+                "navigate",
+                "iframe",
+                None,
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                "mac.tailnet.ts.net:8443",
+                "GET",
+                "/",
+                "cors",
+                "empty",
+                None,
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                "mac.tailnet.ts.net:8443",
+                "GET",
+                "/",
+                "navigate",
+                "document",
+                Some("https://evil.test"),
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                "mac.tailnet.ts.net:8443",
+                "POST",
+                "/api/push/subscribe",
+                "cors",
+                "empty",
+                Some("https://evil.test"),
+                StatusCode::FORBIDDEN,
+            ),
+        ] {
+            let mut request = Request::builder()
+                .method(method)
+                .uri(path)
+                .header(header::HOST, host)
+                .header("sec-fetch-site", "cross-site")
+                .header("sec-fetch-mode", mode)
+                .header("sec-fetch-dest", dest);
+            if let Some(origin) = origin {
+                request = request.header(header::ORIGIN, origin);
+            }
+            let response = relay
+                .clone()
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                expected,
+                "{host} {method} {path} {mode} {dest} {origin:?}"
+            );
+        }
     }
 
     #[tokio::test]
