@@ -1,5 +1,66 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs');
 
+test('tab hover only expands clipped titles; context and shortcuts stay in the click menu',
+  {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
+  const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch({headless:true});
+  try{
+    const page=await browser.newPage({viewport:{width:1100,height:760}}),errors=[];
+    page.setDefaultTimeout(5000);
+    page.on('pageerror',error=>errors.push(error.message));
+    await page.addInitScript(()=>{window.setInterval=()=>0;});
+    let name='Polish the sidebar';
+    const tab=()=>({host:'mac',session:'main',id:1,position:0,name,panes:[{pane_id:1,is_plugin:false,tab_position:0}]});
+    await page.route('**/*',route=>{
+      const url=new URL(route.request().url()),path=url.pathname;
+      const json=value=>route.fulfill({contentType:'application/json',body:JSON.stringify(value)});
+      if(path==='/api/attention'&&url.searchParams.has('after'))return;
+      if(path==='/api/health')return json({commit:'abc123def',commit_date:'2026-10-04'});
+      if(path==='/api/hosts')return json([{id:'mac',name:'Mac'}]);
+      if(path==='/api/hosts/mac')return json({id:'mac',name:'Mac',sessions:[{name:'main',web_clients_allowed:true}]});
+      if(path==='/api/attention')return json({tabs:[tab()],panes:[],errors:[]});
+      if(path.startsWith('/api/'))return json({});
+      if(path.startsWith('/hosts/'))return route.fulfill({contentType:'text/html',body:`<style>body{background:#111318;color:#a3aec0;font:14px monospace;padding:24px}</style><p>~/projects/switchboard</p><p>Ready for your next step.</p><script>const pane={pane_id:1,is_plugin:false,tab_position:0};parent.postMessage({type:'zellij-state',payload:{session_name:'main',panes:[pane],active_pane:pane}},location.origin);</script>`});
+      const file=path==='/'?'index.html':path.slice(1);
+      if(!/^[\w.-]+$/.test(file)||!fs.existsSync(__dirname+'/static/'+file))return route.fulfill({status:404,body:''});
+      return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file)});
+    });
+    await page.goto('https://switchboard.test/');
+    const button=page.locator('.tab-select'),actions=page.locator('.tab-actions');
+    await button.waitFor();await button.hover();
+    assert.equal(await button.getAttribute('title'),null);
+    assert.equal(await page.locator('#tabs').getAttribute('title'),null);
+    await page.waitForFunction(()=>document.querySelector('#build-version').textContent.includes('abc123def'));
+    assert.equal(await page.locator('#settings').getAttribute('title'),null);
+    assert.match(await page.locator('#build-version').getAttribute('title'),/Commit abc123def/);
+    assert.equal(await actions.getAttribute('title'),'Tab actions');
+    name='Review terminal reconnection behavior';await page.evaluate(()=>refreshAttention());
+    await page.waitForFunction(title=>document.querySelector('.tab-select').title===title,name);
+    await button.focus();assert.match(await button.getAttribute('aria-label'),/Review terminal reconnection behavior, Mac, main/);
+    await page.evaluate(()=>setSidebarWidth(420));
+    await page.waitForFunction(()=>!document.querySelector('.tab-select').hasAttribute('title'));
+    await page.evaluate(()=>setSidebarWidth(180));
+    await page.waitForFunction(title=>document.querySelector('.tab-select').title===title,name);
+    const proof=process.env.SWITCHBOARD_HOVER_SCREENSHOTS;
+    if(proof)await page.screenshot({path:proof+'/sidebar.png'});
+    await button.press('Shift+F10');
+    assert.equal(await page.locator('#tab-menu-target').textContent(),name);
+    assert.equal(await page.locator('#tab-menu-target').getAttribute('title'),null);
+    assert.match(await page.locator('#tab-menu-details').textContent(),/Mac · main · No pending attention/);
+    assert.match(await page.locator('#tab-menu-help').textContent(),/Alt\+Shift\+H\/L to reorder/);
+    assert.match(await page.locator('#tab-menu-help').textContent(),/Middle-click to close/);
+    if(proof)await page.screenshot({path:proof+'/menu.png'});
+    await page.keyboard.press('Escape');
+    name='Short';await page.evaluate(()=>refreshAttention());
+    await page.waitForFunction(()=>document.querySelector('.tab-name').textContent==='Short'&&!document.querySelector('.tab-select').hasAttribute('title'));
+    await page.setViewportSize({width:390,height:740});
+    await page.locator('#sidebar-toggle').click();await actions.click();
+    const bounds=await page.locator('#tab-menu').boundingBox();
+    assert.ok(bounds.x>=0&&bounds.x+bounds.width<=390&&bounds.y+bounds.height<=740);
+    if(proof)await page.screenshot({path:proof+'/mobile-menu.png'});
+    assert.deepEqual(errors,[]);
+  }finally{await browser.close();}
+});
+
 // All HTTP and terminal state is local fixture data; never attach to user sessions.
 test('sidebar actions, selection tools, stable status updates, resizing and mobile navigation',
   {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
@@ -188,7 +249,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     const action=page.locator('.tab-actions').nth(1);
     await page.locator('.tab-row').nth(1).hover();await action.click();
     assert.equal(await page.locator('#tab-menu-target').textContent(),'Online shopping');
-    assert.match(await page.locator('#tab-menu-target').getAttribute('title'),/Online shopping · Mac · main/);
+    assert.match(await page.locator('#tab-menu-details').textContent(),/Mac · main/);
     assert.match(await page.locator('#hide-tab').textContent(),/^Hide/);
     if(process.env.SWITCHBOARD_UX_SCREENSHOTS)await page.screenshot({path:process.env.SWITCHBOARD_UX_SCREENSHOTS+'/tab-menu.png'});
     await page.keyboard.press('End');assert.equal(await page.evaluate(()=>document.activeElement.id),'close-tab');

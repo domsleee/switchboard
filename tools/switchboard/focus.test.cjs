@@ -277,7 +277,7 @@ test('headless browser keeps iframe, selection, URL and input focus through fail
     attentionError=true;await page.reload();
     await page.waitForFunction(()=>document.querySelectorAll('#tabs .tab-select').length===2);
     assert.equal(page.url(),requested);assert.equal(await page.locator('#tabs .selected').count(),0);
-    const fallback=page.locator('#tabs .tab-select[title*=" · Windows · main"]');
+    const fallback=page.locator('#tabs .tab-select[aria-label*="Windows, main"]');
     assert.equal(await fallback.evaluate(e=>e._item.tab.pending),true);
     await fallback.click();
     await page.waitForFunction(()=>document.activeElement===document.querySelector('iframe[title="Windows: main"]'));

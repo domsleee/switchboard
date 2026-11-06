@@ -2,7 +2,7 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const vm=require('node:vm');
-const source=fs.readFileSync(__dirname+'/static/app.js','utf8');
+const source=fs.readFileSync(__dirname+'/static/app.js','utf8').replace(/\r\n/g,'\n');
 function initPins(context){
   context.pinned={};
   vm.runInContext(source.slice(source.indexOf('function isPinned('),source.indexOf('// Tabs in the Hidden')),context);
