@@ -406,14 +406,14 @@ impl<T: Serialize> IpcSenderWithContext<T> {
     pub fn send_client_msg(&mut self, msg: ClientToServerMsg) -> Result<()> {
         let proto_msg: ProtoClientToServerMsg = msg.into();
         write_protobuf_message(&mut self.sender, &proto_msg)?;
-        let _ = self.sender.flush();
+        self.sender.flush()?;
         Ok(())
     }
 
     pub fn send_server_msg(&mut self, msg: ServerToClientMsg) -> Result<()> {
         let proto_msg: ProtoServerToClientMsg = msg.into();
         write_protobuf_message(&mut self.sender, &proto_msg)?;
-        let _ = self.sender.flush();
+        self.sender.flush()?;
         Ok(())
     }
 

@@ -118,6 +118,7 @@ assets = [
 ]
 
 [features]
+resumable_viewer_proof = ["zellij-server/resumable_viewer_proof"]
 # See remarks in zellij_utils/Cargo.toml
 default = ["vendored_curl", "web_server_capability"]
 vendored_curl = ["zellij-utils/vendored_curl"]

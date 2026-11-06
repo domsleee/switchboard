@@ -56,4 +56,5 @@ windows-sys = { workspace = true, features = [
 insta = "1.48"
 
 [features]
+resumable_viewer_proof = []
 web_server_capability = ["zellij-utils/web_server_capability"]

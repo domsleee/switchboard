@@ -22,6 +22,8 @@ mod pane_groups;
 use native_layout as plugins;
 mod pty;
 mod pty_writer;
+#[cfg(feature = "resumable_viewer_proof")]
+mod resumable_viewer_proof;
 mod route;
 mod screen;
 mod session_layout_metadata;
@@ -1044,6 +1046,10 @@ pub fn start_server_impl(
                     .set_nonblocking(interprocess::local_socket::ListenerNonblockingMode::Accept)
                     .unwrap();
 
+                #[cfg(feature = "resumable_viewer_proof")]
+                if let Err(error) = resumable_viewer_proof::start(socket_path.clone()) {
+                    log::error!("Cannot start isolated resumable viewer proof: {error:#}");
+                }
                 for stream in listener.incoming() {
                     match stream {
                         Ok(stream) => {
