@@ -9,7 +9,7 @@ vm.runInNewContext(fs.readFileSync(__dirname+'/static/links.js','utf8'),{window,
 assert.equal(window.__switchboardResolveLink('http://127.0.0.1:8765/a?q=1'),'http://172.20.10.69:8765/a?q=1');
 assert.equal(window.__switchboardResolveLink('http://localhost:9000/a'),'http://127.0.0.1:9090/a');
 assert.throws(()=>window.__switchboardResolveLink('javascript:alert(1)'));
-const click={shiftKey:true,button:0,clientX:1,clientY:1,target:{closest:()=>true},preventDefault(){},stopImmediatePropagation(){}};
+const click={shiftKey:true,button:0,clientX:1,clientY:1,target:{closest:selector=>selector==='#terminal'},preventDefault(){},stopImmediatePropagation(){}};
 handlers.mousedown({...click,shiftKey:false});handlers.mouseup({...click,shiftKey:false});assert.equal(messages.length,0);
 handlers.mousedown(click);handlers.mouseup({...click,clientX:20});assert.equal(messages.length,0);
 assert.equal(opened.length,0);
@@ -52,6 +52,17 @@ for(const modifier of ['metaKey','ctrlKey']){
 // So does an AVIF, which desktop image viewers often cannot show.
 link.text='C:\\shots\\a.AVIF';handlers.mousedown({...click,shiftKey:false,ctrlKey:true});handlers.mouseup({...click,shiftKey:false,ctrlKey:true});
 assert.deepEqual(opened.at(-1),['http://127.0.0.1:8090/api/hosts/windows/file?path=C%3A%5Cshots%5Ca.AVIF','_blank','noopener noreferrer']);opened.pop();
+// Animated GIFs open in a browser tab from either their text path or thumbnail.
+for(const modifier of ['metaKey','ctrlKey']){
+  const event={...click,shiftKey:false,[modifier]:true};
+  link.text='C:\\clips\\loop.GIF';handlers.mousedown(event);handlers.mouseup(event);
+  assert.deepEqual(opened.pop(),['http://127.0.0.1:8090/api/hosts/windows/file?path=C%3A%5Cclips%5Cloop.GIF','_blank','noopener noreferrer']);
+  window.__switchboardMedia.open(link.text,event);
+  assert.deepEqual(opened.pop(),['http://127.0.0.1:8090/api/hosts/windows/file?path=C%3A%5Cclips%5Cloop.GIF','_blank','noopener noreferrer']);
+  const thumbnail={...event,target:{closest:()=>true}};
+  const before=opened.length;handlers.mousedown(thumbnail);handlers.mouseup(thumbnail);
+  assert.equal(opened.length,before,'Thumbnail clicks do not also open the underlying terminal link');
+}
 link.text='/Users/dom/clips/demo.mp4';handlers.mousedown(click);handlers.mouseup(click);
 assert.deepEqual(files.at(-1),['windows','/Users/dom/clips/demo.mp4']);assert.equal(opened.length,3);
 opened.splice(1);link.text='http://127.0.0.1:8765/';delete parent.SwitchboardOpenFile;

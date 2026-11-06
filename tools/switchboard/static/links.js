@@ -38,8 +38,8 @@
   const browserPages=/(?<![\w.+-])(?:chrome|edge|brave):\/\/[a-z0-9-]+(?:[/#][\w/.#-]*)?/g;
   const isBrowserPage=uri=>/^(?:chrome|edge|brave):\/\//.test(uri);
   const mediaFile=/\.(?:png|jpe?g|gif|webp|avif|mp4|webm|mov|m4v)$/i,videoFile=/\.(?:mp4|webm|mov|m4v)$/i,
-    // Desktop apps often lack AVIF support (Windows Photos needs an extension); browsers show it.
-    tabFile=/\.(?:mp4|webm|mov|m4v|avif)$/i;
+    // Browsers play animated images and videos, including formats desktop viewers may lack.
+    tabFile=/\.(?:mp4|webm|mov|m4v|avif|gif)$/i;
   // Relative media paths, such as out/shot.png, without spaces since they have no root to start from.
   const relativeMedia=/(?<![\w.~:%/\\@-])(?:[^\s"'`<>|*?:;,()[\]{}\\/]+[\\/])*[^\s"'`<>|*?:;,()[\]{}\\/]+\.(?:png|jpe?g|gif|webp|avif|mp4|webm|mov|m4v)(?![\w-]|\.\w)/gi;
   // Other relative paths: a file with a 2-8 character extension (so e.g. stays text), or a
@@ -117,7 +117,7 @@
         parent.SwitchboardOpenBrowserPage(uri);return;
       }
       const path=filePathOf(uri),newTab=event.metaKey||event.ctrlKey,relative=!path&&relativeFile(uri);
-      // Cmd/Ctrl-click plays a video or shows an AVIF in a browser tab, streamed from this terminal's computer.
+      // Cmd/Ctrl-click plays videos and animated images in a tab, streamed from this terminal's computer.
       if((path||relative)&&!(newTab&&tabFile.test(path||uri))){
         if(window.parent===window||!parent.SwitchboardOpenFile)throw Error('Files open from the Switchboard page');
         if(path){parent.SwitchboardOpenFile(host,path);return;}
@@ -173,7 +173,7 @@
   }
   let down;
   window.addEventListener('mousedown',event=>{
-    if(!linkGesture(event)||!event.target.closest?.('#terminal'))return;
+    if(!linkGesture(event)||!event.target.closest?.('#terminal')||event.target.closest?.('.switchboard-thumbnails'))return;
     const uri=atPointer(event,window.term);
     if(uri){down={uri,x:event.clientX,y:event.clientY};event.preventDefault();event.stopImmediatePropagation();}
   },true);
@@ -199,7 +199,10 @@
     locate,
     url:path=>`/api/hosts/${encodeURIComponent(host)}/file?path=${encodeURIComponent(path)}`,
     isVideo:path=>videoFile.test(path),
-    open:path=>{if(window.parent!==window)parent.SwitchboardOpenFile?.(host,path);},
+    open:(path,event)=>{
+      if(event?.metaKey||event?.ctrlKey)open(event,path);
+      else if(window.parent!==window)parent.SwitchboardOpenFile?.(host,path);
+    },
   };
   window.__switchboardResolveLink=resolve;
   window.__switchboardBrowserPages=line=>[...line.matchAll(browserPages)].map(match=>match[0].replace(/[.`]+$/,''));
