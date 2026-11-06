@@ -1,3 +1,4 @@
+import { resumableSockets } from "./resumable.js";
 import { handleReconnection, handleDisconnected, markConnectionEstablished, setReconnectHandler, showConnectionStatus } from "./connection.js";
 import { authorizedFetch } from "./auth.js";
 import { fineScrolling } from "./wheel.js";
@@ -133,8 +134,8 @@ export function initWebSockets(boot, term, fitAddon) {
         for (const socket of [wsTerminal, wsControl]) {
             if (!socket) continue;
             socket.onclose = socket.onmessage = socket.onopen = null;
-            socket.close();
         }
+        for (const socket of [wsTerminal, wsControl]) socket?.close();
         settleConnection?.(false);
     }
 
@@ -182,11 +183,18 @@ export function initWebSockets(boot, term, fitAddon) {
         if (fineScrolling()) queryString += "&wheel_lines=1";
         const wsTerminalUrl = `${url}${queryString}`;
 
-        wsTerminal = new WebSocket(wsTerminalUrl);
-
-        wsControl = new WebSocket(
-            `${wsBaseUrl}/ws/control?web_client_id=${encodeURIComponent(ownWebClientId)}`
-        );
+        if (nextBoot.resumable?.protocol === 1) {
+            const pair = resumableSockets(wsBaseUrl, nextBoot, { rows: term.rows, cols: term.cols,
+                wheel_lines: fineScrolling() ? 1 : 0 });
+            wsTerminal = pair.terminal;
+            wsControl = pair.control;
+            // The worker retains focus and parser state. Creating a new native
+            // client or replaying focus restoration would target a different view.
+            restorePane = null;
+        } else {
+            wsTerminal = new WebSocket(wsTerminalUrl);
+            wsControl = new WebSocket(`${wsBaseUrl}/ws/control?web_client_id=${encodeURIComponent(ownWebClientId)}`);
+        }
         startWsControl(wsControl, term, fitAddon, ownWebClientId, userConfig, payload => {
             lastPane = payload.active_pane || null;
             if (restorePane && lastPane) {
@@ -285,14 +293,14 @@ export function initWebSockets(boot, term, fitAddon) {
                 }
             }
 
-            term.write(data);
+            term.write(data, event.applied);
         };
 
         const closed = (event) => {
             closeSockets();
             if (event.code === 4001) {
                 stopped = true;
-                handleDisconnected();
+                handleDisconnected(wsTerminal?.resumable ? window.__zjResumeFailure : undefined);
             } else if (!stopped) {
                 handleReconnection();
             }

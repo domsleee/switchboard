@@ -231,6 +231,27 @@ pub fn validate_session_token(session_token: &str) -> Result<bool> {
     Ok(count > 0)
 }
 
+/// Stable credential identity across relay logins. Never expose this hash to browsers.
+pub fn session_token_owner(session_token: &str) -> Result<String> {
+    let conn = open_db()?;
+    Ok(conn.query_row(
+        "SELECT t.token_hash FROM tokens t JOIN session_tokens st ON st.auth_token_hash = t.token_hash WHERE st.session_token_hash = ?1 AND st.expires_at > datetime('now')",
+        [hash_token(session_token)], |row| row.get(0),
+    )?)
+}
+
+/// Revalidate an already-authenticated attachment against its long-lived credential.
+/// Short-lived login cookies can expire while a WebSocket remains connected.
+pub fn credential_is_read_only(token_hash: &str) -> Result<bool> {
+    let conn = open_db()?;
+    let read_only: i64 = conn.query_row(
+        "SELECT read_only FROM tokens WHERE token_hash = ?1",
+        [token_hash],
+        |row| row.get(0),
+    )?;
+    Ok(read_only != 0)
+}
+
 pub fn is_session_token_read_only(session_token: &str) -> Result<bool> {
     let conn = open_db()?;
 

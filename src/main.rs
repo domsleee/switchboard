@@ -402,6 +402,9 @@ fn main() {
         opts.new_session_with_layout = None;
         opts.layout = Some(layout_for_new_session.clone());
         commands::start_client(opts);
+    } else if let Some(Command::AttachmentWorker { session }) = &opts.command {
+        std::env::set_var("SWITCHBOARD_ATTACHMENT_WORKER", session);
+        commands::start_web_server(opts.clone(), false, None, None, None, None, None);
     } else if let Some(Command::Web(web_opts)) = &opts.command {
         if web_opts.get_start() {
             let daemonize = web_opts.daemonize;

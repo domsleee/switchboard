@@ -91,7 +91,7 @@ fn respond(mut stream: TcpStream, root: &Path) {
         },
         ("/api/hosts", Some(binary)) => {
             let hosts = fs::read_to_string(root.join("hosts.json")).unwrap_or_else(|_| {
-                r#"[{"id":"mac","sessions":[{"name":"main","web_clients_allowed":true}]}]"#.into()
+                r#"[{"id":"mac","local":true,"sessions":[{"name":"main","web_clients_allowed":true}]}]"#.into()
             });
             // A relay refused Local Network access reports every peer unavailable.
             let hosts = if binary.contains("unreachable") {
@@ -535,7 +535,7 @@ fn catalog_waits_for_offline_peers_to_finish_reporting() {
     fs::write(harness.root.join("catalog-delay-ms"), "10500").unwrap();
     fs::write(
         harness.root.join("hosts.json"),
-        r#"[{"id":"mac","sessions":[{"name":"main","web_clients_allowed":true}]},
+        r#"[{"id":"mac","local":true,"sessions":[{"name":"main","web_clients_allowed":true}]},
             {"id":"offline","sessions":[],"error":"Host unavailable"}]"#,
     )
     .unwrap();
@@ -1156,7 +1156,7 @@ fn a_relay_that_loses_paired_computers_is_restarted_once_then_rolled_back() {
     // No gateway address, so the Local Network probe has nothing to submit.
     fs::write(
         harness.root.join("hosts.json"),
-        r#"[{"id":"mac","sessions":[{"name":"main","web_clients_allowed":true}]},
+        r#"[{"id":"mac","local":true,"sessions":[{"name":"main","web_clients_allowed":true}]},
             {"id":"peer","local":false,"error":null,"sessions":[]}]"#,
     )
     .unwrap();
@@ -1199,5 +1199,21 @@ fn switchboard_update_is_due_for_a_newer_build_or_a_retry() {
     assert!(
         !is_due(&state(Some(5), Some(ATTEMPTS)), 5),
         "out of attempts"
+    );
+}
+
+#[test]
+fn switchboard_update_catalog_ignores_remote_session_churn() {
+    let local = serde_json::json!({"id":"workstation","local":true,"sessions":[{"name":"main","web_clients_allowed":true}]});
+    let before = serde_json::json!([local.clone(), {"id":"peer","local":false,"sessions":[{"name":"temporary","web_clients_allowed":true}]}]);
+    let after = serde_json::json!([local, {"id":"peer","local":false,"error":"offline"}]);
+    assert_eq!(
+        local_catalog(&before).unwrap(),
+        local_catalog(&after).unwrap()
+    );
+    assert!(local_catalog(&serde_json::json!([{"id":"peer","sessions":[]}])).is_err());
+    assert!(
+        local_catalog(&serde_json::json!([{"id":"local","local":true,"error":"unavailable"}]))
+            .is_err()
     );
 }
