@@ -172,3 +172,16 @@ test('the media lightbox fits a narrow viewport and media clicks keep it open', 
   await gallery.locator('footer').waitFor({state:'visible'});
   await page.keyboard.press('Escape');await gallery.waitFor({state:'hidden'});
 }));
+
+test('Forward to a closed preview cannot strand a reopened carousel on Back', {skip:!enabled},()=>fixture(async({page})=>{
+  await page.evaluate(()=>window.SwitchboardOpenMedia('linux','/tmp/first.png'));
+  await page.goBack();
+  await page.waitForFunction(()=>!document.querySelector('#image-gallery').open);
+  await page.goForward();
+  await page.waitForFunction(()=>!history.state?.switchboardMedia);
+  assert.equal(await page.locator('#image-gallery').evaluate(dialog=>dialog.open),false);
+  await page.evaluate(()=>window.SwitchboardOpenMedia('linux','/tmp/second.png'));
+  await page.goBack();
+  await page.waitForFunction(()=>!document.querySelector('#image-gallery').open);
+  assert.equal(page.url(),'http://switchboard.test/');
+}));

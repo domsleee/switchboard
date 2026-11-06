@@ -48,7 +48,12 @@
     if(!dialog?.open)return;
     dialog.close();finishClose();
   }
-  window.addEventListener('popstate',()=>{if(dialog?.open&&!history.state?.switchboardMedia)close();});
+  window.addEventListener('popstate',()=>{
+    if(dialog?.open){if(!history.state?.switchboardMedia)close();}
+    // Forward can revisit a closed preview's entry. It no longer owns an open
+    // gallery, so a later opening must not inherit another marked entry beneath it.
+    else if(history.state?.switchboardMedia)history.replaceState({...history.state,switchboardMedia:false},'');
+  });
   // A reload has no open media to dismiss.
   if(history.state?.switchboardMedia)history.replaceState({...history.state,switchboardMedia:false},'');
   function step(direction){if(items.length>1){index=(index+direction+items.length)%items.length;show();}}
