@@ -5,6 +5,8 @@
 //! Browsers and paired computers can only ask for an agent's setup by name. What it
 //! runs is fixed here: the `switchboard` plugin for Claude Code and Copilot CLI, and
 //! the skills plugin plus separate command hooks in `~/.codex/hooks.json` for Codex.
+mod dotfiles;
+
 use super::*;
 use std::{
     collections::BTreeMap,
@@ -1029,6 +1031,7 @@ fn describe(agent: Agent) -> Value {
         "detail": if setup.running { "Setting up…".to_string() } else { check.detail },
         "lastReport": report,
         "installation": if agent == Agent::Codex { codex_installation(program.as_deref(), cfg!(windows)) } else { Value::Null },
+        "plugins": if check.state != "absent" { dotfiles::inspect(agent, &dir, &read_json(&home().join(".config/switchboard/dotfiles-plugins.json")).unwrap_or(Value::Null)) } else { Value::Null },
         "skills": if agent == Agent::Codex && check.state != "absent" { skill_health::codex(&dir, &home()) } else { Value::Null },
         "skillRepair": if agent == Agent::Codex { json!({"supported":true,"running":repair.running,"error":repair.error,"finished":repair.finished}) } else { Value::Null },
         "setupError": setup.error,
