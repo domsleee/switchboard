@@ -416,16 +416,35 @@ function allTabs(ignoreFilter=false) {
     .filter(({entry,tab}) => ![...(entry.closingTabs?.values()||[])].some(closing=>matchesClosingTab(tab,closing)) && (ignoreFilter || filter === 'all' || groups[entry.host] === filter))
     .sort((a,b) => a.hidden-b.hidden || a.rank-b.rank || lateness(a)-lateness(b) || byMachine(a,b));
 }
-// Working tabs fold into Snoozed without changing their saved order or Hidden membership.
+// Hold shelf placement briefly across gaps between consecutive runs.
+const snoozedPlacement=new Map();
+let snoozedExitTimer;
 function sidebarTabs(){
-  return allTabs().map(item=>({...item,snoozed:settingValue('move-working-to-snoozed')==='true'&&!item.hidden&&!isReady(item)&&autoLabel(item)==='Working'
-    &&!attentionErrors.some(error=>error.host==='Switchboard'||error.host===item.entry.host&&(!error.session||error.session===item.entry.name))}))
-    .sort((a,b)=>(a.hidden?2:a.snoozed?1:0)-(b.hidden?2:b.snoozed?1:0));
+  const now=Date.now(),tabs=allTabs(),present=new Set(tabs.map(item=>item.key));
+  clearTimeout(snoozedExitTimer);
+  let next=Infinity;
+  for(const key of snoozedPlacement.keys())if(!present.has(key))snoozedPlacement.delete(key);
+  const result=tabs.map(item=>{
+    const eligible=settingValue('move-working-to-snoozed')==='true'&&!item.hidden&&!isReady(item)
+      &&!attentionErrors.some(error=>error.host==='Switchboard'||error.host===item.entry.host&&(!error.session||error.session===item.entry.name));
+    let snoozed=false;
+    if(eligible&&autoLabel(item)==='Working'){
+      snoozedPlacement.set(item.key,{deadline:null});snoozed=true;
+    }else if(eligible&&snoozedPlacement.has(item.key)){
+      const placement=snoozedPlacement.get(item.key);
+      placement.deadline??=now+2000;
+      if(placement.deadline>now){snoozed=true;next=Math.min(next,placement.deadline);}
+      else snoozedPlacement.delete(item.key);
+    }else snoozedPlacement.delete(item.key);
+    return {...item,snoozed};
+  });
+  if(next!==Infinity)snoozedExitTimer=setTimeout(()=>render(),next-now);
+  return result.sort((a,b)=>(a.hidden?2:a.snoozed?1:0)-(b.hidden?2:b.snoozed?1:0));
 }
 // Search includes collapsed groups; keyboard navigation follows the visible rows.
 function listedTabs(){
   const searching=!!$('tab-search').value.trim();
-  return sidebarTabs().filter(item=>matchesSearch(item)&&(!item.hidden||hiddenOpen||searching)&&(!item.snoozed||snoozedOpen||searching));
+  return sidebarTabs().filter(item=>matchesSearch(item)&&(!item.hidden||hiddenOpen||searching)&&(!item.snoozed||snoozedOpen||searching||item.key===selected));
 }
 function moveTab(key,targetKey,after=false) {
   if(key===targetKey)return;
