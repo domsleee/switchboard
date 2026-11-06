@@ -916,6 +916,7 @@ impl Updater {
 
     /// The Windows tray yields service supervision while this names a live process.
     fn with_handoff<T>(&self, action: impl FnOnce() -> Result<T>) -> Result<T> {
+        let _admission = crate::switchboard_viewers::activation(&self.viewer_lock)?;
         let handoff = self.state_directory.join("handoff.json");
         fs::write(&handoff, format!("{{\"pid\": {}}}", std::process::id()))?;
         let result = action();
@@ -1032,7 +1033,7 @@ impl Updater {
         let candidate = bundle.join(self.exe());
         let ready = || {
             self.timed("ready", || {
-                self.wait_ready(Some(&manifest.commit), sessions)
+                self.wait_ready(Some(&manifest.commit), sessions, false)
             })
         };
         let peers_stay = || {
@@ -1130,7 +1131,7 @@ impl Updater {
         } else {
             self.install_mac(&backup, &previous, pending.commit.as_deref())?;
         }
-        self.wait_ready(pending.commit.as_deref(), &pending.sessions)
+        self.wait_ready(pending.commit.as_deref(), &pending.sessions, true)
     }
 
     /// The previous executable is selected and its services are healthy, e.g.
@@ -1214,15 +1215,26 @@ impl Updater {
         local_catalog(&hosts).map(|(id, _)| id)
     }
 
-    fn wait_ready(&self, commit: Option<&str>, sessions: &[Session]) -> Result<()> {
+    fn wait_ready(
+        &self,
+        commit: Option<&str>,
+        sessions: &[Session],
+        filter_legacy_peers: bool,
+    ) -> Result<()> {
         let deadline = Instant::now() + self.ready_timeout;
         while Instant::now() < deadline {
             let ready = self.health().is_ok_and(|h| {
                 h.relay.as_deref() == Some("rust")
                     && commit.is_none_or(|c| same_commit(c, h.commit.as_deref().unwrap_or("")))
             }) && self
-                .catalog()
-                .is_ok_and(|catalog| sessions.iter().all(|s| catalog.contains(s)));
+                .local_json::<serde_json::Value>("/api/hosts", Duration::from_secs(30))
+                .and_then(|hosts| local_catalog(&hosts))
+                .is_ok_and(|(local, catalog)| {
+                    sessions
+                        .iter()
+                        .filter(|s| !filter_legacy_peers || s.0 == local)
+                        .all(|s| catalog.contains(s))
+                });
             if ready {
                 return Ok(());
             }
