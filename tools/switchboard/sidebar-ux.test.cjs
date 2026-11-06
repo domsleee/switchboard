@@ -35,7 +35,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
           window.ClipboardAddon={ClipboardAddon:class{}};
           window.__zjSupportsTabViewport=true;
           window.state=(focus_id)=>parent.postMessage({type:'zellij-state',focus_id,payload:{session_name:'main',panes,active_pane:active,tab_viewport:{is_owner:true}}},location.origin);
-          addEventListener('message',event=>{if(event.data.type==='zellij-focus'){active=panes.find(p=>p.pane_id===event.data.pane_id);input.focus();state(event.data.focus_id)}});
+          addEventListener('message',event=>{if(event.data.type==='zellij-focus'){active=panes.find(p=>p.pane_id===event.data.pane_id);window.lastFocusId=event.data.focus_id;input.focus();state(event.data.focus_id)}});
           window.selectFixture=text=>{selection=text;selectionCallback?.()};
         </script><script src="/clipboard.js"></script><script>new ClipboardAddon.ClipboardAddon().activate(term);state();</script>`});
       }
@@ -94,6 +94,12 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.equal(await page.locator('#tabs .selected .tab-name').textContent(),names[2]);
     await page.evaluate(()=>activate(allTabs()[0]));
     assert.equal(await page.evaluate(()=>localStorage.getItem('switchboard-snoozed-open')),'false');
+    // activate() posts focus asynchronously. Let the fixture acknowledge that
+    // request before fill(), otherwise its late input.focus() steals the search.
+    await page.waitForFunction(()=>{
+      const entry=allTabs().find(item=>item.key===selected)?.entry;
+      return entry&&entry.frame.contentWindow.lastFocusId===entry.focusId&&document.activeElement===entry.frame;
+    });
     await page.locator('#tab-search').fill('switchboard');
     assert.deepEqual(await order(),[names[0]]);
     assert.equal(await snoozed.getAttribute('aria-expanded'),'true');
