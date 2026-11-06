@@ -15,7 +15,10 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     const tabs=names.map((name,i)=>({host:i===2?'windows':'mac',session:'main',id:i+1,position:i===2?0:i,name,panes:[{pane_id:i+1,is_plugin:false,tab_position:i===2?0:i}]}));
     await page.addInitScript(()=>{window.setInterval=()=>0;});
     await context.route('**/*',async route=>{
-      const path=new URL(route.request().url()).pathname;
+      const url=new URL(route.request().url()),path=url.pathname;
+      // This test drives attention changes explicitly. Keep the background watch
+      // pending so its retry cannot render away a notification during dismissal.
+      if(path==='/api/attention'&&url.searchParams.has('after'))return;
       const json=value=>route.fulfill({contentType:'application/json',body:JSON.stringify(value)});
       if(path==='/api/health')return json({commit:'abc123def',commit_date:'2026-10-04'});
       if(path==='/api/hosts')return json([{id:'mac',name:'Mac'},{id:'windows',name:'Windows'}]);
