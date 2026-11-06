@@ -314,12 +314,20 @@ mod tests {
     }
 
     async fn free_port() -> u16 {
-        tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port()
+        // Unlike ordinary socket fixtures, this test releases and rebinds its port.
+        // Keep it below the OS ephemeral range so concurrent tests' outgoing
+        // connections cannot claim the port in between. Allocate once per test.
+        static NEXT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(20000);
+        loop {
+            let port = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            assert!(port < 30000, "No restart fixture port available");
+            if tokio::net::TcpListener::bind(("127.0.0.1", port))
+                .await
+                .is_ok()
+            {
+                return port;
+            }
+        }
     }
 
     fn registration(port: u16, target: &str) -> Registration {
@@ -466,13 +474,50 @@ mod tests {
         second.id = "other-app".into();
         state.artifact_proxies.add(second, &state).await.unwrap();
         assert_eq!(state.artifact_proxies.0.lock().await.running.len(), 2);
+        // A restarted process drops its connections too. Do not reuse a pooled
+        // connection to the old listener when checking the restored proxy.
+        drop(client);
         // Abort and await the listeners so their ports are free before restoring.
         for (_, running) in std::mem::take(&mut state.artifact_proxies.0.lock().await.running) {
             running.task.abort();
             let _ = running.task.await;
+            // Axum spawns connection tasks; aborting its accept task signals their
+            // shutdown but does not await it. Wait for actual socket release,
+            // which a real process restart guarantees before a new relay starts.
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    match tokio::net::TcpListener::bind((
+                        "127.0.0.1",
+                        running.registration.listen_port,
+                    ))
+                    .await
+                    {
+                        Ok(listener) => {
+                            drop(listener);
+                            break;
+                        },
+                        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+                            tokio::time::sleep(Duration::from_millis(1)).await
+                        },
+                        Err(error) => panic!("Cannot release proxy fixture: {error}"),
+                    }
+                }
+            })
+            .await
+            .expect("Old proxy connections did not release their port");
         }
         state.artifact_proxies.restore(path, &state).await;
-        assert_eq!(state.artifact_proxies.0.lock().await.running.len(), 2);
+        let client = Host::new(super::super::super::tests::config(&format!(
+            "http://127.0.0.1:{}",
+            reg.listen_port
+        )))
+        .unwrap();
+        assert_eq!(
+            state.artifact_proxies.0.lock().await.running.len(),
+            2,
+            "{}",
+            logs::local()
+        );
         assert_eq!(
             client
                 .raw_request(Method::GET, "/", Bytes::new(), "", None)
