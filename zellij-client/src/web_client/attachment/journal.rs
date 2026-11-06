@@ -98,6 +98,13 @@ impl Journal {
         );
         Ok(true)
     }
+    pub fn delivery_failed(&mut self, dispatched: bool, error: String) {
+        // Fenced work can still be sitting in the actor queue after resume.
+        // Reject it to that transport without poisoning the retained owner.
+        if dispatched {
+            self.failure = Some(error);
+        }
+    }
     pub fn input_ack(&self) -> u64 {
         self.input.as_ref().map_or(0, |i| i.seq)
     }
@@ -159,5 +166,22 @@ mod tests {
         assert!(j.failure.is_some());
         assert_eq!(j.output.len(), 1);
         assert!(j.resume(0, "first", 0).is_err());
+    }
+    #[test]
+    fn switchboard_attachment_queued_stale_delivery_does_not_poison_resume() {
+        let mut j = Journal::default();
+        j.resume(0, "old", 0).unwrap();
+        let queued = Input {
+            seq: 1,
+            channel: "terminal".into(),
+            data: "once".into(),
+        };
+        j.resume(1, "new", 0).unwrap();
+        let error = j.accepts(1, &queued).unwrap_err();
+        j.delivery_failed(false, error.to_string());
+        assert!(j.failure.is_none());
+        assert!(j.accepts(2, &queued).unwrap());
+        j.delivery_failed(true, "IPC failed after dispatch".into());
+        assert!(j.accepts(2, &queued).is_err());
     }
 }
