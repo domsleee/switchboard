@@ -92,3 +92,17 @@ test('image clicks open a carousel with relative images, keys, wraparound, error
   await page.waitForFunction(()=>document.querySelector('#image-gallery [role="status"]').textContent.includes('Could not load'));
   assert.equal(await gallery.getByRole('button',{name:'Next image'}).isDisabled(),true);
 }));
+test('a queued close event cannot clear a reopened carousel', {skip:!enabled},()=>fixture(async({page})=>{
+  const state=await page.evaluate(async()=>{
+    await window.SwitchboardOpenImages('linux','/tmp/first.png');
+    const dialog=document.querySelector('#image-gallery');
+    const closed=new Promise(resolve=>dialog.addEventListener('close',resolve,{once:true}));
+    dialog.querySelector('.gallery-close').click();
+    const reopened=window.SwitchboardOpenImages('linux','/tmp/second.png',[{path:'/tmp/second.png'},{path:'/tmp/third.png'}]);
+    await closed;await reopened;
+    return {open:dialog.open,src:dialog.querySelector('img').getAttribute('src'),count:dialog.querySelector('.gallery-count').textContent};
+  });
+  assert.deepEqual(state,{open:true,src:'/api/hosts/linux/file?path=%2Ftmp%2Fsecond.png',count:'1 / 2'});
+  await page.getByRole('button',{name:'Next image'}).click();
+  assert.equal(await page.locator('#image-gallery img').getAttribute('alt'),'/tmp/third.png');
+}));

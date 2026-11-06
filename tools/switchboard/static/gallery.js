@@ -8,11 +8,13 @@
     dialog.setAttribute('aria-label','Image carousel');
     dialog.innerHTML='<header><span class="gallery-count" aria-live="polite"></span><span class="gallery-path"></span><a target="_blank" rel="noopener noreferrer">Open original</a><button type="button" class="gallery-close" aria-label="Close image carousel">✕</button></header><div class="gallery-stage"><button type="button" class="gallery-prev" aria-label="Previous image">‹</button><div class="gallery-image"><img alt=""><p role="status"></p></div><button type="button" class="gallery-next" aria-label="Next image">›</button></div><footer>← → to browse · Escape to close</footer>';
     document.body.append(dialog);
-    dialog.querySelector('.gallery-close').onclick=()=>dialog.close();
+    dialog.querySelector('.gallery-close').onclick=close;
     dialog.querySelector('.gallery-prev').onclick=()=>step(-1);
     dialog.querySelector('.gallery-next').onclick=()=>step(1);
-    dialog.addEventListener('click',event=>{if(event.target===dialog)dialog.close();});
-    dialog.addEventListener('close',()=>{version++;dialog.querySelector('img').removeAttribute('src');items=[];previousFocus?.focus();});
+    dialog.addEventListener('click',event=>{if(event.target===dialog)close();});
+    dialog.addEventListener('cancel',event=>{event.preventDefault();close();});
+    // Native close events are queued. An older event may arrive after a new gallery opens.
+    dialog.addEventListener('close',()=>{if(!dialog.open&&previousFocus)finishClose();});
     let touch;
     dialog.addEventListener('touchstart',event=>{if(event.touches.length===1)touch={x:event.touches[0].clientX,y:event.touches[0].clientY};},{passive:true});
     dialog.addEventListener('touchend',event=>{
@@ -20,6 +22,16 @@
       const dx=event.changedTouches[0].clientX-touch.x,dy=event.changedTouches[0].clientY-touch.y;touch=null;
       if(Math.abs(dx)>60&&Math.abs(dx)>Math.abs(dy)*1.5)step(dx<0?1:-1);
     },{passive:true});
+  }
+  function finishClose(){
+    version++;
+    const image=dialog.querySelector('img');image.onload=image.onerror=null;image.removeAttribute('src');
+    items=[];
+    const focus=previousFocus;previousFocus=null;focus?.focus();
+  }
+  function close(){
+    if(!dialog?.open)return;
+    dialog.close();finishClose();
   }
   function step(direction){if(items.length>1){index=(index+direction+items.length)%items.length;show();}}
   function show(){
@@ -59,7 +71,7 @@
     if(!dialog?.open||!items.length||event.altKey||event.ctrlKey||event.metaKey)return;
     if(!['Escape','ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;
     event.preventDefault();event.stopImmediatePropagation();
-    if(event.key==='Escape')dialog.close();
+    if(event.key==='Escape')close();
     else if(event.key==='Home'||event.key==='End'){index=event.key==='Home'?0:items.length-1;show();}
     else step(event.key==='ArrowLeft'?-1:1);
   },true);
