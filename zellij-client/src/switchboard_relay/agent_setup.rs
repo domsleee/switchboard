@@ -867,6 +867,7 @@ fn describe(agent: Agent) -> Value {
         "state": if setup.running { "running" } else { check.state },
         "detail": if setup.running { "Setting up…".to_string() } else { check.detail },
         "lastReport": report,
+        "skills": if agent == Agent::Codex && check.state != "absent" { skill_health::codex(&dir, &home()) } else { Value::Null },
         "setupError": setup.error,
         "setupFinished": setup.finished,
     })
