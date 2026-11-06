@@ -50,6 +50,8 @@ test('Update tasks show per computer, flag failures and changes in the sidebar, 
     const computers=page.locator('#updates .task-computer');
     assert.deepEqual(await computers.locator('h4').allTextContents(),['Mac','Dom-PC','Old PC']);
     assert.equal(await computers.nth(2).locator('.log-note').textContent(),"Update tasks unavailable on this computer's version");
+    await computers.nth(0).locator('.computer-summary').click();
+    await computers.nth(1).locator('.computer-summary').click();
     const mac=computers.nth(0).locator('.task-group');
     assert.equal(await mac.nth(0).locator('.task-state').textContent(),'agent plugins: codex failed');
     assert.match(await mac.nth(0).locator('.task-title small').textContent(),/^every 6h · next in 3h$/);
@@ -139,6 +141,7 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
     await page.locator('#settings').click();await page.getByRole('tab',{name:'Health'}).click();
     const groups=page.locator('#updates .switchboard-group');
     await page.waitForFunction(()=>document.querySelectorAll('#updates .switchboard-group').length===4);
+    for(const summary of await page.locator('.computer-summary').all())await summary.click();
     const [mac,pc,linux,laptop]=[groups.nth(0),groups.nth(1),groups.nth(2),groups.nth(3)];
 
     // Anything needing the user opens its group and names it in the summary.
@@ -165,7 +168,7 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
     assert.equal(await pc.locator('.task-row').first().locator('.task-meta').textContent(),'off');
     assert.equal(await pc.locator('.agent-row').count(),1,'agents that are not installed are left out');
     assert.equal(await pc.locator('.agent-row .task-tail').textContent(),'Could not save hooks.json: denied');
-    assert.equal(await linux.locator('.task-state').textContent(),'All set');
+    assert.equal(await linux.locator('.task-state').textContent(),'Update status unknown');
     assert.equal(await linux.locator('.task-row').first().locator('.task-meta').textContent(),'unknown on this build');
     assert.equal(await linux.locator('.agent-none').textContent(),'No Claude Code, Copilot CLI or Codex on this computer');
     assert.equal(await page.locator('#updates .task-computer').nth(3).locator('.log-note').first().textContent(),'Update Switchboard on this computer to check its agents');
@@ -267,6 +270,85 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
     await laptop.getByRole('button',{name:'Update now'}).click();
     await page.waitForFunction(()=>document.querySelectorAll('#updates .switchboard-group').length===4);
     assert.deepEqual(updates,[{host:'mesh-laptop'}]);
+    assert.deepEqual(errors,[]);
+  }finally{await browser.close();}
+});
+
+test('Bulk Health runs skip ineligible groups, retain failures, and retry only failed groups',
+  {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
+  const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch({headless:true});
+  try{
+    const page=await browser.newPage({viewport:{width:390,height:844}}),actions=[],errors=[];
+    page.on('pageerror',e=>errors.push(e.message));
+    const group=(name,extra={})=>({name,enabled:true,paused:false,running:false,status:'ok',every:'12h',lastStart:1,lastEnd:2,tasks:[],...extra});
+    const computers=[
+      {name:'Mac',local:true,switchboard:{commit:'a',automaticUpdates:true},groups:[group('dotfiles'),group('paused',{paused:true}),group('disabled',{enabled:false}),group('busy',{running:true,status:'running'})]},
+      {name:'Linux',host:'linux',switchboard:{commit:'a',automaticUpdates:true},groups:[group('dotfiles')]},
+      {name:'Offline',host:'offline',error:'Computer offline',groups:[group('dotfiles')]}
+    ];
+    let rejectLinux=true,holdMac;
+    const gate=new Promise(resolve=>holdMac=resolve);
+    await page.route('**/*',async route=>{
+      const request=route.request(),path=new URL(request.url()).pathname;
+      const json=(v,status=200)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(v)});
+      if(path==='/api/tasks')return json({computers});
+      if(path==='/api/tasks/action'){
+        const body=JSON.parse(request.postData());actions.push(body);
+        if(body.host==='linux'&&rejectLinux)return json({error:'Update service unavailable'},503);
+        if(!body.host)await gate;
+        const c=computers.find(c=>(c.host||'')===(body.host||'')),g=c.groups.find(g=>g.name===body.group);
+        g.lastStart+=10;g.running=true;g.status='running';return json({ok:true});
+      }
+      if(path==='/tasks.js'||path==='/style.css')return route.fulfill({contentType:path.endsWith('.js')?'text/javascript':'text/css',body:fs.readFileSync(__dirname+'/static'+path,'utf8')});
+      return route.fulfill({contentType:'text/html',body:'<meta charset="utf-8"><link rel="stylesheet" href="/style.css"><div id="panel-health"><div class="settings-heading health-heading"><p id="health-summary"></p><div class="health-actions"><button id="refresh-updates">Refresh</button><button id="run-all-tasks">Run all tasks</button></div></div><div id="health-batch" hidden></div><div id="updates"></div><div id="status-message"></div></div><script src="/tasks.js"></script>'});
+    });
+    await page.addInitScript(()=>{window.fixtureIntervals=[];window.setInterval=(fn,ms)=>{window.fixtureIntervals.push(ms);return window.fixtureIntervals.length};});
+    await page.goto('https://health.test/');
+    await page.locator('#run-all-tasks').click();
+    assert.equal(await page.locator('#run-all-tasks').isDisabled(),true);
+    assert.equal(await page.locator('.computer-run').first().isDisabled(),true);
+    holdMac();
+    await page.waitForFunction(()=>document.getElementById('health-batch').textContent.includes('Update service unavailable'));
+    assert.deepEqual(actions,[{group:'dotfiles',action:'run'},{group:'dotfiles',action:'run',host:'linux'}]);
+    assert.match(await page.locator('#health-batch').textContent(),/1\/2 task groups finished/);
+    assert.equal(await page.evaluate(()=>fixtureIntervals.includes(2000)),true,'running tasks poll promptly');
+    // Refreshing old results or losing contact must not pretend an accepted run finished.
+    computers[0].error='Connection lost';
+    await page.evaluate(()=>SwitchboardTasks.load());
+    assert.equal(await page.locator('#run-all-tasks').isDisabled(),true);
+    assert.match(await page.locator('#health-batch').textContent(),/Connection lost/);
+    delete computers[0].error;
+    Object.assign(computers[0].groups[0],{running:false,status:'failed',summary:'Update failed',lastEnd:20});
+    await page.evaluate(()=>SwitchboardTasks.load());
+    assert.match(await page.locator('#health-batch').textContent(),/2\/2 task groups finished · 2 need attention/);
+    // Retrying an eligible failure must retain another computer's disconnected failure.
+    computers[1].error='Computer offline';
+    await page.evaluate(()=>SwitchboardTasks.load());
+    await page.getByRole('button',{name:'Retry failed'}).click();
+    await page.waitForFunction(()=>document.querySelectorAll('.task-computer')[0].querySelector('.task-group:not(.switchboard-group)').dataset.status==='running');
+    assert.equal(actions.length,3);
+    assert.equal(actions.at(-1).host,undefined);
+    assert.match(await page.locator('#health-batch').textContent(),/Linux.*Update service unavailable/);
+    Object.assign(computers[0].groups[0],{running:false,status:'ok',summary:'',lastEnd:25});
+    await page.evaluate(()=>SwitchboardTasks.load());
+    assert.match(await page.locator('#health-batch').textContent(),/2\/2 task groups finished · 1 need attention/);
+    assert.equal(await page.getByRole('button',{name:'Retry failed'}).isDisabled(),true);
+    delete computers[1].error;
+    await page.evaluate(()=>SwitchboardTasks.load());
+    rejectLinux=false;
+    await page.getByRole('button',{name:'Retry failed'}).click();
+    await page.waitForFunction(()=>document.querySelectorAll('.task-computer')[1].querySelector('.task-group:not(.switchboard-group)').dataset.status==='running');
+    assert.deepEqual(actions.at(-1),{group:'dotfiles',action:'run',host:'linux'});
+    assert.equal(actions.length,4);
+    Object.assign(computers[1].groups[0],{running:false,status:'changed',summary:'dotfiles: 1 new commits not pulled, local changes',lastEnd:30});
+    await page.evaluate(()=>SwitchboardTasks.load());
+    assert.match(await page.locator('#health-batch').textContent(),/Update blocked by local changes/);
+    assert.match(await page.locator('.computer-state').nth(1).textContent(),/Update blocked by local changes/);
+    // Native details is keyboard operable and polling retains the user's expansion.
+    await page.locator('.computer-summary').nth(1).focus();await page.keyboard.press('Enter');
+    await page.evaluate(()=>SwitchboardTasks.load());
+    assert.equal(await page.locator('.task-computer').nth(1).getAttribute('open'),'');
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
     assert.deepEqual(errors,[]);
   }finally{await browser.close();}
 });
