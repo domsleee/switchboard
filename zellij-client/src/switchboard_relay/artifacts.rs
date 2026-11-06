@@ -1133,6 +1133,7 @@ mod tests {
         peer.id = format!("mesh-{}", "ab".repeat(32));
         let mut relay = super::super::state(
             &RelayConfig {
+                browser_origin: None,
                 hosts: vec![],
                 artifact_proxy: None,
             },
@@ -1243,6 +1244,7 @@ mod tests {
         peer.name = "1WN9PD4".into();
         let mut relay = super::super::state(
             &RelayConfig {
+                browser_origin: None,
                 hosts: vec![],
                 artifact_proxy: None,
             },

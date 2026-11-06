@@ -1402,6 +1402,8 @@ echo [{"id":1,"tab_id":4,"tab_position":0,"tab_name":"T","title":"x","pane_comma
             artifact: None,
             askpass: Default::default(),
             html_previews: Default::default(),
+            push: None,
+            browser_origin: None,
         };
         let mut poll = PollState::default();
         publish(&state, &poll);
@@ -1706,6 +1708,8 @@ esac
             artifact: None,
             askpass: Default::default(),
             html_previews: Default::default(),
+            push: None,
+            browser_origin: None,
         };
         let send = |event: Value, pane: Option<&str>| {
             let mut headers = HeaderMap::new();
@@ -1798,6 +1802,8 @@ esac
             artifact: None,
             askpass: Default::default(),
             html_previews: Default::default(),
+            push: None,
+            browser_origin: None,
         };
         let send = |agent: &str, event: Value| {
             let mut headers = HeaderMap::new();

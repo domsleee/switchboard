@@ -115,18 +115,24 @@ pub(super) fn record(source: &str, message: &str) {
 
 /// Write `data` readable only by this user, replacing `path` atomically.
 pub(super) async fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    let mut temp = path.as_os_str().to_owned();
-    temp.push(".tmp");
-    tokio::fs::write(&temp, data).await?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        tokio::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600)).await?;
-    }
-    tokio::fs::rename(&temp, path).await
+    let path = path.to_owned();
+    let data = data.to_vec();
+    tokio::task::spawn_blocking(move || {
+        use std::io::Write;
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        std::fs::create_dir_all(parent)?;
+        // NamedTempFile creates a unique file with mode 0600 on Unix, before any
+        // secrets are written. Never reuse a predictable, possibly public .tmp.
+        let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+        temp.write_all(&data)?;
+        temp.persist(&path).map_err(|error| error.error)?;
+        Ok(())
+    })
+    .await
+    .map_err(std::io::Error::other)?
 }
 
 /// Restore saved failures, then save changes every few seconds.
@@ -924,6 +930,34 @@ pub(super) async fn modified_enter(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn switchboard_private_writes_do_not_reuse_preexisting_temporary_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("push.json");
+        let stale = dir.path().join("push.json.tmp");
+        std::fs::write(&stale, b"unrelated public file").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stale, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        write_private(&path, b"private push keys").await.unwrap();
+        write_private(&path, b"replacement private keys")
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"replacement private keys");
+        assert_eq!(std::fs::read(&stale).unwrap(), b"unrelated public file");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
     #[test]
     fn clipboard_diagnostics_reject_contents_and_arbitrary_errors() {
         let sample = json!({"host":"mac", "outcome":"drag", "chars":0, "attempt":0,
@@ -995,6 +1029,7 @@ mod tests {
         use tower::ServiceExt;
         let app = router(
             RelayConfig {
+                browser_origin: None,
                 hosts: vec![super::super::tests::config("http://127.0.0.1:8082")],
                 artifact_proxy: None,
             },
@@ -1346,6 +1381,7 @@ mod tests {
         use tower::ServiceExt;
         let app = router(
             RelayConfig {
+                browser_origin: None,
                 hosts: vec![super::super::tests::config("http://127.0.0.1:8082")],
                 artifact_proxy: None,
             },
@@ -1586,6 +1622,7 @@ mod tests {
         use tower::ServiceExt;
         let app = router(
             RelayConfig {
+                browser_origin: None,
                 hosts: vec![],
                 artifact_proxy: None,
             },
@@ -1733,6 +1770,7 @@ mod tests {
         record("test-host", "Remote control unavailable for api test");
         use tower::ServiceExt;
         let config = RelayConfig {
+            browser_origin: None,
             hosts: vec![],
             artifact_proxy: None,
         };
