@@ -73,6 +73,8 @@ test('a fresh page uses the relay catalog when a host scan is unavailable',async
 test('native panes recover a cold catalog and reconcile pane keys with stable tab IDs',async()=>{
   const {context,windows,other,mac}=monitorContext();
   Object.assign(context,{ready:{},hidden:{},tabOrder:[],saveReady(){},localStorage:{setItem(){}}});
+  context.pinned={};
+  vm.runInContext(source.slice(source.indexOf('function isPinned('),source.indexOf('// Tabs in the Hidden')),context);
   vm.runInContext(source.slice(source.indexOf('function sessionKey('),source.indexOf('function attentionKey(')),context);
   context.tabCatalog=[];windows.catalog=[];other.catalog=[];mac.catalog=[];
   windows.state={session_name:'main',tabs:[{position:0,name:'First'},{position:1,name:'Second'}],
@@ -195,7 +197,7 @@ test('headless browser keeps iframe, selection, URL and input focus through fail
         </script>`});
       }
       const file=pathname==='/'?'index.html':pathname.slice(1);
-      if(!['index.html','app.js','bridge.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
+      if(!['index.html','app.js','bridge.js','close.js','titles.js','style.css','conversation.js','conversation.css'].includes(file))return route.fulfill({status:404,body:''});
       return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
     });
     const requested='https://switchboard.test/?host=windows&session=main&tab=42';
@@ -204,6 +206,25 @@ test('headless browser keeps iframe, selection, URL and input focus through fail
     await page.evaluate(()=>{window.originalFrame=document.querySelector('iframe.active');});
     const input=page.frameLocator('iframe[title="Windows: main"]').locator('#terminal-input');
     await input.fill('typed before failure');
+    // Transcript focus must never type into the covered native terminal.
+    await page.getByRole('button',{name:'Conversation',exact:true}).click();
+    await page.evaluate(()=>activate(allTabs().find(item=>item.entry.host==='mac')));
+    await page.waitForTimeout(100); // Allow the real bridge's focus acknowledgement to arrive.
+    assert.equal(await page.evaluate(()=>!!document.activeElement.closest('.conversation-panel')),true);
+    await page.locator('#tab-search').fill('mac');await page.locator('#tab-search').press('Enter');
+    await page.waitForTimeout(100);
+    assert.equal(await page.evaluate(()=>!!document.activeElement.closest('.conversation-panel')),true);
+    await page.keyboard.type('not terminal input');
+    assert.equal(await page.locator('.conversation-panel').isVisible(),true);
+    assert.equal(await page.frameLocator('iframe[title="Mac: main"]').locator('#terminal-input').inputValue(),'');
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(()=>document.activeElement===document.querySelector('iframe[title="Mac: main"]'));
+    assert.equal(await page.locator('.conversation-panel').isVisible(),false);
+    assert.equal(await page.frameLocator('iframe[title="Mac: main"]').locator('#terminal-input').inputValue(),'');
+    await page.locator('#tab-search').fill('');
+    await page.evaluate(()=>activate(allTabs().find(item=>item.entry.host==='windows')));
+    await page.waitForFunction(()=>document.activeElement===document.querySelector('iframe[title="Windows: main"]'));
+
     async function unchanged(){
       assert.equal(page.url(),requested);
       assert.deepEqual(await page.evaluate(()=>({same:originalFrame===document.querySelector('iframe.active'),focused:document.activeElement===originalFrame&&originalFrame.contentDocument.activeElement.id==='terminal-input',selection:document.querySelector('#tabs .selected')?._item.key,value:originalFrame.contentDocument.querySelector('input').value})),

@@ -49,7 +49,13 @@ pub async fn ws_handler_control(
         );
         return StatusCode::FORBIDDEN.into_response();
     }
-    ws.on_upgrade(move |socket| handle_ws_control(socket, params, state))
+    let Ok(viewer) = crate::switchboard_viewers::viewer() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    ws.on_upgrade(move |socket| async move {
+        let _viewer = viewer;
+        handle_ws_control(socket, params, state).await
+    })
 }
 
 pub async fn ws_handler_terminal(
@@ -58,9 +64,13 @@ pub async fn ws_handler_terminal(
     Query(params): Query<TerminalParams>,
     State(state): State<AppState>,
     axum::Extension(session_token_hash): axum::Extension<SessionTokenHash>,
-) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| {
-        handle_ws_terminal(socket, session_name, params, state, session_token_hash)
+) -> Response {
+    let Ok(viewer) = crate::switchboard_viewers::viewer() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    ws.on_upgrade(move |socket| async move {
+        let _viewer = viewer;
+        handle_ws_terminal(socket, session_name, params, state, session_token_hash).await
     })
 }
 
@@ -371,6 +381,48 @@ fn elevated_shell(default_shell: Option<PathBuf>) -> RunCommandAction {
     }
 }
 
+// Run through the configured shell so interactive aliases and functions are available.
+fn tab_command(
+    default_shell: Option<PathBuf>,
+    command: String,
+    cwd: Option<PathBuf>,
+    elevated: bool,
+) -> RunCommandAction {
+    let shell = default_shell
+        .or_else(|| std::env::var_os("SHELL").map(PathBuf::from))
+        .or_else(|| std::env::var_os("COMSPEC").map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("/bin/sh"));
+    let name = shell
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_ascii_lowercase();
+    let args = match name.as_str() {
+        "nu" => vec!["--interactive".into(), "--execute".into(), command],
+        "pwsh" | "powershell" => vec!["-NoExit".into(), "-Command".into(), command],
+        "cmd" => vec!["/K".into(), command],
+        _ => vec!["-ic".into(), command],
+    };
+    let (command, args) = if elevated {
+        (
+            elevator(),
+            std::iter::once(shell.to_string_lossy().into_owned())
+                .chain(args)
+                .collect(),
+        )
+    } else {
+        (shell, args)
+    };
+    RunCommandAction {
+        command,
+        args,
+        cwd,
+        hold_on_close: true,
+        use_terminal_title: true,
+        ..Default::default()
+    }
+}
+
 // Services started before gsudo was installed keep a PATH without it, and new
 // tabs inherit that PATH, so prefer winget's default install location.
 fn elevator() -> PathBuf {
@@ -432,7 +484,24 @@ fn control_payload_to_server_msg(
                 is_cli_client: false,
             }
         },
-        WebClientToWebServerControlMessagePayload::NewTab { elevated } => {
+        WebClientToWebServerControlMessagePayload::NewTab {
+            elevated,
+            project,
+            command,
+        } => {
+            let cwd = project
+                .filter(|p| !p.trim().is_empty())
+                .and_then(|p| std::env::home_dir().map(|home| home.join("git").join(p)));
+            let initial_panes = if command.as_ref().is_some_and(|c| !c.trim().is_empty()) {
+                Some(vec![CommandOrPlugin::Command(tab_command(
+                    default_shell,
+                    command.unwrap(),
+                    cwd.clone(),
+                    elevated,
+                ))])
+            } else {
+                elevated.then(|| vec![CommandOrPlugin::Command(elevated_shell(default_shell))])
+            };
             ClientToServerMsg::Action {
                 action: Action::NewTab {
                     tiled_layout: None,
@@ -442,9 +511,8 @@ fn control_payload_to_server_msg(
                     // The sidebar marks tabs with this name as elevated.
                     tab_name: elevated.then(|| "Administrator".to_owned()),
                     should_change_focus_to_new_tab: true,
-                    cwd: None,
-                    initial_panes: elevated
-                        .then(|| vec![CommandOrPlugin::Command(elevated_shell(default_shell))]),
+                    cwd,
+                    initial_panes,
                     first_pane_unblock_condition: None,
                 },
                 terminal_id: None,
@@ -619,8 +687,74 @@ mod tests {
             serde_json::from_value(raw).expect("parse");
         assert!(matches!(
             parsed.payload,
-            WebClientToWebServerControlMessagePayload::NewTab { elevated: false }
+            WebClientToWebServerControlMessagePayload::NewTab {
+                elevated: false,
+                project: None,
+                command: None
+            }
         ));
+    }
+
+    #[test]
+    fn new_tab_project_and_alias_run_in_the_configured_shell() {
+        for elevated in [false, true] {
+            let payload = serde_json::from_value(serde_json::json!({
+                "type": "NewTab", "project": "switchboard", "command": "castra", "elevated": elevated
+            })).unwrap();
+            let Some(ClientToServerMsg::Action {
+                action:
+                    Action::NewTab {
+                        cwd,
+                        initial_panes: Some(panes),
+                        ..
+                    },
+                ..
+            }) = control_payload_to_server_msg(payload, Some(PathBuf::from("nu")))
+            else {
+                panic!("expected a command tab")
+            };
+            let expected = std::env::home_dir()
+                .unwrap()
+                .join("git")
+                .join("switchboard");
+            assert_eq!(cwd, Some(expected.clone()));
+            let [CommandOrPlugin::Command(run)] = panes.as_slice() else {
+                panic!("expected one pane")
+            };
+            assert_eq!(run.cwd, Some(expected));
+            assert_eq!(
+                run.command,
+                if elevated {
+                    elevator()
+                } else {
+                    PathBuf::from("nu")
+                }
+            );
+            let mut args = vec!["--interactive", "--execute", "castra"];
+            if elevated {
+                args.insert(0, "nu");
+            }
+            assert_eq!(run.args, args);
+            assert!(run.hold_on_close && run.use_terminal_title);
+        }
+    }
+
+    #[test]
+    fn new_tab_shell_arguments_keep_the_command_intact() {
+        for (shell, flags) in [
+            ("zsh", vec!["-ic"]),
+            ("pwsh.exe", vec!["-NoExit", "-Command"]),
+            ("cmd.exe", vec!["/K"]),
+        ] {
+            let run = tab_command(
+                Some(PathBuf::from(shell)),
+                "csol 'some prompt'".into(),
+                None,
+                false,
+            );
+            assert_eq!(&run.args[..run.args.len() - 1], flags.as_slice());
+            assert_eq!(run.args.last().unwrap(), "csol 'some prompt'");
+        }
     }
 
     #[test]

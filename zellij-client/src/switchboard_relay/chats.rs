@@ -50,6 +50,8 @@ struct Chat {
     project: String,
     messages: Vec<Value>,
     partial: bool,
+    muse_deliveries: std::collections::HashSet<String>,
+    embedded_bytes: usize,
 }
 fn clip(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
@@ -89,6 +91,88 @@ impl Chat {
         self.messages
             .push(json!({"role":role,"text":text,"timestamp":timestamp}));
     }
+    // Only explicit user/assistant content parts, never tool output or reasoning.
+    fn push_parts(&mut self, role: &str, parts: &Value, timestamp: Value) {
+        if !matches!(role, "user" | "assistant") {
+            return;
+        }
+        let mut attachments = Vec::new();
+        for part in parts.as_array().into_iter().flatten() {
+            let kind = part["type"].as_str().unwrap_or_default();
+            if !matches!(
+                kind,
+                "image" | "input_image" | "image_url" | "local_image" | "video" | "input_video"
+            ) {
+                continue;
+            }
+            if attachments.len() == 8 {
+                self.partial = true;
+                break;
+            }
+            let mut item = json!({"kind":if kind.contains("video") {"video"} else {"image"},"name":clip(part["name"].as_str().unwrap_or("Attachment"),120)});
+            let source = &part["source"];
+            let reference = part["path"]
+                .as_str()
+                .or_else(|| part["image_url"].as_str())
+                .or_else(|| part["image_url"]["url"].as_str())
+                .or_else(|| part["video_url"].as_str())
+                .or_else(|| source["url"].as_str());
+            let embedded = if source["type"] == "base64" {
+                Some(format!(
+                    "data:{};base64,{}",
+                    source["media_type"].as_str().unwrap_or(""),
+                    source["data"].as_str().unwrap_or("")
+                ))
+            } else {
+                reference
+                    .filter(|r| r.starts_with("data:"))
+                    .map(str::to_owned)
+            };
+            if let Some(data) = embedded {
+                let supported = ["image/png", "image/jpeg", "image/webp", "image/gif"]
+                    .iter()
+                    .any(|mime| data.starts_with(&format!("data:{mime};base64,")));
+                if supported && self.embedded_bytes + data.len() <= 2 * 1024 * 1024 {
+                    use base64::Engine;
+                    let valid = data.split_once(',').is_some_and(|(_, body)| {
+                        base64::engine::general_purpose::STANDARD
+                            .decode(body)
+                            .is_ok()
+                    });
+                    if valid {
+                        self.embedded_bytes += data.len();
+                        item["url"] = json!(data);
+                    } else {
+                        item["unavailable"] = json!("Invalid embedded image");
+                    }
+                } else {
+                    item["unavailable"] = json!(
+                        "Embedded attachment exceeds preview limits or uses an unsupported format"
+                    );
+                }
+            } else if let Some(reference) = reference.filter(|r| r.len() <= 4096) {
+                item["url"] = json!(reference);
+            } else {
+                item["unavailable"] =
+                    json!("The transcript did not retain a previewable attachment");
+            }
+            attachments.push(item);
+        }
+        let text = content(parts);
+        let before = self.messages.len();
+        self.push(
+            role,
+            if text.trim().is_empty() && !attachments.is_empty() {
+                "[Attachment]".into()
+            } else {
+                text
+            },
+            timestamp,
+        );
+        if self.messages.len() > before && !attachments.is_empty() {
+            self.messages.last_mut().unwrap()["attachments"] = json!(attachments);
+        }
+    }
     fn record(&mut self, v: &Value, depth: usize) {
         if depth > 2 {
             self.partial = true;
@@ -127,6 +211,20 @@ impl Chat {
                     Some("started") => {
                         self.push("user", content(&e["prompt"]), v["recorded_at"].clone())
                     },
+                    // Accepted intents and queued records describe the same input;
+                    // include only its delivered copy in the conversation.
+                    Some("inbox_item_drained")
+                        if e["delivery_snapshot"]["source"]["source"] == "user_steer" =>
+                    {
+                        let item = e["item_id"].as_str();
+                        if item.is_none_or(|id| self.muse_deliveries.insert(id.to_owned())) {
+                            self.push(
+                                "user",
+                                content(&e["delivery_snapshot"]["payload"]["prompt"]),
+                                v["recorded_at"].clone(),
+                            );
+                        }
+                    },
                     Some("assistant_message_committed") => {
                         self.push("assistant", content(&e["text"]), v["recorded_at"].clone())
                     },
@@ -147,9 +245,9 @@ impl Chat {
                     self.title = clip(title, 120);
                 }
                 if matches!(v["type"].as_str(), Some("user" | "assistant")) {
-                    self.push(
+                    self.push_parts(
                         v["type"].as_str().unwrap(),
-                        content(&v["message"]["content"]),
+                        &v["message"]["content"],
                         v["timestamp"].clone(),
                     );
                 }
@@ -162,11 +260,18 @@ impl Chat {
                 }
                 // event_msg duplicates these messages. Read only canonical response items.
                 if v["type"] == "response_item" && p["type"] == "message" {
-                    self.push(
+                    let before = self.messages.len();
+                    self.push_parts(
                         p["role"].as_str().unwrap_or_default(),
-                        content(&p["content"]),
+                        &p["content"],
                         v["timestamp"].clone(),
                     );
+                    if self.messages.len() > before
+                        && p["role"] == "assistant"
+                        && matches!(p["phase"].as_str(), Some("commentary" | "final"))
+                    {
+                        self.messages.last_mut().unwrap()["phase"] = p["phase"].clone();
+                    }
                 }
             },
             "copilot" => {
@@ -313,7 +418,18 @@ fn excerpt(text: &str, q: &str) -> String {
     let lower = text.to_lowercase();
     let at = lower
         .find(q)
-        .map(|i| lower[..i].chars().count())
+        .map(|byte_offset| {
+            // Lowercasing can expand a character (İ becomes i + combining dot).
+            // Map the matched lowercase byte back to its original character.
+            let mut lowered_bytes = 0;
+            chars
+                .iter()
+                .position(|c| {
+                    lowered_bytes += c.to_lowercase().map(char::len_utf8).sum::<usize>();
+                    lowered_bytes > byte_offset
+                })
+                .unwrap_or(chars.len())
+        })
         .unwrap_or(0)
         .min(chars.len());
     let start = at.saturating_sub(80);
@@ -348,11 +464,38 @@ fn add_result(chat: &Chat, p: &Params, results: &mut Vec<Value>) {
     }
     results.push(v);
 }
+// A small, inert Markdown event stream. The browser creates allowlisted DOM nodes;
+// neither transcript HTML nor provider-controlled attributes are inserted as HTML.
+fn markdown_events(source: &str) -> Vec<Value> {
+    use pulldown_cmark::{Event, Options, Parser, Tag};
+    Parser::new_ext(source, Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS).map(|event| match event {
+        Event::Start(tag) => match tag {
+            Tag::Link { dest_url, .. } => json!({"type":"start","tag":"a","url":dest_url.as_ref()}),
+            Tag::Image { dest_url, .. } => json!({"type":"start","tag":"image","url":dest_url.as_ref()}),
+            Tag::Heading { level, .. } => json!({"type":"start","tag":format!("{level}")}),
+            Tag::List(start) => json!({"type":"start","tag":if start.is_some(){"ol"}else{"ul"},"start":start}),
+            tag => json!({"type":"start","tag":match tag {
+                Tag::Paragraph=>"p",Tag::BlockQuote(_)=>"blockquote",Tag::CodeBlock(_)=>"pre",
+                Tag::Item=>"li",Tag::Emphasis=>"em",Tag::Strong=>"strong",Tag::Strikethrough=>"del",
+                Tag::Table(_)=>"table",Tag::TableHead=>"thead",Tag::TableRow=>"tr",Tag::TableCell=>"td",_=>"span"
+            }}),
+        },
+        Event::End(_)=>json!({"type":"end"}),
+        Event::Text(text)|Event::Html(text)|Event::InlineHtml(text)=>json!({"type":"text","text":text.as_ref()}),
+        Event::Code(text)=>json!({"type":"code","text":text.as_ref()}),
+        Event::SoftBreak=>json!({"type":"text","text":"\n"}),
+        Event::HardBreak=>json!({"type":"break"}),
+        Event::Rule=>json!({"type":"rule"}),
+        Event::TaskListMarker(done)=>json!({"type":"text","text":if done {"☑ "}else{"☐ "}}),
+        _=>json!({"type":"text","text":""}),
+    }).collect()
+}
+
 fn read_page(chat: &Chat, p: &Params) -> Value {
     let mut result = chat.summary();
     let page:Vec<_>=chat.messages.iter().skip(p.cursor).take(p.limit()).map(|m| {
         let text=m["text"].as_str().unwrap_or_default();
-        json!({"role":m["role"],"timestamp":m["timestamp"],"text":clip(text,4000),"truncated":text.chars().count()>4000})
+        json!({"role":m["role"],"timestamp":m["timestamp"],"text":clip(text,4000),"truncated":text.chars().count()>4000,"phase":m["phase"],"attachments":m["attachments"],"markdown":markdown_events(&clip(text,4000))})
     }).collect();
     let next = p.cursor.saturating_add(page.len());
     result["messages"] = json!(page);
@@ -444,6 +587,26 @@ fn opencode(path: &Path, p: &Params, id: Option<&str>) -> Value {
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )?;
         db.busy_timeout(Duration::from_millis(200))?;
+        // Newer storage families must never silently look like an empty legacy database.
+        let newer: i64 = db.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name='session_v2'",
+            [],
+            |r| r.get(0),
+        )?;
+        let mut newer_storage = newer > 0;
+        let has_messages: i64 = db.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name='session_message'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_messages > 0 {
+            let has_new: bool = db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM session_message LIMIT 1)",
+                [],
+                |r| r.get(0),
+            )?;
+            newer_storage |= has_new;
+        }
         let mut stmt =
             db.prepare("SELECT id,title,directory FROM session WHERE (?3 IS NULL OR id=?3) ORDER BY id LIMIT ?1 OFFSET ?2")?;
         let sessions = stmt.query_map(
@@ -466,7 +629,7 @@ fn opencode(path: &Path, p: &Params, id: Option<&str>) -> Value {
         )?;
         let mut results = Vec::new();
         let mut count = 0;
-        let mut partial = false;
+        let mut partial = newer_storage;
         let mut scanned_bytes = 0usize;
         for row in sessions {
             let (sid, title, project) = row?;
@@ -481,6 +644,7 @@ fn opencode(path: &Path, p: &Params, id: Option<&str>) -> Value {
                 agent: "opencode".into(),
                 title: clip(&title, 120),
                 project,
+                partial: newer_storage,
                 ..Chat::default()
             };
             let mut messages=db.prepare("SELECT json_extract(m.data,'$.role'),substr(json_extract(p.data,'$.text'),1,1048576),m.time_created,length(json_extract(p.data,'$.text')) FROM message m JOIN part p ON p.message_id=m.id WHERE m.session_id=?1 AND json_extract(p.data,'$.type')='text' AND coalesce(json_extract(p.data,'$.synthetic'),0)=0 AND coalesce(json_extract(p.data,'$.ignored'),0)=0 AND json_extract(m.data,'$.role') IN ('user','assistant') ORDER BY m.time_created,m.id,p.time_created,p.id LIMIT 50001")?;
@@ -512,29 +676,11 @@ fn opencode(path: &Path, p: &Params, id: Option<&str>) -> Value {
             }
         }
         if id.is_some() {
-            return Ok(json!({"error":"not_found"}));
+            return Ok(
+                json!({"error":if newer_storage {"unsupported_storage"} else {"not_found"}}),
+            );
         }
         let total: i64 = db.query_row("SELECT count(*) FROM session", [], |r| r.get(0))?;
-        // Newer storage families must never silently look like an empty legacy database.
-        let newer: i64 = db.query_row(
-            "SELECT count(*) FROM sqlite_master WHERE name='session_v2'",
-            [],
-            |r| r.get(0),
-        )?;
-        partial |= newer > 0;
-        let has_messages: i64 = db.query_row(
-            "SELECT count(*) FROM sqlite_master WHERE name='session_message'",
-            [],
-            |r| r.get(0),
-        )?;
-        if has_messages > 0 {
-            let has_new: bool = db.query_row(
-                "SELECT EXISTS(SELECT 1 FROM session_message LIMIT 1)",
-                [],
-                |r| r.get(0),
-            )?;
-            partial |= has_new;
-        }
         let next = p.cursor + count;
         Ok(
             json!({"agent":"opencode","status":if partial{"partial"}else{"ok"},"results":results,
@@ -710,6 +856,50 @@ mod tests {
         c
     }
     #[test]
+    fn switchboard_chats_media_parts_and_markdown_are_bounded_and_inert() {
+        let c = chat(
+            "claude",
+            vec![
+                json!({"type":"user","message":{"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGVsbG8="}}]}}),
+                json!({"type":"assistant","message":{"content":[{"type":"text","text":"**Result** ![shot](out/shot.png) [demo](out/demo.mp4) <script>bad()</script>"},{"type":"tool_use","input":{"type":"image","source":{"url":"secret.png"}}}]}}),
+            ],
+        );
+        assert_eq!(c.messages.len(), 2);
+        let page = read_page(&c, &Params::default());
+        assert_eq!(
+            page["messages"][0]["attachments"][0]["url"],
+            "data:image/png;base64,aGVsbG8="
+        );
+        assert!(page["messages"][1]["attachments"].is_null());
+        let markdown = page["messages"][1]["markdown"].as_array().unwrap();
+        assert!(markdown
+            .iter()
+            .any(|v| v["tag"] == "image" && v["url"] == "out/shot.png"));
+        assert!(markdown.iter().any(|v| v["tag"] == "strong"));
+        assert!(!markdown.iter().any(|v| v["tag"] == "script"));
+        let c = chat(
+            "codex",
+            vec![
+                json!({"type":"response_item","payload":{"type":"message","role":"user","content":[
+                    {"type":"local_image","path":"C:\\work\\shot.png"},
+                    {"type":"input_image","image_url":"data:image/svg+xml;base64,aGVsbG8="},
+                    {"type":"input_image","image_url":"data:image/png;base64,INVALID!"}
+                ]}}),
+            ],
+        );
+        let attachments = &c.messages[0]["attachments"];
+        assert_eq!(attachments[0]["url"], "C:\\work\\shot.png");
+        assert!(attachments[1]["unavailable"].is_string());
+        assert!(attachments[2]["unavailable"].is_string());
+        let mut c = Chat {
+            agent: "claude".into(),
+            embedded_bytes: 2 * 1024 * 1024,
+            ..Chat::default()
+        };
+        c.record(&json!({"type":"user","message":{"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGVsbG8="}}]}}),0);
+        assert!(c.messages[0]["attachments"][0]["unavailable"].is_string());
+    }
+    #[test]
     fn switchboard_chats_readers_exclude_tools_reasoning_and_duplicate_events() {
         let c = chat(
             "claude",
@@ -728,11 +918,15 @@ mod tests {
                 json!({"type":"session_meta","payload":{"id":"x1","cwd":"/repo"}}),
                 json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"question"}]}}),
                 json!({"type":"event_msg","payload":{"type":"user_message","message":"question"}}),
-                json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}}),
+                json!({"type":"response_item","payload":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"answer"}]}}),
             ],
         );
         assert_eq!(c.messages.len(), 2);
         assert_eq!(c.session_id, "x1");
+        assert_eq!(
+            read_page(&c, &Params::default())["messages"][1]["phase"],
+            "commentary"
+        );
         let c = chat(
             "copilot",
             vec![
@@ -754,6 +948,53 @@ mod tests {
         assert_eq!(c.messages.len(), 2);
         assert_eq!(c.project, "/muse");
         assert_eq!(c.session_id, "m1");
+    }
+    #[test]
+    fn switchboard_chats_muse_inflight_followups_are_searchable_once() {
+        let delivery = json!({"recorded_at":3,"payload":{"kind":"run","event":{
+            "kind":"inbox_item_drained","item_id":"input-1","delivery_snapshot":{
+                "source":{"source":"user_steer"},"payload":{"prompt":"Check pairing on Windows too"}
+            }
+        }}});
+        let mut queued = delivery.clone();
+        queued["payload"]["event"]["kind"] = json!("inbox_item_queued");
+        let mut peer = delivery.clone();
+        peer["payload"]["event"]["item_id"] = json!("peer-1");
+        peer["payload"]["event"]["delivery_snapshot"]["source"]["source"] = json!("peer_message");
+        let c = chat(
+            "muse",
+            vec![
+                json!({"payload":{"kind":"run","event":{"kind":"started","prompt":"Fix reconnect"}}}),
+                json!({"payload_type":"runtime.user_intent.accepted","payload":{"refill_blocks":[{"kind":"text","text":"Check pairing on Windows too"}]}}),
+                queued,
+                delivery.clone(),
+                delivery,
+                peer,
+                json!({"payload":{"kind":"run","event":{"kind":"assistant_message_committed","text":"Done"}}}),
+            ],
+        );
+        assert_eq!(c.messages.len(), 3);
+        assert_eq!(c.messages[1]["text"], "Check pairing on Windows too");
+        assert_eq!(c.messages[1]["timestamp"], 3);
+        let p = Params {
+            q: "pairing".into(),
+            ..Params::default()
+        };
+        let mut hits = Vec::new();
+        add_result(&c, &p, &mut hits);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0]["message_cursor"], 1);
+        assert_eq!(
+            read_page(
+                &c,
+                &Params {
+                    cursor: 1,
+                    limit: Some(1),
+                    ..Params::default()
+                }
+            )["messages"][0]["role"],
+            "user"
+        );
     }
     #[test]
     fn switchboard_chats_search_read_pagination_and_coverage() {
@@ -816,6 +1057,9 @@ mod tests {
     }
     #[test]
     fn switchboard_chats_unicode_and_bounded_read() {
+        let expanded = format!("{}Needle{}", "İ".repeat(500), "x".repeat(1000));
+        assert!(excerpt(&expanded, "needle").contains("Needle"));
+
         let mut c = Chat::default();
         c.push("user", format!("{}Needle", "é".repeat(5000)), Value::Null);
         c.push("assistant", "reply".into(), Value::Null);
@@ -864,6 +1108,28 @@ mod tests {
         );
         assert_eq!(result["messages"].as_array().unwrap().len(), 1);
         assert_eq!(fs::read(&path).unwrap(), before);
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE session_message(id TEXT,session_id TEXT); INSERT INTO session_message VALUES('new','ses_1');").unwrap();
+        let result = local(
+            vec![("opencode", path.clone())],
+            &Params::default(),
+            Some("opencode-ses_1"),
+        );
+        assert_eq!(result["partial"], true);
+        db.execute_batch("DELETE FROM session_message; CREATE TABLE session_v2(id TEXT);")
+            .unwrap();
+        let result = local(
+            vec![("opencode", path.clone())],
+            &Params::default(),
+            Some("opencode-ses_1"),
+        );
+        assert_eq!(result["partial"], true);
+        let result = local(
+            vec![("opencode", path)],
+            &Params::default(),
+            Some("opencode-ses_new"),
+        );
+        assert_eq!(result["error"], "unsupported_storage");
     }
     #[test]
     #[ignore = "reads this account's installed agent histories; prints only coverage"]
@@ -915,6 +1181,7 @@ mod tests {
         use tower::ServiceExt;
         let app = router(
             RelayConfig {
+                browser_origin: None,
                 hosts: vec![],
                 artifact_proxy: None,
             },

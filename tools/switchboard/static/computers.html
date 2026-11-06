@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Computers · Switchboard</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="#111318"><title>Computers · Switchboard</title><link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/icon-192.png">
 <style>
 /* Matches the Settings panel this page is embedded in. */
 :root{color-scheme:dark;font:13px/1.5 system-ui,sans-serif;background:#111318;color:#e5e7eb;--line:#2b303b;--soft-line:#222731;--box:#151820;--muted:#9ba7bd;--dim:#8590a3;--ok:#6fbf86;--warn:#d9b44a;--bad:#e06c6c}
@@ -83,6 +83,19 @@ details{margin-top:12px}
 summary{cursor:pointer;color:var(--muted);font-size:12px}
 details[open]>summary{margin-bottom:10px}
 details .field+.field{margin-top:12px}
+@media(max-width:600px){
+  body{margin:12px auto;padding:0 16px calc(16px + env(safe-area-inset-bottom,0px))}
+  h1{font-size:20px}
+  input,textarea,select{font-size:16px;padding:10px}
+  button{min-height:44px;padding:8px 14px}
+  .inline{flex-wrap:wrap}
+  .inline input{flex:1 1 180px}
+  .computer .about{min-width:0;flex-basis:100%}
+  .computer .status{margin-left:0;flex-wrap:wrap}
+  .computer .meta{overflow-wrap:anywhere}
+  .code{font-size:16px;overflow-wrap:anywhere}
+  #invitation-link{height:72px}
+}
 </style><script src="/computers.js" defer></script></head>
 <body><a href="/">← Terminals</a><h1>Computers</h1>
 <p class="lead">Pair computers on the same network to see all their terminals here. Pairing gives each computer in the group access to the others’ terminals.</p>

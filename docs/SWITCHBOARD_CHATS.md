@@ -44,9 +44,16 @@ curl -G 'http://127.0.0.1:8090/api/chats/CHAT_ID' \
 Here `cursor` is a message offset. Use the search result's `message_cursor` to
 jump to a match, or subtract a few to include preceding context. The response
 contains `messages` and `next_cursor`. Each message has `role`, `text`,
-`timestamp` and `truncated`. Text is capped at 4,000 characters per message;
-search excerpts are capped at 401 characters. Tool calls, tool output, reasoning,
-attachments and provider credentials are excluded. OpenCode text parts are
+`timestamp` and `truncated`. Codex assistant messages also include `phase`
+(`commentary` or `final`) when present in the source; other messages return null. Text is capped at 4,000 characters per message;
+search excerpts are capped at 401 characters. Tool calls, tool output, reasoning, and provider credentials are excluded.
+Messages also include an inert `markdown` event stream for safe DOM rendering.
+Claude and Codex messages may include `attachments` with a media `kind`, `name`,
+and `url` or an explicit `unavailable` reason. Paths are not resolved on the relay
+computer; clients must request them from the conversation’s owning host. Embedded
+PNG/JPEG/GIF/WebP data is bounded to 2 MiB per chat, with eight attachments per
+message; other embedded formats are unavailable. Search results never include
+embedded attachment data. OpenCode text parts are
 returned as individual entries. This is a transcript view, not a reconstruction
 of the agent's current compacted context or active rewind branch.
 
@@ -63,7 +70,7 @@ Always inspect coverage before concluding that a conversation does not exist:
 - Computer-level `error`: a peer is unavailable, timed out or needs updating.
 
 Read failures return an `error` field, including `not_found`, `unreadable` or
-`discovery_incomplete`. Invalid parameters return HTTP 400; an unknown host is 404.
+`discovery_incomplete` or `unsupported_storage`. Invalid parameters return HTTP 400; an unknown host is 404.
 A successful HTTP 200 alone does not establish complete coverage.
 
 Each source scans at most 100 files/sessions per request. JSONL reads stop at
@@ -86,7 +93,8 @@ run at once; peer requests have a 15-second timeout and fan out four at a time.
 
 OpenCode uses a read-only SQLite connection to its `session`, `message` and
 `part` tables. Newer `session_v2` or populated `session_message` storage is
-reported as partial; legacy JSON storage is not searched. Environment overrides
+reported as partial for searches and direct reads; unknown IDs in a database with
+newer storage return `unsupported_storage`. Legacy JSON storage is not searched. Environment overrides
 must be set on the relay process. Symlinked history entries are skipped.
 
 References: [Copilot storage](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference),

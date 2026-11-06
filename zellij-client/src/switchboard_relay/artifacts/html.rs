@@ -217,6 +217,7 @@ mod tests {
         config.escape_transport = Some("local".into());
         let state = crate::switchboard_relay::state(
             &RelayConfig {
+                browser_origin: None,
                 hosts: vec![config.clone()],
                 artifact_proxy: None,
             },

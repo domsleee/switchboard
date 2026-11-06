@@ -1574,6 +1574,7 @@ mod tests {
         use tower::ServiceExt;
         let app = router(
             RelayConfig {
+                browser_origin: None,
                 hosts: vec![],
                 artifact_proxy: None,
             },

@@ -90,6 +90,8 @@ for(const platform of ['MacIntel','Win32','Linux x86_64'])test(`${platform}: sid
 
     // Terminal iframe: sidebar digits reach the parent; browser digits bypass xterm/Zellij.
     await page.evaluate(()=>{const item=allTabs().find(item=>item.tab.name==='Alpha');activate(item);});
+    // Finish native selection before browser shortcuts can move focus again.
+    await page.waitForFunction(()=>{const item=allTabs().find(item=>item.key===selected);return item?.tab.name==='Alpha'&&activeTab(item.entry)?.id===item.tab.id&&!item.entry.needsFocus&&!item.entry.requestedPane&&!item.entry.focusPending;});
     await input.evaluate(()=>new Promise(resolve=>{const wait=()=>window.term.options.disableStdin?setTimeout(wait,10):resolve();wait();}));
     await input.focus();await input.evaluate(()=>{window.keys=[];window.sent=[];window.ctrlDigits=[];window.altDigits=[];});
     for(const digit of [1,2,3,4,5,6,7,8,9])await page.keyboard.press('Meta+Digit'+digit);

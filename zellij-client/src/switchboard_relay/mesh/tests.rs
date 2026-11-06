@@ -1492,6 +1492,7 @@ async fn address_pairing_delivers_over_tls_and_completes_without_copying_secrets
         let port = listener.local_addr().unwrap().port();
         let mut state = super::super::state(
             &RelayConfig {
+                browser_origin: None,
                 hosts: vec![],
                 artifact_proxy: None,
             },
@@ -2306,6 +2307,7 @@ async fn a_paired_computer_is_listed_only_under_its_mesh_id() {
     configured.id = "windows".into();
     let mut state = super::super::state(
         &super::super::RelayConfig {
+            browser_origin: None,
             hosts: vec![configured],
             artifact_proxy: None,
         },
@@ -2401,6 +2403,8 @@ async fn attention_reviews_live_with_the_owner_and_every_peer_sees_them() {
         artifact: None,
         askpass: Default::default(),
         html_previews: Default::default(),
+        push: None,
+        browser_origin: None,
     };
     let (mac, laptop) = (relay(&viewers[0]), relay(&viewers[1]));
     async fn shown(relay: &super::super::RelayState, host: &str) -> Value {

@@ -45,6 +45,45 @@ Quitting it leaves your terminals running.
 The first install sets up this computer's login on its own. Running it again
 keeps your settings.
 
+## Open on an Android phone
+
+Use an HTTPS address on your private network. With Tailscale installed and signed
+in on this computer and your phone, [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve)
+provides HTTPS for the computer's `*.ts.net` name. Keep the computer awake while
+using its relay, including for background notifications.
+
+1. Get the computer's DNS name from `tailscale status --json` → `Self.DNSName`
+   (omit its trailing dot).
+2. Add `"browser_origin": "https://YOUR-COMPUTER.YOUR-TAILNET.ts.net"` at the top
+   level of the existing host configuration, keeping its other fields. On Mac it
+   is `~/.config/zellij/switchboard-hosts.json`; on Windows it is
+   `~/.config/switchboard/hosts.json`. Restart only the relay service so it reads
+   the new setting; leave terminal session servers running.
+3. Run `tailscale serve --bg http://127.0.0.1:8090`. Enable HTTPS in the Tailscale
+   admin console if the command asks. Use the relay's actual port if different.
+   This gives devices allowed by your tailnet access to your terminal controls;
+   use Serve within your private tailnet.
+4. Open the printed HTTPS URL in Chrome on Android. In **Settings → This
+   device**, choose **Install Switchboard**, or use Chrome's **Add to Home screen
+   → Install** menu. Turn on **Attention notifications**, allow Chrome's permission
+   request, then press **Send test notification**.
+
+The relay sends encrypted Web Push when an agent needs approval or input, or has
+a new result to review. Alerts work with the page closed; tapping one opens the
+matching terminal. Each device opts in separately. The relay needs internet
+access to the browser's push service; the phone needs Tailscale when opening the
+terminal. Switching a device off removes its subscription. Plain HTTP LAN/IP
+addresses cannot enable notifications or installation.
+
+Push keys, subscriptions and delivery receipts persist beside the host config in
+its `.push.json` file, readable only by its owner on Unix. Preserve this file
+across updates. Terminal screens and password requests are never sent through
+the push service. Existing unread results do not alert when you first opt in.
+
+To remove phone access, run `tailscale serve --https=443 off`, remove
+`browser_origin`, and restart only the relay. Other configured Serve paths or
+ports should be preserved.
+
 ## Exact agent status
 
 Switchboard reads each tab's screen to tell whether an agent is working. Claude Code,
@@ -160,3 +199,42 @@ send the link, and paste it under **Have an invitation?** on the other. Choose
 
 How Switchboard works, its shortcuts and its diagnostics are in
 [Switchboard internals](../../docs/SWITCHBOARD_INTERNALS.md).
+
+### Conversation view
+
+Open **Conversation** above a terminal, choose the agent, and search for the chat
+running in that pane. Search stays on that computer. Select the matching chat;
+Switchboard reads saved messages without starting or resuming an agent. Chat
+links and reply drafts are kept separately per pane for the current page lifetime.
+Use **Choose chat** to correct a selection, and **Search next page** when the
+bounded history search has more files to scan. Coverage and truncated messages
+are shown explicitly. **Load next messages** advances through a longer transcript.
+The visible transcript's last loaded page refreshes every five seconds when you
+are not interacting with it; **Refresh** also checks it immediately. Codex progress
+messages collapse when phase metadata is available. Tool output is not exposed
+by the history API; use **Terminal** for full context.
+
+**Reply in terminal** inserts the draft into the exact active pane, then shows the
+terminal. Review it and press Enter there. It does not submit a prompt, answer an
+approval, start an SDK session, or resume the saved chat. A wrong pane, disconnected
+terminal, control characters, or multiline input without bracketed-paste support
+is rejected. Drafts stay available when insertion fails. If confirmation times out,
+check the terminal before retrying. Approval prompts remain in the terminal.
+
+The conversation view renders Markdown headings, lists, tables, fenced code,
+links, and media without executing transcript HTML. Image references open an
+expandable gallery with zoom; video references use inline playback controls.
+Local and relative paths are read from the selected chat's computer, with relative
+paths based on the chat's recorded project directory. HTTP(S) media URLs load in
+the viewing browser; loopback URLs are not treated as phone-local media.
+
+Claude and Codex image/video content parts are preserved when their transcripts
+retain a path or URL. Supported embedded PNG/JPEG/GIF/WebP images have a 2 MiB
+encoded-data budget per chat and at most eight attachments per message. Missing,
+unsupported, invalid, and oversized attachments show an unavailable state. This
+is media viewing, not attachment uploading. Other providers still expose their
+text messages and Markdown media references.
+
+Reply drafts remain literal text, including `$skill-name` and `/commands`.
+Switchboard does not translate command names between providers. Native command
+and skill autocomplete is not implemented in this view.

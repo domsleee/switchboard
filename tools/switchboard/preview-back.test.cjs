@@ -2,8 +2,7 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const tab=(host,id)=>({host,session:'main',id,position:0,name:host+' terminal',panes:[{pane_id:id,is_plugin:false,tab_position:0}]});
-const statics=['index.html','app.js','bridge.js','close.js','titles.js','pairing-notice.js','style.css'];
-const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEUlEQVR4nGP4z8DwH4QZGBgAEPYD/WQ/5WMAAAAASUVORK5CYII=','base64');
+const statics=['index.html','app.js','bridge.js','close.js','titles.js','pairing-notice.js','style.css','gallery.js','gallery.css'];
 
 // Synthetic hosts and fixture terminals only; never a live relay.
 test('Back, including a mouse back button, closes a file preview and stays on Switchboard',
@@ -12,15 +11,16 @@ test('Back, including a mouse back button, closes a file preview and stays on Sw
   const browser=await chromium.launch({headless:true});
   try{
     const context=await browser.newContext({viewport:{width:1280,height:900}});
-    const page=await context.newPage(),pageErrors=[];page.setDefaultTimeout(5000);
+    const page=await context.newPage(),pageErrors=[],externalOpens=[];page.setDefaultTimeout(5000);
     page.on('pageerror',error=>pageErrors.push(error.message));
     await page.addInitScript(()=>{window.setInterval=()=>0;});
     await context.route('**/*',async route=>{
       const url=new URL(route.request().url()),pathname=url.pathname;
       const json=value=>route.fulfill({contentType:'application/json',body:JSON.stringify(value)});
-      if(pathname==='/api/hosts/windows/file')return route.fulfill({contentType:'image/png',body:png});
+      if(pathname==='/api/open-file'){externalOpens.push(route.request().postDataJSON());return json({});}
+      if(/^\/api\/hosts\/(windows|mac)\/file$/.test(pathname))return route.fulfill({contentType:'text/plain',body:'File preview'});
       if(pathname==='/api/hosts')return json([{id:'mac',name:'Mac',local:true},{id:'windows',name:'Windows'}]);
-      if(pathname.startsWith('/api/hosts/'))return json({id:pathname.split('/')[3],name:pathname.endsWith('mac')?'Mac':'Windows',sessions:[{name:'main',web_clients_allowed:true}]});
+      if(pathname.startsWith('/api/hosts/'))return json({id:pathname.split('/')[3],local:pathname.endsWith('mac'),name:pathname.endsWith('mac')?'Mac':'Windows',sessions:[{name:'main',web_clients_allowed:true}]});
       if(pathname==='/api/attention')return json({tabs:[tab('mac',1),tab('windows',42)],panes:[],errors:[]});
       if(pathname==='/api/mesh')return json({configured:true,computer:{name:'Mac'},mesh:{name:'My computers'},administrator:true,requests:[],members:[]});
       if(pathname.startsWith('/api/'))return json({});
@@ -52,14 +52,14 @@ test('Back, including a mouse back button, closes a file preview and stays on Sw
     const closed=()=>page.waitForFunction(()=>document.querySelector('#artifact-preview').hidden&&!history.state?.switchboardPreview);
 
     // Opening one file then another adds one history entry in all.
-    await open('C:\\shots\\before.png');
-    await page.waitForFunction(()=>document.querySelector('#artifact-frame').contentWindow.location.href.includes('before.png'));
-    await open('C:\\shots\\after.png');
-    await page.waitForFunction(()=>document.querySelector('#artifact-frame').contentWindow.location.href.includes('after.png'));
-    assert.deepEqual(await preview(),{open:true,history:length+1,frame:'https://switchboard.test/api/hosts/windows/file?path=C%3A%5Cshots%5Cafter.png'});
+    await open('C:\\shots\\before.txt');
+    await page.waitForFunction(()=>document.querySelector('#artifact-frame').contentWindow.location.href.includes('before.txt'));
+    await open('C:\\shots\\after.txt');
+    await page.waitForFunction(()=>document.querySelector('#artifact-frame').contentWindow.location.href.includes('after.txt'));
+    assert.deepEqual(await preview(),{open:true,history:length+1,frame:'https://switchboard.test/api/hosts/windows/file?path=C%3A%5Cshots%5Cafter.txt'});
 
-    // The mouse's back button is the browser's Back: it closes the preview, with focus in the image.
-    await page.frameLocator('#artifact-frame').locator('img').click();
+    // The mouse's back button is the browser's Back: it closes the preview, with focus in the file frame.
+    await page.frameLocator('#artifact-frame').locator('body').click();
     const cdp=await context.newCDPSession(page);
     for(const type of ['mousePressed','mouseReleased'])await cdp.send('Input.dispatchMouseEvent',{type,x:700,y:400,button:'back',buttons:type==='mousePressed'?8:0,clickCount:1});
     await closed();
@@ -69,10 +69,35 @@ test('Back, including a mouse back button, closes a file preview and stays on Sw
 
     // Closing it with its own button or Escape drops the entry, so the next Back has nothing of the preview left.
     for(const close of [()=>page.locator('#artifact-back').click(),()=>page.keyboard.press('Escape')]){
-      await open('C:\\shots\\before.png');
+      await open('C:\\shots\\before.txt');
       assert.equal((await preview()).open,true);
       await close();await closed();
       assert.equal(await page.evaluate(()=>document.querySelector('#artifact-frame').contentWindow.location.href),'about:blank');
+    }
+    // Local Markdown previews without launching a desktop app; opening externally is explicit.
+    const localPath='/Users/dom/git/switchboard-docs-navigation/README.md';
+    await page.evaluate(path=>window.SwitchboardOpenFile('mac',path),localPath);
+    await page.waitForFunction(()=>document.querySelector('#artifact-frame').contentWindow.location.href.includes('README.md'));
+    assert.equal((await preview()).open,true);
+    assert.deepEqual(externalOpens,[]);
+    await Promise.all([page.waitForResponse(response=>response.url().endsWith('/api/open-file')),
+      page.getByRole('button',{name:'Open externally',exact:true}).click()]);
+    assert.deepEqual(externalOpens,[{path:localPath}]);
+    assert.equal((await preview()).open,true,'Opening externally keeps the preview available');
+    await open('C:\\shots\\after.txt');
+    assert.equal(await page.locator('#artifact-open-local').isVisible(),false,'Remote files never launch on the relay computer');
+    await page.locator('#artifact-back').click();await closed();
+    // Direct file opens, including files from this computer, share the media overlay.
+    for(const host of ['windows','mac']){
+      await page.evaluate(host=>window.SwitchboardOpenFile(host,'/tmp/clip.webm'),host);
+      const video=page.locator('#image-gallery video');
+      await page.getByRole('dialog',{name:'Media carousel'}).waitFor();
+      await video.focus();
+      await page.keyboard.press('Escape');
+      await page.waitForFunction(()=>!document.querySelector('#image-gallery').open&&!history.state?.switchboardMedia);
+      await page.waitForFunction(()=>document.activeElement===document.querySelector('iframe[title="Windows: main"]')&&document.activeElement.contentDocument.activeElement.id==='terminal-input');
+      assert.equal(await video.getAttribute('src'),null);
+      assert.equal(await page.locator('#artifact-preview').evaluate(preview=>preview.hidden),true);
     }
     await page.evaluate(()=>{window.stillHere=true;});
     await page.goBack({waitUntil:'commit'}).catch(()=>{});

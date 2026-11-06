@@ -165,6 +165,7 @@ impl Harness {
                 binary: installed.clone(),
                 release_directory: root.join("releases"),
                 state_directory: root.join("state"),
+                viewer_lock: root.join("state/viewers.lock"),
                 helpers: root.join("helpers"),
                 source: root.join("release").display().to_string(),
                 menu_app: root.join("no-app/Switchboard"),
@@ -573,6 +574,80 @@ mod orchestration {
     use super::*;
     // Serial: concurrent helper processes from parallel tests made the lock check flaky.
     use serial_test::serial;
+
+    #[serial]
+    #[test]
+    fn switchboard_update_waits_for_viewers_and_reuses_verified_download() {
+        let harness = Harness::new(false);
+        harness.publish(&full('b'), 5, "");
+        let viewer = fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(harness.updater.state_directory.join("viewers.lock"))
+            .unwrap();
+        viewer.lock_shared().unwrap();
+        harness.updater.run().unwrap();
+        assert!(harness.calls().is_empty());
+        assert!(harness.state().get("run_number").is_none());
+        assert!(harness.state().get("pending").is_none());
+        assert!(harness.state()["notice"]
+            .as_str()
+            .unwrap()
+            .contains("waiting for terminal viewers"));
+        // A second run can use the verified cache even when release assets are
+        // unavailable. The manifest is still checked on every scheduled run.
+        fs::remove_file(harness.root.join("release/switchboard-macos-arm64-zellij")).unwrap();
+        harness.updater.run().unwrap();
+        assert!(harness.calls().is_empty());
+        drop(viewer);
+        harness.updater.run().unwrap();
+        assert_eq!(harness.state()["commit"], full('b'));
+        assert_eq!(harness.calls().lines().count(), 1);
+    }
+
+    #[serial]
+    #[test]
+    fn switchboard_update_coalesces_waiting_releases_and_rechecks_viewers() {
+        let harness = Harness::new(false);
+        let viewer = fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(harness.updater.state_directory.join("viewers.lock"))
+            .unwrap();
+        viewer.lock_shared().unwrap();
+        harness.publish(&full('b'), 5, "");
+        harness.updater.run().unwrap();
+        let manifest: Manifest = serde_json::from_slice(
+            &fs::read(
+                harness
+                    .root
+                    .join("release/switchboard-macos-arm64-bundle.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        // A viewer arriving after the early check must also stop the final handoff.
+        assert!(!harness
+            .updater
+            .apply(
+                &harness.updater.state_directory.join("ready"),
+                &manifest,
+                &mut State::default()
+            )
+            .unwrap());
+        assert!(harness.calls().is_empty());
+        harness.publish(&full('c'), 6, "");
+        harness.updater.run().unwrap();
+        assert!(harness.calls().is_empty());
+        drop(viewer);
+        harness.updater.run().unwrap();
+        assert_eq!(harness.state()["commit"], full('c'));
+        assert_eq!(harness.calls().lines().count(), 1);
+    }
 
     #[serial]
     #[test]

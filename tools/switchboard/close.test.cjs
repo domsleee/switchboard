@@ -83,6 +83,8 @@ test('close resolves a provisional tab by its live pane, without closing a tab w
     activate(item){context.selected=item.key;},setStatus(message){context.status=message;},
     fetch:(url,options)=>{calls.push([url,JSON.parse(options.body)]);return new Promise(resolve=>finish=resolve);},AbortSignal};
   vm.createContext(context);
+  context.pinned={};
+  vm.runInContext(source.slice(source.indexOf('function isPinned('),source.indexOf('// Tabs in the Hidden')),context);
   vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function moveSelected(')),context);
   context.listedTabs=()=>context.allTabs();
   vm.runInContext(fs.readFileSync(__dirname+'/static/close.js','utf8'),context);

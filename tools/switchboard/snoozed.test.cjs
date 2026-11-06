@@ -4,7 +4,7 @@ function fixture(){
   let now=0,timer;
   const tab={key:'a',tab:{},entry:{host:'mac',name:'main'},working:true,attention:false};
   const context={Date:{now:()=>now},allTabs:()=>[tab],settingValue:()=> 'true',isReady:item=>item.attention,
-    autoLabel:item=>item.working?'Working':'',attentionErrors:[],setTimeout:fn=>(timer=fn),clearTimeout:()=>{timer=null;},
+    isPinned:key=>!!tab.pinned,autoLabel:item=>item.working?'Working':'',attentionErrors:[],setTimeout:fn=>(timer=fn),clearTimeout:()=>{timer=null;},
     render:()=>context.sidebarTabs(),selected:'a',hiddenOpen:false,snoozedOpen:false,$:()=>({value:''}),matchesSearch:()=>true};
   vm.createContext(context);
   vm.runInContext(source.slice(source.indexOf('// Hold shelf placement'),source.indexOf('function moveTab(')),context);
@@ -32,4 +32,28 @@ test('attention, errors, hiding and disabling snooze bypass the grace',()=>{
     const f=fixture();assert.equal(f.snoozed(),true);f.tab.working=false;assert.equal(f.snoozed(),true);
     change(f);assert.equal(f.snoozed(),false);
   }
+});
+
+test('pinning prevents snoozing and unpinning resumes it immediately',()=>{
+  const {tab,snoozed}=fixture();
+  tab.pinned=true;assert.equal(snoozed(),false);
+  tab.working=false;assert.equal(snoozed(),false);
+  tab.working=true;assert.equal(snoozed(),false);
+  tab.pinned=false;assert.equal(snoozed(),true);
+  tab.pinned=true;assert.equal(snoozed(),false);
+});
+
+test('pins survive a fresh browser state and can be removed',()=>{
+  const stored={};
+  function browser(){
+    const context={load:key=>JSON.parse(stored[key]||'{}'),canonKey:key=>key,
+      localStorage:{setItem:(key,value)=>stored[key]=value}};
+    vm.createContext(context);
+    vm.runInContext(source.slice(source.indexOf('const pinned ='),source.indexOf('// Tabs in the Hidden')),context);
+    return context;
+  }
+  const item={key:'a'};
+  browser().setPinned(item,true);
+  const restored=browser();assert.equal(restored.isPinned('a'),true);
+  restored.setPinned(item,false);assert.equal(browser().isPinned('a'),false);
 });

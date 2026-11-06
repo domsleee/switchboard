@@ -80,6 +80,7 @@ test('Update tasks show per computer, flag failures and changes in the sidebar, 
       {group:'dotfiles',action:'clear',host:'mesh-dompc'}]);
 
     tasks={computers:[{name:'Mac',local:true,groups:[],error:null,switchboard:{commit:'abc1234'},agents:[]}]};
+    await page.waitForFunction(()=>document.querySelector('#updates')?.getAttribute('aria-busy')==='false');
     await page.evaluate(()=>SwitchboardTasks.load());
     await page.waitForFunction(()=>document.getElementById('task-notices').hidden);
     await page.locator('#settings').click();await page.getByRole('tab',{name:'Health'}).click();
@@ -155,6 +156,29 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
     assert.equal(await linux.locator('.task-row').first().locator('.task-meta').textContent(),'unknown on this build');
     assert.equal(await linux.locator('.agent-none').textContent(),'No Claude Code, Copilot CLI or Codex on this computer');
     assert.equal(await page.locator('#updates .task-computer').nth(3).locator('.log-note').first().textContent(),'Update Switchboard on this computer to check its agents');
+
+    // Skill warnings remain visible when hooks are ready, without offering hook setup.
+    tasks.computers[0].agents=tasks.computers[0].agents.map(a=>({...a,state:'ready',lastReport:now-120e3}));
+    await page.waitForFunction(()=>document.querySelector('#updates')?.getAttribute('aria-busy')==='false');
+    await page.evaluate(()=>SwitchboardTasks.load());
+    await page.waitForFunction(()=>document.querySelector('#updates .switchboard-group .task-state')?.textContent==='All set');
+    await mac.evaluate(el=>el.open=true);
+    if(process.env.SKILL_HEALTH_SCREENSHOTS)await page.screenshot({path:'/tmp/skill-health-before.png',clip:await page.locator('#updates .task-computer').first().boundingBox()});
+    tasks.computers[0].agents[2].skills={state:'attention',scope:'Codex user skills and enabled local marketplace plugins; remote and project skills not checked',warnings:[
+      'pr-description-style@dotfiles: cached skills differ from source. Refresh with codex plugin add pr-description-style@dotfiles',
+      'Conflicting skill pr-description-style: ~/.agents/skills/pr-description-style/SKILL.md and ~/.codex/plugins/cache/dotfiles/pr-description-style/local/skills/pr-description-style/SKILL.md']};
+    await page.waitForFunction(()=>document.querySelector('#updates')?.getAttribute('aria-busy')==='false');
+    await page.evaluate(()=>SwitchboardTasks.load());
+    await page.waitForFunction(()=>document.querySelector('#updates .switchboard-group .task-state')?.textContent==='Codex: skills need attention');
+    assert.equal(await mac.locator('.task-state').textContent(),'Codex: skills need attention');
+    assert.equal(await mac.getAttribute('data-status'),'attention');
+    assert.equal(await mac.locator('.skill-warning').count(),2);
+    assert.equal(await macRows.nth(2).getByRole('button').count(),0);
+    if(process.env.SKILL_HEALTH_SCREENSHOTS)await page.screenshot({path:'/tmp/skill-health-after.png',clip:await page.locator('#updates .task-computer').first().boundingBox()});
+    tasks.computers[0].agents[1].state='setup';tasks.computers[0].agents[2].state='approve';
+    delete tasks.computers[0].agents[2].skills;
+    await page.waitForFunction(()=>document.querySelector('#updates')?.getAttribute('aria-busy')==='false');
+    await page.evaluate(()=>SwitchboardTasks.load());
 
     // Setup goes to the computer that owns the agent; this computer's carries no host.
     await macRows.nth(1).getByRole('button',{name:'Set up'}).click();

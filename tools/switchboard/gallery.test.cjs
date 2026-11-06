@@ -3,6 +3,7 @@ const enabled=!!process.env.PLAYWRIGHT_MODULE;
 const source=name=>fs.readFileSync(__dirname+'/static/'+name,'utf8');
 const htmlPath='out/vh-20261106-162703/chart/index.html';
 const rows=[`Interactive graph (${htmlPath})`,'/tmp/first.png','out/second.png','/tmp/first.png','/tmp/loop.gif'];
+const video=Buffer.from('GkXfo59ChoEBQveBAULygQRC84EIQoKEd2VibUKHgQJChYECGFOAZwEAAAAAAAS6EU2bdLpNu4tTq4QVSalmU6yBoU27i1OrhBZUrmtTrIHWTbuMU6uEElTDZ1OsggEzTbuMU6uEHFO7a1OsggSk7AEAAAAAAABZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVSalmsCrXsYMPQkBNgIxMYXZmNjMuMS4xMDJXQYxMYXZmNjMuMS4xMDJEiYhAn0AAAAAAABZUrmvYrgEAAAAAAABP14EBc8WIJNZgsXWLel2cgQAitZyDdW5kiIEAhoVWX1ZQOIOBASPjg4QF9eEA4JGwggFAuoG0moECVbCEVbmBAVXugQDsAQAAAAAAAAIAABJUw2f6c3OfY8CAZ8iZRaOHRU5DT0RFUkSHjExhdmY2My4xLjEwMnNz1WPAi2PFiCTWYLF1i3pdZ8igRaOHRU5DT0RFUkSHk0xhdmM2My4xLjEwMiBsaWJ2cHhnyKFFo4hEVVJBVElPTkSHkzAwOjAwOjAyLjAwMDAwMDAwMAAfQ7Z1QuzngQCjQJuBAACAUA8AnQEqQAG0AABHCIWFiIWEiAICAnWqAgZmZWl9r25snOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnN4A/v7iaX/xvHgV5Lsr//Ys5bAsQKOdgQBkALECAAUQrAAYABhYL/QACIAEM1+tck+VgACjnYEAyACxAgAFEKwAGAAYWC/0AAiABDNfrXJPlYAAo52BASwAsQIABRCsABgAGFgv9AAIgAQzX61yT5WAAKOdgQGQALECAAUQrAAYABhYL/QACIAEM1+tck+VgACjnYEB9ACxAgAFEKwAGAAYWC/0AAiABDNfrXJPlYAAo52BAlgAsQIABRCsABgAGFgv9AAIgAQzX61yT5WAAKOcgQK8AJECAAUQEBRgAGFgv9AAIgAQzX61yT5WAKOdgQMgALECAAUQrAAYABhYL/QACIAEM1+tck+VgACjnYEDhACxAgAFEKwAGAAYWC/0AAiABDNfrXJPlYAAo52BA+gAsQIABRCsABgAGFgv9AAIgAQzX61yT5WAAKOdgQRMALECAAUQrAAYABhYL/QACIAEM1+tck+VgACjnYEEsACxAgAFEKwAGAAYWC/0AAiABDNfrXJPlYAAo52BBRQAsQIABRCsABgAGFgv9AAIgAQzX61yT5WAAKOdgQV4ALECAAUQrAAYABhYL/QACIAEM1+tck+VgACjnYEF3ACxAgAFEKwAGAAYWC/0AAiABDNfrXJPlYAAo52BBkAAsQIABRCsABgAGFgv9AAIgAQzX61yT5WAAKOdgQakALECAAUQrAAYABhYL/QACIAEM1+tck+VgACjnIEHCACRAgAFEBAUYABhYL/QACIAEM1+tck+VgCjnYEHbACxAgAFEKwAGAAYWC/0AAiABDNfrXJPlYAAHFO7a5G7j7OBALeK94EB8YIBsvCBAw==','base64');
 const art='http://127.0.0.1:8091/html/test-ticket/';
 async function fixture(run){
   const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch({headless:true});
@@ -21,6 +22,7 @@ async function fixture(run){
         return json({url:art+'index.html'});
       }
       if(path.endsWith('/file')){
+        if(/\.(?:webm|mp4|mov|m4v)$/i.test(url.searchParams.get('path')))return route.fulfill({contentType:'video/webm',body:video});
         return route.fulfill({contentType:'image/svg+xml',body:`<svg xmlns="http://www.w3.org/2000/svg" width="900" height="500"><rect width="900" height="500" fill="#1d3348"/><circle cx="450" cy="220" r="120" fill="#53c0b1"/><text x="450" y="410" fill="white" text-anchor="middle" font-size="26">${url.searchParams.get('path')}</text></svg>`});
       }
       if(request.url().startsWith(art)){
@@ -71,26 +73,26 @@ test('Ctrl/Cmd-click on relative HTML opens an interactive page with sibling ass
 }));
 test('image clicks open a carousel with relative images, keys, wraparound, errors and focus restoration', {skip:!enabled},()=>fixture(async({page,frame,click,context})=>{
   await click('/tmp/first.png');
-  const gallery=page.getByRole('dialog',{name:'Image carousel'}),image=gallery.locator('img');
+  const gallery=page.getByRole('dialog',{name:'Media carousel'}),image=gallery.locator('img');
   await gallery.waitFor();await page.waitForFunction(()=>document.querySelector('.gallery-count')?.textContent==='1 / 3');
   assert.equal(await image.getAttribute('alt'),'/tmp/first.png');
   await page.keyboard.press('ArrowRight');assert.equal(await image.getAttribute('alt'),'/home/dom/project/out/second.png');
-  await gallery.getByRole('button',{name:'Next image'}).click();assert.equal(await image.getAttribute('alt'),'/tmp/loop.gif');
+  await gallery.getByRole('button',{name:'Next media'}).click();assert.equal(await image.getAttribute('alt'),'/tmp/loop.gif');
   await page.keyboard.press('ArrowRight');assert.equal(await image.getAttribute('alt'),'/tmp/first.png');
   await page.keyboard.press('ArrowLeft');assert.equal(await image.getAttribute('alt'),'/tmp/loop.gif');
   await page.keyboard.press('Home');await image.waitFor({state:'visible'});
   if(process.env.GALLERY_SCREENSHOT)await page.screenshot({path:process.env.GALLERY_SCREENSHOT});
   await page.keyboard.press('Escape');await gallery.waitFor({state:'hidden'});
-  await page.waitForFunction(()=>document.activeElement.id==='terminal-frame');
+  await page.waitForFunction(()=>document.activeElement.id==='terminal-frame'&&!history.state?.switchboardMedia);
   assert.equal(context.pages().length,1,'Images do not open extra browser tabs');
   // A plain thumbnail click follows the same path, with a single-image gallery when needed.
   await frame.evaluate(()=>window.__switchboardMedia.open('/tmp/only.png',{button:0}));
   await gallery.waitFor();await page.waitForFunction(()=>document.querySelector('.gallery-count')?.textContent==='4 / 4');
-  await gallery.getByRole('button',{name:'Close image carousel'}).click();
+  await gallery.getByRole('button',{name:'Close media carousel'}).click();
   await page.route('**/api/hosts/linux/file?path=%2Ftmp%2Fmissing.png',route=>route.fulfill({status:404,body:''}));
   await page.evaluate(()=>window.SwitchboardOpenImages('linux','/tmp/missing.png'));
   await page.waitForFunction(()=>document.querySelector('#image-gallery [role="status"]').textContent.includes('Could not load'));
-  assert.equal(await gallery.getByRole('button',{name:'Next image'}).isDisabled(),true);
+  assert.equal(await gallery.locator('.gallery-next').isDisabled(),true);
 }));
 test('a queued close event cannot clear a reopened carousel', {skip:!enabled},()=>fixture(async({page})=>{
   const state=await page.evaluate(async()=>{
@@ -103,6 +105,83 @@ test('a queued close event cannot clear a reopened carousel', {skip:!enabled},()
     return {open:dialog.open,src:dialog.querySelector('img').getAttribute('src'),count:dialog.querySelector('.gallery-count').textContent};
   });
   assert.deepEqual(state,{open:true,src:'/api/hosts/linux/file?path=%2Ftmp%2Fsecond.png',count:'1 / 2'});
-  await page.getByRole('button',{name:'Next image'}).click();
+  await page.getByRole('button',{name:'Next media'}).click();
   assert.equal(await page.locator('#image-gallery img').getAttribute('alt'),'/tmp/third.png');
+}));
+
+test('videos share the floating carousel, keep native seeking, and Escape returns to the terminal', {skip:!enabled},()=>fixture(async({page,frame,click,context})=>{
+  await frame.evaluate(()=>{window.term.buffer.active.length=6;const getLine=window.term.buffer.active.getLine;window.term.buffer.active.getLine=index=>index===5?{isWrapped:false,translateToString:()=>'/tmp/clip.webm'}:getLine(index);});
+  const length=await page.evaluate(()=>history.length);
+  await click('/tmp/clip.webm');
+  const gallery=page.getByRole('dialog',{name:'Media carousel'}),video=page.locator('#image-gallery video');
+  await gallery.waitFor();await video.waitFor();
+  await page.waitForFunction(()=>document.querySelector('.gallery-count')?.textContent==='4 / 4'&&document.querySelector('video').readyState>=1);
+  assert.equal(context.pages().length,1,'Videos open over the terminal');
+  assert.equal(await page.evaluate(()=>history.length),length+1);
+  await video.evaluate(video=>video.play());
+  await video.focus();await page.keyboard.press('ArrowLeft');
+  assert.equal(await gallery.locator('.gallery-path').textContent(),'clip.webm','Native seeking cannot change carousel items');
+  await page.keyboard.press('Escape');await gallery.waitFor({state:'hidden'});
+  await page.waitForFunction(()=>document.activeElement.id==='terminal-frame'&&!history.state?.switchboardMedia);
+  assert.deepEqual(await video.evaluate(video=>({paused:video.paused,src:video.getAttribute('src')})),{paused:true,src:null});
+  await click('/tmp/first.png','Meta');
+  await page.waitForFunction(()=>document.querySelector('.gallery-count')?.textContent==='1 / 4');
+  await page.keyboard.press('End');await video.waitFor();
+  await page.keyboard.press('Home');await gallery.locator('img').waitFor();
+  assert.equal(await video.getAttribute('src'),null,'Switching away unloads video');
+  await page.keyboard.press('End');await video.waitFor();
+  await page.goBack();await gallery.waitFor({state:'hidden'});
+  await page.waitForFunction(()=>document.activeElement.id==='terminal-frame');
+  assert.equal(page.url(),'http://switchboard.test/','Back closes media without leaving the terminal');
+  // Plain thumbnail clicks use the same mixed-media list.
+  await frame.evaluate(()=>window.__switchboardMedia.open('/tmp/clip.webm',{button:0}));
+  await video.waitFor();
+  // Empty space inside the transparent lightbox also dismisses it.
+  await page.mouse.click(90,70);await gallery.waitFor({state:'hidden'});
+  await page.waitForFunction(()=>!history.state?.switchboardMedia);
+}));
+test('resolving carousel siblings preserves video playback, and late results cannot reopen it', {skip:!enabled},()=>fixture(async({page})=>{
+  await page.evaluate(()=>{
+    window.locateSibling=new Promise(resolve=>window.resolveSibling=resolve);
+    window.opening=window.SwitchboardOpenMedia('linux','/tmp/clip.webm',[{path:'/tmp/clip.webm'},{path:'relative.png',relative:true}],()=>window.locateSibling);
+  });
+  const video=page.locator('#image-gallery video');
+  await page.waitForFunction(()=>document.querySelector('video').readyState>=1);
+  await video.evaluate(async video=>{await video.play();video.addEventListener('emptied',()=>window.videoReloaded=true);});
+  await page.evaluate(async()=>{window.resolveSibling('/tmp/other.png');await window.opening;});
+  assert.equal(await page.evaluate(()=>window.videoReloaded),undefined,'Sibling resolution never reloads the current video');
+  assert.equal(await video.evaluate(video=>video.paused),false);
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(()=>!history.state?.switchboardMedia);
+  await page.evaluate(()=>{window.opening=window.SwitchboardOpenMedia('linux','relative.webm',[{path:'relative.webm',relative:true}],()=>new Promise(resolve=>window.resolveLate=resolve));});
+  await page.keyboard.press('Escape');
+  await page.evaluate(async()=>{window.resolveLate('/tmp/clip.webm');await window.opening;});
+  assert.equal(await page.locator('#image-gallery').evaluate(dialog=>dialog.open),false);
+  assert.equal(await video.getAttribute('src'),null);
+}));
+
+test('the media lightbox fits a narrow viewport and media clicks keep it open', {skip:!enabled},()=>fixture(async({page,click})=>{
+  await page.setViewportSize({width:390,height:844});
+  await click('/tmp/first.png');
+  const gallery=page.locator('#image-gallery'),image=gallery.locator('img');
+  await image.waitFor({state:'visible'});
+  const bounds=await image.boundingBox();
+  assert.ok(bounds.x>=0&&bounds.x+bounds.width<=390);
+  assert.ok(bounds.y>=0&&bounds.y+bounds.height<=844);
+  await image.click();assert.equal(await gallery.evaluate(dialog=>dialog.open),true,'Media clicks keep the lightbox open');
+  await gallery.locator('footer').waitFor({state:'visible'});
+  await page.keyboard.press('Escape');await gallery.waitFor({state:'hidden'});
+}));
+
+test('Forward to a closed preview cannot strand a reopened carousel on Back', {skip:!enabled},()=>fixture(async({page})=>{
+  await page.evaluate(()=>window.SwitchboardOpenMedia('linux','/tmp/first.png'));
+  await page.goBack();
+  await page.waitForFunction(()=>!document.querySelector('#image-gallery').open);
+  await page.goForward();
+  await page.waitForFunction(()=>!history.state?.switchboardMedia);
+  assert.equal(await page.locator('#image-gallery').evaluate(dialog=>dialog.open),false);
+  await page.evaluate(()=>window.SwitchboardOpenMedia('linux','/tmp/second.png'));
+  await page.goBack();
+  await page.waitForFunction(()=>!document.querySelector('#image-gallery').open);
+  assert.equal(page.url(),'http://switchboard.test/');
 }));

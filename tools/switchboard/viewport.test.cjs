@@ -1,10 +1,10 @@
 const test=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs');
 const source=fs.readFileSync(__dirname+'/../../zellij-client/assets/app.js','utf8');
 function harness(viewport){
-  const sent=[],context={window:{__zjViewport:viewport},lastSentCellDimensions:null,getCellPixelDimensions:()=>({width:8,height:16})};
+  const sent=[],context={WebSocket:{OPEN:1},window:{__zjViewport:viewport},lastSentCellDimensions:null,getCellPixelDimensions:()=>({width:8,height:16})};
   vm.createContext(context);
   vm.runInContext(source.slice(source.indexOf('function getMobileRenderSizing()'),source.indexOf('function initWebSockets(')),context);
-  return {context,sent,socket:{send:message=>sent.push(JSON.parse(message).payload)}};
+  return {context,sent,socket:{readyState:1,send:message=>sent.push(JSON.parse(message).payload)}};
 }
 test('virtual canvas sizes never overwrite the reported physical viewport',()=>{
   let changed=true;

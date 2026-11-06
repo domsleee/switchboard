@@ -689,15 +689,11 @@ pub enum ZellijError {
 
     Plugin name: '{plugin_path}'
 
-This is not a builtin plugin known to this version of zellij. If you were using
-a custom layout, please refer to the layout documentation at:
+Switchboard does not support WASM plugins. Remove plugin panes from the layout
+and use terminal panes instead. If this error persists, open an issue:
 
-    https://zellij.dev/documentation/creating-a-layout.html#plugin
+    https://github.com/domsleee/switchboard/issues
 
-If you think this is a bug and the plugin is indeed an internal plugin, please
-open an issue on GitHub:
-
-    https://github.com/zellij-org/zellij/issues
 "
     )]
     BuiltinPluginNonexistent {
@@ -772,7 +768,7 @@ mod not_wasm {
 
 -> To get additional information, check the log at: {}
 -> To see a backtrace next time, reproduce the error with: RUST_BACKTRACE=1 zellij [...]
--> To help us fix this, please open an issue: https://github.com/zellij-org/zellij/issues
+-> To help us fix this, please open an issue: https://github.com/domsleee/switchboard/issues
 
 ",
                 crate::consts::ZELLIJ_TMP_LOG_FILE.display().to_string()

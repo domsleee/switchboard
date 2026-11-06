@@ -3,6 +3,7 @@ mod agent_setup;
 pub(crate) mod artifacts;
 pub(crate) mod askpass;
 pub(crate) mod attention;
+mod skill_health;
 pub use attention::forward_hook;
 mod chats;
 mod control;
@@ -12,6 +13,7 @@ mod logs;
 mod mesh;
 mod output_diagnostics;
 pub(crate) mod peer_bridge;
+mod push;
 mod tasks;
 mod update_watch;
 use axum::{
@@ -53,6 +55,9 @@ const BRIDGE: &str = "<head><script src=\"/link-config.js\"></script><script src
 
 #[derive(Clone, Deserialize)]
 pub struct RelayConfig {
+    /// Explicit HTTPS origin served by a private reverse proxy (e.g. Tailscale Serve).
+    #[serde(default)]
+    pub browser_origin: Option<String>,
     pub hosts: Vec<HostConfig>,
     #[serde(default)]
     pub artifact_proxy: Option<artifacts::ArtifactConfig>,
@@ -101,6 +106,8 @@ struct RelayState {
     // sudo password requests waiting for an answer in this computer's sidebar.
     askpass: Arc<askpass::Prompts>,
     html_previews: artifacts::html::Previews,
+    push: Option<Arc<push::Push>>,
+    browser_origin: Option<String>,
 }
 
 impl RelayState {
@@ -732,8 +739,42 @@ fn trusted(headers: &HeaderMap, port: u16) -> bool {
             .is_some_and(|h| h == "cross-site")
 }
 
+fn valid_browser_origin(origin: &str) -> bool {
+    url::Url::parse(origin).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url.host_str().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.path() == "/"
+            && url.query().is_none()
+            && url.fragment().is_none()
+            && url.origin().ascii_serialization() == origin
+    })
+}
+
+fn trusted_browser_origin(headers: &HeaderMap, origin: &str) -> bool {
+    if !valid_browser_origin(origin) {
+        return false;
+    }
+    let authority = origin.strip_prefix("https://").unwrap();
+    let default_port = format!("{authority}:443");
+    headers
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .is_some_and(|host| host == authority || host == default_port)
+        && headers.get(header::ORIGIN).is_none_or(|h| h == origin)
+        && !headers
+            .get("sec-fetch-site")
+            .is_some_and(|h| h == "cross-site")
+}
+
 async fn guard(State(state): State<RelayState>, request: Request, next: Next) -> Response {
-    if !trusted(request.headers(), state.port) {
+    if !trusted(request.headers(), state.port)
+        && !state
+            .browser_origin
+            .as_deref()
+            .is_some_and(|origin| trusted_browser_origin(request.headers(), origin))
+    {
         return (StatusCode::FORBIDDEN, "Untrusted relay request").into_response();
     }
     let mut response = next.run(request).await;
@@ -931,6 +972,8 @@ async fn proxy(
         )?
     );
     if let Ok(websocket) = websocket {
+        let viewer = crate::switchboard_viewers::viewer()
+            .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "Update in progress"))?;
         let upstream = tokio::time::timeout(Duration::from_secs(20), host.websocket(&path))
             .await
             .map_err(|_| (StatusCode::BAD_GATEWAY, "Host connection timed out"))?
@@ -943,8 +986,9 @@ async fn proxy(
         return Ok(websocket
             .max_message_size(LIMIT)
             .max_frame_size(LIMIT)
-            .on_upgrade(move |downstream| {
-                pump_with_output_diagnostics(downstream, upstream, source)
+            .on_upgrade(move |downstream| async move {
+                let _viewer = viewer;
+                pump_with_output_diagnostics(downstream, upstream, source).await
             }));
     }
     let method = request.method().clone();
@@ -1133,7 +1177,11 @@ async fn asset(request: Request) -> Response {
     let name = if name.is_empty() { "index.html" } else { name };
     let mime = match name {
         "index.html" | "computers.html" | "messages.html" => "text/html; charset=utf-8",
-        "style.css" | "messages.css" | "gallery.css" => "text/css; charset=utf-8",
+        "manifest.webmanifest" => "application/manifest+json; charset=utf-8",
+        "icon-192.png" | "icon-512.png" => "image/png",
+        "style.css" | "messages.css" | "gallery.css" | "conversation.css" => {
+            "text/css; charset=utf-8"
+        },
         "app.js"
         | "startup-cache.js"
         | "bridge.js"
@@ -1150,6 +1198,10 @@ async fn asset(request: Request) -> Response {
         | "messages.js"
         | "terminal-diagnostics.js"
         | "tasks.js"
+        | "notifications.js"
+        | "sw.js"
+        | "conversation-media.js"
+        | "conversation.js"
         | "predict.js" => "application/javascript",
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
@@ -1160,6 +1212,12 @@ async fn asset(request: Request) -> Response {
 }
 
 async fn state(config: &RelayConfig, port: u16) -> anyhow::Result<RelayState> {
+    if let Some(origin) = &config.browser_origin {
+        anyhow::ensure!(
+            valid_browser_origin(origin),
+            "browser_origin must be an HTTPS origin without a path or credentials"
+        );
+    }
     let mut hosts = HashMap::new();
     let mut order = Vec::new();
     let mut candidates = Vec::new();
@@ -1200,6 +1258,8 @@ async fn state(config: &RelayConfig, port: u16) -> anyhow::Result<RelayState> {
         artifact: config.artifact_proxy.clone(),
         askpass: Default::default(),
         html_previews: Default::default(),
+        push: None,
+        browser_origin: config.browser_origin.clone(),
     })
 }
 
@@ -1241,6 +1301,10 @@ fn app(state: RelayState) -> Router {
         )
         .route("/api/hosts", get(self::hosts))
         .route("/api/hosts/{host}", get(host))
+        .route("/api/push/config", get(push::config))
+        .route("/api/push/test", post(push::test))
+        .route("/api/push/subscribe", post(push::subscribe))
+        .route("/api/push/unsubscribe", post(push::unsubscribe))
         .route("/api/attention", get(attention::handler))
         .route("/api/attention/ack", post(attention::acknowledge))
         // Hook bodies carry tool output, which can be large.
@@ -1415,6 +1479,7 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
     let failures = logs::start(failures_file.clone()).await;
     let polling =
         attention::start(state.clone(), config_path.with_extension("attention.json")).await;
+    let push = push::start(&mut state, config_path.with_extension("push.json")).await;
     let update_tasks = tasks::start(state.clone()).await;
     let also =
         (port != DEFAULT_PORT).then(|| tokio::spawn(serve_also_on(state.clone(), DEFAULT_PORT)));
@@ -1429,6 +1494,9 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
     pairing.abort();
     if let Some(task) = also {
         task.abort();
+    }
+    if let Some(push) = push {
+        push.abort();
     }
     update_tasks.abort();
     update_watch.abort();
@@ -1465,6 +1533,100 @@ async fn shutdown() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switchboard_browser_origin_is_explicit_https_and_does_not_allow_other_origins() {
+        let origin = "https://mac.tailnet.ts.net";
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, "mac.tailnet.ts.net".parse().unwrap());
+        headers.insert(header::ORIGIN, origin.parse().unwrap());
+        assert!(!trusted(&headers, 8090));
+        assert!(trusted_browser_origin(&headers, origin));
+        headers.insert(header::ORIGIN, "https://evil.test".parse().unwrap());
+        assert!(!trusted_browser_origin(&headers, origin));
+        headers.insert(header::ORIGIN, origin.parse().unwrap());
+        headers.insert("sec-fetch-site", "cross-site".parse().unwrap());
+        assert!(!trusted_browser_origin(&headers, origin));
+        for bad in [
+            "http://mac.tailnet.ts.net",
+            "https://u:p@mac.tailnet.ts.net",
+            "https://mac.tailnet.ts.net/path",
+            "https://mac.tailnet.ts.net#fragment",
+        ] {
+            assert!(!valid_browser_origin(bad));
+        }
+    }
+
+    #[tokio::test]
+    async fn switchboard_reverse_proxy_origin_works_through_the_router_and_rejects_cross_site_posts(
+    ) {
+        use tower::ServiceExt;
+        let relay = router(
+            RelayConfig {
+                hosts: vec![],
+                artifact_proxy: None,
+                browser_origin: Some("https://mac.tailnet.ts.net".into()),
+            },
+            8090,
+        )
+        .await
+        .unwrap();
+        for (origin, status) in [
+            ("https://mac.tailnet.ts.net", StatusCode::OK),
+            ("https://evil.test", StatusCode::FORBIDDEN),
+        ] {
+            let response = relay
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/health")
+                        .header(header::HOST, "mac.tailnet.ts.net")
+                        .header(header::ORIGIN, origin)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), status);
+        }
+        let response = relay
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/push/subscribe")
+                    .header(header::HOST, "mac.tailnet.ts.net")
+                    .header(header::ORIGIN, "https://evil.test")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn switchboard_relay_serves_installation_assets_with_browser_mime_types() {
+        for (path, mime) in [
+            (
+                "manifest.webmanifest",
+                "application/manifest+json; charset=utf-8",
+            ),
+            ("sw.js", "application/javascript"),
+            ("icon-192.png", "image/png"),
+            ("icon-512.png", "image/png"),
+        ] {
+            let response = asset(
+                Request::builder()
+                    .uri(format!("/{path}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert_eq!(response.headers()[header::CONTENT_TYPE], mime);
+        }
+    }
 
     // The browser tests serve static files directly, so only this catches a page
     // that loads a file the relay does not serve (tasks.js was missed this way).
@@ -1975,6 +2137,8 @@ mod tests {
             }),
             askpass: Default::default(),
             html_previews: Default::default(),
+            push: None,
+            browser_origin: None,
         };
         let paired = Host::new(config("https://192.0.2.69:8082")).unwrap();
         assert_eq!(
@@ -2023,6 +2187,7 @@ mod tests {
         declared.id = "declared".into();
         declared.escape_transport = Some("local".into());
         let config = RelayConfig {
+            browser_origin: None,
             hosts: vec![config("http://127.0.0.1:8082"), remote, declared],
             artifact_proxy: None,
         };
@@ -2142,6 +2307,7 @@ mod tests {
         peer.escape_transport = Some("gateway".into());
         let mut relay = state(
             &RelayConfig {
+                browser_origin: None,
                 hosts: vec![],
                 artifact_proxy: None,
             },
@@ -2248,6 +2414,7 @@ mod tests {
     async fn switchboard_relay_on_another_port_also_answers_hooks_on_the_default_port() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let config = RelayConfig {
+            browser_origin: None,
             hosts: vec![config("http://127.0.0.1:8082")],
             artifact_proxy: None,
         };
@@ -2334,6 +2501,7 @@ mod tests {
         use tower::ServiceExt;
         let app = router(
             RelayConfig {
+                browser_origin: None,
                 hosts: vec![],
                 artifact_proxy: None,
             },
@@ -2354,6 +2522,9 @@ mod tests {
             ("/terminal-diagnostics.js", "application/javascript"),
             ("/predict.js", "application/javascript"),
             ("/thumbnails.js", "application/javascript"),
+            ("/conversation.js", "application/javascript"),
+            ("/conversation-media.js", "application/javascript"),
+            ("/conversation.css", "text/css; charset=utf-8"),
         ] {
             let response = app
                 .clone()
@@ -2466,6 +2637,7 @@ mod tests {
         let host = config("http://127.0.0.1:8082");
         assert!(router(
             RelayConfig {
+                browser_origin: None,
                 hosts: vec![host.clone(), host],
                 artifact_proxy: None,
             },
@@ -2572,6 +2744,7 @@ mod tests {
         windows_config.name = "Windows".into();
         let relay = router(
             RelayConfig {
+                browser_origin: None,
                 hosts: vec![upstream_config, windows_config],
                 artifact_proxy: None,
             },
