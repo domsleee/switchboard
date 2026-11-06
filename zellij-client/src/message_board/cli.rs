@@ -68,7 +68,15 @@ impl Client {
         path: &str,
         payload: Option<serde_json::Value>,
     ) -> anyhow::Result<(u16, serde_json::Value)> {
-        let url = self.origin.join(&format!("api/message-board/{path}"))?;
+        self.request_path(method, &format!("api/message-board/{path}"), payload)
+    }
+    fn request_path(
+        &self,
+        method: &str,
+        path: &str,
+        payload: Option<serde_json::Value>,
+    ) -> anyhow::Result<(u16, serde_json::Value)> {
+        let url = self.origin.join(path)?;
         let body = payload
             .map(|v| serde_json::to_vec(&v).unwrap())
             .unwrap_or_default();
@@ -83,7 +91,7 @@ impl Client {
         // Never follow a redirect with a machine credential, and never start a local fallback board.
         let mut response = self.http.send(request).map_err(|_| {
             anyhow::anyhow!(
-                "Configured board is unavailable; keep the input and retry with the same send key"
+                "No response; keep the input and retry with the same destination and send key"
             )
         })?;
         let status = response.status();
@@ -97,7 +105,7 @@ impl Client {
             "Board response exceeded its limit"
         );
         let value: serde_json::Value =
-            serde_json::from_slice(&bytes).context("Board returned an invalid response")?;
+            serde_json::from_slice(&bytes).context("Relay returned an invalid response; check that it supports this command before retrying with the same key")?;
         Ok((status.as_u16(), value))
     }
     fn request(
@@ -199,6 +207,56 @@ fn relay_url(explicit: Option<&str>, registration: &std::path::Path) -> String {
         .unwrap_or_else(|| default_relay_url(registration))
 }
 pub fn run_cli(cli: &MessageCli) -> anyhow::Result<()> {
+    if let MessageCommand::Queue {
+        host,
+        thread,
+        body_file,
+        send_key,
+    } = &cli.command
+    {
+        let message = body(body_file)?;
+        anyhow::ensure!(
+            uuid::Uuid::parse_str(thread).is_ok_and(|id| id.to_string() == *thread),
+            "--thread must be a canonical Codex session UUID"
+        );
+        anyhow::ensure!(
+            !message.trim().is_empty() && message.len() <= 8192 && !message.contains('\0'),
+            "Queue messages must contain 1–8192 UTF-8 bytes without NUL"
+        );
+        anyhow::ensure!(
+            !host.is_empty() && host != "." && host != "..",
+            "Supply a destination host ID or local"
+        );
+        let key = send_key
+            .clone()
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        anyhow::ensure!(
+            !key.is_empty()
+                && key.len() <= 128
+                && key
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c)),
+            "Send keys must contain 1–128 letters, numbers, dashes, underscores or dots"
+        );
+        eprintln!("Send key: {key}");
+        // Native delivery always uses this computer's relay, independent of board configuration.
+        let mut client = Client::relay(&local_relay_url(cli.relay_url.as_deref()))?;
+        client.http = HttpClient::builder()
+            .timeout(Duration::from_secs(30))
+            .redirect_policy(RedirectPolicy::None)
+            .build()?;
+        let (status, result) = client.request_path(
+            "POST",
+            &format!("api/hosts/{}/codex/queue", segment(host)),
+            Some(json!({"thread":thread,"message":message,"send_key":key})),
+        )?;
+        println!("{}", serde_json::to_string(&result)?);
+        anyhow::ensure!(
+            (200..300).contains(&status) && result["status"] == "queued",
+            "Native queue did not confirm acceptance; keep the same send key for any retry"
+        );
+        return Ok(());
+    }
     if matches!(cli.command, MessageCommand::Serve) {
         let config = cli
             .board_config
@@ -365,7 +423,7 @@ pub fn run_cli(cli: &MessageCli) -> anyhow::Result<()> {
             eprintln!("Send key: {}", request.send_key);
             client.request("POST", "messages", Some(serde_json::to_value(request)?))?
         },
-        MessageCommand::Serve => unreachable!(),
+        MessageCommand::Serve | MessageCommand::Queue { .. } => unreachable!(),
     };
     if cli.json {
         println!("{}", serde_json::to_string(&result)?);
@@ -417,6 +475,58 @@ fn safe_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switchboard_native_messages_cli_uses_relay_without_board_registration() {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut first = String::new();
+            reader.read_line(&mut first).unwrap();
+            assert!(first.starts_with("POST /api/hosts/fixture/codex/queue "));
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse::<usize>().unwrap();
+                }
+            }
+            let mut bytes = vec![0; length];
+            reader.read_exact(&mut bytes).unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(value["message"], "Hello\n世界");
+            assert_eq!(value["send_key"], "cli-test");
+            let response = r#"{"status":"queued","send_key":"cli-test"}"#;
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).unwrap();
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("message.txt");
+        std::fs::write(&file, "Hello\n世界").unwrap();
+        let cli = MessageCli {
+            board_config: Some(dir.path().join("nonexistent-board.json")),
+            relay_url: Some(format!("http://{address}")),
+            agent_session: None,
+            json: true,
+            command: MessageCommand::Queue {
+                host: "fixture".into(),
+                thread: "00000000-0000-4000-8000-000000000001".into(),
+                body_file: Some(file),
+                send_key: Some("cli-test".into()),
+            },
+        };
+        run_cli(&cli).unwrap();
+        server.join().unwrap();
+    }
     #[test]
     fn message_board_cli_discovers_registered_relay_port_without_overriding_explicit_url() {
         let dir = tempfile::tempdir().unwrap();

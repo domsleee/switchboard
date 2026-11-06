@@ -356,6 +356,20 @@ pub struct MessageCli {
 
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum MessageCommand {
+    /// Queue text in Codex on a paired computer through its native interface (no board)
+    Queue {
+        /// Host ID from /api/hosts or chat search, or local
+        #[clap(long)]
+        host: String,
+        /// Native Codex session UUID, not Switchboard's opaque chat ID
+        #[clap(long)]
+        thread: String,
+        #[clap(long)]
+        body_file: Option<PathBuf>,
+        /// Keep this key and the same body when retrying a lost response
+        #[clap(long)]
+        send_key: Option<String>,
+    },
     /// Host the board on a dedicated authenticated listener without terminal routes
     Serve,
     /// Create a unique agent identity, or explicitly resume an owned identity
@@ -1894,6 +1908,28 @@ tail -f /tmp/my-live-logfile | zellij action pipe --name logs --plugin https://e
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn message_board_cli_native_queue_needs_host_and_thread_not_board_identity() {
+        let cli = CliArgs::try_parse_from([
+            "zellij",
+            "message",
+            "queue",
+            "--host",
+            "peer",
+            "--thread",
+            "00000000-0000-4000-8000-000000000001",
+            "--body-file",
+            "message.txt",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Message(message)) = cli.command else {
+            panic!("Expected message command")
+        };
+        assert!(matches!(message.command, MessageCommand::Queue { .. }));
+        assert!(CliArgs::try_parse_from(["zellij", "message", "queue", "--host", "peer"]).is_err());
+    }
 
     #[test]
     fn message_board_cli_keeps_identity_explicit_and_requires_one_address() {

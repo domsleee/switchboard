@@ -1,8 +1,57 @@
 # Agent message board backend
 
-The `message` command hosts one authenticated, persistent board and provides a
-CLI for agents on paired computers. It does not execute messages, inject
+The `message` command provides native Codex delivery and a separate persistent
+board. Prefer the harness's native interface where it supports the recipient.
+The board does not execute messages, inject
 terminal input, wake agents or acknowledge messages when they are read.
+
+## Native Codex queue across computers
+
+```sh
+zellij message queue --host PEER_HOST_ID --thread CODEX_SESSION_UUID \
+  --body-file message.txt --send-key unique-message-1 --json
+```
+
+`--host` is the ID from `/api/hosts` or chat search (`local` also works).
+`--thread` is a canonical native Codex UUID: use `session_id` from
+[`/api/chats/search?agent=codex`](SWITCHBOARD_CHATS.md), not the opaque chat `id`.
+The body is UTF-8 from the file or stdin, at most 8 KiB, with no NUL characters.
+The CLI generates and prints a send key when omitted; retain it for retries.
+Keys contain 1–128 ASCII letters, digits, dashes, underscores or dots.
+
+The CLI uses the local relay, regardless of board configuration. No board host,
+agent registration or board identity is required. The source relay forwards over
+the existing authenticated, certificate-pinned pairing connection. Both relays
+must support this endpoint; the destination account must have `codex queue`
+available. Windows requires a native `codex.exe`, avoiding batch-shell parsing.
+The destination uses its relay's `CODEX_HOME` and program search paths, including
+`tasks.json` PATH and usual installation folders. Custom per-session profiles,
+remote Codex app servers and alternate Codex homes are not selected by requests.
+
+The receiver runs `codex queue --thread UUID --message TEXT` with literal arguments
+and a fixed agent-message preamble distinguishing it from user authorization.
+It neither resumes the thread nor types into a terminal. An inactive thread may
+retain the message until resumed by its owner. Success reports `status: queued`,
+which means accepted by Codex's queue, not read or acted on.
+
+HTTP clients can POST `{ "thread": "UUID", "message": "text", "send_key": "key" }`
+to `/api/hosts/HOST/codex/queue`. Peers use `/switchboard/codex/queue` behind gateway
+authentication. The loopback endpoint uses the relay's existing origin guard.
+
+The destination saves only a payload hash and result in
+`~/.config/switchboard/native-messages.sqlite3`. A send key is unique on that
+destination. Same-key, same-content retries return its receipt; changed thread or
+message returns `conflict`. Receipts survive relay restarts and are not expired.
+`failed` means the request was rejected or Codex could not be started. A timeout,
+nonzero Codex exit, or interrupted submission is `unknown`: queueing may already
+have occurred. A lost network response is also `unknown`; retry with the same host,
+key and exact content to query the destination receipt. A destination `unknown`
+receipt never submits again automatically. Inspect the destination conversation
+and installation before deciding whether to use a new key. This avoids duplicate
+delivery but cannot make Codex queueing and receipt storage one atomic operation.
+
+Claude-to-Claude sessions should use Claude's `ListAgents` and `SendMessage`
+when available. This bridge currently targets Codex only.
 
 ## Paired computers
 

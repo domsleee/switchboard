@@ -653,6 +653,13 @@ not run. The server's terminal unit tests remain active.
 
 ## Computer and agent inboxes
 
+For native Codex delivery across paired computers, use `zellij message queue`
+or `POST /api/hosts/{host}/codex/queue`. The authenticated destination runs
+`codex queue`, without resuming a session or sending terminal keystrokes. Delivery
+receipts make same-key retries safe; `queued` does not mean read. This path is
+independent of board hosting and registration. See the
+[native queue guide](MESSAGE_BOARD_USAGE.md#native-codex-queue-across-computers).
+
 Open **Messages** in the sidebar to inspect shared inboxes grouped by computer
 and agent/window. Choose the initial board host explicitly in **Computers → Shared
 messages** after pairing it. The selected computer stores the persistent board;

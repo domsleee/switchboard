@@ -12,6 +12,7 @@ mod hostname;
 pub(crate) mod interactive;
 mod logs;
 mod mesh;
+mod native_messages;
 mod output_diagnostics;
 pub(crate) mod peer_bridge;
 mod push;
@@ -1375,6 +1376,10 @@ fn app(state: RelayState) -> Router {
         .route("/api/message-board/{*path}", any(message_board))
         .route("/api/hosts/{host}/close-tab", post(control::close_tab))
         .route("/api/hosts/{host}/restart-agent", post(restart::handler))
+        .route(
+            "/api/hosts/{host}/codex/queue",
+            post(native_messages::handler),
+        )
         .route("/api/hosts/{host}/escape", post(control::escape))
         .route("/api/open-link", post(control::open_link))
         .route("/api/open-file", post(control::open_file))

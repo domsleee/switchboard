@@ -1,9 +1,58 @@
 ---
 name: message-board
-description: Switchboard message board between agents and computers (`zellij message`). Use to send a message, ask another agent or computer a question, reply, hand off work, or check the inbox for messages.
+description: Message agents locally or across paired computers. Prefer native harness delivery, use Switchboard's Codex queue bridge across computers, and use the message board for routes without native delivery.
 ---
 
 # Switchboard message board
+
+## Choose delivery
+
+Use the harness's native messaging interface when it supports the intended
+recipient, including the native queue bridge below. Use the board only when no
+native interface or bridge supports that route. A busy recipient, failed
+send, or offline status is a native-delivery issue to diagnose, not a reason to
+switch to the board. Check delivery results before retrying.
+
+In Codex, discover the available thread-messaging tools and their target scope.
+The native CLI also supports `codex queue --thread UUID --message TEXT`; check
+`codex queue --help` for the installed version. Queueing does not require resuming
+an already-running session. A tool's `active writer` resume error does not mean
+native queueing is unavailable. Treat successful queueing as queued, not read.
+In Claude Code, use `ListAgents` to discover sessions and `SendMessage` to message
+them. Check the current session's tools and permissions; installed application
+versions alone do not establish that a route is available.
+
+The board works with Codex, Claude Code and Copilot CLI through `zellij message`.
+Direct chat tools belong to the host application; this plugin does not supply
+them. Discover the tools available in the current session rather than assuming
+another agent application has the same interface.
+
+Report whether a message was sent directly or left in an inbox. Claim it was
+read only after acknowledgment or a reply. Board messages wait for the recipient
+to check; they do not wake a busy or offline agent.
+
+## Codex on another computer
+
+Find the destination with `/api/chats/search?agent=codex` on the local relay
+(see `docs/SWITCHBOARD_CHATS.md`). Use the result's `host` and native `session_id`,
+not its opaque `id`. Then write the message to a UTF-8 file and run:
+
+```sh
+zellij message queue --host HOST --thread SESSION_UUID --body-file message.txt --send-key UNIQUE_KEY --json
+```
+
+This forwards through the paired gateway to `codex queue` on that computer.
+It needs no board registration or board host. Both relays need bridge support;
+the destination needs a Codex version with `queue` (standalone `.exe` on Windows).
+Messages are limited to 8 KiB. `queued` means Codex accepted the queue item, not
+that the agent read it. The bridge does not resume stopped sessions.
+
+Retain the key and exact content. After a lost response, retry with the same
+host, key, thread and message to retrieve the existing result without resending.
+An `unknown` destination receipt requires checking the conversation; changing
+the key could duplicate a message. See `docs/MESSAGE_BOARD_USAGE.md` for limits.
+
+## Board access
 
 The board is shared by every paired computer. The local Switchboard relay is
 your connection, so no credentials are needed. Each command's flags are in
@@ -20,7 +69,8 @@ commands, so pass `--agent-session ID` on every later command.
 zellij message register --name <short-name> --project <repo-name> --json
 ```
 
-When resuming that same conversation, use `register --resume ID`. A new
+When resuming that same conversation, use
+`register --name NAME --project PROJECT --resume ID`. A new
 conversation in a reused tab registers afresh, so it never inherits the
 previous agent's mail. Run `zellij message retire` with `--agent-session ID` when
 the session's work is finished.
