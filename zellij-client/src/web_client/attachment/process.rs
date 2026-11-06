@@ -31,8 +31,17 @@ fn directory() -> Result<PathBuf> {
                 .join(".local/share/switchboard/attachments"),
         ))
 }
-fn endpoint_path(config: &Path, session: &str) -> Result<PathBuf> {
-    let key = format!("{}\0{session}", config.display());
+fn recovery_identity(
+    recovery: Option<&super::super::sharing_recovery::SharingRecovery>,
+    session: &str,
+) -> String {
+    recovery
+        .filter(|r| r.is_target(session))
+        .map(|r| r.socket_identity())
+        .unwrap_or_default()
+}
+fn endpoint_path(config: &Path, session: &str, recovery: &str) -> Result<PathBuf> {
+    let key = format!("{}\0{session}\0{recovery}", config.display());
     Ok(directory()?.join(format!(
         "{}.json",
         Sha256::digest(key.as_bytes())
@@ -71,17 +80,18 @@ fn call(endpoint: &Endpoint, path: &str, body: Option<Vec<u8>>) -> Result<serde_
     );
     Ok(serde_json::from_slice(&response.bytes()?)?)
 }
-fn find(config: &Path, session: &str) -> Result<Endpoint> {
-    let endpoint: Endpoint = serde_json::from_slice(&fs::read(endpoint_path(config, session)?)?)?;
+fn find(config: &Path, session: &str, recovery: &str) -> Result<Endpoint> {
+    let endpoint: Endpoint =
+        serde_json::from_slice(&fs::read(endpoint_path(config, session, recovery)?)?)?;
     ensure!(endpoint.protocol == 1, "Unsupported attachment protocol");
     Ok(endpoint)
 }
-fn launch(config: &Path, session: &str) -> Result<Endpoint> {
-    let path = endpoint_path(config, session)?;
+fn launch(config: &Path, session: &str, recovery: &str) -> Result<Endpoint> {
+    let path = endpoint_path(config, session, recovery)?;
     fs::create_dir_all(path.parent().unwrap())?;
     let lock = open_private(&path.with_extension("launch-lock"))?;
     lock.lock()?;
-    if let Ok(endpoint) = find(config, session) {
+    if let Ok(endpoint) = find(config, session, recovery) {
         if call(&endpoint, "/health", None).is_ok() {
             return Ok(endpoint);
         }
@@ -115,7 +125,7 @@ fn launch(config: &Path, session: &str) -> Result<Endpoint> {
         if let Some(status) = child.try_wait()? {
             bail!("Attachment worker exited: {status}");
         }
-        if let Ok(endpoint) = find(config, session) {
+        if let Ok(endpoint) = find(config, session, recovery) {
             if call(&endpoint, "/health", None).is_ok() {
                 // Reap a later Unix exit without tying the worker to the service's lifetime.
                 std::thread::spawn(move || {
@@ -136,13 +146,14 @@ pub(in crate::web_client) async fn bootstrap(
     session: String,
 ) -> Result<CreateClientIdResponse> {
     // Block new retained viewers during activation, including first-upgrade rollback.
-    let _admission = crate::switchboard_viewers::viewer()?;
+    let _admission = crate::switchboard_viewers::bootstrap()?;
     let welcome =
         super::super::types::take_pending_welcome_session(&app.pending_welcome_sessions, &session);
+    let recovery = recovery_identity(app.sharing_recovery.as_ref(), &session);
     let config = app.config_file_path.clone();
     let worker_session = session.clone();
     let reply = tokio::task::spawn_blocking(move || {
-        let endpoint = launch(&config, &worker_session)?;
+        let endpoint = launch(&config, &worker_session, &recovery)?;
         call(
             &endpoint,
             "/attach",
@@ -173,7 +184,11 @@ pub(in crate::web_client) async fn proxy(
 ) -> Response {
     // This route is protected by the ordinary web authentication middleware.
     // Never create a new worker on resume: losing the state owner is terminal.
-    let endpoint = match find(&app.config_file_path, &query.session) {
+    let endpoint = match find(
+        &app.config_file_path,
+        &query.session,
+        &recovery_identity(app.sharing_recovery.as_ref(), &query.session),
+    ) {
         Ok(e) => e,
         Err(_) => return StatusCode::GONE.into_response(),
     };
@@ -270,7 +285,17 @@ pub(in crate::web_client) fn run_worker(
             .or_else(Config::default_config_file_path)
             .context("No configuration")?;
         let session = session.to_string_lossy().into_owned();
-        let path = endpoint_path(&config_path, &session)?;
+        let sharing_recovery = super::super::sharing_recovery::SharingRecovery::from_environment(
+            Ipv4Addr::LOCALHOST.into(),
+            &config,
+            &options,
+        )
+        .map_err(anyhow::Error::msg)?;
+        let path = endpoint_path(
+            &config_path,
+            &session,
+            &recovery_identity(sharing_recovery.as_ref(), &session),
+        )?;
         fs::create_dir_all(path.parent().unwrap())?;
         let lifetime = open_private(&path.with_extension("worker-lock"))?;
         lifetime.try_lock()?;
@@ -283,12 +308,6 @@ pub(in crate::web_client) fn run_worker(
             pid: std::process::id(),
             build: env!("SWITCHBOARD_COMMIT").into(),
         };
-        let sharing_recovery = super::super::sharing_recovery::SharingRecovery::from_environment(
-            Ipv4Addr::LOCALHOST.into(),
-            &config,
-            &options,
-        )
-        .map_err(anyhow::Error::msg)?;
         let app = AppState {
             connection_table: Arc::new(Mutex::new(super::super::types::ConnectionTable::default())),
             config: Arc::new(Mutex::new(config)),
