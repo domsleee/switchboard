@@ -303,6 +303,10 @@ pub enum AgentResumeCommand {
 
 #[derive(Debug, Args, Clone, Serialize, Deserialize)]
 pub struct SwitchboardUpdateCli {
+    /// Activate this exact published commit, reconnecting viewers but preserving terminals
+    #[clap(long, conflicts_with = "check")]
+    #[serde(default)]
+    pub activate: Option<String>,
     /// Download and verify without changing services
     #[clap(long)]
     pub check: bool,

@@ -310,8 +310,80 @@ struct State {
     notice: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pending: Option<Pending>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ready: Option<ReadyUpdate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    activation: Option<Activation>,
     #[serde(flatten)]
     other: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ReadyUpdate {
+    commit: String,
+    since: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Activation {
+    commit: String,
+    expires: u64,
+}
+fn epoch() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+fn valid_commit(commit: &str) -> bool {
+    commit.len() == 40 && commit.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// One-shot request for the installed scheduled updater, outside the relay's lifetime.
+pub(crate) fn request_activation(directory: &Path, commit: &str) -> Result<()> {
+    ensure!(valid_commit(commit), "Invalid update commit");
+    let state = State::load(&directory.join("state.json"))?;
+    ensure!(
+        state
+            .ready
+            .as_ref()
+            .is_some_and(|ready| ready.commit == commit)
+            || state
+                .pending
+                .as_ref()
+                .and_then(|pending| pending.target.as_deref())
+                == Some(commit),
+        "That update is no longer ready; refresh Health"
+    );
+    fs::create_dir_all(directory)?;
+    let mut file = tempfile::NamedTempFile::new_in(directory)?;
+    serde_json::to_writer(
+        file.as_file_mut(),
+        &Activation {
+            commit: commit.into(),
+            expires: epoch() + 300,
+        },
+    )?;
+    file.persist(directory.join("activate.json"))?;
+    Ok(())
+}
+fn take_activation(directory: &Path) -> Result<Option<String>> {
+    let consumed = directory.join(format!("activation-{}.json", uuid::Uuid::new_v4()));
+    match fs::rename(directory.join("activate.json"), &consumed) {
+        Ok(()) => {},
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    }
+    let body = fs::read(&consumed);
+    let _ = fs::remove_file(consumed);
+    let request: Activation = serde_json::from_slice(&body?)?;
+    ensure!(
+        valid_commit(&request.commit)
+            && request.expires >= epoch()
+            && request.expires <= epoch() + 300,
+        "Activation request expired or invalid; choose Update now again"
+    );
+    Ok(Some(request.commit))
 }
 
 /// Rollback journal, written before the first service mutation.
@@ -437,6 +509,7 @@ pub struct Updater {
     windows: bool,
     platform: String,
     check: bool,
+    activation: RefCell<Option<String>>,
     config: Option<PathBuf>,
     host_config: PathBuf,
     port: u16,
@@ -485,6 +558,7 @@ impl Updater {
             windows,
             platform: target_platform()?.to_owned(),
             check: cli.check,
+            activation: RefCell::new(cli.activate.clone()),
             config: cli.config.clone().or_else(|| given(running.config)),
             host_config: cli.host_config.clone().unwrap_or_else(|| {
                 home.join(if windows {
@@ -545,10 +619,37 @@ impl Updater {
             .read(true)
             .append(true)
             .open(self.state_directory.join("automatic.lock"))?;
-        lock.try_lock()
-            .map_err(|_| anyhow!("Another automatic update is running"))?;
+        // Health briefly probes this lock to distinguish a live updater from a
+        // journal left by a crash. Let that read-only probe finish before giving up.
+        for attempt in 0..3 {
+            match lock.try_lock() {
+                Ok(()) => break,
+                Err(std::fs::TryLockError::WouldBlock) if attempt < 2 => {
+                    std::thread::sleep(Duration::from_millis(20))
+                },
+                Err(_) => return Err(anyhow!("Another automatic update is running")),
+            }
+        }
+        let previous_error = State::load(&self.state_path())
+            .ok()
+            .and_then(|state| state.error);
         let result = (|| {
+            if !self.check && self.activation.borrow().is_none() {
+                *self.activation.borrow_mut() = take_activation(&self.state_directory)?;
+            }
             let mut state = State::load(&self.state_path())?;
+            if !self.check {
+                state.activation = self.activation.borrow().as_ref().map(|commit| Activation {
+                    commit: commit.clone(),
+                    expires: epoch() + 300,
+                });
+                if state.activation.is_some() {
+                    state.error = None;
+                    state.notice =
+                        Some("Preparing requested update; terminals will briefly reconnect".into());
+                    state.save(&self.state_path())?;
+                }
+            }
             if let Some(pending) = state.pending.clone() {
                 self.settle_pending(&mut state, &pending)?;
                 if state.pending.is_some() {
@@ -558,6 +659,18 @@ impl Updater {
             self.update(&mut state)
         })();
         // Closing is not enough: a child forked meanwhile shares the lock until it execs.
+        self.activation.borrow_mut().take();
+        if !self.check {
+            if let Ok(mut state) = State::load(&self.state_path()) {
+                state.activation = None;
+                if let Err(error) = &result {
+                    if state.error == previous_error || state.error.is_none() {
+                        state.error = Some(format!("{error:#}"));
+                    }
+                }
+                let _ = state.save(&self.state_path());
+            }
+        }
         let _ = lock.unlock();
         result
     }
@@ -589,11 +702,17 @@ impl Updater {
                     !self.check,
                     "Interrupted update requires recovery before checking another build"
                 );
-                let Some(_viewers) = crate::switchboard_viewers::update(&self.viewer_lock)? else {
+                let _viewers = crate::switchboard_viewers::update(&self.viewer_lock)?;
+                if _viewers.is_none()
+                    && !pending
+                        .target
+                        .as_deref()
+                        .is_some_and(|target| self.activating(target))
+                {
                     state.notice =
                         Some("Recovery waiting for terminal viewers to disconnect".into());
                     return state.save(&self.state_path());
-                };
+                }
                 let result = self.with_handoff(|| self.recover(pending));
                 // Reported once: a failed recovery never blocks later builds.
                 state.pending = None;
@@ -624,6 +743,9 @@ impl Updater {
         let manifest: Manifest = serde_json::from_slice(&self.fetch(&asset("bundle.json"))?)
             .context("Invalid release manifest")?;
         validate_manifest(&manifest, &self.platform)?;
+        if let Some(requested) = self.activation.borrow().as_ref() {
+            ensure!(requested == &manifest.commit, "The requested update was superseded; check for updates and choose Update now again");
+        }
         if !is_due(state, manifest.run_number) {
             // Scheduled runs log every few minutes; only say so when someone is watching.
             if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
@@ -641,6 +763,7 @@ impl Updater {
                     state.commit = Some(manifest.commit.clone());
                     state.error = None;
                     state.notice = None;
+                    state.ready = None;
                     println!("Already running {}", manifest.commit);
                     return state.save(&self.state_path());
                 }
@@ -672,7 +795,9 @@ impl Updater {
         }
         // Avoid expensive preflight while occupied. apply() checks again and
         // holds the lock across the actual handoff to close the admission race.
-        if crate::switchboard_viewers::update(&self.viewer_lock)?.is_none() {
+        if crate::switchboard_viewers::update(&self.viewer_lock)?.is_none()
+            && !self.activating(&manifest.commit)
+        {
             return self.defer(state, &manifest);
         }
         let before = (state.run_number, state.attempts);
@@ -691,6 +816,7 @@ impl Updater {
             Ok(true) => {
                 state.error = None;
                 state.notice = None;
+                state.ready = None;
                 println!("Updated connection services to {}", manifest.commit);
             },
             Err(error) => {
@@ -716,7 +842,21 @@ impl Updater {
         result.map(|_| ())
     }
 
+    fn activating(&self, commit: &str) -> bool {
+        self.activation.borrow().as_deref() == Some(commit)
+    }
+
     fn defer(&self, state: &mut State, manifest: &Manifest) -> Result<()> {
+        if !state
+            .ready
+            .as_ref()
+            .is_some_and(|ready| ready.commit == manifest.commit)
+        {
+            state.ready = Some(ReadyUpdate {
+                commit: manifest.commit.clone(),
+                since: epoch(),
+            });
+        }
         let notice = format!(
             "Update {} ready; waiting for terminal viewers to disconnect",
             manifest.commit
@@ -752,9 +892,16 @@ impl Updater {
                 self.local_json("/api/hosts", Duration::from_secs(30))
             })?);
         }
-        let Some(_viewers) = crate::switchboard_viewers::update(&self.viewer_lock)? else {
+        let _viewers = crate::switchboard_viewers::update(&self.viewer_lock)?;
+        if _viewers.is_none() && !self.activating(&manifest.commit) {
             return Ok(false);
-        };
+        }
+        state.ready = None;
+        state.notice = Some(format!(
+            "Activating {}; terminals briefly reconnect",
+            manifest.commit
+        ));
+        state.save(&self.state_path())?;
         let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let backup = self.state_directory.join(format!("rollback-{nanos}"));
         fs::create_dir(&backup)?;

@@ -42,8 +42,24 @@ The verified bundle is cached in `automatic-updates/ready`; each check fetches
 the latest manifest, so newer releases replace the waiting release. Deferral
 appears in `state.json`'s `notice` and does not consume an update attempt.
 
+Settings → Health shows a downloaded build as **Update ready · terminals connected**,
+including the target commit and waiting time. **Check for updates** starts a normal,
+viewer-gated check. Once a build is ready, **Update now** explicitly activates that
+exact build and briefly reconnects browsers; running shells and agents continue.
+This bypasses only viewer deferral, retaining verification, preflight, serialization,
+readiness checks and rollback. Input during the reconnect is not guaranteed delivered.
+Older paired services show only Check for updates until they support explicit activation.
+
+The CLI equivalent is `zellij switchboard update --activate FULL_COMMIT`.
+Health submits a one-use request to the installed update job, outside the relay's
+lifetime. It expires after five minutes, is consumed only under the updater lock,
+and cannot authorize a different release if the published build changes. Failed
+activation does not make later automatic retries bypass viewers. A pending recovery
+can use the same explicit request for its recorded target build. No countdown or
+forced automatic activation is enabled.
+
 Relay and web connections hold shared locks on `automatic-updates/viewers.lock`.
-The updater takes an exclusive lock immediately before mutation and holds it
+Automatic activation takes an exclusive lock immediately before mutation and holds it
 through readiness checks and rollback. A viewer arriving during that interval
 retries until activation finishes. Locks are released by the OS on process exit;
 never delete the lock file. Isolated tests can set `SWITCHBOARD_VIEWER_LOCK` to a
