@@ -272,7 +272,7 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
     assert.equal(await laptop.locator('.task-row').first().locator('.task-tail').textContent(),'This build cannot reach paired computers yet');
     assert.equal(await mac.getByRole('button',{name:'Update now'}).count(),0,'no button without an update job to start');
     await laptop.getByRole('button',{name:'Check for updates'}).click();
-    await page.waitForFunction(()=>document.querySelectorAll('#updates .switchboard-group').length===4);
+    await page.waitForFunction(()=>document.querySelector('#status-message')?.textContent==='Checking for a newer build on Laptop…');
     assert.deepEqual(updates,[{host:'mesh-laptop'}]);
     const sb=tasks.computers.find(c=>c.host==='mesh-laptop').switchboard;
     sb.lastUpdateError=null;sb.activateUpdate=true;sb.readyUpdate={commit:'b'.repeat(40),since:Math.floor(Date.now()/1000)-120};sb.updatePhase='waiting';
@@ -289,6 +289,7 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
       await page.evaluate(()=>SwitchboardTasks.load());
     }
     await laptop.getByRole('button',{name:'Update now',exact:true}).click();
+    await page.waitForFunction(()=>document.querySelector('#status-message')?.textContent==='Update requested on Laptop; terminals will briefly reconnect…');
     assert.deepEqual(updates.at(-1),{host:'mesh-laptop',activate:'b'.repeat(40)});
     sb.updatePhase='requested';
     await page.evaluate(()=>SwitchboardTasks.load());
