@@ -67,7 +67,10 @@ The runner verifies:
 - Browser document, xterm, focus, dimensions, pane IDs, engine PID and fixture PID
   survive. The old bridge exits and the replacement actually serves requests.
 - Input acceptance, application delivery and visible output delays stay below
-  250 ms in this isolated proof. Results report measured maxima, not just counts.
+  250 ms by default in this isolated proof. Shared CI runners use a 1,000 ms
+  ceiling via `RESUME_PROOF_LATENCY_MS` to catch stalls without treating scheduler
+  delays as protocol failures. CI is not evidence of the 250 ms local target.
+  Results report the ceiling and measured maxima, not just counts.
 - Stale generations, unknown resume tokens, altered retries, gaps and output
   replay overflow fail explicitly.
 
