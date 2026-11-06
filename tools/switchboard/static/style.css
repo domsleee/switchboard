@@ -326,7 +326,7 @@ body.sidebar-collapsed #artifact-preview header{padding-left:42px}
 .health-heading{margin:16px 0 6px;flex-wrap:wrap}
 #panel .health-heading p{margin:0;color:#c5cddd;font-size:13px}
 .health-actions{display:flex;gap:8px;align-items:center}
-#panel .health-actions #run-all-tasks{background:#30466b;border-color:#527bb9;color:#edf3ff}
+#panel .health-actions #fix-all-health{background:#30466b;border-color:#527bb9;color:#edf3ff}
 #panel .health-help{font-size:11px;line-height:1.5;margin:0 0 16px;color:#8590a3}
 #health-batch{padding:10px 12px;margin-bottom:12px;border:1px solid #363e4d;border-radius:6px;font-size:12px;color:#b9c9e2}
 #health-batch[hidden]{display:none}
