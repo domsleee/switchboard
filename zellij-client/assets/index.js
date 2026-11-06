@@ -1,4 +1,4 @@
-import { initConnectionHandlers } from './connection.js';
+import { initConnectionHandlers, handleDisconnected } from './connection.js';
 import { fetchSession, fetchSessionList } from './auth.js';
 import { initTerminal, settleFontSize } from './terminal.js';
 import { setupInputHandlers } from './input.js';
@@ -23,7 +23,9 @@ document.addEventListener("DOMContentLoaded", async (event) => {
         welcome = false;
     }
 
-    const boot = await fetchSession(sessionFromPath, { welcome });
+    let boot;
+    try { boot = await fetchSession(sessionFromPath, { welcome }); }
+    catch (error) { await handleDisconnected(error.message); return; }
 
     if (!location.pathname.endsWith(`/${boot.session_name}`)) {
         history.replaceState(null, "", boot.session_name);

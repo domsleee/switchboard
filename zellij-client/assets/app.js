@@ -311,13 +311,19 @@ async function fetchSession(sessionFromPath, options = {}) {
     }
     const query = params.toString() ? `?${params.toString()}` : "";
 
-    const response = await authorizedFetch(`${baseUrl}/session${query}`, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-        },
-    });
-    return await response.json();
+    const deadline = Date.now() + 60000;
+    for (;;) {
+        const response = await authorizedFetch(`${baseUrl}/session${query}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+        });
+        if (response.ok) return await response.json();
+        if (response.status !== 503 || Date.now() >= deadline) {
+            throw new Error("Terminal attachment is unavailable. Reload after the update finishes.");
+        }
+        showConnectionStatus("Waiting for terminal attachment…");
+        await new Promise(resolve => setTimeout(resolve, 1000));
+    }
 }
 
 /**
@@ -3969,7 +3975,9 @@ document.addEventListener("DOMContentLoaded", async (event) => {
         welcome = false;
     }
 
-    const boot = await fetchSession(sessionFromPath, { welcome });
+    let boot;
+    try { boot = await fetchSession(sessionFromPath, { welcome }); }
+    catch (error) { await handleDisconnected(error.message); return; }
 
     if (!location.pathname.endsWith(`/${boot.session_name}`)) {
         history.replaceState(null, "", boot.session_name);

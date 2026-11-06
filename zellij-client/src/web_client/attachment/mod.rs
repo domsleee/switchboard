@@ -194,7 +194,7 @@ async fn resume(
     }
     *viewer.touched.lock().unwrap() = Instant::now();
     viewer.notify.notify_waiters();
-    ws.max_message_size(128 * 1024)
+    ws.max_message_size(512 * 1024)
         .on_upgrade(move |socket| transport(socket, viewer, generation, query.applied))
 }
 
@@ -343,7 +343,8 @@ async fn attachment(
         tokio::time::timeout(Duration::from_secs(30), attachment).await,
         Ok(Ok(()))
     ) {
-        viewer.journal.lock().unwrap().failure = Some("Terminal attachment timed out".into());
+        viewer.journal.lock().unwrap().failure =
+            Some("Terminal attachment failed or timed out".into());
     }
     let mut stdin = StdinSession::new(
         app.config
@@ -364,37 +365,35 @@ async fn attachment(
         }
         tokio::select! {
             Some(delivery)=input.recv()=>{
-                let result=(||->Result<u64>{
-                    let mut journal=viewer.journal.lock().unwrap();
-                    if journal.accepts(delivery.generation,&delivery.input)? {
+                let result=async {
+                    let focus;
+                    {
+                        let journal=viewer.journal.lock().unwrap();
+                        if !journal.accepts(delivery.generation,&delivery.input)? { return Ok(journal.input_ack()); }
                         if delivery.input.channel=="terminal" {
-                            // Engine read-only policy remains authoritative; do
-                            // not even parse user bytes for a read-only viewer.
                             if !viewer.read_only { parse_stdin(delivery.input.data.as_bytes(),os.clone(),&mut mouse,&mut stdin); }
-                            held_since=Instant::now();
+                            held_since=Instant::now();focus=None;
                         } else {
                             let payload:WebClientToWebServerControlMessagePayload=serde_json::from_str(&delivery.input.data)?;
-                            // Complete ambiguous terminal bytes on their original pane
-                            // before a control command can move this client.
                             if stdin.pending_finalize() { stdin.finalize(&*os,&mut mouse); }
-                            if stdin.has_pending_bytes() {
-                                journal.failure=Some("Incomplete terminal sequence before a control command; attachment stopped to preserve its target pane".into());
-                                anyhow::bail!("Incomplete terminal sequence before a control command");
-                            }
-                            let focus=matches!(payload,WebClientToWebServerControlMessagePayload::FocusPane{..});
-                            if let Some(message)=control_payload_to_server_msg(payload,app.config.lock().unwrap().options.default_shell.clone()) {
-                                os.send_to_server(message);
-                            }
-                            if focus {if let Some(refresh)=app.connection_table.lock().unwrap().client_id_to_channels.get(&id).and_then(|c|c.recovery_metadata_refresh.clone()){refresh.request();}}
+                            ensure!(!stdin.has_pending_bytes(),"Incomplete terminal sequence before a control command; attachment stopped to preserve its target pane");
+                            focus=match &payload {WebClientToWebServerControlMessagePayload::FocusPane{pane_id,is_plugin}=>Some((*pane_id,*is_plugin)),_=>None};
+                            if let Some(message)=control_payload_to_server_msg(payload,app.config.lock().unwrap().options.default_shell.clone()) { os.send_to_server(message); }
+                            if focus.is_some() {if let Some(refresh)=app.connection_table.lock().unwrap().client_id_to_channels.get(&id).and_then(|c|c.recovery_metadata_refresh.clone()){refresh.request();}}
                         }
-                        if let Some(error)=os.send_failure() {
-                            journal.failure=Some(format!("Terminal IPC failed: {error}"));
-                            anyhow::bail!("Terminal IPC failed; input delivery is uncertain");
-                        }
-                        journal.input=Some(delivery.input);
+                        ensure!(os.send_failure().is_none(),"Terminal IPC failed; input delivery is uncertain");
                     }
+                    if let Some(target)=focus {
+                        confirm_focus(&viewer,target,&mut output,&mut controls).await?;
+                    }
+                    // The action was dispatched before a newer generation could
+                    // fence it. Commit before processing its queued retry.
+                    let mut journal=viewer.journal.lock().unwrap();
+                    ensure!(journal.failure.is_none(),"Terminal attachment failed during input delivery");
+                    journal.input=Some(delivery.input);
                     Ok(journal.input_ack())
-                })();
+                }.await;
+                if let Err(error)=&result { viewer.journal.lock().unwrap().failure=Some(format!("{error}"));viewer.notify.notify_waiters(); }
                 let _=delivery.done.send(result);
             },
             Some(text)=output.recv()=>{viewer.journal.lock().unwrap().emit("terminal",text);viewer.notify.notify_waiters();},
@@ -426,4 +425,42 @@ async fn attachment(
     // definitive failure rather than creating a fresh attachment and replaying.
     tokio::time::sleep(Duration::from_secs(10)).await;
     worker.views.lock().unwrap().remove(&id);
+}
+
+/// FIFO requests alone cannot establish focus: a stale target is a native no-op.
+/// Do not acknowledge this control or process subsequent typing until the engine
+/// confirms the destination. Native output continues to drain into its journal.
+async fn confirm_focus(
+    viewer: &Viewer,
+    target: (u32, bool),
+    output: &mut mpsc::UnboundedReceiver<String>,
+    controls: &mut mpsc::UnboundedReceiver<Message>,
+) -> Result<()> {
+    let deadline = tokio::time::sleep(Duration::from_secs(10));
+    tokio::pin!(deadline);
+    let mut permission = tokio::time::interval(Duration::from_secs(1));
+    loop {
+        ensure!(
+            viewer.journal.lock().unwrap().failure.is_none(),
+            "Terminal attachment failed while selecting pane"
+        );
+        tokio::select! {
+            _=&mut deadline=>anyhow::bail!("Terminal pane selection was not confirmed; queued typing was not sent"),
+            _=permission.tick()=>ensure!(credential_is_read_only(&viewer.owner).ok()==Some(viewer.read_only),"Terminal permission was revoked"),
+            Some(text)=output.recv()=>{viewer.journal.lock().unwrap().emit("terminal",text);viewer.notify.notify_waiters();},
+            message=controls.recv()=>{
+                let Some(Message::Text(text))=message else {anyhow::bail!("Terminal ended while selecting pane");};
+                let value:serde_json::Value=serde_json::from_str(&text)?;
+                viewer.journal.lock().unwrap().emit("control",text.to_string());viewer.notify.notify_waiters();
+                if value["type"]=="MobileState" {
+                    let active=&value["payload"]["active_pane"];
+                    if active["pane_id"].as_u64()==Some(target.0 as u64) && active["is_plugin"].as_bool()==Some(target.1) { return Ok(()); }
+                }
+                if value["type"]=="LogError" {
+                    let missing=format!("Could not find pane with id: {}({})",if target.1{"Plugin"}else{"Terminal"},target.0);
+                    ensure!(!value["lines"].as_array().is_some_and(|lines|lines.iter().any(|line|line.as_str().is_some_and(|line|line.contains(&missing)))),"Requested terminal pane no longer exists; queued typing was not sent");
+                }
+            }
+        }
+    }
 }
