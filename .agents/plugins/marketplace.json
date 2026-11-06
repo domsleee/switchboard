@@ -1,0 +1,15 @@
+{
+  "name": "switchboard",
+  "interface": {
+    "displayName": "Switchboard"
+  },
+  "plugins": [
+    {
+      "name": "switchboard",
+      "source": "./plugins/switchboard",
+      "policy": {
+        "installation": "AVAILABLE"
+      }
+    }
+  ]
+}

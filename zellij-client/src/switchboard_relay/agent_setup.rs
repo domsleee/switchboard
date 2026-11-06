@@ -4,7 +4,7 @@
 //!
 //! Browsers and paired computers can only ask for an agent's setup by name. What it
 //! runs is fixed here: the `switchboard` plugin for Claude Code and Copilot CLI, and
-//! command hooks in `~/.codex/hooks.json` for Codex, whose plugins can't carry hooks.
+//! the skills plugin plus separate command hooks in `~/.codex/hooks.json` for Codex.
 use super::*;
 use std::{
     collections::BTreeMap,
@@ -522,6 +522,35 @@ fn same_path(a: &Path, b: &Path) -> bool {
     }
 }
 
+/// The skills plugin is separate from Codex's status hooks. Hook reports cannot
+/// prove that the plugin is installed or enabled.
+fn check_codex_plugin(dir: &Path) -> Result<(), &'static str> {
+    let config = std::fs::read_to_string(dir.join("config.toml"))
+        .ok()
+        .and_then(|text| text.parse::<toml::Table>().ok());
+    let plugin = config
+        .as_ref()
+        .and_then(|c| c.get("plugins"))
+        .and_then(|p| p.get(PLUGIN));
+    let Some(plugin) = plugin else {
+        return Err("Switchboard plugin not installed");
+    };
+    if plugin.get("enabled").and_then(|v| v.as_bool()) != Some(true) {
+        return Err("Switchboard plugin turned off");
+    }
+    let cache = dir.join("plugins/cache/switchboard/switchboard/local");
+    let manifest = read_json(&cache.join(".codex-plugin/plugin.json"));
+    if !manifest.is_some_and(|m| m["name"] == "switchboard" && m["skills"] == "./skills/") {
+        return Err("Switchboard plugin cache missing or invalid");
+    }
+    for skill in ["close-tab", "interactive", "message-board", "sudo"] {
+        if !cache.join("skills").join(skill).join("SKILL.md").is_file() {
+            return Err("Switchboard plugin skills missing");
+        }
+    }
+    Ok(())
+}
+
 fn check_codex(dir: &Path, launcher: &Path, reported_since_setup: bool) -> Check {
     let file = dir.join("hooks.json");
     let config = read_json(&file).unwrap_or(Value::Null);
@@ -759,6 +788,26 @@ async fn set_up(agent: Agent) -> Result<(), String> {
             )
         },
         Agent::Codex => {
+            let codex = find_program("codex", &folders).ok_or("Codex not found")?;
+            if check_codex_plugin(&dir).is_err() {
+                run(
+                    &codex,
+                    &[
+                        "plugin",
+                        "marketplace",
+                        "add",
+                        REPO,
+                        "--sparse",
+                        ".agents/plugins",
+                        "--sparse",
+                        "plugins",
+                    ],
+                    &folders,
+                )
+                .await?;
+                run(&codex, &["plugin", "add", PLUGIN], &folders).await?;
+                check_codex_plugin(&dir).map_err(String::from)?;
+            }
             let binary = control::own_executable()
                 .map_err(|e| format!("Cannot find Switchboard's executable: {e}"))?;
             install_codex_launcher(&home(), &binary)
@@ -767,7 +816,6 @@ async fn set_up(agent: Agent) -> Result<(), String> {
                 &dir.join("hooks.json"),
                 &codex_command(&codex_launcher(&home())),
             )?;
-            let codex = find_program("codex", &folders).ok_or("Codex not found")?;
             trust_codex_hooks(&codex, &folders).await.map_err(|error| {
                 format!("Hooks installed, but trusting them failed ({error}). Start Codex and choose “Trust all and continue” when it asks to review hooks")
             })
@@ -883,11 +931,17 @@ fn describe(agent: Agent) -> Value {
             Agent::Copilot => check_copilot(&dir),
             Agent::Codex => {
                 let since = setup.finished.unwrap_or(0);
-                check_codex(
-                    &dir,
-                    &codex_launcher(&home()),
-                    report.is_some_and(|at| at > since),
-                )
+                match check_codex_plugin(&dir) {
+                    Err(detail) => Check {
+                        state: "setup",
+                        detail: detail.into(),
+                    },
+                    Ok(()) => check_codex(
+                        &dir,
+                        &codex_launcher(&home()),
+                        report.is_some_and(|at| at > since),
+                    ),
+                }
             },
         }
     };
@@ -1056,6 +1110,51 @@ mod tests {
         );
         assert_eq!(settings["enabledPlugins"][PLUGIN], true);
         assert!(dir.join("settings.json.switchboard.bak").is_file());
+    }
+
+    #[test]
+    fn switchboard_agent_setup_requires_codex_plugin_and_all_skills() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        assert_eq!(
+            check_codex_plugin(dir),
+            Err("Switchboard plugin not installed")
+        );
+        write(
+            &dir.join("config.toml"),
+            "[plugins.\"switchboard@switchboard\"]\nenabled = false\n",
+        );
+        assert_eq!(
+            check_codex_plugin(dir),
+            Err("Switchboard plugin turned off")
+        );
+        write(
+            &dir.join("config.toml"),
+            "[plugins.\"switchboard@switchboard\"]\nenabled = true\n",
+        );
+        assert_eq!(
+            check_codex_plugin(dir),
+            Err("Switchboard plugin cache missing or invalid")
+        );
+        let cache = dir.join("plugins/cache/switchboard/switchboard/local");
+        write(
+            &cache.join(".codex-plugin/plugin.json"),
+            include_str!("../../../plugins/switchboard/.codex-plugin/plugin.json"),
+        );
+        assert_eq!(
+            check_codex_plugin(dir),
+            Err("Switchboard plugin skills missing")
+        );
+        for skill in ["close-tab", "interactive", "message-board", "sudo"] {
+            write(&cache.join("skills").join(skill).join("SKILL.md"), "skill");
+        }
+        assert_eq!(check_codex_plugin(dir), Ok(()));
+        // A cached copy alone is insufficient after uninstall or disabling.
+        write(&dir.join("config.toml"), "");
+        assert_eq!(
+            check_codex_plugin(dir),
+            Err("Switchboard plugin not installed")
+        );
     }
 
     #[test]
