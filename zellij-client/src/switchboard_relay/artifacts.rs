@@ -212,6 +212,9 @@ const MARKDOWN_LIMIT: usize = 4 * 1024 * 1024;
 const FRAME: &str = "frame-ancestors 'self' https://switchboard.localhost http://switchboard.localhost http://127.0.0.1:8090 http://localhost:8090";
 /// Rendered Markdown never runs scripts.
 const DOCUMENT: &str = "sandbox allow-same-origin allow-popups allow-popups-to-escape-sandbox";
+// Sanitized Markdown on the file viewer must retain its origin: its links and images
+// go through same_origin(). Scripts remain blocked, including after navigation.
+const FILE_MARKDOWN: &str = "sandbox allow-same-origin";
 
 pub(crate) fn root() -> anyhow::Result<std::path::PathBuf> {
     control::expand_path("~/.switchboard/artifacts")
@@ -701,7 +704,8 @@ pub(super) async fn file(
         };
         remote(&host, method, &path, range).await?
     };
-    if markdown && response.status() == StatusCode::OK {
+    let rendered_markdown = markdown && response.status() == StatusCode::OK;
+    if rendered_markdown {
         let source = to_bytes(std::mem::take(response.body_mut()), MARKDOWN_LIMIT)
             .await
             .map_err(|_| {
@@ -747,9 +751,14 @@ pub(super) async fn file(
         .any(|prefix| kind.starts_with(prefix))
         || kind.starts_with("image/") && !kind.contains("svg");
     if !inert {
+        let policy = if rendered_markdown {
+            FILE_MARKDOWN
+        } else {
+            "sandbox"
+        };
         response
             .headers_mut()
-            .insert(header::CONTENT_SECURITY_POLICY, "sandbox".parse().unwrap());
+            .insert(header::CONTENT_SECURITY_POLICY, policy.parse().unwrap());
     }
     Ok(response)
 }
@@ -1224,7 +1233,7 @@ mod tests {
         let (status, headers, body) = send(notes.to_str().unwrap(), &[]).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(headers[header::CONTENT_TYPE], "text/html; charset=utf-8");
-        assert_eq!(headers[header::CONTENT_SECURITY_POLICY], "sandbox");
+        assert_eq!(headers[header::CONTENT_SECURITY_POLICY], FILE_MARKDOWN);
         let page = String::from_utf8_lossy(&body);
         assert!(
             page.contains("<table>") && !page.contains("<script>alert"),
