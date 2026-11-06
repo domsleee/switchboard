@@ -47,6 +47,11 @@ impl StdinSession {
         }
     }
 
+    /// A control command must not move bytes retained for the old pane.
+    pub fn has_pending_bytes(&self) -> bool {
+        !self.held.is_empty()
+    }
+
     pub fn pending_finalize(&self) -> bool {
         self.pending_finalize
     }
@@ -634,5 +639,26 @@ mod tests {
         for msg in &sent {
             assert!(!typed(msg).2);
         }
+    }
+    #[test]
+    fn switchboard_attachment_control_boundary_drains_escape_and_detects_incomplete_paste() {
+        let os = RecordingOsInput::default();
+        let mut mouse = MouseEvent::new();
+        let mut session = super::StdinSession::new(false);
+        parse_stdin(b"\x1b", Box::new(os.clone()), &mut mouse, &mut session);
+        session.finalize(&os, &mut mouse);
+        assert!(!session.has_pending_bytes());
+        assert!(!os.take_sent_messages().is_empty());
+        parse_stdin(
+            b"\x1b[200~unfinished",
+            Box::new(os.clone()),
+            &mut mouse,
+            &mut session,
+        );
+        session.finalize(&os, &mut mouse);
+        assert!(
+            session.has_pending_bytes(),
+            "A control cannot move an incomplete paste to another pane"
+        );
     }
 }
