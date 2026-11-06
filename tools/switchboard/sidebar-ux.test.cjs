@@ -44,15 +44,46 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
       return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
     });
     await page.goto('https://switchboard.test/');
-    await page.waitForFunction(()=>document.querySelectorAll('#tabs .tab-select').length===3);
+    await page.waitForFunction(()=>document.querySelectorAll('#tabs .tab-select').length===2&&document.querySelector('#snoozed-toggle'));
     const order=()=>page.locator('#tabs .tab-name').allTextContents();
+    const snoozed=page.locator('#snoozed-toggle');
+    assert.deepEqual(await order(),names.slice(1));
+    assert.equal(await snoozed.getAttribute('aria-expanded'),'false');
+    assert.equal(await snoozed.locator('.count').textContent(),'1');
+    assert.equal(await page.locator('#tab-count').textContent(),'3 tabs');
+    await snoozed.click();
+    assert.deepEqual(await order(),[...names.slice(1),names[0]]);
+    assert.equal(await page.locator('#tabs small').last().textContent(),'Mac · Working');
+    assert.equal(await page.locator('#tabs .star').first().getAttribute('class'),'star waiting');
+    // Collapsing the section never stops or switches the selected terminal.
+    await page.locator('#tabs .tab-select').last().click();
+    const selectedBefore=await page.evaluate(()=>selected);
+    await snoozed.click();
+    assert.equal(await page.evaluate(()=>selected),selectedBefore);
+    assert.equal(await page.evaluate(()=>localStorage.getItem('switchboard-snoozed-open')),'false');
+    await page.locator('#tab-search').fill('switchboard');
+    assert.deepEqual(await order(),[names[0]]);
+    assert.equal(await snoozed.getAttribute('aria-expanded'),'true');
+    await page.locator('#tab-search').fill('');
+    assert.deepEqual(await order(),names.slice(1));
+    // Attention and status failures take precedence over automatic snoozing.
+    for(const state of ['ready','approval','input']){
+      await page.evaluate(state=>{paneAttention.get(attentionKey('mac','main',1)).state=state;render();},state);
+      assert.equal(await snoozed.count(),0);
+      assert.deepEqual(await order(),names);
+    }
+    await page.evaluate(()=>{paneAttention.get(attentionKey('mac','main',1)).state='working';attentionErrors=[{host:'mac',session:'main'}];render();});
+    assert.equal(await snoozed.count(),0);
+    await page.evaluate(()=>{attentionErrors=[];setHidden(allTabs()[0],true);render();});
+    assert.equal(await snoozed.count(),0);
+    assert.equal(await page.locator('#hidden-toggle .count').textContent(),'1');
+    await page.evaluate(()=>{setHidden(allTabs().find(item=>item.hidden),false);render();});
+    assert.equal(await snoozed.count(),1);
+    working=false;await page.evaluate(()=>refreshAttention());
+    await page.waitForFunction(()=>!document.querySelector('#snoozed-toggle'));
     assert.deepEqual(await order(),names);
     assert.equal(await page.locator('#sidebar-summary').isVisible(),true);
-    assert.equal(await page.locator('#tab-count').textContent(),'3 tabs');
     assert.equal(await page.locator('#selection-tools').isVisible(),false);
-    assert.equal(await page.locator('#tabs small').first().textContent(),'Mac · Working');
-    assert.equal(await page.locator('#tabs small').nth(1).textContent(),'Mac · Waiting on an agent');
-    assert.equal(await page.locator('#tabs .star').nth(1).getAttribute('class'),'star waiting');
     // xterm pauses drawing only when its element is off screen. Hidden sessions must be.
     const onScreen=title=>page.frameLocator(`iframe[title="${title}"]`).locator('body').evaluate(body=>new Promise(resolve=>
       new IntersectionObserver(([entry],observer)=>{observer.disconnect();resolve(entry.isIntersecting);}).observe(body)));

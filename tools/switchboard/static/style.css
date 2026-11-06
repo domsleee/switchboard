@@ -52,14 +52,15 @@ body.sidebar-collapsed #sidebar-toggle{left:8px}
 #tabs [hidden]{display:none}
 /* The Hidden group: a quiet header after the other tabs, opening onto dimmed rows. */
 /* margin-top:auto keeps the Hidden group at the bottom of a short list too. */
-#hidden-toggle{position:sticky;bottom:-6px;z-index:1;flex-shrink:0;display:flex;align-items:center;gap:7px;margin-top:auto;padding:8px 9px;border:0;border-top:1px solid #2b303b;border-radius:0;background:#151820;color:#a3aec0;font-size:11px;text-align:left}
-#hidden-toggle:hover{background:#222732;color:#e5e7eb}
-#hidden-toggle .chevron{display:inline-block;width:8px;font-size:13px;line-height:1;transition:transform .15s}
-#hidden-toggle[aria-expanded=true] .chevron{transform:rotate(90deg)}
-#hidden-toggle .star{width:6px;height:6px;border-radius:50%}
-#hidden-toggle .count{margin-left:auto;color:#9ba7bd;font-variant-numeric:tabular-nums}
+:is(#hidden-toggle,#snoozed-toggle){position:sticky;bottom:-6px;z-index:1;flex-shrink:0;display:flex;align-items:center;gap:7px;margin-top:auto;padding:8px 9px;border:0;border-top:1px solid #2b303b;border-radius:0;background:#151820;color:#a3aec0;font-size:11px;text-align:left}
+#snoozed-toggle{position:static;bottom:auto;margin-top:8px}
+:is(#hidden-toggle,#snoozed-toggle):hover{background:#222732;color:#e5e7eb}
+:is(#hidden-toggle,#snoozed-toggle) .chevron{display:inline-block;width:8px;font-size:13px;line-height:1;transition:transform .15s}
+:is(#hidden-toggle,#snoozed-toggle)[aria-expanded=true] .chevron{transform:rotate(90deg)}
+:is(#hidden-toggle,#snoozed-toggle) .star{width:6px;height:6px;border-radius:50%}
+:is(#hidden-toggle,#snoozed-toggle) .count{margin-left:auto;color:#9ba7bd;font-variant-numeric:tabular-nums}
 #tabs .tab-row.hidden-tab .tab-select:not(.selected):not(:hover){opacity:.7}
-@media (prefers-reduced-motion:reduce){#hidden-toggle .chevron{transition:none}}
+@media (prefers-reduced-motion:reduce){:is(#hidden-toggle,#snoozed-toggle) .chevron{transition:none}}
 #tab-empty{display:grid;grid-template-columns:8px minmax(0,1fr);column-gap:7px;row-gap:8px;align-items:center;padding:16px 16px 4px;font-size:12px;line-height:1.4;color:#9ba7bd;overflow-wrap:anywhere}
 #tab-empty[hidden]{display:none}
 #tab-empty span{grid-column:2}

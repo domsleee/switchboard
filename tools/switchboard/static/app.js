@@ -26,6 +26,7 @@ const ready = load('switchboard-ready');
 // Tabs in the Hidden group at the bottom of the sidebar. The group shares them like the
 // tab order; tabs archived before Hidden existed join it.
 const hidden = localStorage.getItem('switchboard-hidden')===null?load('switchboard-archived'):load('switchboard-hidden');
+let snoozedOpen = localStorage.getItem('switchboard-snoozed-open')==='true';
 let hiddenOpen = localStorage.getItem('switchboard-hidden-open')==='true';
 const seenAttention = load('switchboard-attention-seen');
 let attentionLoaded=false,paneAttention=new Map(),tabCatalog=[],attentionErrors=[],attentionLoading=false,attentionRefreshPending=false,attentionVersion=0;
@@ -415,10 +416,16 @@ function allTabs(ignoreFilter=false) {
     .filter(({entry,tab}) => ![...(entry.closingTabs?.values()||[])].some(closing=>matchesClosingTab(tab,closing)) && (ignoreFilter || filter === 'all' || groups[entry.host] === filter))
     .sort((a,b) => a.hidden-b.hidden || a.rank-b.rank || lateness(a)-lateness(b) || byMachine(a,b));
 }
-// The tabs listed in the sidebar, in order: hidden ones only while their group is open.
+// Working tabs fold into Snoozed without changing their saved order or Hidden membership.
+function sidebarTabs(){
+  return allTabs().map(item=>({...item,snoozed:!item.hidden&&!isReady(item)&&autoLabel(item)==='Working'
+    &&!attentionErrors.some(error=>error.host==='Switchboard'||error.host===item.entry.host&&(!error.session||error.session===item.entry.name))}))
+    .sort((a,b)=>(a.hidden?2:a.snoozed?1:0)-(b.hidden?2:b.snoozed?1:0));
+}
+// Search includes collapsed groups; keyboard navigation follows the visible rows.
 function listedTabs(){
   const searching=!!$('tab-search').value.trim();
-  return allTabs().filter(item=>matchesSearch(item)&&(!item.hidden||hiddenOpen||searching));
+  return sidebarTabs().filter(item=>matchesSearch(item)&&(!item.hidden||hiddenOpen||searching)&&(!item.snoozed||snoozedOpen||searching));
 }
 function moveTab(key,targetKey,after=false) {
   if(key===targetKey)return;
@@ -485,10 +492,18 @@ function renderHiddenHeader(tabs,shown,searching){
   hiddenHeader.setAttribute('aria-label',`Hidden tabs, ${tabs.length}${attention?', one needs you':''}`);
   hiddenHeader.title=`${expanded?'Collapse':'Expand'} hidden tabs. They keep running.\nDrag a tab here to hide it, or above here to show it again.`;
 }
+const snoozedHeader=document.createElement('button');
+snoozedHeader.id='snoozed-toggle';
+snoozedHeader.innerHTML='<span class="chevron" aria-hidden="true">›</span><span>Snoozed</span><span class="count"></span>';
+snoozedHeader.title='Working tabs keep running here and return when they finish or need you.';
+snoozedHeader.onclick=()=>{
+  if(dragging||Date.now()<suppressTabClickUntil)return;
+  snoozedOpen=!snoozedOpen;localStorage.setItem('switchboard-snoozed-open',String(snoozedOpen));render();
+};
 function render() {
   // Live metadata arrives while dragging; keep the source element mounted.
   if(dragging)return;
-  const tabs = allTabs();
+  const tabs = sidebarTabs();
   const previous = selected,wasRestoring=restoringTab;
   const selection=tabs.find(t=>t.key===selected);
   if(selection){if(selection.entry.state)restoringTab=false;}
@@ -498,10 +513,13 @@ function render() {
   for(const [key,button] of tabButtons)if(!liveKeys.has(key)){button._row.remove();tabButtons.delete(key);}
   const shown=tabs.filter(matchesSearch),listed=listedTabs(),nodes=[],shownKeys=new Set(listed.map(item=>item.key));
   const searching=!!$('tab-search').value.trim(),hiddenTabs=tabs.filter(item=>item.hidden),hiddenShown=shown.filter(item=>item.hidden);
+  const snoozedTabs=tabs.filter(item=>item.snoozed),snoozedShown=shown.filter(item=>item.snoozed);
+  const showSnoozedGroup=snoozedTabs.length>0&&(!searching||snoozedShown.length>0);
   const showHiddenGroup=hiddenTabs.length>0&&(!searching||hiddenShown.length>0);
   const titles=new Map(tabs.map(item=>[item.key,tabTitle(item)])),titleCounts=new Map();
   for(const item of tabs){const key=JSON.stringify([item.entry.host,titles.get(item.key)]);titleCounts.set(key,(titleCounts.get(key)||0)+1);}
   for (const item of listed) {
+    if((item.snoozed||item.hidden)&&showSnoozedGroup&&!nodes.includes(snoozedHeader))nodes.push(snoozedHeader);
     if(item.hidden&&!nodes.includes(hiddenHeader))nodes.push(hiddenHeader);
     let button=tabButtons.get(item.key);
     if(!button){
@@ -563,6 +581,12 @@ function render() {
     actions.setAttribute('aria-expanded',String(!$('tab-menu').hidden&&contextItem?.key===item.key));
     nodes.push(row);
   }
+  if(showSnoozedGroup){
+    if(!nodes.includes(snoozedHeader))nodes.push(snoozedHeader);
+    snoozedHeader.setAttribute('aria-expanded',String(snoozedOpen||searching));
+    snoozedHeader.setAttribute('aria-label',`Snoozed tabs, ${snoozedTabs.length}`);
+    snoozedHeader.lastElementChild.textContent=searching?`${snoozedShown.length} / ${snoozedTabs.length}`:String(snoozedTabs.length);
+  }else snoozedHeader.remove();
   if(showHiddenGroup&&!nodes.includes(hiddenHeader))nodes.push(hiddenHeader);
   if(showHiddenGroup)renderHiddenHeader(hiddenTabs,hiddenShown,searching);else hiddenHeader.remove();
   for(const button of tabButtons.values())if(!shownKeys.has(button._item.key))button._row.remove();
