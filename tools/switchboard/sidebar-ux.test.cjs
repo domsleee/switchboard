@@ -104,7 +104,11 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.deepEqual(await order(),[names[1],names[0]]);
     await page.locator('#tab-search').press('Enter');
     assert.equal(await page.locator('#tabs .selected .tab-name').textContent(),names[1]);
+    // Enter hands focus to the terminal asynchronously. Finish that handoff before
+    // filling search again, or the pane acknowledgement can steal the Delete key.
+    await page.waitForFunction(()=>{const entry=allTabs().find(item=>item.key===selected)?.entry;return entry&&!entry.requestedPane&&!entry.focusPending&&document.activeElement===entry.frame;});
     await page.locator('#tab-search').fill('');
+    assert.equal(await page.locator('#tab-search').inputValue(),'');
     await page.evaluate(()=>activate(allTabs()[0]));
     // Attention and status failures take precedence over automatic snoozing.
     for(const state of ['ready','approval','input']){
