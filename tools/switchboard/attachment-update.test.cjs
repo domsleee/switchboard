@@ -23,7 +23,7 @@ env.ZELLIJ_CONFIG_FILE = config;
 let cliSequence=0;
 const cliWith = (binary,...args) => {
     const prefix=path.join(dir,`cli-${++cliSequence}`),out=fs.openSync(prefix+'.log','w'),err=fs.openSync(prefix+'-error.log','w');
-    try {execFileSync(binary,['--config',config,...args],{env,windowsHide:true,timeout:15000,stdio:['ignore',out,err]});return fs.readFileSync(prefix+'.log','utf8');}
+    try {execFileSync(binary,['--config',config,...args],{env,windowsHide:true,timeout:15000,stdio:['ignore',out,err]});const result=fs.readFileSync(prefix+'.log','utf8');if(args.some(arg=>arg==='--create-token'||arg==='--create-read-only-token'))fs.writeFileSync(prefix+'.log','[credential output omitted]\n');return result;}
     finally {fs.closeSync(out);fs.closeSync(err);}
 };
 const cli=(...args)=>cliWith(installed,...args);
@@ -47,6 +47,7 @@ async function stop(child) {
 }
 const identities = () => JSON.parse(cli('-s',name,'action','list-panes','--json','--all')).map(p=>[p.is_plugin,p.id,p.tab_id]).sort();
 const recoveryMode=process.env.SWITCHBOARD_TEST_RECOVERY==='1';
+const createdTokens=[];
 let native, relay, browser, updateController, created=false;
 (async()=>{
  try {
@@ -54,6 +55,7 @@ let native, relay, browser, updateController, created=false;
   fs.writeFileSync(config,`web_sharing "${recoveryMode?'off':'on'}"\nshow_startup_tips false\nsession_serialization false\n`);
   fs.copyFileSync(oldBinary,installed);fs.chmodSync(installed,0o755);
   const tokenLine=cli('web','--create-token').split('\n').find(line=>line.includes(': '));
+  createdTokens.push(tokenLine.slice(0,tokenLine.indexOf(': ')));
   const tokenPath=path.join(dir,'token');fs.writeFileSync(tokenPath,tokenLine.slice(tokenLine.indexOf(': ')+2).trim(),{mode:0o600});
   const nativePort=await availablePort(),relayPort=await availablePort(),url=`http://127.0.0.1:${relayPort}`;
   const relayConfig=path.join(dir,'hosts.json');
@@ -181,6 +183,7 @@ let native, relay, browser, updateController, created=false;
   const beforeReadonly=identities();
   const roLine=cli('web','--create-read-only-token').split('\n').find(line=>line.includes(': '));
   const roName=roLine.slice(0,roLine.indexOf(': '));
+  createdTokens.push(roName);
   const roToken=roLine.slice(roLine.indexOf(': ')+2).replace(/ \(read-only\)\s*$/,'').trim();
   const roContext=await browser.newContext(),nativeUrl=`http://127.0.0.1:${nativePort}`;
   assert.equal((await roContext.request.post(nativeUrl+'/command/login',{data:{auth_token:roToken,remember_me:true}})).status(),200);
@@ -213,6 +216,7 @@ let native, relay, browser, updateController, created=false;
  } finally {
   if(updateController)await new Promise(resolve=>updateController.close(resolve));
   if(browser)await browser.close();
+  for(const token of createdTokens)try{cli('web','--revoke-token',token);}catch{}
   if(created)try{cli('kill-session',name);}catch{}
   await stop(native);await stop(relay);
   for(const file of fs.existsSync(path.join(dir,'attachments'))?fs.readdirSync(path.join(dir,'attachments')):[])if(file.endsWith('.json')){try{process.kill(JSON.parse(fs.readFileSync(path.join(dir,'attachments',file))).pid,'SIGTERM');}catch{}}
