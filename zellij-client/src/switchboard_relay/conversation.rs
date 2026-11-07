@@ -183,6 +183,159 @@ pub(super) async fn reply_handler(
 
 pub(super) const REPLY_LIMIT: usize = 16000;
 
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Skills {
+    cwd: String,
+}
+
+pub(super) async fn skills_handler(
+    State(state): State<RelayState>,
+    RoutePath(id): RoutePath<String>,
+    Json(request): Json<Skills>,
+) -> Result<Response, Error> {
+    let host = state
+        .host(&id)
+        .ok_or((StatusCode::NOT_FOUND, "Unknown computer"))?;
+    if host.config.escape_transport.as_deref() == Some("gateway") {
+        let response = host
+            .request(
+                Method::POST,
+                "/switchboard/conversation/skills",
+                serde_json::to_vec(&request).unwrap().into(),
+                "application/json",
+            )
+            .await
+            .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot reach the other computer"))?;
+        return Ok((
+            response.status,
+            [(header::CONTENT_TYPE, "application/json")],
+            response.body,
+        )
+            .into_response());
+    }
+    skills_local(&host, request)
+        .await
+        .map(IntoResponse::into_response)
+}
+
+pub(super) async fn skills_local(host: &Host, request: Skills) -> Result<Json<Value>, Error> {
+    if request.cwd.len() > 4096
+        || (!request.cwd.is_empty() && !Path::new(&request.cwd).is_absolute())
+    {
+        return Err((StatusCode::BAD_REQUEST, "Invalid project directory"));
+    }
+    control::require_writable_host(host).await?;
+    let (program, path) = agent_setup::codex_queue_program()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Codex is unavailable"))?;
+    let mut command = tokio::process::Command::new(program);
+    command
+        .arg("app-server")
+        .env("PATH", path)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    if request.cwd.is_empty() {
+        if let Some(home) = std::env::home_dir() {
+            command.current_dir(home);
+        }
+    } else {
+        command.current_dir(&request.cwd);
+    }
+    for key in [
+        "CODEX_THREAD_ID",
+        "ZELLIJ_SESSION_NAME",
+        "ZELLIJ_PANE_ID",
+        "CLAUDECODE",
+    ] {
+        command.env_remove(key);
+    }
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000);
+    let mut child = command
+        .spawn()
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot list Codex skills"))?;
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let mut input = child.stdin.take().ok_or(())?;
+        let mut output = BufReader::new(child.stdout.take().ok_or(())?).lines();
+        let cwds: Vec<&str> = if request.cwd.is_empty() {
+            vec![]
+        } else {
+            vec![&request.cwd]
+        };
+        for (id, method, params) in [
+            (
+                1,
+                "initialize",
+                json!({"clientInfo":{"name":"switchboard","version":env!("SWITCHBOARD_COMMIT")}}),
+            ),
+            (2, "skills/list", json!({"cwds":cwds})),
+        ] {
+            input
+                .write_all(
+                    format!("{}\n", json!({"id":id,"method":method,"params":params})).as_bytes(),
+                )
+                .await
+                .map_err(|_| ())?;
+            if id == 1 {
+                input
+                    .write_all(b"{\"method\":\"initialized\"}\n")
+                    .await
+                    .map_err(|_| ())?;
+            }
+            loop {
+                let line = output.next_line().await.map_err(|_| ())?.ok_or(())?;
+                let Ok(message) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
+                if message["id"] != id {
+                    continue;
+                }
+                if message.get("error").is_some() {
+                    return Err(());
+                }
+                if id == 2 {
+                    return Ok(skill_choices(&message["result"]));
+                }
+                break;
+            }
+        }
+        Err(())
+    })
+    .await;
+    let _ = child.kill().await;
+    let skills = result
+        .ok()
+        .and_then(Result::ok)
+        .ok_or((StatusCode::BAD_GATEWAY, "Cannot list Codex skills"))?;
+    Ok(Json(json!({"skills":skills})))
+}
+
+fn skill_choices(result: &Value) -> Vec<Value> {
+    let mut choices = std::collections::BTreeMap::new();
+    for entry in result["data"].as_array().into_iter().flatten() {
+        for skill in entry["skills"].as_array().into_iter().flatten() {
+            let Some(name) = skill["name"].as_str() else {
+                continue;
+            };
+            if skill["enabled"] != true || name.is_empty() {
+                continue;
+            }
+            let description = skill["interface"]["shortDescription"]
+                .as_str()
+                .or_else(|| skill["shortDescription"].as_str())
+                .or_else(|| skill["description"].as_str())
+                .unwrap_or("");
+            choices
+                .entry(name.to_owned())
+                .or_insert_with(|| json!({"name":name,"description":description}));
+        }
+    }
+    choices.into_values().collect()
+}
+
 pub(super) async fn reply_local(host: &Host, reply: Reply) -> Result<Json<Value>, Error> {
     let text = &reply.text;
     if text.trim().is_empty()
@@ -234,6 +387,25 @@ pub(super) async fn reply_local(host: &Host, reply: Reply) -> Result<Json<Value>
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn switchboard_conversation_skill_suggestions_hide_disabled_skills_and_paths() {
+        let listed = json!({"data":[{"skills":[
+            {"name":"bro","enabled":true,"description":"Long description","path":"/private/skills/bro/SKILL.md","interface":{"shortDescription":"Review together"}},
+            {"name":"disabled","enabled":false,"description":"Hidden"},
+            {"name":"legacy","enabled":true,"description":"Long description","shortDescription":"Legacy summary"}
+        ]},{"skills":[
+            {"name":"bro","enabled":true,"description":"Duplicate"},
+            {"name":"plain","enabled":true,"description":"Fallback description"}
+        ]}]});
+        assert_eq!(
+            skill_choices(&listed),
+            vec![
+                json!({"name":"bro","description":"Review together"}),
+                json!({"name":"legacy","description":"Legacy summary"}),
+                json!({"name":"plain","description":"Fallback description"}),
+            ]
+        );
+    }
     // Captured from Codex 0.167.0 in an isolated CODEX_HOME, before any prompt.
     const REVIEW: &str = "\n  Hooks need review\n  1 hook is new or changed.\n  Hooks can run outside the sandbox after you trust them.\n\n› 1. Review hooks\n  2. Trust all and continue\n  3. Continue without trusting (hooks won't run)\n\n  enter confirm · esc skip\n\n";
 
@@ -407,6 +579,13 @@ esac
             let session = create_session_token(&auth, false).unwrap();
             *host.cookie.lock().await = Some(format!("session_token={session}"));
             if read_only {
+                assert_eq!(
+                    skills_local(&host, Skills { cwd: String::new() })
+                        .await
+                        .unwrap_err()
+                        .0,
+                    StatusCode::FORBIDDEN
+                );
                 assert_eq!(
                     local(&host, target()).await.unwrap_err().0,
                     StatusCode::FORBIDDEN
