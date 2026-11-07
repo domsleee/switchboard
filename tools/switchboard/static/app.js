@@ -468,7 +468,9 @@ function acknowledgeConversation(view){
   if(!view.chatId||state?.chat_id!==view.chatId)return;
   if(acknowledgeAttention(item,view.pane))render();
 }
-function isReady(item){return !!(ready[item.key] || item.tab.name.startsWith('*') || askpassForTab(item) || statesForTab(item).some(needsAttention));}
+// Agents open tabs named System for their own checks: hidden, and never asking for attention.
+function systemTab(tab){return tab.name.replace(/^\*\s*/,'')==='System';}
+function isReady(item){return !systemTab(item.tab)&&!!(ready[item.key] || item.tab.name.startsWith('*') || askpassForTab(item) || statesForTab(item).some(needsAttention));}
 function matchesSearch(item){
   const query=$('tab-search').value.trim().toLowerCase();
   return !query || `${tabTitle(item)} ${hosts.get(item.entry.host)?.name || item.entry.host} ${groups[item.entry.host]||''} ${item.entry.name} ${autoLabel(item)}`.toLowerCase().includes(query);
@@ -507,7 +509,7 @@ function allTabs(ignoreFilter=false) {
   // Saved drag positions first; the rest by machine and session, keeping each session's tab order;
   // tabs created since then last.
   const byMachine=(a,b)=>{const x=machineOrder(a),y=machineOrder(b);return x<y?-1:x>y?1:0;};
-  return [...sessions.values()].flatMap(entry => sessionTabs(entry).map(tab => {const key=tabKey(entry,tab);return {entry,tab,key,hidden:isHidden(key),rank:ranks.get(canonKey(key))??Infinity};}))
+  return [...sessions.values()].flatMap(entry => sessionTabs(entry).map(tab => {const key=tabKey(entry,tab);return {entry,tab,key,hidden:isHidden(key)||systemTab(tab),rank:ranks.get(canonKey(key))??Infinity};}))
     .filter(({entry,tab}) => ![...(entry.closingTabs?.values()||[])].some(closing=>matchesClosingTab(tab,closing)) && (ignoreFilter || filter === 'all' || groups[entry.host] === filter))
     .sort((a,b) => a.hidden-b.hidden || a.rank-b.rank || lateness(a)-lateness(b) || byMachine(a,b));
 }
@@ -715,9 +717,9 @@ function render() {
     const duplicate=titleCounts.get(JSON.stringify([item.entry.host,title]))>1;
     const project=tabProject(item);
     const subtitle=`${project?project+' · ':''}${machine}${duplicate?' · '+item.entry.name:''}${isPinned(item.key)?' · Pinned':''}`;
-    button.className='tab-select'+(item.key===selected?' selected':'')+(starred?' needs-attention':'')+(elevated?' elevated':'');
+    button.className='tab-select'+(item.key===selected?' selected':'')+(starred?' needs-attention':'')+(elevated?' elevated':'')+(systemTab(item.tab)?' system':'');
     button.setAttribute('aria-pressed',String(item.key===selected));
-    button.setAttribute('aria-label',`${title}${elevated&&title!=='Administrator'?', Administrator':''}, ${project?project+', ':''}${machine}, ${item.entry.name}${status?', '+status:''}${flagged?', Flagged for review':''}${isPinned(item.key)?', Pinned':''}`);
+    button.setAttribute('aria-label',`${title}${elevated&&title!=='Administrator'?', Administrator':''}${systemTab(item.tab)?', System tab opened by an agent':''}, ${project?project+', ':''}${machine}, ${item.entry.name}${status?', '+status:''}${flagged?', Flagged for review':''}${isPinned(item.key)?', Pinned':''}`);
     button._star.className='star '+(unavailable?'unavailable':starred?'attention':stateLabel==='Working'?'working':stateLabel.startsWith('Waiting')?'waiting':'quiet');
     const working=stateLabel==='Working'?tabAge(item,'working'):'';
     const short=unavailable?'Unavailable':working&&working!=='now'?`Working ${working}`:statusWords[stateLabel]||(flagged?'Review':tabAge(item));

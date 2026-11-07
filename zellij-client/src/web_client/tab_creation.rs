@@ -30,6 +30,9 @@ pub(super) struct Target {
     images: Vec<String>,
     #[serde(default)]
     elevated: bool,
+    /// Opened by an agent for its own checks: named System, so no computer alerts for it.
+    #[serde(default)]
+    system: bool,
 }
 
 fn valid(target: &Target) -> bool {
@@ -297,6 +300,7 @@ pub(super) async fn create(
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
+    let name = tab_name(&target);
     let shell = state.config.lock().unwrap().options.default_shell.clone();
     let cwd = std::env::home_dir()
         .ok_or((StatusCode::BAD_GATEWAY, "Home directory unavailable"))?
@@ -313,12 +317,8 @@ pub(super) async fn create(
     let command = std::iter::once(run.command.to_string_lossy().into_owned())
         .chain(run.args)
         .collect();
-    let new_tab = new_tab_action(
-        cwd,
-        target.elevated.then(|| "Administrator".to_owned()),
-        command,
-    )
-    .ok_or((StatusCode::BAD_REQUEST, "Invalid tab request"))?;
+    let new_tab = new_tab_action(cwd, name, command)
+        .ok_or((StatusCode::BAD_REQUEST, "Invalid tab request"))?;
     // `new-tab` prints a stable tab ID, then the terminal it started the command in.
     let reply = action(&target.session, new_tab).await?;
     let (tab_id, pane_id) = created_ids(&reply).ok_or((
@@ -343,6 +343,16 @@ pub(super) async fn create(
             ));
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Sidebars mark tabs by these names: a shield for Administrator, and System tabs
+/// (agents' own checks) stay hidden and never alert.
+fn tab_name(target: &Target) -> Option<String> {
+    if target.elevated {
+        Some("Administrator".into())
+    } else {
+        target.system.then(|| "System".into())
     }
 }
 
@@ -435,8 +445,16 @@ mod tests {
             prompt: None,
             images: vec![],
             elevated: false,
+            system: false,
         };
         assert!(valid(&target));
+        assert_eq!(tab_name(&target), None);
+        target.system = true;
+        assert_eq!(tab_name(&target).as_deref(), Some("System"));
+        target.elevated = true;
+        assert_eq!(tab_name(&target).as_deref(), Some("Administrator"));
+        target.elevated = false;
+        target.system = false;
         for name in ["", "..", "../main", "a\\b", "main\n"] {
             target.session = name.into();
             assert!(!valid(&target));

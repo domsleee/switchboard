@@ -249,6 +249,11 @@ fn resolved(snapshot: &Value) -> Vec<String> {
         .map(|pane| json!([pane["host"], pane["session"], pane["pane_id"]]).to_string())
         .collect()
 }
+/// The name the web server gives a tab created with `system: true` (a review mark
+/// may prefix it with `*`).
+fn system_tab(name: &str) -> bool {
+    name.trim_start_matches('*').trim_start() == "System"
+}
 fn alerts(snapshot: &Value) -> Vec<Alert> {
     let mut alerts = Vec::new();
     for pane in snapshot["panes"].as_array().into_iter().flatten() {
@@ -276,6 +281,10 @@ fn alerts(snapshot: &Value) -> Vec<Alert> {
                         .as_array()
                         .is_some_and(|panes| panes.iter().any(|p| p["pane_id"] == id))
             });
+        // Agents open tabs named System for their own checks; those never alert.
+        if tab.is_some_and(|tab| system_tab(tab["name"].as_str().unwrap_or(""))) {
+            continue;
+        }
         let title = tab
             .and_then(|tab| tab["name"].as_str())
             .filter(|t| !t.is_empty())
@@ -687,5 +696,17 @@ mod tests {
         );
         snapshot["panes"][0]["seen"] = json!(true);
         assert!(alerts(&snapshot).is_empty());
+    }
+    #[test]
+    fn switchboard_push_never_alerts_for_system_tabs() {
+        for state in ["ready", "approval", "input"] {
+            let mut snapshot = snapshot(state, "result:1");
+            snapshot["tabs"][0]["name"] = json!("System");
+            assert!(alerts(&snapshot).is_empty(), "{state}");
+            snapshot["tabs"][0]["name"] = json!("* System");
+            assert!(alerts(&snapshot).is_empty(), "{state}");
+            snapshot["tabs"][0]["name"] = json!("System check");
+            assert_eq!(alerts(&snapshot).len(), 1, "{state}");
+        }
     }
 }
