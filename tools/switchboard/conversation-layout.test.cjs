@@ -26,7 +26,7 @@ test('Conversation folds finished progress, keeps the live step, and gives code 
    if(p==='/')return route.fulfill({contentType:'text/html',body:`<meta charset="utf-8"><link rel="stylesheet" href="/conversation.css"><style>body{margin:0}#terminals{position:relative;height:100dvh}</style><main id="terminals"><iframe id="terminal"></iframe><section id="artifact-preview" hidden></section></main><script src="/conversation-media.js"></script><script src="/conversation.js"></script><script>window.current={key:'pane1',host:'fixture',session:'main',pane:1,title:'Fix',agent:'claude',state:'working',since:Math.floor(Date.now()/1000)-65,chatId:'chat-1',frame:document.getElementById('terminal')};SwitchboardConversation.install({selection:()=>current,terminal(){}});</script>`});
    return route.fulfill({path:path.join(__dirname,'static',path.basename(p)),contentType:p.endsWith('.css')?'text/css':'text/javascript'});
   });
-  await page.goto('http://layout.test/');await page.getByText('Still checking',{exact:true}).waitFor();
+  await page.goto('http://layout.test/');await page.getByText('Checking Windows',{exact:true}).waitFor();
   // The finished run folds behind one summary; the run still in progress stays open.
   const summary=page.locator('.conversation-steps');
   assert.equal(await summary.count(),1);assert.equal(await summary.textContent(),'Worked for 1m 12s · 2 steps');
@@ -39,8 +39,11 @@ test('Conversation folds finished progress, keeps the live step, and gives code 
   // Polling again keeps the reader's choice.
   await page.evaluate(()=>intervals.forEach(fn=>fn()));await page.waitForTimeout(100);
   assert.equal(await page.getByText('Reading app.js',{exact:true}).isVisible(),true);
-  // The working line counts from when the turn started.
-  assert.match(await page.locator('.conversation-working').getAttribute('data-label'),/^Working · 1m [56]s$/);
+  // The newest step moves into the live row, which counts from when the turn started.
+  const live=page.locator('.conversation-working');
+  assert.equal(await live.locator('.conversation-working-step').getAttribute('data-step'),'Still checking');
+  assert.match(await live.locator('.conversation-working-time').textContent(),/^1m [56]s$/);
+  assert.equal(await page.locator('.conversation-message.commentary.live').isVisible(),false);
   // Code gets a card with its language, highlighting built from text nodes, and a copy button.
   const card=page.locator('.conversation-code');
   assert.equal(await card.locator('.conversation-code-bar span').textContent(),'js');

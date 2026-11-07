@@ -87,10 +87,12 @@
     const panel=el('section',undefined,'conversation-panel');
     // CSS keeps a hidden panel laid out (see conversation.css), so hide it from assistive technology here.
     const setPanelHidden=value=>{panel.hidden=value;panel.setAttribute('aria-hidden',String(value));};setPanelHidden(true);panel.tabIndex=-1;panel.setAttribute('aria-label','Agent conversation');
-    const header=el('header'),heading=el('div',undefined,'conversation-heading'),title=el('strong'),model=el(switchModel?'button':'span',undefined,'conversation-model'),activity=el('span',undefined,'conversation-activity'),terminalAction=el('button','Open Terminal','conversation-terminal-action');model.title=switchModel?'Switch between Claude and Codex with context':'Last reported model';if(switchModel){model.type='button';model.setAttribute('aria-label','Switch model with context');model.onclick=()=>switchModel(target);}activity.setAttribute('role','status');terminalAction.type='button';terminalAction.hidden=true;terminalAction.onclick=()=>show(false);const context=el('span',undefined,'conversation-context');heading.append(title,context);header.append(heading,activity,terminalAction);
+    const header=el('header'),heading=el('div',undefined,'conversation-heading'),title=el('strong'),model=el(switchModel?'button':'span',undefined,'conversation-model'),activity=el('span',undefined,'conversation-activity'),terminalAction=el('button','Open Terminal','conversation-terminal-action');model.title=switchModel?'Switch between Claude and Codex with context':'Last reported model';if(switchModel){model.type='button';model.setAttribute('aria-label','Switch model with context');model.onclick=()=>switchModel(target);}activity.setAttribute('role','status');terminalAction.type='button';terminalAction.hidden=true;terminalAction.onclick=()=>show(false);const context=el('span',undefined,'conversation-context'),subtitle=el('div',undefined,'conversation-subtitle');subtitle.append(context,activity);heading.append(title,subtitle);header.append(heading,terminalAction);
     const notice=el('p','Loading this terminal’s conversation…','conversation-notice');notice.setAttribute('role','status');
     const list=el('div',undefined,'conversation-messages'),older=el('button','Load older messages'),refresh=el('button','↻'),latest=el('button','↓');refresh.setAttribute('aria-label','Refresh');refresh.title='Refresh conversation';latest.setAttribute('aria-label','Scroll to bottom');latest.title='Scroll to bottom';older.hidden=true;
-    const working=el('div',undefined,'conversation-working');working.append(el('span'),el('span'),el('span'));working.hidden=true;working.setAttribute('aria-hidden','true');
+    // One live row: a pulsing marker, the step in progress (or "Working"), and the elapsed time.
+    const working=el('div',undefined,'conversation-working'),workingStep=el('span',undefined,'conversation-working-step'),workingTime=el('span',undefined,'conversation-working-time');
+    working.append(el('span',undefined,'conversation-working-dot'),workingStep,workingTime);working.hidden=true;workingStep.dataset.step='Working';let liveStep=null;working.setAttribute('aria-hidden','true');
     const recovery=el('div',undefined,'conversation-recovery'),retryConnection=el('button','Retry connection');recovery.hidden=true;retryConnection.type='button';retryConnection.onclick=()=>{if(target)startups.delete(identity(target));status(unboundNotice());updateActivity();prepare();};recovery.append(retryConnection);
     const historyStatus=el('span',undefined,'conversation-history-status');historyStatus.hidden=true;historyStatus.setAttribute('role','status');
     const actions=el('div',undefined,'conversation-actions');actions.append(refresh,latest);list.append(older,working);latest.hidden=refresh.hidden=true;
@@ -157,9 +159,20 @@
     // The in-transcript indicator counts up from when the agent started this turn.
     let workingTimer=null;
     function tickWorking(){
-      clearTimeout(workingTimer);if(working.hidden||panel.hidden)return;
-      const since=Number(target?.since),label=since>0?'Working · '+duration(Math.max(0,Date.now()/1000-since)):'Working';
-      if(working.dataset.label!==label)working.dataset.label=label;workingTimer=setTimeout(tickWorking,1000);
+      clearTimeout(workingTimer);syncLiveStep();if(working.hidden||panel.hidden)return;
+      const since=Number(target?.since),time=since>0?duration(Math.max(0,Date.now()/1000-since)):'';
+      if(workingTime.textContent!==time)workingTime.textContent=time;workingTimer=setTimeout(tickWorking,1000);
+    }
+    // The newest progress update moves into the live row, so the step in progress
+    // and the timer read as one line instead of two indicators.
+    function syncLiveStep(){
+      const last=working.hidden?null:working.previousElementSibling,step=last?.classList.contains('commentary')&&!last.hidden?last:null;
+      if(step===liveStep)return;
+      liveStep?.classList.remove('live');liveStep=step;
+      // Shown through CSS content so the step's text stays in the transcript only once.
+      if(step){step.classList.add('live');workingStep.dataset.step=[...step.childNodes].filter(node=>!node.classList?.contains('conversation-label')).map(node=>node.textContent).join(' ').replace(/\s+/g,' ').trim();}
+      else workingStep.dataset.step='Working';
+      working.classList.toggle('has-step',!!step);
     }
     function updateActivity(){
       const state=target?.state,label=state==='working'?'Working…':state==='approval'?'Approval needed':state==='input'?'Input needed':state==='waiting'?'Waiting on an agent':state==='ready'?'Ready':'';
@@ -334,7 +347,7 @@
       if(list.lastChild!==working)list.append(working);
       if(prepend)list.scrollTop=position+list.scrollHeight-height;
       else if(follow)list.scrollTop=list.scrollHeight;
-      updateLatest();rememberReading();paintFiles();
+      syncLiveStep();updateLatest();rememberReading();paintFiles();
     }
     function applyPage(data,kind,cursor){
       const initial=kind==='initial',prepend=kind==='older',page=data.messages||[],start=data.start_cursor??(initial?0:prepend?Math.max(0,startCursor-page.length):cursor);

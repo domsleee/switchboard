@@ -106,7 +106,8 @@ test('phone chat opens the latest page, hides setup, and preserves messages and 
    return route.fulfill({contentType:url.pathname.endsWith('.css')?'text/css':'application/javascript',path:path.join(__dirname,'static',path.basename(url.pathname))});
   });
   await page.goto('http://chat.test/');
-  await page.getByText('Checking the final result…',{exact:true}).waitFor();
+  // The newest step of a working agent is shown in the live row.
+  await page.locator('.conversation-working-step[data-step="Checking the final result…"]').waitFor();
   assert.equal(requests.length,1);assert.equal(requests[0].tail,'true');
   assert.equal(requests[0].limit,'15');
   assert.equal(await page.locator('.conversation-message').count(),15);
