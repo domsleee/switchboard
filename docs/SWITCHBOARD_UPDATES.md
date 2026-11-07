@@ -53,8 +53,10 @@ Older paired services show only Check for updates until they support explicit ac
 The CLI equivalent is `zellij switchboard update --activate FULL_COMMIT`.
 Health submits a one-use request to the installed update job, outside the relay's
 lifetime. It expires after five minutes, is consumed only under the updater lock,
-and cannot authorize a different release if the published build changes. Failed
-activation does not make later automatic retries bypass viewers. A pending recovery
+and cannot authorize a different release if the published build changes. On Windows,
+the running tray consumes the request on its next check, within two minutes;
+there is no separate update job to start from Health. Failed activation does not
+make later automatic retries bypass viewers. A pending recovery
 can use the same explicit request for its recorded target build. No countdown or
 forced automatic activation is enabled.
 
