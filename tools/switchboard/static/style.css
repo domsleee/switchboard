@@ -30,23 +30,33 @@ body.sidebar-collapsed #sidebar-toggle{left:8px}
 /* Keep scrolled tabs clear of the pinned group headers. */
 #tabs:has(:is(#hidden-toggle,#snoozed-toggle)){scroll-padding-bottom:40px}
 #tabs:has(#hidden-toggle):has(#snoozed-toggle){scroll-padding-bottom:75px}
-#tabs .tab-select{flex-shrink:0;display:grid;grid-template-columns:8px minmax(0,1fr);column-gap:7px;row-gap:3px;white-space:normal;text-align:left;padding:9px 34px 9px 9px;min-height:52px;width:100%;border-color:transparent;background:transparent;user-select:none}
-@media(hover:hover){#tabs .tab-select:hover{background:#222732}}
+/* Two lines: project · computer and status or age, then title and agent. */
+#tabs .tab-select{flex-shrink:0;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;column-gap:10px;row-gap:3px;white-space:normal;text-align:left;padding:9px 12px;min-height:52px;width:100%;border-color:transparent;border-radius:8px;background:transparent;user-select:none}
+@media(hover:hover){#tabs .tab-select:hover{background:#1b1f27}}
 #tabs .tab-select.selected{background:#202630;border-color:transparent}
-#tabs .tab-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:550;line-height:1.35;grid-column:2}
+#tabs .tab-where{grid-area:1/1;color:#8b93a3;font-size:11px;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#tabs .tab-status{grid-area:1/2;justify-self:end;display:flex;align-items:center;gap:5px;color:#8b93a3;font-size:11px;line-height:1.3;font-variant-numeric:tabular-nums;white-space:nowrap}
+#tabs .tab-status[data-tone=attention]{color:#f0bc63;font-weight:600}
+#tabs .tab-status[data-tone=done]{color:#5fd38d;font-weight:600}
+#tabs .tab-name{grid-area:2/1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:400;line-height:1.2;color:#e5e7eb}
 #tabs .tab-select.elevated .tab-name::before{content:"\1F6E1\FE0F";margin-right:4px}
-#tabs small{color:#a3aec0;font-size:10px;grid-column:2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#tabs .star{grid-column:1;grid-row:1 / 3;align-self:center;width:6px;height:6px;border-radius:50%;font-size:0;background:transparent}
-#tabs .star.attention{background:#f0bc63;box-shadow:0 0 0 3px rgb(240 188 99 / .25)}
-/* Needs you: the loudest row state. Working stays a quiet dot. */
-#tabs .tab-select.needs-attention .tab-name{color:#fff;font-weight:700}
-#tabs .tab-select.needs-attention small{color:#f0bc63}
-#tabs .star.working{background:#8cabe9}
-#tabs .star.waiting{box-shadow:inset 0 0 0 2px #8cabe9}
-#tabs .star.unavailable{border:1px solid #a3aec0}
+#tabs .tab-agent{grid-area:2/2;justify-self:end;display:flex;width:14px;height:14px}
+#tabs .tab-agent svg{width:14px;height:14px}
+#tabs .tab-select.needs-attention .tab-name{color:#fff;font-weight:500}
+#tabs .star{display:none;flex-shrink:0;box-sizing:border-box;width:12px;height:12px;border-radius:50%;font-size:0}
+#tabs .star.working{display:block;border:2px solid #343a46;border-top-color:#a3aec0;animation:tab-spin 1s linear infinite}
+#tabs .star.waiting{display:block;border:2px solid #8cabe9}
+#tabs .star.unavailable{display:block;border:1px solid #a3aec0}
+#tabs .tab-status[data-tone=attention] .star{display:block;width:7px;height:7px;background:#f0bc63}
+#tabs .tab-status[data-tone=done] .star{display:block;position:relative;border:1.5px solid currentColor}
+#tabs .tab-status[data-tone=done] .star::after{content:'';position:absolute;left:3.2px;top:1.2px;width:2.5px;height:5px;border:solid currentColor;border-width:0 1.5px 1.5px 0;transform:rotate(45deg)}
+@keyframes tab-spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){#tabs .star.working{animation:none}}
 .tab-row{position:relative;flex-shrink:0}
-#tabs .tab-actions{position:absolute;top:13px;right:6px;width:25px;height:25px;padding:0;border:0;background:transparent;font-size:18px;color:#bdcce3;opacity:0}
-#tabs .tab-row.active .tab-actions,#tabs .tab-row:hover .tab-actions,#tabs .tab-row:focus-within .tab-actions{opacity:1}
+/* With a mouse, the actions button covers the row's right edge only while hovered. */
+#tabs .tab-actions{position:absolute;top:4px;bottom:4px;right:4px;width:30px;padding:0;border:0;border-radius:6px;background:#1b1f27;font-size:18px;color:#bdcce3;opacity:0}
+#tabs .tab-row.active .tab-actions{background:#202630}
+#tabs .tab-row:hover .tab-actions,#tabs .tab-row:focus-within .tab-actions,#tabs .tab-actions[aria-expanded=true]{opacity:1}
 #tabs .tab-actions:hover{background:#3a4c69}
 #tabs .dragging{opacity:.4}
 #tabs.reordering,#tabs.reordering button{cursor:grabbing}
@@ -60,10 +70,11 @@ body.sidebar-collapsed #sidebar-toggle{left:8px}
 :is(#hidden-toggle,#snoozed-toggle) .chevron{display:inline-block;width:8px;font-size:13px;line-height:1;transition:transform .15s}
 :is(#hidden-toggle,#snoozed-toggle)[aria-expanded=true] .chevron{transform:rotate(90deg)}
 :is(#hidden-toggle,#snoozed-toggle) .star{width:6px;height:6px;border-radius:50%}
+#tabs :is(#hidden-toggle,#snoozed-toggle) .star.attention{display:block;background:#f0bc63}
 :is(#hidden-toggle,#snoozed-toggle) .count{margin-left:auto;color:#9ba7bd;font-variant-numeric:tabular-nums}
 #tabs .tab-row.hidden-tab .tab-select:not(.selected):not(:hover){opacity:.7}
 @media (prefers-reduced-motion:reduce){:is(#hidden-toggle,#snoozed-toggle) .chevron{transition:none}}
-#tab-empty{display:grid;grid-template-columns:8px minmax(0,1fr);column-gap:7px;row-gap:8px;align-items:center;padding:16px 16px 4px;font-size:12px;line-height:1.4;color:#9ba7bd;overflow-wrap:anywhere}
+#tab-empty{display:grid;grid-template-columns:8px minmax(0,1fr);column-gap:7px;row-gap:8px;align-items:center;padding:16px 16px 4px 4px;font-size:12px;line-height:1.4;color:#9ba7bd;overflow-wrap:anywhere}
 #tab-empty[hidden]{display:none}
 #tab-empty span{grid-column:2}
 #tab-empty::before{content:'';grid-row:1;width:6px;height:6px;border-radius:50%}
@@ -221,8 +232,8 @@ dialog p{font-size:12px;color:#9ba7bd}
   #filters{overflow-x:auto;scrollbar-width:none;padding-bottom:2px}
   #filters::-webkit-scrollbar{display:none}
   #filters button,#filter-more{min-height:44px;padding:7px 10px;white-space:nowrap}
-  #tabs .tab-select{min-height:60px;padding:11px 54px 11px 9px}
-  #tabs .tab-actions{width:44px;height:44px;top:8px;right:4px}
+  #tabs .tab-select{min-height:60px;padding:11px 54px 11px 12px}
+  #tabs .tab-actions{top:50%;bottom:auto;transform:translateY(-50%);width:44px;height:44px;right:4px}
   #sidebar-bottom{padding-bottom:calc(10px + env(safe-area-inset-bottom,0px))}
   #sidebar-utilities a,#sidebar-utilities button{min-height:44px;padding:10px 4px;font-size:13px}
   #status{bottom:calc(12px + env(safe-area-inset-bottom,0px))}
@@ -288,7 +299,7 @@ body.sidebar-collapsed #artifact-preview header{padding-left:42px}
   #link-apps input{width:100%;flex-shrink:1}
 }
 
-@media(hover:none){#tabs .tab-actions{opacity:1}}
+@media(hover:none){#tabs .tab-actions{opacity:1;background:transparent}#tabs .tab-select{padding-right:40px}}
 
 #new-tab-dialog{width:500px;max-width:calc(100vw - 32px);padding:16px;overflow:visible}
 #new-tab-form{display:grid;grid-template-columns:62px minmax(0,1fr);gap:6px 8px}

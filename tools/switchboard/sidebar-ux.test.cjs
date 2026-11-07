@@ -138,7 +138,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.deepEqual(await order(),names);
     assert.equal(await snoozed.count(),0);
     assert.ok(await page.evaluate(()=>Object.keys(JSON.parse(localStorage.getItem('switchboard-pinned'))).length===1));
-    assert.match(await workingTab.locator('small').textContent(),/Pinned/);
+    assert.match(await workingTab.locator('.tab-where').textContent(),/Pinned/);
     await pinProof('after',workingTab,'Pinned tab stays here while working');
     await workingTab.click({button:'right'});
     assert.equal(await page.locator('#pin-tab').textContent(),'Unpin');
@@ -176,7 +176,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.equal(await page.locator('#tab-count').textContent(),'3 tabs');
     await snoozed.click();
     assert.deepEqual(await order(),[...names.slice(1),names[0]]);
-    assert.equal(await page.locator('#tabs small').last().textContent(),'Mac · Working');
+    assert.equal(await page.locator('#tabs .tab-status').last().textContent(),'Working');
     assert.equal(await page.locator('#tabs .star').first().getAttribute('class'),'star waiting');
     // Collapsing the section never stops or switches the selected terminal.
     await page.locator('#tabs .tab-select').last().click();
@@ -271,7 +271,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     await page.evaluate(()=>delete navigator.clipboard.writeText);
     await action.click();await page.locator('#ready').click();
     assert.equal(await page.locator('#tabs .selected .tab-name').textContent(),'switchboard');
-    assert.match(await page.locator('#tabs small').nth(1).textContent(),/For review/);
+    assert.equal(await page.locator('#tabs .tab-status').nth(1).textContent(),'Review');
     assert.deepEqual(await order(),names);
     // Hide moves the tab into the collapsed Hidden group at the bottom; it still needs review.
     const toggle=page.locator('#hidden-toggle');
