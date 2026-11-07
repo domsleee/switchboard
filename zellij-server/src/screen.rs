@@ -869,6 +869,10 @@ pub enum ScreenInstruction {
         tab_position: usize,
         ownership: Option<bool>,
     },
+    SetViewerHidden {
+        client_id: ClientId,
+        hidden: bool,
+    },
     TogglePaneEmbedOrEjectForPaneId(PaneId),
     CloseTabWithIndex(usize),
     BreakPanesToNewTab {
@@ -1246,6 +1250,7 @@ impl From<&ScreenInstruction> for ScreenContext {
                 ScreenContext::SetMobileRenderPreferences
             },
             ScreenInstruction::SetTabViewport { .. } => ScreenContext::SetTabViewport,
+            ScreenInstruction::SetViewerHidden { .. } => ScreenContext::SetViewerHidden,
             ScreenInstruction::TogglePaneEmbedOrEjectForPaneId(..) => {
                 ScreenContext::TogglePaneEmbedOrEjectForPaneId
             },
@@ -1552,6 +1557,8 @@ pub(crate) struct Screen {
     active_tab_ids: BTreeMap<ClientId, usize>,
     client_sizes: HashMap<ClientId, Size>,
     web_viewport_clients: HashSet<ClientId>,
+    /// Browser viewers the user cannot see. They own no tab and never size one.
+    hidden_viewers: HashSet<ClientId>,
     tab_size_owners: HashMap<usize, ClientId>,
     global_last_active_tab_id: usize,
     tab_history: BTreeMap<ClientId, Vec<usize>>,
@@ -1764,6 +1771,7 @@ impl Screen {
             active_tab_ids: BTreeMap::new(),
             client_sizes: HashMap::new(),
             web_viewport_clients: HashSet::new(),
+            hidden_viewers: HashSet::new(),
             tab_size_owners: HashMap::new(),
             global_last_active_tab_id: 0,
             tabs: BTreeMap::new(),
@@ -2391,7 +2399,7 @@ impl Screen {
         self.web_viewport_clients.insert(client_id);
         self.set_client_size(client_id, size);
         match ownership {
-            Some(true) => {
+            Some(true) if !self.hidden_viewers.contains(&client_id) => {
                 self.tab_size_owners.insert(tab_id, client_id);
             },
             Some(false) if self.tab_size_owners.get(&tab_id) == Some(&client_id) => {
@@ -2400,6 +2408,27 @@ impl Screen {
             _ => {},
         }
         self.recompute_tab_size(tab_id)
+    }
+
+    /// A hidden viewer gives up its tab's size, so the screens people can see decide it.
+    pub fn set_viewer_hidden(&mut self, client_id: ClientId, hidden: bool) -> Result<()> {
+        if !self.connected_clients.borrow().contains_key(&client_id) {
+            return Ok(());
+        }
+        let changed = if hidden {
+            self.hidden_viewers.insert(client_id)
+        } else {
+            self.hidden_viewers.remove(&client_id)
+        };
+        if hidden {
+            self.tab_size_owners.retain(|_, owner| *owner != client_id);
+        }
+        if changed {
+            if let Some(tab_id) = self.active_tab_ids.get(&client_id).copied() {
+                self.recompute_tab_size(tab_id)?;
+            }
+        }
+        Ok(())
     }
 
     fn tab_viewport_for_client(
@@ -2418,6 +2447,7 @@ impl Screen {
                 .and_then(|id| self.client_sizes.get(&id))
                 .map(|size| *size != tab.size)
                 .unwrap_or(false),
+            hidden: self.hidden_viewers.contains(&client_id),
         })
     }
 
@@ -2474,7 +2504,10 @@ impl Screen {
             let mut new_size = owner_size;
             // Older browsers and plain terminals cannot pan. Keep their render within bounds.
             for (client_id, active_tab) in &self.active_tab_ids {
-                if *active_tab == tab_id && !self.web_viewport_clients.contains(client_id) {
+                if *active_tab == tab_id
+                    && !self.web_viewport_clients.contains(client_id)
+                    && !self.hidden_viewers.contains(client_id)
+                {
                     if let Some(size) = self.client_sizes.get(client_id) {
                         new_size.rows = new_size.rows.min(size.rows);
                         new_size.cols = new_size.cols.min(size.cols);
@@ -2493,7 +2526,7 @@ impl Screen {
         let mut cols: Vec<usize> = Vec::new();
         let mut fit_disabled_clients: Vec<ClientId> = Vec::new();
         for (client_id, active_tab) in self.active_tab_ids.iter() {
-            if *active_tab == tab_id {
+            if *active_tab == tab_id && !self.hidden_viewers.contains(client_id) {
                 if self
                     .mobile_web_prefs
                     .get(client_id)
@@ -2633,6 +2666,7 @@ impl Screen {
         connected
             .keys()
             .filter(|other_id| self.shares_tab_with(client_id, **other_id))
+            .filter(|other_id| !self.hidden_viewers.contains(*other_id))
             .filter_map(|other_id| self.client_sizes.get(other_id).copied())
             .max_by_key(|size| size.rows * size.cols)
     }
@@ -5351,6 +5385,7 @@ impl Screen {
         }
         self.client_sizes.remove(&client_id);
         self.web_viewport_clients.remove(&client_id);
+        self.hidden_viewers.remove(&client_id);
         self.tab_size_owners.retain(|_, owner| *owner != client_id);
         self.pane_render_subscribers.remove(&client_id);
         self.client_host_focused.remove(&client_id);
@@ -12125,6 +12160,11 @@ pub(crate) fn screen_thread_main(
                 ownership,
             } => {
                 screen.set_tab_viewport(client_id, size, tab_position, ownership)?;
+                screen.render(None)?;
+                screen.log_and_report_session_state()?;
+            },
+            ScreenInstruction::SetViewerHidden { client_id, hidden } => {
+                screen.set_viewer_hidden(client_id, hidden)?;
                 screen.render(None)?;
                 screen.log_and_report_session_state()?;
             },

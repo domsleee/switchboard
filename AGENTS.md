@@ -73,9 +73,10 @@ new endpoints. See the [internals](docs/SWITCHBOARD_INTERNALS.md) for transport 
 - Relay tests: `cargo test -p zellij-client --features web_server_capability switchboard_ --lib`.
   Sidebar tests: `node tools/switchboard/<name>.test.cjs` (some need Playwright).
 - After editing `zellij-client/assets/`, run `cargo xtask assets`. CI rejects a stale bundle.
-- Conversation disconnects terminal viewers on phones, because a phone viewer can force-resize
-  the shared terminal. On desktop it keeps an already-connected viewer so switching back is
-  instant, but never attaches a new one: an attach claims a size before resizes can be suppressed.
+- A browser viewer the user cannot see (behind Conversation or another sidebar tab) must never size
+  the terminal on other screens; the bridge reports it hidden and the engine leaves it out of
+  sizing. Conversation still disconnects viewers on phones, which can force-resize the shared
+  terminal, and on engines that do not confirm hidden. It never attaches a new viewer.
 - Agent state uses reported hooks and screen/title fallback. Check which source produced the
   state before changing detection. For a screen-classification change, capture the actual
   pane with `dump-screen` and add it as a `classify` test before changing the rule.

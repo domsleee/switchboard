@@ -70,7 +70,9 @@ Screen tracks a size owner for each tab. A capable browser claims ownership
 on focus or through **Use this window's size**. Other capable browsers pan
 across the same terminal layout. Plain terminal clients and older browser
 clients still constrain the layout to their available size. Ownership releases
-when the owner changes tabs or disconnects.
+when the owner changes tabs or disconnects. A browser viewer the user cannot
+see (behind Conversation or another sidebar tab) reports itself hidden: Screen
+releases its ownership and leaves it out of sizing until it is shown again.
 
 The native web client's
 [control messages](../zellij-client/src/web_client/control_message.rs) carry

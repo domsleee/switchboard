@@ -48,6 +48,9 @@ pub enum WebClientToWebServerControlMessagePayload {
         tab_position: usize,
         ownership: Option<bool>,
     },
+    SetViewerHidden {
+        hidden: bool,
+    },
     #[serde(other)]
     Unknown,
 }

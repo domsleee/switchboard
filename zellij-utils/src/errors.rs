@@ -416,6 +416,7 @@ pub enum ScreenContext {
     TogglePaneIdFullscreen,
     SetMobileRenderPreferences,
     SetTabViewport,
+    SetViewerHidden,
     TogglePaneEmbedOrEjectForPaneId,
     CloseTabWithIndex,
     BreakPanesToNewTab,

@@ -168,4 +168,5 @@ message TabViewportMsg {
   bool owner_active = 3;
   bool is_owner = 4;
   bool constrained = 5;
+  bool hidden = 6;
 }

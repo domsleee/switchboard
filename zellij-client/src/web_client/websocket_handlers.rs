@@ -588,6 +588,9 @@ pub(super) fn control_payload_to_server_msg(
             tab_position,
             ownership,
         },
+        WebClientToWebServerControlMessagePayload::SetViewerHidden { hidden } => {
+            ClientToServerMsg::SetViewerHidden { hidden }
+        },
         WebClientToWebServerControlMessagePayload::Unknown => {
             log::warn!("Ignoring unknown control message type from web client");
             return None;
@@ -979,6 +982,22 @@ mod tests {
                     tab_position: 2,
                     ownership,
                 })
+            );
+        }
+    }
+
+    #[test]
+    fn hidden_viewer_reports_survive_web_control_conversion() {
+        for hidden in [false, true] {
+            let raw = serde_json::json!({
+                "web_client_id": "abc",
+                "payload": { "type": "SetViewerHidden", "hidden": hidden }
+            });
+            let parsed: WebClientToWebServerControlMessage =
+                serde_json::from_value(raw).expect("parse");
+            assert_eq!(
+                control_payload_to_server_msg(parsed.payload, None),
+                Some(ClientToServerMsg::SetViewerHidden { hidden })
             );
         }
     }

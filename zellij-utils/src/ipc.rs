@@ -146,6 +146,9 @@ pub struct TabViewportPayload {
     pub owner_active: bool,
     pub is_owner: bool,
     pub constrained: bool,
+    /// Confirms SetViewerHidden; older engines never set it.
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -256,6 +259,10 @@ pub enum ClientToServerMsg {
         size: Size,
         tab_position: usize,
         ownership: Option<bool>,
+    },
+    /// A browser viewer the user cannot see. It takes no part in tab sizing.
+    SetViewerHidden {
+        hidden: bool,
     },
     HostTerminalFocusChanged {
         focused: bool,

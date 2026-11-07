@@ -17,11 +17,11 @@ use crate::{
         MobileTabMsg, NestedSessionFrameFromHostMsg, PaneMetadata as ProtoPaneMetadata,
         PaneRenderUpdateMsg, QueryTerminalSizeMsg, RenamedSessionMsg, RenderMsg,
         RequestSessionListMsg, ServerToClientMsg as ProtoServerToClientMsg,
-        SetMobileRenderPreferencesMsg, SetSoftKeyboardMsg, SetTabViewportMsg, SixelSupportMsg,
-        SoftKeyboardVisibilityChangedMsg, StartWebServerMsg, SubscribeToPaneRendersMsg,
-        SubscribedPaneClosedMsg, SwitchSessionMsg, TabMetadata as ProtoTabMetadata, TabViewportMsg,
-        TerminalPixelDimensionsMsg, TerminalResizeMsg, UnblockCliPipeInputMsg,
-        UnblockInputThreadMsg, WebServerStartedMsg,
+        SetMobileRenderPreferencesMsg, SetSoftKeyboardMsg, SetTabViewportMsg, SetViewerHiddenMsg,
+        SixelSupportMsg, SoftKeyboardVisibilityChangedMsg, StartWebServerMsg,
+        SubscribeToPaneRendersMsg, SubscribedPaneClosedMsg, SwitchSessionMsg,
+        TabMetadata as ProtoTabMetadata, TabViewportMsg, TerminalPixelDimensionsMsg,
+        TerminalResizeMsg, UnblockCliPipeInputMsg, UnblockInputThreadMsg, WebServerStartedMsg,
     },
     data::{HostTerminalThemeMode, InputMode, PaneId},
     errors::prelude::*,
@@ -194,6 +194,9 @@ impl From<ClientToServerMsg> for ProtoClientToServerMsg {
                 tab_position: tab_position as u32,
                 ownership,
             }),
+            ClientToServerMsg::SetViewerHidden { hidden } => {
+                client_to_server_msg::Message::SetViewerHidden(SetViewerHiddenMsg { hidden })
+            },
         };
 
         ProtoClientToServerMsg {
@@ -381,6 +384,9 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
                     ownership: msg.ownership,
                 })
             },
+            Some(client_to_server_msg::Message::SetViewerHidden(msg)) => {
+                Ok(ClientToServerMsg::SetViewerHidden { hidden: msg.hidden })
+            },
         }
     }
 }
@@ -495,6 +501,7 @@ fn mobile_state_payload_to_proto(payload: MobileStatePayload) -> MobileStateMsg 
             owner_active: v.owner_active,
             is_owner: v.is_owner,
             constrained: v.constrained,
+            hidden: v.hidden,
         }),
         session_name: payload.session_name,
         now_secs: payload.now_secs,
@@ -558,6 +565,7 @@ fn mobile_state_payload_from_proto(msg: MobileStateMsg) -> MobileStatePayload {
             owner_active: v.owner_active,
             is_owner: v.is_owner,
             constrained: v.constrained,
+            hidden: v.hidden,
         }),
         session_name: msg.session_name,
         now_secs: msg.now_secs,

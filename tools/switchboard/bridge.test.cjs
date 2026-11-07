@@ -112,7 +112,7 @@ test('scroll reports capture actual clipping and wheel events without terminal c
   assert.equal(report.first_xterm_cols,162);assert.equal(report.min_xterm_rows,65);
 });
 test('last focused browser claims once, background metadata and hidden sessions never reclaim',()=>{
-  const h=harness(),sent=[];h.window.__zjSupportsTabViewport=true;h.window.__zjSendControl=message=>sent.push(message);
+  const h=harness(),sent=[],hidden=[];h.window.__zjSupportsTabViewport=true;h.window.__zjSendControl=message=>(message.type==='SetViewerHidden'?hidden:sent).push(message);
   const payload=tab=>({active_pane:{pane_id:tab+1,is_plugin:false,tab_position:tab},tab_viewport:{owner_active:false}});
   h.setBrowserFocus(true);h.state(payload(0));h.state(payload(0));
   assert.equal(sent.length,1);assert.equal(sent[0].ownership,true);assert.equal(sent[0].size.cols,100);
@@ -120,7 +120,9 @@ test('last focused browser claims once, background metadata and hidden sessions 
   h.setBrowserFocus(true);h.handlers.focus();assert.equal(sent.length,2);assert.equal(sent[1].tab_position,1);
   h.state(payload(1));assert.equal(sent.length,2,'A new owner in metadata must not trigger focus ping-pong');
   h.setFrameActive(false);h.state(payload(2));h.handlers.focus();assert.equal(sent.length,2);
+  assert.deepEqual(hidden.map(m=>m.hidden),[true],'A background session leaves terminal sizing');
   h.setFrameActive(true);h.state(payload(2));assert.equal(sent.length,3);
+  assert.deepEqual(hidden.map(m=>m.hidden),[true,false],'A shown session rejoins terminal sizing');
   h.parent.document.visibilityState='hidden';h.handlers.focus();assert.equal(sent.length,3);
   h.parent.document.visibilityState='visible';
   const socket=new h.window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');socket.handlers.close();
@@ -682,14 +684,15 @@ test('Copilot Send checks the live boxed composer, including multiline drafts',(
 });
 
 test('Conversation never claims or reports the hidden terminal viewport',()=>{
-  const h=harness(),sent=[];let open=true;
+  const h=harness(),sent=[],hidden=[];let open=true;
   h.parent.document.getElementById=id=>id==='terminals'?{classList:{contains:()=>open}}:null;
-  h.window.__zjSupportsTabViewport=true;h.window.__zjSendControl=message=>sent.push(message);h.setBrowserFocus(true);
+  h.window.__zjSupportsTabViewport=true;h.window.__zjSendControl=message=>(message.type==='SetViewerHidden'?hidden:sent).push(message);h.setBrowserFocus(true);
   const payload={active_pane:{pane_id:1,is_plugin:false,tab_position:0},tab_viewport:{owner_active:false}};
   h.state(payload);h.handlers.focus();
   assert.equal(h.window.__zjViewport.dimensions(),undefined);
   assert.equal(h.window.__zjViewport.report({cols:40,rows:30}),false);
   assert.equal(sent.length,0);
+  assert.deepEqual(hidden.map(m=>m.hidden),[true],'Conversation takes the viewer out of terminal sizing');
   open=false;h.handlers.focus();
   assert.equal(sent.length,1);assert.equal(sent[0].ownership,true);
   open=true;h.state(payload);h.handlers.focus();assert.equal(sent.length,1);

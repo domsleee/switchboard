@@ -942,7 +942,7 @@ function renderMachines() {
 function syncTerminalConnection(entry) {
   const live=`/hosts/${encodeURIComponent(entry.host)}/${encodeURIComponent(entry.name)}`;
   const suspended=!!globalThis.SwitchboardConversation?.wantsConversation?.()&&
-    !(!mobileSidebar.matches&&!entry.cached&&!!entry.state&&!entry.suspending&&entry.frame.getAttribute('src')===live);
+    !(!mobileSidebar.matches&&!entry.hideUnsupported&&!entry.cached&&!!entry.state&&!entry.suspending&&entry.frame.getAttribute('src')===live);
   const src=entry.cached||suspended?'about:blank':live;
   if(suspended&&entry.state?.active_pane)entry.resumePane=entry.state.active_pane;
   entry.suspended=suspended;
@@ -955,7 +955,7 @@ function syncTerminalConnection(entry) {
     retireTerminal(entry,retire);
     return;
   }
-  entry.state=null;entry.disconnected=false;entry.requestedPane=null;entry.focusPending=false;entry.needsFocus=true;
+  entry.state=null;entry.disconnected=false;entry.requestedPane=null;entry.focusPending=false;entry.needsFocus=true;entry.hideUnsupported=false;
   entry.frame.src=src;
 }
 function terminalTransition(entry,busy) {
@@ -1198,6 +1198,9 @@ window.addEventListener('message',event=>{
     recordTerminalDiagnostic(entry,'clipboard',event.data.diagnostic);
   }else if(event.data?.type==='zellij-clipboard'){
     setStatus(event.data.ok?'Copied to this browser.':event.data.error||'Copy failed; use the terminal’s clipboard panel.',!event.data.ok);
+  }else if(event.data?.type==='zellij-hide-unsupported'){
+    // This engine still sizes tabs for hidden viewers. Disconnect it during Conversation.
+    entry.hideUnsupported=true;syncTerminalConnection(entry);render();
   }else if(event.data?.type==='zellij-disconnected'){
     entry.disconnected=true;entry.needsFocus=true;
     // A hidden viewer's reconnect would attach again, sized while hidden. Stop it;
