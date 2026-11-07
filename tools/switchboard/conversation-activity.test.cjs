@@ -19,9 +19,9 @@ test('Conversation shows the model, animates real work and keeps delivery receip
   const activity=page.locator('.conversation-activity'),working=page.locator('.conversation-working');
   assert.equal(await activity.textContent(),'Ready');assert.equal(await page.locator('.conversation-model').textContent(),'6.1 Sol · medium');
   const labels=page.locator('.conversation-message.assistant .conversation-label');
-  assert.equal(await labels.first().textContent(),'6.1 Sol · low');
-  assert.equal(await labels.last().textContent(),'6.1 Sol · medium');
-  assert.equal(await labels.last().isVisible(),true,'A changed model or effort starts a visible label even after another assistant message');
+  assert.equal(await labels.first().textContent(),'Codex');
+  assert.equal(await labels.last().textContent(),'Codex');assert.equal(await page.locator('.conversation-compose .conversation-model').count(),1,'The model shows once, in the composer');
+  assert.equal(await labels.last().isVisible(),false,'Consecutive assistant messages share one label');
   assert.equal(await working.isVisible(),false);
   await page.getByLabel('Reply draft').fill('Please continue');await page.getByRole('button',{name:'Send',exact:true}).click();
   await page.locator('.conversation-outgoing').getByText('Queued',{exact:true}).waitFor();
@@ -29,7 +29,7 @@ test('Conversation shows the model, animates real work and keeps delivery receip
   await page.evaluate(()=>{current.state='working';SwitchboardConversation.update();});
   assert.equal(await activity.textContent(),'Working…');assert.equal(await page.locator('.conversation-model').textContent(),'6.1 Sol · medium');
   assert.equal(await working.isVisible(),true);
-  assert.equal(await working.evaluate(node=>getComputedStyle(node,'::before').animationName),'conversation-spin');
+  assert.equal(await working.evaluate(node=>getComputedStyle(node.firstElementChild).animationName),'conversation-typing');
   assert.equal(await activity.evaluate(node=>getComputedStyle(node,'::before').animationName),'conversation-pulse');
   assert.equal(await page.getByText('Waiting for agent…',{exact:true}).count(),0);
   assert.equal(await page.locator('.conversation-messages').evaluate(node=>node.lastElementChild.className),'conversation-working');
@@ -40,7 +40,7 @@ test('Conversation shows the model, animates real work and keeps delivery receip
   model='gpt-6-astra';effort='high';
   await Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/')),page.evaluate(()=>intervals.forEach(fn=>fn()))]);
   await page.waitForFunction(()=>document.querySelector('.conversation-model').textContent==='6 Astra · high');assert.equal(await activity.textContent(),'Working…');
-  assert.equal(await labels.first().textContent(),'6.1 Sol · low','Historical messages keep the model and effort that produced them');
+  assert.equal(await labels.first().textContent(),'Codex');
   for(const state of ['ready','approval','input','waiting']){
    await page.evaluate(state=>{current.state=state;SwitchboardConversation.update();},state);
    assert.equal(await working.isVisible(),false,state+' must stop the animation');

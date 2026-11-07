@@ -1408,6 +1408,10 @@ fn app(state: RelayState) -> Router {
             post(conversation::handler),
         )
         .route(
+            "/api/hosts/{host}/conversation/reply",
+            post(conversation::reply_handler),
+        )
+        .route(
             "/api/hosts/{host}/codex/queue",
             post(native_messages::handler),
         )

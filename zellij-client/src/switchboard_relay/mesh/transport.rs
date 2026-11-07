@@ -800,6 +800,16 @@ async fn terminal_response(
             .await
             .map(IntoResponse::into_response);
     }
+    if path == "/switchboard/conversation/reply" && request.method() == Method::POST {
+        let bytes = to_bytes(request.into_body(), conversation::REPLY_LIMIT * 4 + 4096)
+            .await
+            .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid conversation request"))?;
+        let reply = serde_json::from_slice::<conversation::Reply>(&bytes)
+            .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid conversation reply"))?;
+        return conversation::reply_local(&host, reply)
+            .await
+            .map(IntoResponse::into_response);
+    }
     if path == "/switchboard/restart-agent" && request.method() == Method::POST {
         let bytes = to_bytes(request.into_body(), 4096)
             .await
