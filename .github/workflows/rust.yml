@@ -37,7 +37,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macOS compiles the same code in Test (macos-latest).
+        # macOS compiles the same code in Test (macos-latest, nightly).
         os: [ubuntu-latest]
 
     runs-on: ${{ matrix.os }}
@@ -98,7 +98,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # macOS runners are scarce and release builds wait for them; check nightly.
+        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-latest"]') }}
 
     runs-on: ${{ matrix.os }}
 
