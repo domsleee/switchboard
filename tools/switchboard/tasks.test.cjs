@@ -260,6 +260,16 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
     assert.equal(await linux.locator('.agent-none').textContent(),'No Claude Code, Copilot CLI or Codex on this computer');
     assert.equal(await page.locator('#updates .task-computer').nth(3).locator('.log-note').first().textContent(),'Update Switchboard on this computer to check its agents');
 
+    // An old successful report must not hide incompatible plugin hooks.
+    tasks.computers[0].agents[0].state='setup';
+    tasks.computers[0].agents[0].detail='Reporting and message hooks missing or out of date';
+    await page.evaluate(()=>SwitchboardTasks.load());
+    assert.equal(await macRows.nth(0).getAttribute('data-status'),'failed');
+    assert.equal(await macRows.nth(0).getByRole('button',{name:'Set up'}).count(),1);
+    assert.match(await macRows.nth(0).locator('.task-meta').textContent(),/hooks missing or out of date/);
+    assert.match(await mac.locator('.task-state').textContent(),/Claude Code: needs setup/);
+    tasks.computers[0].agents[0].detail='Plugin installed · auto-updates enabled';
+
     // Skill warnings remain visible when hooks are ready, without offering hook setup.
     tasks.computers[0].agents=tasks.computers[0].agents.map(a=>({...a,state:'ready',lastReport:now-120e3}));
     await page.waitForFunction(()=>document.querySelector('#updates')?.getAttribute('aria-busy')==='false');
