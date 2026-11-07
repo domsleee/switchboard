@@ -2,6 +2,46 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const vm=require('node:vm');
+test('Ctrl+D closes the selected Conversation tab from its draft without a terminal connection',
+  {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
+  const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch();
+  try{
+    const page=await browser.newPage(),calls=[],connections=[],errors=[],ids=[42,90,105];
+    page.setDefaultTimeout(5000);page.on('pageerror',error=>errors.push(error.message));
+    await page.addInitScript(()=>{window.setInterval=()=>0;localStorage.setItem('switchboard-view-mode','conversation');localStorage.setItem('switchboard-mobile-view-mode','conversation');});
+    await page.route('https://switchboard.test/**',async route=>{
+      const pathname=new URL(route.request().url()).pathname,json=value=>route.fulfill({json:value});
+      if(pathname.endsWith('/close-tab')){calls.push(route.request().postDataJSON());return json({ok:true});}
+      if(pathname==='/api/hosts')return json([{id:'fixture',name:'Fixture desktop',local:true}]);
+      if(pathname==='/api/hosts/fixture')return json({id:'fixture',name:'Fixture desktop',local:true,sessions:[{name:'main',web_clients_allowed:true}]});
+      if(pathname==='/api/attention')return json({tabs:ids.map((id,position)=>({host:'fixture',session:'main',id,position,name:'Conversation '+id,panes:[{pane_id:id+1,tab_position:position,is_plugin:false}]})),panes:ids.map(id=>({host:'fixture',session:'main',pane_id:id+1,agent:'codex',state:'ready',chat_id:'chat-'+id})),errors:[]});
+      if(pathname.startsWith('/api/chats/'))return json({messages:[{role:'assistant',text:pathname.split('/').at(-1)}],start_cursor:0,next_cursor:null});
+      if(pathname.startsWith('/api/'))return json({});
+      if(pathname.startsWith('/hosts/')){connections.push(pathname);return route.fulfill({body:''});}
+      const file=__dirname+'/static/'+(pathname==='/'?'index.html':pathname.slice(1));
+      return fs.existsSync(file)?route.fulfill({path:file,contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html'}):route.fulfill({status:404,body:''});
+    });
+    await page.goto('https://switchboard.test/?host=fixture&session=main&tab=42');
+    const draft=page.getByLabel('Reply draft');await draft.fill('A draft in the selected tab');
+    const guarded=await draft.evaluate(node=>[{altKey:true},{metaKey:true},{shiftKey:true},{isComposing:true}].map(extra=>!node.dispatchEvent(new KeyboardEvent('keydown',{key:'d',code:'KeyD',ctrlKey:true,bubbles:true,cancelable:true,...extra}))));
+    assert.deepEqual(guarded,[false,false,false,false]);assert.deepEqual(calls,[]);
+    assert.equal(await page.locator('#tab-search').evaluate(node=>node.dispatchEvent(new KeyboardEvent('keydown',{key:'d',code:'KeyD',ctrlKey:true,bubbles:true,cancelable:true}))),true);
+    await page.evaluate(()=>{const dialog=document.createElement('dialog');dialog.id='fixture-dialog';dialog.innerHTML='<input>';document.body.append(dialog);dialog.showModal();});
+    await page.keyboard.press('Control+d');assert.deepEqual(calls,[]);
+    await page.evaluate(()=>document.getElementById('fixture-dialog').remove());
+    await draft.focus();await page.keyboard.down('Control');await page.keyboard.down('d');
+    await page.waitForFunction(()=>document.querySelector('.conversation-message')?.textContent.includes('chat-90'));
+    assert.deepEqual(calls,[{session:'main',tab_id:42}]);
+    await draft.fill('Keep the next tab');await page.keyboard.down('d');
+    assert.equal(await draft.inputValue(),'Keep the next tab');assert.equal(calls.length,1,'Holding Ctrl+D must not close the next tab');
+    await page.keyboard.up('d');await page.keyboard.up('Control');
+    await draft.fill('');await page.keyboard.press('Control+d');
+    await page.waitForFunction(()=>document.querySelector('.conversation-message')?.textContent.includes('chat-105'));
+    assert.deepEqual(calls,[{session:'main',tab_id:42},{session:'main',tab_id:90}]);
+    assert.deepEqual(connections,[]);assert.deepEqual(errors,[]);
+  }finally{await browser.close();}
+});
+
 test('Close (menu or Ctrl+D) closes the clicked tab immediately and restores it on failure',async()=>{
   const elements=new Map(),calls=[];
   const $=id=>{
