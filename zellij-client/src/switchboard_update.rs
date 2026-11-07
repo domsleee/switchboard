@@ -819,7 +819,10 @@ impl Updater {
         if let Some(requested) = self.activation.borrow().as_ref() {
             ensure!(requested == &manifest.commit, "The requested update was superseded; check for updates and choose Update now again");
         }
-        if !is_due(state, manifest.run_number) {
+        let explicit_retry = self.activating(&manifest.commit)
+            && state.run_number == Some(manifest.run_number)
+            && state.attempts.is_some();
+        if !is_due(state, manifest.run_number) && !explicit_retry {
             // Scheduled runs log every few minutes; only say so when someone is watching.
             if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
                 println!("No newer successful main build.");
@@ -894,6 +897,12 @@ impl Updater {
             },
             Err(error) => {
                 state.error = Some(format!("{error:#}"));
+                // Keep this verified release actionable after a failed activation,
+                // including when its automatic retry budget has been exhausted.
+                state.ready = Some(ReadyUpdate {
+                    commit: manifest.commit.clone(),
+                    since: epoch(),
+                });
                 // Preflight failures happen before an attempt is counted.
                 if let Some(attempt) = state
                     .attempts
@@ -938,7 +947,6 @@ impl Updater {
             println!("{notice}");
         }
         state.notice = Some(notice);
-        state.error = None;
         state.save(&self.state_path())
     }
 
@@ -1402,7 +1410,19 @@ impl Updater {
             .env("SWITCHBOARD_EXPECTED_COMMIT", commit.unwrap_or(""))
             .env("SWITCHBOARD_RELAY_PORT", self.port.to_string())
             .env_remove("SWITCHBOARD_UPDATE_BINARY_ONLY");
-        run_command(command, Duration::from_secs(300)).map(drop)
+        // Four pane checks per live session can legitimately exceed five
+        // minutes on computers with many sessions. Each probe remains bounded.
+        let sessions = self.native_sessions()?.len() as u64;
+        let probe_seconds = std::env::var("SWITCHBOARD_UPDATE_PROBE_TIMEOUT")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|seconds| (1..=300).contains(seconds))
+            .unwrap_or(15);
+        run_command(
+            command,
+            Duration::from_secs(300 + sessions * 4 * probe_seconds),
+        )
+        .map(drop)
     }
 
     fn reload_menu(&self) -> Result<()> {
@@ -1588,6 +1608,19 @@ fn run_command(mut command: Command, timeout: Duration) -> Result<String> {
             break status;
         }
         if Instant::now() >= deadline {
+            #[cfg(unix)]
+            {
+                // Let the shell's EXIT trap restore the executable and services.
+                // Signal this helper only: session engines must remain alive.
+                let _ = nix::sys::signal::kill(
+                    nix::unistd::Pid::from_raw(child.id() as i32),
+                    nix::sys::signal::Signal::SIGTERM,
+                );
+                let cleanup_deadline = Instant::now() + Duration::from_secs(180);
+                while child.try_wait()?.is_none() && Instant::now() < cleanup_deadline {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
             let _ = child.kill();
             let _ = child.wait();
             bail!("{name} timed out after {} seconds", timeout.as_secs());
