@@ -47,9 +47,6 @@ what runs there, and before deleting or stopping anything on it. Reach other com
 the relay or their agent rather than assuming SSH works; read their files with
 `/api/hosts/<id>/file?path=<URL-encoded path>`.
 
-On Windows, an old `zellij.exe` in `~/.cargo/bin` can come first on `PATH` and lack newer
-subcommands such as `agent-hook`. Check which binary ran before blaming a hook or a test result.
-
 Sessions and tabs you create on the running system appear in the user's sidebar. Give test
 sessions unique names, close everything you create, and check `/api/hosts` (sessions) and
 `/api/attention` (tabs) for leftovers.

@@ -103,6 +103,31 @@ function Initialize-SwitchboardReleaseStore([string]$Binary, [string]$Directory 
     } finally { $lock.Dispose() }
 }
 
+# Agent hooks and the CLI run `zellij` from PATH. Keep that copy on the selected
+# release, as macOS and Linux updates do, so it never goes stale. A running
+# executable can be renamed but not overwritten, so the old copy moves aside and
+# is deleted by a later update once nothing runs it.
+function Sync-SwitchboardPathBinary([string]$Binary, [string]$Target = (Join-Path $HOME '.cargo/bin/zellij.exe')) {
+    if (!(Test-Path -LiteralPath $Target)) { return $false }
+    $directory = Split-Path -LiteralPath $Target
+    foreach ($old in @(Get-ChildItem -LiteralPath $directory -Filter 'zellij.retired-*.exe' -ErrorAction SilentlyContinue)) {
+        Remove-Item -LiteralPath $old.FullName -Force -ErrorAction SilentlyContinue
+    }
+    $hash = Get-SwitchboardHash $Binary
+    if ((Get-SwitchboardHash $Target) -ceq $hash) { return $false }
+    $id = [Guid]::NewGuid().ToString('N')
+    $staged = Join-Path $directory ".zellij-$id.exe"
+    $retired = Join-Path $directory "zellij.retired-$id.exe"
+    try {
+        Copy-Item -LiteralPath $Binary -Destination $staged -ErrorAction Stop
+        if ((Get-SwitchboardHash $staged) -cne $hash) { throw 'Release changed while copying it onto PATH' }
+        [IO.File]::Move($Target, $retired)
+        try { [IO.File]::Move($staged, $Target) } catch { [IO.File]::Move($retired, $Target); throw }
+    } finally { if (Test-Path -LiteralPath $staged) { Remove-Item -LiteralPath $staged -Force } }
+    Remove-Item -LiteralPath $retired -Force -ErrorAction SilentlyContinue
+    $true
+}
+
 # Quote arguments for the Windows native command line, including trailing
 # backslashes and quotes. No shell or command interpolation is involved.
 function ConvertTo-SwitchboardArgument([string]$Value) {
@@ -364,6 +389,8 @@ function Invoke-SwitchboardWindowsUpdate {
             throw 'Running native web daemon became unavailable to the selected executable'
         }
         Remove-Item -LiteralPath $journal -Force -ErrorAction Stop
+        try { Sync-SwitchboardPathBinary $selectedBinary | Out-Null }
+        catch { Write-Warning "Could not update zellij.exe on PATH: $($_.Exception.Message)" }
         [pscustomobject]@{sha256=$hash; previous_sha256=$before.sha256; live_services_restarted=$false; browser_verified=$false}
     } catch {
         $failure = $_
@@ -380,4 +407,4 @@ function Invoke-SwitchboardWindowsUpdate {
     } finally { $lock.Dispose() }
 }
 
-Export-ModuleMember -Function Get-SwitchboardTrayScript,Get-SwitchboardTrays,Get-SwitchboardTrayArguments,Get-SwitchboardCommandLineValue,Wait-SwitchboardMutexRelease,Enter-SwitchboardMutex,Get-SwitchboardReleaseDirectory,Get-SwitchboardReleaseState,Get-SwitchboardCurrentBinary,Initialize-SwitchboardReleaseStore,Invoke-SwitchboardWindowsUpdate,Invoke-SwitchboardProbe,ConvertTo-SwitchboardArgument
+Export-ModuleMember -Function Get-SwitchboardTrayScript,Get-SwitchboardTrays,Get-SwitchboardTrayArguments,Get-SwitchboardCommandLineValue,Wait-SwitchboardMutexRelease,Enter-SwitchboardMutex,Get-SwitchboardReleaseDirectory,Get-SwitchboardReleaseState,Get-SwitchboardCurrentBinary,Initialize-SwitchboardReleaseStore,Invoke-SwitchboardWindowsUpdate,Sync-SwitchboardPathBinary,Invoke-SwitchboardProbe,ConvertTo-SwitchboardArgument

@@ -119,8 +119,10 @@ A relay on another port, such as an older installation on port 80, also answers 
 Healthy existing sessions retain their engines, shells and agents, including new
 tabs created inside those sessions. Legacy viewers defer automatic updates until they disconnect. New sessions use the selected release when started through the
 updated services/launcher.
-On Windows a separate old `zellij.exe` on PATH is not overwritten; use the
-installed `windows_cli.ps1` launcher to follow the selected release.
+On Windows, each update also copies the selected release over
+`~/.cargo/bin/zellij.exe` when that file exists, because agent hooks and the CLI
+run `zellij` from PATH. A running copy is renamed aside and deleted by a later
+update.
 
 macOS grants Local Network access per code signature. CI signs every macOS
 build with Switchboard's own certificate (`.github/signing`) under the fixed
