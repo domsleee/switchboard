@@ -716,3 +716,17 @@ test('resumable already-focused confirmation settles the matching sidebar reques
   emit({type:'FocusConfirmed',payload:{pane_id:1,is_plugin:false}});
   assert.equal(h.messages.at(-1).focus_id,8);assert.equal(h.messages.at(-1).focus_pending,false);
 });
+
+ test('Conversation blocks resumable resize without queuing it and keeps ordinary controls',()=>{
+  const h=harness();let open=true;
+  h.parent.document.getElementById=id=>id==='terminals'?{classList:{contains:()=>open}}:null;
+  const Socket=Object.getPrototypeOf(h.window.WebSocket);
+  const terminal=new Socket('/ws/terminal'),control=new Socket('/ws/control');
+  terminal.resumable=control.resumable=true;
+  h.handlers['zellij-resumable-sockets']({detail:{terminal,control}});
+  const resize=JSON.stringify({web_client_id:1,payload:{type:'TerminalResize',rows:30,cols:40}});
+  const input=JSON.stringify({web_client_id:1,payload:{type:'Key',key:'Enter'}});
+  control.send(resize);assert.deepEqual(control.sent,[]);
+  control.send(input);assert.deepEqual(control.sent,[input]);
+  open=false;control.send(resize);assert.deepEqual(control.sent,[input,resize]);
+});
