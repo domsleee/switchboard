@@ -114,6 +114,8 @@ let recoveryPanes, reconnectTarget;
         assert.ok(children.length,'Session owns terminal processes');
         browser=await chromium.launch({headless:true});
         const context=await browser.newContext({viewport:{width:1200,height:800}});
+        // This fixture covers legacy viewer locking and explicit migration.
+        await context.route(/\/session\?/, route=>{const url=new URL(route.request().url());url.searchParams.delete("resumable");return route.continue({url:url.href});});
         const page=await context.newPage();
         page.setDefaultTimeout(30000);
         page.on('pageerror',error=>console.error('Browser error:',error.message));
@@ -165,6 +167,7 @@ let recoveryPanes, reconnectTarget;
             const roLine=roOutput.split('\n').find(line=>line.includes(': '));
             readOnlyTokenName=roLine.split(': ')[0];
             const roContext=await browser.newContext();
+            await roContext.route(/\/session\?/, route=>{const url=new URL(route.request().url());url.searchParams.delete("resumable");return route.continue({url:url.href});});
             const nativeUrl=`http://127.0.0.1:${nativePort}`;
             assert.equal((await fetch(nativeUrl+'/session-list')).status,401,'Recovery does not allow unauthenticated session discovery');
             assert.equal((await roContext.request.post(nativeUrl+'/command/login',{data:{auth_token:roLine.slice(readOnlyTokenName.length+2).replace(/ \(read-only\)\s*$/,'').trim(),remember_me:false}})).status(),200);
@@ -225,9 +228,12 @@ let recoveryPanes, reconnectTarget;
             },pane.id);
         }
         async function selectPane(pane,target=page){
-            const index=await target.evaluate(id=>[...document.querySelectorAll('#tabs .tab-select')].findIndex(b=>b._item?.tab.id===id),pane.tab_id);
-            assert.ok(index>=0,'Expected tab is present in the sidebar');
-            await target.locator('#tabs .tab-select').nth(index).click();
+            // Catalog recovery can reorder rows between lookup and click.
+            // Retain the chosen button rather than clicking its former index.
+            const handle=await target.evaluateHandle(id=>[...document.querySelectorAll('#tabs .tab-select')].find(b=>b._item?.tab.id===id),pane.tab_id);
+            const button=handle.asElement();
+            assert.ok(button,'Expected tab is present in the sidebar');
+            try{await button.click();}finally{await handle.dispose();}
             await selectedPane(pane,target);
         }
         if(!recoveryMode){

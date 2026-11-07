@@ -2,7 +2,7 @@
 import os, sys, threading, time, json
 root = sys.argv[1]
 if os.name == 'nt':
-    import ctypes, msvcrt
+    import ctypes, msvcrt, codecs
     from ctypes import wintypes
     kernel = ctypes.WinDLL('kernel32', use_last_error=True)
     kernel.GetStdHandle.argtypes = [wintypes.DWORD]
@@ -11,6 +11,9 @@ if os.name == 'nt':
     kernel.GetConsoleMode.restype = wintypes.BOOL
     kernel.SetConsoleMode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
     kernel.SetConsoleMode.restype = wintypes.BOOL
+    # os.read/os.write use bytes; match the UTF-8 stream delivered through ConPTY.
+    if not kernel.SetConsoleCP(65001) or not kernel.SetConsoleOutputCP(65001):
+        raise ctypes.WinError(ctypes.get_last_error())
     for standard, clear, enable in [(-10, 7, 0x200), (-11, 0, 4)]:
         mode = wintypes.DWORD()
         handle = kernel.GetStdHandle(standard & 0xffffffff)
@@ -20,9 +23,25 @@ if os.name == 'nt':
             raise ctypes.WinError(ctypes.get_last_error())
     msvcrt.setmode(sys.stdin.fileno(), os.O_BINARY)
     msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)
+    # ReadFile's console byte conversion can replace each half of a surrogate pair.
+    # Read UTF-16 console characters and retain a high surrogate until its pair arrives.
+    console_decoder = codecs.getincrementaldecoder('utf-16-le')()
+    kernel.ReadConsoleW.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+    kernel.ReadConsoleW.restype = wintypes.BOOL
+    input_handle = kernel.GetStdHandle(-10 & 0xffffffff)
+    def read_input():
+        buffer = ctypes.create_string_buffer(8192)
+        count = wintypes.DWORD()
+        while True:
+            if not kernel.ReadConsoleW(input_handle, buffer, 4096, ctypes.byref(count), None):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if not count.value: return b''
+            text = console_decoder.decode(buffer.raw[:count.value * 2])
+            if text: return text.encode('utf-8')
 else:
     import tty
     tty.setraw(sys.stdin.fileno())
+    def read_input(): return os.read(sys.stdin.fileno(), 4096)
 os.write(sys.stdout.fileno(), b'\x1b[?2004h')  # Fixture accepts bracketed paste bytes.
 with open(os.path.join(root, 'fixture.json'), 'w') as f:
     json.dump({'pid': os.getpid()}, f)
@@ -40,7 +59,7 @@ threading.Thread(target=output, daemon=True).start()
 total = 0
 with open(os.path.join(root, 'input.bin'), 'ab', buffering=0) as f, open(os.path.join(root, 'input-times.jsonl'), 'w', buffering=1) as times:
     while True:
-        data = os.read(sys.stdin.fileno(), 4096)
+        data = read_input()
         if not data: break
         f.write(data)
         total += len(data)

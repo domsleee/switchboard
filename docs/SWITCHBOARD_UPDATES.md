@@ -33,14 +33,32 @@ the manifest over HTTPS first and installs only a run number newer than the last
 one it tried. Assets whose checksum does not match (normally a newer upload in
 progress) are skipped and retried on the next run.
 
-Updates download and verify immediately, but `zellij switchboard update` waits
-while any terminal WebSocket uses this computer's relay or web service. This
-includes paired computers' viewers and connected background browser tabs; it is
-not based on typing, focus, or whether agents are working. Close those viewers
-to allow activation on the next scheduled check. Shells and agents keep running.
-The verified bundle is cached in `automatic-updates/ready`; each check fetches
-the latest manifest, so newer releases replace the waiting release. Deferral
-appears in `state.json`'s `notice` and does not consume an update attempt.
+New browser viewers use a retained attachment worker for each native session. The
+worker owns the production input parser, native IPC connection, focus state and
+bounded delivery journals. Relay and web services can update while these viewers
+stay open: typing is buffered and resumes in order on the same attachment, and
+output is acknowledged only after the browser renderer applies it. A restart can
+briefly delay display; it does not move queued typing to a new session.
+
+Switching to Conversation drains queued typing and waits for the retained
+viewer to confirm native disconnection before unloading the terminal. Returning
+during that handoff keeps typing disabled until the viewer is safe to use. An
+unfinished paste keeps its original viewer; an unconfirmed disconnect offers an
+explicit retry instead of replacing it. Retirement receipts remain available for
+ten minutes and do not occupy live viewer capacity.
+
+An already-loaded legacy browser still holds the viewer lock. The first migration
+requires **Update now**, followed by a browser reload to enable resumable attachments.
+Legacy viewers continue to defer automatic activation; their input during that first
+reconnect is not guaranteed. Once viewers use the new protocol, leaving them open
+does not indefinitely block later automatic updates. Older paired web services
+continue using the protected legacy path until upgraded and reloaded.
+
+The verified bundle is cached in `automatic-updates/ready`; newer releases replace
+waiting releases. Deferral appears in `state.json`'s `notice` without consuming an
+update attempt. Readiness verifies this computer's sessions only; unrelated paired
+session churn cannot trigger rollback. Old pending journals are filtered to the
+local computer before recovery verification.
 
 Settings → Health shows a downloaded build as **Update ready · terminals connected**,
 including the target commit and waiting time. **Check for updates** starts a normal,
@@ -60,10 +78,14 @@ make later automatic retries bypass viewers. A pending recovery
 can use the same explicit request for its recorded target build. No countdown or
 forced automatic activation is enabled.
 
-Relay and web connections hold shared locks on `automatic-updates/viewers.lock`.
+Legacy relay and web connections hold shared locks on `automatic-updates/viewers.lock`.
 Automatic activation takes an exclusive lock immediately before mutation and holds it
-through readiness checks and rollback. A viewer arriving during that interval
-retries until activation finishes. Locks are released by the OS on process exit;
+through readiness checks and rollback. A separate short-lived bootstrap admission lock applies even to explicit activation.
+New web services also honor older updaters’ active handoff marker and process lock
+during the first migration. A new attachment arriving during that interval
+retries until activation finishes; existing resumable attachments can reconnect through
+the lock. This also prevents first-upgrade viewers depending on a candidate that
+rolls back to a legacy web service. Locks are released by the OS on process exit;
 never delete the lock file. Isolated tests can set `SWITCHBOARD_VIEWER_LOCK` to a
 private path in both services and the updater. Changing `--state-directory`
 alone does not change which viewers the updater protects.
@@ -95,8 +117,7 @@ A relay on another port, such as an older installation on port 80, also answers 
 8090 so agent hooks and the CLI reach it.
 
 Healthy existing sessions retain their engines, shells and agents, including new
-tabs created inside those sessions. Automatic updates wait for viewers to
-disconnect. New sessions use the selected release when started through the
+tabs created inside those sessions. Legacy viewers defer automatic updates until they disconnect. New sessions use the selected release when started through the
 updated services/launcher.
 On Windows a separate old `zellij.exe` on PATH is not overwritten; use the
 installed `windows_cli.ps1` launcher to follow the selected release.
@@ -509,3 +530,29 @@ saved user state. Existing sessions must remain reachable, and new sessions
 must start with the new engine. Also test mixed versions, interrupted downloads,
 updates while the browser is disconnected, repeated upgrades of a long-lived
 session, and a machine catching up after several missed releases.
+
+## Retained attachment lifecycle
+
+Workers use the hidden `attachment-worker` command and are independent of the
+restartable web/relay services. They keep their original build until their viewers
+end, like existing terminal engines. `/api/health` exposes attachment protocol and
+live worker builds/PIDs without private credentials. A bundle without protocol 1
+cannot replace services while retained workers are active.
+
+Each browser has one ordered input/control stream, stop-and-wait input acknowledgment,
+a fenced transport generation and an idempotent resume nonce. Reconnect revalidates
+the credential identity, allowing the relay's session cookie to rotate after restart.
+Workers recheck credential permission changes while connected. Recovery attachments
+are discovered only under the current recovery authorization and pinned socket
+identity; removing that authorization on web restart prevents their reuse. Pane
+switches hold subsequent typing until the engine explicitly confirms the destination
+and an ordered query reply completes the focus transaction. An IPC failure is explicit;
+uncertain input is never replayed into a newly created terminal.
+
+Limits are 1 MiB queued browser input, 4 MiB/4096 unacknowledged worker output records,
+64 viewers per session worker, a two-minute browser recovery deadline, and ten minutes
+of detached worker-viewer retention. Overflow, expiry, revocation or worker loss fails
+visibly rather than silently discarding/replaying data. Pending unacknowledged input is
+retained in the original page as `window.__zjPendingTerminalInput` for explicit recovery.
+An idle worker exits after ten minutes with no retained viewers. Worker endpoint files
+are private and authenticated on loopback; never copy them between computers.

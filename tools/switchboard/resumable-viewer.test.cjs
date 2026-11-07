@@ -40,7 +40,17 @@ async function bridge(version,origin,port=0,drop=0){
 (async()=>{try{
  const python=process.env.PYTHON|| (process.platform==='win32'?'python':'python3');
  cli('attach','--create-background',name,'--',python,'-u',path.join(fixture,'fixture.py'),dir);created=true;
- await waitFor(()=>fs.existsSync(endpointFile)&&fs.existsSync(path.join(dir,'fixture.json')),'private engine/fixture did not start');
+ const startupBegan=Date.now();
+ try {await waitFor(()=>fs.existsSync(endpointFile)&&fs.existsSync(path.join(dir,'fixture.json')),'private engine/fixture did not start',process.platform==='win32'?45000:15000);}
+ catch(error){
+  const diagnostic={elapsedMs:Date.now()-startupBegan,endpointExists:fs.existsSync(endpointFile),fixtureExists:fs.existsSync(path.join(dir,'fixture.json'))};
+  try{
+   diagnostic.panes=JSON.parse(cli('-s',name,'action','list-panes','--json','--all'));
+   diagnostic.screens=diagnostic.panes.filter(p=>!p.is_plugin).map(p=>{try{return {pane:p.id,text:cli('-s',name,'action','dump-screen','-p',String(p.id))};}catch(cause){return {pane:p.id,error:String(cause)};}});
+  }catch(cause){diagnostic.error=String(cause);}
+  fs.writeFileSync(path.join(dir,'startup-diagnostic.json'),JSON.stringify(diagnostic,null,2));
+  throw error;
+ }
  endpoint=JSON.parse(fs.readFileSync(endpointFile));
  const panes=JSON.parse(cli('-s',name,'action','list-panes','--json','--all'));pane=panes.find(p=>!p.is_plugin).id;
  const fixturePid=JSON.parse(fs.readFileSync(path.join(dir,'fixture.json'))).pid;

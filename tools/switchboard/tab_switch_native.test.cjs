@@ -48,6 +48,10 @@ let native,relay,browser,tokenName,created=false;
       const now=()=>performance.timeOrigin+performance.now();
       window.__switchEvents=[];window.__metadataSequence=0;
       const Original=window.WebSocket;
+      window.addEventListener('zellij-resumable-sockets',({detail})=>{
+        detail.control.addEventListener('message',event=>{const m=JSON.parse(event.data);if(m.type==='MobileState'){window.__metadataSequence++;window.__switchEvents.push({type:'metadata',pane:m.payload.active_pane?.pane_id,time:now()});}});
+        const send=detail.control.send;detail.control.send=function(data){const m=JSON.parse(data);if(m.payload?.type==='FocusPane')window.__switchEvents.push({type:'focus-sent',pane:m.payload.pane_id,time:now()});return send.call(this,data);};
+      });
       window.WebSocket=class extends Original{
         constructor(...args){super(...args);if(String(args[0]).includes('/ws/control'))this.addEventListener('message',event=>{try{const m=JSON.parse(event.data);if(m.type==='MobileState'){window.__metadataSequence++;window.__switchEvents.push({type:'metadata',pane:m.payload.active_pane?.pane_id,time:now()});}}catch{}});}
         send(data){try{const m=JSON.parse(data);if(m.payload?.type==='FocusPane')window.__switchEvents.push({type:'focus-sent',pane:m.payload.pane_id,time:now()});}catch{}return super.send(data);}

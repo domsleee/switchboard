@@ -705,3 +705,28 @@ test('Conversation blocks stock fallback and forced TerminalResize but keeps con
   socket.send(input);assert.deepEqual(socket.sent,[input]);
   open=false;socket.send(resize);assert.deepEqual(socket.sent,[input,resize]);
 });
+
+test('resumable already-focused confirmation settles the matching sidebar request',()=>{
+  const h=harness();h.window.__zjSendControl=()=>{};
+  const control=new h.window.WebSocket('ws://localhost:8090/ws/control');control.resumable=true;
+  const emit=message=>control.handlers.message({data:JSON.stringify(message)});
+  emit({type:'MobileState',payload:{active_pane:{pane_id:1,is_plugin:false}}});
+  h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-focus',pane_id:1,is_plugin:false,focus_id:8}});
+  assert.equal(h.window.term.options.disableStdin,false,'Typing stays in the retained ordered stream');
+  emit({type:'FocusConfirmed',payload:{pane_id:1,is_plugin:false}});
+  assert.equal(h.messages.at(-1).focus_id,8);assert.equal(h.messages.at(-1).focus_pending,false);
+});
+
+ test('Conversation blocks resumable resize without queuing it and keeps ordinary controls',()=>{
+  const h=harness();let open=true;
+  h.parent.document.getElementById=id=>id==='terminals'?{classList:{contains:()=>open}}:null;
+  const Socket=Object.getPrototypeOf(h.window.WebSocket);
+  const terminal=new Socket('/ws/terminal'),control=new Socket('/ws/control');
+  terminal.resumable=control.resumable=true;
+  h.handlers['zellij-resumable-sockets']({detail:{terminal,control}});
+  const resize=JSON.stringify({web_client_id:1,payload:{type:'TerminalResize',rows:30,cols:40}});
+  const input=JSON.stringify({web_client_id:1,payload:{type:'Key',key:'Enter'}});
+  control.send(resize);assert.deepEqual(control.sent,[]);
+  control.send(input);assert.deepEqual(control.sent,[input]);
+  open=false;control.send(resize);assert.deepEqual(control.sent,[input,resize]);
+});

@@ -138,7 +138,10 @@ loopback and rejects cross-site requests. Each relay serves its own desktop; it 
 ## Keyboard shortcuts and sidebar
 
 The sidebar checks its relay build every 30 seconds and when browser visibility changes.
-After a relay update, it automatically reloads in the background, keeping the current
+After a relay update, it automatically reloads in the background once every terminal
+viewer has safely retired or closed. A nonblank iframe can hold queued input or an
+unfinished paste, even after its browser input queue is empty, so it prevents page
+refresh. Automatic service updates continue independently. The reload keeps the current
 URL and selected terminal. An open dialog, unsent conversation draft (including drafts
 in other panes), attachment, or pending send postpones the reload. Returning to the
 browser before the reload cancels it until the page is in the background again.

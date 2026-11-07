@@ -14,7 +14,8 @@ const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const oldBinary = path.resolve(process.argv[2]), newBinary = path.resolve(process.argv[3]);
 const digest = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 assert.notEqual(digest(oldBinary), digest(newBinary), 'Use two distinct executable releases to exercise rollback');
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'switchboard-windows-browser-'));
+// Process inspection reports canonical paths, not Windows TEMP's 8.3 aliases.
+const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(process.env.RUNNER_TEMP || os.tmpdir(), 'switchboard-windows-browser-')));
 const store = path.join(dir, 'releases'), config = path.join(dir, 'config.kdl');
 const agentScript = path.join(dir,'codex','fixture.cjs');
 const name = 'update-acceptance-' + crypto.randomBytes(8).toString('hex');
@@ -89,6 +90,9 @@ function start(binary,args,label) {
         page.setDefaultTimeout(45000);
         await page.addInitScript(()=>{
             const Original=window.WebSocket;window.__acceptanceSockets=[];
+            window.addEventListener('zellij-resumable-sockets',({detail})=>{
+                for(const channel of ['terminal','control']){const socket=detail[channel];socket.url='/ws/'+channel;window.__acceptanceSockets.push(socket);}
+            });
             window.WebSocket=class extends Original {constructor(...args){super(...args);window.__acceptanceSockets.push(this);}};
         });
         await page.goto(url);await page.waitForSelector('#tabs .tab-select');

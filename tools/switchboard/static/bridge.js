@@ -190,6 +190,7 @@
     catch(_){releaseNewTab('send-failed');}
   }
   function holdFocusInput() {
+    if(controlSocket?.resumable)return; // focus and input share one ordered worker stream
     if(!window.term?.element)return;
     focusInputState ||= {disabled:window.term.options.disableStdin,pointer:window.term.element.style.pointerEvents};
     window.term.options.disableStdin=true;window.term.element.style.pointerEvents='none';
@@ -445,38 +446,37 @@
     parent.postMessage({type: 'zellij-state', host, payload, focus_id:focusId, focus_pending:!!pendingFocus}, location.origin);
     requestAnimationFrame(updateChrome);
   }
-  window.WebSocket = class extends NativeSocket {
-    constructor(...args) {
-      super(...args);
-      if(String(args[0]).includes('/ws/terminal')){
-        terminalSocket=this;
+  function observeSocket(socket,url) {
+      if(String(url).includes('/ws/terminal')){
+        terminalSocket=socket;
         predict?.attach(window.term);
-        this.addEventListener('open',()=>{load.socket_ms??=Math.round(performance.now());});
-        this.addEventListener('message',event=>{if(terminalSocket!==this)return;load.frame_ms??=Math.round(performance.now());diagnostics?.hook(window.term);diagnostics?.frame(event.data);});
-        this.addEventListener('close',()=>{if(terminalSocket===this){terminalSocket=null;predict?.reset();}});
+        socket.addEventListener('open',()=>{load.socket_ms??=Math.round(performance.now());});
+        socket.addEventListener('message',event=>{if(terminalSocket!==socket)return;load.frame_ms??=Math.round(performance.now());diagnostics?.hook(window.term);diagnostics?.frame(event.data);});
+        socket.addEventListener('close',()=>{if(terminalSocket===socket){terminalSocket=null;predict?.reset();}});
       }
-      if (String(args[0]).includes('/ws/control')) {
-        controlSocket=this;
-        this.addEventListener('open',()=>{
-          if(controlSocket!==this)return;
+      if (String(url).includes('/ws/control')) {
+        controlSocket=socket;
+        socket.addEventListener('open',()=>{
+          if(controlSocket!==socket)return;
           sendPendingNewTab();
           if(!pendingFocus)return;
           holdFocusInput();
           if(pendingFocus!==desiredFocus)dispatchFocus();else sendPendingFocus();
         });
-        this.addEventListener('message', event => {
-          if(controlSocket!==this)return;
+        socket.addEventListener('message', event => {
+          if(controlSocket!==socket)return;
           try {
             const message = JSON.parse(event.data);
             if (message.type === 'MobileState') sendState(message.payload);
+            if (message.type === 'FocusConfirmed' && latest?.active_pane?.pane_id===message.payload?.pane_id && latest.active_pane.is_plugin===message.payload.is_plugin) sendState(latest);
             if (message.type === 'LogError') {
               // Unrelated control errors must not acknowledge an in-flight focus.
               if(pendingFocus && message.lines?.some(line=>line.includes(`Could not find pane with id: ${pendingFocus.is_plugin?'Plugin':'Terminal'}(${pendingFocus.pane_id})`)))rejectFocus();
             }
           } catch (_) {}
         });
-        this.addEventListener('close', () => {
-          if(controlSocket!==this)return;
+        socket.addEventListener('close', () => {
+          if(controlSocket!==socket)return;
           disconnectedPane = desiredFocus || latest?.active_pane || disconnectedPane;
           latest = undefined;
           diagnostics?.finish('disconnected');
@@ -486,13 +486,32 @@
           releaseNewTab('disconnected');
         });
       }
+  }
+  function suppressConversationResize(socket,data){
+    if(controlSocket!==socket||!conversationOpen())return false;
+    try{return JSON.parse(data)?.payload?.type==='TerminalResize';}catch{return false;}
+  }
+  window.addEventListener("zellij-resumable-sockets",event=>{
+    for (const socket of [event.detail.terminal,event.detail.control]) {
+      const send=socket.send;
+      socket.send=function(data){
+        if(suppressConversationResize(this,data))return;
+        if(controlSocket===this)diagnostics?.sent(data);
+        if(terminalSocket===this&&this.readyState===1)predict?.sent(data);
+        return send.call(this,data);
+      };
+    }
+    observeSocket(event.detail.terminal,"/ws/terminal");
+    observeSocket(event.detail.control,"/ws/control");
+  });
+  window.WebSocket = class extends NativeSocket {
+    constructor(...args) {
+      super(...args); observeSocket(this,args[0]);
     }
     send(data) {
       // The stock client also sends legacy/forced resizes when no physical
       // viewport is available. Conversation must not resize the native terminal.
-      if(controlSocket===this&&conversationOpen()){
-        try{if(JSON.parse(data)?.payload?.type==='TerminalResize')return;}catch{}
-      }
+      if(suppressConversationResize(this,data))return;
       if(controlSocket===this)diagnostics?.sent(data);
       if(terminalSocket===this&&this.readyState===1)predict?.sent(data);
       return super.send(data);

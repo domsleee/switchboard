@@ -1,0 +1,660 @@
+//! Retained production terminal attachments. Web/relay transports may disappear;
+//! the parser, native IPC client and delivery journal remain in this process.
+mod journal;
+mod process;
+
+use super::{
+    control_message::WebClientToWebServerControlMessagePayload,
+    message_handlers::{parse_stdin, StdinSession},
+    server_listener::zellij_server_listener,
+    types::{AppState, CreateClientIdResponse},
+    websocket_handlers::control_payload_to_server_msg,
+};
+use anyhow::{ensure, Result};
+use axum::{
+    extract::{
+        ws::{Message, WebSocket},
+        Query, State, WebSocketUpgrade,
+    },
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+    Json, Router,
+};
+use futures_util::{SinkExt, StreamExt};
+use journal::{Input, Journal};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    time::{Duration, Instant},
+};
+use tokio::sync::{mpsc, oneshot, watch, Notify};
+use uuid::Uuid;
+use zellij_utils::{
+    input::mouse::MouseEvent,
+    ipc::ClientToServerMsg,
+    pane_size::Size,
+    web_authentication_tokens::{
+        credential_is_read_only, is_session_token_read_only, session_token_owner,
+        validate_session_token,
+    },
+};
+
+pub(crate) use process::worker_status;
+pub(super) use process::{bootstrap, proxy, run_worker};
+const VIEWER_LIMIT: usize = 64;
+const RETIRED: &str = "Terminal viewer retired";
+const DETACHED_TTL: Duration = Duration::from_secs(600);
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) struct ResumeInfo {
+    pub protocol: u8,
+    pub session: String,
+}
+#[derive(Deserialize, Serialize)]
+pub(super) struct Attach {
+    token: String,
+    welcome: bool,
+}
+#[derive(Clone)]
+struct Worker {
+    app: AppState,
+    session: String,
+    views: Arc<Mutex<HashMap<String, Arc<Viewer>>>>,
+}
+struct Viewer {
+    journal: Mutex<Journal>,
+    notify: Notify,
+    input: mpsc::Sender<Delivery>,
+    owner: String,
+    read_only: bool,
+    touched: Mutex<Instant>,
+    incoming: Mutex<Option<mpsc::Receiver<Delivery>>>,
+    retired: watch::Sender<bool>,
+    parser_pending: AtomicBool,
+}
+struct Delivery {
+    generation: u64,
+    input: Input,
+    done: oneshot::Sender<Result<u64>>,
+}
+#[derive(Deserialize, Serialize)]
+pub(super) struct ResumeQuery {
+    pub session: String,
+    pub web_client_id: String,
+    #[serde(default)]
+    pub generation: u64,
+    pub nonce: String,
+    #[serde(default)]
+    pub applied: u64,
+    pub rows: Option<u16>,
+    pub cols: Option<u16>,
+    pub cell_width: Option<u16>,
+    pub cell_height: Option<u16>,
+    pub wheel_lines: Option<u32>,
+}
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum Request {
+    Input { generation: u64, input: Input },
+    Ack { generation: u64, applied: u64 },
+    Close { generation: u64 },
+    Retire { generation: u64 },
+}
+
+async fn create(State(worker): State<Worker>, Json(attach): Json<Attach>) -> Response {
+    if !validate_session_token(&attach.token).unwrap_or(false) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if attach.welcome {
+        super::types::record_pending_welcome_session(
+            &worker.app.pending_welcome_sessions,
+            &worker.session,
+        );
+    }
+    let id = Uuid::new_v4().to_string();
+    let Ok(owner) = session_token_owner(&attach.token) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let read_only = is_session_token_read_only(&attach.token).unwrap_or(true);
+    let (tx, rx) = mpsc::channel(32);
+    let viewer = Arc::new(Viewer {
+        journal: Mutex::new(Journal::default()),
+        notify: Notify::new(),
+        input: tx,
+        owner,
+        read_only,
+        touched: Mutex::new(Instant::now()),
+        incoming: Mutex::new(Some(rx)),
+        retired: watch::channel(false).0,
+        parser_pending: AtomicBool::new(false),
+    });
+    {
+        let mut views = worker.views.lock().unwrap();
+        if views
+            .values()
+            .filter(|viewer| !*viewer.retired.borrow())
+            .count()
+            >= VIEWER_LIMIT
+        {
+            return (StatusCode::SERVICE_UNAVAILABLE, "Too many retained viewers").into_response();
+        }
+        views.insert(id.clone(), viewer.clone());
+    }
+
+    Json(json!({"web_client_id":id})).into_response()
+}
+
+async fn resume(
+    State(worker): State<Worker>,
+    Query(query): Query<ResumeQuery>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
+    let Some(viewer) = worker
+        .views
+        .lock()
+        .unwrap()
+        .get(&query.web_client_id)
+        .cloned()
+    else {
+        return (
+            StatusCode::GONE,
+            "Terminal attachment expired; reload explicitly",
+        )
+            .into_response();
+    };
+    // Every reconnect revalidates the current web credential, independently of
+    // the private worker capability. A viewer id is not an authorization token.
+    let mut request = axum::http::Request::new(());
+    *request.headers_mut() = headers;
+    let token = super::utils::parse_cookies(&request);
+    let Some(token) = token.get("session_token") else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if !validate_session_token(token).unwrap_or(false)
+        || session_token_owner(token).ok().as_ref() != Some(&viewer.owner)
+        || is_session_token_read_only(token).unwrap_or(true) != viewer.read_only
+    {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    if query.session != worker.session {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    // A transport may lose the terminal error while disconnecting. Authenticate
+    // first, then deliver the retained failure over WebSocket so the browser can
+    // stop retrying immediately instead of hiding an HTTP upgrade rejection.
+    let failure = viewer.journal.lock().unwrap().failure.clone();
+    if let Some(error) = failure {
+        return ws.on_upgrade(move |mut socket| async move {
+            let _ = socket
+                .send(Message::Text(
+                    final_reply(&viewer, error).await.to_string().into(),
+                ))
+                .await;
+        });
+    }
+    let generation =
+        match viewer
+            .journal
+            .lock()
+            .unwrap()
+            .resume(query.generation, &query.nonce, query.applied)
+        {
+            Ok(g) => g,
+            Err(error) => return (StatusCode::CONFLICT, error.to_string()).into_response(),
+        };
+    if let Some(input) = viewer.incoming.lock().unwrap().take() {
+        tokio::spawn(attachment(
+            worker.clone(),
+            query.web_client_id.clone(),
+            viewer.clone(),
+            input,
+            query.rows,
+            query.cols,
+            query.wheel_lines.unwrap_or(0),
+        ));
+    }
+    *viewer.touched.lock().unwrap() = Instant::now();
+    viewer.notify.notify_waiters();
+    ws.max_message_size(512 * 1024)
+        .on_upgrade(move |socket| transport(socket, viewer, generation, query.applied))
+}
+
+async fn final_reply(viewer: &Viewer, error: String) -> serde_json::Value {
+    if error == RETIRED {
+        let mut retired = viewer.retired.subscribe();
+        if matches!(
+            tokio::time::timeout(Duration::from_secs(10), retired.wait_for(|done| *done)).await,
+            Ok(Ok(_))
+        ) {
+            return json!({"type":"retired"});
+        }
+    }
+    json!({"type":"error","message":error})
+}
+
+async fn transport(socket: WebSocket, viewer: Arc<Viewer>, generation: u64, mut sent: u64) {
+    let (mut writer, mut reader) = socket.split();
+    let input_ack = viewer.journal.lock().unwrap().input_ack();
+    if writer
+        .send(Message::Text(
+            json!({"type":"hello","generation":generation,"input_ack":input_ack})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .is_err()
+    {
+        return;
+    }
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(2));
+    loop {
+        // Register before snapshotting so an emit between snapshot and wait
+        // cannot strand output until the next unrelated engine event.
+        let notified = viewer.notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        let (output, error) = {
+            let journal = viewer.journal.lock().unwrap();
+            if journal.generation != generation {
+                break;
+            }
+            (
+                journal
+                    .output
+                    .iter()
+                    .filter(|o| o.seq > sent)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                journal.failure.clone(),
+            )
+        };
+        if let Some(error) = error {
+            let _ = writer
+                .send(Message::Text(
+                    final_reply(&viewer, error).await.to_string().into(),
+                ))
+                .await;
+            break;
+        }
+        for record in output {
+            sent = record.seq;
+            if writer
+                .send(Message::Text(
+                    json!({"type":"output","record":record}).to_string().into(),
+                ))
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+        tokio::select! {
+            _=&mut notified=>{},
+            _=heartbeat.tick()=>{if writer.send(Message::Text(json!({"type":"heartbeat"}).to_string().into())).await.is_err(){break;}},
+            frame=reader.next()=>{
+                let Some(Ok(frame))=frame else {break;};
+                *viewer.touched.lock().unwrap()=Instant::now();
+                let Message::Text(text)=frame else {if matches!(frame,Message::Close(_)){break;}continue;};
+                let result:Result<Option<serde_json::Value>>=async {
+                    match serde_json::from_str::<Request>(&text)? {
+                        Request::Input{generation:g,input}=>{
+                            ensure!(g==generation,"Stale transport");
+                            let (done,reply)=oneshot::channel();
+                            viewer.input.send(Delivery{generation,input,done}).await.map_err(|_|anyhow::anyhow!("Attachment ended"))?;
+                            Ok(Some(json!({"type":"ack","input_ack":reply.await??})))
+                        },
+                        Request::Ack{generation:g,applied}=>{
+                            let mut journal=viewer.journal.lock().unwrap();
+                            ensure!(g==generation && g==journal.generation,"Stale transport");
+                            journal.acknowledge(applied)?;Ok(None)
+                        },
+                        Request::Retire{generation:g}=>{
+                            {
+                                let mut journal=viewer.journal.lock().unwrap();
+                                ensure!(g==generation && g==journal.generation,"Stale transport");
+                                if viewer.parser_pending.load(Ordering::Acquire) {
+                                    return Ok(Some(json!({"type":"retirement_rejected","message":"An incomplete terminal sequence is still buffered. Return to Terminal to finish it."})));
+                                }
+                                journal.failure=Some(RETIRED.into());
+                            }
+                            viewer.notify.notify_waiters();
+                            Ok(Some(final_reply(&viewer, RETIRED.into()).await))
+                        }
+                        Request::Close{generation:g}=>{
+                            let mut journal=viewer.journal.lock().unwrap();ensure!(g==generation && g==journal.generation,"Stale transport");
+                            journal.failure=Some("Terminal viewer closed".into());viewer.notify.notify_waiters();Ok(None)
+                        }
+                    }
+                }.await;
+                match result {
+                    Ok(Some(reply))=>{let retired=reply["type"]=="retired";if writer.send(Message::Text(reply.to_string().into())).await.is_err()||retired{break;}},
+                    Ok(None)=>{},Err(error)=>{let _=writer.send(Message::Text(json!({"type":"error","message":error.to_string()}).to_string().into())).await;break;}
+                }
+            }
+        }
+    }
+}
+
+async fn attachment(
+    worker: Worker,
+    id: String,
+    viewer: Arc<Viewer>,
+    mut input: mpsc::Receiver<Delivery>,
+    rows: Option<u16>,
+    cols: Option<u16>,
+    wheel_lines: u32,
+) {
+    let app = &worker.app;
+    let os = match app.client_os_api_factory.create_client_os_api() {
+        Ok(os) => os,
+        Err(error) => {
+            viewer.journal.lock().unwrap().failure = Some(error.to_string());
+            viewer.notify.notify_waiters();
+            return;
+        },
+    };
+    let (stdout, mut output) = mpsc::unbounded_channel();
+    let (control, mut controls) = mpsc::unbounded_channel();
+    {
+        let mut table = app.connection_table.lock().unwrap();
+        table.add_new_client(
+            id.clone(),
+            os.clone(),
+            viewer.read_only,
+            viewer.owner.clone(),
+        );
+        table.add_client_terminal_tx(&id, stdout);
+        table.add_client_control_tx(&id, control);
+    }
+    let (attached, attachment) = oneshot::channel();
+    zellij_server_listener(
+        os.clone(),
+        app.connection_table.clone(),
+        Some(worker.session.clone()),
+        app.config.lock().unwrap().clone(),
+        app.config_options.clone(),
+        Some(app.config_file_path.clone()),
+        id.clone(),
+        app.session_manager.clone(),
+        Some(attached),
+        Some(Size {
+            rows: rows.unwrap_or(24).max(1) as usize,
+            cols: cols.unwrap_or(80).max(1) as usize,
+        }),
+        None,
+        app.pending_welcome_sessions.clone(),
+        app.sharing_recovery.clone(),
+    );
+    if !matches!(
+        tokio::time::timeout(Duration::from_secs(30), attachment).await,
+        Ok(Ok(()))
+    ) {
+        viewer.journal.lock().unwrap().failure =
+            Some("Terminal attachment failed or timed out".into());
+    }
+    let mut stdin = StdinSession::new(
+        app.config
+            .lock()
+            .unwrap()
+            .options
+            .support_kitty_keyboard_protocol
+            == Some(false),
+    );
+    stdin.wheel_lines = wheel_lines.min(3);
+    let mut mouse = MouseEvent::new();
+    let mut timer = tokio::time::interval(Duration::from_millis(50));
+    let mut held_since = Instant::now();
+    let mut auth_checked = Instant::now();
+    loop {
+        if viewer.journal.lock().unwrap().failure.is_some() {
+            break;
+        }
+        tokio::select! {
+            Some(delivery)=input.recv()=>{
+                let mut accepted=false;
+                let result=async {
+                    let focus;
+                    {
+                        let journal=viewer.journal.lock().unwrap();
+                        if !journal.accepts(delivery.generation,&delivery.input)? { return Ok(journal.input_ack()); }
+                        accepted=true;
+                        if delivery.input.channel=="terminal" {
+                            if !viewer.read_only { parse_stdin(delivery.input.data.as_bytes(),os.clone(),&mut mouse,&mut stdin); }
+                            held_since=Instant::now();focus=None;
+                        } else {
+                            let payload:WebClientToWebServerControlMessagePayload=serde_json::from_str(&delivery.input.data)?;
+                            // Geometry does not change the input target. It may arrive
+                            // between paste chunks during a mode switch or resize.
+                            // Leave the parser untouched; routing/action controls must
+                            // still fail closed until the sequence is complete.
+                            if !matches!(payload,
+                                WebClientToWebServerControlMessagePayload::TerminalResize(_) |
+                                WebClientToWebServerControlMessagePayload::TerminalMetrics(_) |
+                                WebClientToWebServerControlMessagePayload::SetTabViewport { .. }
+                            ) {
+                                if stdin.pending_finalize() { stdin.finalize(&*os,&mut mouse); }
+                                ensure!(!stdin.has_pending_bytes(),"Incomplete terminal sequence before a control command; attachment stopped to preserve its target pane");
+                            }
+                            focus=match &payload {WebClientToWebServerControlMessagePayload::FocusPane{pane_id,is_plugin}=>Some((*pane_id,*is_plugin)),_=>None};
+                            if let Some(message)=control_payload_to_server_msg(payload,app.config.lock().unwrap().options.default_shell.clone()) {
+                                os.send_to_server(message.clone());
+                                if focus.is_some() {
+                                    // An idempotent second focus gives explicit native
+                                    // confirmation even when MobileState is unchanged.
+                                    os.send_to_server(message);
+                                    os.send_to_server(ClientToServerMsg::Action {
+                                        action:zellij_utils::input::actions::Action::CurrentTabInfo{output_json:false},
+                                        terminal_id:None,client_id:None,is_cli_client:false,
+                                    });
+                                }
+                            }
+                            if focus.is_some() {if let Some(refresh)=app.connection_table.lock().unwrap().client_id_to_channels.get(&id).and_then(|c|c.recovery_metadata_refresh.clone()){refresh.request();}}
+                        }
+                        viewer.parser_pending.store(stdin.has_pending_bytes(),Ordering::Release);
+                        ensure!(os.send_failure().is_none(),"Terminal IPC failed; input delivery is uncertain");
+                    }
+                    if let Some(target)=focus {
+                        confirm_focus(&viewer,target,&mut output,&mut controls).await?;
+                    }
+                    // The action was dispatched before a newer generation could
+                    // fence it. Commit before processing its queued retry.
+                    let mut journal=viewer.journal.lock().unwrap();
+                    ensure!(journal.failure.is_none(),"Terminal attachment failed during input delivery");
+                    journal.input=Some(delivery.input);
+                    Ok(journal.input_ack())
+                }.await;
+                if let Err(error)=&result { viewer.journal.lock().unwrap().delivery_failed(accepted,error.to_string());viewer.notify.notify_waiters(); }
+                let _=delivery.done.send(result);
+            },
+            Some(text)=output.recv()=>{viewer.journal.lock().unwrap().emit("terminal",text);viewer.notify.notify_waiters();},
+            Some(message)=controls.recv()=>{
+                match message {
+                    Message::Text(text)=>viewer.journal.lock().unwrap().emit("control",text.to_string()),
+                    Message::Close(_)=>viewer.journal.lock().unwrap().failure=Some("Terminal ended or sharing was revoked".into()),
+                    _=>{},
+                }
+                viewer.notify.notify_waiters();
+            },
+            _=timer.tick()=>{
+                if stdin.pending_finalize() && held_since.elapsed()>=Duration::from_millis(50){stdin.finalize(&*os,&mut mouse);}
+                viewer.parser_pending.store(stdin.has_pending_bytes(),Ordering::Release);
+                if let Some(error)=os.send_failure(){viewer.journal.lock().unwrap().failure=Some(format!("Terminal IPC failed: {error}"));}
+                if auth_checked.elapsed()>=Duration::from_secs(1){
+                    auth_checked=Instant::now();
+                    if credential_is_read_only(&viewer.owner).ok() != Some(viewer.read_only) {
+                        viewer.journal.lock().unwrap().failure=Some("Terminal permission was revoked".into());
+                    }
+                }
+                if viewer.touched.lock().unwrap().elapsed()>DETACHED_TTL{viewer.journal.lock().unwrap().failure=Some("Terminal attachment expired".into());}
+            }
+        }
+    }
+    viewer.notify.notify_waiters();
+    os.send_to_server(ClientToServerMsg::ClientExited);
+    app.connection_table.lock().unwrap().remove_client(&id);
+    // Keep the generation so an existing transport can deliver its final error.
+    viewer.journal.lock().unwrap().release_payloads();
+    viewer.retired.send_replace(true);
+    // Retain a lightweight receipt beyond the browser retry deadline, including
+    // explicit recovery after a pause. Other failures need only brief delivery.
+    let retention = if viewer.journal.lock().unwrap().failure.as_deref() == Some(RETIRED) {
+        DETACHED_TTL
+    } else {
+        Duration::from_secs(10)
+    };
+    tokio::time::sleep(retention).await;
+    worker.views.lock().unwrap().remove(&id);
+}
+
+/// Every focus transaction issues two identical focus actions, followed by this
+/// connection's reserved plain CurrentTabInfo query. The second action reports
+/// "already focused" only after the engine actually selects that pane. Drain to
+/// the query response before acknowledging so no duplicate reply leaks into the
+/// next transaction. Cached MobileState is never evidence of focus success.
+async fn confirm_focus(
+    viewer: &Viewer,
+    target: (u32, bool),
+    output: &mut mpsc::UnboundedReceiver<String>,
+    controls: &mut mpsc::UnboundedReceiver<Message>,
+) -> Result<()> {
+    let deadline = tokio::time::sleep(Duration::from_secs(10));
+    tokio::pin!(deadline);
+    let mut permission = tokio::time::interval(Duration::from_secs(1));
+    let mut confirmation = FocusConfirmation::new(target);
+    loop {
+        ensure!(
+            viewer.journal.lock().unwrap().failure.is_none(),
+            "Terminal attachment failed while selecting pane"
+        );
+        tokio::select! {
+            _=&mut deadline=>anyhow::bail!("Terminal pane selection was not confirmed; queued typing was not sent"),
+            _=permission.tick()=>ensure!(credential_is_read_only(&viewer.owner).ok()==Some(viewer.read_only),"Terminal permission was revoked"),
+            Some(text)=output.recv()=>{viewer.journal.lock().unwrap().emit("terminal",text);viewer.notify.notify_waiters();},
+            message=controls.recv()=>{
+                let Some(Message::Text(text))=message else {anyhow::bail!("Terminal ended while selecting pane");};
+                let value:serde_json::Value=serde_json::from_str(&text)?;
+                match confirmation.consume(&value)? {
+                    FocusReply::Private=>continue,
+                    FocusReply::Complete=>{
+                        viewer.journal.lock().unwrap().emit("control",json!({"type":"FocusConfirmed","payload":{"pane_id":target.0,"is_plugin":target.1}}).to_string());
+                        viewer.notify.notify_waiters();return Ok(());
+                    },
+                    FocusReply::Forward=>{},
+                }
+                viewer.journal.lock().unwrap().emit("control",text.to_string());viewer.notify.notify_waiters();
+            }
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum FocusReply {
+    Forward,
+    Private,
+    Complete,
+}
+struct FocusConfirmation {
+    pane: String,
+    positive: String,
+    confirmed: bool,
+}
+impl FocusConfirmation {
+    fn new(target: (u32, bool)) -> Self {
+        let pane = format!(
+            "{}({})",
+            if target.1 { "Plugin" } else { "Terminal" },
+            target.0
+        );
+        Self {
+            positive: format!("Pane {pane} is already focused"),
+            pane,
+            confirmed: false,
+        }
+    }
+    fn consume(&mut self, value: &serde_json::Value) -> Result<FocusReply> {
+        if value["type"] == "LogError" {
+            for line in value["lines"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|line| line.as_str())
+            {
+                if line == self.positive {
+                    self.confirmed = true;
+                } else {
+                    ensure!(
+                        !line.contains(&self.pane),
+                        "Requested terminal pane could not be selected; queued typing was not sent"
+                    );
+                }
+            }
+            if value["lines"].as_array().is_some_and(|lines| {
+                !lines.is_empty()
+                    && lines
+                        .iter()
+                        .all(|line| line.as_str() == Some(&self.positive))
+            }) {
+                return Ok(FocusReply::Private);
+            }
+        }
+        if value["type"] == "Log" && focus_marker(&value["lines"]) {
+            ensure!(
+                self.confirmed,
+                "Engine did not confirm terminal pane selection; queued typing was not sent"
+            );
+            return Ok(FocusReply::Complete);
+        }
+        Ok(FocusReply::Forward)
+    }
+}
+
+fn focus_marker(lines: &serde_json::Value) -> bool {
+    let Some(lines) = lines.as_array() else {
+        return false;
+    };
+    lines.len() == 3
+        && lines[0].as_str().is_some_and(|s| s.starts_with("name: "))
+        && lines[1]
+            .as_str()
+            .and_then(|s| s.strip_prefix("id: "))
+            .is_some_and(|s| s.parse::<u64>().is_ok())
+        && lines[2]
+            .as_str()
+            .and_then(|s| s.strip_prefix("position: "))
+            .is_some_and(|s| s.parse::<u64>().is_ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn switchboard_attachment_focus_ignores_stale_state_and_drains_duplicate_confirmations() {
+        let marker = json!({"type":"Log","lines":["name: tab","id: 0","position: 0"]});
+        let stale =
+            json!({"type":"MobileState","payload":{"active_pane":{"pane_id":7,"is_plugin":false}}});
+        let mut focus = FocusConfirmation::new((7, false));
+        assert_eq!(focus.consume(&stale).unwrap(), FocusReply::Forward);
+        assert!(
+            focus.consume(&marker).is_err(),
+            "Cached metadata cannot prove focus"
+        );
+        let yes = json!({"type":"LogError","lines":["Pane Terminal(7) is already focused"]});
+        assert_eq!(focus.consume(&yes).unwrap(), FocusReply::Private);
+        assert_eq!(focus.consume(&yes).unwrap(), FocusReply::Private);
+        assert_eq!(focus.consume(&marker).unwrap(), FocusReply::Complete);
+        let mut missing = FocusConfirmation::new((7, false));
+        missing.consume(&yes).unwrap();
+        assert!(missing
+            .consume(&json!({"type":"LogError","lines":["Pane with id Terminal(7) not found"]}))
+            .is_err());
+        let mut wrong = FocusConfirmation::new((8, false));
+        wrong.consume(&yes).unwrap();
+        assert!(wrong.consume(&marker).is_err());
+    }
+}

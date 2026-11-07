@@ -207,6 +207,8 @@ fn target_platform() -> Result<&'static str> {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Manifest {
+    #[serde(default)]
+    pub attachment_protocol: u32,
     pub schema: u32,
     pub commit: String,
     pub platform: String,
@@ -278,6 +280,7 @@ pub fn package(
         files.insert(name.to_string(), sha256_file(&target)?);
     }
     let manifest = Manifest {
+        attachment_protocol: 1,
         schema: 1,
         commit: commit.to_owned(),
         platform: platform.to_owned(),
@@ -400,6 +403,38 @@ struct Pending {
     sessions: Vec<Session>,
     #[serde(default)]
     processes: serde_json::Value,
+}
+
+// Preserve only the installation being updated. Peer availability is checked
+// independently; an unrelated peer closing a tab must never cause rollback.
+fn local_catalog(hosts: &serde_json::Value) -> Result<(String, Vec<Session>)> {
+    let hosts = hosts.as_array().context("Invalid host catalog")?;
+    let local: Vec<_> = hosts.iter().filter(|host| host["local"] == true).collect();
+    ensure!(
+        local.len() == 1,
+        "Cannot identify this installation in host catalog"
+    );
+    let host = local[0];
+    let id = host["id"]
+        .as_str()
+        .context("Invalid local host identity")?
+        .to_owned();
+    let entries = host["sessions"]
+        .as_array()
+        .context("Local session catalog unavailable")?;
+    let mut sessions = Vec::new();
+    for session in entries {
+        sessions.push((
+            id.clone(),
+            session["name"]
+                .as_str()
+                .context("Invalid local session")?
+                .to_owned(),
+            session["web_clients_allowed"].as_bool().unwrap_or(false),
+        ));
+    }
+    sessions.sort();
+    Ok((id, sessions))
 }
 
 /// Whether the updater should install published build `run_number`: it is newer than
@@ -678,6 +713,11 @@ impl Updater {
     fn settle_pending(&self, state: &mut State, pending: &Pending) -> Result<()> {
         let health = self.health().ok();
         let catalog = self.catalog().ok();
+        let mut pending = pending.clone();
+        if let Ok(local) = self.local_host_id() {
+            pending.sessions.retain(|session| session.0 == local);
+        }
+        let pending = &pending;
         match resolve_pending(pending, health.as_ref(), catalog.as_deref()) {
             Resolution::Discard(running) => {
                 if let Some(target) = pending
@@ -743,6 +783,11 @@ impl Updater {
         let manifest: Manifest = serde_json::from_slice(&self.fetch(&asset("bundle.json"))?)
             .context("Invalid release manifest")?;
         validate_manifest(&manifest, &self.platform)?;
+        ensure!(
+            manifest.attachment_protocol == 1
+                || crate::web_client::attachment::worker_status().is_empty(),
+            "Candidate does not support retained terminal attachments"
+        );
         if let Some(requested) = self.activation.borrow().as_ref() {
             ensure!(requested == &manifest.commit, "The requested update was superseded; check for updates and choose Update now again");
         }
@@ -871,6 +916,7 @@ impl Updater {
 
     /// The Windows tray yields service supervision while this names a live process.
     fn with_handoff<T>(&self, action: impl FnOnce() -> Result<T>) -> Result<T> {
+        let _admission = crate::switchboard_viewers::activation(&self.viewer_lock)?;
         let handoff = self.state_directory.join("handoff.json");
         fs::write(&handoff, format!("{{\"pid\": {}}}", std::process::id()))?;
         let result = action();
@@ -896,6 +942,13 @@ impl Updater {
         if _viewers.is_none() && !self.activating(&manifest.commit) {
             return Ok(false);
         }
+        // Recheck under the activation lock: a viewer can bootstrap after the
+        // download/preflight check but before we acquire exclusive admission.
+        ensure!(
+            manifest.attachment_protocol == 1
+                || crate::web_client::attachment::worker_status().is_empty(),
+            "Candidate cannot resume retained terminal attachments"
+        );
         state.ready = None;
         state.notice = Some(format!(
             "Activating {}; terminals briefly reconnect",
@@ -980,7 +1033,7 @@ impl Updater {
         let candidate = bundle.join(self.exe());
         let ready = || {
             self.timed("ready", || {
-                self.wait_ready(Some(&manifest.commit), sessions)
+                self.wait_ready(Some(&manifest.commit), sessions, false)
             })
         };
         let peers_stay = || {
@@ -1078,7 +1131,7 @@ impl Updater {
         } else {
             self.install_mac(&backup, &previous, pending.commit.as_deref())?;
         }
-        self.wait_ready(pending.commit.as_deref(), &pending.sessions)
+        self.wait_ready(pending.commit.as_deref(), &pending.sessions, true)
     }
 
     /// The previous executable is selected and its services are healthy, e.g.
@@ -1154,33 +1207,34 @@ impl Updater {
         // reporting it unavailable. Let that catalog finish even with an
         // offline peer, including when talking to an older relay.
         let hosts: serde_json::Value = self.local_json("/api/hosts", Duration::from_secs(30))?;
-        let mut sessions = Vec::new();
-        for host in hosts.as_array().context("Invalid host catalog")? {
-            let id = host["id"].as_str().context("Invalid host catalog")?;
-            for session in host["sessions"].as_array().into_iter().flatten() {
-                sessions.push((
-                    id.to_owned(),
-                    session["name"]
-                        .as_str()
-                        .context("Invalid session")?
-                        .to_owned(),
-                    session["web_clients_allowed"].as_bool().unwrap_or(false),
-                ));
-            }
-        }
-        sessions.sort();
-        Ok(sessions)
+        local_catalog(&hosts).map(|(_, sessions)| sessions)
     }
 
-    fn wait_ready(&self, commit: Option<&str>, sessions: &[Session]) -> Result<()> {
+    fn local_host_id(&self) -> Result<String> {
+        let hosts: serde_json::Value = self.local_json("/api/hosts", Duration::from_secs(30))?;
+        local_catalog(&hosts).map(|(id, _)| id)
+    }
+
+    fn wait_ready(
+        &self,
+        commit: Option<&str>,
+        sessions: &[Session],
+        filter_legacy_peers: bool,
+    ) -> Result<()> {
         let deadline = Instant::now() + self.ready_timeout;
         while Instant::now() < deadline {
             let ready = self.health().is_ok_and(|h| {
                 h.relay.as_deref() == Some("rust")
                     && commit.is_none_or(|c| same_commit(c, h.commit.as_deref().unwrap_or("")))
             }) && self
-                .catalog()
-                .is_ok_and(|catalog| sessions.iter().all(|s| catalog.contains(s)));
+                .local_json::<serde_json::Value>("/api/hosts", Duration::from_secs(30))
+                .and_then(|hosts| local_catalog(&hosts))
+                .is_ok_and(|(local, catalog)| {
+                    sessions
+                        .iter()
+                        .filter(|s| !filter_legacy_peers || s.0 == local)
+                        .all(|s| catalog.contains(s))
+                });
             if ready {
                 return Ok(());
             }

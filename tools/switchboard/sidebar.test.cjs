@@ -510,7 +510,7 @@ test('failed switch clears pending state and restores the actual active tab, ign
   const start=source.indexOf("window.addEventListener('message'");
   const branch=source.indexOf("}else if(event.data?.type==='zellij-focus-failed')",start);
   const end=source.indexOf("}else if(event.data?.type==='zellij-open-new-tab')",branch);
-  const preamble=source.slice(start,source.indexOf("  if(event.data?.type==='zellij-state')",start));
+  const preamble=source.slice(start,source.indexOf("\n  if(event.data?.type==='zellij-state')",start));
   vm.runInContext(preamble+'  if(false){'+source.slice(branch,end)+'}});',context);
   const fail=id=>handler({origin:'http://localhost',source:entry.frame.contentWindow,data:{type:'zellij-focus-failed',focus_id:id,payload:entry.state,message:'Terminal switch timed out.'}});
   fail(8);assert.equal(entry.focusPending,true);assert.equal(context.selected,'requested');
