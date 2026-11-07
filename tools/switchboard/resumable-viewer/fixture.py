@@ -11,6 +11,9 @@ if os.name == 'nt':
     kernel.GetConsoleMode.restype = wintypes.BOOL
     kernel.SetConsoleMode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
     kernel.SetConsoleMode.restype = wintypes.BOOL
+    # os.read/os.write use bytes; match the UTF-8 stream delivered through ConPTY.
+    if not kernel.SetConsoleCP(65001) or not kernel.SetConsoleOutputCP(65001):
+        raise ctypes.WinError(ctypes.get_last_error())
     for standard, clear, enable in [(-10, 7, 0x200), (-11, 0, 4)]:
         mode = wintypes.DWORD()
         handle = kernel.GetStdHandle(standard & 0xffffffff)
