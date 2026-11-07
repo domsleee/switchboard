@@ -581,7 +581,10 @@
           if(top<0||bottom<=top+1||!lines.slice(top+1,bottom).every(line=>/^┃\s*$/.test(line.trim())))return reply(false,'Clear the terminal prompt before sending.');
         }else{
         const index=marker?lines.findLastIndex(line=>line.trimStart().startsWith(marker)):-1;
-        const prompt=index<0?null:lines[index].trimStart().slice(1).trim();
+        // Claude draws a suggested next prompt dim; only undimmed text is a draft.
+        const bright=row=>{const line=buffer.getLine(buffer.baseY+row);if(!line)return '';if(typeof line.getCell!=='function')return lines[row];let text='';
+          for(let x=0;x<line.length;x++){const cell=line.getCell(x);if(cell&&!cell.isDim())text+=cell.getChars()||' ';}return text;};
+        const prompt=index<0?null:bright(index).trimStart().replace(marker,'').trim();
         const placeholder=message.agent==='codex'?['Ask Codex to do anything','Ask a follow-up question'].includes(prompt):/^Try ".*"$/.test(prompt||'');
         if(prompt===null||(prompt!==''&&!placeholder))return reply(false,'Clear the terminal prompt before sending.');
         for(const line of lines.slice(index+1)){
