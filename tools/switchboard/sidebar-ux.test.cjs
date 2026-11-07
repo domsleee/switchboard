@@ -287,8 +287,17 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     await page.waitForFunction(()=>document.querySelectorAll('#tabs .tab-select')[1]?.classList.contains('elevated'));
     assert.equal(await page.locator('#tabs .elevated').count(),1);
     assert.equal(await page.locator('#tabs .elevated .tab-name').evaluate(e=>getComputedStyle(e,'::before').content),'"\u{1F6E1}️"');
+    // A tab an agent opened for its own checks is hidden, labelled, and never asks for attention,
+    // even when flagged for review.
+    tabs[1].name='* System';await page.evaluate(()=>refreshAttention());
+    await page.waitForFunction(()=>allTabs(true).some(item=>item.tab.name==='* System'&&item.hidden));
+    assert.equal(await page.evaluate(()=>allTabs(true).filter(item=>item.tab.name==='* System').map(isReady).join()),'false');
+    assert.equal(await page.locator('#notifications').isVisible(),false);
+    await page.evaluate(()=>{hiddenOpen=true;render();});
+    assert.equal(await page.locator('#tabs .tab-select.system .tab-name').evaluate(e=>getComputedStyle(e,'::before').content),'"SYSTEM"');
+    await page.evaluate(()=>{hiddenOpen=false;render();});
     tabs[1].name=names[1];await page.evaluate(()=>refreshAttention());
-    await page.waitForFunction(()=>!document.querySelector('#tabs .elevated'));
+    await page.waitForFunction(()=>!document.querySelector('#tabs .elevated')&&!allTabs(true).some(item=>item.hidden));
     const action=page.locator('.tab-actions').nth(1);
     await page.locator('.tab-row').nth(1).hover();await action.click();
     assert.equal(await page.locator('#tab-menu-target').textContent(),'Online shopping');
