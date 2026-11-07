@@ -3,11 +3,52 @@
   const el=(tag,text,cls)=>{const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(cls)node.className=cls;return node;};
   function textBlocks(parent,text){
     text.split('```').forEach((block,i)=>{
-      if(i%2){const pre=el('pre');pre.append(el('code',block.replace(/^\w*\n/,'')));parent.append(pre);return;}
+      if(i%2){const pre=el('pre'),lang=block.match(/^([\w+#.-]{1,24})\n/)?.[1];if(lang)pre.dataset.lang=lang;pre.append(el('code',block.replace(/^[\w+#.-]*\n/,'')));parent.append(pre);return;}
       for(const paragraph of block.trim().split(/\n\s*\n/)){
         if(!paragraph)continue;const p=el('p');paragraph.split('`').forEach((part,j)=>p.append(j%2?el('code',part):document.createTextNode(part)));parent.append(p);
       }
     });
+  }
+  // Light highlighting for common languages. Builds text nodes only; transcript text is untrusted.
+  const keywords=/^(?:as|async|await|break|case|catch|class|const|continue|def|default|defer|do|elif|else|enum|export|extends|false|fn|for|from|func|function|go|if|impl|import|in|interface|let|loop|match|mod|mut|new|nil|None|null|package|pub|raise|return|self|static|struct|super|switch|this|throw|trait|true|True|False|try|type|typeof|undefined|use|var|where|while|with|yield)$/;
+  const hashComments=/^(?:sh|bash|zsh|shell|console|py|python|rb|ruby|toml|yaml|yml|ps1|powershell|dockerfile|make|makefile)$/i;
+  const plainLanguages=/^(?:text|txt|plain|log|output|diff|patch|md|markdown)$/i;
+  function highlight(code,lang){
+    if(!lang||plainLanguages.test(lang)||code.length>20000)return false;
+    const hash=hashComments.test(lang),rust=/^(?:rs|rust)$/i.test(lang);
+    const pattern=new RegExp(String.raw`(\/\*[\s\S]*?\*\/|\/\/[^\n]*${hash?String.raw`|#[^\n]*`:''})|("(?:\\.|[^"\\\n])*"|${rust?String.raw`'(?:\\.|[^'\\\n]){1,2}'`:String.raw`'(?:\\.|[^'\\\n])*'`}|\x60(?:\\.|[^\x60\\])*\x60)|(\b\d[\d_]*(?:\.\d+)?\b)|([A-Za-z_$][\w$]*)(?=\s*\()|([A-Za-z_$][\w$]*)|([{}()[\];,])`,'g');
+    const out=document.createDocumentFragment();let last=0;
+    for(const m of code.matchAll(pattern)){
+      const cls=m[1]?'tok-c':m[2]?'tok-s':m[3]?'tok-n':m[4]?(keywords.test(m[4])?'tok-k':'tok-f'):m[6]?'tok-p':keywords.test(m[5])?'tok-k':null;
+      if(!cls)continue;
+      out.append(code.slice(last,m.index),el('span',m[0],cls));last=m.index+m[0].length;
+    }
+    out.append(code.slice(last));return out;
+  }
+  const duration=seconds=>{seconds=Math.round(seconds);if(seconds<60)return seconds+'s';const minutes=Math.floor(seconds/60);if(minutes<60)return `${minutes}m ${seconds%60}s`;return `${Math.floor(minutes/60)}h ${minutes%60}m`;};
+  function copyText(text){
+    if(navigator.clipboard&&window.isSecureContext)return navigator.clipboard.writeText(text);
+    const area=el('textarea');area.value=text;area.style.cssText='position:fixed;opacity:0';document.body.append(area);area.select();
+    try{document.execCommand('copy');}finally{area.remove();}return Promise.resolve();
+  }
+  // Give each code block a card with its language and a copy button.
+  function decorateCode(article){
+    // Long inline paths break at separators instead of mid-word.
+    for(const code of article.querySelectorAll('code')){
+      if(code.closest('pre')||code.textContent.length<16||code.querySelector('wbr'))continue;
+      const parts=code.textContent.split(/(?<=[\/\\])/);code.replaceChildren();
+      parts.forEach((part,i)=>{if(i)code.append(el('wbr'));code.append(part);});
+    }
+    for(const pre of article.querySelectorAll('pre')){
+      if(pre.parentNode.classList?.contains('conversation-code'))continue;
+      const text=pre.textContent.replace(/\n$/,''),lang=pre.dataset.lang||'';
+      const highlighted=highlight(text,lang);if(highlighted){const code=el('code');code.append(highlighted);pre.replaceChildren(code);}
+      const card=el('div',undefined,'conversation-code'),bar=el('div',undefined,'conversation-code-bar'),copy=el('button','Copy');
+      copy.type='button';copy.setAttribute('aria-label','Copy code');let reset;
+      copy.onclick=()=>copyText(text).then(()=>{copy.textContent='Copied';clearTimeout(reset);reset=setTimeout(()=>{copy.textContent='Copy';},1500);},()=>{copy.textContent='Copy failed';});
+      bar.append(el('span',lang||'code'),copy);pre.replaceWith(card);card.append(bar,pre);
+      requestAnimationFrame(()=>pre.classList.toggle('fits',pre.scrollWidth<=pre.clientWidth+1));
+    }
   }
   window.SwitchboardConversation={install({selection,terminal,modeChanged=()=>{},viewed=()=>{},switchModel=null}){
     const root=document.getElementById('terminals'),drafts=new Map(),attachments=new Map(),retryKeys=new Map();
@@ -46,14 +87,24 @@
     const panel=el('section',undefined,'conversation-panel');
     // CSS keeps a hidden panel laid out (see conversation.css), so hide it from assistive technology here.
     const setPanelHidden=value=>{panel.hidden=value;panel.setAttribute('aria-hidden',String(value));};setPanelHidden(true);panel.tabIndex=-1;panel.setAttribute('aria-label','Agent conversation');
-    const header=el('header'),heading=el('div',undefined,'conversation-heading'),title=el('strong'),model=el(switchModel?'button':'span',undefined,'conversation-model'),activity=el('span',undefined,'conversation-activity'),terminalAction=el('button','Open Terminal','conversation-terminal-action');model.title=switchModel?'Switch between Claude and Codex with context':'Last reported model';if(switchModel){model.type='button';model.setAttribute('aria-label','Switch model with context');model.onclick=()=>switchModel(target);}activity.setAttribute('role','status');terminalAction.type='button';terminalAction.hidden=true;terminalAction.onclick=()=>show(false);heading.append(title);header.append(heading,activity,terminalAction);
+    const header=el('header'),heading=el('div',undefined,'conversation-heading'),title=el('strong'),model=el(switchModel?'button':'span',undefined,'conversation-model'),activity=el('span',undefined,'conversation-activity'),terminalAction=el('button','Open Terminal','conversation-terminal-action');model.title=switchModel?'Switch between Claude and Codex with context':'Last reported model';if(switchModel){model.type='button';model.setAttribute('aria-label','Switch model with context');model.onclick=()=>switchModel(target);}activity.setAttribute('role','status');terminalAction.type='button';terminalAction.hidden=true;terminalAction.onclick=()=>show(false);const context=el('span',undefined,'conversation-context'),subtitle=el('div',undefined,'conversation-subtitle');subtitle.append(context,activity);heading.append(title,subtitle);header.append(heading,terminalAction);
     const notice=el('p','Loading this terminal’s conversation…','conversation-notice');notice.setAttribute('role','status');
     const list=el('div',undefined,'conversation-messages'),older=el('button','Load older messages'),refresh=el('button','↻'),latest=el('button','↓');refresh.setAttribute('aria-label','Refresh');refresh.title='Refresh conversation';latest.setAttribute('aria-label','Scroll to bottom');latest.title='Scroll to bottom';older.hidden=true;
-    const working=el('div',undefined,'conversation-working');working.append(el('span'),el('span'),el('span'));working.hidden=true;working.setAttribute('aria-hidden','true');
+    // One live row: a pulsing marker, the step in progress (or "Working"), and the elapsed time.
+    const working=el('div',undefined,'conversation-working'),workingStep=el('span',undefined,'conversation-working-step'),workingTime=el('span',undefined,'conversation-working-time');
+    working.append(el('span',undefined,'conversation-working-dot'),workingStep,workingTime);working.hidden=true;workingStep.dataset.step='Working';let liveStep=null;working.setAttribute('aria-hidden','true');
     const recovery=el('div',undefined,'conversation-recovery'),retryConnection=el('button','Retry connection');recovery.hidden=true;retryConnection.type='button';retryConnection.onclick=()=>{if(target)startups.delete(identity(target));status(unboundNotice());updateActivity();prepare();};recovery.append(retryConnection);
     const historyStatus=el('span',undefined,'conversation-history-status');historyStatus.hidden=true;historyStatus.setAttribute('role','status');
     const actions=el('div',undefined,'conversation-actions');actions.append(refresh,latest);list.append(older,working);latest.hidden=refresh.hidden=true;
-    const form=el('form',undefined,'conversation-compose'),draft=el('textarea'),insert=el('button','↑');draft.rows=1;draft.maxLength=16000;draft.placeholder='Message…';draft.setAttribute('aria-label','Reply draft');insert.type='submit';insert.setAttribute('aria-label','Send');insert.title='Send message';const attach=el('button','+','conversation-attach'),picker=el('input'),files=el('div',undefined,'conversation-attachments');attach.type='button';attach.setAttribute('aria-label','Attach files');attach.title='Attach photos or files';picker.type='file';picker.multiple=true;picker.hidden=true;files.hidden=true;form.append(files,attach,draft,model,insert,picker);
+    const form=el('form',undefined,'conversation-compose'),draft=el('textarea'),insert=el('button','↑');draft.rows=1;draft.maxLength=16000;draft.placeholder='Message…';draft.setAttribute('aria-label','Reply draft');insert.type='submit';insert.setAttribute('aria-label','Send');insert.title='Send message';const attach=el('button','+','conversation-attach'),picker=el('input'),files=el('div',undefined,'conversation-attachments');attach.type='button';attach.setAttribute('aria-label','Attach files');attach.title='Attach photos or files';picker.type='file';picker.multiple=true;picker.hidden=true;files.hidden=true;
+    const stop=el('button',undefined,'conversation-stop');stop.type='button';stop.setAttribute('aria-label','Stop');stop.title='Interrupt the agent (sends Esc)';
+    stop.onclick=async()=>{
+      const destination=target;if(!destination?.session||!Number.isInteger(destination.pane))return;stop.disabled=true;
+      try{const response=await fetch('/api/hosts/'+encodeURIComponent(destination.host)+'/escape',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:destination.session,pane_id:destination.pane}),signal:AbortSignal.timeout(10000)});if(!response.ok)throw Error();}
+      catch{if(identity(target)===identity(destination))sendStatus('Could not interrupt the agent. Open Terminal and press Esc.');}
+      finally{stop.disabled=false;}
+    };
+    form.append(files,attach,draft,model,insert,stop,picker);
     const sendNotice=el('small',undefined,'conversation-send-notice');sendNotice.hidden=true;sendNotice.setAttribute('role','status');form.append(sendNotice);
     const transportNotice=el('small','Replies use Terminal briefly, then return here.','conversation-transport-notice');transportNotice.hidden=true;form.append(transportNotice);
     const completions=el('div',undefined,'conversation-completions');completions.id='conversation-completions';completions.hidden=true;completions.setAttribute('role','listbox');completions.setAttribute('aria-label','Commands and skills');form.prepend(completions);
@@ -105,17 +156,41 @@
     }
     function providerLabel(){const agent=target?.agent||chat?.agent;return agent?agent[0].toUpperCase()+agent.slice(1):'Assistant';}
     function agentLabel(){return modelLabel(chat)||providerLabel();}
+    // The in-transcript indicator counts up from when the agent started this turn.
+    let workingTimer=null;
+    function tickWorking(){
+      clearTimeout(workingTimer);syncLiveStep();if(working.hidden||panel.hidden)return;
+      const since=Number(target?.since),time=since>0?duration(Math.max(0,Date.now()/1000-since)):'';
+      if(workingTime.textContent!==time)workingTime.textContent=time;workingTimer=setTimeout(tickWorking,1000);
+    }
+    // The newest progress update moves into the live row, so the step in progress
+    // and the timer read as one line instead of two indicators.
+    function syncLiveStep(){
+      const last=working.hidden?null:working.previousElementSibling,step=last?.classList.contains('commentary')&&!last.hidden?last:null;
+      if(step===liveStep)return;
+      liveStep?.classList.remove('live');liveStep=step;
+      // Shown through CSS content so the step's text stays in the transcript only once.
+      if(step){step.classList.add('live');workingStep.dataset.step=[...step.childNodes].filter(node=>!node.classList?.contains('conversation-label')).map(node=>node.textContent).join(' ').replace(/\s+/g,' ').trim();}
+      else workingStep.dataset.step='Working';
+      working.classList.toggle('has-step',!!step);
+    }
     function updateActivity(){
       const state=target?.state,label=state==='working'?'Working…':state==='approval'?'Approval needed':state==='input'?'Input needed':state==='waiting'?'Waiting on an agent':state==='ready'?'Ready':'';
       const name=chat||target?.agent?agentLabel():'';if(model.textContent!==name)model.textContent=name;
+      const short=name.split(' · ')[0];if(short&&short!==name)model.dataset.short=short;else delete model.dataset.short;
       if(switchModel)model.disabled=!target?.switchAvailable||!chat||!!pendingFor()||!!(outgoing.get(identity(target))||[]).length||!!(attachments.get(identity(target))||[]).length;
       if(activity.textContent!==label)activity.textContent=label;
       activity.classList.toggle('working',state==='working');
-      const follow=nearBottom();working.hidden=state!=='working'||!chat;
+      const follow=nearBottom();working.hidden=state!=='working'||!chat;tickWorking();
       if(follow)list.scrollTop=list.scrollHeight;
       const startup=startupState(),stalled=!!startup&&(!!startup.error||Date.now()-startup.started>=30000);
       terminalAction.hidden=!['approval','input'].includes(state)&&!stalled;recovery.hidden=!stalled||!!chat;
       insert.disabled=!!pendingFor();
+      // While the agent works, an empty composer offers Stop in the send button's place.
+      form.classList.toggle('can-stop',state==='working'&&!!chat&&!!target?.session&&Number.isInteger(target?.pane));
+      const project=String(chat?.project||'').replace(/[\\/]+$/,'').split(/[\\/]/).pop();
+      const where=[project,target?.computer].filter(Boolean).join(' · ');if(context.textContent!==where)context.textContent=where;
+      const prompt=target?.agent?`Ask ${providerLabel()} a follow-up…`:'Message…';if(draft.placeholder!==prompt)draft.placeholder=prompt;
       transportNotice.hidden=!chat||!(target?.terminalReady===false&&target?.agent!=='claude'&&!(target?.agent==='codex'&&/^[0-9a-f-]{36}$/.test(chat.thread||'')));
       insert.setAttribute('aria-label',transportNotice.hidden?'Send':'Send via Terminal');insert.title=transportNotice.hidden?'Send message':'Send via Terminal and return to Conversation';
     }
@@ -149,7 +224,26 @@
       if(reasons.includes('malformed_record'))return 'An unreadable history record was skipped. Other messages are still available.';
       return 'Some history is unavailable. Showing the messages that could be read.';
     }
-    const rendered=new Map(),renderedOutgoing=new Map();
+    const rendered=new Map(),renderedOutgoing=new Map(),summaries=new Map(),expandedRuns=new Set();
+    const isCommentary=item=>item.role==='assistant'&&item.phase==='commentary';
+    // A finished run of two or more progress updates folds behind one summary line.
+    function activityRuns(){
+      const visible=[],runs=new Map();
+      for(const [offset,item] of messages.entries())if(!setupMessage(item))visible.push({key:startCursor+offset,item});
+      for(let i=0;i<visible.length;){
+        if(!isCommentary(visible[i].item)){i++;continue;}
+        let end=i;while(end+1<visible.length&&isCommentary(visible[end+1].item))end++;
+        const after=visible[end+1],count=end-i+1;
+        if(after&&count>=2){
+          const before=visible[i-1]?.item.role==='user'?visible[i-1].item:visible[i].item;
+          const elapsed=(Date.parse(after.item.timestamp)-Date.parse(before.timestamp))/1000;
+          const run={start:visible[i].key,collapsed:!expandedRuns.has(identity(target)+':'+visible[i].key),label:(Number.isFinite(elapsed)&&elapsed>0?`${providerLabel()} worked for ${duration(elapsed)} · `:`${providerLabel()} · `)+`${count} steps`};
+          for(let j=i;j<=end;j++)runs.set(visible[j].key,run);
+        }
+        i=end+1;
+      }
+      return runs;
+    }
     // Each message is serialized once. Polls replace only the newest page, so a
     // long transcript's earlier messages keep their objects and signatures.
     const signatures=new WeakMap();
@@ -201,9 +295,17 @@
       if(!follow&&!prepend&&!initial)newOutput=true;
       older.hidden=true;
       let previous=older,previousRole=null,previousSpeaker=null;
+      const runs=activityRuns(),summaryKeys=new Set();
       for(const [offset,item] of messages.entries()){
         if(setupMessage(item))continue;
         const notices=mailboxCount(item),key=startCursor+offset,signature=snapshot.messages[offset],speaker=notices?'Switchboard':item.role==='user'?'You':providerLabel();keys.add(key);
+        const run=runs.get(key);
+        if(run?.start===key){
+          let summary=summaries.get(key);
+          if(!summary){summary=el('button',undefined,'conversation-steps');summary.type='button';summary.onclick=()=>{const id=identity(target)+':'+key;expandedRuns.has(id)?expandedRuns.delete(id):expandedRuns.add(id);lastPaint=null;paint();};summaries.set(key,summary);}
+          if(summary.textContent!==run.label)summary.textContent=run.label;summary.setAttribute('aria-expanded',String(!run.collapsed));summaryKeys.add(key);
+          if(previous.nextSibling!==summary)previous.after(summary);previous=summary;
+        }
         let entry=rendered.get(key);
         if(!entry||entry.signature!==signature){
           const article=el(notices?'details':'article',undefined,'conversation-message '+(notices?'conversation-notification':item.role+(item.phase==='commentary'?' commentary':'')));
@@ -214,15 +316,18 @@
           }else{
             article.append(el('div',speaker,'conversation-label'));
             if(window.SwitchboardConversationMedia&&(item.markdown||item.attachments))window.SwitchboardConversationMedia.render(article,item,{host:target.host,project:binding()?.project});else textBlocks(article,item.text||'');
+            decorateCode(article);
           }
           if(item.truncated)article.append(el('small','Message truncated by history API. Open the terminal for full context.'));
           if(entry){contentResize?.unobserve(entry.node);entry.node.remove();}entry={signature,node:article};rendered.set(key,entry);
         }
         entry.node.classList.toggle('continuation',previousRole==='assistant'&&item.role==='assistant'&&previousSpeaker===speaker);previousRole=notices?'notification':item.role;previousSpeaker=speaker;
+        entry.node.hidden=!!run?.collapsed;
         if(previous.nextSibling!==entry.node)previous.after(entry.node);
         previous=entry.node;
       }
       for(const [key,entry] of rendered)if(!keys.has(key)){contentResize?.unobserve(entry.node);entry.node.remove();rendered.delete(key);}
+      for(const [key,summary] of summaries)if(!summaryKeys.has(key)){summary.remove();summaries.delete(key);}
       for(const sent of visibleOutgoing){
         const signature=JSON.stringify([sent.text,sent.files.map(file=>file.name),sent.state,sent.detail]);let entry=renderedOutgoing.get(sent.id);
         if(!entry||entry.signature!==signature){
@@ -243,7 +348,7 @@
       if(list.lastChild!==working)list.append(working);
       if(prepend)list.scrollTop=position+list.scrollHeight-height;
       else if(follow)list.scrollTop=list.scrollHeight;
-      updateLatest();rememberReading();paintFiles();
+      syncLiveStep();updateLatest();rememberReading();paintFiles();
     }
     function applyPage(data,kind,cursor){
       const initial=kind==='initial',prepend=kind==='older',page=data.messages||[],start=data.start_cursor??(initial?0:prepend?Math.max(0,startCursor-page.length):cursor);
@@ -414,7 +519,7 @@
       if(target)drafts.set(identity(target),draft.value);
       if(target&&loaded){conversations.delete(identity(target));conversations.set(identity(target),{chat,messages,startCursor,tailCursor,nextCursor,streamSupported,position:restorePosition?.position??list.scrollTop,follow:restorePosition?.follow??nearBottom()});if(conversations.size>8)conversations.delete(conversations.keys().next().value);}
       window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();
-      stopStream();streamSupported=false;restorePosition=null;target=current;loadRequest?.abort();lastFailure=null;lastDiagnostic='';newOutput=false;sendStatus('');generation++;loaded=false;lastPaint=null;busy(false);messages=[];startCursor=tailCursor=0;nextCursor=null;following=true;readingAnchor=null;for(const entry of [...rendered.values(),...renderedOutgoing.values()])contentResize?.unobserve(entry.node);rendered.clear();renderedOutgoing.clear();list.replaceChildren(older,working);older.hidden=true;historyStatus.hidden=true;latest.hidden=refresh.hidden=true;
+      stopStream();streamSupported=false;restorePosition=null;target=current;loadRequest?.abort();lastFailure=null;lastDiagnostic='';newOutput=false;sendStatus('');generation++;loaded=false;lastPaint=null;busy(false);messages=[];startCursor=tailCursor=0;nextCursor=null;following=true;readingAnchor=null;for(const entry of [...rendered.values(),...renderedOutgoing.values()])contentResize?.unobserve(entry.node);rendered.clear();renderedOutgoing.clear();summaries.clear();list.replaceChildren(older,working);older.hidden=true;historyStatus.hidden=true;latest.hidden=refresh.hidden=true;
       chat=target?.chatId?{id:target.chatId,agent:target.agent,title:target.title}:null;
       if(target&&chat&&handoverDrafts.has(target.key)){drafts.set(identity(target),handoverDrafts.get(target.key));handoverDrafts.delete(target.key);}
       const cached=conversations.get(identity(target));if(cached){({chat,messages,startCursor,tailCursor,nextCursor,streamSupported}=cached);loaded=true;}

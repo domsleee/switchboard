@@ -1231,6 +1231,8 @@ async fn asset(request: Request) -> Response {
         "index.html" | "computers.html" | "messages.html" => "text/html; charset=utf-8",
         "manifest.webmanifest" => "application/manifest+json; charset=utf-8",
         "icon-192.png" | "icon-512.png" => "image/png",
+        // Inter (SIL OFL 1.1, see inter-OFL.txt), Latin subset, for Conversation.
+        "inter.woff2" => "font/woff2",
         "style.css" | "messages.css" | "gallery.css" | "conversation.css" => {
             "text/css; charset=utf-8"
         },
