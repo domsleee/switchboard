@@ -126,6 +126,8 @@ Computer mail goes to one agent on that computer, including agents in other proj
 Local delivery cursors suppress duplicate notifications across concurrent hooks,
 including competing agents checking computer mail. Delivery does not acknowledge
 mail: use `unread` or `inbox` to read it again and `ack` to confirm receipt.
+Each hook hand-over records `delivered_at` on the delivery, which the sidebar shows as
+**Delivered**, so senders can tell mail reached an agent that has not acknowledged it.
 
 Only computers the user paired, or gave a board token, reach the board, and only a
 session's owning computer can send as it, so every message comes from one of the
@@ -136,7 +138,8 @@ destructive or irreversible actions, still apply.
 
 Hooks stay silent when the board is unconfigured or offline; background watchers
 retry after a connection failure. A normal `SessionEnd` retires the identity and
-the agent cancels its watcher. Abrupt exits can leave an identity listed until
+the agent cancels its watcher. A watcher whose agent (or its launcher) exits without
+`SessionEnd` retires the identity and stops within about 10 seconds. Abrupt exits can leave an identity listed until
 explicitly retired. Identity mappings and delivery cursors live under the Zellij
 cache's `message-hooks` directory; `SWITCHBOARD_MESSAGE_STATE_DIR` selects a private
 directory for fixtures. Hooks never type into terminal panes.

@@ -27,7 +27,8 @@ Direct chat tools belong to the host application; this plugin does not supply
 them. Discover the tools available in the current session rather than assuming
 another agent application has the same interface.
 
-Report whether a message was sent directly or left in an inbox. Claim it was
+Report whether a message was sent directly or left in an inbox. A delivery's
+`delivered_at` means a hook handed the message to that agent. Claim it was
 read only after acknowledgment or a reply. Lifecycle hooks deliver board mail to running Codex and Claude Code sessions and
 wake idle agents. Sessions without those hooks must check their inbox explicitly;
 offline agents receive mail when they return.

@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const agent = {id:'session-new',name:'Reviewer',project:'switchboard',active:true,terminal:{host:'windows',session:'main',tab_id:2},unread_count:1};
 const directory = {machine_id:'mac',machines:[{id:'mac',name:'Mac',unread_count:1,participants:[]},{id:'windows',name:'Windows',unread_count:0,participants:[agent,{...agent,id:'session-old',active:false}]}]};
-function message(id, overrides = {}) {return {id,thread_id:'thread-1',sender_name:'Builder',sender_machine_name:'Mac',project:'switchboard',created_at:1700000000000,body:'Hello\n<script>window.compromised=true</script>',deliveries:[{recipient:'session-new',name:'Reviewer',machine_name:'Windows',recipient_kind:'agent',acknowledged_at:null}],...overrides};}
+function message(id, overrides = {}) {return {id,thread_id:'thread-1',sender_name:'Builder',sender_machine_name:'Mac',project:'switchboard',created_at:1700000000000,body:'Hello\n<script>window.compromised=true</script>',deliveries:[{recipient:'session-new',name:'Reviewer',machine_name:'Windows',recipient_kind:'agent',acknowledged_at:null},{recipient:'session-other',name:'Tester',machine_name:'Windows',recipient_kind:'agent',acknowledged_at:null,delivered_at:1700000000000}],...overrides};}
 async function fixture(run) {
   const browser = await chromium.launch({headless:true});
   try {
@@ -42,6 +42,7 @@ test('computer and session inboxes preserve history, receipt status, literal tex
     assert.equal(await page.locator('#location a').count(),0);
     assert.match(await page.locator('button[data-key="agent:session-old"]').textContent(), /Retired/);
     assert.match(await page.locator('article').textContent(), /Awaiting acknowledgment/);
+    assert.match(await page.locator('article').textContent(), /Tester · Delivered .+, awaiting acknowledgment/);
     assert.match(await page.locator('.body').textContent(), /<script>/);
     assert.equal(await page.evaluate(() => window.compromised),undefined);
     await page.locator('#more').click();
