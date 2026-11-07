@@ -38,7 +38,7 @@ test('current conversation opens directly, stays pane-local, and follows a new c
  assert.equal(await page.getByRole('button',{name:'Send',exact:true}).isEnabled(),true);
  await page.getByLabel('Reply draft').fill('draft one');
  await page.evaluate(()=>{current.state='working';});await page.getByLabel('Reply draft').press('Enter');
- assert.equal(await page.evaluate(()=>sent.length),1);assert.match(await page.locator('.conversation-send-notice').textContent(),/agent is working/);
+ assert.equal(await page.evaluate(()=>sent.length),1);assert.match(await page.locator('.conversation-send-notice').textContent(),/Still connecting/);
  await Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/codex-one')),page.evaluate(()=>intervals.forEach(fn=>fn()))]);
  assert.equal(await page.locator('.conversation-send-notice').isVisible(),true);
  await page.evaluate(()=>{current.state='ready';});
@@ -113,5 +113,51 @@ test('phone chat opens the latest page, hides setup, and preserves messages and 
   assert.equal(await page.locator('.conversation-activity').textContent(),'codex');
   assert.equal(await page.getByRole('button',{name:/Load.*messages/}).count(),0);
   if(process.env.MODE_SCREENSHOTS)await page.screenshot({path:process.env.MODE_SCREENSHOTS+'/phone-chat.png'});
+ }finally{await browser.close();}
+});
+
+test('Android keyboard layout, file picker, and working Codex replies preserve drafts on retries',{skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
+ const {chromium}=require(process.env.PLAYWRIGHT_MODULE),requests=[],uploads=[];
+ let confirmed=false;
+ const browser=await chromium.launch();
+ try{
+  const page=await browser.newPage({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+  await page.addInitScript(()=>{window.keyboardHeight=844;Object.defineProperty(visualViewport,'height',{get:()=>keyboardHeight});});
+  await page.route('http://chat.test/**',async route=>{
+   const url=new URL(route.request().url());
+   if(url.pathname.endsWith('/attachments')){uploads.push({host:url.pathname,name:url.searchParams.get('name'),bytes:route.request().postDataBuffer().toString()});return route.fulfill({json:{path:'/uploads/'+url.searchParams.get('name')}});}
+   if(url.pathname.endsWith('/codex/reply')){requests.push({host:url.pathname,...route.request().postDataJSON()});return confirmed?route.fulfill({json:{status:'queued'}}):route.abort();}
+   if(url.pathname.startsWith('/api/chats/'))return route.fulfill({json:{session_id:'00000000-0000-4000-8000-000000000001',messages:Array.from({length:25},(_,i)=>({role:'assistant',text:'Reply '+i+'\n'+('Detailed explanation. '.repeat(10))})),start_cursor:0,next_cursor:null}});
+   if(url.pathname==='/')return route.fulfill({contentType:'text/html',body:`<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/conversation.css"><div id="workspace"><iframe id="terminal" hidden></iframe><main id="terminals"><section id="artifact-preview" hidden></section></main></div><script src="/conversation.js"></script><script>window.current={key:'pane1',host:'peer',pane:1,agent:'codex',state:'working',chatId:'codex-chat',frame:document.getElementById('terminal')};window.pastes=[];current.frame.contentWindow.postMessage=data=>pastes.push(data);SwitchboardConversation.install({selection:()=>current,terminal:()=>{}});</script>`});
+   return route.fulfill({contentType:url.pathname.endsWith('.css')?'text/css':'application/javascript',path:path.join(__dirname,'static',path.basename(url.pathname))});
+  });
+  await page.goto('http://chat.test/');await page.locator('.conversation-message').last().waitFor();
+  const draft=page.getByLabel('Reply draft'),form=page.locator('.conversation-compose');
+  await draft.fill('Please also inspect this screenshot.');
+  for(const height of [500,360,844,480]){
+   await page.evaluate(height=>{keyboardHeight=height;visualViewport.dispatchEvent(new Event('resize'));},height);
+   const bounds=await form.boundingBox();assert.ok(bounds.y+bounds.height<=height&&height-bounds.y-bounds.height<=8,JSON.stringify(bounds));
+   assert.ok(bounds.height<105,'Short composer must not grow excessively');
+   assert.equal(await draft.evaluate(n=>getComputedStyle(n).overflowY),'hidden');
+   assert.equal(await page.getByRole('button',{name:'Scroll to bottom',exact:true}).isVisible(),false);
+   assert.equal(await page.evaluate(()=>document.documentElement.scrollHeight<=innerHeight),true);
+  }
+  const chooser=page.waitForEvent('filechooser');await page.getByRole('button',{name:'Attach files',exact:true}).click();
+  await page.evaluate(()=>{window.originalTarget=current;current={...current,key:'pane2',host:'other',chatId:'codex-other'};SwitchboardConversation.update();});
+  await (await chooser).setFiles([{name:'screenshot.png',mimeType:'image/png',buffer:Buffer.from('fixture image')},{name:'notes.txt',mimeType:'text/plain',buffer:Buffer.from('fixture notes')}]);
+  assert.equal(await page.locator('.conversation-attachment').count(),0);
+  await page.evaluate(()=>{current=originalTarget;SwitchboardConversation.update();});
+  await page.waitForFunction(()=>[...document.querySelectorAll('.conversation-attachment small')].every(n=>n.textContent==='Ready')&&document.querySelectorAll('.conversation-attachment').length===2);
+  assert.equal(await page.getByRole('button',{name:'Scroll to bottom',exact:true}).isVisible(),false);
+  assert.equal(uploads.length,2);assert.ok(uploads.every(u=>u.host==='/api/hosts/peer/attachments'));
+  await page.getByRole('button',{name:'Remove notes.txt',exact:true}).click();assert.equal(await page.locator('.conversation-attachment').count(),1);
+  await page.getByRole('button',{name:'Send',exact:true}).click();await page.getByText('Could not confirm delivery. Retry to check its status.',{exact:true}).waitFor();
+  assert.equal(await draft.inputValue(),'Please also inspect this screenshot.');assert.equal(await page.locator('.conversation-attachment').count(),1);
+  confirmed=true;await page.getByRole('button',{name:'Send',exact:true}).click();await page.getByText('Queued',{exact:true}).waitFor();
+  assert.equal(requests.length,2);assert.equal(requests[0].send_key,requests[1].send_key);assert.equal(requests[0].thread,'00000000-0000-4000-8000-000000000001');
+  assert.equal(requests[0].message,'Please also inspect this screenshot.\n\nAttached files:\n/uploads/screenshot.png');
+  assert.equal(await draft.inputValue(),'');assert.equal(await page.locator('.conversation-attachment').count(),0);assert.equal(await page.evaluate(()=>pastes.length),0);
+  await draft.fill('line\n'.repeat(30));assert.equal(await draft.evaluate(n=>getComputedStyle(n).overflowY),'auto');
+  await draft.fill('Short again');assert.equal(await draft.evaluate(n=>getComputedStyle(n).overflowY),'hidden');
  }finally{await browser.close();}
 });
