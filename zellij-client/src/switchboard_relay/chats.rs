@@ -537,7 +537,13 @@ impl Chat {
                 }
                 // Meta records are Claude Code's own additions (skill bodies, an
                 // `[Image: source: …]` line per pasted image), not what the user typed.
-                if matches!(v["type"].as_str(), Some("user" | "assistant")) && v["isMeta"] != true {
+                // Background task notifications are user records with a system
+                // prompt source, without isMeta. Use provenance so pasted XML stays visible.
+                let system_prompt = v["type"] == "user" && v["promptSource"] == "system";
+                if matches!(v["type"].as_str(), Some("user" | "assistant"))
+                    && v["isMeta"] != true
+                    && !system_prompt
+                {
                     self.push_parts(
                         v["type"].as_str().unwrap(),
                         &v["message"]["content"],
@@ -1702,6 +1708,80 @@ mod tests {
         let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
         write!(file, "{}", lines(&records[3..])).unwrap();
         assert_eq!(phases(&index.page(&params).unwrap()["messages"]), expected);
+    }
+
+    #[test]
+    fn switchboard_chats_exclude_claude_system_task_notifications() {
+        // Claude Code 2.1.319 emits this as a user record without isMeta.
+        let notification = json!({
+            "type":"user", "version":"2.1.319", "userType":"external",
+            "origin":{"kind":"task-notification","producer":"session-task"},
+            "promptSource":"system", "turnOrigin":"task_notification",
+            "message":{"role":"user","content":concat!(
+                "<task-notification>\n<task-id>bvq2ldvi9</task-id>\n",
+                "<tool-use-id>toolu_01KsyYBwFC6SG5fbyNcf8mJc</tool-use-id>\n",
+                "<output-file>C:\\Temp\\claude\\tasks\\bvq2ldvi9.output</output-file>\n",
+                "<status>completed</status>\n",
+                "<summary>Background command \"Build dev-opt binary with hidden attach\" completed (exit code 0)</summary>\n",
+                "</task-notification>"
+            )}
+        });
+        // A human can paste the same XML, including when reporting a parser bug.
+        let mut human = notification.clone();
+        human["origin"] = json!({"kind":"human"});
+        human["promptSource"] = json!("typed");
+        human["turnOrigin"] = json!("human");
+        let legacy = json!({"type":"user","message":{"content":"Measure the change"}});
+        let progress = json!({"type":"assistant","message":{"content":[{"type":"text","text":"Waiting for the dev-opt build."}]}});
+        let answer = json!({"type":"assistant","message":{"content":[{"type":"text","text":"Build finished."}]}});
+        let records = vec![
+            notification.clone(),
+            legacy,
+            progress,
+            notification,
+            human,
+            answer,
+        ];
+        let c = chat("claude", records.clone());
+        assert_eq!(c.messages.len(), 4);
+        assert_eq!(c.title, "Measure the change");
+        assert_eq!(c.messages[2]["text"], records[4]["message"]["content"]);
+
+        // Live appends and paged reads must use the same filtering and cursors.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("live.jsonl");
+        let mut file = fs::File::create(&path).unwrap();
+        let mut index = HistoryIndex::new("claude", dir.path(), &path);
+        let params = Params {
+            tail: true,
+            limit: Some(50),
+            ..Params::default()
+        };
+        let mut expected = 0;
+        for record in records {
+            writeln!(file, "{record}").unwrap();
+            expected += chat("claude", vec![record]).messages.len();
+            assert_eq!(index.page(&params).unwrap()["message_count"], expected);
+        }
+        let first = index
+            .page(&Params {
+                limit: Some(2),
+                ..Params::default()
+            })
+            .unwrap();
+        let second = index
+            .page(&Params {
+                cursor: 2,
+                limit: Some(2),
+                ..Params::default()
+            })
+            .unwrap();
+        assert_eq!(first["next_cursor"], 2);
+        assert_eq!(second["next_cursor"], Value::Null);
+        let page = read_page(&c, &Params::default());
+        let messages = page["messages"].as_array().unwrap();
+        assert_eq!(first["messages"], json!(&messages[..2]));
+        assert_eq!(second["messages"], json!(&messages[2..]));
     }
 
     #[test]
