@@ -22,7 +22,9 @@ permissions:
 
 concurrency:
   group: rust-${{ github.ref }}
-  cancel-in-progress: true
+  # A new push to a PR replaces its run. On main a newer merge replaces only the
+  # pending run: cancelling mid-run wasted runners and left main with no result.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Rust caches: only main saves them; PRs restore main's. A cache whose key already
 # exists is never re-saved, so a failed run must not save a partial one.
