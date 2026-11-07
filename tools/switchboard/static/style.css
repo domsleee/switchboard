@@ -290,7 +290,7 @@ body.sidebar-collapsed #artifact-preview header{padding-left:42px}
 
 @media(hover:none){#tabs .tab-actions{opacity:1}}
 
-#new-tab-dialog{width:330px;padding:12px;overflow:visible}
+#new-tab-dialog{width:500px;max-width:calc(100vw - 32px);padding:16px;overflow:visible}
 #new-tab-form{display:grid;grid-template-columns:62px minmax(0,1fr);gap:6px 8px}
 #new-tab-form h2{grid-column:1/-1;margin:0 0 2px;font-size:14px}
 #new-tab-form label{color:#b8c1cf;font-size:12px;margin:6px 0 0;align-self:start}
@@ -298,6 +298,19 @@ body.sidebar-collapsed #artifact-preview header{padding-left:42px}
 #new-tab-form input{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
 #new-tab-form input:focus{outline:2px solid #9dc2fa;outline-offset:1px}
 #new-tab-form input::selection{background:#426ba4;color:white}
+.new-tab-prompt-field{min-width:0}
+#new-tab-prompt{display:block;width:100%;min-height:130px;resize:vertical;padding:9px;background:#111318;border:1px solid #363e4d;border-radius:5px;color:inherit;font:13px/1.5 system-ui,sans-serif}
+#new-tab-prompt:focus{outline:2px solid #9dc2fa;outline-offset:1px}
+.new-tab-prompt-tools{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px}
+.new-tab-prompt-tools small{font-size:10px;color:#9ba7bd}
+#new-tab-attach{font-size:11px;padding:4px 8px}
+.new-tab-file{display:flex;align-items:center;gap:6px;margin-top:6px;padding:4px 6px;border:1px solid #363e4d;border-radius:5px;font-size:12px}
+.new-tab-file img{width:32px;height:32px;object-fit:cover;border-radius:3px}
+.new-tab-file span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.new-tab-file button{padding:2px 6px}
+#new-tab-error{margin:6px 0 0;color:#eab47c;font-size:12px}
+#new-tab-error:empty{display:none}
+@media(pointer:coarse){#new-tab-prompt{font-size:16px}#new-tab-attach,.new-tab-file button{min-height:44px}.new-tab-prompt-tools small{display:none}}
 #new-tab-project-help{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .new-tab-combobox{position:relative;min-width:0}
 #new-tab-form .new-tab-combobox input{padding-right:30px}

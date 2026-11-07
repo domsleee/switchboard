@@ -382,16 +382,66 @@ fn elevated_shell(default_shell: Option<PathBuf>) -> RunCommandAction {
 }
 
 // Run through the configured shell so interactive aliases and functions are available.
+fn tab_shell(default_shell: Option<PathBuf>) -> PathBuf {
+    default_shell
+        .or_else(|| std::env::var_os("SHELL").map(PathBuf::from))
+        .or_else(|| std::env::var_os("COMSPEC").map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("/bin/sh"))
+}
+
+// Prompt text is data, never shell source. Quote on the destination computer,
+// where the configured shell and uploaded image paths are known.
+pub(super) fn prompt_command(shell: Option<PathBuf>, prompt: &str, images: &[String]) -> String {
+    let shell = tab_shell(shell);
+    let name = shell
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_ascii_lowercase();
+    let quote = |value: &str| match name.as_str() {
+        "nu" => {
+            let mut hashes = "#".to_owned();
+            while value.contains(&format!("'{hashes}")) {
+                hashes.push('#');
+            }
+            format!("r{hashes}'{value}'{hashes}")
+        },
+        "pwsh" | "powershell" | "cmd" => {
+            use base64::Engine;
+            let data = base64::engine::general_purpose::STANDARD.encode(value.as_bytes());
+            format!("([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{data}')))")
+        },
+        "fish" => format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'")),
+        _ => format!("'{}'", value.replace('\'', "'\\''")),
+    };
+    let mut command = "csol".to_owned();
+    for image in images {
+        command.push_str(&format!(" --image {}", quote(image)));
+    }
+    if !prompt.is_empty() {
+        command.push_str(&format!(" {} {}", quote("--"), quote(prompt)));
+    }
+    if name == "cmd" {
+        // cmd cannot quote arbitrary multiline data or suppress % expansion.
+        // Use PowerShell's encoded script transport instead.
+        use base64::Engine;
+        let bytes: Vec<u8> = command.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        format!(
+            "powershell.exe -EncodedCommand {}",
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        )
+    } else {
+        command
+    }
+}
+
 pub(super) fn tab_command(
     default_shell: Option<PathBuf>,
     command: String,
     cwd: Option<PathBuf>,
     elevated: bool,
 ) -> RunCommandAction {
-    let shell = default_shell
-        .or_else(|| std::env::var_os("SHELL").map(PathBuf::from))
-        .or_else(|| std::env::var_os("COMSPEC").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from("/bin/sh"));
+    let shell = tab_shell(default_shell);
     let name = shell
         .file_stem()
         .unwrap_or_default()
@@ -488,7 +538,12 @@ pub(super) fn control_payload_to_server_msg(
             elevated,
             project,
             command,
+            prompt,
+            images,
         } => {
+            let command = prompt
+                .map(|text| prompt_command(default_shell.clone(), &text, &images))
+                .or(command);
             let cwd = project
                 .filter(|p| !p.trim().is_empty())
                 .and_then(|p| std::env::home_dir().map(|home| home.join("git").join(p)));
@@ -690,8 +745,10 @@ mod tests {
             WebClientToWebServerControlMessagePayload::NewTab {
                 elevated: false,
                 project: None,
-                command: None
-            }
+                command: None,
+                prompt: None,
+                images
+            } if images.is_empty()
         ));
     }
 
@@ -754,6 +811,94 @@ mod tests {
             );
             assert_eq!(&run.args[..run.args.len() - 1], flags.as_slice());
             assert_eq!(run.args.last().unwrap(), "csol 'some prompt'");
+        }
+    }
+
+    #[test]
+    fn switchboard_new_tab_prompt_round_trips_through_real_shells() {
+        use std::process::Command;
+        let prompt = "  --help it's \"quoted\" ‘smart’ $HOME $(echo bad); & | %PATH% \\ 🦀\nsecond line '# '## \\server\\share  ";
+        let images = vec![
+            "C:/my images/it's a $shot.png".to_owned(),
+            "/tmp/second image.png".to_owned(),
+        ];
+        let mut tested = 0;
+        let shells = if cfg!(windows) {
+            vec![
+                "nu",
+                "pwsh",
+                "powershell",
+                "C:/Program Files/Git/bin/bash.exe",
+            ]
+        } else {
+            vec!["/bin/sh", "bash", "zsh", "fish", "nu", "pwsh"]
+        };
+        for shell in shells {
+            let command = prompt_command(Some(shell.into()), prompt, &images);
+            let (script, flags, json) = match shell {
+                "nu" => (format!("def --wrapped csol [...args: string] {{ $args | to json --raw }}; {command}"), vec!["--no-config-file", "-c"], true),
+                "pwsh" | "powershell" => (format!("[Console]::OutputEncoding = [Text.UTF8Encoding]::new(); function csol {{ ConvertTo-Json -Compress -InputObject @($args) }}; {command}"), vec!["-NoProfile", "-Command"], true),
+                "fish" => (format!("function csol; printf '%s\\0' $argv; end; {command}"), vec!["-c"], false),
+                _ => (format!("csol() {{ printf '%s\\0' \"$@\"; }}; {command}"), vec!["-c"], false),
+            };
+            let output = match Command::new(shell).args(flags).arg(script).output() {
+                Ok(output) => output,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => panic!("{shell}: {error}"),
+            };
+            assert!(
+                output.status.success(),
+                "{shell}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let args: Vec<String> = if json {
+                serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+                    panic!(
+                        "{shell}: {error}: {}",
+                        String::from_utf8_lossy(&output.stdout)
+                    )
+                })
+            } else {
+                output
+                    .stdout
+                    .split(|byte| *byte == 0)
+                    .filter(|arg| !arg.is_empty())
+                    .map(|arg| String::from_utf8(arg.to_vec()).unwrap())
+                    .collect()
+            };
+            let mut expected = vec!["--image", &images[0], "--image", &images[1], "--"];
+            expected.push(prompt);
+            assert_eq!(args, expected, "{shell}");
+            tested += 1;
+        }
+        assert!(tested > 0, "No shell available to test prompt quoting");
+        assert_eq!(prompt_command(Some("nu".into()), "", &[]), "csol");
+    }
+
+    #[test]
+    fn switchboard_new_tab_prompt_reaches_the_configured_shell() {
+        for elevated in [false, true] {
+            let payload = serde_json::from_value(serde_json::json!({
+                "type":"NewTab", "project":"sample", "prompt":"fix this\nplease", "images":["/tmp/my shot.png"], "elevated":elevated
+            })).unwrap();
+            let Some(ClientToServerMsg::Action {
+                action:
+                    Action::NewTab {
+                        initial_panes: Some(panes),
+                        ..
+                    },
+                ..
+            }) = control_payload_to_server_msg(payload, Some("nu".into()))
+            else {
+                panic!("Expected prompt command");
+            };
+            let [CommandOrPlugin::Command(run)] = panes.as_slice() else {
+                panic!("Expected one command");
+            };
+            assert_eq!(
+                run.args.last().unwrap(),
+                "csol --image r#'/tmp/my shot.png'# r#'--'# r#'fix this\nplease'#"
+            );
         }
     }
 

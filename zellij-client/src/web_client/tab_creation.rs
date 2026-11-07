@@ -1,5 +1,9 @@
 //! Create tabs without attaching a browser viewer or changing terminal geometry.
-use super::{authentication::IsReadOnly, types::AppState, websocket_handlers::tab_command};
+use super::{
+    authentication::IsReadOnly,
+    types::AppState,
+    websocket_handlers::{prompt_command, tab_command},
+};
 use axum::{extract::State, http::StatusCode, Extension, Json};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -12,7 +16,12 @@ type Error = (StatusCode, &'static str);
 pub(super) struct Target {
     session: String,
     project: String,
+    #[serde(default)]
     command: String,
+    #[serde(default)]
+    prompt: Option<String>,
+    #[serde(default)]
+    images: Vec<String>,
     #[serde(default)]
     elevated: bool,
 }
@@ -28,7 +37,15 @@ fn valid(target: &Target) -> bool {
         && !target.project.trim().is_empty()
         && target.project.len() <= 4096
         && !target.project.contains('\0')
-        && !target.command.trim().is_empty()
+        && (target.prompt.is_some() || !target.command.trim().is_empty())
+        && target
+            .prompt
+            .as_ref()
+            .is_none_or(|text| text.len() <= 16000 && !text.contains('\0'))
+        && target.images.len() <= 8
+        && target.images.iter().all(|path| {
+            !path.is_empty() && path.len() <= 4096 && !path.chars().any(char::is_control)
+        })
         && target.command.len() <= 16000
         && !target.command.contains('\0')
 }
@@ -174,7 +191,11 @@ pub(super) async fn create(
         .ok_or((StatusCode::BAD_GATEWAY, "Home directory unavailable"))?
         .join("git")
         .join(target.project.trim());
-    let run = tab_command(shell, target.command, Some(cwd.clone()), target.elevated);
+    let command = target
+        .prompt
+        .map(|text| prompt_command(shell.clone(), &text, &target.images))
+        .unwrap_or(target.command);
+    let run = tab_command(shell, command, Some(cwd.clone()), target.elevated);
     let mut args: Vec<OsString> = vec![
         "-s".into(),
         target.session.clone().into(),
@@ -246,6 +267,8 @@ mod tests {
             session: "main".into(),
             project: "switchboard".into(),
             command: "c".into(),
+            prompt: None,
+            images: vec![],
             elevated: false,
         };
         assert!(valid(&target));

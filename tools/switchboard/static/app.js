@@ -1332,7 +1332,7 @@ $('new-admin-tab').onclick=()=>openNewTabDialog(true);
 function openNewTabDialog(elevated){
   newTabElevated=elevated;
   $('new-tab-title').textContent=elevated?'New administrator tab':'New tab';
-  $('new-tab-command').value='c';newTabCommandLookup.close();newTabProjectLookup.close();
+  $('new-tab-prompt').value='';clearNewTabFiles();newTabProjectLookup.close();
   $('new-tab-project').value='switchboard';updateNewTabProject();
   $('new-tab-note').textContent=elevated?'Opens an administrator shell on the selected machine. Someone there approves it: a UAC prompt on Windows, a sudo password elsewhere.':'';
   const select=$('new-tab-target');select.replaceChildren();
@@ -1349,7 +1349,7 @@ function openNewTabDialog(elevated){
   if(!select.options.length){setStatus(elevated&&hosts.size?'Open a regular tab on the machine first, then an administrator tab.':'No machines are connected. Check your machines in Settings.',true);return;}
   loadNewTabProjects();
   $('new-tab-dialog').showModal();
-  $('new-tab-command').focus();$('new-tab-command').select();
+  $('new-tab-prompt').focus();
 }
 function newTabLookup(inputId,listId,buttonId,items,emptyText,onChange=()=>{}){
   const input=$(inputId),list=$(listId),button=$(buttonId);let index=-1,showAll=false;
@@ -1390,7 +1390,6 @@ function updateNewTabProject(){
   const folder='~/git/'+$('new-tab-project').value.trim();
   $('new-tab-project-help').textContent=folder;$('new-tab-project').title=folder;
 }
-const newTabCommandLookup=newTabLookup('new-tab-command','new-tab-commands','new-tab-lookup',()=>[['c','Claude'],['castra','Codex · Astra'],['csol','Codex · Sol']]);
 let newTabProjects=[],newTabProjectMessage='',newTabProjectRequest;
 const newTabProjectLookup=newTabLookup('new-tab-project','new-tab-projects','new-tab-project-lookup',()=>newTabProjects.map(name=>[name,'']),()=>newTabProjectMessage||'No matching folders in ~/git.',updateNewTabProject);
 async function loadNewTabProjects(){
@@ -1444,13 +1443,68 @@ async function createConversationTab(key,launch){
     render();refreshAttention(true);refresh();
   }catch(error){failNewTab(entry,pending.requestId,error.message||'Could not confirm tab creation. Check the tab list before retrying.');}
 }
-$('new-tab-dialog').addEventListener('close',()=>{$('new-tab-form').pendingSubmission=null;});
-$('new-tab-form').onsubmit=event=>{
-  event.preventDefault();const request={};$('new-tab-form').pendingSubmission=request;
-  createNewTab($('new-tab-target').value,{project:$('new-tab-project').value.trim(),command:$('new-tab-command').value.trim(),elevated:newTabElevated},()=>$('new-tab-form').pendingSubmission===request&&$('new-tab-dialog').open);
+let newTabFiles=[];
+function clearNewTabFiles(){
+  for(const item of newTabFiles)if(item.preview)URL.revokeObjectURL(item.preview);
+  newTabFiles=[];paintNewTabFiles();$('new-tab-error').textContent='';
+}
+function newTabBusy(busy){
+  for(const control of $('new-tab-form').querySelectorAll('input,textarea,select,button'))control.disabled=busy;
+}
+function paintNewTabFiles(){
+  const files=$('new-tab-files');files.replaceChildren();
+  for(const item of newTabFiles){
+    const chip=document.createElement('div');chip.className='new-tab-file';
+    if(item.preview){const img=document.createElement('img');img.src=item.preview;img.alt='';chip.append(img);}
+    const name=document.createElement('span');name.textContent=item.file.name;chip.append(name);
+    const remove=document.createElement('button');remove.type='button';remove.textContent='×';remove.setAttribute('aria-label','Remove '+item.file.name);
+    remove.onclick=()=>{newTabFiles=newTabFiles.filter(file=>file!==item);if(item.preview)URL.revokeObjectURL(item.preview);paintNewTabFiles();};chip.append(remove);files.append(chip);
+  }
+}
+function addNewTabFiles(files){
+  $('new-tab-error').textContent='';
+  for(const file of files){
+    if(newTabFiles.length>=8){$('new-tab-error').textContent='Attach up to 8 files.';break;}
+    if(!file.size||file.size>20*1024*1024){$('new-tab-error').textContent='Choose a non-empty file up to 20 MB.';continue;}
+    newTabFiles.push({file,preview:file.type.startsWith('image/')?URL.createObjectURL(file):null});
+  }
+  paintNewTabFiles();
+}
+$('new-tab-attach').onclick=()=>$('new-tab-picker').click();
+$('new-tab-picker').onchange=()=>{addNewTabFiles([...$('new-tab-picker').files]);$('new-tab-picker').value='';};
+$('new-tab-prompt').addEventListener('paste',event=>{
+  const files=[...(event.clipboardData?.files||[])];if(files.length){event.preventDefault();addNewTabFiles(files);const text=event.clipboardData.getData('text/plain');if(text){const input=$('new-tab-prompt');input.setRangeText(text,input.selectionStart,input.selectionEnd,'end');}}
+});
+$('new-tab-form').addEventListener('dragover',event=>{if(event.dataTransfer?.types.includes('Files'))event.preventDefault();});
+$('new-tab-form').addEventListener('drop',event=>{if(event.dataTransfer?.files.length){event.preventDefault();addNewTabFiles([...event.dataTransfer.files]);}});
+$('new-tab-prompt').onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing&&!matchMedia('(pointer:coarse)').matches){event.preventDefault();$('new-tab-form').requestSubmit();}};
+$('new-tab-dialog').addEventListener('close',()=>{$('new-tab-form').pendingSubmission=null;newTabBusy(false);clearNewTabFiles();});
+$('new-tab-form').onsubmit=async event=>{
+  event.preventDefault();const form=$('new-tab-form');if(form.pendingSubmission)return;
+  const key=$('new-tab-target').value,project=$('new-tab-project').value.trim(),text=$('new-tab-prompt').value,files=[...newTabFiles],elevated=newTabElevated;
+  if(/[\x00-\x08\x0b-\x1f\x7f]/.test(text)||new TextEncoder().encode(text).length>16000){$('new-tab-error').textContent='Use a prompt up to 16 KB without control characters.';return;}
+  const request={};form.pendingSubmission=request;newTabBusy(true);
+  const isCurrent=()=>form.pendingSubmission===request&&$('new-tab-dialog').open;
+  $('new-tab-error').textContent=files.length?'Uploading attachments…':'';
+  try{
+    const images=[],others=[],host=JSON.parse(key)[0];
+    for(const item of files){
+      const response=await fetch('/api/hosts/'+encodeURIComponent(host)+'/attachments?'+new URLSearchParams({name:item.file.name}),{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:item.file});
+      if(!isCurrent())return;
+      if(!response.ok)throw Error('Could not upload '+item.file.name+'. Try again.');
+      const data=await response.json();if(typeof data.path!=='string'||!data.path||/[\x00-\x1f]/.test(data.path))throw Error('Invalid attachment response. Try again.');
+      (item.file.type.startsWith('image/')?images:others).push(data.path);
+    }
+    if(!isCurrent())return;
+    const prompt=text+(others.length?'\n\nAttached files:\n'+others.join('\n'):'');
+    if(new TextEncoder().encode(prompt).length>16000)throw Error('The prompt and file paths must fit within 16 KB.');
+    $('new-tab-error').textContent='';
+    await createNewTab(key,{project,prompt,images,elevated},isCurrent);
+  }catch(error){if(isCurrent())$('new-tab-error').textContent=error.message;}
+  finally{if(form.pendingSubmission===request){form.pendingSubmission=null;newTabBusy(false);}}
 };
 async function createNewTab(key,launch,isCurrent=()=>true){
-  if(!launch.project||!launch.command)return;
+  if(!launch.project||(!launch.command&&typeof launch.prompt!=='string'))return;
   if(globalThis.SwitchboardConversation?.wantsConversation?.())return createConversationTab(key,launch);
   let entry=sessions.get(key);
   // A recently resumed Terminal may still be connecting. Keep the dialog

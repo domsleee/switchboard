@@ -558,11 +558,11 @@ for(const hasTouch of [false,true])test(`conversation composer keeps focus throu
     await draft.fill('keep typing');
     await page.keyboard.press('Alt+KeyT');
     assert.equal(await page.locator('#new-tab-dialog').evaluate(dialog=>dialog.open),true,'Alt+T opens New tab from the conversation composer');
-    assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-command');
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-prompt');
     assert.equal(await draft.inputValue(),'keep typing','Opening New tab preserves the reply draft');
-    await page.locator('#new-tab-command').fill('custom command');
+    await page.locator('#new-tab-prompt').fill('custom command');
     await page.keyboard.press('Alt+KeyT');
-    assert.equal(await page.locator('#new-tab-command').inputValue(),'custom command','Alt+T leaves an existing dialog alone');
+    assert.equal(await page.locator('#new-tab-prompt').inputValue(),'custom command','Alt+T leaves an existing dialog alone');
     await page.keyboard.press('Escape');
     await draft.focus();
     await draft.evaluate(node=>node.setSelectionRange(0,4));
