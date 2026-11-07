@@ -15,6 +15,7 @@
     const modeKey=mobile?'switchboard-mobile-view-mode':'switchboard-view-mode';
     let savedMode;try{savedMode=localStorage.getItem(modeKey);}catch{}
     let target=null,open=savedMode? savedMode==='conversation':mobile,generation=0,startCursor=0,tailCursor=0,nextCursor=null,messages=[],pending=null,loading=false,loaded=false,lastPaint=null;
+    const outgoing=new Map(),consumedTranscript=new Map();
     const modes=el('div',undefined,'conversation-modes');modes.hidden=true;modes.setAttribute('role','group');modes.setAttribute('aria-label','View mode');
     const back=el('button','Terminal'),toggle=el('button','Conversation','conversation-toggle');back.type=toggle.type='button';back.setAttribute('aria-pressed',String(!open));toggle.setAttribute('aria-pressed',String(open));modes.append(back,toggle);root.append(modes);
     const panel=el('section',undefined,'conversation-panel');panel.hidden=true;panel.tabIndex=-1;panel.setAttribute('aria-label','Agent conversation');
@@ -59,13 +60,26 @@
       if(reasons.includes('malformed_record'))return 'An unreadable history record was skipped. Other messages are still available.';
       return 'Some history is unavailable. Showing the messages that could be read.';
     }
-    const rendered=new Map();
+    const rendered=new Map(),renderedOutgoing=new Map();
     function setupMessage(item){return item.role==='user'&&/^(?:# AGENTS\.md instructions|<environment_context>|<permissions instructions>|<skills_instructions>)/.test((item.text||'').trimStart());}
+    function normalizeMessage(value){return String(value||'').replace(/\r\n/g,'\n');}
+    function sameMessage(a,b){return normalizeMessage(a)===normalizeMessage(b);}
+    function outgoingLabel(state){return state==='sending'?'Sending…':state==='queued'||state==='sent'?'Waiting for agent…':'Could not confirm sending';}
+    function sendItem(sent,state,detail){sent.state=state;sent.detail=detail||'';if(identity(target)===sent.key)paint();}
     function nearBottom(){return list.scrollHeight-list.scrollTop-list.clientHeight<80;}
     function updateLatest(){latest.hidden=nearBottom();if(latest.hidden)newOutput=false;latest.textContent=newOutput?'↓ New messages':'↓ Latest';actions.hidden=latest.hidden&&refresh.hidden;}
     list.addEventListener('scroll',()=>{list.classList.add('scrolling');clearTimeout(scrollIdle);scrollIdle=setTimeout(()=>list.classList.remove('scrolling'),700);updateLatest();if(loaded&&startCursor>0&&list.scrollTop<80&&!loading&&older.hidden)load('older');},{passive:true});
     function paint(prepend=false,initial=false){
-      const snapshot=JSON.stringify(messages);if(snapshot===lastPaint)return;
+      const key=identity(target),sentItems=outgoing.get(key)||[],used=consumedTranscript.get(key)||new Set();
+      for(const sent of sentItems){
+        if(sent.transcriptCursor!==undefined)continue;
+        const match=messages.findIndex((item,offset)=>startCursor+offset>sent.baseline&&item.role==='user'&&!used.has(startCursor+offset)&&sameMessage(item.text||'',sent.payload));
+        if(match>=0){sent.transcriptCursor=startCursor+match;used.add(sent.transcriptCursor);}
+      }
+      consumedTranscript.set(key,used);
+      outgoing.set(key,sentItems.filter(item=>item.transcriptCursor===undefined));
+      const visibleOutgoing=sentItems.filter(item=>item.transcriptCursor===undefined);
+      const snapshot=JSON.stringify([messages,visibleOutgoing.map(({id,text,files,state,detail})=>({id,text,files:files.map(file=>file.name),state,detail}))]);if(snapshot===lastPaint)return;
       lastPaint=snapshot;
       const follow=initial||nearBottom(),height=list.scrollHeight,position=list.scrollTop,keys=new Set();
       if(!follow&&!prepend&&!initial)newOutput=true;
@@ -86,6 +100,20 @@
         previous=entry.node;
       }
       for(const [key,entry] of rendered)if(!keys.has(key)){entry.node.remove();rendered.delete(key);}
+      for(const sent of visibleOutgoing){
+        const signature=JSON.stringify([sent.text,sent.files.map(file=>file.name),sent.state,sent.detail]);let entry=renderedOutgoing.get(sent.id);
+        if(!entry||entry.signature!==signature){
+          const article=el('article',undefined,'conversation-message user conversation-outgoing '+sent.state),label=el('div','You','conversation-label');article.append(label);textBlocks(article,sent.text||'');
+          for(const file of sent.files)article.append(el('div',file.name,'conversation-outgoing-file'));
+          const footer=el('div',undefined,'conversation-outgoing-status');footer.append(el('span',sent.detail||outgoingLabel(sent.state)));
+          if(sent.state==='failed'&&sent.native){
+            const retry=el('button','Retry');retry.type='button';retry.onclick=()=>retrySend(sent);footer.append(retry);
+          }
+          article.append(footer);entry?.node.remove();entry={signature,node:article};renderedOutgoing.set(sent.id,entry);
+        }
+        if(previous.nextSibling!==entry.node)previous.after(entry.node);previous=entry.node;
+      }
+      const outgoingIds=new Set(visibleOutgoing.map(item=>item.id));for(const [id,entry] of renderedOutgoing)if(!outgoingIds.has(id)){entry.node.remove();renderedOutgoing.delete(id);}
       if(prepend)list.scrollTop=position+list.scrollHeight-height;
       else if(follow)list.scrollTop=list.scrollHeight;
       updateLatest();
@@ -157,8 +185,19 @@
         retryKeys.delete(sent.key);if(drafts.get(sent.key)===sent.text)drafts.delete(sent.key);
         attachments.set(sent.key,fileList(sent.key).filter(item=>!sent.files.includes(item)));for(const item of sent.files)if(item.preview)URL.revokeObjectURL(item.preview);
         if(identity(target)===sent.key&&draft.value===sent.text)draft.value='';
-      }
-      if(identity(target)===sent.key){sendStatus(message);if(ok)load();}paintFiles();
+        sendItem(sent,sent.native?'queued':'sent');
+      }else sendItem(sent,'failed',message);
+      if(identity(target)===sent.key){sendStatus(ok?'':message);if(ok)load();}paintFiles();
+    }
+    async function retrySend(sent){
+      if(pending||sent.state!=='failed'||!sent.native)return;
+      const destination=selection();if(identity(destination)!==sent.key)return;
+      pending=sent;insert.disabled=true;sent.state='sending';sent.detail='';paintFiles();sendStatus('');paint();
+      const sendKey=sent.sendKey;
+      try{
+        const response=await fetch('/api/hosts/'+encodeURIComponent(sent.host)+'/codex/reply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({thread:sent.thread,message:sent.payload,send_key:sendKey})});
+        const result=await response.json();complete(sent,response.ok&&result.status==='queued',response.ok&&result.status==='queued'?'Waiting for agent…':result.detail||'Could not confirm sending. Retry to check its status.');
+      }catch{complete(sent,false,'Could not confirm sending. Retry to check its status.');}
     }
     form.onsubmit=async event=>{
       event.preventDefault();const current=selection();if(!target||identity(current)!==identity(target)||!binding()||(!draft.value.trim()&&!fileList().length)||pending)return;
@@ -169,13 +208,18 @@
       const native=current.agent==='codex'&&/^[0-9a-f-]{36}$/.test(chat.thread||'');
       if(current.state==='working'&&!native&&current.agent!=='claude'){sendStatus('Still connecting to this conversation. Try sending again in a moment.');return;}
       if(new TextEncoder().encode(payload).length>(native?8192:16000)){sendStatus('This message is too long. Shorten it before sending.');return;}
+      const retry=native&&(outgoing.get(identity(target))||[]).find(item=>item.state==='failed'&&item.native&&sameMessage(item.payload,payload));
+      if(retry){retrySend(retry);return;}
       const key=identity(target),id='conversation-'+Array.from(crypto.getRandomValues(new Uint32Array(4)),n=>n.toString(16)).join('-');
-      const sent={id,key,frame:target.frame,text,files:[...selected],native};pending=sent;insert.disabled=true;paintFiles();sendStatus('Sending…');
+      const items=outgoing.get(key)||[],failedBridge=!native&&items.find(item=>item.state==='failed'&&!item.native&&sameMessage(item.payload,payload));
+      const sent={id,key,frame:target.frame,text,payload,files:[...selected],native,host:target.host,thread:chat.thread,baseline:failedBridge?failedBridge.baseline:startCursor+messages.length-1,sendKey:id,state:'sending'};
+      if(failedBridge)items[items.indexOf(failedBridge)]=sent;else items.push(sent);
+      outgoing.set(key,items);pending=sent;insert.disabled=true;paintFiles();sendStatus('');paint();
       if(native){
-        const prior=retryKeys.get(key),sendKey=prior?.payload===payload?prior.id:id;retryKeys.set(key,{payload,id:sendKey});
+        const prior=retryKeys.get(key),sendKey=prior?.payload===payload?prior.id:id;sent.sendKey=sendKey;retryKeys.set(key,{payload,id:sendKey});
         try{const response=await fetch('/api/hosts/'+encodeURIComponent(target.host)+'/codex/reply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({thread:chat.thread,message:payload,send_key:sendKey})});
-          const result=await response.json();complete(sent,response.ok&&result.status==='queued',response.ok&&result.status==='queued'?'Queued':result.detail||'Could not confirm delivery. Retry to check its status.');
-        }catch{complete(sent,false,'Could not confirm delivery. Retry to check its status.');}return;
+          sent.sendKey=sendKey;const result=await response.json();complete(sent,response.ok&&result.status==='queued',response.ok&&result.status==='queued'?'Waiting for agent…':result.detail||'Could not confirm sending. Retry to check its status.');
+        }catch{complete(sent,false,'Could not confirm sending. Retry to check its status.');}return;
       }
       // Agents without a native reply API need the visible terminal connection.
       // Attach only after leaving Conversation, then wait for the selected pane.
@@ -191,7 +235,7 @@
     };
     window.addEventListener('message',event=>{
       if(event.origin!==location.origin||!pending||pending.native||event.source!==pending.frame.contentWindow||event.data?.type!=='zellij-conversation-paste-result'||event.data.id!==pending.id)return;
-      complete(pending,event.data.ok,event.data.ok?'Sent':event.data.error||'Open the terminal and try again.');
+      complete(pending,event.data.ok,event.data.ok?'Waiting for agent…':event.data.error||'Open the terminal and try again.');
     });
     function update(){
       root.classList.toggle('conversation-open',open);
@@ -212,7 +256,7 @@
     }
     // Open at the latest messages; older history is fetched only on request.
     setInterval(()=>{if(open&&!document.hidden)load();},2000);
-    window.SwitchboardConversation.hasUnsentWork=()=>!!pending||!!draft.value||[...drafts.values()].some(Boolean)||[...attachments.values()].some(files=>files.length);
+    window.SwitchboardConversation.hasUnsentWork=()=>!!pending||[...outgoing.values()].some(items=>items.length)||!!draft.value||[...drafts.values()].some(Boolean)||[...attachments.values()].some(files=>files.length);
     window.SwitchboardConversation.wantsConversation=()=>open;window.SwitchboardConversation.update=update;window.SwitchboardConversation.isOpen=()=>open&&!panel.hidden;window.SwitchboardConversation.focus=focusSurface;window.SwitchboardConversation.showTerminal=()=>show(false);update();
   }};
 })();
