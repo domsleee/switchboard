@@ -175,6 +175,100 @@ let native, relay, browser, updateController, created=false;
   await focus(oldPane);
   assert.equal(fs.readFileSync(path.join(dir,'input.bin'),'utf8'),expected);
   console.log('PASS: repeated idle focus and real pane switches survive reconnect with typing sent only to the target');
+  if(!recoveryMode) {
+    const clientIds=()=>cli('-s',name,'action','list-clients').split('\n').map(line=>line.trim().split(/\s+/)[0]).filter(id=>/^\d+$/.test(id)).sort();
+    const originalClients=clientIds();
+    await send('\x1b[200~cancel-retirement');
+    await page.waitForFunction(()=>document.querySelector('#terminals>iframe.active').contentWindow.testPair.terminal.owner.pending.length===0);
+    await stop(relay);relay=null;
+    await page.waitForFunction(()=>!document.querySelector('#terminals>iframe.active').contentWindow.testPair.terminal.owner.connected);
+    await page.evaluate(()=>{window.cancelOwner=document.querySelector('#terminals>iframe.active').contentWindow.testPair.terminal.owner;document.querySelector('.conversation-toggle').click();});
+    await page.getByRole('button',{name:'Terminal',exact:true}).click();
+    await page.waitForFunction(()=>!document.querySelector('#terminals>iframe.active').inert);
+    await send('-finished\x1b[201~');
+    relay=start(['serve','--host-config',relayConfig,'--port',String(relayPort)],'relay');
+    await page.waitForFunction(()=>window.cancelOwner.stopped||window.cancelOwner.connected&&window.cancelOwner.pending.length===0);
+    assert.equal(await page.evaluate(()=>window.cancelOwner.stopped),false,'Canceling retirement preserves parser-buffered paste: '+JSON.stringify(await page.evaluate(()=>({pending:window.cancelOwner.pending,failure:document.querySelector('#terminals>iframe.active').contentWindow.__zjResumeFailure}))));
+    await waitFor(()=>fs.readFileSync(path.join(dir,'input.bin'),'utf8')===expected,'Canceled retirement paste completes on the same owner');
+    await send('\x1b[200~partial-retirement');
+    await page.waitForFunction(()=>document.querySelector('#terminals>iframe.active').contentWindow.testPair.terminal.owner.pending.length===0);
+    await assert.rejects(page.evaluate(()=>document.querySelector('#terminals>iframe.active').contentWindow.__zjSuspendTerminal()),/incomplete terminal sequence/);
+    assert.equal(await page.evaluate(()=>document.querySelector('#terminals>iframe.active').contentWindow.testPair.terminal.owner.stopped),false);
+    await page.evaluate(()=>{
+      const pair=document.querySelector('#terminals>iframe.active').contentWindow.testPair;
+      for(const payload of [
+        {type:'TerminalResize',rows:40,cols:100},
+        {type:'TerminalMetrics',cell_pixel_width:8,cell_pixel_height:16,text_area_pixel_width:800,text_area_pixel_height:640},
+        {type:'SetTabViewport',size:{cols:100,rows:40},tab_position:0,ownership:true}
+      ])pair.control.send(JSON.stringify({web_client_id:pair.control.owner.viewer,payload}));
+    });
+    await send('-finished\x1b[201~');
+    await waitFor(()=>fs.readFileSync(path.join(dir,'input.bin'),'utf8')===expected,'Refused retirement preserves partial paste for completion');
+    const largeContext=await browser.newContext({viewport:{width:1800,height:1000}}),nativeUrl=`http://127.0.0.1:${nativePort}`;
+    assert.equal((await largeContext.request.post(nativeUrl+'/command/login',{data:{auth_token:fs.readFileSync(tokenPath,'utf8'),remember_me:true}})).status(),200);
+    const large=await largeContext.newPage();
+    await large.addInitScript(()=>window.addEventListener('zellij-resumable-sockets',e=>window.testPair=e.detail));
+    await large.goto(nativeUrl+'/'+name);
+    await large.waitForFunction(()=>window.testPair?.terminal.readyState===1);
+    await large.evaluate(id=>{const pair=window.testPair;pair.control.send(JSON.stringify({web_client_id:pair.control.owner.viewer,payload:{type:'FocusPane',pane_id:id,is_plugin:false}}));},oldPane);
+    await large.waitForFunction(()=>window.testPair.terminal.owner.pending.length===0);
+    await page.setViewportSize({width:600,height:450});
+    const columns=()=>JSON.parse(cli('-s',name,'action','list-panes','--json','--all')).find(p=>p.id===oldPane&&!p.is_plugin).pane_columns;
+    await waitFor(()=>columns()<90,'Small viewer constrains terminal before suspension');
+    const smallColumns=columns();
+    await stop(relay);relay=null;
+    await page.waitForFunction(()=>!document.querySelector('#terminals>iframe.active').contentWindow.testPair.terminal.owner.connected);
+    await send('conversation|');
+    await page.evaluate(()=>{
+      const owner=document.querySelector('#terminals>iframe.active').contentWindow.testPair.terminal.owner;
+      window.retirementOwner=owner;window.lostRetirementReceipt=false;
+      const connect=owner.connect.bind(owner);
+      owner.connect=()=>{connect();const socket=owner.socket,handler=socket.onmessage;
+        socket.onmessage=event=>{if(JSON.parse(event.data).type==='retired'&&!window.lostRetirementReceipt){window.lostRetirementReceipt=true;owner.socket=null;owner.connected=false;clearInterval(owner.watchdog);socket.onmessage=null;socket.onclose=()=>{};socket.close();setTimeout(()=>owner.pauseRetirement(),50);}else handler(event);};};
+      document.querySelector('.conversation-toggle').click();
+    });
+    await sleep(300);
+    assert.notEqual(await page.locator('#terminals>iframe').first().getAttribute('src'),'about:blank','Buffered owner remains alive while relay is down');
+    assert.ok(await page.evaluate(()=>window.retirementOwner.pending.length>0));
+    relay=start(['serve','--host-config',relayConfig,'--port',String(relayPort)],'relay');
+    await page.waitForFunction(()=>window.lostRetirementReceipt);
+    await page.evaluate(()=>{
+      const frame=document.querySelector('#terminals>iframe');
+      frame.contentDocument.querySelector('.xterm-helper-textarea')?.focus();
+      [...document.querySelectorAll('button')].find(b=>b.textContent==='Terminal').click();
+    });
+    assert.equal(await page.locator('#terminals>iframe').first().evaluate(frame=>frame.inert),true,'Returning during retirement cannot expose a retired input owner');
+    await page.keyboard.type('MUST_NOT_REACH_TERMINAL');await sleep(150);
+    assert.equal(fs.readFileSync(path.join(dir,'input.bin'),'utf8'),expected,'An already-focused iframe cannot receive typing while retirement is unresolved');
+    await page.screenshot({path:path.join(dir,'retirement-pending.png')});
+    await page.evaluate(()=>document.querySelector('.conversation-toggle').click());
+    await sleep(12000);
+    await page.getByRole('button',{name:'Retry terminal connection',exact:true}).click();
+    await page.waitForFunction(()=>document.querySelector('#terminals>iframe')?.getAttribute('src')==='about:blank');
+    assert.equal(fs.readFileSync(path.join(dir,'input.bin'),'utf8'),expected,'Conversation drains queued typing exactly once');
+    assert.equal(await page.evaluate(()=>window.lostRetirementReceipt),true,'Lost retirement confirmation is recovered');
+    await waitFor(()=>originalClients.every(id=>!clientIds().includes(id)),'Retired native viewer is removed promptly');
+    await waitFor(()=>columns()>smallColumns+40,'Large viewer regains terminal dimensions after retirement');
+    await large.evaluate(()=>window.__zjSuspendTerminal());
+    for(let cycle=0;cycle<65;cycle++){
+      await large.reload();
+      await large.waitForFunction(()=>window.testPair?.terminal.readyState===1);
+      await large.evaluate(()=>window.__zjSuspendTerminal());
+    }
+    await large.reload();await large.waitForFunction(()=>window.testPair?.terminal.readyState===1);
+    await large.evaluate(()=>window.testPair.terminal.send('\x1b[200~unfinished'));
+    await large.waitForFunction(()=>window.testPair.terminal.owner.pending.length===0);
+    await large.evaluate(pane=>{const pair=window.testPair;pair.control.send(JSON.stringify({web_client_id:pair.control.owner.viewer,payload:{type:'FocusPane',pane_id:pane,is_plugin:false}}));pair.terminal.send('MUST_NOT_ROUTE');},otherPane);
+    await large.waitForFunction(()=>window.__zjResumeFailure);
+    assert.match(await large.evaluate(()=>window.__zjResumeFailure),/Incomplete terminal sequence/);
+    assert.equal(fs.readFileSync(path.join(otherDir,'input.bin'),'utf8'),'other|','Focus cannot reroute an unfinished paste');
+    await largeContext.close();
+    await page.setViewportSize({width:1200,height:800});
+    await page.getByRole('button',{name:'Terminal',exact:true}).click();
+    await page.waitForFunction(()=>document.querySelector('#terminals>iframe.active')?.contentWindow.testPair?.terminal.readyState===1);
+    await focus(oldPane);
+    console.log('PASS: Conversation preserves queued typing through relay downtime, recovers a lost retirement receipt, removes the old native viewer and restores terminal size');
+  }
   if(recoveryMode) {
     const resume=await page.evaluate(()=>{const o=document.querySelector('#terminals>iframe.active').contentWindow.testPair.terminal.owner;window.savedOwner=o;return {session:o.session,web_client_id:o.viewer,generation:o.generation,nonce:'revoked-recovery',applied:o.applied};});
     await stop(native);native=null;delete env.SWITCHBOARD_RECOVER_UNSHARED_SESSION;
