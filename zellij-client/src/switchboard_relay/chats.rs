@@ -786,6 +786,57 @@ fn markdown_events(source: &str) -> Vec<Value> {
     }).collect()
 }
 
+// The composer sends uploaded paths as a text suffix so terminal agents can
+// read them. Keep the raw text for delivery reconciliation, but display those
+// files as attachments in history too. Only recognize our upload directory.
+fn uploaded_attachments(text: &str) -> Option<(String, Vec<Value>)> {
+    let normalized = text.replace("\r\n", "\n");
+    let (body, files) = normalized
+        .rsplit_once("\n\nAttached files:\n")
+        .or_else(|| {
+            normalized
+                .strip_prefix("Attached files:\n")
+                .map(|files| ("", files))
+        })?;
+    let lines = files.lines().collect::<Vec<_>>();
+    if lines.is_empty() || lines.len() > 8 {
+        return None;
+    }
+    let mut attachments = Vec::new();
+    for path in lines {
+        if path.len() > 4096 || path.chars().any(char::is_control) {
+            return None;
+        }
+        let normalized = path.replace('\\', "/");
+        let absolute = normalized.starts_with('/')
+            || normalized.starts_with("~/")
+            || (normalized
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphabetic)
+                && normalized.as_bytes().get(1..3) == Some(b":/"));
+        let (directory, name) = normalized.rsplit_once('/')?;
+        let (root, id) = directory.rsplit_once('/')?;
+        if !absolute
+            || normalized.starts_with("//")
+            || !root.ends_with("/.local/share/switchboard/attachments")
+            || id.len() != 36
+            || uuid::Uuid::parse_str(id).is_err()
+            || matches!(name, "" | "." | "..")
+        {
+            return None;
+        }
+        let extension = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+        let kind = match extension.as_str() {
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "svg" => "image",
+            "mp4" | "webm" | "mov" | "m4v" => "video",
+            _ => "file",
+        };
+        attachments.push(json!({"kind":kind,"name":clip(name,120),"url":path}));
+    }
+    Some((body.into(), attachments))
+}
+
 fn read_page(chat: &Chat, p: &Params) -> Value {
     let mut result = chat.summary();
     let end = p
@@ -797,10 +848,36 @@ fn read_page(chat: &Chat, p: &Params) -> Value {
     } else {
         p.cursor.min(end)
     };
-    let page:Vec<_>=chat.messages[start..end].iter().take(p.limit()).map(|m| {
+    let mut page:Vec<_>=chat.messages[start..end].iter().take(p.limit()).map(|m| {
         let text=m["text"].as_str().unwrap_or_default();
         json!({"role":m["role"],"timestamp":m["timestamp"],"text":clip(text,4000),"truncated":text.chars().count()>4000,"phase":m["phase"],"attachments":m["attachments"],"markdown":markdown_events(&clip(text,4000))})
     }).collect();
+    for (message, source) in page.iter_mut().zip(&chat.messages[start..end]) {
+        if source["role"] == "user" {
+            if let Some((body, files)) = source["text"].as_str().and_then(uploaded_attachments) {
+                let mut attachments = message["attachments"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                for file in files {
+                    if attachments.len() < 8
+                        && !attachments.iter().any(|existing| {
+                            existing["url"]
+                                .as_str()
+                                .zip(file["url"].as_str())
+                                .is_some_and(|(one, two)| {
+                                    one.replace('\\', "/") == two.replace('\\', "/")
+                                })
+                        })
+                    {
+                        attachments.push(file);
+                    }
+                }
+                message["attachments"] = json!(attachments);
+                message["markdown"] = json!(markdown_events(&clip(&body, 4000)));
+            }
+        }
+    }
     let next = start.saturating_add(page.len());
     result["start_cursor"] = json!(start);
     result["message_count"] = json!(chat.messages.len());
@@ -1272,6 +1349,68 @@ pub(in crate::switchboard_relay) async fn gateway(request: Request) -> Response 
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn switchboard_chats_display_uploaded_files_without_changing_delivery_text() {
+        let windows = r"C:\Users\fixture\.local/share/switchboard/attachments\11111111-2222-4333-8444-555555555555\image.png";
+        let unix = "/home/fixture/.local/share/switchboard/attachments/11111111-2222-4333-8444-555555555555/notes.txt";
+        let text = format!("Check **this screenshot**.\n\nAttached files:\n{windows}\n{unix}");
+        let chat = Chat {
+            messages: vec![json!({"role":"user","text":text})],
+            ..Chat::default()
+        };
+        let page = read_page(&chat, &Params::default());
+        let message = &page["messages"][0];
+        assert_eq!(
+            message["text"], text,
+            "The outgoing receipt matches the original payload"
+        );
+        assert_eq!(
+            message["attachments"][0],
+            json!({"kind":"image","name":"image.png","url":windows})
+        );
+        assert_eq!(message["attachments"][1]["kind"], "file");
+        assert_eq!(
+            message["markdown"],
+            json!(markdown_events("Check **this screenshot**."))
+        );
+        let only = uploaded_attachments(&format!("\n\nAttached files:\n{windows}")).unwrap();
+        assert_eq!(only.0, "");
+        assert_eq!(only.1.len(), 1);
+        assert!(uploaded_attachments(&format!("Attached files:\r\n{windows}\r\n")).is_some());
+        let duplicate = Chat {
+            messages: vec![
+                json!({"role":"user","text":format!("Photo\n\nAttached files:\n{windows}"),"attachments":[{"kind":"image","name":"image.png","url":windows.replace('\\',"/")}]}),
+            ],
+            ..Chat::default()
+        };
+        assert_eq!(
+            read_page(&duplicate, &Params::default())["messages"][0]["attachments"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        for invalid in [
+            "/repo/image.png".into(),
+            windows.replace("11111111-2222-4333-8444-555555555555", "not-an-upload"),
+            format!("{windows}\nnot a file"),
+            std::iter::repeat_n(windows, 9)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ] {
+            assert!(
+                uploaded_attachments(&format!("Message\n\nAttached files:\n{invalid}")).is_none()
+            );
+        }
+        let assistant = Chat {
+            messages: vec![json!({"role":"assistant","text":text})],
+            ..Chat::default()
+        };
+        let message = &read_page(&assistant, &Params::default())["messages"][0];
+        assert!(message["attachments"].is_null());
+        assert!(message["markdown"].to_string().contains("Attached files:"));
+    }
 
     #[test]
     fn switchboard_chats_index_reads_beyond_file_and_message_limits() {
