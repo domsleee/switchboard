@@ -37,7 +37,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
         const input=document.querySelector('input');let count=${created},active=count;
         window.term={element:document.querySelector('#terminal'),options:{disableStdin:false},focus(){input.focus()},blur(){input.blur()},
           _core:{_renderService:{dimensions:{css:{cell:{width:8,height:16}}}}},buffer:{active:{viewportY:0,getLine:()=>({translateToString:()=>''})}},onRender(){},onResize(){}};
-        window.__zjSendControl=message=>{if(message.type==='NewTab'&&window.controlSocket.readyState===1){window.creationRequested=true;window.creationElevated=message.elevated;window.creationLaunch={project:message.project,prompt:message.prompt,images:message.images};}};
+        window.__zjSendControl=message=>{if(message.type==='NewTab'&&window.controlSocket.readyState===1){window.creationRequested=true;window.creationElevated=message.elevated;window.creationLaunch={project:message.project,command:message.command,prompt:message.prompt,images:message.images};}};
       </script><script src="/bridge.js"></script><script>
         const socket=window.controlSocket=new WebSocket('wss://switchboard.test/ws/control');
         function state(){const panes=Array.from({length:count+1},(_,i)=>({pane_id:i?8+i:7,is_plugin:false,tab_position:i,title:'~'}));socket.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'MobileState',payload:{session_name:'main',panes,active_pane:panes[active],tabs:panes.map((p,i)=>({position:i,name:i?'New shell '+i:'Original',active:i===active}))}})}));}
@@ -65,7 +65,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
       await page.locator('#new-tab-form button[type="submit"]').click();
       await page.waitForFunction(()=>document.querySelector('iframe.active')?.contentWindow.creationRequested);
       const input=page.frameLocator('iframe[title="Windows: main"]').locator('#terminal-input');
-      assert.deepEqual(await input.evaluate(()=>window.creationLaunch),{project:'switchboard',prompt:'',images:[]});
+      assert.deepEqual(await input.evaluate(()=>window.creationLaunch),{project:'switchboard',command:'csol',prompt:'',images:[]});
       await input.evaluate(()=>window.confirmCreation());
       await page.waitForFunction(()=>document.querySelector('#tabs .selected .tab-name')?.textContent==='New shell 1');
       assert.equal(frameBoots,1);
@@ -95,6 +95,8 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
       assert.equal(await page.locator('#new-tab-prompt').evaluate(input=>document.activeElement===input),true);
       assert.equal(await page.locator('#new-tab-prompt').inputValue(),'');
       assert.equal(await page.getByLabel('Prompt',{exact:true}).count(),1);
+      assert.deepEqual(await page.locator('#new-tab-form label').allTextContents(),['Computer','Project','Model','Prompt']);
+      assert.equal(await page.getByLabel('Model',{exact:true}).inputValue(),'csol','Sol is the default model');
       assert.equal(await page.locator('#new-tab-target option').count(),1,'One option per computer even with multiple sessions');
       assert.equal(await page.locator('#new-tab-target option').first().textContent(),'Windows');
       if(number===1)await page.evaluate(()=>sessions.delete(sessionKey('windows','other')));
@@ -116,6 +118,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
       }
       if(number===2){
         await page.locator('#new-tab-prompt').fill('Update this project');
+        await page.getByLabel('Model',{exact:true}).selectOption({label:'c'});
         await page.locator('#new-tab-project').fill('dot');
         await page.getByRole('option',{name:'dotfiles',exact:true}).waitFor();
         await page.keyboard.press('Tab');
@@ -135,7 +138,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
       await page.evaluate(()=>refreshAttention());
       assert.equal(await page.locator('#tabs .selected .tab-name').textContent(),'Creating tab…');
       assert.equal(await input.evaluate(()=>window.creationElevated),number===2);
-      assert.deepEqual(await input.evaluate(()=>window.creationLaunch),number===2?{project:'dotfiles',prompt:'Update this project',images:[]}:{project:'switchboard',prompt:'  Fix spaces, "quotes", $vars & symbols 🦀\nsecond line  \n\nAttached files:\nC:/User files/attachments/it\'s notes.txt',images:["C:/User files/attachments/it's screen shot.png","C:/User files/attachments/it's pasted.png"]});
+      assert.deepEqual(await input.evaluate(()=>window.creationLaunch),number===2?{project:'dotfiles',command:'c',prompt:'Update this project',images:[]}:{project:'switchboard',command:'csol',prompt:'  Fix spaces, "quotes", $vars & symbols 🦀\nsecond line  \n\nAttached files:\nC:/User files/attachments/it\'s notes.txt',images:["C:/User files/attachments/it's screen shot.png","C:/User files/attachments/it's pasted.png"]});
       if(number===1){
         assert.deepEqual(uploads.slice(-3).map(({path,name})=>({path,name})),['screen shot.png','pasted.png','notes.txt'].map(name=>({path:'/api/hosts/windows/attachments',name})));
         assert.deepEqual(uploads.at(-3).body,png);
@@ -217,12 +220,13 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
     assert.equal(await input.evaluate(i=>document.activeElement===i),true);
     // A deliberate move to search while creation waits must still win.
     await page.locator('#new-tab').click();
+    assert.equal(await page.getByLabel('Model',{exact:true}).inputValue(),'c','The dialog remembers the last model');
     await page.locator('#new-tab-prompt').fill('custom --flag');await page.keyboard.press('Tab');
     assert.equal(await page.locator('#new-tab-prompt').inputValue(),'custom --flag');
     assert.equal(await page.evaluate(()=>document.activeElement.textContent),'Attach files','Tab moves to attachments');
     await page.locator('#new-tab-prompt').focus();await page.keyboard.press('Enter');
     await page.waitForFunction(()=>document.querySelector('iframe.active')?.contentWindow.creationRequested);
-    assert.deepEqual(await input.evaluate(()=>window.creationLaunch),{project:'switchboard',prompt:'custom --flag',images:[]});
+    assert.deepEqual(await input.evaluate(()=>window.creationLaunch),{project:'switchboard',command:'c',prompt:'custom --flag',images:[]});
     await page.locator('#tab-search').click();
     await input.evaluate(()=>window.confirmCreation());
     await page.waitForFunction(()=>document.querySelector('#tabs .selected .tab-name')?.textContent==='New shell 3');

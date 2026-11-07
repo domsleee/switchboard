@@ -2,7 +2,7 @@
 use super::{
     authentication::IsReadOnly,
     types::AppState,
-    websocket_handlers::{prompt_command, tab_command},
+    websocket_handlers::{prompt_agent, prompt_command, tab_command},
 };
 use axum::{extract::State, http::StatusCode, Extension, Json};
 use serde::Deserialize;
@@ -37,7 +37,10 @@ fn valid(target: &Target) -> bool {
         && !target.project.trim().is_empty()
         && target.project.len() <= 4096
         && !target.project.contains('\0')
-        && (target.prompt.is_some() || !target.command.trim().is_empty())
+        && match target.prompt {
+            Some(_) => prompt_agent(&target.command).is_some(),
+            None => !target.command.trim().is_empty(),
+        }
         && target
             .prompt
             .as_ref()
@@ -199,7 +202,10 @@ pub(super) async fn create(
         .join(target.project.trim());
     let command = target
         .prompt
-        .map(|text| prompt_command(shell.clone(), &text, &target.images))
+        .map(|text| {
+            let agent = prompt_agent(&target.command).unwrap_or("csol");
+            prompt_command(shell.clone(), agent, &text, &target.images)
+        })
         .unwrap_or(target.command);
     let run = tab_command(shell, command, Some(cwd.clone()), target.elevated);
     let mut args: Vec<OsString> = vec![
@@ -287,6 +293,14 @@ mod tests {
         assert!(!valid(&target));
         target.command = "c".into();
         target.project = "".into();
+        assert!(!valid(&target));
+        target.project = "switchboard".into();
+        target.prompt = Some("go".into());
+        for agent in ["", "c", "castra", "csol"] {
+            target.command = agent.into();
+            assert!(valid(&target), "{agent}");
+        }
+        target.command = "bash".into();
         assert!(!valid(&target));
     }
 }
