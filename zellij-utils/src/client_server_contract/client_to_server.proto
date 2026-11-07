@@ -34,8 +34,11 @@ message ClientToServerMsg {
     HostTerminalFocusChangedMsg host_terminal_focus_changed = 27;
     SetTabViewportMsg set_tab_viewport = 28;
     SetViewerHiddenMsg set_viewer_hidden = 29;
+    RedrawMsg redraw = 30;
   }
 }
+
+message RedrawMsg {}
 
 message SetViewerHiddenMsg {
   bool hidden = 1;

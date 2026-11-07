@@ -873,6 +873,7 @@ pub enum ScreenInstruction {
         client_id: ClientId,
         hidden: bool,
     },
+    Redraw(ClientId),
     TogglePaneEmbedOrEjectForPaneId(PaneId),
     CloseTabWithIndex(usize),
     BreakPanesToNewTab {
@@ -1251,6 +1252,7 @@ impl From<&ScreenInstruction> for ScreenContext {
             },
             ScreenInstruction::SetTabViewport { .. } => ScreenContext::SetTabViewport,
             ScreenInstruction::SetViewerHidden { .. } => ScreenContext::SetViewerHidden,
+            ScreenInstruction::Redraw(..) => ScreenContext::Redraw,
             ScreenInstruction::TogglePaneEmbedOrEjectForPaneId(..) => {
                 ScreenContext::TogglePaneEmbedOrEjectForPaneId
             },
@@ -2413,6 +2415,21 @@ impl Screen {
             _ => {},
         }
         self.recompute_tab_size(tab_id)
+    }
+
+    /// Repaints every cell the client sees. Renders otherwise send only changed
+    /// lines, so a client that lost output never recovers from them alone.
+    pub fn force_render_for_client(&mut self, client_id: ClientId) {
+        if let Some(watcher_state) = self.watcher_clients.get_mut(&client_id) {
+            watcher_state.set_force_render();
+        }
+        if let Some(tab) = self
+            .active_tab_ids
+            .get(&client_id)
+            .and_then(|tab_id| self.tabs.get_mut(tab_id))
+        {
+            tab.set_force_render();
+        }
     }
 
     /// A hidden viewer gives up its tab's size, so the screens people can see decide it.
@@ -12177,6 +12194,10 @@ pub(crate) fn screen_thread_main(
                 screen.set_viewer_hidden(client_id, hidden)?;
                 screen.render(None)?;
                 screen.log_and_report_session_state()?;
+            },
+            ScreenInstruction::Redraw(client_id) => {
+                screen.force_render_for_client(client_id);
+                screen.render(None)?;
             },
             ScreenInstruction::TogglePaneEmbedOrEjectForPaneId(pane_id) => {
                 let all_tabs = screen.get_tabs_mut();

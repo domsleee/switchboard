@@ -264,6 +264,9 @@ pub enum ClientToServerMsg {
     SetViewerHidden {
         hidden: bool,
     },
+    /// Repaint this client's whole screen. A browser viewer sends it after
+    /// dropping output it could not hold. Older engines ignore it.
+    Redraw,
     HostTerminalFocusChanged {
         focused: bool,
     },

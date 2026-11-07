@@ -53,6 +53,14 @@ test('output is acknowledged only after xterm applies it, including duplicate re
  assert.equal(f.renders.length,1);assert.equal(f.client.applied,1);
  assert.ok(f.sockets[1].sent.some(x=>x.type==='ack'&&x.applied===1));
 });
+test('output may skip dropped terminal records only at a resync record',async()=>{
+ const f=fixture();const apply=async record=>{f.sockets[0].message({type:'output',record});await new Promise(r=>setImmediate(r));f.renders.at(-1)?.applied?.();await f.client.outputWork;};
+ await apply({seq:1,channel:'terminal',data:'a'});assert.equal(f.client.applied,1);
+ await apply({seq:9,channel:'terminal',data:'\x1b[0m',resync:true});
+ assert.equal(f.client.stopped,false);assert.equal(f.client.applied,9);
+ await apply({seq:10,channel:'terminal',data:'repaint'});assert.equal(f.client.applied,10);
+ await apply({seq:20,channel:'terminal',data:'gap'});assert.equal(f.client.stopped,true);
+});
 test('unicode paste splitting preserves every byte and has bounded records',()=>{
  const f=fixture();const data='\x1b[200~'+'😀'.repeat(20000)+'\x1b[201~';f.client.terminal.send(data);
  assert.equal(f.client.pending.map(x=>x.data).join(''),data);
