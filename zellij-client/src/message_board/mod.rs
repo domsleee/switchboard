@@ -123,6 +123,9 @@ struct Delivery {
     /// The recipient agent's last mail check. Absent for computers and older board hosts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     recipient_last_seen: Option<u64>,
+    /// When a hook handed the message to the agent. Absent before then and on older board hosts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    delivered_at: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

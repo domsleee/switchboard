@@ -60,6 +60,7 @@ test('agent hooks deliver and reply across machines, suppress duplicates, preser
     const delivered=await sync('claude');assert.ok(delivered.hookSpecificOutput.additionalContext.includes(question.id));assert.ok(delivered.hookSpecificOutput.additionalContext.includes('Check the logs'));
     assert.equal(await sync('claude'),null,'normal hooks do not inject the same mail repeatedly');
     let unread=await api('windows',`participants/${b.id}/unread`);assert.equal(unread.items[0].id,question.id);assert.equal(unread.items[0].deliveries[0].acknowledged_at,null);
+    assert.ok(unread.items[0].deliveries[0].delivered_at>0,'senders can see the hook handed the mail over');
     const answer=await api('windows','messages',{sender:b.id,send_key:'reply',body:'The terminal pipe closed',reply_to:question.id});
     const stopReply=await sync('codex','Stop');assert.equal(stopReply.decision,'block');assert.ok(stopReply.reason.includes(answer.id));
     await api('windows',`participants/${b.id}/ack/${question.id}`,{});
@@ -177,4 +178,41 @@ test('SessionEnd hands retirement to a watcher holding the session lock',
     assert.ok(emitted.stderr.includes(messages[19].id));
     assert.equal(retirements,before+1);
   }finally{release();await stop(watcher?.child);for(const child of children)await stop(child);await new Promise(resolve=>server.close(resolve));fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('a watcher whose agent exits without SessionEnd retires the identity and stops',
+  {skip:!binary&&'Set SWITCHBOARD_TEST_BINARY for the isolated executable check',timeout:60000},async()=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'switchboard-hook-orphan-'));
+  const session=crypto.randomUUID(),participant={id:crypto.randomUUID(),cursor:0,machine_id:'fixture',machine_name:'Fixture',name:'agent',project:'fixture',terminal:null,active:true,created_at:1};
+  let retirements=0,agent;
+  const server=http.createServer((req,res)=>{
+    req.resume();
+    let value={items:[],next_cursor:null};
+    if(req.url==='/api/agent-hook'){res.writeHead(204).end();return;}
+    if(req.url==='/api/message-board/participants')value=participant;
+    else if(req.url.endsWith('/retire')){retirements++;value={...participant,active:false};}
+    res.writeHead(200,{'Content-Type':'application/json'}).end(JSON.stringify(value));
+  });
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const origin='http://127.0.0.1:'+server.address().port,config=path.join(root,'client.json'),token=path.join(root,'token');
+  fs.writeFileSync(token,'f'.repeat(64));fs.writeFileSync(config,JSON.stringify({url:origin,token_file:token}));
+  const env={...process.env,SWITCHBOARD_BOARD_CONFIG:config,SWITCHBOARD_RELAY_URL:origin,SWITCHBOARD_MESSAGE_STATE_DIR:path.join(root,'state'),SWITCHBOARD_MESSAGE_PROJECT:'fixture',ZELLIJ_SESSION_NAME:'fixture',ZELLIJ_PANE_ID:'1'};
+  delete env.CLAUDECODE;
+  const event=name=>JSON.stringify({session_id:session,cwd:root,hook_event_name:name});
+  try{
+    assert.equal((await run(['agent-hook','--agent','codex'],env,event('SessionStart')).done).code,0);
+    // A stand-in agent starts the async watcher, then dies without a SessionEnd hook.
+    const pidFile=path.join(root,'watcher.pid');
+    const script=`const c=require('node:child_process').spawn(${JSON.stringify(path.resolve(binary))},['agent-hook','--agent','codex','--wait'],{stdio:['pipe','ignore','ignore']});c.stdin.end(${JSON.stringify(event('SessionStart'))});require('node:fs').writeFileSync(${JSON.stringify(pidFile)},String(c.pid));setInterval(()=>{},1000);`;
+    agent=spawn(process.execPath,['-e',script],{env,stdio:'ignore'});children.add(agent);
+    await waitFor(()=>fs.existsSync(pidFile),'stand-in agent starts its watcher');
+    const watcherPid=Number(fs.readFileSync(pidFile,'utf8'));
+    await sleep(2500);
+    assert.equal(retirements,0,'a live agent keeps its identity');
+    agent.kill('SIGKILL');
+    const exited=()=>{try{process.kill(watcherPid,0);return false;}catch{return true;}};
+    const until=Date.now()+20000;while(Date.now()<until&&!exited())await sleep(100);
+    assert.ok(exited(),'the watcher stops after its agent exits');
+    assert.equal(retirements,1,'the dead agent no longer receives broadcasts');
+  }finally{for(const child of children)await stop(child);await new Promise(resolve=>server.close(resolve));fs.rmSync(root,{recursive:true,force:true});}
 });

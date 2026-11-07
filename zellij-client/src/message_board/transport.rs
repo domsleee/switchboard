@@ -150,6 +150,10 @@ fn routes(state: BoardState) -> Router {
             post(machine_ack),
         )
         .route(
+            "/api/message-board/machines/{id}/delivered/{message}",
+            post(machine_delivered),
+        )
+        .route(
             "/api/message-board/health",
             get(|| async { Json(json!({"status":"ok","protocol":1})) }),
         )
@@ -164,6 +168,10 @@ fn routes(state: BoardState) -> Router {
         .route(
             "/api/message-board/participants/{id}/ack/{message}",
             post(ack),
+        )
+        .route(
+            "/api/message-board/participants/{id}/delivered/{message}",
+            post(delivered),
         )
         .layer(DefaultBodyLimit::max(MAX_BODY * 6 + 16 * 1024))
         .with_state(state)
@@ -271,6 +279,13 @@ async fn ack(
 ) -> Result<Json<Delivery>> {
     operation(move || state.store.ack(&machine, &id, &message)).await
 }
+async fn delivered(
+    State(state): State<BoardState>,
+    Extension(machine): Extension<Machine>,
+    Path((id, message)): Path<(String, String)>,
+) -> Result<Json<Delivery>> {
+    operation(move || state.store.delivered(&machine, &id, &message)).await
+}
 pub(super) async fn serve(config: HostConfig) -> anyhow::Result<()> {
     let app = router(&config)?;
     if let (Some(cert), Some(key)) = (config.tls_cert, config.tls_key) {
@@ -324,6 +339,14 @@ async fn machine_ack(
     Path((id, message)): Path<(String, String)>,
 ) -> Result<Json<Delivery>> {
     operation(move || state.store.machine_ack(&machine, &id, &message)).await
+}
+
+async fn machine_delivered(
+    State(state): State<BoardState>,
+    Extension(machine): Extension<Machine>,
+    Path((id, message)): Path<(String, String)>,
+) -> Result<Json<Delivery>> {
+    operation(move || state.store.machine_delivered(&machine, &id, &message)).await
 }
 
 /// Dispatch a request whose computer identity has already been authenticated by the relay mesh.

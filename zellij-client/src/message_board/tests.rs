@@ -186,6 +186,51 @@ fn message_board_multiline_reply_unread_and_ack_survive_restart_without_implicit
 }
 
 #[test]
+fn message_board_delivery_receipt_is_separate_from_acknowledgment() {
+    let (_dir, store) = fixture();
+    let a = register(&store, "mac", "backend");
+    let b = register(&store, "windows", "reviewer");
+    let sent = store
+        .send(&machine("mac"), request(&a, &b, "question"))
+        .unwrap();
+    assert!(sent.deliveries[0].delivered_at.is_none());
+    assert_eq!(
+        store
+            .delivered(&machine("mac"), &b.id, &sent.id)
+            .unwrap_err()
+            .0,
+        StatusCode::FORBIDDEN,
+        "Only the recipient's computer records delivery"
+    );
+    let first = store
+        .delivered(&machine("windows"), &b.id, &sent.id)
+        .unwrap();
+    assert!(first.delivered_at.is_some() && first.acknowledged_at.is_none());
+    assert_eq!(
+        store
+            .delivered(&machine("windows"), &b.id, &sent.id)
+            .unwrap()
+            .delivered_at,
+        first.delivered_at,
+        "The first delivery time is kept"
+    );
+    assert_eq!(
+        store
+            .unread(&machine("windows"), &b.id, page())
+            .unwrap()
+            .items
+            .len(),
+        1,
+        "Delivery does not acknowledge"
+    );
+    let thread = store.thread(&sent.thread_id, page()).unwrap();
+    assert_eq!(
+        thread.items[0].deliveries[0].delivered_at,
+        first.delivered_at
+    );
+}
+
+#[test]
 fn message_board_broadcast_snapshots_membership_and_acknowledges_each_recipient_separately() {
     let (_dir, store) = fixture();
     let a = register(&store, "mac", "sender");
@@ -491,6 +536,26 @@ fn message_board_computer_inbox_is_durable_independent_and_retry_safe() {
             .unwrap_err()
             .0,
         StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        store
+            .machine_delivered(&machine("mac"), "windows", &sent.id)
+            .unwrap_err()
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    let delivered = store
+        .machine_delivered(&machine("windows"), "windows", &sent.id)
+        .unwrap();
+    assert!(delivered.delivered_at.is_some() && delivered.acknowledged_at.is_none());
+    assert_eq!(
+        store
+            .inbox("windows", true, true, page())
+            .unwrap()
+            .items
+            .len(),
+        1,
+        "Delivery does not acknowledge computer mail"
     );
     let receiver = register(&store, "windows", "receiver");
     assert!(store

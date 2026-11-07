@@ -226,6 +226,66 @@ fn queue_program(program: &Path, session_id: &str, text: &str) -> anyhow::Result
     }
 }
 
+/// Records that the agent was handed this mail, so senders can tell it arrived.
+/// Older board hosts lack the route; delivery never depends on the receipt.
+fn mark_delivered(client: &Client, session: &Session, messages: &[(&Message, bool)]) {
+    for (message, computer) in messages {
+        let (kind, id) = if *computer {
+            ("machines", &session.participant.machine_id)
+        } else {
+            ("participants", &session.participant.id)
+        };
+        let _ = client.request(
+            "POST",
+            &format!(
+                "{kind}/{}/delivered/{}",
+                urlencoding::encode(id),
+                urlencoding::encode(&message.id)
+            ),
+            None,
+        );
+    }
+}
+
+/// The watcher's nearest ancestors: the agent itself, or a launcher (PowerShell on
+/// Windows) and the agent. An abrupt exit skips SessionEnd and leaves the watcher
+/// polling, which keeps the dead agent looking active to senders.
+fn ancestors() -> Vec<(sysinfo::Pid, u64)> {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+    let mut system = System::new();
+    system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+    let mut chain = vec![];
+    let mut next = sysinfo::get_current_pid()
+        .ok()
+        .and_then(|pid| system.process(pid))
+        .and_then(|process| process.parent());
+    while let Some(process) = next.and_then(|pid| system.process(pid)) {
+        if chain.len() == 2 || process.pid().as_u32() <= 1 {
+            break;
+        }
+        chain.push((process.pid(), process.start_time()));
+        next = process.parent();
+    }
+    chain
+}
+
+/// A reused PID has a different start time, so it does not count as alive.
+fn alive(chain: &[(sysinfo::Pid, u64)]) -> bool {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+    let pids: Vec<_> = chain.iter().map(|(pid, _)| *pid).collect();
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&pids),
+        true,
+        ProcessRefreshKind::nothing(),
+    );
+    chain.iter().all(|(pid, started)| {
+        system
+            .process(*pid)
+            .is_some_and(|process| process.start_time() == *started)
+    })
+}
+
 fn output(event: &str, context: &str, has_messages: bool) -> serde_json::Value {
     if event == "Stop" && has_messages {
         json!({"decision":"block","reason":context})
@@ -385,6 +445,7 @@ fn deliver(
             writeln!(stdout)?;
             stdout.flush()?;
         }
+        mark_delivered(client, &state, &messages);
     }
     if let Some(last) = own.items.last() {
         state.cursor = last.cursor;
@@ -476,6 +537,8 @@ pub(crate) fn run(agent: &str, input: &[u8], wait: bool) {
         None
     };
     let mut initializing = wait && event.hook_event_name == "SessionStart";
+    let owners = if wait { ancestors() } else { vec![] };
+    let mut polls = 0u32;
     loop {
         match deliver(&client, &dir, agent, &event, wait, &mut initializing) {
             Ok(Delivery::Ended) => return,
@@ -505,6 +568,17 @@ pub(crate) fn run(agent: &str, input: &[u8], wait: bool) {
             },
             _ => {},
         }
+        polls = polls.wrapping_add(1);
+        // Checked every 10 seconds: one process-table read is cheap but not free on Windows.
+        if polls.is_multiple_of(5) && !alive(&owners) {
+            let end = Event {
+                session_id: event.session_id.clone(),
+                cwd: event.cwd.clone(),
+                hook_event_name: "SessionEnd".into(),
+            };
+            let _ = deliver(&client, &dir, agent, &end, false, &mut false);
+            return;
+        }
         std::thread::sleep(POLL);
     }
 }
@@ -512,6 +586,35 @@ pub(crate) fn run(agent: &str, input: &[u8], wait: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn message_board_hook_watcher_notices_its_agent_exit() {
+        let mut child = std::process::Command::new(if cfg!(windows) { "cmd" } else { "sleep" })
+            .args(if cfg!(windows) {
+                vec!["/C", "ping -n 30 127.0.0.1 >NUL"]
+            } else {
+                vec!["30"]
+            })
+            .spawn()
+            .unwrap();
+        let pid = sysinfo::Pid::from_u32(child.id());
+        let mut system = sysinfo::System::new();
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[pid]),
+            true,
+            sysinfo::ProcessRefreshKind::nothing(),
+        );
+        let started = system.process(pid).unwrap().start_time();
+        assert!(alive(&[(pid, started)]));
+        assert!(
+            !alive(&[(pid, started + 1)]),
+            "a reused PID is not the agent"
+        );
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(!alive(&[(pid, started)]));
+        assert!(!ancestors().is_empty());
+    }
 
     #[cfg(windows)]
     #[test]

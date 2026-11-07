@@ -183,7 +183,9 @@
     article.append(body, ...media(message));
     const receipts = document.createElement('ul');
     for (const delivery of message.deliveries) {
-      const receipt = delivery.acknowledged_at == null ? 'Awaiting acknowledgment' : 'Acknowledged ' + date(delivery.acknowledged_at);
+      const receipt = delivery.acknowledged_at != null ? 'Acknowledged ' + date(delivery.acknowledged_at)
+        : delivery.delivered_at != null ? 'Delivered ' + date(delivery.delivered_at) + ', awaiting acknowledgment'
+        : 'Awaiting acknowledgment';
       receipts.append(text('li', `To ${delivery.machine_name} / ${delivery.name}${delivery.recipient_kind === 'computer' ? ' (computer)' : ''} · ${receipt}`, 'receipt'));
     }
     article.append(receipts);

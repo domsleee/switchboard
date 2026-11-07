@@ -70,6 +70,19 @@ impl Store {
         if !has_last_seen {
             conn.execute("ALTER TABLE participants ADD COLUMN last_seen INTEGER", [])?;
         }
+        for table in ["deliveries", "machine_deliveries"] {
+            let has_delivered = conn
+                .prepare(&format!(
+                    "SELECT 1 FROM pragma_table_info('{table}') WHERE name='delivered_at'"
+                ))?
+                .exists([])?;
+            if !has_delivered {
+                conn.execute(
+                    &format!("ALTER TABLE {table} ADD COLUMN delivered_at INTEGER"),
+                    [],
+                )?;
+            }
+        }
         Ok(store)
     }
 
@@ -164,13 +177,34 @@ impl Store {
         id: &str,
         message_id: &str,
     ) -> Result<Delivery> {
+        self.machine_stamp(machine, id, message_id, Stamp::Acknowledged)
+    }
+
+    /// Records that a hook handed this computer mail to an agent; it does not acknowledge it.
+    pub(super) fn machine_delivered(
+        &self,
+        machine: &Machine,
+        id: &str,
+        message_id: &str,
+    ) -> Result<Delivery> {
+        self.machine_stamp(machine, id, message_id, Stamp::Delivered)
+    }
+
+    fn machine_stamp(
+        &self,
+        machine: &Machine,
+        id: &str,
+        message_id: &str,
+        stamp: Stamp,
+    ) -> Result<Delivery> {
         if machine.id != id {
             return Err(BoardError::forbidden());
         }
         let mut conn = self.connection()?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let seq = message_seq(&tx, message_id)?;
-        if tx.execute("UPDATE machine_deliveries SET acknowledged_at=COALESCE(acknowledged_at,?1) WHERE message_seq=?2 AND recipient=?3", params![now(),seq,id])? == 0 { return Err(BoardError::forbidden()); }
+        let column = stamp.column();
+        if tx.execute(&format!("UPDATE machine_deliveries SET {column}=COALESCE({column},?1) WHERE message_seq=?2 AND recipient=?3"), params![now(),seq,id])? == 0 { return Err(BoardError::forbidden()); }
         let result = message(&tx, seq)?
             .deliveries
             .into_iter()
@@ -403,11 +437,32 @@ impl Store {
     }
 
     pub(super) fn ack(&self, machine: &Machine, id: &str, message_id: &str) -> Result<Delivery> {
+        self.stamp(machine, id, message_id, Stamp::Acknowledged)
+    }
+
+    /// Records that a hook handed this mail to the agent; it does not acknowledge it.
+    pub(super) fn delivered(
+        &self,
+        machine: &Machine,
+        id: &str,
+        message_id: &str,
+    ) -> Result<Delivery> {
+        self.stamp(machine, id, message_id, Stamp::Delivered)
+    }
+
+    fn stamp(
+        &self,
+        machine: &Machine,
+        id: &str,
+        message_id: &str,
+        stamp: Stamp,
+    ) -> Result<Delivery> {
         let mut conn = self.connection()?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         owned(&tx, machine, id)?;
         let seq = message_seq(&tx, message_id)?;
-        if tx.execute("UPDATE deliveries SET acknowledged_at=COALESCE(acknowledged_at,?1) WHERE message_seq=?2 AND recipient=?3",
+        let column = stamp.column();
+        if tx.execute(&format!("UPDATE deliveries SET {column}=COALESCE({column},?1) WHERE message_seq=?2 AND recipient=?3"),
             params![now(),seq,id])?==0 { return Err(BoardError::forbidden()); }
         let result = message(&tx, seq)?
             .deliveries
@@ -416,6 +471,21 @@ impl Store {
             .unwrap();
         tx.commit()?;
         Ok(result)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Stamp {
+    Acknowledged,
+    Delivered,
+}
+
+impl Stamp {
+    fn column(self) -> &'static str {
+        match self {
+            Stamp::Acknowledged => "acknowledged_at",
+            Stamp::Delivered => "delivered_at",
+        }
     }
 }
 
@@ -514,7 +584,7 @@ fn message(conn: &Connection, seq: u64) -> Result<Message> {
         FROM messages WHERE seq=?1", [seq], |r| Ok(Message { cursor:r.get(0)?,id:r.get(1)?,sender:r.get(2)?,sender_name:r.get(3)?,
             sender_machine_id:r.get(4)?,sender_machine_name:r.get(5)?,project:r.get(6)?,thread_id:r.get(7)?,reply_to:r.get(8)?,
             body:r.get(9)?,created_at:r.get(10)?,deliveries:vec![] })).optional()?.ok_or_else(BoardError::missing)?;
-    let mut query = conn.prepare("SELECT d.recipient,d.name,d.machine_id,d.machine_name,d.acknowledged_at,'agent',COALESCE(p.last_seen,p.created_at) FROM deliveries d JOIN participants p ON p.id=d.recipient WHERE d.message_seq=?1 UNION ALL SELECT recipient,name,machine_id,machine_name,acknowledged_at,'computer',NULL FROM machine_deliveries WHERE message_seq=?1 ORDER BY 1")?;
+    let mut query = conn.prepare("SELECT d.recipient,d.name,d.machine_id,d.machine_name,d.acknowledged_at,'agent',COALESCE(p.last_seen,p.created_at),d.delivered_at FROM deliveries d JOIN participants p ON p.id=d.recipient WHERE d.message_seq=?1 UNION ALL SELECT recipient,name,machine_id,machine_name,acknowledged_at,'computer',NULL,delivered_at FROM machine_deliveries WHERE message_seq=?1 ORDER BY 1")?;
     result.deliveries = query
         .query_map([seq], |r| {
             Ok(Delivery {
@@ -525,6 +595,7 @@ fn message(conn: &Connection, seq: u64) -> Result<Message> {
                 machine_name: r.get(3)?,
                 acknowledged_at: r.get(4)?,
                 recipient_last_seen: r.get(6)?,
+                delivered_at: r.get(7)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
