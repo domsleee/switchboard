@@ -6,7 +6,14 @@ test('conversation recovers from stalled reads, logs safe diagnostics and preser
  try{
   const page=await browser.newPage({viewport:{width:390,height:844},hasTouch:true,isMobile:true});page.setDefaultTimeout(5000);
   const errors=[];page.on('pageerror',e=>errors.push(e.message));await page.clock.install();
-  await page.addInitScript(()=>{window.polls=[];window.setInterval=fn=>polls.push(fn);});
+  await page.addInitScript(()=>{
+   window.polls=[];window.setInterval=fn=>polls.push(fn);
+   const Observer=ResizeObserver;
+   window.ResizeObserver=class extends Observer{constructor(callback){super((...args)=>{
+    const frame=requestAnimationFrame;window.requestAnimationFrame=fn=>{window.pendingResizeFrame=fn;return frame(fn);};
+    try{callback(...args);}finally{window.requestAnimationFrame=frame;}
+   });}};
+  });
   await page.route('http://loading.test/**',async route=>{
    const url=new URL(route.request().url());
    if(url.pathname==='/api/diagnostics/conversation'){diagnostics.push(route.request().postDataJSON());return route.fulfill({status:204});}
@@ -32,7 +39,12 @@ test('conversation recovers from stalled reads, logs safe diagnostics and preser
   assert.equal(await page.locator('.conversation-messages').evaluate(n=>n.scrollTop),position);
   await page.getByRole('button',{name:'Scroll to bottom',exact:true}).waitFor();assert.equal(await page.getByRole('button',{name:'Scroll to bottom',exact:true}).textContent(),'↓ New messages');
   if(process.env.CONVERSATION_SCROLL_SCREENSHOT)await page.screenshot({path:process.env.CONVERSATION_SCROLL_SCREENSHOT});
-  await page.getByRole('button',{name:'Scroll to bottom',exact:true}).click();await page.clock.runFor(30);assert.equal(await page.getByRole('button',{name:'Scroll to bottom',exact:true}).isVisible(),false);
+  // A resize queued before the click must not restore the old reading position
+  // before the browser delivers the programmatic scroll event.
+  await page.evaluate(()=>{document.querySelector('[aria-label="Scroll to bottom"]').click();pendingResizeFrame();});
+  await page.clock.runFor(30);
+  if(process.env.CONVERSATION_LATEST_SCREENSHOT)await page.screenshot({path:process.env.CONVERSATION_LATEST_SCREENSHOT,clip:{x:0,y:350,width:390,height:494}});
+  assert.equal(await page.getByRole('button',{name:'Scroll to bottom',exact:true}).isVisible(),false);
   partial=true;await poll();await page.getByText('An oversized history record was skipped. Later messages can still load.',{exact:true}).waitFor();
   assert.equal(diagnostics.at(-1).outcome,'partial');const count=diagnostics.length;await poll();assert.equal(diagnostics.length,count,'Repeated partial reads do not flood browser diagnostics');
   partial=false;mode='invalid';await poll();await page.getByText('The conversation response was incomplete. Retrying…',{exact:true}).waitFor();assert.equal(await page.locator('.conversation-message').count(),41,'Failed reads preserve visible history');
