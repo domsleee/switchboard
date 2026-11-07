@@ -21,6 +21,7 @@ mod output_diagnostics;
 pub(crate) mod peer_bridge;
 mod push;
 mod restart;
+mod shared_main;
 mod tasks;
 mod update_watch;
 use axum::{
@@ -1564,6 +1565,7 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
     let also =
         (port != DEFAULT_PORT).then(|| tokio::spawn(serve_also_on(state.clone(), DEFAULT_PORT)));
     let update_watch = tokio::spawn(update_watch::watch());
+    let shared_main = tokio::spawn(shared_main::keep(state.clone()));
     // Keystrokes and echoes are tiny writes; Nagle plus delayed ACK can hold each one back.
     let listener = axum::serve::ListenerExt::tap_io(listener, |stream| {
         let _ = stream.set_nodelay(true);
@@ -1581,6 +1583,7 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
     }
     update_tasks.abort();
     update_watch.abort();
+    shared_main.abort();
     tasks::stop_running().await;
     failures.abort();
     logs::save(&failures_file).await;
