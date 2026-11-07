@@ -1239,6 +1239,17 @@ async fn asset(request: Request) -> Response {
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
     match ASSETS.get_file(name) {
+        Some(file) if name == "index.html" => {
+            let html = file.contents_utf8().unwrap().replacen(
+                "<head>",
+                &format!(
+                    "<head><meta name=\"switchboard-build\" content=\"{}\">",
+                    env!("SWITCHBOARD_COMMIT")
+                ),
+                1,
+            );
+            ([(header::CONTENT_TYPE, mime)], html).into_response()
+        },
         Some(file) => ([(header::CONTENT_TYPE, mime)], file.contents()).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }
@@ -1798,6 +1809,19 @@ mod tests {
             .await;
             assert_eq!(response.status(), StatusCode::OK, "{path}");
             assert_eq!(response.headers()[header::CONTENT_TYPE], mime);
+        }
+    }
+
+    #[tokio::test]
+    async fn switchboard_relay_stamps_the_loaded_sidebar_build() {
+        for path in ["/", "/index.html"] {
+            let response = asset(Request::builder().uri(path).body(Body::empty()).unwrap()).await;
+            let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+            let html = String::from_utf8(body.to_vec()).unwrap();
+            assert!(html.contains(&format!(
+                "<meta name=\"switchboard-build\" content=\"{}\">",
+                env!("SWITCHBOARD_COMMIT")
+            )));
         }
     }
 
