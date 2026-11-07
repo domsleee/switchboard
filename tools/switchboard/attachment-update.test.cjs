@@ -142,7 +142,8 @@ let native, relay, browser, updateController, created=false;
     await waitFor(async()=> (await fetch(url)).ok,'Restart failed');
   }
   await send('after|');
-  await waitFor(()=>fs.readFileSync(path.join(dir,'input.bin'),'utf8')===expected,'Buffered input lost/duplicated: '+expected);
+  try {await waitFor(()=>fs.readFileSync(path.join(dir,'input.bin'),'utf8')===expected,'Buffered input lost/duplicated');}
+  catch(error){console.error('Fixture input bytes:',JSON.stringify({expected:Buffer.from(expected).toString('hex'),actual:fs.readFileSync(path.join(dir,'input.bin')).toString('hex')}));throw error;}
   assert.deepEqual((await(await fetch(url+'/api/health')).json()).attachment_workers,workers,'Worker survives');
   assert.deepEqual(identities(),before,'Panes survive');process.kill(fixturePid,0);
   assert.ok(await page.evaluate(()=>{const w=document.querySelector('#terminals>iframe.active').contentWindow;return w.term===window.savedTerm&&w.document===window.savedDocument;}),'Document and renderer survive');
