@@ -154,7 +154,15 @@
     // long transcript's earlier messages keep their objects and signatures.
     const signatures=new WeakMap();
     function signatureOf(item){let signature=signatures.get(item);if(signature===undefined){signature=JSON.stringify(item);signatures.set(item,signature);}return signature;}
-    function setupMessage(item){return item.role==='user'&&/^(?:# AGENTS\.md instructions|<environment_context>|<permissions instructions>|<skills_instructions>)/.test((item.text||'').trimStart());}
+    const uuid='[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}';
+    // The native queue stores generated mailbox wake-ups as ordinary user input.
+    // Match the generated envelope, not general discussion of Switchboard mail.
+    const mailboxNotice=new RegExp('^New Switchboard messages: '+uuid+'(?:, '+uuid+')*\\. Read them with `zellij message --agent-session '+uuid+' unread --json` and `zellij message unread --computer [0-9a-f]{64} --json`\\. Reply using this agent identity when an answer is needed, and explicitly acknowledge receipt\\.(?: |$)','i');
+    function internalMessage(item){
+      if(item.role!=='user')return false;
+      const text=(item.receipt_text??item.text??'').trimStart();
+      return /^(?:# AGENTS\.md instructions|<environment_context>|<permissions instructions>|<skills_instructions>)/.test(text)||mailboxNotice.test(text);
+    }
     function normalizeMessage(value){return String(value||'').replace(/\r\n/g,'\n');}
     function sameMessage(a,b){return normalizeMessage(a)===normalizeMessage(b);}
     function outgoingLabel(state){return state==='sending'?'Sending…':state==='queued'?'Queued':state==='sent'?'Sent':'Could not confirm sending';}
@@ -197,7 +205,7 @@
       older.hidden=true;
       let previous=older,previousRole=null,previousSpeaker=null;
       for(const [offset,item] of messages.entries()){
-        if(setupMessage(item))continue;
+        if(internalMessage(item))continue;
         const key=startCursor+offset,signature=snapshot.messages[offset],speaker=item.role==='user'?'You':providerLabel();keys.add(key);
         let entry=rendered.get(key);
         if(!entry||entry.signature!==signature){
