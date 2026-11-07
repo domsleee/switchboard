@@ -12,7 +12,9 @@ permissions:
 
 concurrency:
   group: e2e-${{ github.ref }}
-  cancel-in-progress: true
+  # A new push to a PR replaces its run. On main a newer merge replaces only the
+  # pending run: cancelling mid-run wasted runners and left main with no result.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   browser:
@@ -116,9 +118,11 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install isolated browser
+        # --with-deps installs Linux libraries; on Windows it only enables Media
+        # Foundation (about 3 minutes), which headless Chromium does not need.
         run: |
           npm install --prefix "$RUNNER_TEMP/resume-browser" playwright
-          "$RUNNER_TEMP/resume-browser/node_modules/.bin/playwright" install --with-deps chromium
+          "$RUNNER_TEMP/resume-browser/node_modules/.bin/playwright" install ${{ runner.os == 'Linux' && '--with-deps' || '' }} chromium
           echo "PLAYWRIGHT_MODULE=$RUNNER_TEMP/resume-browser/node_modules/playwright" >> "$GITHUB_ENV"
       - name: Check input and replay bounds
         run: |
