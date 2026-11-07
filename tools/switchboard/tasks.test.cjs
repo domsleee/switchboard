@@ -132,6 +132,9 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
         return json({ok:true},202);
       }
       if(path==='/api/hosts')return json([]);
+      // No attention changes in this fixture. Keep the long poll pending so a
+      // fabricated refresh cannot replace the update action's status message.
+      if(path==='/api/attention'&&new URL(request.url()).searchParams.has('after'))return;
       if(path==='/api/attention')return json({tabs:[],panes:[],errors:[]});
       if(path.startsWith('/api/'))return json({});
       const file=path==='/'?'index.html':path.slice(1);
