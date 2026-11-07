@@ -12,7 +12,7 @@ const dir = fs.mkdtempSync('/tmp/sbn-');
 const suffix = crypto.randomBytes(6).toString('hex');
 const names = ['off', 'disabled'].map(mode => `__switchboard_control_sharing_${mode}_${suffix}`);
 const configs = names.map((_, index) => path.join(dir, `${index}.kdl`));
-const env = {...process.env, ZELLIJ_SOCKET_DIR: path.join(dir, 'sockets'), TERM: 'xterm-256color'};
+const env = {...process.env, ZELLIJ_SOCKET_DIR: path.join(dir, 'sockets'), SWITCHBOARD_ATTACHMENT_DIRECTORY:path.join(dir,'attachments'), TERM: 'xterm-256color'};
 for (const key of ['ZELLIJ','ZELLIJ_SESSION_NAME','ZELLIJ_CONFIG_FILE','ZELLIJ_CONFIG_DIR','SWITCHBOARD_RECOVER_UNSHARED_SESSION']) delete env[key];
 const run = (index, ...args) => execFileSync(binary, ['--config', configs[index], ...args], {env, encoding:'utf8', timeout:15000, stdio:['ignore','pipe','pipe']});
 const action = (index, ...args) => run(index, '-s', names[index], 'action', ...args);
@@ -111,9 +111,10 @@ const created = [];
             assert.equal((await context.request.post(url+'/command/login',{data:{auth_token:token,remember_me:false}})).status(),200);
             const page=await context.newPage();page.setDefaultTimeout(30000);
             const sockets=[];
-            page.on('websocket',socket=>{if(/\/ws\/(terminal|control)/.test(socket.url()))sockets.push(socket);});
+            await page.addInitScript(()=>window.addEventListener('zellij-resumable-sockets',({detail})=>window.testPair=detail));
+            page.on('websocket',socket=>{if(/\/ws\/(terminal|control|resume)/.test(socket.url()))sockets.push(socket);});
             await page.goto(url+'/'+names[0]);
-            await waitFor(()=>['terminal','control'].every(type=>sockets.some(socket=>socket.url().includes('/ws/'+type)&&!socket.isClosed())),'Authenticated viewer did not attach both terminal and control');
+            await page.waitForFunction(()=>window.testPair?.terminal.readyState===1&&window.testPair?.control.readyState===1);
             await page.waitForFunction(()=>window.term?.buffer?.active);
             return {context,page,sockets};
         }
@@ -153,7 +154,6 @@ const created = [];
         action(0,'set-web-sharing','on');
         await waitFor(async()=>await allowed(0)===true,'Sharing could not reenable');
         writable=await viewer(authToken);watcher=await viewer(readOnlyToken);
-        await waitFor(()=>[writable,watcher].every(view=>['terminal','control'].every(type=>view.sockets.some(socket=>socket.url().includes('/ws/'+type)&&!socket.isClosed()))),'Browsers did not reattach after sharing was enabled');
         await browserCommand('WEB_REATTACHED_');
         await writable.context.close();await watcher.context.close();
         for (const enabled of ['on','off']) {
@@ -186,6 +186,7 @@ const created = [];
         for (const index of created) try {run(index,'kill-session',names[index]);} catch {}
         if (tokenName) try {run(0,'web','--revoke-token',tokenName);} catch {}
         if (readOnlyTokenName) try {run(0,'web','--revoke-token',readOnlyTokenName);} catch {}
+        for(const file of fs.existsSync(env.SWITCHBOARD_ATTACHMENT_DIRECTORY)?fs.readdirSync(env.SWITCHBOARD_ATTACHMENT_DIRECTORY):[])if(file.endsWith('.json'))try{process.kill(JSON.parse(fs.readFileSync(path.join(env.SWITCHBOARD_ATTACHMENT_DIRECTORY,file))).pid,'SIGTERM');}catch{}
         // CI uploads /tmp/sbn-*/*.log: keep a failed run's engine log beside the web logs.
         const engineLog = path.join(require('node:os').tmpdir(), `zellij-${process.getuid()}`, 'zellij-log', 'zellij.log');
         if (passed) fs.rmSync(dir,{recursive:true,force:true});
