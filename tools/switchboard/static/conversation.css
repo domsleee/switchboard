@@ -111,9 +111,10 @@
 @media(max-width:700px){.conversation-media-dialog{width:100vw;height:100dvh;border:0;border-radius:0}.conversation-media-dialog header{gap:8px;padding:8px}.conversation-media img,.conversation-media video{max-height:280px}}
 
 /* The phone keyboard changes the visual viewport, not necessarily 100dvh. */
-.conversation-compose{grid-template-columns:36px minmax(0,1fr) 40px;gap:8px}
+.conversation-compose{grid-template-columns:36px minmax(0,1fr) auto 40px;gap:8px}
 .conversation-compose textarea{grid-column:2;grid-row:auto;field-sizing:fixed;overflow-y:hidden}
-.conversation-compose>button[type=submit]{grid-column:3;grid-row:auto}
+.conversation-compose>button[type=submit]{grid-column:4;grid-row:auto}
+.conversation-compose .conversation-model{grid-column:3;align-self:center;max-width:14em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .conversation-compose .conversation-attach{grid-column:1;grid-row:auto;width:36px;height:40px;background:transparent;color:#a9bad7;font-size:28px;box-shadow:none}
 .conversation-compose .conversation-attach:hover{background:#303c50;color:#e2ecff}
 .conversation-compose .conversation-send-notice{grid-row:auto}
@@ -133,7 +134,7 @@
   body.conversation-open #sidebar-toggle{position:fixed;top:calc(var(--chat-top,0px) + 8px)}
   body.conversation-open .conversation-panel{position:fixed;top:var(--chat-top,0px);left:0;right:0;bottom:auto;height:var(--chat-height,100dvh)}
   body.conversation-open .conversation-modes{position:fixed;top:calc(var(--chat-top,0px) + 8px)}
-  .conversation-compose{grid-template-columns:44px minmax(0,1fr) 44px;padding:6px;margin-bottom:max(4px,env(safe-area-inset-bottom));gap:4px;border-radius:25px}
+  .conversation-compose{grid-template-columns:44px minmax(0,1fr) auto 44px;padding:6px;margin-bottom:max(4px,env(safe-area-inset-bottom));gap:4px;border-radius:25px}
   .conversation-compose .conversation-attach{width:44px;height:44px}
   .conversation-attachments{margin:4px 4px 0}
   .conversation-compose .conversation-send-notice{padding:0 10px 4px}

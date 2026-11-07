@@ -520,7 +520,9 @@ impl Chat {
                 if let Some(title) = v["customTitle"].as_str() {
                     self.title = clip(title, 120);
                 }
-                if matches!(v["type"].as_str(), Some("user" | "assistant")) {
+                // Meta records are Claude Code's own additions (skill bodies, an
+                // `[Image: source: …]` line per pasted image), not what the user typed.
+                if matches!(v["type"].as_str(), Some("user" | "assistant")) && v["isMeta"] != true {
                     self.push_parts(
                         v["type"].as_str().unwrap(),
                         &v["message"]["content"],
@@ -1745,6 +1747,8 @@ mod tests {
                 json!({"type":"user","sessionId":"c1","cwd":"/repo","message":{"content":"pairing question"}}),
                 json!({"type":"assistant","message":{"content":[{"type":"thinking","thinking":"secret reasoning"},{"type":"text","text":"answer"},{"type":"tool_use","input":{"text":"secret tool"}}]}}),
                 json!({"type":"user","message":{"content":[{"type":"tool_result","content":"secret result"}]}}),
+                // Claude Code 2.1.319 writes this after a pasted image, and skill bodies likewise.
+                json!({"type":"user","isMeta":true,"message":{"content":[{"type":"text","text":"[Image: source: /tmp/pasted.png]"}]}}),
             ],
         );
         assert_eq!(c.messages.len(), 2);
