@@ -57,7 +57,7 @@ test('outgoing replies stay visible through queue acknowledgement and reconcile 
   // A current relay types Claude replies itself; the terminal is never used.
   relay=409;await draft.fill('Relay reply');await send.click();
   await outgoing.getByText('Clear the terminal prompt before sending.',{exact:true}).waitFor();
-  relay=200;await send.click();await outgoing.getByText('Sent',{exact:true}).waitFor();
+  relay=200;await send.click();await outgoing.getByText('Queued',{exact:true}).waitFor();
   assert.equal(await page.evaluate(()=>pastes.length),2);
   assert.deepEqual(replies.at(-1),{pane_id:1,text:'Relay reply'});
   assert.equal(await draft.inputValue(),'');

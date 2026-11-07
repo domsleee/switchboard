@@ -145,7 +145,7 @@ test('integrated Conversation journeys use production markup and preserve delive
     await page.evaluate(()=>{window.leftConversation=false;new MutationObserver(()=>{if(!SwitchboardConversation.isOpen())leftConversation=true;}).observe(document.body,{subtree:true,attributes:true});});
     assert.equal(await page.locator('.conversation-transport-notice').isVisible(),false);
     await page.getByLabel('Reply draft').fill('Claude reply');await page.getByRole('button',{name:'Send',exact:true}).click();
-    await page.locator('.conversation-outgoing').getByText('Sent',{exact:true}).waitFor();
+    await page.locator('.conversation-outgoing').getByText('Queued',{exact:true}).waitFor();
     assert.deepEqual(f.claudeReplies,[{session:'main',tab_id:1,pane_id:1,text:'Claude reply'}]);
     assert.equal(await page.evaluate(()=>reviewPastes.length),0);
     assert.equal(await page.evaluate(()=>leftConversation||!SwitchboardConversation.isOpen()||![...sessions.values()].every(entry=>entry.suspended)),false);

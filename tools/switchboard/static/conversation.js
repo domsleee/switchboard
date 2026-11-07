@@ -275,7 +275,7 @@
     function returnToConversation(sent){if(sent.returnHere&&!open&&modeRevision===sent.modeRevision&&navigationRevision===sent.navigationRevision&&identity(selection())===sent.key)show(true,true);}
     function complete(sent,ok,message,uncertain=false){
       if(pendingFor(sent.key)!==sent)return;pendingSends.delete(sent.key);
-      if(ok){clearSentDraft(sent);sendItem(sent,sent.native?'queued':'sent');}
+      if(ok){clearSentDraft(sent);sendItem(sent,sent.native||sent.relay?'queued':'sent');}
       else sendItem(sent,uncertain?'uncertain':'failed',message);
       returnToConversation(sent);
       if(identity(target)===sent.key){sendStatus(ok?'':message,sent);if(ok)load();}paintFiles();
@@ -322,7 +322,7 @@
       if(current.agent==='claude'){
         try{
           const response=await fetch('/api/hosts/'+encodeURIComponent(sent.host)+'/conversation/reply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:current.session,tab_id:current.tab,pane_id:current.pane,text:payload}),signal:AbortSignal.timeout(20000)});
-          if(response.status!==404){complete(sent,response.ok,response.ok?'':(await response.text())||'Could not send the reply. Your draft is kept.');return;}
+          if(response.status!==404){sent.relay=true;complete(sent,response.ok,response.ok?'':(await response.text())||'Could not send the reply. Your draft is kept.');return;}
         }catch(error){const timeout=error.name==='TimeoutError';complete(sent,false,timeout?'No confirmation from the terminal. Check it before trying again; your draft is kept.':'Could not reach this computer. Your draft is kept.',timeout);return;}
       }
       // Agents without a native reply API need the visible terminal connection.

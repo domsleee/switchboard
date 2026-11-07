@@ -24,6 +24,8 @@ struct MessageOffset {
     item: usize,
     model: Option<String>,
     reasoning_effort: Option<String>,
+    assistant: bool,
+    commentary: bool,
 }
 struct HistoryIndex {
     path: PathBuf,
@@ -130,6 +132,12 @@ impl HistoryIndex {
                     record.record(&value, 0);
                     self.chat.embedded_bytes = 0;
                     self.chat.record(&value, 0);
+                    // Messages are drained per record, so mark the indexed one instead.
+                    if self.chat.used_tool && self.chat.messages.is_empty() {
+                        if let Some(last) = self.messages.last_mut().filter(|m| m.assistant) {
+                            last.commentary = true;
+                        }
+                    }
                     for message in self.chat.messages.drain(..) {
                         if let Some(item) = record
                             .messages
@@ -142,6 +150,8 @@ impl HistoryIndex {
                                 item,
                                 model: self.chat.model.clone(),
                                 reasoning_effort: self.chat.reasoning_effort.clone(),
+                                assistant: message["role"] == "assistant",
+                                commentary: false,
                             });
                             if !complete {
                                 self.provisional += 1;
@@ -206,6 +216,9 @@ impl HistoryIndex {
             record.record(&value, 0);
             if let Some(message) = record.messages.get(entry.item) {
                 let mut message = message.clone();
+                if entry.commentary {
+                    message["phase"] = json!("commentary");
+                }
                 for attachment in message["attachments"].as_array_mut().into_iter().flatten() {
                     if let Some(url) = attachment["url"]
                         .as_str()
@@ -305,6 +318,8 @@ struct Chat {
     partial_reasons: Vec<&'static str>,
     muse_deliveries: std::collections::HashSet<String>,
     embedded_bytes: usize,
+    /// The last Claude record called a tool, so the text before it was a progress note.
+    used_tool: bool,
 }
 fn clip(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
@@ -528,6 +543,21 @@ impl Chat {
                         &v["message"]["content"],
                         v["timestamp"].clone(),
                     );
+                }
+                // Claude marks no phase. Text followed by a tool call is a progress
+                // note, which Codex reports as commentary; the turn's last text is the answer.
+                self.used_tool = v["type"] == "assistant"
+                    && v["message"]["content"]
+                        .as_array()
+                        .is_some_and(|parts| parts.iter().any(|part| part["type"] == "tool_use"));
+                if self.used_tool {
+                    if let Some(last) = self
+                        .messages
+                        .last_mut()
+                        .filter(|message| message["role"] == "assistant")
+                    {
+                        last["phase"] = json!("commentary");
+                    }
                 }
             },
             "codex" => {
@@ -1625,6 +1655,53 @@ mod tests {
             "Newest reply"
         );
         assert_eq!(index.offset, offset);
+    }
+
+    #[test]
+    fn switchboard_chats_mark_claude_text_before_a_tool_call_as_commentary() {
+        let text =
+            |t: &str| json!({"type":"assistant","message":{"content":[{"type":"text","text":t}]}});
+        let tool =
+            json!({"type":"assistant","message":{"content":[{"type":"tool_use","input":{}}]}});
+        let records = vec![
+            json!({"type":"user","message":{"content":"question"}}),
+            tool.clone(),
+            text("Checking the logs."),
+            tool.clone(),
+            json!({"type":"user","message":{"content":[{"type":"tool_result","content":"out"}]}}),
+            text("Found it."),
+        ];
+        let phases = |messages: &Value| {
+            messages
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|m| m["phase"].as_str().unwrap_or("").to_owned())
+                .collect::<Vec<_>>()
+        };
+        let expected = ["", "commentary", ""];
+        let c = chat("claude", records.clone());
+        assert_eq!(phases(&json!(c.messages)), expected);
+        // The live index sees each record separately and must agree.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("live.jsonl");
+        let lines = |records: &[Value]| {
+            records
+                .iter()
+                .map(|r| r.to_string() + "\n")
+                .collect::<String>()
+        };
+        fs::write(&path, lines(&records[..3])).unwrap();
+        let mut index = HistoryIndex::new("claude", dir.path(), &path);
+        let params = Params {
+            tail: true,
+            limit: Some(50),
+            ..Params::default()
+        };
+        assert_eq!(phases(&index.page(&params).unwrap()["messages"]), ["", ""]);
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        write!(file, "{}", lines(&records[3..])).unwrap();
+        assert_eq!(phases(&index.page(&params).unwrap()["messages"]), expected);
     }
 
     #[test]
