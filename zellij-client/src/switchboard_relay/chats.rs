@@ -22,6 +22,8 @@ struct MessageOffset {
     start: u64,
     bytes: usize,
     item: usize,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
 }
 struct HistoryIndex {
     path: PathBuf,
@@ -121,6 +123,8 @@ impl HistoryIndex {
                     // providers whose envelopes contain several or deduplicated messages.
                     let mut record = Chat {
                         agent: self.chat.agent.clone(),
+                        model: self.chat.model.clone(),
+                        reasoning_effort: self.chat.reasoning_effort.clone(),
                         ..Chat::default()
                     };
                     record.record(&value, 0);
@@ -132,7 +136,13 @@ impl HistoryIndex {
                             .iter()
                             .position(|candidate| *candidate == message)
                         {
-                            self.messages.push(MessageOffset { start, bytes, item });
+                            self.messages.push(MessageOffset {
+                                start,
+                                bytes,
+                                item,
+                                model: self.chat.model.clone(),
+                                reasoning_effort: self.chat.reasoning_effort.clone(),
+                            });
                             if !complete {
                                 self.provisional += 1;
                             }
@@ -175,6 +185,8 @@ impl HistoryIndex {
             title: self.chat.title.clone(),
             session_id: self.chat.session_id.clone(),
             project: self.chat.project.clone(),
+            model: self.chat.model.clone(),
+            reasoning_effort: self.chat.reasoning_effort.clone(),
             partial: self.chat.partial,
             partial_reasons: self.chat.partial_reasons.clone(),
             ..Chat::default()
@@ -187,6 +199,8 @@ impl HistoryIndex {
             let value: Value = serde_json::from_slice(&bytes)?;
             let mut record = Chat {
                 agent: chat.agent.clone(),
+                model: entry.model.clone(),
+                reasoning_effort: entry.reasoning_effort.clone(),
                 ..Chat::default()
             };
             record.record(&value, 0);
@@ -284,6 +298,8 @@ struct Chat {
     agent: String,
     title: String,
     project: String,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
     messages: Vec<Value>,
     partial: bool,
     partial_reasons: Vec<&'static str>,
@@ -333,6 +349,15 @@ impl Chat {
         }
         self.messages
             .push(json!({"role":role,"text":text,"timestamp":timestamp}));
+        if role == "assistant" {
+            let message = self.messages.last_mut().unwrap();
+            if let Some(model) = &self.model {
+                message["model"] = json!(model);
+            }
+            if let Some(effort) = &self.reasoning_effort {
+                message["reasoning_effort"] = json!(effort);
+            }
+        }
     }
     // Only explicit user/assistant content parts, never tool output or reasoning.
     fn push_parts(&mut self, role: &str, parts: &Value, timestamp: Value) {
@@ -478,6 +503,14 @@ impl Chat {
         }
         match self.agent.as_str() {
             "claude" => {
+                if v["type"] == "assistant" {
+                    if let Some(model) = v["message"]["model"]
+                        .as_str()
+                        .filter(|model| !model.is_empty() && *model != "<synthetic>")
+                    {
+                        self.model = Some(clip(model, 128));
+                    }
+                }
                 if let Some(id) = v["sessionId"].as_str() {
                     self.session_id = id.into();
                 }
@@ -497,6 +530,17 @@ impl Chat {
             },
             "codex" => {
                 let p = &v["payload"];
+                if v["type"] == "turn_context" {
+                    self.model = p["model"]
+                        .as_str()
+                        .filter(|model| !model.is_empty())
+                        .map(|model| clip(model, 128));
+                    self.reasoning_effort = p["effort"]
+                        .as_str()
+                        .or_else(|| p["reasoning_effort"].as_str())
+                        .filter(|effort| !effort.is_empty())
+                        .map(|effort| clip(effort, 32));
+                }
                 if v["type"] == "session_meta" {
                     self.session_id = p["id"].as_str().unwrap_or_default().into();
                     self.project = p["cwd"].as_str().unwrap_or_default().into();
@@ -538,7 +582,8 @@ impl Chat {
     }
     fn summary(&self) -> Value {
         json!({"id":self.id,"session_id":clip(&self.session_id,256),"agent":self.agent,"title":self.title,
-            "project":clip(&self.project,4096),"timestamp":self.messages.last().map(|m| &m["timestamp"]),"partial":self.partial,"partial_reasons":self.partial_reasons})
+            "project":clip(&self.project,4096),"model":self.model,"reasoning_effort":self.reasoning_effort,
+            "timestamp":self.messages.last().map(|m| &m["timestamp"]),"partial":self.partial,"partial_reasons":self.partial_reasons})
     }
 }
 fn roots() -> Vec<(&'static str, PathBuf)> {
@@ -786,6 +831,57 @@ fn markdown_events(source: &str) -> Vec<Value> {
     }).collect()
 }
 
+// The composer sends uploaded paths as a text suffix so terminal agents can
+// read them. Keep the raw text for delivery reconciliation, but display those
+// files as attachments in history too. Only recognize our upload directory.
+fn uploaded_attachments(text: &str) -> Option<(String, Vec<Value>)> {
+    let normalized = text.replace("\r\n", "\n");
+    let (body, files) = normalized
+        .rsplit_once("\n\nAttached files:\n")
+        .or_else(|| {
+            normalized
+                .strip_prefix("Attached files:\n")
+                .map(|files| ("", files))
+        })?;
+    let lines = files.lines().collect::<Vec<_>>();
+    if lines.is_empty() || lines.len() > 8 {
+        return None;
+    }
+    let mut attachments = Vec::new();
+    for path in lines {
+        if path.len() > 4096 || path.chars().any(char::is_control) {
+            return None;
+        }
+        let normalized = path.replace('\\', "/");
+        let absolute = normalized.starts_with('/')
+            || normalized.starts_with("~/")
+            || (normalized
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphabetic)
+                && normalized.as_bytes().get(1..3) == Some(b":/"));
+        let (directory, name) = normalized.rsplit_once('/')?;
+        let (root, id) = directory.rsplit_once('/')?;
+        if !absolute
+            || normalized.starts_with("//")
+            || !root.ends_with("/.local/share/switchboard/attachments")
+            || id.len() != 36
+            || uuid::Uuid::parse_str(id).is_err()
+            || matches!(name, "" | "." | "..")
+        {
+            return None;
+        }
+        let extension = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+        let kind = match extension.as_str() {
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "svg" => "image",
+            "mp4" | "webm" | "mov" | "m4v" => "video",
+            _ => "file",
+        };
+        attachments.push(json!({"kind":kind,"name":clip(name,120),"url":path}));
+    }
+    Some((body.into(), attachments))
+}
+
 fn read_page(chat: &Chat, p: &Params) -> Value {
     let mut result = chat.summary();
     let end = p
@@ -797,10 +893,43 @@ fn read_page(chat: &Chat, p: &Params) -> Value {
     } else {
         p.cursor.min(end)
     };
-    let page:Vec<_>=chat.messages[start..end].iter().take(p.limit()).map(|m| {
+    let mut page:Vec<_>=chat.messages[start..end].iter().take(p.limit()).map(|m| {
         let text=m["text"].as_str().unwrap_or_default();
-        json!({"role":m["role"],"timestamp":m["timestamp"],"text":clip(text,4000),"truncated":text.chars().count()>4000,"phase":m["phase"],"attachments":m["attachments"],"markdown":markdown_events(&clip(text,4000))})
+        json!({"role":m["role"],"timestamp":m["timestamp"],"text":clip(text,4000),"truncated":text.chars().count()>4000,"phase":m["phase"],"model":m["model"],"reasoning_effort":m["reasoning_effort"],"attachments":m["attachments"],"markdown":markdown_events(&clip(text,4000))})
     }).collect();
+    for (message, source) in page.iter_mut().zip(&chat.messages[start..end]) {
+        if source["role"] == "user" {
+            // Display stays clipped; receipt matching must cover every message
+            // accepted by the composer, including an attached-file suffix.
+            if message["truncated"] == true {
+                if let Some(text) = source["text"].as_str().filter(|text| text.len() <= 16_000) {
+                    message["receipt_text"] = json!(text);
+                }
+            }
+            if let Some((body, files)) = source["text"].as_str().and_then(uploaded_attachments) {
+                let mut attachments = message["attachments"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                for file in files {
+                    if attachments.len() < 8
+                        && !attachments.iter().any(|existing| {
+                            existing["url"]
+                                .as_str()
+                                .zip(file["url"].as_str())
+                                .is_some_and(|(one, two)| {
+                                    one.replace('\\', "/") == two.replace('\\', "/")
+                                })
+                        })
+                    {
+                        attachments.push(file);
+                    }
+                }
+                message["attachments"] = json!(attachments);
+                message["markdown"] = json!(markdown_events(&clip(&body, 4000)));
+            }
+        }
+    }
     let next = start.saturating_add(page.len());
     result["start_cursor"] = json!(start);
     result["message_count"] = json!(chat.messages.len());
@@ -1272,6 +1401,169 @@ pub(in crate::switchboard_relay) async fn gateway(request: Request) -> Response 
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn switchboard_chats_long_composer_messages_have_bounded_receipts() {
+        let upload = "/home/fixture/.local/share/switchboard/attachments/11111111-2222-4333-8444-555555555555/photo.png";
+        let text = format!("{}\n\nAttached files:\n{upload}", "a".repeat(4500));
+        let chat = Chat {
+            messages: vec![
+                json!({"role":"user","text":text}),
+                json!({"role":"assistant","text":"a".repeat(4500)}),
+                json!({"role":"user","text":"a".repeat(16001)}),
+            ],
+            ..Chat::default()
+        };
+        let page = read_page(
+            &chat,
+            &Params {
+                limit: Some(3),
+                ..Params::default()
+            },
+        );
+        assert_eq!(
+            page["messages"][0]["text"]
+                .as_str()
+                .unwrap()
+                .chars()
+                .count(),
+            4000
+        );
+        assert_eq!(page["messages"][0]["receipt_text"], text);
+        assert_eq!(page["messages"][0]["attachments"][0]["name"], "photo.png");
+        assert!(page["messages"][1].get("receipt_text").is_none());
+        assert!(page["messages"][2].get("receipt_text").is_none());
+    }
+
+    #[test]
+    fn switchboard_chats_keep_model_and_effort_with_each_turn_and_live_page() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("models.jsonl");
+        let context = |model: &str, effort: Value| json!({"type":"turn_context","payload":{"model":model,"effort":effort}});
+        let reply = |text: &str| json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":text}]}});
+        let records = [
+            context("gpt-6.1-sol", json!("medium")),
+            reply("First answer"),
+            context("gpt-6-astra", json!("high")),
+            reply("Second answer"),
+        ];
+        fs::write(
+            &path,
+            records
+                .iter()
+                .map(|record| format!("{record}\n"))
+                .collect::<String>(),
+        )
+        .unwrap();
+        let mut index = HistoryIndex::new("codex", dir.path(), &path);
+        let params = Params {
+            tail: true,
+            limit: Some(1),
+            ..Params::default()
+        };
+        let latest = index.page(&params).unwrap();
+        assert_eq!(latest["model"], "gpt-6-astra");
+        assert_eq!(latest["reasoning_effort"], "high");
+        assert_eq!(latest["messages"][0]["model"], "gpt-6-astra");
+        assert_eq!(latest["messages"][0]["reasoning_effort"], "high");
+        let older = index
+            .page(&Params {
+                before: Some(1),
+                ..params.clone()
+            })
+            .unwrap();
+        assert_eq!(
+            older["model"], "gpt-6-astra",
+            "Reading old history must not change the current model"
+        );
+        assert_eq!(older["messages"][0]["model"], "gpt-6.1-sol");
+        assert_eq!(older["messages"][0]["reasoning_effort"], "medium");
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, "{}", context("gpt-6.1-sol", Value::Null)).unwrap();
+        let changed = index.page(&params).unwrap();
+        assert_eq!(changed["model"], "gpt-6.1-sol");
+        assert!(
+            changed["reasoning_effort"].is_null(),
+            "Do not reuse an effort that was not reported for the new turn"
+        );
+        assert_eq!(changed["messages"][0]["model"], "gpt-6-astra");
+        assert_eq!(changed["messages"][0]["reasoning_effort"], "high");
+        drop(file);
+        fs::write(&path, format!("{}\n", reply("Replaced history"))).unwrap();
+        let replaced = index.page(&params).unwrap();
+        assert!(replaced["model"].is_null());
+        assert!(replaced["messages"][0]["model"].is_null());
+        let mut claude = Chat {
+            agent: "claude".into(),
+            ..Chat::default()
+        };
+        claude.record(&json!({"type":"assistant","message":{"model":"claude-opus-4-6","content":"Claude reply"}}), 0);
+        assert_eq!(claude.summary()["model"], "claude-opus-4-6");
+        assert_eq!(claude.messages[0]["model"], "claude-opus-4-6");
+        assert!(claude.summary()["reasoning_effort"].is_null());
+    }
+
+    #[test]
+    fn switchboard_chats_display_uploaded_files_without_changing_delivery_text() {
+        let windows = r"C:\Users\fixture\.local/share/switchboard/attachments\11111111-2222-4333-8444-555555555555\image.png";
+        let unix = "/home/fixture/.local/share/switchboard/attachments/11111111-2222-4333-8444-555555555555/notes.txt";
+        let text = format!("Check **this screenshot**.\n\nAttached files:\n{windows}\n{unix}");
+        let chat = Chat {
+            messages: vec![json!({"role":"user","text":text})],
+            ..Chat::default()
+        };
+        let page = read_page(&chat, &Params::default());
+        let message = &page["messages"][0];
+        assert_eq!(
+            message["text"], text,
+            "The outgoing receipt matches the original payload"
+        );
+        assert_eq!(
+            message["attachments"][0],
+            json!({"kind":"image","name":"image.png","url":windows})
+        );
+        assert_eq!(message["attachments"][1]["kind"], "file");
+        assert_eq!(
+            message["markdown"],
+            json!(markdown_events("Check **this screenshot**."))
+        );
+        let only = uploaded_attachments(&format!("\n\nAttached files:\n{windows}")).unwrap();
+        assert_eq!(only.0, "");
+        assert_eq!(only.1.len(), 1);
+        assert!(uploaded_attachments(&format!("Attached files:\r\n{windows}\r\n")).is_some());
+        let duplicate = Chat {
+            messages: vec![
+                json!({"role":"user","text":format!("Photo\n\nAttached files:\n{windows}"),"attachments":[{"kind":"image","name":"image.png","url":windows.replace('\\',"/")}]}),
+            ],
+            ..Chat::default()
+        };
+        assert_eq!(
+            read_page(&duplicate, &Params::default())["messages"][0]["attachments"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        for invalid in [
+            "/repo/image.png".into(),
+            windows.replace("11111111-2222-4333-8444-555555555555", "not-an-upload"),
+            format!("{windows}\nnot a file"),
+            std::iter::repeat_n(windows, 9)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ] {
+            assert!(
+                uploaded_attachments(&format!("Message\n\nAttached files:\n{invalid}")).is_none()
+            );
+        }
+        let assistant = Chat {
+            messages: vec![json!({"role":"assistant","text":text})],
+            ..Chat::default()
+        };
+        let message = &read_page(&assistant, &Params::default())["messages"][0];
+        assert!(message["attachments"].is_null());
+        assert!(message["markdown"].to_string().contains("Attached files:"));
+    }
 
     #[test]
     fn switchboard_chats_index_reads_beyond_file_and_message_limits() {

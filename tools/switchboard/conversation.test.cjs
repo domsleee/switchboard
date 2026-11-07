@@ -54,7 +54,7 @@ test('current conversation opens directly, stays pane-local, and follows a new c
  await page.evaluate(()=>{current={...current,chatId:null};SwitchboardConversation.update();});
  assert.equal(await page.locator('.conversation-message').count(),0);
  assert.equal(await page.getByLabel('Reply draft').isVisible(),false);
- assert.match(await page.locator('.conversation-notice').textContent(),/not reported/);
+ assert.match(await page.locator('.conversation-notice').textContent(),/Connecting/);
  // Shell-only tabs have a plain empty state; startup and an unreported agent
  // remain distinct even when the pane/chat identity has not changed.
  await page.evaluate(()=>{current={...current,agent:null};SwitchboardConversation.update();});
@@ -63,7 +63,7 @@ test('current conversation opens directly, stays pane-local, and follows a new c
  await page.evaluate(()=>{current={...current,starting:true};SwitchboardConversation.update();});
  assert.equal(await page.locator('.conversation-notice').textContent(),'Starting agent…');
  await page.evaluate(()=>{current={...current,starting:false,agent:'codex'};SwitchboardConversation.update();});
- assert.match(await page.locator('.conversation-notice').textContent(),/not reported/);
+ assert.match(await page.locator('.conversation-notice').textContent(),/Connecting/);
  // A hook arriving later connects the open panel automatically.
  await page.evaluate(()=>{current={...current,chatId:'codex-one'};SwitchboardConversation.update();});
  await page.locator('.conversation-message').first().waitFor();assert.equal(queries,0);
@@ -115,12 +115,12 @@ test('phone chat opens the latest page, hides setup, and preserves messages and 
   await page.waitForFunction(()=>!document.querySelector('[aria-label="Refresh"]').disabled);
   assert.equal(requests.at(-1).cursor,'502');assert.equal(payloads.at(-1).length,1);
   assert.equal(await page.getByText(/Session instructions|Internal setup|Internal environment|Enter to send/).count(),0);
-  assert.equal(await page.getByText('Working…',{exact:true}).isVisible(),true);
+  assert.equal(await page.locator('.conversation-working').isVisible(),true);
   assert.ok(await page.evaluate(()=>{const n=document.querySelector('.conversation-messages');return n.scrollHeight-n.scrollTop-n.clientHeight<3;}));
   await page.getByLabel('Reply draft').fill('A mobile draft');await page.getByLabel('Reply draft').press('Enter');
   assert.equal(await page.getByLabel('Reply draft').inputValue(),'A mobile draft\n');
   const bounds=await page.locator('.conversation-compose').boundingBox();assert.ok(bounds.height<130);
-  await page.evaluate(()=>{window.savedMessage=document.querySelector('.conversation-message:last-child');document.querySelector('.conversation-messages').scrollTop=100;window.savedTop=document.querySelector('.conversation-messages').scrollTop;});
+  await page.evaluate(()=>{window.savedMessage=[...document.querySelectorAll('.conversation-message')].at(-1);document.querySelector('.conversation-messages').scrollTop=100;window.savedTop=document.querySelector('.conversation-messages').scrollTop;});
   history.push({role:'assistant',text:'The result is ready.'});
   await page.evaluate(()=>intervals.forEach(fn=>fn()));await page.getByText('The result is ready.',{exact:true}).waitFor({state:'attached'});
   assert.equal(await page.evaluate(()=>savedMessage.isConnected),true);
@@ -136,7 +136,7 @@ test('phone chat opens the latest page, hides setup, and preserves messages and 
   await page.getByRole('button',{name:'Scroll to bottom',exact:true}).click();
   assert.ok(await page.evaluate(()=>{const n=document.querySelector('.conversation-messages');return n.scrollHeight-n.scrollTop-n.clientHeight<3;}));
   await page.evaluate(()=>{current.state='ready';SwitchboardConversation.update();});
-  assert.equal(await page.locator('.conversation-activity').textContent(),'codex');
+  assert.equal(await page.locator('.conversation-activity').textContent(),'Ready');assert.equal(await page.locator('.conversation-model').textContent(),'Codex');
   assert.equal(await page.getByRole('button',{name:/Load.*messages/}).count(),0);
   // A burst larger than one page still catches up without skipping messages.
   const beforeBurst=requests.length;

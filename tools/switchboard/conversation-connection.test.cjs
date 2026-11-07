@@ -32,7 +32,7 @@ test('Conversation never attaches a terminal, including initial mobile load and 
     return route.fulfill({contentType:'text/html',body:`<script>
       let active=${JSON.stringify(pane(1))};
       const state=id=>parent.postMessage({type:'zellij-state',focus_id:id,payload:{session_name:'main',active_pane:active,panes:${JSON.stringify([pane(1),pane(2),pane(3)])}}},location.origin);
-      addEventListener('message',event=>{if(event.data.type==='zellij-focus'){active=${JSON.stringify([pane(1),pane(2),pane(3)])}.find(p=>p.pane_id===event.data.pane_id);state(event.data.focus_id);}else if(event.data.type==='zellij-new-tab'){window.newTab=event.data;}else if(event.data.type==='zellij-conversation-paste'){window.sent=event.data;parent.postMessage({type:'zellij-conversation-paste-result',id:event.data.id,ok:true},location.origin);}});window.selectThird=()=>{active=${JSON.stringify(pane(3))};state();};state();
+      addEventListener('message',event=>{if(event.data.type==='zellij-focus'){active=${JSON.stringify([pane(1),pane(2),pane(3)])}.find(p=>p.pane_id===event.data.pane_id);state(event.data.focus_id);}else if(event.data.type==='zellij-new-tab'){window.newTab=event.data;}else if(event.data.type==='zellij-conversation-paste'){(parent.bridgePastes??=[]).push(event.data);parent.postMessage({type:'zellij-conversation-paste-result',id:event.data.id,ok:true},location.origin);}});window.selectThird=()=>{active=${JSON.stringify(pane(3))};state();};state();
      </script>`});
    }
    if(p.startsWith('/api/'))return json({});
@@ -55,7 +55,7 @@ test('Conversation never attaches a terminal, including initial mobile load and 
   assert.deepEqual(connections,[],'Mobile Conversation must not load a terminal page at all');
   assert.equal(await page.locator('iframe[title="Ubuntu: main"]').getAttribute('src'),'about:blank');
   await page.getByLabel('Reply draft').fill('Hello without resizing');await page.getByRole('button',{name:'Send',exact:true}).click();
-  await page.waitForFunction(()=>document.querySelector('.conversation-outgoing.queued')?.textContent.includes('Waiting for agent…'));
+  await page.waitForFunction(()=>document.querySelector('.conversation-outgoing.queued')?.textContent.includes('Queued'));
   assert.equal(replies[0].message,'Hello without resizing');assert.deepEqual(connections,[]);
   await page.evaluate(()=>activate(allTabs().find(t=>t.tab.id===2)));
   await page.waitForFunction(()=>JSON.parse(localStorage.getItem('switchboard-attention-seen')||'{}')['["local","main",2]']==='result-2');
@@ -86,7 +86,7 @@ test('Conversation never attaches a terminal, including initial mobile load and 
   await page.getByRole('button',{name:'Conversation',exact:true}).click();
   await page.waitForFunction(()=>[...sessions.values()].every(e=>e.suspended&&e.frame.getAttribute('src')==='about:blank'&&!e.state));
   await page.getByLabel('Reply draft').fill('Reply to the focused split pane');
-  await page.getByRole('button',{name:'Send',exact:true}).click();await page.getByText('Waiting for agent…',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'Send',exact:true}).click();await page.getByText('Queued',{exact:true}).waitFor();
   assert.equal(replies.at(-1).thread,thread.slice(0,-1)+'3','Suspension must preserve the second pane in a split tab');
   await page.getByRole('button',{name:'Terminal',exact:true}).click();
   await page.waitForFunction(()=>[...sessions.values()][0].state?.active_pane?.pane_id===3);
@@ -95,10 +95,11 @@ test('Conversation never attaches a terminal, including initial mobile load and 
   await page.getByText('Ready for a reply',{exact:true}).waitFor();
   assert.equal(connections.length,2,'Saved Conversation also avoids attaching at desktop widths');
   native=false;await page.reload();await page.getByText('Ready for a reply',{exact:true}).waitFor();
-  await page.getByLabel('Reply draft').fill('Fallback reply');await page.getByRole('button',{name:'Send',exact:true}).click();
-  await page.waitForFunction(()=>[...sessions.values()].some(e=>e.frame.contentWindow.sent?.text==='Fallback reply'));
-  assert.equal(await page.getByRole('button',{name:'Terminal',exact:true}).getAttribute('aria-pressed'),'true');
-  assert.equal(await page.evaluate(()=>[...sessions.values()][0].frame.contentWindow.sent.pane_id),2);
+  await page.getByLabel('Reply draft').fill('Fallback reply');await page.getByRole('button',{name:'Send via Terminal',exact:true}).click();
+  await page.waitForFunction(()=>window.bridgePastes?.some(sent=>sent.text==='Fallback reply'));
+  await page.waitForFunction(()=>SwitchboardConversation.isOpen()&&[...sessions.values()].every(e=>e.suspended));
+  assert.equal(await page.getByRole('button',{name:'Conversation',exact:true}).getAttribute('aria-pressed'),'true');
+  assert.equal(await page.evaluate(()=>bridgePastes[0].pane_id),2);
   assert.equal(connections.length,3,'Fallback sending attaches only after switching to Terminal');
   await page.getByRole('button',{name:'Conversation',exact:true}).click();
   await page.locator('#new-tab').click();await page.locator('#new-tab-dialog').waitFor({state:'visible'});
