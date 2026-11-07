@@ -9,7 +9,7 @@
       }
     });
   }
-  window.SwitchboardConversation={install({selection,terminal,modeChanged=()=>{}}){
+  window.SwitchboardConversation={install({selection,terminal,modeChanged=()=>{},viewed=()=>{}}){
     const root=document.getElementById('terminals'),drafts=new Map(),attachments=new Map(),retryKeys=new Map();
     const mobile=matchMedia('(max-width:700px), (pointer:coarse) and (max-width:1000px)').matches;
     const modeKey=mobile?'switchboard-mobile-view-mode':'switchboard-view-mode';
@@ -149,6 +149,9 @@
       else if(prepend){messages=page.concat(messages);startCursor=start;}
       else{if(start<startCursor){messages=page;startCursor=start;}else messages=messages.slice(0,Math.max(0,start-startCursor)).concat(page);tailCursor=start+Math.max(0,page.length-1);nextCursor=data.next_cursor??null;}
       loaded=true;refresh.hidden=true;if(open)paint(prepend,initial);
+      // Conversation has no terminal focus acknowledgement. Review only output
+      // that has loaded and is visible at the end of the selected transcript.
+      if(open&&!panel.hidden&&!document.hidden&&document.hasFocus()&&nextCursor===null&&nearBottom())viewed(target);
     }
     async function load(kind='poll'){
       if(!target||!binding()||loading||(!open&&kind!=='initial'))return;if(!loaded)kind='initial';const version=generation,chat=binding(),started=performance.now(),request=new AbortController();loadRequest=request;let timedOut=false,catchUp=false;busy(true);const timeout=setTimeout(()=>{timedOut=true;request.abort();},15000);
@@ -287,6 +290,7 @@
     // Open at the latest messages; older history is fetched only on request.
     setInterval(()=>{if(open&&!document.hidden){prepare();if(!streamReady)load();}},2000);
     document.addEventListener('visibilitychange',()=>{if(document.hidden)stopStream();else if(open){load();startStream();}});
+    window.addEventListener('focus',()=>{if(open&&!document.hidden)load();});
     window.addEventListener('pagehide',()=>{stopStream();loadRequest?.abort();});
     window.SwitchboardConversation.hasUnsentWork=()=>!!pending||[...outgoing.values()].some(items=>items.length)||!!draft.value||[...drafts.values()].some(Boolean)||[...attachments.values()].some(files=>files.length);
     window.SwitchboardConversation.wantsConversation=()=>open;window.SwitchboardConversation.update=update;window.SwitchboardConversation.isOpen=()=>open&&!panel.hidden;window.SwitchboardConversation.focus=focusSurface;window.SwitchboardConversation.showTerminal=()=>show(false);update();

@@ -89,6 +89,27 @@ test('attention acknowledgment never moves tabs; search, filters, hiding and cro
 
 });
 
+test('conversation review only acknowledges the visible selected chat pane',()=>{
+  const reviews=[],item={key:'selected',entry:{host:'mac',name:'main'},tab:{panes:[{pane_id:7,is_plugin:false},{pane_id:8,is_plugin:false}]}},view={host:'mac',session:'main',pane:7,chatId:'chat-seven'};
+  let focused=true,open=true,dialog=false,artifact=false,renders=0;
+  const context={selected:item.key,allTabs:()=>[item],SwitchboardConversation:{isOpen:()=>open},
+    document:{hidden:false,hasFocus:()=>focused,querySelector:()=>dialog?{}:null},$:()=>({hidden:!artifact}),
+    paneAttention:new Map([['mac/main/7',{chat_id:'chat-seven'}]]),attentionKey:(host,session,pane)=>`${host}/${session}/${pane}`,
+    acknowledgeAttention:(target,pane)=>{reviews.push([target.key,pane]);return true;},render:()=>renders++};
+  vm.createContext(context);
+  vm.runInContext(source.slice(source.indexOf('function acknowledgeConversation('),source.indexOf('function isReady(')),context);
+  context.acknowledgeConversation(view);
+  assert.deepEqual(reviews,[['selected',7]]);assert.equal(renders,1);
+  for(const change of [{host:'other'},{session:'other'},{pane:9},{chatId:'replaced'},{chatId:null}])context.acknowledgeConversation({...view,...change});
+  context.selected='other';context.acknowledgeConversation(view);context.selected=item.key;
+  context.document.hidden=true;context.acknowledgeConversation(view);context.document.hidden=false;
+  focused=false;context.acknowledgeConversation(view);focused=true;
+  open=false;context.acknowledgeConversation(view);open=true;
+  dialog=true;context.acknowledgeConversation(view);dialog=false;
+  artifact=true;context.acknowledgeConversation(view);
+  assert.equal(reviews.length,1,'Hidden, unfocused, covered and superseded chats stay unread');
+});
+
 test('Flag for review targets the menu tab without changing saved order or selection',()=>{
   const button={},stored={};
   const originalOrder=['win:1','mac:0','mac:1'];
