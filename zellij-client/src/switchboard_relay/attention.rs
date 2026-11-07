@@ -647,7 +647,7 @@ impl PollState {
             let key = json!([host, row["session"], row["pane_id"]]).to_string();
             let mut previous = self.observed.get(&key).cloned().unwrap_or(Value::Null);
             let created = row.as_object_mut().unwrap().remove("created");
-            let mut recreated = false;
+            let mut recreated = None;
             // A recreated session reuses pane IDs; its panes are new panes. Saved
             // state from before session times were recorded counts as stale too.
             if let Some(created) = created.as_ref().and_then(Value::as_u64) {
@@ -657,7 +657,7 @@ impl PollState {
                         .is_none_or(|before| before.abs_diff(created) > 60)
                 {
                     previous = Value::Null;
-                    recreated = true;
+                    recreated = Some(created);
                 }
             }
             // What the screen alone said, and the hook that may override it, for the change log.
@@ -678,8 +678,8 @@ impl PollState {
             // Only local scans list commands, so only local panes take hooks and runs.
             let mut waiting_on_run = false;
             if let Some(command) = row.as_object_mut().unwrap().remove("command") {
-                if recreated {
-                    self.forget_hook(row);
+                if let Some(created) = recreated {
+                    self.forget_hook(row, created);
                 }
                 self.apply_hook(row, &command);
                 // After apply_hook, which drops a hook from an agent the pane no longer runs.
@@ -844,9 +844,19 @@ impl PollState {
         self.interactive.contains_key(&(session.to_owned(), pane))
     }
     /// A recreated session reuses pane IDs: an old hook status is not its agent's.
-    fn forget_hook(&mut self, row: &Value) {
+    /// A new pane matching a pane ID saved from an older session looks recreated on
+    /// every scan until its screen is read, so a hook sent since the session started
+    /// (a new agent's SessionStart) stays.
+    fn forget_hook(&mut self, row: &Value, created: u64) {
         if let (Some(session), Some(pane)) = (row["session"].as_str(), row["pane_id"].as_u64()) {
             let key = (session.to_owned(), pane);
+            if self
+                .hooks
+                .get(&key)
+                .is_some_and(|hooked| hooked.at.saturating_add(60) >= created)
+            {
+                return;
+            }
             self.stop_shells.remove(&key);
             self.dirty |= self.hooks.remove(&key).is_some();
         }
@@ -977,7 +987,7 @@ impl PollState {
             .hooks
             .iter()
             .map(|((session, pane), h)| {
-                json!([session, pane, h.agent, h.state, h.token, h.chat_id, h.restart])
+                json!([session, pane, h.agent, h.state, h.token, h.chat_id, h.restart, h.at])
             })
             .collect();
         saved.insert("hooks".into(), json!(hooks));
@@ -1018,6 +1028,7 @@ impl PollState {
                     token,
                     chat_id: row[5].as_str().map(str::to_owned),
                     restart: serde_json::from_value(row[6].clone()).ok(),
+                    at: row[7].as_u64().unwrap_or(0),
                 },
             );
         }
@@ -1248,6 +1259,8 @@ struct Hooked {
     token: Option<String>,
     chat_id: Option<String>,
     restart: Option<super::restart::Identity>,
+    // When this agent first reported for the pane, in Unix seconds.
+    at: u64,
 }
 
 /// IDs of the background shells a Stop event lists as still running.
@@ -1310,6 +1323,7 @@ fn hook_status(agent: &'static str, event: &Value) -> Option<Hooked> {
         token,
         chat_id: super::chats::hook_chat_id(agent, event),
         restart: None,
+        at: unix_seconds(),
     })
 }
 
@@ -1343,11 +1357,14 @@ pub(super) async fn hook(
     // events cannot install a stale state.
     let mut poll = state.poll.lock().await;
     if let Some(hook) = &mut next {
-        hook.restart = poll
+        if let Some(old) = poll
             .hooks
             .get(&key)
             .filter(|old| old.chat_id == hook.chat_id && old.agent == agent)
-            .and_then(|old| old.restart.clone());
+        {
+            hook.restart = old.restart.clone();
+            hook.at = old.at;
+        }
         // Claude resumes the turn when a background shell exits. One started this turn
         // is a wait (CI, a build, a review); one already running at the previous Stop is
         // left behind, like a dev server, and does not hold the tab open.
@@ -2339,6 +2356,50 @@ esac
     }
 
     #[test]
+    fn new_claude_tab_at_its_empty_prompt_is_ready() {
+        // Claude Code 2.1.319 on Windows, a new tab before its first prompt (dump-screen).
+        let rule = "─".repeat(80);
+        let screen = format!(
+            " ▐▛███▛█   Claude Code v2.1.319\n▝▜██████▀  Opus 5.5 with high effort · Claude Max\n ▝▝   ▝▝   ~\\git\\switchboard\n{rule}\n❯ Try \"fix lint errors\"\n{rule}\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 1 agent"
+        );
+        for pane in [
+            json!({"pane_command":"claude.exe --dangerously-skip-permissions","title":"✳ Claude Code"}),
+            json!({"title":"Claude Code"}),
+        ] {
+            assert_eq!(classify(&pane, &screen)["state"], "ready", "{pane}");
+            assert_eq!(classify(&pane, &screen)["token"], "idle");
+        }
+    }
+
+    #[test]
+    fn new_claude_pane_keeps_its_startup_hook_over_an_older_sessions_pane_id() {
+        let root = std::env::var_os("CLAUDE_CONFIG_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::home_dir().unwrap().join(".claude"));
+        let event = json!({"hook_event_name":"SessionStart","source":"startup",
+            "session_id":"1da2fbc0-43c6-4808-beec-63e446ce3d50",
+            "transcript_path":root.join("projects/test/1da2fbc0-43c6-4808-beec-63e446ce3d50.jsonl")});
+        let hooked = hook_status("claude", &event).unwrap();
+        let id = hooked.chat_id.clone().unwrap();
+        let created = unix_seconds() - 3600;
+        let mut poll = PollState::default();
+        // Pane 17 of a session closed long ago; the new session reuses the ID.
+        poll.observed.insert(
+            json!(["windows", "main", 17]).to_string(),
+            json!({"created":created - 86400,"generation":4,"state":"ready","token":"old"}),
+        );
+        poll.hooks.insert(("main".into(), 17), hooked);
+        // Live screens can lag the pane, so the new agent's screen still reads unknown.
+        for _ in 0..2 {
+            let mut snapshot = json!({"panes":[{"session":"main","pane_id":17,"state":"unknown","agent":"claude",
+                "command":"claude.exe --dangerously-skip-permissions","created":created}],"tabs":[],"errors":[]});
+            poll.update("windows", &mut snapshot);
+            assert_eq!(snapshot["panes"][0]["state"], "ready");
+            assert_eq!(snapshot["panes"][0]["chat_id"], id);
+        }
+    }
+
+    #[test]
     fn claude_idle_prompt_is_ready_with_a_persistent_background_shell() {
         let pane = json!({"pane_command":"claude.exe --dangerously-skip-permissions","title":"✳ Example task"});
         // Claude Code 2.1.301, sanitized from an idle pane with a dev server still running.
@@ -2735,6 +2796,7 @@ esac
             token: token.map(str::to_owned),
             chat_id: None,
             restart: None,
+            at: 0,
         };
         let mut poll = PollState::default();
         poll.hooks

@@ -4,7 +4,7 @@ use axum::extract::Query;
 use serde::Serialize;
 use std::{
     fs,
-    io::{BufRead, BufReader, Read, Seek, SeekFrom},
+    io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom},
     path::PathBuf,
     sync::{LazyLock, Mutex as SyncMutex},
 };
@@ -60,7 +60,13 @@ impl HistoryIndex {
         }
     }
     fn update(&mut self) -> std::io::Result<()> {
-        let mut file = fs::File::open(&self.path)?;
+        let mut file = match fs::File::open(&self.path) {
+            // Claude writes a new session's transcript with its first message.
+            Err(error) if error.kind() == ErrorKind::NotFound && self.observed.is_none() => {
+                return Ok(())
+            },
+            file => file?,
+        };
         let metadata = file.metadata()?;
         let stamp = (metadata.len(), metadata.modified()?);
         if self.observed == Some(stamp) {
@@ -203,8 +209,12 @@ impl HistoryIndex {
             partial_reasons: self.chat.partial_reasons.clone(),
             ..Chat::default()
         };
-        let mut file = fs::File::open(&self.path)?;
+        let mut opened = None;
         for entry in self.messages[start..end].iter().take(p.limit()) {
+            let file = match &mut opened {
+                Some(file) => file,
+                None => opened.insert(fs::File::open(&self.path)?),
+            };
             file.seek(SeekFrom::Start(entry.start))?;
             let mut bytes = vec![0; entry.bytes];
             file.read_exact(&mut bytes)?;
@@ -1174,12 +1184,18 @@ fn local(roots: Vec<(&str, PathBuf)>, p: &Params, id: Option<&str>) -> Value {
         id.and_then(|id| TRANSCRIPTS.lock().unwrap().get(id).cloned())
     {
         // A hook-provided path must obey the same no-symlinks rule as discovery.
+        // It may not exist yet: a new Claude session has no transcript until its first message.
         if p.agent.as_ref().is_none_or(|a| *a == agent)
             && roots.iter().any(|(a, r)| *a == agent && *r == root)
             && path
                 .ancestors()
                 .take_while(|path| *path != root)
-                .all(|path| fs::symlink_metadata(path).is_ok_and(|m| !m.file_type().is_symlink()))
+                .all(|path| {
+                    fs::symlink_metadata(path).map_or_else(
+                        |error| error.kind() == ErrorKind::NotFound,
+                        |m| !m.file_type().is_symlink(),
+                    )
+                })
         {
             return indexed_page(&agent, &root, &path, p);
         }
@@ -2207,6 +2223,30 @@ mod tests {
         }
         c
     }
+    #[test]
+    fn switchboard_chat_hook_transcript_reads_empty_until_the_first_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let path = root.join("-repo/1da2fbc0-43c6-4808-beec-63e446ce3d50.jsonl");
+        let id = file_id("claude", &root, &path);
+        TRANSCRIPTS
+            .lock()
+            .unwrap()
+            .insert(id.clone(), ("claude".into(), root.clone(), path.clone()));
+        let p = Params {
+            tail: true,
+            ..Params::default()
+        };
+        let empty = local(vec![("claude", root.clone())], &p, Some(&id));
+        assert!(empty.get("error").is_none(), "{empty}");
+        assert_eq!(empty["messages"], json!([]));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let record = json!({"type":"user","message":{"role":"user","content":"Fix the sidebar"}});
+        fs::write(&path, format!("{record}\n")).unwrap();
+        let first = local(vec![("claude", root)], &p, Some(&id));
+        assert_eq!(first["messages"].as_array().unwrap().len(), 1, "{first}");
+    }
+
     #[test]
     fn switchboard_chat_hook_uses_exact_transcript_without_search() {
         for (agent, root, file) in [
