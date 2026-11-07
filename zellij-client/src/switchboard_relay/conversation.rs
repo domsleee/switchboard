@@ -470,9 +470,16 @@ esac
         assert!(!actions.exists());
         std::fs::write(&screen, CLAUDE_IDLE).unwrap();
         assert_eq!(reply_local(&host, reply("-v")).await.unwrap().0["ok"], true);
+        // cmd's echo writes CRLF; compare the recorded actions, not their line endings.
         assert_eq!(
-            std::fs::read_to_string(&actions).unwrap().trim(),
-            "-s fixture action paste -p 7 -- -v\n-s fixture action write -p 7 13"
+            std::fs::read_to_string(&actions)
+                .unwrap()
+                .lines()
+                .collect::<Vec<_>>(),
+            [
+                "-s fixture action paste -p 7 -- -v",
+                "-s fixture action write -p 7 13"
+            ]
         );
         server.abort();
     }
