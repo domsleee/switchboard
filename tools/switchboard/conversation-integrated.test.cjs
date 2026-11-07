@@ -213,10 +213,14 @@ test('integrated Conversation journeys use production markup and preserve delive
     await draft.fill('First task');await page.getByRole('button',{name:'Send',exact:true}).click();
     await page.locator('.conversation-outgoing').getByText('Queued',{exact:true}).waitFor();
     assert.deepEqual(f.claudeReplies,[{session:'main',tab_id:1,pane_id:1,text:'First task'}]);assert.equal(await page.evaluate(()=>reviewPastes.length),0);
-    f.state='working';await f.refresh();
+    // Still reading ready afterwards, the pane keeps the timer the first message started.
+    await f.refresh();
     assert.match(await page.locator('.conversation-notice').textContent(),/Connecting/,'The connection timer starts with the first message');
-    f.history.get(1).push({role:'user',text:'First task'});f.bound=true;await f.refresh();
+    await page.evaluate(()=>{reviewOffset=240000;reviewIntervals.forEach(fn=>fn());});
+    await page.getByRole('button',{name:'Retry connection',exact:true}).waitFor();
+    f.state='working';f.history.get(1).push({role:'user',text:'First task'});f.bound=true;await f.refresh();
     await page.locator('.conversation-message.user').getByText('First task',{exact:true}).waitFor();assert.equal(await page.locator('.conversation-outgoing').count(),0);
+    assert.equal(await page.evaluate(()=>SwitchboardConversation.hasUnsentWork()),false,'The first send moves to the chat it started');
    }finally{await f.close();}
   });
   await t.test('Codex and Claude commands attach only after leaving Conversation and keep Terminal available',async()=>{

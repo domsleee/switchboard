@@ -56,7 +56,7 @@
     const modeKey=mobile?'switchboard-mobile-view-mode':'switchboard-view-mode';
     let savedMode;try{savedMode=localStorage.getItem(modeKey);}catch{}
     let target=null,open=savedMode? savedMode==='conversation':mobile,generation=0,startCursor=0,tailCursor=0,nextCursor=null,messages=[],loading=false,loaded=false,lastPaint=null,modeRevision=0,navigationRevision=0;
-    const outgoing=new Map(),consumedTranscript=new Map(),pendingSends=new Map(),startups=new Map(),draftVersions=new Map();
+    const outgoing=new Map(),consumedTranscript=new Map(),pendingSends=new Map(),startups=new Map(),draftVersions=new Map(),firstSends=new Set();
     const conversations=new Map(),handoverDrafts=new Map();
     let stream=null,streamReady=false,streamSupported=false,streamPages=[],restorePosition=null;
     async function prepare(){
@@ -197,7 +197,7 @@
     }
     // A new Claude at its empty prompt has no transcript until its first message, which
     // the relay types into the prompt. Its connection timer starts after that message.
-    function firstMessage(){return !chat&&target?.agent==='claude'&&target.state==='ready'&&!!target.session&&Number.isInteger(target.pane);}
+    function firstMessage(){return !chat&&target?.agent==='claude'&&target.state==='ready'&&!!target.session&&Number.isInteger(target.pane)&&!firstSends.has(target.key);}
     function startupState(){if(!target||chat||!target.agent&&!target.starting)return null;const key=identity(target);if(firstMessage()){startups.delete(key);return null;}if(!startups.has(key)&&open&&!document.hidden)startups.set(key,{started:Date.now()});return startups.get(key);}
     function unboundNotice(){if(firstMessage())return 'Send a message to start the conversation.';const startup=startupState();return startup?.error||(startup&&Date.now()-startup.started>=30000?'The agent has not connected. Retry or open Terminal.':target?.starting?'Starting agent…':target?.agent?'Connecting to this agent’s conversation…':'No agent');}
     function busy(value){loading=value;older.disabled=refresh.disabled=value;}
@@ -488,7 +488,7 @@
       if(retry){retrySend(retry,true);return;}
       const key=identity(target),id='conversation-'+Array.from(crypto.getRandomValues(new Uint32Array(4)),n=>n.toString(16)).join('-');
       const items=outgoing.get(key)||[],failedBridge=!native&&items.find(item=>item.state==='failed'&&!item.native&&sameMessage(item.payload,payload));
-      const sent={id,key,frame:target.frame,text,payload,files:[...selected],native,command,host:target.host,thread:chat?.thread,draftRevision:draftVersions.get(key)||0,baseline:failedBridge?failedBridge.baseline:startCursor+messages.length-1,sendKey:id,state:'sending'};
+      const sent={id,key,pane:target.key,unbound:!chat,frame:target.frame,text,payload,files:[...selected],native,command,host:target.host,thread:chat?.thread,draftRevision:draftVersions.get(key)||0,baseline:failedBridge?failedBridge.baseline:startCursor+messages.length-1,sendKey:id,state:'sending'};
       if(failedBridge)items[items.indexOf(failedBridge)]=sent;else items.push(sent);
       outgoing.set(key,items);pendingSends.set(key,sent);insert.disabled=true;paintFiles();sendStatus('');paint();
       if(native){
@@ -500,6 +500,8 @@
       if(current.agent==='claude'&&!command){
         try{
           const response=await fetch('/api/hosts/'+encodeURIComponent(sent.host)+'/conversation/reply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:current.session,tab_id:current.tab,pane_id:current.pane,text:payload}),signal:AbortSignal.timeout(20000)});
+          // An accepted first message starts the connection timer, whatever the pane reads next.
+          if(response.ok&&sent.unbound){firstSends.add(sent.pane);if(identity(selection())===sent.key){updateActivity();status(unboundNotice(),loaded);}}
           if(response.status!==404){sent.relay=true;complete(sent,response.ok,response.ok?'':(await response.text())||'Could not send the reply. Your draft is kept.');return;}
         }catch(error){const timeout=error.name==='TimeoutError';complete(sent,false,timeout?'No confirmation from the terminal. Check it before trying again; your draft is kept.':'Could not reach this computer. Your draft is kept.',timeout);return;}
       }
@@ -531,6 +533,10 @@
       window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();
       stopStream();streamSupported=false;restorePosition=null;target=current;loadRequest?.abort();lastFailure=null;lastDiagnostic='';newOutput=false;sendStatus('');generation++;loaded=false;lastPaint=null;busy(false);messages=[];startCursor=tailCursor=0;nextCursor=null;following=true;readingAnchor=null;for(const entry of [...rendered.values(),...renderedOutgoing.values()])contentResize?.unobserve(entry.node);rendered.clear();renderedOutgoing.clear();summaries.clear();list.replaceChildren(older,working);older.hidden=true;historyStatus.hidden=true;latest.hidden=refresh.hidden=true;
       chat=target?.chatId?{id:target.chatId,agent:target.agent,title:target.title}:null;
+      // A first message sent before the pane had a chat moves to the chat it started.
+      if(chat){const unbound=JSON.stringify([target.key,null]),bound=identity(target);
+        for(const map of [outgoing,pendingSends,drafts,draftVersions,consumedTranscript,attachments])if(map.has(unbound)&&!map.has(bound)){map.set(bound,map.get(unbound));map.delete(unbound);}
+        for(const item of outgoing.get(bound)||[])item.key=bound;}
       if(target&&chat&&handoverDrafts.has(target.key)){drafts.set(identity(target),handoverDrafts.get(target.key));handoverDrafts.delete(target.key);}
       const cached=conversations.get(identity(target));if(cached){({chat,messages,startCursor,tailCursor,nextCursor,streamSupported}=cached);loaded=true;}
       updateActivity();actions.hidden=true;
