@@ -9,18 +9,25 @@
             "timeout": 5
           },
           {
-            "type": "http",
-            "url": "http://127.0.0.1:8090/api/agent-hook",
+            "type": "command",
+            "command": "zellij",
             "timeout": 5,
-            "headers": {
-              "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
-              "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
-              "X-Claude-Nested": "$CLAUDECODE"
-            },
-            "allowedEnvVars": [
-              "ZELLIJ_SESSION_NAME",
-              "ZELLIJ_PANE_ID",
-              "CLAUDECODE"
+            "args": [
+              "agent-hook",
+              "--agent",
+              "claude"
+            ]
+          },
+          {
+            "type": "command",
+            "command": "zellij",
+            "asyncRewake": true,
+            "timeout": 31536000,
+            "args": [
+              "agent-hook",
+              "--agent",
+              "claude",
+              "--wait"
             ]
           }
         ]
@@ -30,18 +37,13 @@
       {
         "hooks": [
           {
-            "type": "http",
-            "url": "http://127.0.0.1:8090/api/agent-hook",
+            "type": "command",
+            "command": "zellij",
             "timeout": 5,
-            "headers": {
-              "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
-              "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
-              "X-Claude-Nested": "$CLAUDECODE"
-            },
-            "allowedEnvVars": [
-              "ZELLIJ_SESSION_NAME",
-              "ZELLIJ_PANE_ID",
-              "CLAUDECODE"
+            "args": [
+              "agent-hook",
+              "--agent",
+              "claude"
             ]
           }
         ]
@@ -51,18 +53,13 @@
       {
         "hooks": [
           {
-            "type": "http",
-            "url": "http://127.0.0.1:8090/api/agent-hook",
+            "type": "command",
+            "command": "zellij",
             "timeout": 5,
-            "headers": {
-              "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
-              "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
-              "X-Claude-Nested": "$CLAUDECODE"
-            },
-            "allowedEnvVars": [
-              "ZELLIJ_SESSION_NAME",
-              "ZELLIJ_PANE_ID",
-              "CLAUDECODE"
+            "args": [
+              "agent-hook",
+              "--agent",
+              "claude"
             ]
           }
         ]
@@ -72,18 +69,13 @@
       {
         "hooks": [
           {
-            "type": "http",
-            "url": "http://127.0.0.1:8090/api/agent-hook",
+            "type": "command",
+            "command": "zellij",
             "timeout": 5,
-            "headers": {
-              "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
-              "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
-              "X-Claude-Nested": "$CLAUDECODE"
-            },
-            "allowedEnvVars": [
-              "ZELLIJ_SESSION_NAME",
-              "ZELLIJ_PANE_ID",
-              "CLAUDECODE"
+            "args": [
+              "agent-hook",
+              "--agent",
+              "claude"
             ]
           }
         ]
@@ -93,18 +85,13 @@
       {
         "hooks": [
           {
-            "type": "http",
-            "url": "http://127.0.0.1:8090/api/agent-hook",
+            "type": "command",
+            "command": "zellij",
             "timeout": 5,
-            "headers": {
-              "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
-              "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
-              "X-Claude-Nested": "$CLAUDECODE"
-            },
-            "allowedEnvVars": [
-              "ZELLIJ_SESSION_NAME",
-              "ZELLIJ_PANE_ID",
-              "CLAUDECODE"
+            "args": [
+              "agent-hook",
+              "--agent",
+              "claude"
             ]
           }
         ]
@@ -114,18 +101,13 @@
       {
         "hooks": [
           {
-            "type": "http",
-            "url": "http://127.0.0.1:8090/api/agent-hook",
+            "type": "command",
+            "command": "zellij",
             "timeout": 5,
-            "headers": {
-              "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
-              "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
-              "X-Claude-Nested": "$CLAUDECODE"
-            },
-            "allowedEnvVars": [
-              "ZELLIJ_SESSION_NAME",
-              "ZELLIJ_PANE_ID",
-              "CLAUDECODE"
+            "args": [
+              "agent-hook",
+              "--agent",
+              "claude"
             ]
           }
         ]
@@ -135,18 +117,25 @@
       {
         "hooks": [
           {
-            "type": "http",
-            "url": "http://127.0.0.1:8090/api/agent-hook",
+            "type": "command",
+            "command": "zellij",
             "timeout": 5,
-            "headers": {
-              "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
-              "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
-              "X-Claude-Nested": "$CLAUDECODE"
-            },
-            "allowedEnvVars": [
-              "ZELLIJ_SESSION_NAME",
-              "ZELLIJ_PANE_ID",
-              "CLAUDECODE"
+            "args": [
+              "agent-hook",
+              "--agent",
+              "claude"
+            ]
+          },
+          {
+            "type": "command",
+            "command": "zellij",
+            "asyncRewake": true,
+            "timeout": 31536000,
+            "args": [
+              "agent-hook",
+              "--agent",
+              "claude",
+              "--wait"
             ]
           }
         ]
@@ -156,18 +145,13 @@
       {
         "hooks": [
           {
-            "type": "http",
-            "url": "http://127.0.0.1:8090/api/agent-hook",
+            "type": "command",
+            "command": "zellij",
             "timeout": 5,
-            "headers": {
-              "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
-              "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
-              "X-Claude-Nested": "$CLAUDECODE"
-            },
-            "allowedEnvVars": [
-              "ZELLIJ_SESSION_NAME",
-              "ZELLIJ_PANE_ID",
-              "CLAUDECODE"
+            "args": [
+              "agent-hook",
+              "--agent",
+              "claude"
             ]
           }
         ]
@@ -177,18 +161,13 @@
       {
         "hooks": [
           {
-            "type": "http",
-            "url": "http://127.0.0.1:8090/api/agent-hook",
+            "type": "command",
+            "command": "zellij",
             "timeout": 5,
-            "headers": {
-              "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
-              "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
-              "X-Claude-Nested": "$CLAUDECODE"
-            },
-            "allowedEnvVars": [
-              "ZELLIJ_SESSION_NAME",
-              "ZELLIJ_PANE_ID",
-              "CLAUDECODE"
+            "args": [
+              "agent-hook",
+              "--agent",
+              "claude"
             ]
           }
         ]

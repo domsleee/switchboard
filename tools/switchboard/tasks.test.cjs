@@ -305,6 +305,19 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
     assert.deepEqual(updates.at(-1),{host:'mesh-laptop',activate:'b'.repeat(40)});
     await page.waitForFunction(message=>document.querySelector('#status-message')?.textContent===message,updateWarning);
 
+    // Refresh recovers a superseded selection without reauthorizing that build.
+    sb.updatePhase='failed';
+    sb.lastUpdateError='The requested update was superseded; check for updates and choose Update now again';
+    await page.evaluate(()=>SwitchboardTasks.load());
+    const updateCount=updates.length;
+    await page.locator('#refresh-updates').click();
+    await page.waitForFunction(()=>document.querySelector('#status-message')?.textContent==='Checking for a newer build on Laptop…');
+    assert.deepEqual(updates.slice(updateCount),[{host:'mesh-laptop'}]);
+    sb.lastUpdateError=null;sb.activationTarget='c'.repeat(40);sb.readyUpdate={commit:'c'.repeat(40)};sb.updatePhase='waiting';
+    await page.evaluate(()=>SwitchboardTasks.load());
+    await laptop.getByRole('button',{name:'Update now',exact:true}).click();
+    assert.deepEqual(updates.at(-1),{host:'mesh-laptop',activate:'c'.repeat(40)});
+
     assert.deepEqual(errors,[]);
   }finally{await browser.close();}
 });
@@ -418,33 +431,35 @@ test('Fix all installs missing plugins before refreshing skills and leaves healt
       if(path==='/tasks.js'||path==='/style.css')return route.fulfill({contentType:path.endsWith('.js')?'text/javascript':'text/css',body:fs.readFileSync(__dirname+'/static'+path,'utf8')});
       return route.fulfill({contentType:'text/html',body:'<meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/style.css"><div id="panel-health"><p id="health-summary"></p><button id="fix-all-health">Fix all</button><div id="health-batch"></div><div id="updates"></div></div><script src="/tasks.js"></script>'});
     });
+    const refresh=async()=>{
+      await page.waitForFunction(()=>document.querySelector('#updates')?.getAttribute('aria-busy')==='false');
+      await page.evaluate(()=>SwitchboardTasks.load());
+    };
     await page.goto('https://health.test/');
+    await page.waitForFunction(()=>document.querySelector('#updates')?.getAttribute('aria-busy')==='false');
     await page.getByRole('button',{name:'Fix all',exact:true}).click();
     await page.waitForFunction(()=>document.getElementById('health-batch').textContent.includes('Setup unavailable'));
     assert.deepEqual(actions,[{agent:'codex'},{agent:'claude',host:'desktop'}]);
-    await page.evaluate(()=>SwitchboardTasks.load());
+    await refresh();
     assert.equal(actions.length,2,'skill refresh must wait for setup completion');
     codex.state='ready';codex.setupFinished=10;codex.detail='Plugin installed';
-    await page.evaluate(()=>SwitchboardTasks.load());
+    await refresh();
     assert.deepEqual(actions.at(-1),{agent:'codex',action:'fix-skills'});
     assert.equal(actions.length,3);
-    await page.evaluate(()=>SwitchboardTasks.load());
+    await refresh();
     assert.equal(actions.length,3,'polling cannot dispatch duplicate repairs');
     codex.skillRepair={supported:true,running:false,finished:20,error:'Refresh failed'};
-    await page.evaluate(()=>SwitchboardTasks.load());
+    await refresh();
     assert.match(await page.locator('#health-batch').textContent(),/2\/2 repairs finished · 2 need attention/);
     assert.match(await page.locator('#health-batch').textContent(),/Refresh failed/);
     remote.state='ready';
-    await page.evaluate(()=>SwitchboardTasks.load());
-    const retryRefresh=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/tasks');
+    await refresh();
     await page.getByRole('button',{name:'Retry failed',exact:true}).click();
-    await retryRefresh;
-    await page.waitForFunction(()=>document.getElementById('updates').getAttribute('aria-busy')==='false');
     await page.waitForFunction(()=>document.getElementById('health-batch').textContent.includes('1/2 repairs finished'));
     assert.equal(actions.length,4);
     assert.deepEqual(actions.at(-1),{agent:'codex',action:'fix-skills'});
     codex.skillRepair={supported:true,running:false,finished:30};codex.skills={state:'ok',warnings:[],refreshPlugins:[]};
-    await page.evaluate(()=>SwitchboardTasks.load());
+    await refresh();
     assert.equal(await page.getByRole('button',{name:'Fix all',exact:true}).isDisabled(),true);
     assert.equal(await page.locator('.computer-run').count(),0,'healthy computers have no repair button');
     await page.locator('.computer-summary').first().click();

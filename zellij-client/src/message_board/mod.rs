@@ -1,5 +1,6 @@
 //! A single durable agent board, served separately from terminals and artifacts.
 pub(crate) mod cli;
+pub(crate) mod hooks;
 mod store;
 #[cfg(test)]
 mod tests;
