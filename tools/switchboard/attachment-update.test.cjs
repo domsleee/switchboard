@@ -215,7 +215,8 @@ let native, relay, browser, updateController, created=false;
     await page.setViewportSize({width:600,height:450});
     // Establish ownership explicitly: OS focus can remain in the large browser,
     // and changing CSS viewport size must not implicitly steal its native size.
-    await page.evaluate(()=>{const pair=document.querySelector('#terminals>iframe.active').contentWindow.testPair;pair.control.send(JSON.stringify({web_client_id:pair.control.owner.viewer,payload:{type:'SetTabViewport',size:{cols:70,rows:25},tab_position:0,ownership:true}}));});
+    await page.evaluate(()=>{const pair=document.querySelector('#terminals>iframe.active').contentWindow.testPair;for(const payload of [{type:'TerminalResize',cols:70,rows:25},{type:'SetTabViewport',size:{cols:70,rows:25},tab_position:0,ownership:true}])pair.control.send(JSON.stringify({web_client_id:pair.control.owner.viewer,payload}));});
+    await page.waitForFunction(()=>{const owner=document.querySelector('#terminals>iframe.active').contentWindow.testPair.terminal.owner;return !owner.stopped&&owner.pending.length===0;});
     const columns=()=>JSON.parse(cli('-s',name,'action','list-panes','--json','--all')).find(p=>p.id===oldPane&&!p.is_plugin).pane_columns;
     await waitFor(()=>columns()<90,'Small viewer constrains terminal before suspension');
     const smallColumns=columns();
