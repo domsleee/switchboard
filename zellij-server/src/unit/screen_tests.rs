@@ -329,6 +329,33 @@ fn tab_ids_are_not_reused_after_closing_the_highest_tab() {
     assert!(screen.get_new_tab_id() > closed);
 }
 
+#[test]
+fn a_layout_finished_after_its_client_left_does_not_re_add_that_client() {
+    // `attach --create-background` exits before the pty thread finishes the first tab.
+    let mut screen = create_new_screen(Size { rows: 24, cols: 80 }, false, false);
+    screen.new_tab(0, (vec![], vec![]), None, Some(1)).unwrap();
+    screen.remove_client(1).unwrap();
+    screen
+        .apply_layout(
+            TiledPaneLayout::default(),
+            vec![],
+            vec![(1, None)],
+            vec![],
+            HashMap::new(),
+            0,
+            true,
+            (1, false),
+            None,
+        )
+        .unwrap();
+    assert_eq!(screen.tabs.len(), 1, "the session still gets its tab");
+    assert!(
+        !screen.connected_clients.borrow().contains_key(&1),
+        "a departed client must not stay listed and size the session"
+    );
+    assert!(!screen.active_tab_ids.contains_key(&1));
+}
+
 fn create_new_screen_with_kitty_graphics(
     size: Size,
     advanced_mouse_actions: bool,

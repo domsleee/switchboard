@@ -1557,6 +1557,10 @@ pub(crate) struct Screen {
     active_tab_ids: BTreeMap<ClientId, usize>,
     client_sizes: HashMap<ClientId, Size>,
     web_viewport_clients: HashSet<ClientId>,
+    /// Clients removed since they last attached. A layout the pty thread finishes
+    /// after its client left (a background session's creator exits at once) must
+    /// not re-add that client, or it stays in every client list and tab size.
+    departed_clients: HashSet<ClientId>,
     /// Browser viewers the user cannot see. They own no tab and never size one.
     hidden_viewers: HashSet<ClientId>,
     tab_size_owners: HashMap<usize, ClientId>,
@@ -1771,6 +1775,7 @@ impl Screen {
             active_tab_ids: BTreeMap::new(),
             client_sizes: HashMap::new(),
             web_viewport_clients: HashSet::new(),
+            departed_clients: HashSet::new(),
             hidden_viewers: HashSet::new(),
             tab_size_owners: HashMap::new(),
             global_last_active_tab_id: 0,
@@ -5166,7 +5171,8 @@ impl Screen {
             None
         };
 
-        if !self.active_tab_ids.contains_key(&client_id) {
+        let client_departed = self.departed_clients.contains(&client_id);
+        if !client_departed && !self.active_tab_ids.contains_key(&client_id) {
             self.connected_clients
                 .borrow_mut()
                 .insert(client_id, is_web_client);
@@ -5198,7 +5204,7 @@ impl Screen {
             })
             .with_context(err_context)?;
 
-        if !self.active_tab_ids.contains_key(&client_id) {
+        if !client_departed && !self.active_tab_ids.contains_key(&client_id) {
             // this means this is a new client and we need to add it to our state properly
             self.add_client(client_id, is_web_client)
                 .with_context(err_context)?;
@@ -5302,6 +5308,7 @@ impl Screen {
 
     pub fn remove_client(&mut self, client_id: ClientId) -> Result<()> {
         let err_context = || format!("failed to remove client {client_id}");
+        self.departed_clients.insert(client_id);
 
         self.set_client_dimmed(client_id, false, None);
         let passthrough_panes: Vec<PaneId> = self
@@ -10448,6 +10455,7 @@ pub(crate) fn screen_thread_main(
                 tab_position_to_focus,
                 pane_id_to_focus,
             ) => {
+                screen.departed_clients.remove(&client_id);
                 screen.set_client_size(client_id, client_size);
                 screen.add_client(client_id, is_web_client)?;
                 let pane_id = pane_id_to_focus.map(|(pane_id, is_plugin)| {
@@ -12463,6 +12471,7 @@ pub(crate) fn screen_thread_main(
                 completion_tx,
             ),
             ScreenInstruction::AddWatcherClient(client_id, size) => {
+                screen.departed_clients.remove(&client_id);
                 screen
                     .add_watcher_client(client_id)
                     .context("failed to add watcher client")?;
