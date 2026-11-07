@@ -83,7 +83,9 @@ int main(int argc,char**argv){if(argc>1&&strcmp(argv[1],"queue")==0){if(argc!=6)
     const response=page.waitForResponse(r=>r.url().endsWith('/restart-agent'));
     await page.getByRole('menuitem',{name:'Restart & resume'}).click();
     const result=await response;assert.equal(result.status(),200);
-    const replacement=JSON.parse(cli('-s',name,'action','list-panes','--json','--all')).find(p=>!p.is_plugin&&p.tab_id===first.tab_id);
+    // The restart response can precede the replacement's first pane snapshot.
+    let replacement;
+    await until(()=>{replacement=JSON.parse(cli('-s',name,'action','list-panes','--json','--all')).find(p=>!p.is_plugin&&p.tab_id===first.tab_id&&p.id!==first.id);return replacement;},'Replacement pane was not published');
     assert.ok(replacement);const restarted={pane_id:replacement.id,tab_id:replacement.tab_id};assert.notEqual(restarted.pane_id,first.id);
     await until(()=>launches().length===2,'Replacement did not start');
     assert.equal(launches()[1].split('|').slice(1).join('|'),'--model|fixture|resume|'+sid);

@@ -127,6 +127,10 @@ const created = [];
             },text);
         }
         async function browserCommand(prefix){
+            // Open sockets and an allocated buffer precede the first native render.
+            // Wait for the existing shell state before sending browser input.
+            await terminalContains(writable.page,marker);
+            await terminalContains(watcher.page,marker);
             await writable.page.locator('.xterm-helper-textarea').focus();
             await writable.page.keyboard.type(`printf '%s%s\\n' "${prefix}" "$SB_NATIVE_STATE"`);
             await writable.page.keyboard.press('Enter');
