@@ -126,18 +126,64 @@ pub(super) struct Reply {
     text: String,
 }
 
+/// Splits a `dump-screen --ansi` capture into lines of plain text, each paired
+/// with the same text minus anything drawn dim (SGR 2). Other escapes are dropped.
+fn screen_lines(screen: &str) -> Vec<(String, String)> {
+    let mut lines = Vec::new();
+    let (mut plain, mut bright, mut dim) = (String::new(), String::new(), false);
+    let mut chars = screen.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\x1b' if chars.peek() == Some(&'[') => {
+                chars.next();
+                let mut params = String::new();
+                for c in chars.by_ref() {
+                    if ('\x40'..='\x7e').contains(&c) {
+                        if c == 'm' {
+                            for code in params.split(';') {
+                                match code {
+                                    "" | "0" | "22" => dim = false,
+                                    "2" => dim = true,
+                                    _ => {},
+                                }
+                            }
+                        }
+                        break;
+                    }
+                    params.push(c);
+                }
+            },
+            '\n' => lines.push((std::mem::take(&mut plain), std::mem::take(&mut bright))),
+            '\r' => {},
+            c => {
+                plain.push(c);
+                if !dim {
+                    bright.push(c);
+                }
+            },
+        }
+    }
+    if !plain.is_empty() {
+        lines.push((plain, bright));
+    }
+    lines
+}
+
 /// Claude's prompt box is empty: the last `❯` line holds nothing but its
-/// placeholder, and only blank lines sit between it and the box's lower rule.
+/// placeholder or a dim suggested prompt, and only blank lines sit between it
+/// and the box's lower rule. `screen` may carry ANSI styling, which is how a
+/// suggestion (drawn dim) is told apart from a typed draft.
 /// The same check the terminal bridge makes before pasting a reply.
 fn claude_prompt_empty(screen: &str) -> bool {
-    let lines: Vec<&str> = screen.lines().collect();
+    let lines = screen_lines(screen);
     let Some(index) = lines
         .iter()
-        .rposition(|line| line.trim_start().starts_with('❯'))
+        .rposition(|(line, _)| line.trim_start().starts_with('❯'))
     else {
         return false;
     };
-    let prompt = lines[index].trim_start()['❯'.len_utf8()..].trim();
+    let bright = lines[index].1.trim_start();
+    let prompt = bright.strip_prefix('❯').unwrap_or("").trim();
     // Narrow panes cut the placeholder short with an ellipsis.
     let placeholder = prompt.len() > 5
         && prompt.starts_with("Try \"")
@@ -145,7 +191,7 @@ fn claude_prompt_empty(screen: &str) -> bool {
     if !prompt.is_empty() && !placeholder {
         return false;
     }
-    for line in &lines[index + 1..] {
+    for (line, _) in &lines[index + 1..] {
         let text = line.trim();
         if text.is_empty() {
             continue;
@@ -356,7 +402,16 @@ pub(super) async fn reply_local(host: &Host, reply: Reply) -> Result<Json<Value>
     if attention::classify(&pane, &screen)["agent"] != "claude" {
         return Err((StatusCode::CONFLICT, "The selected pane is not Claude"));
     }
-    if !claude_prompt_empty(&screen) {
+    // Styling tells a dim suggested prompt from a typed draft.
+    let styled = control::run_local(
+        host,
+        &target.session,
+        &["dump-screen", "--ansi", "-p", &target.pane_id.to_string()],
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap_or(screen);
+    if !claude_prompt_empty(&styled) {
         return Err((
             StatusCode::CONFLICT,
             "Clear the terminal prompt before sending.",
@@ -423,7 +478,18 @@ mod tests {
         assert!(claude_prompt_empty(
             &CLAUDE_IDLE.replace("❯\u{a0}", "❯ Try \"write a test for …")
         ));
+        // Claude Code 2.1.319 suggests a next prompt in dim text once a turn ends;
+        // captured with `dump-screen --ansi` (styling trimmed to what it sets).
+        let suggested = "\x1b[m❯\u{a0}\x1b[39m\x1b[49m\x1b[22m\x1b[24m\x1b[2m\x1b[23mok waiting";
+        assert!(claude_prompt_empty(
+            &CLAUDE_IDLE.replace("❯\u{a0}", suggested)
+        ));
+        assert!(claude_prompt_empty(&format!(
+            "\x1b[38;2;136;136;136m{RULE}\r\n{suggested}\x1b[m\r\n\x1b[38;2;136;136;136m{RULE}\r\n"
+        )));
         for screen in [
+            CLAUDE_IDLE.replace("❯\u{a0}", "\x1b[m❯\u{a0}\x1b[39m\x1b[22mok waiting"),
+            CLAUDE_IDLE.replace("❯\u{a0}", "\x1b[m❯\u{a0}\x1b[2mok \x1b[0mwaiting"),
             CLAUDE_IDLE.replace("❯\u{a0}", "❯\u{a0}[Pasted text #1 +3 lines]"),
             CLAUDE_IDLE.replace("❯\u{a0}", "❯ draft"),
             CLAUDE_IDLE.replace("❯\u{a0}\n", "❯\u{a0}first line\n  second line\n"),

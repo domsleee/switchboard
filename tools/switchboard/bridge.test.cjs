@@ -713,6 +713,20 @@ test('conversation Send submits once and rejects unsent multiline input or a she
   lines=['$ '];h.window.term.rows=1;send();assert.equal(writes.length,2);assert.equal(h.messages.at(-1).ok,false);
 });
 
+test('Claude Send types over a dim suggested prompt but not over a typed draft',()=>{
+  const h=harness(),writes=[],rule='─'.repeat(20);
+  new h.window.WebSocket('ws://localhost:8090/hosts/windows/ws/terminal');
+  // Cells as xterm reports them: Claude Code draws its suggested next prompt dim.
+  const row=(text,dimFrom)=>({translateToString:()=>text,length:text.length,getCell:x=>({getChars:()=>text[x]||'',isDim:()=>x>=dimFrom})});
+  let prompt=row('❯ ok waiting',2);
+  h.window.term.rows=3;h.window.term.buffer.active={baseY:0,viewportY:0,getLine:i=>i===1?prompt:row(rule,99)};
+  h.window.term.modes={bracketedPasteMode:true};h.window.term.paste=text=>writes.push(['paste',text]);h.window.term.input=text=>writes.push(['input',text]);
+  h.state({active_pane:{pane_id:7,is_plugin:false}});
+  const send=()=>h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-conversation-paste',id:'claude',pane_id:7,agent:'claude',submit:true,text:'hello'}});
+  send();assert.deepEqual(writes,[['paste','hello'],['input','\r']]);
+  prompt=row('❯ ok waiting',99);send();assert.equal(writes.length,2);assert.equal(h.messages.at(-1).error,'Clear the terminal prompt before sending.');
+});
+
 test('Copilot Send checks the live boxed composer, including multiline drafts',()=>{
  const h=harness(),writes=[];new h.window.WebSocket('ws://localhost/ws/terminal');
  let lines=['old ❯ message','╻▄▄▄▄▄▄','┃','╹▀▀▀▀▀','Interactive · / commands · ? help'];
