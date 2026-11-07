@@ -391,7 +391,23 @@ fn tab_shell(default_shell: Option<PathBuf>) -> PathBuf {
 
 // Prompt text is data, never shell source. Quote on the destination computer,
 // where the configured shell and uploaded image paths are known.
-pub(super) fn prompt_command(shell: Option<PathBuf>, prompt: &str, images: &[String]) -> String {
+/// The agents New tab can launch with a prompt. Each name is a shell alias on
+/// the target computer. An empty name keeps older clients on Sol.
+pub(super) fn prompt_agent(command: &str) -> Option<&'static str> {
+    match command.trim() {
+        "" | "csol" => Some("csol"),
+        "castra" => Some("castra"),
+        "c" => Some("c"),
+        _ => None,
+    }
+}
+
+pub(super) fn prompt_command(
+    shell: Option<PathBuf>,
+    agent: &str,
+    prompt: &str,
+    images: &[String],
+) -> String {
     let shell = tab_shell(shell);
     let name = shell
         .file_stem()
@@ -414,12 +430,25 @@ pub(super) fn prompt_command(shell: Option<PathBuf>, prompt: &str, images: &[Str
         "fish" => format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'")),
         _ => format!("'{}'", value.replace('\'', "'\\''")),
     };
-    let mut command = "csol".to_owned();
-    for image in images {
-        command.push_str(&format!(" --image {}", quote(image)));
+    let mut command = agent.to_owned();
+    let mut prompt = prompt.to_owned();
+    if agent == "c" {
+        // Claude has no image flag; it reads image paths named in the prompt.
+        if !images.is_empty() {
+            prompt.push_str(if prompt.is_empty() {
+                "Attached images:\n"
+            } else {
+                "\n\nAttached images:\n"
+            });
+            prompt.push_str(&images.join("\n"));
+        }
+    } else {
+        for image in images {
+            command.push_str(&format!(" --image {}", quote(image)));
+        }
     }
     if !prompt.is_empty() {
-        command.push_str(&format!(" {} {}", quote("--"), quote(prompt)));
+        command.push_str(&format!(" {} {}", quote("--"), quote(&prompt)));
     }
     if name == "cmd" {
         // cmd cannot quote arbitrary multiline data or suppress % expansion.
@@ -541,9 +570,16 @@ pub(super) fn control_payload_to_server_msg(
             prompt,
             images,
         } => {
-            let command = prompt
-                .map(|text| prompt_command(default_shell.clone(), &text, &images))
-                .or(command);
+            let command = match prompt {
+                Some(text) => {
+                    let Some(agent) = prompt_agent(command.as_deref().unwrap_or_default()) else {
+                        log::warn!("Ignoring a new tab for an unknown agent");
+                        return None;
+                    };
+                    Some(prompt_command(default_shell.clone(), agent, &text, &images))
+                },
+                None => command,
+            };
             let cwd = project
                 .filter(|p| !p.trim().is_empty())
                 .and_then(|p| std::env::home_dir().map(|home| home.join("git").join(p)));
@@ -836,13 +872,16 @@ mod tests {
         } else {
             vec!["/bin/sh", "bash", "zsh", "fish", "nu", "pwsh"]
         };
-        for shell in shells {
-            let command = prompt_command(Some(shell.into()), prompt, &images);
+        for (shell, agent) in shells
+            .into_iter()
+            .flat_map(|shell| ["csol", "c"].map(|agent| (shell, agent)))
+        {
+            let command = prompt_command(Some(shell.into()), agent, prompt, &images);
             let (script, flags, json) = match shell {
-                "nu" => (format!("def --wrapped csol [...args: string] {{ $args | to json --raw }}; {command}"), vec!["--no-config-file", "-c"], true),
-                "pwsh" | "powershell" => (format!("[Console]::OutputEncoding = [Text.UTF8Encoding]::new(); function csol {{ ConvertTo-Json -Compress -InputObject @($args) }}; {command}"), vec!["-NoProfile", "-Command"], true),
-                "fish" => (format!("function csol; printf '%s\\0' $argv; end; {command}"), vec!["-c"], false),
-                _ => (format!("csol() {{ printf '%s\\0' \"$@\"; }}; {command}"), vec!["-c"], false),
+                "nu" => (format!("def --wrapped {agent} [...args: string] {{ $args | to json --raw }}; {command}"), vec!["--no-config-file", "-c"], true),
+                "pwsh" | "powershell" => (format!("[Console]::OutputEncoding = [Text.UTF8Encoding]::new(); function {agent} {{ ConvertTo-Json -Compress -InputObject @($args) }}; {command}"), vec!["-NoProfile", "-Command"], true),
+                "fish" => (format!("function {agent}; printf '%s\\0' $argv; end; {command}"), vec!["-c"], false),
+                _ => (format!("{agent}() {{ printf '%s\\0' \"$@\"; }}; {command}"), vec!["-c"], false),
             };
             let output = match Command::new(shell).args(flags).arg(script).output() {
                 Ok(output) => output,
@@ -869,13 +908,18 @@ mod tests {
                     .map(|arg| String::from_utf8(arg.to_vec()).unwrap())
                     .collect()
             };
-            let mut expected = vec!["--image", &images[0], "--image", &images[1], "--"];
-            expected.push(prompt);
-            assert_eq!(args, expected, "{shell}");
+            let claude_prompt = format!("{prompt}\n\nAttached images:\n{}", images.join("\n"));
+            let expected = if agent == "c" {
+                vec!["--", claude_prompt.as_str()]
+            } else {
+                vec!["--image", &images[0], "--image", &images[1], "--", prompt]
+            };
+            assert_eq!(args, expected, "{shell} {agent}");
             tested += 1;
         }
         assert!(tested > 0, "No shell available to test prompt quoting");
-        assert_eq!(prompt_command(Some("nu".into()), "", &[]), "csol");
+        assert_eq!(prompt_command(Some("nu".into()), "csol", "", &[]), "csol");
+        assert_eq!(prompt_command(Some("nu".into()), "c", "", &[]), "c");
     }
 
     #[test]
@@ -903,6 +947,39 @@ mod tests {
                 "csol --image r#'/tmp/my shot.png'# r#'--'# r#'fix this\nplease'#"
             );
         }
+    }
+
+    #[test]
+    fn switchboard_new_tab_prompt_launches_the_chosen_agent() {
+        let launch = |command: &str| {
+            let payload = serde_json::from_value(serde_json::json!({
+                "type":"NewTab", "project":"sample", "command":command, "prompt":"go", "images":["/tmp/a.png"]
+            }))
+            .unwrap();
+            match control_payload_to_server_msg(payload, Some("nu".into())) {
+                Some(ClientToServerMsg::Action {
+                    action:
+                        Action::NewTab {
+                            initial_panes: Some(panes),
+                            ..
+                        },
+                    ..
+                }) => match panes.as_slice() {
+                    [CommandOrPlugin::Command(run)] => Some(run.args.last().unwrap().clone()),
+                    _ => panic!("Expected one command"),
+                },
+                _ => None,
+            }
+        };
+        assert_eq!(
+            launch("castra").as_deref(),
+            Some("castra --image r#'/tmp/a.png'# r#'--'# r#'go'#")
+        );
+        assert_eq!(
+            launch("c").as_deref(),
+            Some("c r#'--'# r#'go\n\nAttached images:\n/tmp/a.png'#")
+        );
+        assert_eq!(launch("rm -rf ~"), None);
     }
 
     #[test]

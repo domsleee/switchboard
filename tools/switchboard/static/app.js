@@ -1383,6 +1383,9 @@ function openNewTabDialog(elevated){
   $('new-tab-title').textContent=elevated?'New administrator tab':'New tab';
   $('new-tab-prompt').value='';clearNewTabFiles();newTabProjectLookup.close();
   $('new-tab-project').value='switchboard';updateNewTabProject();
+  // Each browser remembers its last model; Sol is the default.
+  let model='csol';try{model=localStorage.getItem('switchboard-new-tab-model')||model;}catch(_){}
+  const models=$('new-tab-model');models.value=model;if(models.selectedIndex<0)models.value='csol';
   $('new-tab-note').textContent=elevated?'Opens an administrator shell on the selected machine. Someone there approves it: a UAC prompt on Windows, a sudo password elsewhere.':'';
   const select=$('new-tab-target');select.replaceChildren();
   const current=allTabs().find(t=>t.key===selected)?.entry;
@@ -1530,7 +1533,7 @@ $('new-tab-prompt').onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey&&!
 $('new-tab-dialog').addEventListener('close',()=>{$('new-tab-form').pendingSubmission=null;newTabBusy(false);clearNewTabFiles();});
 $('new-tab-form').onsubmit=async event=>{
   event.preventDefault();const form=$('new-tab-form');if(form.pendingSubmission)return;
-  const key=$('new-tab-target').value,project=$('new-tab-project').value.trim(),text=$('new-tab-prompt').value,files=[...newTabFiles],elevated=newTabElevated;
+  const key=$('new-tab-target').value,project=$('new-tab-project').value.trim(),command=$('new-tab-model').value,text=$('new-tab-prompt').value,files=[...newTabFiles],elevated=newTabElevated;
   if(/[\x00-\x08\x0b-\x1f\x7f]/.test(text)||new TextEncoder().encode(text).length>16000){$('new-tab-error').textContent='Use a prompt up to 16 KB without control characters.';return;}
   const request={};form.pendingSubmission=request;newTabBusy(true);
   const isCurrent=()=>form.pendingSubmission===request&&$('new-tab-dialog').open;
@@ -1548,7 +1551,8 @@ $('new-tab-form').onsubmit=async event=>{
     const prompt=text+(others.length?'\n\nAttached files:\n'+others.join('\n'):'');
     if(new TextEncoder().encode(prompt).length>16000)throw Error('The prompt and file paths must fit within 16 KB.');
     $('new-tab-error').textContent='';
-    await createNewTab(key,{project,prompt,images,elevated},isCurrent);
+    try{localStorage.setItem('switchboard-new-tab-model',command);}catch(_){}
+    await createNewTab(key,{project,command,prompt,images,elevated},isCurrent);
   }catch(error){if(isCurrent())$('new-tab-error').textContent=error.message;}
   finally{if(form.pendingSubmission===request){form.pendingSubmission=null;newTabBusy(false);}}
 };
