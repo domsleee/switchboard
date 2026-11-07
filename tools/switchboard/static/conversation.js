@@ -157,12 +157,9 @@
     const uuid='[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}';
     // The native queue stores generated mailbox wake-ups as ordinary user input.
     // Match the generated envelope, not general discussion of Switchboard mail.
-    const mailboxNotice=new RegExp('^New Switchboard messages: '+uuid+'(?:, '+uuid+')*\\. Read them with `zellij message --agent-session '+uuid+' unread --json` and `zellij message unread --computer [0-9a-f]{64} --json`\\. Reply using this agent identity when an answer is needed, and explicitly acknowledge receipt\\.(?: |$)','i');
-    function internalMessage(item){
-      if(item.role!=='user')return false;
-      const text=(item.receipt_text??item.text??'').trimStart();
-      return /^(?:# AGENTS\.md instructions|<environment_context>|<permissions instructions>|<skills_instructions>)/.test(text)||mailboxNotice.test(text);
-    }
+    const mailboxNotice=new RegExp('^New Switchboard messages: ('+uuid+'(?:, '+uuid+')*)\\. Read them with `zellij message --agent-session '+uuid+' unread --json` and `zellij message unread --computer [0-9a-f]{64} --json`\\. Reply using this agent identity when an answer is needed, and explicitly acknowledge receipt\\.(?: |$)','i');
+    function mailboxCount(item){return item.role==='user'?(mailboxNotice.exec((item.receipt_text??item.text??'').trimStart())?.[1].split(', ').length||0):0;}
+    function setupMessage(item){return item.role==='user'&&/^(?:# AGENTS\.md instructions|<environment_context>|<permissions instructions>|<skills_instructions>)/.test((item.text||'').trimStart());}
     function normalizeMessage(value){return String(value||'').replace(/\r\n/g,'\n');}
     function sameMessage(a,b){return normalizeMessage(a)===normalizeMessage(b);}
     function outgoingLabel(state){return state==='sending'?'Sending…':state==='queued'?'Queued':state==='sent'?'Sent':'Could not confirm sending';}
@@ -205,17 +202,23 @@
       older.hidden=true;
       let previous=older,previousRole=null,previousSpeaker=null;
       for(const [offset,item] of messages.entries()){
-        if(internalMessage(item))continue;
-        const key=startCursor+offset,signature=snapshot.messages[offset],speaker=item.role==='user'?'You':providerLabel();keys.add(key);
+        if(setupMessage(item))continue;
+        const notices=mailboxCount(item),key=startCursor+offset,signature=snapshot.messages[offset],speaker=notices?'Switchboard':item.role==='user'?'You':providerLabel();keys.add(key);
         let entry=rendered.get(key);
         if(!entry||entry.signature!==signature){
-          const article=el('article',undefined,'conversation-message '+item.role+(item.phase==='commentary'?' commentary':'')),label=el('div',speaker,'conversation-label');article.append(label);
+          const article=el(notices?'details':'article',undefined,'conversation-message '+(notices?'conversation-notification':item.role+(item.phase==='commentary'?' commentary':'')));
           article.dataset.conversationEntry='message-'+key;contentResize?.observe(article);
-          if(window.SwitchboardConversationMedia&&(item.markdown||item.attachments))window.SwitchboardConversationMedia.render(article,item,{host:target.host,project:binding()?.project});else textBlocks(article,item.text||'');
+          if(notices){
+            article.append(el('summary','Switchboard · '+notices+' message'+(notices===1?'':'s')));
+            const body=el('div',undefined,'conversation-notification-body');textBlocks(body,item.text||'');article.append(body);article.open=entry?.node.open||false;
+          }else{
+            article.append(el('div',speaker,'conversation-label'));
+            if(window.SwitchboardConversationMedia&&(item.markdown||item.attachments))window.SwitchboardConversationMedia.render(article,item,{host:target.host,project:binding()?.project});else textBlocks(article,item.text||'');
+          }
           if(item.truncated)article.append(el('small','Message truncated by history API. Open the terminal for full context.'));
           if(entry){contentResize?.unobserve(entry.node);entry.node.remove();}entry={signature,node:article};rendered.set(key,entry);
         }
-        entry.node.classList.toggle('continuation',previousRole==='assistant'&&item.role==='assistant'&&previousSpeaker===speaker);previousRole=item.role;previousSpeaker=speaker;
+        entry.node.classList.toggle('continuation',previousRole==='assistant'&&item.role==='assistant'&&previousSpeaker===speaker);previousRole=notices?'notification':item.role;previousSpeaker=speaker;
         if(previous.nextSibling!==entry.node)previous.after(entry.node);
         previous=entry.node;
       }
