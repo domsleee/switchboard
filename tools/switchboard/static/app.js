@@ -87,7 +87,7 @@ function sectionExpanded(section){
 let snoozedOpen = sectionExpanded('snoozed');
 let hiddenOpen = sectionExpanded('hidden');
 const seenAttention = load('switchboard-attention-seen');
-let attentionLoaded=false,paneAttention=new Map(),tabCatalog=[],attentionErrors=[],attentionLoading=false,attentionRefreshPending=false,attentionVersion=0;
+let attentionLoaded=false,paneAttention=keyedAttention(globalThis.SwitchboardStartup?.snapshot.attention||[]),tabCatalog=[],attentionErrors=[],attentionLoading=false,attentionRefreshPending=false,attentionVersion=0;
 let contextItem = null, menuTrigger = null;
 let tabOrder=load('switchboard-tab-order');
 if(!Array.isArray(tabOrder))tabOrder=[];
@@ -150,8 +150,11 @@ function waitingForRequestedTab(){
   if(!machine)return !hostsLoaded||loading;
   return machine.connecting||!!entry&&(!entry.state||!entry.catalog?.length||!entry.catalogPolls);
 }
-function catalogUnavailable(host,session){
-  return attentionErrors.some(error=>(error.host==='Switchboard'||error.host===host)&&(!error.session||error.session===session));
+function catalogUnavailable(host,session){return attentionError(host,session);}
+// A relay that is starting or has not scanned a computer yet keeps its last status.
+function statusUnavailable(host,session){return attentionError(host,session,false);}
+function attentionError(host,session,pending){
+  return attentionErrors.some(error=>(error.host==='Switchboard'||error.host===host)&&(!error.session||error.session===session)&&(pending===undefined||!!error.pending===pending));
 }
 function updateTabUrl(item){
   if(!item&&(restoringTab||waitingForRequestedTab()))return;
@@ -518,7 +521,7 @@ function sidebarTabs(){
   for(const key of snoozedPlacement.keys())if(!present.has(key))snoozedPlacement.delete(key);
   const result=tabs.map(item=>{
     const eligible=settingValue('move-working-to-snoozed')==='true'&&!item.hidden&&!isPinned(item.key)&&!isReady(item)
-      &&!attentionErrors.some(error=>error.host==='Switchboard'||error.host===item.entry.host&&(!error.session||error.session===item.entry.name));
+      &&!statusUnavailable(item.entry.host,item.entry.name);
     let snoozed=false;
     if(eligible&&autoLabel(item)==='Working'){
       snoozedPlacement.set(item.key,{deadline:null});snoozed=true;
@@ -703,7 +706,7 @@ function render() {
     const title=titles.get(item.key);
     const machine=hosts.get(item.entry.host)?.name || item.entry.host;
     const stateLabel=autoLabel(item);
-    const unavailable=attentionErrors.some(error=>error.host==='Switchboard'||error.host===item.entry.host&&(!error.session||error.session===item.entry.name));
+    const unavailable=statusUnavailable(item.entry.host,item.entry.name);
     const flagged=!!ready[item.key]||item.tab.name.startsWith('*');
     const starred=isReady(item);
     // The web server names tabs opened with Run as administrator.
@@ -777,11 +780,11 @@ function render() {
   }
   const errors=[...hosts.values()].filter(h=>h.error).map(h=>({host:h.id,message:`${h.name}: ${h.error}`}));
   for(const entry of sessions.values())if(entry.closeError)errors.push({message:entry.closeError});
-  for(const error of attentionErrors)errors.push({host:hosts.has(error.host)?error.host:null,message:`${hosts.get(error.host)?.name||error.host}: attention status unavailable`});
+  for(const error of attentionErrors)if(!error.pending)errors.push({host:hosts.has(error.host)?error.host:null,message:`${hosts.get(error.host)?.name||error.host}: attention status unavailable`});
   if(currentEntry?.disconnected)errors.push({message:`${hosts.get(currentEntry.host)?.name||currentEntry.host}: reconnecting…`});
   setStatus(errors.length?errors.map(error=>error.message).join(' · '):`${hosts.size} machines · ${tabs.length} tabs${current?' · '+hosts.get(current.entry.host)?.name:''}`,errors.length>0,errors);
   showRetirementStatus();
-  if(hostsLoaded&&attentionLoaded&&!terminalsSettling())globalThis.SwitchboardStartup?.save([...hosts.values()],allTabs(true).map(item=>({...item,title:tabTitle(item)})),groups);
+  if(hostsLoaded&&attentionLoaded&&!terminalsSettling())globalThis.SwitchboardStartup?.save([...hosts.values()],allTabs(true).map(item=>({...item,title:tabTitle(item),states:statesForTab(item)})),groups);
   if ((selected !== previous || wasRestoring&&!restoringTab) && current) focus(current,true);
   if(selected!==previous) $('tabs').querySelector('.selected')?.scrollIntoView({block:'nearest',inline:'nearest'});
   globalThis.SwitchboardAskpass?.update();
@@ -2099,8 +2102,10 @@ async function refreshAttention(immediate=false,watch=false){
     attentionVersion=data.version??attentionVersion;
     if(relayLostAt){relayLostAt=0;refresh();}
     askpassRequests=data.askpass||[];
-    paneAttention=new Map((data.panes||[]).map(state=>{const key=attentionKey(state.host,state.session,state.pane_id);return [key,{...state,key}];}));
     attentionErrors=data.errors||[];
+    const previous=paneAttention;
+    paneAttention=keyedAttention(data.panes||[]);
+    for(const [key,state] of previous)if(!paneAttention.has(key)&&attentionError(state.host,state.session,true))paneAttention.set(key,state);
     // The relay also preserves catalogs during failed scans. Use those on a
     // fresh page, and retain browser entries the failed scan could not supply.
     const incoming=data.tabs||[],identity=tab=>JSON.stringify([tab.host,tab.session,tab.id]);
@@ -2121,6 +2126,9 @@ async function refreshAttention(immediate=false,watch=false){
     return data.version!==undefined;
   }catch(_){attentionLoaded=true;paneAttention.clear();askpassRequests=[];attentionErrors=[{host:'Switchboard'}];render();relayLost();return false;}
   finally{if(!watch){attentionLoading=false;if(attentionRefreshPending){attentionRefreshPending=false;refreshAttention();}}}
+}
+function keyedAttention(states){
+  return new Map(states.map(state=>{const key=attentionKey(state.host,state.session,state.pane_id);return [key,{...state,key}];}));
 }
 // An upgrade restarts the relay for about a second. Retry every 250 ms for 10 s
 // instead of waiting for the next poll, and reload hosts once it answers.

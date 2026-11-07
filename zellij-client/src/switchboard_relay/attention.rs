@@ -957,7 +957,7 @@ impl PollState {
                 merged["errors"]
                     .as_array_mut()
                     .unwrap()
-                    .push(json!({"host":host,"message":"Status not scanned yet"}));
+                    .push(json!({"host":host,"message":"Status not scanned yet","pending":true}));
             }
         }
         merged
@@ -2265,6 +2265,8 @@ esac
         let cold = PollState::default().merged(&["windows".into()]);
         assert!(cold["tabs"].as_array().unwrap().is_empty());
         assert_eq!(cold["errors"][0]["host"], "windows");
+        // Browsers keep the last status shown instead of flashing "Unavailable".
+        assert_eq!(cold["errors"][0]["pending"], true);
     }
 
     #[test]

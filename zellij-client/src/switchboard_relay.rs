@@ -1310,13 +1310,14 @@ async fn state(config: &RelayConfig, port: u16) -> anyhow::Result<RelayState> {
         hosts: Arc::new(hosts),
         order: Arc::new(order),
         port,
-        // Until the first scan, report every host unavailable rather than tabless.
+        // Until the first scan, every host is pending rather than tabless, so browsers
+        // keep their last status instead of flashing "Unavailable".
         attention: Arc::new(tokio::sync::watch::Sender::new((
             // Versions keep rising across restarts, so browsers can drop stale answers.
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |since| since.as_millis() as u64),
-            json!({"panes": [], "tabs": [], "errors": [{"host": "Switchboard", "message": "Status starting"}]}),
+            json!({"panes": [], "tabs": [], "errors": [{"host": "Switchboard", "message": "Status starting", "pending": true}]}),
         ))),
         poll: Default::default(),
         mesh: None,
@@ -3070,7 +3071,7 @@ mod tests {
         attention.as_object_mut().unwrap().remove("version");
         assert_eq!(
             attention,
-            json!({"panes": [], "tabs": [], "errors": [{"host": "Switchboard", "message": "Status starting"}]})
+            json!({"panes": [], "tabs": [], "errors": [{"host": "Switchboard", "message": "Status starting", "pending": true}]})
         );
         assert_eq!(
             client

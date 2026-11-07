@@ -92,3 +92,61 @@ test('reload shows cached rows before discovery, survives empty snapshots, and d
     assert.deepEqual(errors,[]);
   }finally{await browser.close();}
 });
+
+test('reload keeps the last agent status instead of flashing an empty or unavailable one',
+  {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
+  const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
+  const browser=await chromium.launch({headless:true});
+  try{
+    const page=await browser.newPage();page.setDefaultTimeout(10000);
+    const errors=[];page.on('pageerror',error=>errors.push(error.message));
+    const first=tab('mac',1,'First'),since=Math.floor(Date.now()/1000)-120;
+    const working={tabs:[first],panes:[{host:'mac',session:'main',pane_id:1,tab_id:1,agent:'claude',state:'working',since}],errors:[]};
+    let answer=working,release=null;
+    await page.addInitScript(()=>{window.setInterval=()=>0;});
+    await page.route('**/*',async route=>{
+      const pathname=new URL(route.request().url()).pathname;
+      const json=value=>route.fulfill({contentType:'application/json',body:JSON.stringify(value)});
+      if(pathname==='/api/health')return json({});
+      if(pathname==='/api/mesh')return json({members:[]});
+      if(pathname==='/api/hosts')return json([{id:'mac',name:'Mac'}]);
+      if(pathname.startsWith('/api/hosts/'))return json({id:'mac',name:'Mac',sessions:[{name:'main',web_clients_allowed:true}]});
+      if(pathname==='/api/attention'){if(release)await release;return json(answer);}
+      if(pathname.startsWith('/hosts/')){
+        const pane=first.panes[0];
+        return route.fulfill({contentType:'text/html',body:`<input id="terminal-input"><script>
+          const pane=${JSON.stringify(pane)};
+          const state=focus_id=>parent.postMessage({type:'zellij-state',focus_id,payload:{session_name:'main',panes:[pane],active_pane:pane}},location.origin);
+          addEventListener('message',event=>{if(event.data.type==='zellij-focus')state(event.data.focus_id)});state();
+        </script>`});
+      }
+      const file=pathname==='/'?'index.html':pathname.slice(1);
+      if(!['index.html','app.js','startup-cache.js','close.js','titles.js','style.css','pairing-notice.js'].includes(file))return route.fulfill({status:404,body:''});
+      return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
+    });
+    const status=()=>page.locator('#tabs .tab-select').first().getAttribute('data-agent-state');
+    await page.goto('https://switchboard.test/?host=mac&session=main&tab=1');
+    await page.waitForFunction(()=>document.querySelector('#tabs .tab-select')?.dataset.agentState==='Working');
+    await page.waitForFunction(()=>JSON.parse(localStorage.getItem('switchboard-startup-tabs')||'null')?.attention?.[0]?.state==='working');
+    let unblock;release=new Promise(resolve=>unblock=resolve);
+    await page.reload({waitUntil:'domcontentloaded'});
+    await page.locator('#tabs .tab-select').first().waitFor();
+    assert.equal(await status(),'Working','The cached status shows before the relay answers');
+    // A relay that just restarted has not scanned this computer yet.
+    answer={tabs:[],panes:[],errors:[{host:'Switchboard',message:'Status starting',pending:true}]};
+    unblock();release=null;
+    await page.evaluate(()=>refreshAttention());
+    assert.equal(await status(),'Working','A relay still starting keeps the last status');
+    assert.equal(await page.locator('#tabs .tab-name').first().textContent(),'First');
+    answer={...working,errors:[{host:'mac',message:'Status not scanned yet',pending:true}],panes:[]};
+    await page.evaluate(()=>refreshAttention());
+    assert.equal(await status(),'Working','A computer not scanned yet keeps its last status');
+    answer={...working,panes:[{...working.panes[0],state:'ready',seen:true}]};
+    await page.evaluate(()=>refreshAttention());
+    assert.equal(await status(),'Ready','The scanned status replaces the cached one');
+    answer={tabs:[first],panes:[],errors:[{host:'mac',message:'Status unavailable from paired computer'}]};
+    await page.evaluate(()=>refreshAttention());
+    assert.equal(await status(),'Status unavailable','A real outage still reads as unavailable');
+    assert.deepEqual(errors,[]);
+  }finally{await browser.close();}
+});

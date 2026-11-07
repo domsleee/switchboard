@@ -438,7 +438,7 @@ test('new tab focus and catalog resolve selection in either arrival order withou
 test('new tab requests one immediate catalog refresh after an in-flight scan',async()=>{
   let release,requests=0;
   const response=new Promise(resolve=>release=resolve);
-  const context={attentionLoading:false,attentionRefreshPending:false,attentionVersion:0,tabCatalog:[],catalogUnavailable:()=>false,sessions:new Map(),allTabs:()=>[],render(){},
+  const context={attentionLoading:false,attentionRefreshPending:false,attentionVersion:0,tabCatalog:[],paneAttention:new Map(),catalogUnavailable:()=>false,sessions:new Map(),allTabs:()=>[],render(){},
     selected:null,attentionKey(){},updateCreatedTabs(){},setInterval(){},
     fetch:async()=>{requests++;if(requests===1)await response;return {ok:true,json:async()=>({tabs:[],panes:[]})};}};
   vm.createContext(context);
