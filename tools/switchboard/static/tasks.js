@@ -7,7 +7,7 @@
   const byId=id=>document.getElementById(id);
   const element=(tag,className,text)=>{const node=document.createElement(tag);if(className)node.className=className;if(text!==undefined)node.textContent=text;return node;};
   const marks={ok:'✓',changed:'↑',failed:'✗',timeout:'✗',interrupted:'✗',running:'…',waiting:'…',skipped:'–',never:'·'};
-  let computers=[],loading=false,failed=false,fast=null,batch=[],dispatching=false;
+  let computers=[],versions=[],loading=false,failed=false,fast=null,batch=[],dispatching=false;
   const pendingRuns=new Set();
   const groupKey=(computer,group)=>JSON.stringify([computer.host||'',group.name]);
   const busyGroup=(computer,group)=>group.running||pendingRuns.has(groupKey(computer,group));
@@ -302,6 +302,28 @@
     if(status!=='ok')block.open=true;
     return block;
   }
+  function versionLabel(computer){
+    if(computer.local)return 'This computer';
+    const own=computers.find(c=>c.local&&!c.error),build=computer.switchboard,local=own?.switchboard;
+    const valid=commit=>typeof commit==='string'&&/^[a-f0-9]{7,40}$/i.test(commit);
+    if(computer.error||!valid(build?.commit)||!valid(local?.commit))return 'Version comparison unavailable';
+    const same=(a,b)=>a.toLowerCase().startsWith(b.toLowerCase())||b.toLowerCase().startsWith(a.toLowerCase());
+    if(same(build.commit,local.commit))return 'Same version as this computer';
+    // Only use host timestamps for the exact builds returned by Health. The
+    // two snapshots can straddle an update, so mismatched metadata is ignored.
+    const time=(c,sb)=>{
+      const host=versions.find(h=>c.local?h.local:h.id===c.host);
+      return valid(host?.version?.commit)&&same(host.version.commit,sb.commit)
+        ? Date.parse(host.version.commit_timestamp||'') : NaN;
+    };
+    let theirs=time(computer,build),ours=time(own,local);
+    if(!Number.isFinite(theirs)||!Number.isFinite(ours)){
+      const day=value=>/^\d{4}-\d{2}-\d{2}$/.test(value||'')?Date.parse(value):NaN;
+      theirs=day(build.commitDate);ours=day(local.commitDate);
+    }
+    if(!Number.isFinite(theirs)||!Number.isFinite(ours)||theirs===ours)return 'Different version · order unknown';
+    return theirs<ours?'Older than this computer':'Newer than this computer';
+  }
   function renderPanel(){
     const list=byId('updates');if(!list)return;
     const open=new Set([...list.querySelectorAll('details[data-key][open]')].map(node=>node.dataset.key));
@@ -326,7 +348,9 @@
       const section=element('details','log-computer task-computer');section.dataset.key=JSON.stringify([computer.host||'','computer']);section.dataset.status=state;
       const summary=element('summary','computer-summary');
       const title=element('span','computer-title');title.append(element('h4','',computer.name));
-      if(computer.local)title.append(element('small','computer-local','This computer'));
+      const version=element('small','computer-local computer-version',versionLabel(computer));
+      version.title='Compared with the computer serving this Switchboard page. Build order uses commit time.';
+      title.append(version);
       const last=Math.max(0,...groups.map(g=>g.lastEnd||0));
       const status=element('span','computer-state',running?'Working…':issues.length?issues.join(' · '):`All set${last?` · ran ${ago(last)}`:''}`);
       const run=button('Fix',`Fix detected issues on ${computer.name}`,()=>runBatch(repairTargets([computer])));run.className='computer-run';run.disabled=failed||active;
@@ -362,7 +386,11 @@
     const list=byId('updates'),refresh=byId('refresh-updates');
     list?.setAttribute('aria-busy','true');if(refresh)refresh.disabled=true;
     try{
-      const response=await fetch('/api/tasks',{cache:'no-store'});
+      const [response,hosts]=await Promise.all([
+        fetch('/api/tasks',{cache:'no-store'}),
+        fetch('/api/hosts',{cache:'no-store'}).then(r=>r.ok?r.json():[]).catch(()=>[])
+      ]);
+      versions=Array.isArray(hosts)?hosts:[];
       if(!response.ok)throw Error('Update tasks unavailable');
       computers=(await response.json()).computers||[];failed=false;await updateBatch();
     }catch(_){failed=true;}
