@@ -584,6 +584,25 @@ mod orchestration {
     // Serial: concurrent helper processes from parallel tests made the lock check flaky.
     use serial_test::serial;
 
+    #[test]
+    fn switchboard_update_helper_timeout_runs_shell_cleanup() {
+        let directory = tempfile::tempdir().unwrap();
+        let cleaned = directory.path().join("cleaned");
+        let mut command = Command::new("bash");
+        command.args([
+            "-c",
+            "trap 'touch \"$1\"; exit 143' TERM; while :; do sleep .05; done",
+            "fixture",
+        ]);
+        command.arg(&cleaned);
+        let error = run_command(command, Duration::from_millis(250)).unwrap_err();
+        assert!(error.to_string().contains("timed out"));
+        assert!(
+            cleaned.exists(),
+            "timeout must allow the installer's cleanup trap"
+        );
+    }
+
     #[serial]
     #[test]
     fn switchboard_update_waits_for_viewers_and_reuses_verified_download() {
@@ -722,6 +741,48 @@ mod orchestration {
             .state_directory
             .join("activate.json")
             .exists());
+    }
+
+    #[serial]
+    #[test]
+    fn switchboard_update_explicit_retry_after_exhaustion_is_one_attempt() {
+        let harness = Harness::new(false);
+        harness.publish(&full('b'), 5, "broken");
+        for _ in 0..ATTEMPTS {
+            assert!(harness.updater.run().is_err());
+        }
+        assert_eq!(harness.state()["attempts"], ATTEMPTS);
+        assert_eq!(harness.state()["ready"]["commit"], full('b'));
+        let calls = harness.calls();
+        harness.updater.run().unwrap();
+        assert_eq!(harness.calls(), calls);
+        request_activation(&harness.updater.state_directory, &full('b')).unwrap();
+        assert!(harness.updater.run().is_err());
+        assert_eq!(harness.state()["attempts"], ATTEMPTS + 1);
+        assert_eq!(harness.state()["ready"]["commit"], full('b'));
+        let calls = harness.calls();
+        harness.updater.run().unwrap();
+        assert_eq!(
+            harness.calls(),
+            calls,
+            "a requested retry does not reset the budget"
+        );
+    }
+
+    #[serial]
+    #[test]
+    fn switchboard_update_viewer_deferral_retains_last_failure() {
+        let harness = Harness::new(false);
+        harness.publish(&full('b'), 5, "broken");
+        assert!(harness.updater.run().is_err());
+        let error = harness.state()["error"].clone();
+        let _viewer = held_viewer(&harness);
+        harness.updater.run().unwrap();
+        assert_eq!(harness.state()["error"], error);
+        assert!(harness.state()["notice"]
+            .as_str()
+            .unwrap()
+            .contains("waiting"));
     }
 
     #[serial]

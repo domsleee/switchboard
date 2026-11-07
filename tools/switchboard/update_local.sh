@@ -39,7 +39,29 @@ probe_timeout=${SWITCHBOARD_UPDATE_PROBE_TIMEOUT:-15}
 [[ -x $candidate && -f $candidate && -x $installed && -f $installed && ! -L $installed ]] || {
     echo 'Expected an executable candidate and a regular installed executable.' >&2; exit 2;
 }
-lock="$installed.update-lock"
+# Keep the lock in the kernel: SIGKILL cannot leave later installations blocked.
+# FD 9 stays in this installer only; probes and service launches close it.
+# Never unlink the persistent .install-lock file: competing callers must lock
+# the same inode, including after a holder exits.
+if [[ ${SWITCHBOARD_INSTALL_LOCK_HELD:-} != "$installed" ]]; then
+    exec /usr/bin/perl -MFcntl=:flock -MPOSIX=dup2 -e '
+        my ($installed, $script, $binary_only, @args) = @ARGV;
+        open my $lock, ">>", "$installed.install-lock" or die "Cannot open installation lock: $!\n";
+        flock($lock, LOCK_EX | LOCK_NB) or die "Another installation is running.\n";
+        dup2(fileno($lock), 9) >= 0 or die "Cannot retain installation lock: $!\n";
+        $^F = 9;
+        $ENV{SWITCHBOARD_INSTALL_LOCK_HELD} = $installed;
+        exec "/bin/bash", $script, ($binary_only eq "1" ? ("--binary-only") : ()), @args;
+        die "Cannot start installer: $!\n";
+    ' "$installed" "$0" "$binary_only" "$candidate" "$installed"
+fi
+unset SWITCHBOARD_INSTALL_LOCK_HELD
+# Old installers have no owner identity. Preserve their recovery files until an
+# operator has checked for a live installer and moved the abandoned directory.
+[[ ! -e "$installed.update-lock" ]] || {
+    echo "Legacy installation lock $installed.update-lock needs inspection; check for a live update_local.sh before moving it aside." >&2
+    exit 1
+}
 work=''
 staged=''
 changed=false
@@ -47,13 +69,13 @@ old_release=''
 releases=${SWITCHBOARD_RELEASES_DIR:-$HOME/.local/share/switchboard/releases}
 if [[ $linux == true ]]; then
     job=${SWITCHBOARD_SYSTEMD_UNIT:-switchboard.service}
-    restart_job() { systemctl --user restart "$job"; }
-    describe_job() { systemctl --user cat "$job"; }
+    restart_job() { probe systemctl --user restart "$job"; }
+    describe_job() { probe systemctl --user cat "$job"; }
     inspect="systemctl --user status $job"
 else
     job="gui/$(id -u)/${SWITCHBOARD_LAUNCHD_LABEL:-dev.zellij.switchboard}"
-    restart_job() { launchctl kickstart -k "$job"; }
-    describe_job() { launchctl print "$job"; }
+    restart_job() { probe launchctl kickstart -k "$job"; }
+    describe_job() { probe launchctl print "$job"; }
     inspect="launchctl print $job"
 fi
 relay_port=${SWITCHBOARD_RELAY_PORT:-8090}
@@ -68,7 +90,7 @@ else
     digest() { /usr/bin/shasum -a 256 "$1" | awk '{print $1}'; }
 fi
 # The alarm survives exec and terminates only this read-only CLI probe.
-probe() { /usr/bin/perl -e 'alarm shift; exec @ARGV; die "exec failed: $!\n"' "$probe_timeout" "$@"; }
+probe() { /usr/bin/perl -e 'alarm shift; exec @ARGV; die "exec failed: $!\n"' "$probe_timeout" "$@" 9>&-; }
 
 atomic_install() {
     local actual_hash
@@ -129,7 +151,7 @@ start_plain_web() {
     # daemonizes and then exits, so its `|| web --daemonize` fallback never runs.
     probe "$installed" web --status --timeout 2 > /dev/null 2>&1 ||
         (cd "$HOME" && env -u SWITCHBOARD_RECOVER_UNSHARED_SESSION -u SWITCHBOARD_RECOVER_UNSHARED_SOCKET_IDENTITY \
-            "$installed" web --daemonize < /dev/null > /dev/null 2>&1) || true
+            "$installed" web --daemonize 9>&- < /dev/null > /dev/null 2>&1) || true
 }
 await_services() {
     wait_for $((service_timeout / 2)) services_ready && return 0
@@ -163,14 +185,12 @@ finish() {
     fi
     [[ -z $staged ]] || rm -f "$staged"
     [[ -z $work ]] || rm -rf "$work"
-    rmdir "$lock"
     exit "$result"
 }
-mkdir "$lock" || { echo 'Another update is running (or its lock needs inspection).' >&2; exit 1; }
 trap finish EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-work=$(mktemp -d "$lock/work.XXXXXX")
+work=$(mktemp -d "$installed.update-work.XXXXXX")
 old_hash=$(digest "$installed")
 new_hash=$(digest "$candidate")
 old_release="$releases/$old_hash/zellij"
