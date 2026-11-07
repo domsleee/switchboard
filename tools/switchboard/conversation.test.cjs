@@ -14,6 +14,8 @@ test('current conversation opens directly, stays pane-local, and follows a new c
   const file=path.join(__dirname,'static',path.basename(url.pathname));res.setHeader('Content-Type',file.endsWith('.css')?'text/css':'application/javascript');res.end(fs.readFileSync(file));
  });await new Promise(r=>server.listen(0,'127.0.0.1',r));const browser=await chromium.launch();
  try{const page=await browser.newPage({viewport:{width:390,height:844}});await page.addInitScript(()=>{Object.defineProperty(crypto,'randomUUID',{value:undefined});window.intervals=[];window.setInterval=fn=>intervals.push(fn);});const errors=[];page.on('pageerror',e=>errors.push(e.message));await page.goto(`http://127.0.0.1:${server.address().port}`);
+ // Wait for the UI to finish consuming each response before requesting another poll.
+ const poll=async()=>{await page.waitForFunction(()=>!document.querySelector('[aria-label="Refresh"]').disabled);await Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/codex-one')),page.evaluate(()=>intervals.forEach(fn=>fn()))]);await page.waitForFunction(()=>!document.querySelector('[aria-label="Refresh"]').disabled);};
  const terminalMode=page.getByRole('button',{name:'Terminal',exact:true}),conversationMode=page.getByRole('button',{name:'Conversation',exact:true});
  const checkModes=async()=>{const a=await terminalMode.boundingBox(),b=await conversationMode.boundingBox();assert.ok(a&&b);assert.equal(a.y,b.y);assert.ok(a.x<b.x);assert.ok(b.y<20&&b.x+b.width<=page.viewportSize().width&&b.x+b.width>=page.viewportSize().width-20);};
  await checkModes();assert.equal(await conversationMode.getAttribute('aria-pressed'),'true');
@@ -22,10 +24,10 @@ test('current conversation opens directly, stays pane-local, and follows a new c
  if(process.env.MODE_SCREENSHOTS)await page.screenshot({path:process.env.MODE_SCREENSHOTS+'/conversation.png'});
  await page.getByLabel('Reply draft').focus();await page.evaluate(()=>intervals.forEach(fn=>fn()));await page.getByText('Final answer',{exact:true}).waitFor();assert.equal(await page.locator('.conversation-message').count(),3);
  await page.evaluate(()=>{window.originalMessage=document.querySelector('.conversation-message');});
- await Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/codex-one')),page.evaluate(()=>intervals.forEach(fn=>fn()))]);
+ await poll();
  assert.equal(await page.evaluate(()=>originalMessage===document.querySelector('.conversation-message')),true);assert.equal(await page.evaluate(()=>originalMessage===document.querySelector('.conversation-message')),true);
  await page.locator('.conversation-panel').focus();
- await Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/codex-one')),page.evaluate(()=>intervals.forEach(fn=>fn()))]);
+ await poll();
  // New history continues arriving while the composer has focus, preserving existing message nodes.
  answer='Updated answer';await page.getByLabel('Reply draft').fill('keep typing');
  await page.evaluate(()=>intervals.forEach(fn=>fn()));await page.getByText('Updated answer',{exact:true}).waitFor();
@@ -39,7 +41,7 @@ test('current conversation opens directly, stays pane-local, and follows a new c
  await page.getByLabel('Reply draft').fill('draft one');
  await page.evaluate(()=>{current.state='working';});await page.getByLabel('Reply draft').press('Enter');
  assert.equal(await page.evaluate(()=>sent.length),1);assert.match(await page.locator('.conversation-send-notice').textContent(),/Still connecting/);
- await Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/codex-one')),page.evaluate(()=>intervals.forEach(fn=>fn()))]);
+ await poll();
  assert.equal(await page.locator('.conversation-send-notice').isVisible(),true);
  await page.evaluate(()=>{current.state='ready';});
  await page.evaluate(()=>{current={...current,key:'pane2',pane:2,chatId:null};SwitchboardConversation.update();});assert.equal(await page.getByLabel('Reply draft').inputValue(),'');assert.equal(await page.locator('.conversation-message').count(),0);
