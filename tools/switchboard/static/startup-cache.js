@@ -9,6 +9,9 @@
       &&saved.tabs.every(tab=>typeof tab.host==='string'&&typeof tab.session==='string'&&Number.isInteger(tab.id)&&tab.id>=0&&Number.isInteger(tab.position)&&typeof tab.name==='string'
         &&Array.isArray(tab.panes)&&tab.panes.every(pane=>Number.isInteger(pane?.pane_id))))snapshot=saved;
   }catch(_){}
+  // Each pane's last status, shown until the relay answers so rows do not flash empty.
+  snapshot.attention=(Array.isArray(snapshot.attention)?snapshot.attention:[]).filter(state=>
+    typeof state?.host==='string'&&typeof state.session==='string'&&Number.isInteger(state.pane_id)&&typeof state.state==='string');
   const identity=tab=>JSON.stringify([tab.host,tab.session,'tab',tab.id]);
   const held=new Map(snapshot.tabs.map(tab=>[identity(tab),tab]));
   const order=[...held.keys()];
@@ -26,11 +29,13 @@
     },
     finish(){finished=true;return {tabs:latest,listed};},
     save(hosts,items,groups){
-      const tabs=items.filter(item=>!item.tab.pending&&Number.isInteger(item.tab.id)).map(({entry,tab,title})=>({
+      const saved=items.filter(item=>!item.tab.pending&&Number.isInteger(item.tab.id));
+      const tabs=saved.map(({entry,tab,title})=>({
         host:entry.host,session:entry.name,id:tab.id,position:tab.position,name:tab.name,cachedTitle:title,
         panes:tab.panes.map(pane=>({pane_id:pane.pane_id,is_plugin:pane.is_plugin,tab_position:tab.position})),
       }));
-      const content={version:1,hosts:hosts.map(host=>({id:host.id,name:host.name,local:host.local,group:groups[host.id]})),tabs};
+      const attention=saved.flatMap(item=>item.states||[]).map(({key,...state})=>state);
+      const content={version:1,hosts:hosts.map(host=>({id:host.id,name:host.name,local:host.local,group:groups[host.id]})),tabs,attention};
       const serialized=JSON.stringify(content),now=Date.now();
       if(serialized===savedContent&&now-savedAt<60000)return;
       try{localStorage.setItem(key,JSON.stringify({...content,savedAt:now}));savedContent=serialized;savedAt=now;}catch(_){}
