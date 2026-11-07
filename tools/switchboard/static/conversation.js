@@ -11,8 +11,10 @@
   }
   window.SwitchboardConversation={install({selection,terminal,modeChanged=()=>{}}){
     const root=document.getElementById('terminals'),drafts=new Map(),attachments=new Map(),retryKeys=new Map();
-    let savedMode;try{savedMode=localStorage.getItem('switchboard-view-mode');}catch{}
-    let target=null,open=savedMode? savedMode==='conversation':matchMedia('(max-width:700px)').matches,generation=0,startCursor=0,tailCursor=0,nextCursor=null,messages=[],pending=null,loading=false,loaded=false,lastPaint=null;
+    const mobile=matchMedia('(max-width:700px), (pointer:coarse) and (max-width:1000px)').matches;
+    const modeKey=mobile?'switchboard-mobile-view-mode':'switchboard-view-mode';
+    let savedMode;try{savedMode=localStorage.getItem(modeKey);}catch{}
+    let target=null,open=savedMode? savedMode==='conversation':mobile,generation=0,startCursor=0,tailCursor=0,nextCursor=null,messages=[],pending=null,loading=false,loaded=false,lastPaint=null;
     const modes=el('div',undefined,'conversation-modes');modes.hidden=true;modes.setAttribute('role','group');modes.setAttribute('aria-label','View mode');
     const back=el('button','Terminal'),toggle=el('button','Conversation','conversation-toggle');back.type=toggle.type='button';back.setAttribute('aria-pressed',String(!open));toggle.setAttribute('aria-pressed',String(open));modes.append(back,toggle);root.append(modes);
     const panel=el('section',undefined,'conversation-panel');panel.hidden=true;panel.tabIndex=-1;panel.setAttribute('aria-label','Agent conversation');
@@ -31,7 +33,8 @@
     function status(text,quiet=false){notice.textContent=text;notice.hidden=quiet;}
     function busy(value){loading=value;older.disabled=refresh.disabled=value;}
     function focusSurface(){if(!panel.hidden&&!panel.contains(document.activeElement))panel.focus({preventScroll:true});}
-    function show(value){if(!value){window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();}open=value;root.classList.toggle('conversation-open',open);modeChanged();try{localStorage.setItem('switchboard-view-mode',value?'conversation':'terminal');}catch{}panel.hidden=!value;toggle.setAttribute('aria-pressed',String(value));back.setAttribute('aria-pressed',String(!value));if(value){document.getElementById('artifact-preview').hidden=true;update();if(binding()&&!messages.length)load('initial');focusSurface();}else if(target)terminal(target);viewport();}
+    function show(value){if(!value){window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();}open=value;root.classList.toggle('conversation-open',open);modeChanged();try{localStorage.setItem(modeKey,value?'conversation':'terminal');}catch{}panel.hidden=!value;toggle.setAttribute('aria-pressed',String(value));back.setAttribute('aria-pressed',String(!value));if(value){document.getElementById('artifact-preview').hidden=true;update();if(binding()&&!messages.length)load('initial');focusSurface();}else if(target)terminal(target);viewport();}
+
     toggle.onclick=()=>show(true);back.onclick=()=>show(false);
     async function get(url){const response=await fetch(url);if(!response.ok)throw Error(`Request failed (${response.status})`);const data=await response.json();if(data.error)throw Error(data.error);return data;}
     const rendered=new Map();
@@ -79,9 +82,12 @@
       }catch(error){if(version===generation){if(prepend){older.textContent='Retry earlier messages';older.hidden=false;}else{status(error.message);refresh.hidden=false;updateLatest();}}}finally{if(version===generation){busy(false);historyStatus.hidden=true;if(catchUp)setTimeout(()=>{if(version===generation)load();},0);else if(loaded&&startCursor>0&&older.hidden&&list.scrollHeight<=list.clientHeight)setTimeout(()=>{if(version===generation)load('older');},0);}}
     }
     older.onclick=()=>load('older');refresh.onclick=()=>load(messages.length?'poll':'initial');latest.onclick=()=>{list.scrollTop=list.scrollHeight;updateLatest();};
+    let draftSizeKey;
     function sizeDraft(){
+      if(panel.hidden||form.hidden)return;
+      const key=JSON.stringify([draft.value,draft.clientWidth,window.visualViewport?.height||innerHeight]);
       const follow=nearBottom(),limit=Math.min(144,Math.max(60,(window.visualViewport?.height||innerHeight)*.25));
-      draft.style.height='0px';const height=draft.scrollHeight;draft.style.height=Math.min(height,limit)+'px';draft.style.overflowY=height>limit?'auto':'hidden';
+      if(key!==draftSizeKey){draftSizeKey=key;draft.style.height='0px';const height=draft.scrollHeight;draft.style.height=Math.min(height,limit)+'px';draft.style.overflowY=height>limit?'auto':'hidden';}
       panel.style.setProperty('--composer-height',form.offsetHeight+'px');if(follow)list.scrollTop=list.scrollHeight;updateLatest();
     }
     function viewport(){

@@ -382,7 +382,7 @@ fn elevated_shell(default_shell: Option<PathBuf>) -> RunCommandAction {
 }
 
 // Run through the configured shell so interactive aliases and functions are available.
-fn tab_command(
+pub(super) fn tab_command(
     default_shell: Option<PathBuf>,
     command: String,
     cwd: Option<PathBuf>,

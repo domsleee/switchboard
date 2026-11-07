@@ -10,6 +10,7 @@ mod projects;
 mod server_listener;
 mod session_management;
 mod sharing_recovery;
+mod tab_creation;
 mod types;
 mod utils;
 mod websocket_handlers;
@@ -282,6 +283,7 @@ pub async fn serve_web_client(
         .route("/session", post(create_new_client))
         .route("/session-list", get(list_sessions_handler))
         .route("/project-list", get(projects::list))
+        .route("/new-tab", post(tab_creation::create))
         .route(
             "/paste-image",
             post(paste_image_handler).layer(DefaultBodyLimit::max(PASTE_IMAGE_LIMIT)),

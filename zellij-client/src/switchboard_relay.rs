@@ -9,6 +9,7 @@ pub use attention::forward_hook;
 mod attachments;
 mod chats;
 mod control;
+pub(crate) use control::own_executable;
 mod hostname;
 pub(crate) mod interactive;
 mod logs;

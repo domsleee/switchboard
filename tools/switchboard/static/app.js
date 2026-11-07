@@ -341,6 +341,7 @@ function setCatalog(entry,tabs){
   if(changed){saveReady();localStorage.setItem('switchboard-tab-order',JSON.stringify(tabOrder));}
   followRestart(entry,tabs);markNewTabs(entry,tabs);
   entry.catalog=tabs;
+  if(entry.apiCreationPane!==undefined&&tabs.some(tab=>tab.panes.some(p=>!p.is_plugin&&p.pane_id===entry.apiCreationPane))){entry.starting=false;clearTimeout(entry.startTimeout);delete entry.apiCreationPane;}
   entry.provisionalTabs=entry.provisionalTabs?.filter(tab=>!migrations.has(tabKey(entry,tab)));
   // Keep confirmed closes hidden through snapshots taken before the close finished.
   for(const [key,closing] of [...(entry.closingTabs||[])]){
@@ -546,6 +547,8 @@ snoozedHeader.onclick=()=>{
   snoozedOpen=!snoozedOpen;localStorage.setItem(`switchboard-snoozed-open:${filter}`,String(snoozedOpen));render();
 };
 function updateTabTooltips(){
+  // Touch users have the actions menu; avoid measuring every row during polling.
+  if(mobileSidebar.matches){for(const button of tabButtons.values())button.removeAttribute('title');return;}
   for(const name of $('tabs').querySelectorAll('.tab-name')){
     const button=name.parentElement;
     if(name.scrollWidth>name.clientWidth)button.title=name.textContent;
@@ -1196,7 +1199,6 @@ let newTabElevated=false;
 $('new-tab').onclick=()=>openNewTabDialog(false);
 $('new-admin-tab').onclick=()=>openNewTabDialog(true);
 function openNewTabDialog(elevated){
-  if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.showTerminal();
   newTabElevated=elevated;
   $('new-tab-title').textContent=elevated?'New administrator tab':'New tab';
   $('new-tab-command').value='c';newTabCommandLookup.close();newTabProjectLookup.close();
@@ -1287,6 +1289,30 @@ for(const dialog of document.querySelectorAll('dialog')){
   dialog.addEventListener('pointerdown',event=>{pressedOutside=outside(event);});
   dialog.addEventListener('click',event=>{if(pressedOutside&&outside(event))dialog.close();pressedOutside=false;});
 }
+// Native creation uses a short CLI request, never a terminal viewer. This keeps
+// Conversation open without letting a phone constrain an existing tab's size.
+async function createConversationTab(key,launch){
+  const [hostId,name]=JSON.parse(key),host=hosts.get(hostId);if(!host||host.error)return;
+  const entry=sessions.get(key)||connectSession(host,name,true);
+  if(entry.pendingNewTab){setStatus('A tab is already being created on this computer.',true);return;}
+  const pending=entry.pendingNewTab=new Set(sessionTabs(entry).map(tab=>tabKey(entry,tab)));
+  pending.requestId=entry.newTabRequestId=(entry.newTabRequestId||0)+1;
+  entry.creatingTab={id:'creating',pending:true,name:'Creating tab…',position:Infinity,panes:[]};
+  const placeholder=selected=tabKey(entry,entry.creatingTab);restoringTab=false;
+  if(filter!=='all'&&groups[hostId]!==filter)setFilter('all');$('tab-search').value='';
+  sidebarOpen=false;updateSidebar();$('new-tab-dialog').close();render();globalThis.SwitchboardConversation.focus();
+  try{
+    const response=await fetch(`/hosts/${encodeURIComponent(hostId)}/new-tab`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:name,...launch})});
+    if(!response.ok)throw Error(response.status===404?'Update Switchboard on this computer to create tabs from Conversation.':await response.text());
+    const result=await response.json();if(!Number.isInteger(result.pane_id)||result.pane_id<0)throw Error('The new tab did not return its identity. Check the tab list before retrying.');
+    if(entry.pendingNewTab!==pending)return;
+    entry.apiCreationPane=result.pane_id;
+    const tab={id:result.pane_id,pending:true,name:'New tab',position:Infinity,panes:[{pane_id:result.pane_id,is_plugin:false,tab_position:Infinity}]};
+    entry.provisionalTabs??=[];entry.provisionalTabs.push(tab);entry.creatingTab=null;entry.pendingNewTab=null;
+    if(selected===placeholder)selected=tabKey(entry,tab);
+    render();refreshAttention(true);refresh();
+  }catch(error){failNewTab(entry,pending.requestId,error.message||'Could not confirm tab creation. Check the tab list before retrying.');}
+}
 $('new-tab-dialog').addEventListener('close',()=>{$('new-tab-form').pendingSubmission=null;});
 $('new-tab-form').onsubmit=event=>{
   event.preventDefault();const request={};$('new-tab-form').pendingSubmission=request;
@@ -1294,9 +1320,10 @@ $('new-tab-form').onsubmit=event=>{
 };
 async function createNewTab(key,launch,isCurrent=()=>true){
   if(!launch.project||!launch.command)return;
+  if(globalThis.SwitchboardConversation?.wantsConversation?.())return createConversationTab(key,launch);
   let entry=sessions.get(key);
-  // Opening New tab from Conversation starts the viewer connection. Keep the
-  // dialog usable, but do not mistake that connecting session for an empty host.
+  // A recently resumed Terminal may still be connecting. Keep the dialog
+  // usable without mistaking that session for an empty host.
   if(entry&&!entry.state&&sessionTabs(entry).length){
     const deadline=Date.now()+10000;
     while(isCurrent()&&sessions.get(key)===entry&&!entry.state&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,50));
@@ -1307,15 +1334,13 @@ async function createNewTab(key,launch,isCurrent=()=>true){
     const [id,name]=JSON.parse(key),host=hosts.get(id);
     if(!host||host.error||host.sessions?.length!==0)return;
     if(entry&&!entry.starting){entry.frame.remove();sessions.delete(key);}
-    if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.showTerminal();
     const created=connectSession(host,name,true);created.selectOnStart=true;created.launchOnStart=launch;
     if(filter!=='all'&&groups[id]!==filter)setFilter('all');$('tab-search').value='';
-    // Closing the dialog returns focus to +; give it to the new terminal instead.
-    $('new-tab-dialog').close();render();created.frame.focus();return;
+    // Closing the dialog returns focus to +; restore the current viewing surface.
+    $('new-tab-dialog').close();render();if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.focus();else created.frame.focus();return;
   }
   if(!sessionTabs(entry).length)return;
   if(entry.pendingNewTab||entry.requestedPane||entry.focusPending){setStatus('Wait for the terminal to receive focus before creating a tab.',true);return;}
-  if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.showTerminal();
   const pending=entry.pendingNewTab=new Set(sessionTabs(entry).map(tab=>tabKey(entry,tab)));
   pending.requestId=entry.newTabRequestId=(entry.newTabRequestId||0)+1;
   pending.startedAt=performance.timeOrigin+performance.now();
@@ -1328,8 +1353,8 @@ async function createNewTab(key,launch,isCurrent=()=>true){
   sidebarOpen=false;updateSidebar();$('artifact-preview').hidden=true;$('artifact-frame').contentWindow?.location.replace('about:blank');
   $('new-tab-dialog').close();render();
   // Keyboard dismissal can leave focus on the hidden session selector, then
-  // move it to the body. Hand focus to the frame before creation records it.
-  entry.frame.focus();
+  // move it to the body. Restore the viewing surface before creation records it.
+  if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.focus();else entry.frame.focus();
   entry.frame.contentWindow.postMessage({type:'zellij-new-tab',...launch,request_id:pending.requestId,started_at:pending.startedAt},location.origin);
   setStatus(`Creating a tab on ${hosts.get(entry.host)?.name}…`);
   setTimeout(()=>failNewTab(entry,pending.requestId,'No new tab received. Check the connection and try again.'),30000);
@@ -1791,7 +1816,8 @@ window.SwitchboardConversation?.install({
     const item=allTabs().find(item=>item.key===selected);if(!item)return null;
     const active=item.entry.state?.active_pane,panes=(!item.entry.state?item.tab.panes:tabPanes(item.entry,item.tab)).filter(p=>!p.is_plugin);
     const preferred=item.entry.resumePane||active;
-    const pane=panes.find(p=>p.pane_id===preferred?.pane_id)||panes.find(p=>p.is_focused)||panes[0];if(!pane)return null;
+    const pane=panes.find(p=>p.pane_id===preferred?.pane_id)||panes.find(p=>p.is_focused)||panes[0];if(!pane)return {key:item.key,host:item.entry.host,frame:item.entry.frame,title:tabTitle(item)};
+
     const state=paneAttention.get(attentionKey(item.entry.host,item.entry.name,pane.pane_id));
     return {key:JSON.stringify([item.entry.host,item.entry.name,pane.pane_id]),host:item.entry.host,chatHost:hosts.get(item.entry.host)?.local?'local':item.entry.host,pane:pane.pane_id,frame:item.entry.frame,terminalReady:!item.entry.suspended&&!item.entry.disconnected&&!item.entry.needsFocus&&!item.entry.focusPending&&active?.pane_id===pane.pane_id,title:tabTitle(item),agent:state?.agent,state:state?.state,chatId:state?.chat_id};
   },
