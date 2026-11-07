@@ -97,8 +97,13 @@ new endpoints. See the [internals](docs/SWITCHBOARD_INTERNALS.md) for transport 
   sizing. Conversation still disconnects viewers on phones, which can force-resize the shared
   terminal, and on engines that do not confirm hidden. It never attaches a new viewer.
 - Agent state uses reported hooks and screen/title fallback. Check which source produced the
-  state before changing detection. For a screen-classification change, capture the actual
-  pane with `dump-screen` and add it as a `classify` test before changing the rule.
+  state before changing detection: the relay logs each change as `Switchboard pane … (screen …,
+  hook …)`. For a screen-classification change, capture the actual pane with `dump-screen` and
+  add it as a `classify` test before changing the rule.
+- [T3 Code](https://github.com/pingdotgg/t3code) is the reference for what an agent's state
+  should be. It reads structured agent events, treats a turn ending and its background work
+  settling as separate milestones, and keeps a thread active while the agent awaits a task.
+  Check what it does before choosing a new state rule.
 
 ## Privacy
 
