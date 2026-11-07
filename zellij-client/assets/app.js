@@ -534,7 +534,7 @@ function installWheelHandler(term) {
 }
 
 const NATURAL_MIN_TOTAL_ROWS = 25;
-const MOBILE_LEGIBLE_FLOOR_PX = 16;
+const MOBILE_LEGIBLE_FLOOR_PX = 12;
 
 // drawImage on a composited WebGL canvas returns blank pixels unless
 // preserveDrawingBuffer is set (needed by the pinch overlay snapshot); this must
@@ -599,7 +599,7 @@ function settleFontSize(term, fitAddon, config) {
     const fontSize = config ? config.font_size : undefined;
     const mobileViewport = isMobileViewport();
     const hasExplicitFontSize = typeof fontSize === "number" && fontSize > 0;
-    const baseFontPx = hasExplicitFontSize ? fontSize : mobileViewport ? 24 : 12;
+    const baseFontPx = hasExplicitFontSize ? fontSize : mobileViewport ? 14 : 12;
     applyFontSize(term, fitAddon, baseFontPx);
     const needsMobileDownscale =
         !hasExplicitFontSize &&
