@@ -151,6 +151,23 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
       await page.keyboard.type('draft '+number);
       assert.ok((await input.inputValue()).endsWith('draft '+number),'Typing reaches the new terminal without an extra click');
     }
+    // The close event arrives after the dialog closes; a quick reopen keeps its new draft,
+    // and an upload still running for the closed dialog can no longer create a tab.
+    delayUpload=true;
+    await page.evaluate(()=>{$('new-tab').click();addNewTabFiles([new File(['image'],'slow.png',{type:'image/png'})]);$('new-tab-form').requestSubmit();});
+    for(let i=0;!releaseUpload&&i<200;i++)await new Promise(resolve=>setTimeout(resolve,5));assert.ok(releaseUpload);
+    assert.deepEqual(await page.evaluate(async()=>{
+      $('new-tab-dialog').close();$('new-tab').click();
+      addNewTabFiles([new File(['image'],'quick.png',{type:'image/png'})]);
+      await new Promise(resolve=>setTimeout(resolve,50));
+      return {files:newTabFiles.length,enabled:!$('new-tab-prompt').disabled};
+    }),{files:1,enabled:true});
+    releaseUpload();delayUpload=false;releaseUpload=null;
+    await page.waitForResponse(response=>new URL(response.url()).pathname.endsWith('/attachments'));
+    await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,50)));
+    assert.equal(await page.locator('#new-tab-dialog').evaluate(dialog=>dialog.open),true,'The old upload does not close the fresh dialog');
+    assert.equal(await input.evaluate(()=>!!window.creationRequested),false,'The old upload does not create a tab');
+    await page.keyboard.press('Escape');
     // A lookup must follow the selected computer, including a late reply from the previous one.
     await page.locator('#new-tab').click();
     await page.waitForFunction(()=>newTabProjects.includes('dotfiles'));
