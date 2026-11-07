@@ -54,6 +54,7 @@ struct Chat {
     project: String,
     messages: Vec<Value>,
     partial: bool,
+    partial_reasons: Vec<&'static str>,
     muse_deliveries: std::collections::HashSet<String>,
     embedded_bytes: usize,
 }
@@ -80,6 +81,12 @@ fn content(v: &Value) -> String {
         .unwrap_or_default()
 }
 impl Chat {
+    fn incomplete(&mut self, reason: &'static str) {
+        self.partial = true;
+        if !self.partial_reasons.contains(&reason) {
+            self.partial_reasons.push(reason);
+        }
+    }
     fn push(&mut self, role: &str, text: String, timestamp: Value) {
         if !matches!(role, "user" | "assistant") || text.trim().is_empty() {
             return;
@@ -89,7 +96,7 @@ impl Chat {
         }
         // Bound memory even for unusually dense transcripts. Coverage reports this loss.
         if self.messages.len() == 50_000 {
-            self.partial = true;
+            self.incomplete("message_limit");
             return;
         }
         self.messages
@@ -299,7 +306,7 @@ impl Chat {
     }
     fn summary(&self) -> Value {
         json!({"id":self.id,"session_id":clip(&self.session_id,256),"agent":self.agent,"title":self.title,
-            "project":clip(&self.project,4096),"timestamp":self.messages.last().map(|m| &m["timestamp"]),"partial":self.partial})
+            "project":clip(&self.project,4096),"timestamp":self.messages.last().map(|m| &m["timestamp"]),"partial":self.partial,"partial_reasons":self.partial_reasons})
     }
 }
 fn roots() -> Vec<(&'static str, PathBuf)> {
@@ -415,7 +422,9 @@ fn read_file(agent: &str, root: &Path, path: &Path) -> std::io::Result<Chat> {
         ..Chat::default()
     };
     let file = fs::File::open(path)?;
-    chat.partial = file.metadata()?.len() > FILE_BYTES;
+    if file.metadata()?.len() > FILE_BYTES {
+        chat.incomplete("file_limit");
+    }
     let mut reader = BufReader::new(file.take(FILE_BYTES));
     loop {
         let mut line = Vec::new();
@@ -427,17 +436,36 @@ fn read_file(agent: &str, root: &Path, path: &Path) -> std::io::Result<Chat> {
             break;
         }
         if n as u64 > LINE_BYTES {
-            chat.partial = true;
-            break;
+            chat.incomplete("record_limit");
+            // Skip this oversized record without hiding all later messages.
+            if line.last() != Some(&b'\n') {
+                loop {
+                    let buffer = reader.fill_buf()?;
+                    if buffer.is_empty() {
+                        break;
+                    }
+                    let newline = buffer.iter().position(|b| *b == b'\n');
+                    let count = newline.map_or(buffer.len(), |n| n + 1);
+                    reader.consume(count);
+                    if newline.is_some() {
+                        break;
+                    }
+                }
+            }
+            continue;
         }
         // An incomplete final line may still be being written by the agent.
         if line.last() != Some(&b'\n') {
-            chat.partial = true;
+            // Accept a complete final record without a newline. An unfinished live
+            // write is retried on the next poll, not reported as lost history.
+            if let Ok(value) = serde_json::from_slice::<Value>(&line) {
+                chat.record(&value, 0);
+            }
             break;
         }
         match serde_json::from_slice::<Value>(&line) {
             Ok(v) => chat.record(&v, 0),
-            Err(_) => chat.partial = true,
+            Err(_) => chat.incomplete("malformed_record"),
         }
     }
     Ok(chat)
@@ -851,6 +879,50 @@ pub(super) async fn read(
     } else {
         local_async(p, Some(id)).await
     };
+    if result.get("error").is_some() || result["partial"] == true {
+        let outcome = if result.get("error").is_some() {
+            "failed"
+        } else {
+            "partial"
+        };
+        let reason = result["error"]
+            .as_str()
+            .filter(|reason| {
+                matches!(
+                    *reason,
+                    "unreadable"
+                        | "not_found"
+                        | "discovery_incomplete"
+                        | "computer_unavailable"
+                        | "invalid_peer_response"
+                        | "unsupported_peer_version"
+                        | "history_reader_failed"
+                        | "unsupported_storage"
+                )
+            })
+            .unwrap_or(outcome);
+        let partial_reasons = result["partial_reasons"]
+            .as_array()
+            .map(|reasons| {
+                reasons
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .filter(|reason| {
+                        matches!(
+                            *reason,
+                            "file_limit" | "record_limit" | "malformed_record" | "message_limit"
+                        )
+                    })
+                    .take(4)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .unwrap_or_default();
+        logs::record(
+            "Conversation",
+            &format!("History load {outcome}: {reason}; reasons={partial_reasons}"),
+        );
+    }
     Json(result).into_response()
 }
 fn valid_id(id: &str) -> bool {
@@ -1253,6 +1325,36 @@ mod tests {
             Some("opencode-ses_new"),
         );
         assert_eq!(result["error"], "unsupported_storage");
+    }
+    #[test]
+    fn switchboard_chats_live_tail_and_skipped_records_keep_later_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("chat.jsonl");
+        let record = json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Hello"}]}}).to_string();
+        fs::write(&path, format!("{record}\n{{\"type\":")).unwrap();
+        let chat = read_file("codex", dir.path(), &path).unwrap();
+        assert!(
+            !chat.partial,
+            "An unfinished live write is retried, not lost history"
+        );
+        assert_eq!(chat.messages.len(), 1);
+        fs::write(&path, format!("broken JSON\n{record}\n")).unwrap();
+        let chat = read_file("codex", dir.path(), &path).unwrap();
+        assert_eq!(chat.messages.len(), 1);
+        assert_eq!(chat.partial_reasons, vec!["malformed_record"]);
+        let oversized = "x".repeat(LINE_BYTES as usize + 1);
+        fs::write(&path, format!("{oversized}\n{record}\n")).unwrap();
+        let chat = read_file("codex", dir.path(), &path).unwrap();
+        assert_eq!(
+            chat.messages.len(),
+            1,
+            "Oversized tool records must not hide later messages"
+        );
+        assert_eq!(chat.partial_reasons, vec!["record_limit"]);
+        assert_eq!(
+            read_page(&chat, &Params::default())["partial_reasons"],
+            json!(["record_limit"])
+        );
     }
     #[test]
     #[ignore = "reads this account's installed agent histories; prints only coverage"]
