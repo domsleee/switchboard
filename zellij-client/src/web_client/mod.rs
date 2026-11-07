@@ -65,6 +65,69 @@ use websocket_handlers::{ws_handler_control, ws_handler_terminal};
 #[allow(dead_code)] // used in #[cfg(not(unix))] code path
 const DEFAULT_SERVER_STARTUP_TIMEOUT_SECS: u64 = 10;
 
+/// Use the same configured shell and model aliases as New tab. Check the alias
+/// before replacing a running provider, so an unavailable model leaves it intact.
+pub(crate) async fn handover_command(
+    agent: &str,
+    prompt: &str,
+    cwd: PathBuf,
+) -> Result<zellij_utils::input::command::RunCommandAction, &'static str> {
+    let agent = websocket_handlers::prompt_agent(agent).ok_or("Unknown handover model")?;
+    let config = std::env::var_os("ZELLIJ_CONFIG_FILE")
+        .map(PathBuf::from)
+        .or_else(Config::default_config_file_path);
+    let shell = match config.filter(|path| path.is_file()) {
+        Some(path) => {
+            Config::from_path(&path, None)
+                .map_err(|_| "Cannot read the terminal shell configuration")?
+                .options
+                .default_shell
+        },
+        None => None,
+    };
+    let command = websocket_handlers::prompt_command(shell.clone(), agent, prompt, &[]);
+    let run = websocket_handlers::tab_command(shell.clone(), command, Some(cwd), false);
+    let name = run
+        .command
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_ascii_lowercase();
+    let check = match name.as_str() {
+        "nu" => format!("if (which {agent} | is-empty) {{ exit 1 }}; exit 0"),
+        "pwsh" | "powershell" => format!("if (!(Get-Command {agent} -ErrorAction SilentlyContinue)) {{ exit 1 }}"),
+        "cmd" => format!("powershell.exe -Command \"if (!(Get-Command {agent} -ErrorAction SilentlyContinue)) {{ exit 1 }}\""),
+        "fish" => format!("type -q {agent}"),
+        _ => format!("command -v {agent} >/dev/null"),
+    };
+    let mut probe = websocket_handlers::tab_command(shell, check, None, false);
+    for arg in &mut probe.args {
+        if arg == "-NoExit" {
+            *arg = "-NonInteractive".into();
+        }
+        if arg == "/K" {
+            *arg = "/C".into();
+        }
+    }
+    let status = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        tokio::process::Command::new(&probe.command)
+            .args(&probe.args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .status(),
+    )
+    .await
+    .map_err(|_| "The destination model check timed out")?
+    .map_err(|_| "Cannot run the terminal shell")?;
+    if !status.success() {
+        return Err("The destination model alias is unavailable in the terminal shell");
+    }
+    Ok(run)
+}
+
 pub fn start_web_client(
     mut config: Config,
     config_options: Options,

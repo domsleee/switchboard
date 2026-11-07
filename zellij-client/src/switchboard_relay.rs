@@ -1244,6 +1244,7 @@ async fn asset(request: Request) -> Response {
         | "sw.js"
         | "conversation-media.js"
         | "conversation.js"
+        | "handover.js"
         | "predict.js" => "application/javascript",
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
@@ -2741,6 +2742,7 @@ mod tests {
             ("/predict.js", "application/javascript"),
             ("/thumbnails.js", "application/javascript"),
             ("/conversation.js", "application/javascript"),
+            ("/handover.js", "application/javascript"),
             ("/conversation-media.js", "application/javascript"),
             ("/conversation.css", "text/css; charset=utf-8"),
         ] {

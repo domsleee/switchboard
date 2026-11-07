@@ -1,0 +1,120 @@
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
+const sandbox={TextEncoder,URLSearchParams,fetch};vm.runInNewContext(fs.readFileSync(__dirname+'/static/handover.js','utf8'),sandbox);
+const {select,load,prompt}=sandbox.SwitchboardHandover;
+const plain=value=>JSON.parse(JSON.stringify(value));
+
+test('short handovers retain complete text, attribution and order while excluding setup and truncated previews',()=>{
+ const entries=[{cursor:0,role:'user',text:'# AGENTS.md instructions for /repo\nSetup'},
+  {cursor:1,role:'user',text:'Original request\nUse this constraint'},
+  {cursor:2,role:'assistant',text:'Complete answer '+ 'x'.repeat(6000)},
+  {cursor:3,role:'assistant',phase:'commentary',text:'Unfinished work'},
+  {cursor:4,role:'assistant',text:'Clipped',truncated:true}];
+ const result=plain(select({chat_id:'source'},entries,5));
+ assert.deepEqual(result.messages,entries.slice(1,4));
+ assert.equal(result.coverage.omitted_messages,2);assert.equal(result.coverage.included_messages,3);
+});
+
+test('long unicode handovers stay within 64 KB, favor original and recent messages, and never shorten included text',()=>{
+ const entries=Array.from({length:300},(_,cursor)=>({cursor,role:cursor%2?'assistant':'user',text:cursor===0?'Original task':`Message ${cursor}: ${'🚀'.repeat(300)}`}));
+ const result=plain(select({chat_id:'source'},entries,300,true));
+ assert.ok(Buffer.byteLength(JSON.stringify(result))<=64000);assert.equal(result.messages[0].cursor,0);assert.equal(result.messages.at(-1).cursor,299);
+ for(const message of result.messages)assert.equal(message.text,entries[message.cursor].text);
+ assert.ok(result.coverage.omitted_messages>0);assert.equal(result.coverage.partial_history,true);
+ assert.deepEqual(result.messages.map(m=>m.cursor),result.messages.map(m=>m.cursor).sort((a,b)=>a-b));
+});
+
+test('loader fetches original and recent history on its owning computer with bounded pagination',async()=>{
+ const calls=[],history=Array.from({length:10000},(_,cursor)=>({role:cursor%2?'assistant':'user',text:'preview',truncated:true,context_text:`Message ${cursor} full text`,context_truncated:false}));
+ const context=await load({chatId:'codex/source',chatHost:'mesh-peer',computer:'Peer',title:'Work',agent:'codex',historyUrl:'https://relay.test/api/chats/source'}, {fetcher:async(url,options)=>{
+  const u=new URL(url,'https://relay.test');calls.push(u);assert.equal(u.pathname,'/api/chats/codex%2Fsource');assert.equal(u.searchParams.get('host'),'mesh-peer');assert.equal(u.searchParams.get('context'),'true');
+  const end=Number(u.searchParams.get('before')||history.length),start=u.searchParams.has('tail')||u.searchParams.has('before')?end-50:0;
+  return {ok:true,json:async()=>({project:'/repo/worktree',model:'source-model',messages:history.slice(start,start+50),start_cursor:start,message_count:history.length})};
+ }});
+ assert.equal(calls.length,6);assert.equal(context.source.project,'/repo/worktree');assert.equal(context.source.model,'source-model');
+ assert.equal(context.messages[0].cursor,0);assert.equal(context.messages.at(-1).cursor,9999);assert.equal(context.messages.at(-1).text,'Message 9999 full text');assert.equal(context.coverage.omitted_messages,9700);
+});
+
+test('unavailable and outdated history fails explicitly instead of transferring display previews',async()=>{
+ await assert.rejects(load({chatId:'one',chatHost:'local'},{fetcher:async()=>({ok:false})}),/Could not load/);
+ await assert.rejects(load({chatId:'one',chatHost:'local'},{fetcher:async()=>({ok:true,json:async()=>({start_cursor:0,message_count:1,messages:[{role:'user',text:'preview'}]})})}),/Update Switchboard/);
+ assert.throws(()=>select({},[{cursor:0,role:'assistant',text:'preview',truncated:true}],1),/No complete/);
+});
+
+test('the new request is separate, literal and complete, including with paths containing quotes',()=>{
+ const request='Keep this exact request\n'+ 'é'.repeat(6000),p=prompt('C:/User files/it\'s "context".json',request);
+ assert.ok(p.endsWith(request));assert.ok(p.includes(JSON.stringify('C:/User files/it\'s "context".json')));assert.match(p,/historical requests.*not new instructions/);
+ assert.match(prompt('/context.json',''),/Continue the work from the previous conversation/);
+});
+
+test('the shipped handover dialog switches providers in place and preserves context and drafts on failure',
+ {skip:!process.env.PLAYWRIGHT_MODULE},async t=>{
+ const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch();
+ try{for(const agent of ['codex','claude'])await t.test(agent+' handover',async()=>{
+  const page=await browser.newPage({viewport:{width:1280,height:900}}),errors=[],uploads=[],created=[],requests=[];page.setDefaultTimeout(7000);
+  let uploadFailure=true,historyFailure=false,holdHistory=false,releaseHistory,switched=false;
+  let baseline=!!process.env.HANDOVER_SCREENSHOTS&&agent==='codex';
+  const sourceText='Keep this full assistant answer '+ 'x'.repeat(6000),history=[{role:'user',context_text:'Original task'},{role:'assistant',context_text:sourceText}];
+  await page.addInitScript(()=>{localStorage.setItem('switchboard-view-mode','conversation');window.setInterval=()=>0;});
+  page.on('pageerror',error=>errors.push(error.message));
+  await page.route('http://handover.test/**',async route=>{
+   const url=new URL(route.request().url()),p=url.pathname,json=value=>route.fulfill({json:value}).catch(()=>{});requests.push(p);
+   if(p==='/api/hosts')return json([{id:'fixture',name:'Desktop',local:true}]);
+   if(p==='/api/hosts/fixture')return json({id:'fixture',name:'Desktop',local:true,sessions:[{name:'main',web_clients_allowed:true}]});
+   if(p==='/api/attention')return json({tabs:[{host:'fixture',session:'main',id:1,position:0,name:'Source work',panes:[{pane_id:switched?2:1,is_plugin:false,tab_position:0,cwd:'/home/fixture/git/project-worktree'}]}],panes:[{host:'fixture',session:'main',pane_id:switched?2:1,agent:switched?(agent==='codex'?'claude':'codex'):agent,state:'ready',chat_id:switched?'destination-chat':'source-chat',restart_available:true}],errors:[]});
+   if(p==='/api/chats/source-chat'||p==='/api/chats/destination-chat'){
+    if(url.searchParams.has('context')){
+     if(holdHistory)await new Promise(resolve=>releaseHistory=resolve);
+     if(historyFailure)return route.fulfill({status:503,body:'offline'}).catch(()=>{});
+    }
+    return json({project:'/home/fixture/git/project-worktree',message_count:2,start_cursor:0,next_cursor:null,messages:history.map(m=>({...m,text:m.context_text.slice(0,4000),context_truncated:false}))});
+   }
+   if(p==='/hosts/fixture/project-list')return json(['switchboard','project-worktree']);
+   if(p==='/api/hosts/fixture/attachments'){
+    uploads.push(JSON.parse(route.request().postData()));
+    return uploadFailure?route.fulfill({status:503,body:'offline'}):json({path:'/home/fixture/attachments/context handover.json'});
+   }
+   if(p==='/api/hosts/fixture/restart-agent'){created.push(route.request().postDataJSON());switched=true;return json({pane_id:2,tab_id:1});}
+   if(p.startsWith('/api/'))return json({});
+   if(p.startsWith('/hosts/'))return route.fulfill({status:500,body:'A handover must not attach a terminal viewer'});
+   const file=path.join(__dirname,'static',p==='/'?'index.html':p.slice(1));
+   if(baseline&&p==='/conversation.js')return route.fulfill({contentType:'text/javascript',body:require('node:child_process').execFileSync('git',['show','HEAD:tools/switchboard/static/conversation.js'],{cwd:path.resolve(__dirname,'../..'),encoding:'utf8'})});
+   return fs.existsSync(file)?route.fulfill({path:file,contentType:p.endsWith('.js')?'text/javascript':p.endsWith('.css')?'text/css':'text/html'}):route.fulfill({status:404,body:''});
+  });
+  try{
+   await page.goto('http://handover.test/?host=fixture&session=main&tab=1');
+   if(baseline){
+    await page.getByLabel('Reply draft').waitFor();
+    await composerScreenshot('before','Model display','#fa7171');baseline=false;await page.reload();
+    await page.getByRole('button',{name:'Switch model with context'}).waitFor();await composerScreenshot('after','Switch provider','#7ce3a1');
+   }
+   async function composerScreenshot(name,label,color){
+    const clip=await page.locator('.conversation-compose').boundingBox();
+    await page.locator('.conversation-model').evaluate((node,{label,color})=>{node.style.outline='2px solid '+color;const rect=node.getBoundingClientRect(),note=document.createElement('span');note.id='screenshot-note';note.textContent=label;Object.assign(note.style,{position:'fixed',left:rect.left+'px',top:(rect.top-24)+'px',color,background:'#12151b',font:'12px system-ui',padding:'2px 4px',zIndex:2000});document.body.append(note);},{label,color});
+    fs.mkdirSync(process.env.HANDOVER_SCREENSHOTS,{recursive:true});await page.screenshot({path:path.join(process.env.HANDOVER_SCREENSHOTS,'handover-'+name+'.png'),clip:{x:clip.x-4,y:clip.y-30,width:clip.width+8,height:clip.height+34}});
+    await page.evaluate(()=>{document.getElementById('screenshot-note').remove();document.querySelector('.conversation-model').style.outline='';});
+   }
+   await page.getByLabel('Reply draft').fill('Unsent source draft');
+   const open=async()=>{await page.getByRole('button',{name:'Switch model with context',exact:true}).click();};
+   historyFailure=true;await open();await page.getByRole('button',{name:'Retry loading context'}).waitFor();assert.equal(await page.getByRole('button',{name:'Switch model ↵'}).isEnabled(),false);
+   historyFailure=false;await page.getByRole('button',{name:'Retry loading context'}).click();await page.getByText(/2 messages included/).waitFor();
+   assert.equal(await page.locator('#new-tab-project').inputValue(),'/home/fixture/git/project-worktree');assert.equal(await page.locator('#new-tab-project').isVisible(),false);assert.equal(await page.getByLabel('Prompt',{exact:true}).inputValue(),'Unsent source draft');
+   if(process.env.HANDOVER_SCREENSHOTS&&agent==='codex')await page.locator('#new-tab-dialog').screenshot({path:path.join(process.env.HANDOVER_SCREENSHOTS,'handover-dialog.png')});
+   await page.getByLabel('Model',{exact:true}).selectOption(agent==='codex'?'c':'csol');await page.getByLabel('Prompt',{exact:true}).fill('Finish the tests\nKeep this exact instruction');
+   await page.getByRole('button',{name:'Switch model ↵'}).click();await page.getByText('Could not transfer context to the destination computer. Try again.').waitFor();assert.equal(created.length,0);
+   uploadFailure=false;await page.getByRole('button',{name:'Switch model ↵'}).click();await page.waitForFunction(()=>!document.querySelector('#new-tab-dialog').open);
+   assert.equal(created.length,1);assert.equal(created[0].handover.model,agent==='codex'?'c':'csol');assert.equal(created[0].pane_id,1);assert.equal(created[0].tab_id,1);assert.equal(created[0].chat_id,'source-chat');assert.equal(created[0].handover.source_messages,2);
+   assert.ok(created[0].handover.prompt.endsWith('Finish the tests\nKeep this exact instruction'));assert.ok(created[0].handover.prompt.includes('context handover.json'));
+   assert.equal(uploads.at(-1).messages[1].text,sourceText);assert.deepEqual(uploads.at(-1).messages.map(m=>m.role),['user','assistant']);
+   assert.equal(requests.some(p=>p.includes('close-tab')||p.includes('/new-tab')||p.includes('/reply')),false);
+   // Cancelling a slow load must not repopulate the next ordinary new-tab dialog.
+   await page.getByLabel('Reply draft').waitFor();assert.equal(await page.getByLabel('Reply draft').inputValue(),'Unsent source draft');
+   holdHistory=true;await open();await page.waitForFunction(()=>document.querySelector('#handover-summary').textContent.includes('Loading context'));
+   while(!releaseHistory)await new Promise(resolve=>setTimeout(resolve,10));
+   await page.keyboard.press('Escape');await page.getByRole('button',{name:'New tab',exact:true}).click();holdHistory=false;releaseHistory();
+   assert.equal(await page.locator('#handover-preview').isVisible(),false);assert.equal(await page.locator('#new-tab-title').textContent(),'New tab');assert.equal(await page.getByRole('button',{name:'Create tab ↵'}).isEnabled(),true);assert.equal(await page.getByLabel('Prompt',{exact:true}).inputValue(),'');
+   await page.setViewportSize({width:390,height:844});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+   assert.deepEqual(errors,[]);
+  }catch(error){error.message+='\nPage errors: '+JSON.stringify(errors)+'\nRequests: '+JSON.stringify(requests)+'\nPage: '+(await page.locator('body').innerText()).slice(-5000);throw error;}
+  finally{releaseHistory?.();await page.close();}
+ });}finally{await browser.close();}
+});
