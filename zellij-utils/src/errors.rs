@@ -417,6 +417,7 @@ pub enum ScreenContext {
     SetMobileRenderPreferences,
     SetTabViewport,
     SetViewerHidden,
+    Redraw,
     TogglePaneEmbedOrEjectForPaneId,
     CloseTabWithIndex,
     BreakPanesToNewTab,

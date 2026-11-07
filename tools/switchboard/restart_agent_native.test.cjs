@@ -109,6 +109,30 @@ int main(int argc,char**argv){if(argc>1&&strcmp(argv[1],"queue")==0){if(argc!=6)
     assert.equal(fs.existsSync(path.join(dir,'input')),false,'Native replies must not type into the terminal');
     await until(async()=>await page.getByLabel('Reply draft').inputValue()==='','Sent draft did not clear');
     assert.equal(await page.locator('.conversation-panel').isVisible(),true);
+    // A provider switch reuses the guarded replacement path. Fake aliases keep
+    // this an isolated process/argv test without contacting either provider.
+    fs.appendFileSync(transcript,JSON.stringify({type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:'Original task'}]}})+'\n');
+    await hook('Stop',restarted.pane_id);
+    let switchState;await until(async()=>{const data=await(await fetch(url+'/api/attention')).json();switchState=data.panes.find(p=>p.pane_id===restarted.pane_id);return switchState?.restart_available;},'Source agent did not bind before handover');
+    const switchTarget={session:name,pane_id:restarted.pane_id,tab_id:first.tab_id,chat_id:switchState.chat_id};
+    const handoverPrompt='Read the context file and continue. Literal $(text)\nKeep the current worktree.';
+    const handover={model:'c',prompt:handoverPrompt,source_messages:1};
+    assert.equal((await restart({...switchTarget,handover:{...handover,source_messages:0}})).status,409,'A changed transcript must be reloaded');
+    await hook('UserPromptSubmit',restarted.pane_id);
+    assert.equal((await restart({...switchTarget,handover,confirm_interrupt:true})).status,409,'Provider switches never interrupt working agents');
+    await hook('Stop',restarted.pane_id);
+    fs.writeFileSync(path.join(dir,'.bashrc'),'');
+    assert.equal((await restart({...switchTarget,handover})).status,409,'Unavailable model aliases leave the source intact');
+    assert.equal(launches().length,2);
+    fs.writeFileSync(path.join(dir,'.bashrc'),"c() { exec '"+fixture.replaceAll("'","'\\''")+"' \"$@\"; }\n");
+    const switched=await restart({...switchTarget,handover});assert.equal(switched.status,200,await switched.clone().text());
+    const switchedTarget=await switched.json();assert.equal(switchedTarget.tab_id,first.tab_id);
+    await until(()=>launches().length===4,'The destination provider did not launch');
+    assert.equal(launches()[2].split('|').slice(1).join('|'),'--|'+handoverPrompt.split('\n')[0]);
+    // The fixture records argv with newlines unchanged, so the second prompt
+    // line occupies the following log line rather than a new shell command.
+    assert.ok(fs.readFileSync(path.join(dir,'launches'),'utf8').includes(handoverPrompt));
+    assert.ok(JSON.parse(cli('-s',name,'action','list-panes','--json','--all')).some(p=>p.id===untouched.id),'The other terminal remains running');
     console.log('PASS: real menu + endpoint restarted only the intended agent, retained tab and other pane, resumed exact UUID and flags, rejected busy/draft/stale targets. Screenshots: '+dir);
   }catch(error){console.error('Private fixture logs:',dir);throw error;}
   finally{if(browser)await browser.close();if(created)try{cli('kill-session',name);}catch{}await stop(relay);await stop(native);if(tokenName)try{cli('web','--revoke-token',tokenName);}catch{}fs.rmSync(path.join(dir,'token'),{force:true});}

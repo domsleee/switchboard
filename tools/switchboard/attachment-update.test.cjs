@@ -175,6 +175,29 @@ let native, relay, browser, updateController, created=false;
   await focus(oldPane);
   assert.equal(fs.readFileSync(path.join(dir,'input.bin'),'utf8'),expected);
   console.log('PASS: repeated idle focus and real pane switches survive reconnect with typing sent only to the target');
+  // A hidden tab or sleeping laptop stops applying output while the pane keeps
+  // writing. The relay must repaint that viewer, not fail it, once its replay fills.
+  await page.evaluate(()=>{
+    const owner=document.querySelector('#terminals>iframe.active').contentWindow.testPair.terminal.owner;
+    const socket=owner.socket,handler=socket.onmessage,apply=owner.apply.bind(owner);
+    window.floodOwner=owner;window.sawResync=false;
+    owner.apply=record=>{if(record.resync)window.sawResync=true;return apply(record);};
+    socket.onmessage=event=>{if(JSON.parse(event.data).type==='output')owner.lastReceived=Date.now();else handler(event);};
+  });
+  fs.writeFileSync(path.join(dir,'flood'),'');
+  await waitFor(()=>fs.existsSync(path.join(dir,'flood-done')),'Fixture did not finish flooding',600);
+  await sleep(1000);
+  await page.evaluate(()=>window.floodOwner.socket.close());
+  try {await page.waitForFunction(()=>{
+    const w=document.querySelector('#terminals>iframe.active').contentWindow,term=w.term;
+    return w.__zjResumeFailure||Array.from({length:term.buffer.active.length},(_,i)=>term.buffer.active.getLine(i)?.translateToString()||'').some(line=>line.includes('FLOOD:DONE'));
+  },null,{timeout:30000});} finally {
+    const state=await page.evaluate(()=>({failure:document.querySelector('#terminals>iframe.active').contentWindow.__zjResumeFailure??null,stopped:window.floodOwner.stopped,resync:window.sawResync}));
+    assert.deepEqual(state,{failure:null,stopped:false,resync:true},'A lagging viewer is repainted after its replay buffer fills');
+  }
+  await send('after-flood|');
+  await waitFor(()=>fs.readFileSync(path.join(dir,'input.bin'),'utf8')===expected,'Typing works after a repaint');
+  console.log('PASS: a viewer that stopped applying output is repainted after its replay buffer fills');
   if(!recoveryMode) {
     const clientIds=()=>cli('-s',name,'action','list-clients').split('\n').map(line=>line.trim().split(/\s+/)[0]).filter(id=>/^\d+$/.test(id)).sort();
     const originalClients=clientIds();

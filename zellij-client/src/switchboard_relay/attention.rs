@@ -580,6 +580,8 @@ pub(super) struct PollState {
     hooked: Arc<tokio::sync::Notify>,
     // Local panes waiting on `zellij switchboard run` (count per pane); they show "input".
     interactive: HashMap<(String, u64), usize>,
+    // Background shells running at each local pane's last Claude Stop, by task ID.
+    stop_shells: HashMap<(String, u64), Vec<String>>,
     dirty: bool,
 }
 
@@ -658,6 +660,21 @@ impl PollState {
                     recreated = true;
                 }
             }
+            // What the screen alone said, and the hook that may override it, for the change log.
+            // A deferred row's screen was not read this scan. Rows reused from the previous
+            // snapshot also carry no command, so their hook is not looked up either.
+            let deferred = row["deferred"] == json!(true);
+            let screen = if deferred {
+                "unread"
+            } else {
+                row["state"].as_str().unwrap_or("unknown")
+            }
+            .to_owned();
+            let mut hook = if deferred && row.get("command").is_none() {
+                "unread"
+            } else {
+                "none"
+            };
             // Only local scans list commands, so only local panes take hooks and runs.
             let mut waiting_on_run = false;
             if let Some(command) = row.as_object_mut().unwrap().remove("command") {
@@ -665,6 +682,14 @@ impl PollState {
                     self.forget_hook(row);
                 }
                 self.apply_hook(row, &command);
+                // After apply_hook, which drops a hook from an agent the pane no longer runs.
+                if let (Some(session), Some(pane)) =
+                    (row["session"].as_str(), row["pane_id"].as_u64())
+                {
+                    if let Some(hooked) = self.hooks.get(&(session.to_owned(), pane)) {
+                        hook = hooked.state;
+                    }
+                }
                 waiting_on_run = self.waiting_on_run(row);
             }
             if row.as_object_mut().unwrap().remove("deferred") == Some(json!(true))
@@ -738,6 +763,15 @@ impl PollState {
                     },
                     _ => json!(unix_seconds()),
                 };
+                if !previous.is_null() && previous["state"] != row["state"] {
+                    log::info!(
+                        "Switchboard pane {host} {} {}: {} -> {} (screen {screen}, hook {hook})",
+                        row["session"].as_str().unwrap_or(""),
+                        row["pane_id"],
+                        previous["state"].as_str().unwrap_or("unknown"),
+                        row["state"].as_str().unwrap_or("unknown"),
+                    );
+                }
                 changed |= previous != observed;
                 self.observed.insert(key.clone(), observed);
             }
@@ -812,7 +846,9 @@ impl PollState {
     /// A recreated session reuses pane IDs: an old hook status is not its agent's.
     fn forget_hook(&mut self, row: &Value) {
         if let (Some(session), Some(pane)) = (row["session"].as_str(), row["pane_id"].as_u64()) {
-            self.dirty |= self.hooks.remove(&(session.to_owned(), pane)).is_some();
+            let key = (session.to_owned(), pane);
+            self.stop_shells.remove(&key);
+            self.dirty |= self.hooks.remove(&key).is_some();
         }
     }
     /// Replaces a local pane's screen reading with its agent's hook status.
@@ -830,6 +866,7 @@ impl PollState {
             .is_some_and(|c| !c.is_empty() && !c.to_ascii_lowercase().contains(hooked.agent))
         {
             self.hooks.remove(&key);
+            self.stop_shells.remove(&key);
             self.dirty = true;
             return;
         }
@@ -1213,6 +1250,17 @@ struct Hooked {
     restart: Option<super::restart::Identity>,
 }
 
+/// IDs of the background shells a Stop event lists as still running.
+fn running_shells(event: &Value) -> Vec<String> {
+    event["background_tasks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|task| task["type"] == "shell" && task["status"] == "running")
+        .filter_map(|task| task["id"].as_str().map(str::to_owned))
+        .collect()
+}
+
 /// What a hook event says about its pane, if anything. Claude Code, Codex and
 /// Copilot's PascalCase hooks share these event names and fields.
 fn hook_status(agent: &'static str, event: &Value) -> Option<Hooked> {
@@ -1231,8 +1279,8 @@ fn hook_status(agent: &'static str, event: &Value) -> Option<Hooked> {
             _ => return None,
         },
         // A running background agent or workflow will wake the turn when it finishes.
-        // A shell (also what a Monitor runs) is as often a dev server or a watcher that
-        // outlives the reply, so a turn that leaves only shells running is finished.
+        // A shell (also what a Monitor runs) may be a dev server that outlives the reply,
+        // so `hook` decides from shells new since the previous Stop.
         "Stop" | "StopFailure"
             if event["background_tasks"].as_array().is_some_and(|tasks| {
                 tasks
@@ -1291,24 +1339,41 @@ pub(super) async fn hook(
     super::agent_setup::heard(agent);
     let key = (session.to_owned(), pane);
     let mut next = hook_status(agent, &event);
+    // One lock from reading the previous Stop to installing this hook: overlapping
+    // events cannot install a stale state.
+    let mut poll = state.poll.lock().await;
     if let Some(hook) = &mut next {
-        hook.restart = state
-            .poll
-            .lock()
-            .await
+        hook.restart = poll
             .hooks
             .get(&key)
             .filter(|old| old.chat_id == hook.chat_id && old.agent == agent)
             .and_then(|old| old.restart.clone());
+        // Claude resumes the turn when a background shell exits. One started this turn
+        // is a wait (CI, a build, a review); one already running at the previous Stop is
+        // left behind, like a dev server, and does not hold the tab open.
+        if matches!(
+            event["hook_event_name"].as_str(),
+            Some("Stop" | "StopFailure")
+        ) {
+            let running = running_shells(&event);
+            let before = poll
+                .stop_shells
+                .insert(key.clone(), running.clone())
+                .unwrap_or_default();
+            if hook.state == "ready" && running.iter().any(|id| !before.contains(id)) {
+                hook.state = "waiting";
+                hook.token = None;
+            }
+        }
     }
     let capture = next.clone().filter(|hook| {
         hook.restart.is_none()
             && matches!(hook.state, "ready" | "working")
             && hook.chat_id.is_some()
     });
-    let mut poll = state.poll.lock().await;
     // An interrupted Codex turn has no Stop; the screen shows what it left.
     if matches!(event["hook_event_name"].as_str(), Some("SessionEnd")) {
+        poll.stop_shells.remove(&key);
         poll.dirty |= poll.hooks.remove(&key).is_some();
     } else if let Some(hooked) = next {
         if hooked.state == "unknown" && hooked.chat_id.is_none() {
@@ -1680,7 +1745,7 @@ esac
         assert_eq!(
             event("Stop", json!({"background_tasks":[shell]})),
             Some("ready"),
-            "a watcher or dev server shell does not keep the turn open"
+            "on its own a shell does not keep the turn open; `hook` waits for new ones"
         );
         assert_eq!(
             event("Stop", json!({"background_tasks":[shell, agent]})),
@@ -1806,6 +1871,59 @@ esac
             assert_eq!(finished["panes"][0]["state"], "ready");
             assert_eq!(finished["panes"][0]["token"], token);
         }
+    }
+
+    #[tokio::test]
+    async fn claude_stop_waits_for_a_shell_started_this_turn_only() {
+        let state = RelayState {
+            hosts: Default::default(),
+            order: Default::default(),
+            port: 0,
+            attention: Default::default(),
+            poll: Default::default(),
+            mesh: None,
+            candidates: Default::default(),
+            artifact: None,
+            askpass: Default::default(),
+            html_previews: Default::default(),
+            artifact_proxies: Default::default(),
+            push: None,
+            browser_origin: None,
+        };
+        let stop = |tasks: Value| {
+            let mut headers = HeaderMap::new();
+            headers.insert("x-zellij-session", "main".parse().unwrap());
+            headers.insert("x-zellij-pane", "3".parse().unwrap());
+            let event = json!({"hook_event_name":"Stop","prompt_id":"p","background_tasks":tasks});
+            let state = state.clone();
+            async move {
+                hook(State(state.clone()), headers, Json(event)).await;
+                let poll = state.poll.lock().await;
+                poll.hooks[&("main".to_owned(), 3)].state
+            }
+        };
+        // Claude Code 2.1.318 Stop payload fields.
+        let shell = |id: &str, status: &str| json!({"id":id,"type":"shell","status":status,"command":"gh pr checks 1 --watch"});
+        assert_eq!(
+            stop(json!([shell("ci", "running")])).await,
+            "waiting",
+            "a CI watch started this turn"
+        );
+        assert_eq!(
+            stop(json!([shell("ci", "running")])).await,
+            "ready",
+            "still running at the next Stop, like a dev server"
+        );
+        assert_eq!(
+            stop(json!([shell("ci", "running"), shell("build", "running")])).await,
+            "waiting",
+            "a new wait beside the old shell"
+        );
+        assert_eq!(
+            stop(json!([shell("ci", "running"), shell("build", "completed")])).await,
+            "ready"
+        );
+        assert_eq!(stop(json!([])).await, "ready");
     }
 
     #[tokio::test]
@@ -2167,6 +2285,12 @@ esac
         assert_eq!(classify(&claude, busy)["state"], "working");
         let starting = busy.replace(" (23s · ↓ 1.4k tokens · thought for 1s)", "");
         assert_eq!(classify(&claude, &starting)["state"], "working");
+        // Claude Code 2.1.319, captured with dump-screen while a PreToolUse hook ran mid-turn.
+        let hooked = busy.replace(
+            "· Perambulating… (23s",
+            "✽ Fermenting… (running PreToolUse hook · 9m 34s",
+        );
+        assert_eq!(classify(&claude, &hooked)["state"], "working");
         let waiting = busy.replace(
             "Perambulating… (23s · ↓ 1.4k tokens · thought for 1s)",
             "Waiting for 2 background agents to finish",

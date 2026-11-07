@@ -52,6 +52,7 @@ pub async fn ws_handler_control(
     let Ok(viewer) = crate::switchboard_viewers::viewer() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
+    log::warn!("Legacy connection /ws/control delays automatic updates");
     ws.on_upgrade(move |socket| async move {
         let _viewer = viewer;
         handle_ws_control(socket, params, state).await
@@ -68,6 +69,7 @@ pub async fn ws_handler_terminal(
     let Ok(viewer) = crate::switchboard_viewers::viewer() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
+    log::warn!("Legacy connection /ws/terminal delays automatic updates");
     ws.on_upgrade(move |socket| async move {
         let _viewer = viewer;
         handle_ws_terminal(socket, session_name, params, state, session_token_hash).await

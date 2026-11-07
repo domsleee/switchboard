@@ -13975,3 +13975,37 @@ pub fn reported_pixel_dimensions_are_applied_to_existing_ptys() {
         resizes_after_reply
     );
 }
+
+#[test]
+fn redraw_repaints_every_line_for_a_viewer_that_lost_output() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let (mut screen, _tty_stdin_bytes, server_receiver) =
+        create_new_screen_with_capture(size, true, true, true, true);
+    new_tab(&mut screen, 1, 0);
+    let mut drain = || -> Vec<String> {
+        server_receiver
+            .try_iter()
+            .filter_map(|(instruction, _)| match instruction {
+                ServerInstruction::Render(Some(output)) => output.get(&1).cloned(),
+                _ => None,
+            })
+            .filter(|output| !output.is_empty())
+            .collect()
+    };
+    screen.render_to_clients().unwrap();
+    drain();
+    screen.render_to_clients().unwrap();
+    assert!(drain().is_empty(), "an unchanged screen sends nothing");
+    screen.force_render_for_client(1);
+    screen.render_to_clients().unwrap();
+    let repaint = drain().concat();
+    for row in 1..=size.rows {
+        assert!(
+            repaint.contains(&format!("\u{1b}[{row};1H")),
+            "row {row} was not repainted: {repaint:?}"
+        );
+    }
+}

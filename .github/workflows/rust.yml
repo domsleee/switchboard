@@ -37,7 +37,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macOS compiles the same code in Test (macos-latest).
+        # macOS compiles the same code in Test (macos-latest, nightly).
         os: [ubuntu-latest]
 
     runs-on: ${{ matrix.os }}
@@ -98,7 +98,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # macOS runners are scarce and release builds wait for them; check nightly.
+        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-latest"]') }}
 
     runs-on: ${{ matrix.os }}
 
@@ -158,8 +159,10 @@ jobs:
       - name: Install NASM
         uses: ilammy/setup-nasm@v1.5.2
 
-      - name: Check Switchboard installer
-        run: cargo test -p zellij-client --features web_server_capability switchboard_update::install --lib
+      # The same filter gates Windows releases in native-binaries.yml; running it
+      # here catches Windows-only failures before they stall Windows updates.
+      - name: Check Switchboard relay, installer and updater
+        run: cargo test -p zellij-client --features web_server_capability switchboard_ --lib
       - name: Check Windows message hook launcher
         run: cargo test -p zellij-client --features web_server_capability message_board_hook_queues_with_a_windows_cmd_launcher --lib
 

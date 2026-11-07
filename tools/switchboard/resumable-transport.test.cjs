@@ -20,11 +20,23 @@ test('input and focus controls remain ordered across lost acknowledgments and ro
  sockets[0].drop();client.terminal.send('typed while offline');
  f.timers.shift()();const next=sockets[1];next.message({type:'hello',generation:2,input_ack:1});
  assert.equal(next.sent[0].input.seq,2);assert.equal(next.sent[0].input.channel,'control');
- next.message({type:'ack',input_ack:2});assert.equal(next.sent[1].input.data,'second');
+ next.message({type:'ack',input_ack:2});assert.equal(next.sent[1].input.data,'secondtyped while offline');
+ client.terminal.send('after send');
  next.drop();f.timers.shift()();const rollback=sockets[2];rollback.message({type:'hello',generation:3,input_ack:2});
- assert.equal(rollback.sent[0].input.seq,3);rollback.message({type:'ack',input_ack:3});
- assert.equal(rollback.sent[1].input.data,'typed while offline');rollback.message({type:'ack',input_ack:4});
+ assert.deepEqual(rollback.sent[0].input,next.sent[1].input,'a sent record is resent unchanged');rollback.message({type:'ack',input_ack:3});
+ assert.equal(rollback.sent[1].input.data,'after send');rollback.message({type:'ack',input_ack:4});
  assert.equal(client.pending.length,0);assert.equal(client.stopped,false);
+});
+test('keys typed while a record awaits its ack leave in one record, never across a control',()=>{
+ const f=fixture();const {client,sockets}=f;
+ for(const key of 'abc')client.terminal.send(key);
+ client.control.send(JSON.stringify({web_client_id:'viewer',payload:{type:'FocusPane',pane_id:2,is_plugin:false}}));
+ for(const key of 'de')client.terminal.send(key);
+ assert.deepEqual(sockets[0].sent.map(x=>x.input.data),['a']);assert.deepEqual(Object.keys(sockets[0].sent[0].input).sort(),['channel','data','seq']);
+ sockets[0].message({type:'ack',input_ack:1});assert.equal(sockets[0].sent[1].input.data,'bc');
+ sockets[0].message({type:'ack',input_ack:2});assert.equal(sockets[0].sent[2].input.channel,'control');
+ sockets[0].message({type:'ack',input_ack:3});assert.deepEqual(sockets[0].sent[3].input,{seq:4,channel:'terminal',data:'de'});
+ sockets[0].message({type:'ack',input_ack:4});assert.equal(client.pending.length,0);assert.equal(client.bytes,0);
 });
 test('lost resume reply retries the same nonce and expected generation',()=>{
  const f=fixture();f.sockets[0].drop();f.timers.shift()();const first=new URL(f.sockets[1].url);
@@ -40,6 +52,14 @@ test('output is acknowledged only after xterm applies it, including duplicate re
  f.renders[0].applied();await f.client.outputWork;
  assert.equal(f.renders.length,1);assert.equal(f.client.applied,1);
  assert.ok(f.sockets[1].sent.some(x=>x.type==='ack'&&x.applied===1));
+});
+test('output may skip dropped terminal records only at a resync record',async()=>{
+ const f=fixture();const apply=async record=>{f.sockets[0].message({type:'output',record});await new Promise(r=>setImmediate(r));f.renders.at(-1)?.applied?.();await f.client.outputWork;};
+ await apply({seq:1,channel:'terminal',data:'a'});assert.equal(f.client.applied,1);
+ await apply({seq:9,channel:'terminal',data:'\x1b[0m',resync:true});
+ assert.equal(f.client.stopped,false);assert.equal(f.client.applied,9);
+ await apply({seq:10,channel:'terminal',data:'repaint'});assert.equal(f.client.applied,10);
+ await apply({seq:20,channel:'terminal',data:'gap'});assert.equal(f.client.stopped,true);
 });
 test('unicode paste splitting preserves every byte and has bounded records',()=>{
  const f=fixture();const data='\x1b[200~'+'😀'.repeat(20000)+'\x1b[201~';f.client.terminal.send(data);

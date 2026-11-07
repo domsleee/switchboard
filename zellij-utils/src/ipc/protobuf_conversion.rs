@@ -15,7 +15,7 @@ use crate::{
         LayoutMetadata as ProtoLayoutMetadata, LogErrorMsg, LogMsg, MobileActivePaneMsg,
         MobilePaneMsg, MobileRenderPrefsMsg, MobileSessionMsg, MobileSizeMsg, MobileStateMsg,
         MobileTabMsg, NestedSessionFrameFromHostMsg, PaneMetadata as ProtoPaneMetadata,
-        PaneRenderUpdateMsg, QueryTerminalSizeMsg, RenamedSessionMsg, RenderMsg,
+        PaneRenderUpdateMsg, QueryTerminalSizeMsg, RedrawMsg, RenamedSessionMsg, RenderMsg,
         RequestSessionListMsg, ServerToClientMsg as ProtoServerToClientMsg,
         SetMobileRenderPreferencesMsg, SetSoftKeyboardMsg, SetTabViewportMsg, SetViewerHiddenMsg,
         SixelSupportMsg, SoftKeyboardVisibilityChangedMsg, StartWebServerMsg,
@@ -197,6 +197,7 @@ impl From<ClientToServerMsg> for ProtoClientToServerMsg {
             ClientToServerMsg::SetViewerHidden { hidden } => {
                 client_to_server_msg::Message::SetViewerHidden(SetViewerHiddenMsg { hidden })
             },
+            ClientToServerMsg::Redraw => client_to_server_msg::Message::Redraw(RedrawMsg {}),
         };
 
         ProtoClientToServerMsg {
@@ -387,6 +388,7 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
             Some(client_to_server_msg::Message::SetViewerHidden(msg)) => {
                 Ok(ClientToServerMsg::SetViewerHidden { hidden: msg.hidden })
             },
+            Some(client_to_server_msg::Message::Redraw(_)) => Ok(ClientToServerMsg::Redraw),
         }
     }
 }

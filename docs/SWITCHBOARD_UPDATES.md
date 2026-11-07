@@ -49,8 +49,10 @@ ten minutes and do not occupy live viewer capacity.
 
 An already-loaded legacy browser still holds the viewer lock. The first migration
 requires **Update now**, followed by a browser reload to enable resumable attachments.
-Legacy viewers continue to defer automatic activation; their input during that first
-reconnect is not guaranteed. Once viewers use the new protocol, leaving them open
+Legacy viewers defer automatic activation for at most 10 minutes, counted from the
+first deferred build, so newer builds do not restart the wait; their input during the
+reconnect is not guaranteed. Each legacy connection the relay accepts is recorded in
+`/api/logs` under `updates`, naming the path and browser that delays updates. Once viewers use the new protocol, leaving them open
 does not indefinitely block later automatic updates. Older paired web services
 continue using the protected legacy path until upgraded and reloaded.
 
@@ -74,9 +76,8 @@ lifetime. It expires after five minutes, is consumed only under the updater lock
 and cannot authorize a different release if the published build changes. On Windows,
 the running tray consumes the request on its next check, within two minutes;
 there is no separate update job to start from Health. Failed activation does not
-make later automatic retries bypass viewers. A pending recovery
-can use the same explicit request for its recorded target build. No countdown or
-forced automatic activation is enabled.
+make later automatic retries bypass viewers, even after the 10-minute limit. A pending
+recovery can use the same explicit request for its recorded target build.
 
 Legacy relay and web connections hold shared locks on `automatic-updates/viewers.lock`.
 Automatic activation takes an exclusive lock immediately before mutation and holds it
@@ -117,7 +118,7 @@ A relay on another port, such as an older installation on port 80, also answers 
 8090 so agent hooks and the CLI reach it.
 
 Healthy existing sessions retain their engines, shells and agents, including new
-tabs created inside those sessions. Legacy viewers defer automatic updates until they disconnect. New sessions use the selected release when started through the
+tabs created inside those sessions. Legacy viewers defer automatic updates for up to 10 minutes. New sessions use the selected release when started through the
 updated services/launcher.
 On Windows, each update also copies the selected release over
 `~/.cargo/bin/zellij.exe` when that file exists, because agent hooks and the CLI

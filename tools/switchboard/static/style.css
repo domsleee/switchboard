@@ -339,6 +339,11 @@ body.sidebar-collapsed #artifact-preview header{padding-left:42px}
 .new-tab-options p{margin:6px;font-size:11px}
 #new-tab-note{grid-column:1/-1;font-size:10px;margin:0}
 #new-tab-note:empty{display:none}
+#handover-preview{grid-column:1/-1;padding:8px 10px;border:1px solid #363e4d;border-radius:6px;background:#171e2a;font-size:12px;overflow-wrap:anywhere}
+#handover-preview[hidden]{display:none}
+#handover-summary{margin:0}
+#handover-retry{margin-top:6px}
+.handover-mode label[for=new-tab-target],.handover-mode #new-tab-target,.handover-mode label[for=new-tab-project],.handover-mode .new-tab-project-field,.handover-mode .new-tab-prompt-tools,.handover-mode #new-tab-files{display:none}
 #new-tab-form .dialog-actions{grid-column:1/-1;margin-top:2px;gap:5px}
 #new-tab-form .dialog-actions button{font-size:11px;height:26px;padding:3px 8px}
 #new-tab-form button[type=submit]{background:#30466b;border-color:#507bb3}
