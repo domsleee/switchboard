@@ -213,12 +213,16 @@ let native, relay, browser, updateController, created=false;
     await large.evaluate(id=>{const pair=window.testPair;pair.control.send(JSON.stringify({web_client_id:pair.control.owner.viewer,payload:{type:'FocusPane',pane_id:id,is_plugin:false}}));},oldPane);
     await large.waitForFunction(()=>window.testPair.terminal.owner.pending.length===0);
     await page.setViewportSize({width:600,height:450});
-    // Establish ownership explicitly: OS focus can remain in the large browser,
-    // and changing CSS viewport size must not implicitly steal its native size.
-    await page.evaluate(()=>{const pair=document.querySelector('#terminals>iframe.active').contentWindow.testPair;for(const payload of [{type:'TerminalResize',cols:70,rows:25},{type:'SetTabViewport',size:{cols:70,rows:25},tab_position:0,ownership:true}])pair.control.send(JSON.stringify({web_client_id:pair.control.owner.viewer,payload}));});
+    // Use the same measured size as automatic browser resize reports. Synthetic
+    // dimensions can be overwritten by a pending render after their input ack.
+    const smallViewport=await page.evaluate(()=>document.querySelector('#terminals>iframe.active').contentWindow.__zjViewport.dimensions());
+    const largeColumns=await large.evaluate(()=>Math.floor(innerWidth/term._core._renderService.dimensions.css.cell.width));
+    assert.ok(largeColumns>smallViewport.cols+40,'The large browser has room to expand after retirement');
+    await page.evaluate(size=>{const pair=document.querySelector('#terminals>iframe.active').contentWindow.testPair;for(const payload of [{type:'TerminalResize',...size},{type:'SetTabViewport',size,tab_position:0,ownership:true}])pair.control.send(JSON.stringify({web_client_id:pair.control.owner.viewer,payload}));},smallViewport);
     await page.waitForFunction(()=>{const owner=document.querySelector('#terminals>iframe.active').contentWindow.testPair.terminal.owner;return !owner.stopped&&owner.pending.length===0;});
     const columns=()=>JSON.parse(cli('-s',name,'action','list-panes','--json','--all')).find(p=>p.id===oldPane&&!p.is_plugin).pane_columns;
-    await waitFor(()=>columns()<90,'Small viewer constrains terminal before suspension');
+    try {await waitFor(()=>columns()===smallViewport.cols,'Small viewer constrains terminal before suspension');}
+    catch(error){console.error('Retirement size setup:',JSON.stringify({smallViewport,largeColumns,nativeColumns:columns(),browser:await page.evaluate(()=>{const w=document.querySelector('#terminals>iframe.active').contentWindow;return {physical:w.__zjViewport.dimensions(),state:w.__zjLastMobileState};})}));throw error;}
     const smallColumns=columns();
     await stop(relay);relay=null;
     await page.waitForFunction(()=>!document.querySelector('#terminals>iframe.active').contentWindow.testPair.terminal.owner.connected);
