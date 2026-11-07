@@ -116,8 +116,9 @@ needs it, on any computer. Setup does only this:
   Dotfiles' `csol` and `castra` shortcuts pass `--dangerously-bypass-hook-trust`,
   which runs enabled hooks for that invocation without saving trust; direct Codex
   launches still use the saved trust that setup verifies.
-  If the plugin updates before the relay, finish setup with the updated relay and
-  restart Codex before trusting its new hooks, so legacy and plugin hooks do not run together.
+  If the plugin updates before the relay, finish setup with the updated relay before
+  restarting Codex. Bypass shortcuts can run both hook sets until migration succeeds;
+  per-session locks prevent duplicate message delivery and competing watchers.
 
 Running sessions pick up the plugin or hooks after a restart. Copilot's hooks run
 `zellij` from `PATH`, so this fork's `zellij` must be on it.
