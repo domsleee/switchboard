@@ -192,6 +192,20 @@ try {
         try { Assert-SwitchboardProcesses $baseline -AllowExited } catch { $rejected = $true }
         if (!$rejected) { throw 'A new engine PID for the same session was accepted' }
     }
+    # The PATH copy follows the selected release, even while the old copy runs.
+    $pathDirectory = Join-Path $root 'cargo bin'
+    [IO.Directory]::CreateDirectory($pathDirectory) | Out-Null
+    $pathBinary = Join-Path $pathDirectory 'zellij.exe'
+    $release = Join-Path $root 'release zellij.exe'
+    [IO.File]::WriteAllText($pathBinary, 'old build')
+    [IO.File]::WriteAllText($release, 'selected release')
+    Assert (!(Sync-SwitchboardPathBinary $release (Join-Path $root 'missingzellij.exe'))) 'A computer without a PATH copy must not get one'
+    $running = [IO.File]::Open($pathBinary, 'Open', 'Read', ([IO.FileShare]::Read -bor [IO.FileShare]::Delete))
+    try { Assert (Sync-SwitchboardPathBinary $release $pathBinary) 'The stale PATH copy was not replaced' } finally { $running.Dispose() }
+    Assert ([IO.File]::ReadAllText($pathBinary) -ceq 'selected release') 'PATH copy does not hold the selected release'
+    Assert (!(Sync-SwitchboardPathBinary $release $pathBinary)) 'An up-to-date PATH copy was rewritten'
+    Assert (@(Get-ChildItem -LiteralPath $pathDirectory).Count -eq 1) 'Staged or retired copies were left behind'
+
     Write-Output "PASS: $checks Windows release checks; closed engines are allowed only during service verification, reused PIDs still fail."
 } finally {
     Remove-Module $module -Force
