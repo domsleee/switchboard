@@ -55,6 +55,15 @@ test('current conversation opens directly, stays pane-local, and follows a new c
  assert.equal(await page.locator('.conversation-message').count(),0);
  assert.equal(await page.getByLabel('Reply draft').isVisible(),false);
  assert.match(await page.locator('.conversation-notice').textContent(),/not reported/);
+ // Shell-only tabs have a plain empty state; startup and an unreported agent
+ // remain distinct even when the pane/chat identity has not changed.
+ await page.evaluate(()=>{current={...current,agent:null};SwitchboardConversation.update();});
+ assert.equal(await page.locator('.conversation-notice').textContent(),'No agent');
+ assert.equal(await page.getByRole('button',{name:/Start (Sol|Astra|Claude)/}).count(),0);
+ await page.evaluate(()=>{current={...current,starting:true};SwitchboardConversation.update();});
+ assert.equal(await page.locator('.conversation-notice').textContent(),'Starting agent…');
+ await page.evaluate(()=>{current={...current,starting:false,agent:'codex'};SwitchboardConversation.update();});
+ assert.match(await page.locator('.conversation-notice').textContent(),/not reported/);
  // A hook arriving later connects the open panel automatically.
  await page.evaluate(()=>{current={...current,chatId:'codex-one'};SwitchboardConversation.update();});
  await page.locator('.conversation-message').first().waitFor();assert.equal(queries,0);
