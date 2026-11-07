@@ -899,6 +899,13 @@ fn read_page(chat: &Chat, p: &Params) -> Value {
     }).collect();
     for (message, source) in page.iter_mut().zip(&chat.messages[start..end]) {
         if source["role"] == "user" {
+            // Display stays clipped; receipt matching must cover every message
+            // accepted by the composer, including an attached-file suffix.
+            if message["truncated"] == true {
+                if let Some(text) = source["text"].as_str().filter(|text| text.len() <= 16_000) {
+                    message["receipt_text"] = json!(text);
+                }
+            }
             if let Some((body, files)) = source["text"].as_str().and_then(uploaded_attachments) {
                 let mut attachments = message["attachments"]
                     .as_array()
@@ -1394,6 +1401,39 @@ pub(in crate::switchboard_relay) async fn gateway(request: Request) -> Response 
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn switchboard_chats_long_composer_messages_have_bounded_receipts() {
+        let upload = "/home/fixture/.local/share/switchboard/attachments/11111111-2222-4333-8444-555555555555/photo.png";
+        let text = format!("{}\n\nAttached files:\n{upload}", "a".repeat(4500));
+        let chat = Chat {
+            messages: vec![
+                json!({"role":"user","text":text}),
+                json!({"role":"assistant","text":"a".repeat(4500)}),
+                json!({"role":"user","text":"a".repeat(16001)}),
+            ],
+            ..Chat::default()
+        };
+        let page = read_page(
+            &chat,
+            &Params {
+                limit: Some(3),
+                ..Params::default()
+            },
+        );
+        assert_eq!(
+            page["messages"][0]["text"]
+                .as_str()
+                .unwrap()
+                .chars()
+                .count(),
+            4000
+        );
+        assert_eq!(page["messages"][0]["receipt_text"], text);
+        assert_eq!(page["messages"][0]["attachments"][0]["name"], "photo.png");
+        assert!(page["messages"][1].get("receipt_text").is_none());
+        assert!(page["messages"][2].get("receipt_text").is_none());
+    }
 
     #[test]
     fn switchboard_chats_keep_model_and_effort_with_each_turn_and_live_page() {

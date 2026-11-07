@@ -14,17 +14,19 @@
     const mobile=matchMedia('(max-width:700px), (pointer:coarse) and (max-width:1000px)').matches;
     const modeKey=mobile?'switchboard-mobile-view-mode':'switchboard-view-mode';
     let savedMode;try{savedMode=localStorage.getItem(modeKey);}catch{}
-    let target=null,open=savedMode? savedMode==='conversation':mobile,generation=0,startCursor=0,tailCursor=0,nextCursor=null,messages=[],pending=null,loading=false,loaded=false,lastPaint=null;
-    const outgoing=new Map(),consumedTranscript=new Map();
+    let target=null,open=savedMode? savedMode==='conversation':mobile,generation=0,startCursor=0,tailCursor=0,nextCursor=null,messages=[],loading=false,loaded=false,lastPaint=null,modeRevision=0,navigationRevision=0;
+    const outgoing=new Map(),consumedTranscript=new Map(),pendingSends=new Map(),startups=new Map(),draftVersions=new Map();
     const conversations=new Map();
     let stream=null,streamReady=false,streamSupported=false,streamPages=[],restorePosition=null;
-    let preparing=false,lastPrepare='',lastPrepareAt=0;
     async function prepare(){
-      if(!open||document.hidden||!target||target.agent!=='codex'||!target.session||!Number.isInteger(target.tab)||preparing)return;
+      if(!open||document.hidden||!target||target.agent!=='codex'||!target.session||!Number.isInteger(target.tab))return;
       if(target.chatId&&['ready','working'].includes(target.state))return;
-      const key=identity(target);if(key===lastPrepare&&Date.now()-lastPrepareAt<5000)return;
-      lastPrepare=key;lastPrepareAt=Date.now();preparing=true;
-      try{await fetch('/api/hosts/'+encodeURIComponent(target.host)+'/conversation/prepare',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:target.session,tab_id:target.tab,pane_id:target.pane}),signal:AbortSignal.timeout(20000)});}catch{}finally{preparing=false;}
+      const destination=target,key=identity(destination),startup=startupState();
+      if(!startup||startup.pending||startup.error||Date.now()-startup.started>=30000||Date.now()-(startup.at||0)<5000)return;
+      startup.at=Date.now();startup.pending=true;
+      try{const response=await fetch('/api/hosts/'+encodeURIComponent(destination.host)+'/conversation/prepare',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:destination.session,tab_id:destination.tab,pane_id:destination.pane}),signal:AbortSignal.timeout(20000)});if(!response.ok)throw Error(response.status===404?'Update Switchboard on this computer to prepare the agent.':'Could not prepare this agent. Retry or open Terminal.');}
+      catch(error){startup.error=error.name==='TimeoutError'?'Agent preparation timed out. Retry or open Terminal.':error.message||'Could not reach this agent. Retry or open Terminal.';}
+      finally{startup.pending=false;if(identity(target)===key&&!chat){status(unboundNotice());updateActivity();}}
     }
     function stopStream(){stream?.close();stream=null;streamReady=false;streamPages=[];}
     function streamPage(data){applyPage(data,'poll',nextCursor??tailCursor);status(partialNotice(data),!data.partial);}
@@ -42,37 +44,49 @@
     const modes=el('div',undefined,'conversation-modes');modes.hidden=true;modes.setAttribute('role','group');modes.setAttribute('aria-label','View mode');
     const back=el('button','Terminal'),toggle=el('button','Conversation','conversation-toggle');back.type=toggle.type='button';back.setAttribute('aria-pressed',String(!open));toggle.setAttribute('aria-pressed',String(open));modes.append(back,toggle);root.append(modes);
     const panel=el('section',undefined,'conversation-panel');panel.hidden=true;panel.tabIndex=-1;panel.setAttribute('aria-label','Agent conversation');
-    const header=el('header'),heading=el('div',undefined,'conversation-heading'),title=el('strong'),activity=el('span',undefined,'conversation-activity');activity.setAttribute('role','status');heading.append(title,activity);header.append(heading);
+    const header=el('header'),heading=el('div',undefined,'conversation-heading'),title=el('strong'),model=el('span',undefined,'conversation-model'),activity=el('span',undefined,'conversation-activity'),terminalAction=el('button','Open Terminal','conversation-terminal-action');model.title='Last reported model';activity.setAttribute('role','status');terminalAction.type='button';terminalAction.hidden=true;terminalAction.onclick=()=>show(false);heading.append(title,model);header.append(heading,activity,terminalAction);
     const notice=el('p','Loading this terminal’s conversation…','conversation-notice');notice.setAttribute('role','status');
     const list=el('div',undefined,'conversation-messages'),older=el('button','Load older messages'),refresh=el('button','↻'),latest=el('button','↓');refresh.setAttribute('aria-label','Refresh');refresh.title='Refresh conversation';latest.setAttribute('aria-label','Scroll to bottom');latest.title='Scroll to bottom';older.hidden=true;
-    const working=el('div','Working…','conversation-working');working.hidden=true;working.setAttribute('role','status');
+    const working=el('div','Working…','conversation-working');working.hidden=true;working.setAttribute('aria-hidden','true');
+    const recovery=el('div',undefined,'conversation-recovery'),retryConnection=el('button','Retry connection');recovery.hidden=true;retryConnection.type='button';retryConnection.onclick=()=>{if(target)startups.delete(identity(target));status(unboundNotice());updateActivity();prepare();};recovery.append(retryConnection);
     const historyStatus=el('span',undefined,'conversation-history-status');historyStatus.hidden=true;historyStatus.setAttribute('role','status');
     const actions=el('div',undefined,'conversation-actions');actions.append(refresh,latest);list.append(older,working);latest.hidden=refresh.hidden=true;
     const form=el('form',undefined,'conversation-compose'),draft=el('textarea'),insert=el('button','↑');draft.rows=1;draft.maxLength=16000;draft.placeholder='Message…';draft.setAttribute('aria-label','Reply draft');insert.type='submit';insert.setAttribute('aria-label','Send');insert.title='Send message';const attach=el('button','+','conversation-attach'),picker=el('input'),files=el('div',undefined,'conversation-attachments');attach.type='button';attach.setAttribute('aria-label','Attach files');attach.title='Attach photos or files';picker.type='file';picker.multiple=true;picker.hidden=true;files.hidden=true;form.append(files,attach,draft,insert,picker);
     const sendNotice=el('small',undefined,'conversation-send-notice');sendNotice.hidden=true;sendNotice.setAttribute('role','status');form.append(sendNotice);
-    function sendStatus(text){const follow=nearBottom();sendNotice.textContent=text;sendNotice.hidden=!text;if(form.isConnected){sizeDraft();if(follow){list.scrollTop=list.scrollHeight;updateLatest();}}}
-    panel.append(header,notice,list,historyStatus,actions,form);root.append(panel);
+    const transportNotice=el('small','Replies use Terminal briefly, then return here.','conversation-transport-notice');transportNotice.hidden=true;form.append(transportNotice);
+    let sendNoticeReceipt=null;
+    function sendStatus(text,receipt=null){const follow=nearBottom();sendNoticeReceipt=receipt;if(sendNotice.textContent!==text)sendNotice.textContent=text;sendNotice.hidden=!text;if(form.isConnected){sizeDraft();if(follow){list.scrollTop=list.scrollHeight;updateLatest();}}}
+    panel.append(header,notice,recovery,list,historyStatus,actions,form);root.append(panel);
     const identity=t=>t?JSON.stringify([t.key,t.chatId]):null;
     let chat=null;
     const binding=()=>chat;
-    function status(text,quiet=false){notice.textContent=text;notice.hidden=quiet;}
+    const pendingFor=(key=identity(target))=>pendingSends.get(key);
+    function status(text,quiet=false){if(notice.textContent!==text)notice.textContent=text;notice.hidden=quiet;}
     function modelLabel(value){
-      const name=value?.model?String(value.model).replace(/^gpt-/i,'').replace(/-/g,' ').replace(/\b[a-z]/g,char=>char.toUpperCase()):'';
+      const raw=String(value?.model||'');
+      const name=/^gpt-\d+(?:\.\d+)?-(?:sol|astra|luna|terra)(?:-codex)?$/i.test(raw)?raw.replace(/^gpt-/i,'').replace(/-/g,' ').replace(/\b[a-z]/g,char=>char.toUpperCase()):/^claude-(opus|sonnet|haiku)-\d+(?:-\d+)?(?:-\d{8})?$/i.test(raw)?raw.replace(/^claude-/i,'').replace(/-\d{8}$/,'').replace(/^(opus|sonnet|haiku)-(\d+)-(\d+)$/i,'$1 $2.$3').replace(/-/g,' ').replace(/^\w/,char=>char.toUpperCase()):raw;
       return name?[name,value.reasoning_effort].filter(Boolean).join(' · '):'';
     }
     function providerLabel(){const agent=target?.agent||chat?.agent;return agent?agent[0].toUpperCase()+agent.slice(1):'Assistant';}
     function agentLabel(){return modelLabel(chat)||providerLabel();}
     function updateActivity(){
-      const state=target?.state,label=state==='working'?'Working…':state==='approval'?'Approval needed in Terminal':state==='input'?'Input needed in Terminal':state==='waiting'?'Waiting on an agent':state==='ready'?'Ready':'';
-      activity.textContent=chat||target?.agent?[agentLabel(),label].filter(Boolean).join(' · '):'';
+      const state=target?.state,label=state==='working'?'Working…':state==='approval'?'Approval needed':state==='input'?'Input needed':state==='waiting'?'Waiting on an agent':state==='ready'?'Ready':'';
+      const name=chat||target?.agent?agentLabel():'';if(model.textContent!==name)model.textContent=name;
+      if(activity.textContent!==label)activity.textContent=label;
       activity.classList.toggle('working',state==='working');
       const follow=nearBottom();working.hidden=state!=='working'||!chat;
       if(follow)list.scrollTop=list.scrollHeight;
+      const startup=startupState(),stalled=!!startup&&(!!startup.error||Date.now()-startup.started>=30000);
+      terminalAction.hidden=!['approval','input'].includes(state)&&!stalled;recovery.hidden=!stalled||!!chat;
+      insert.disabled=!!pendingFor();
+      transportNotice.hidden=!chat||!(target?.terminalReady===false&&!(target?.agent==='codex'&&/^[0-9a-f-]{36}$/.test(chat.thread||'')));
+      insert.setAttribute('aria-label',transportNotice.hidden?'Send':'Send via Terminal');insert.title=transportNotice.hidden?'Send message':'Send via Terminal and return to Conversation';
     }
-    function unboundNotice(){return target?.starting?'Starting agent…':target?.agent?'This agent has not reported its conversation yet. This view will connect automatically.':'No agent';}
+    function startupState(){if(!target||chat||!target.agent&&!target.starting)return null;const key=identity(target);if(!startups.has(key)&&open&&!document.hidden)startups.set(key,{started:Date.now()});return startups.get(key);}
+    function unboundNotice(){const startup=startupState();return startup?.error||(startup&&Date.now()-startup.started>=30000?'The agent has not connected. Retry or open Terminal.':target?.starting?'Starting agent…':target?.agent?'Connecting to this agent’s conversation…':'No agent');}
     function busy(value){loading=value;older.disabled=refresh.disabled=value;}
     function focusSurface(){if(!panel.hidden)(form.hidden?panel:draft).focus({preventScroll:true});}
-    function show(value){if(!value){stopStream();loadRequest?.abort();window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();}open=value;root.classList.toggle('conversation-open',open);modeChanged();try{localStorage.setItem(modeKey,value?'conversation':'terminal');}catch{}panel.hidden=!value;toggle.setAttribute('aria-pressed',String(value));back.setAttribute('aria-pressed',String(!value));if(value){document.getElementById('artifact-preview').hidden=true;update();if(loaded){paint(false,restorePosition===null&&lastPaint===null);if(restorePosition!==null){list.scrollTop=restorePosition.follow?list.scrollHeight:restorePosition.position;restorePosition=null;updateLatest();}}if(binding())load(loaded?'poll':'initial');startStream();focusSurface();}else if(target)terminal(target);viewport();}
+    function show(value,transient=false){if(!transient)modeRevision++;if(!value){stopStream();loadRequest?.abort();window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();}open=value;root.classList.toggle('conversation-open',open);modeChanged();if(!transient)try{localStorage.setItem(modeKey,value?'conversation':'terminal');}catch{}panel.hidden=!value;toggle.setAttribute('aria-pressed',String(value));back.setAttribute('aria-pressed',String(!value));if(value){document.getElementById('artifact-preview').hidden=true;update();if(loaded){paint(false,restorePosition===null&&lastPaint===null);if(restorePosition!==null){list.scrollTop=restorePosition.follow?list.scrollHeight:restorePosition.position;restorePosition=null;updateLatest();}}if(binding())load(loaded?'poll':'initial');startStream();focusSurface();}else if(target)terminal(target);viewport();}
 
     toggle.onclick=()=>show(true);back.onclick=()=>show(false);
     let loadRequest=null,lastFailure=null,lastDiagnostic='',lastDiagnosticAt=0,newOutput=false,scrollIdle;
@@ -105,14 +119,31 @@
     function outgoingLabel(state){return state==='sending'?'Sending…':state==='queued'?'Queued':state==='sent'?'Sent':'Could not confirm sending';}
     function sendItem(sent,state,detail){sent.state=state;sent.detail=detail||'';if(identity(target)===sent.key)paint();}
     function nearBottom(){return list.scrollHeight-list.scrollTop-list.clientHeight<80;}
+    let following=true,readingAnchor=null,resizeFrame=null;
+    function rememberReading(){
+      following=nearBottom();
+      if(following){readingAnchor=null;return;}
+      const top=list.getBoundingClientRect().top,node=[...list.querySelectorAll('.conversation-message')].find(node=>node.getBoundingClientRect().bottom>top);
+      readingAnchor=node?{node,id:node.dataset.conversationEntry,offset:node.getBoundingClientRect().top-top}:null;
+    }
+    const contentResize=globalThis.ResizeObserver?new ResizeObserver(()=>{
+      if(resizeFrame!==null)return;
+      resizeFrame=requestAnimationFrame(()=>{resizeFrame=null;if(panel.hidden||!loaded)return;
+        if(following)list.scrollTop=list.scrollHeight;
+        else if(readingAnchor){const node=readingAnchor.node.isConnected?readingAnchor.node:[...list.querySelectorAll('.conversation-message')].find(node=>node.dataset.conversationEntry===readingAnchor.id);if(node)list.scrollTop+=node.getBoundingClientRect().top-list.getBoundingClientRect().top-readingAnchor.offset;}
+        updateLatest();rememberReading();
+      });
+    }):null;
+    contentResize?.observe(list);contentResize?.observe(working);
+    if(globalThis.ResizeObserver)new ResizeObserver(()=>panel.style.setProperty('--conversation-header-height',header.offsetHeight+'px')).observe(header);
     function updateLatest(){latest.hidden=nearBottom();if(latest.hidden)newOutput=false;latest.textContent=newOutput?'↓ New messages':'↓ Latest';actions.hidden=latest.hidden&&refresh.hidden;}
-    list.addEventListener('scroll',()=>{list.classList.add('scrolling');clearTimeout(scrollIdle);scrollIdle=setTimeout(()=>list.classList.remove('scrolling'),700);updateLatest();if(loaded&&startCursor>0&&list.scrollTop<80&&!loading&&older.hidden)load('older');},{passive:true});
+    list.addEventListener('scroll',()=>{rememberReading();list.classList.add('scrolling');clearTimeout(scrollIdle);scrollIdle=setTimeout(()=>list.classList.remove('scrolling'),700);updateLatest();if(loaded&&startCursor>0&&list.scrollTop<80&&!loading&&older.hidden)load('older');},{passive:true});
     function paint(prepend=false,initial=false){
       const key=identity(target),sentItems=outgoing.get(key)||[],used=consumedTranscript.get(key)||new Set();
       for(const sent of sentItems){
         if(sent.transcriptCursor!==undefined)continue;
-        const match=messages.findIndex((item,offset)=>startCursor+offset>sent.baseline&&item.role==='user'&&!used.has(startCursor+offset)&&sameMessage(item.text||'',sent.payload));
-        if(match>=0){sent.transcriptCursor=startCursor+match;used.add(sent.transcriptCursor);}
+        const match=messages.findIndex((item,offset)=>startCursor+offset>sent.baseline&&item.role==='user'&&!used.has(startCursor+offset)&&sameMessage(item.receipt_text??item.text??'',sent.payload));
+        if(match>=0){sent.transcriptCursor=startCursor+match;used.add(sent.transcriptCursor);if(pendingFor(sent.key)===sent){pendingSends.delete(sent.key);sent.request?.abort();}clearSentDraft(sent);}
       }
       consumedTranscript.set(key,used);
       outgoing.set(key,sentItems.filter(item=>item.transcriptCursor===undefined));
@@ -129,35 +160,37 @@
         let entry=rendered.get(key);
         if(!entry||entry.signature!==signature){
           const article=el('article',undefined,'conversation-message '+item.role+(item.phase==='commentary'?' commentary':'')),label=el('div',speaker,'conversation-label');article.append(label);
+          article.dataset.conversationEntry='message-'+key;contentResize?.observe(article);
           if(window.SwitchboardConversationMedia&&(item.markdown||item.attachments))window.SwitchboardConversationMedia.render(article,item,{host:target.host,project:binding()?.project});else textBlocks(article,item.text||'');
           if(item.truncated)article.append(el('small','Message truncated by history API. Open the terminal for full context.'));
-          entry?.node.remove();entry={signature,node:article};rendered.set(key,entry);
+          if(entry){contentResize?.unobserve(entry.node);entry.node.remove();}entry={signature,node:article};rendered.set(key,entry);
         }
         entry.node.classList.toggle('continuation',previousRole==='assistant'&&item.role==='assistant'&&previousSpeaker===speaker);previousRole=item.role;previousSpeaker=speaker;
         if(previous.nextSibling!==entry.node)previous.after(entry.node);
         previous=entry.node;
       }
-      for(const [key,entry] of rendered)if(!keys.has(key)){entry.node.remove();rendered.delete(key);}
+      for(const [key,entry] of rendered)if(!keys.has(key)){contentResize?.unobserve(entry.node);entry.node.remove();rendered.delete(key);}
       for(const sent of visibleOutgoing){
         const signature=JSON.stringify([sent.text,sent.files.map(file=>file.name),sent.state,sent.detail]);let entry=renderedOutgoing.get(sent.id);
         if(!entry||entry.signature!==signature){
           const article=el('article',undefined,'conversation-message user conversation-outgoing '+sent.state),label=el('div','You','conversation-label');article.append(label);textBlocks(article,sent.text||'');
+          article.dataset.conversationEntry='outgoing-'+sent.id;contentResize?.observe(article);
           const mediaFiles=sent.files.filter(file=>file.kind==='image'||file.kind==='video');
           if(window.SwitchboardConversationMedia&&mediaFiles.length)window.SwitchboardConversationMedia.render(article,{attachments:mediaFiles.map(file=>({kind:file.kind,name:file.name,url:file.path}))},{host:sent.host});
           for(const file of sent.files.filter(file=>!window.SwitchboardConversationMedia||!mediaFiles.includes(file)))article.append(el('div',file.name,'conversation-outgoing-file'));
           const footer=el('div',undefined,'conversation-outgoing-status');footer.append(el('span',sent.detail||outgoingLabel(sent.state)));
-          if(sent.state==='failed'&&sent.native){
+          if(['failed','uncertain'].includes(sent.state)&&sent.native){
             const retry=el('button','Retry');retry.type='button';retry.onclick=()=>retrySend(sent);footer.append(retry);
           }
-          article.append(footer);entry?.node.remove();entry={signature,node:article};renderedOutgoing.set(sent.id,entry);
+          article.append(footer);if(entry){contentResize?.unobserve(entry.node);entry.node.remove();}entry={signature,node:article};renderedOutgoing.set(sent.id,entry);
         }
         if(previous.nextSibling!==entry.node)previous.after(entry.node);previous=entry.node;
       }
-      const outgoingIds=new Set(visibleOutgoing.map(item=>item.id));for(const [id,entry] of renderedOutgoing)if(!outgoingIds.has(id)){entry.node.remove();renderedOutgoing.delete(id);}
-      list.append(working);
+      const outgoingIds=new Set(visibleOutgoing.map(item=>item.id));for(const [id,entry] of renderedOutgoing)if(!outgoingIds.has(id)){contentResize?.unobserve(entry.node);entry.node.remove();renderedOutgoing.delete(id);}
+      if(list.lastChild!==working)list.append(working);
       if(prepend)list.scrollTop=position+list.scrollHeight-height;
       else if(follow)list.scrollTop=list.scrollHeight;
-      updateLatest();
+      updateLatest();rememberReading();paintFiles();
     }
     function applyPage(data,kind,cursor){
       const initial=kind==='initial',prepend=kind==='older',page=data.messages||[],start=data.start_cursor??(initial?0:prepend?Math.max(0,startCursor-page.length):cursor);
@@ -204,15 +237,15 @@
         const chip=el('div',undefined,'conversation-attachment');
         if(item.preview){const img=el('img');img.src=item.preview;img.alt='';chip.append(img);}
         chip.append(el('span',item.name),el('small',item.error?'Upload failed':item.path?'Ready':'Uploading…'));
-        const remove=el('button','×');remove.type='button';remove.setAttribute('aria-label','Remove '+item.name);remove.disabled=!!pending;
+        const remove=el('button','×');remove.type='button';remove.setAttribute('aria-label','Remove '+item.name);remove.disabled=!!pendingFor();
         remove.onclick=()=>{attachments.set(identity(target),fileList().filter(file=>file!==item));if(item.preview)URL.revokeObjectURL(item.preview);paintFiles();};chip.append(remove);files.append(chip);
       }
-      attach.disabled=!!pending;sizeDraft();if(follow){list.scrollTop=list.scrollHeight;updateLatest();}
+      attach.disabled=insert.disabled=!!pendingFor();sizeDraft();if(follow){list.scrollTop=list.scrollHeight;updateLatest();}
     }
     let pickerTarget=null;
     attach.onclick=()=>{pickerTarget=target;picker.click();};
     async function addFiles(selected,destination=target){
-      if(!destination||pending)return;const key=identity(destination),host=destination.host;
+      if(!destination||pendingFor(identity(destination)))return;const key=identity(destination),host=destination.host;
       for(const file of selected){
         if(fileList(key).length>=8){if(identity(target)===key)sendStatus('Attach up to 8 files per message.');break;}
         if(!file.size||file.size>20*1024*1024){if(identity(target)===key)sendStatus('Choose a non-empty file up to 20 MB.');continue;}
@@ -225,30 +258,44 @@
     }
     picker.onchange=()=>{const selected=[...picker.files],destination=pickerTarget;picker.value='';pickerTarget=null;void addFiles(selected,destination);};
     draft.addEventListener('paste',event=>{const selected=[...(event.clipboardData?.files||[])];if(selected.length){event.preventDefault();void addFiles(selected);}});
-    draft.oninput=()=>{if(target)drafts.set(identity(target),draft.value);sizeDraft();if(!pending)sendStatus('');};
+    draft.oninput=()=>{if(target){const key=identity(target);drafts.set(key,draft.value);draftVersions.set(key,(draftVersions.get(key)||0)+1);}sizeDraft();if(!pendingFor())sendStatus('');};
     draft.onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing&&!matchMedia('(pointer:coarse)').matches){event.preventDefault();form.requestSubmit();}};
-    function complete(sent,ok,message){
-      if(pending!==sent)return;pending=null;insert.disabled=false;
-      if(ok){
-        retryKeys.delete(sent.key);if(drafts.get(sent.key)===sent.text)drafts.delete(sent.key);
-        attachments.set(sent.key,fileList(sent.key).filter(item=>!sent.files.includes(item)));for(const item of sent.files)if(item.preview)URL.revokeObjectURL(item.preview);
-        if(identity(target)===sent.key&&draft.value===sent.text)draft.value='';
-        sendItem(sent,sent.native?'queued':'sent');
-      }else sendItem(sent,'failed',message);
-      if(identity(target)===sent.key){sendStatus(ok?'':message);if(ok)load();}paintFiles();
+    function clearSentDraft(sent){
+      if(sent.draftCleared)return;sent.draftCleared=true;
+      if(retryKeys.get(sent.key)?.id===sent.sendKey)retryKeys.delete(sent.key);
+      const ownsDraft=(draftVersions.get(sent.key)||0)===sent.draftRevision;
+      if(ownsDraft&&drafts.get(sent.key)===sent.text)drafts.delete(sent.key);
+      attachments.set(sent.key,fileList(sent.key).filter(item=>!sent.files.includes(item)));for(const item of sent.files)if(item.preview){URL.revokeObjectURL(item.preview);item.preview=null;}
+      if(ownsDraft&&identity(target)===sent.key&&draft.value===sent.text)draft.value='';
+      if(sendNoticeReceipt===sent&&identity(target)===sent.key)sendStatus('');
     }
-    async function retrySend(sent){
-      if(pending||sent.state!=='failed'||!sent.native)return;
-      const destination=selection();if(identity(destination)!==sent.key)return;
-      pending=sent;insert.disabled=true;sent.state='sending';sent.detail='';paintFiles();sendStatus('');paint();
-      const sendKey=sent.sendKey;
+    function returnToConversation(sent){if(sent.returnHere&&!open&&modeRevision===sent.modeRevision&&navigationRevision===sent.navigationRevision&&identity(selection())===sent.key)show(true,true);}
+    function complete(sent,ok,message,uncertain=false){
+      if(pendingFor(sent.key)!==sent)return;pendingSends.delete(sent.key);
+      if(ok){clearSentDraft(sent);sendItem(sent,sent.native?'queued':'sent');}
+      else sendItem(sent,uncertain?'uncertain':'failed',message);
+      returnToConversation(sent);
+      if(identity(target)===sent.key){sendStatus(ok?'':message,sent);if(ok)load();}paintFiles();
+    }
+    async function sendNative(sent){
+      const request=new AbortController();sent.request=request;
+      const timeout=setTimeout(()=>request.abort(),30000);
       try{
-        const response=await fetch('/api/hosts/'+encodeURIComponent(sent.host)+'/codex/reply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({thread:sent.thread,message:sent.payload,send_key:sendKey})});
-        const result=await response.json();complete(sent,response.ok&&result.status==='queued',response.ok&&result.status==='queued'?'':result.detail||'Could not confirm sending. Retry to check its status.');
-      }catch{complete(sent,false,'Could not confirm sending. Retry to check its status.');}
+        const response=await fetch('/api/hosts/'+encodeURIComponent(sent.host)+'/codex/reply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({thread:sent.thread,message:sent.payload,send_key:sent.sendKey}),signal:request.signal});
+        const result=await response.json(),ok=response.ok&&result.status==='queued';
+        complete(sent,ok,ok?'':result.detail||'Could not confirm sending. Retry to check its status.',result.status!=='failed');
+      }catch{complete(sent,false,request.signal.aborted?'Sending timed out. Delivery is not confirmed. Retry to check its status.':'Could not confirm sending. Retry to check its status.',true);}
+      finally{clearTimeout(timeout);if(sent.request===request)sent.request=null;}
+    }
+    async function retrySend(sent,claimDraft=false){
+      if(pendingFor(sent.key)||!['failed','uncertain'].includes(sent.state)||!sent.native)return;
+      const destination=selection();if(identity(destination)!==sent.key)return;
+      if(claimDraft){sent.draftRevision=draftVersions.get(sent.key)||0;sent.text=draft.value;sent.draftCleared=false;}
+      pendingSends.set(sent.key,sent);insert.disabled=true;sent.state='sending';sent.detail='';paintFiles();sendStatus('');paint();
+      await sendNative(sent);
     }
     form.onsubmit=async event=>{
-      event.preventDefault();const current=selection();if(!target||identity(current)!==identity(target)||!binding()||(!draft.value.trim()&&!fileList().length)||pending)return;
+      event.preventDefault();const current=selection();if(!target||identity(current)!==identity(target)||!binding()||(!draft.value.trim()&&!fileList().length)||pendingFor())return;
       if(!['ready','working'].includes(current.state)){sendStatus('The agent needs attention in Terminal. Your draft is kept.');return;}
       const selected=fileList();if(selected.some(item=>!item.path)){sendStatus(selected.some(item=>item.error)?'Remove failed attachments before sending.':'Wait for attachments to finish uploading.');return;}
       const text=draft.value,payload=text+(selected.length?'\n\nAttached files:\n'+selected.map(item=>item.path).join('\n'):'');
@@ -256,44 +303,44 @@
       const native=current.agent==='codex'&&/^[0-9a-f-]{36}$/.test(chat.thread||'');
       if(current.state==='working'&&!native&&current.agent!=='claude'){sendStatus('Still connecting to this conversation. Try sending again in a moment.');return;}
       if(new TextEncoder().encode(payload).length>(native?8192:16000)){sendStatus('This message is too long. Shorten it before sending.');return;}
-      const retry=native&&(outgoing.get(identity(target))||[]).find(item=>item.state==='failed'&&item.native&&sameMessage(item.payload,payload));
-      if(retry){retrySend(retry);return;}
+      const retry=native&&(outgoing.get(identity(target))||[]).find(item=>['failed','uncertain'].includes(item.state)&&item.native&&sameMessage(item.payload,payload));
+      if(retry){retrySend(retry,true);return;}
       const key=identity(target),id='conversation-'+Array.from(crypto.getRandomValues(new Uint32Array(4)),n=>n.toString(16)).join('-');
       const items=outgoing.get(key)||[],failedBridge=!native&&items.find(item=>item.state==='failed'&&!item.native&&sameMessage(item.payload,payload));
-      const sent={id,key,frame:target.frame,text,payload,files:[...selected],native,host:target.host,thread:chat.thread,baseline:failedBridge?failedBridge.baseline:startCursor+messages.length-1,sendKey:id,state:'sending'};
+      const sent={id,key,frame:target.frame,text,payload,files:[...selected],native,host:target.host,thread:chat.thread,draftRevision:draftVersions.get(key)||0,baseline:failedBridge?failedBridge.baseline:startCursor+messages.length-1,sendKey:id,state:'sending'};
       if(failedBridge)items[items.indexOf(failedBridge)]=sent;else items.push(sent);
-      outgoing.set(key,items);pending=sent;insert.disabled=true;paintFiles();sendStatus('');paint();
+      outgoing.set(key,items);pendingSends.set(key,sent);insert.disabled=true;paintFiles();sendStatus('');paint();
       if(native){
         const prior=retryKeys.get(key),sendKey=prior?.payload===payload?prior.id:id;sent.sendKey=sendKey;retryKeys.set(key,{payload,id:sendKey});
-        try{const response=await fetch('/api/hosts/'+encodeURIComponent(target.host)+'/codex/reply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({thread:chat.thread,message:payload,send_key:sendKey})});
-          sent.sendKey=sendKey;const result=await response.json();complete(sent,response.ok&&result.status==='queued',response.ok&&result.status==='queued'?'':result.detail||'Could not confirm sending. Retry to check its status.');
-        }catch{complete(sent,false,'Could not confirm sending. Retry to check its status.');}return;
+        await sendNative(sent);return;
       }
       // Agents without a native reply API need the visible terminal connection.
       // Attach only after leaving Conversation, then wait for the selected pane.
       if(current.terminalReady===false){
-        show(false);
+        sent.returnHere=true;sent.modeRevision=modeRevision;sent.navigationRevision=navigationRevision;show(false,true);
         const deadline=Date.now()+10000;
-        while(pending===sent&&identity(selection())===key&&!selection()?.terminalReady&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,50));
-        if(pending!==sent)return;
+        while(pendingFor(key)===sent&&identity(selection())===key&&!selection()?.terminalReady&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,50));
+        if(pendingFor(key)!==sent)return;
         if(identity(selection())!==key||!selection()?.terminalReady){complete(sent,false,'Terminal is not ready. Your draft is kept.');return;}
       }
       sent.frame.contentWindow.postMessage({type:'zellij-conversation-paste',id,pane_id:current.pane,agent:current.agent,submit:true,text:payload},location.origin);
       setTimeout(()=>complete(sent,false,'No confirmation from the terminal. Check it before trying again; your draft is kept.'),4000);
     };
     window.addEventListener('message',event=>{
-      if(event.origin!==location.origin||!pending||pending.native||event.source!==pending.frame.contentWindow||event.data?.type!=='zellij-conversation-paste-result'||event.data.id!==pending.id)return;
-      complete(pending,event.data.ok,event.data.ok?'':event.data.error||'Open the terminal and try again.');
+      if(event.origin!==location.origin||event.data?.type!=='zellij-conversation-paste-result')return;
+      const sent=[...pendingSends.values()].find(sent=>!sent.native&&event.source===sent.frame?.contentWindow&&event.data.id===sent.id);if(!sent)return;
+      complete(sent,event.data.ok,event.data.ok?'':event.data.error||'Open the terminal and try again.');
     });
     function update(){
       root.classList.toggle('conversation-open',open);
       const current=selection();modes.hidden=!current;
       title.textContent=current?.title||'Conversation';
       if(identity(current)===identity(target)){target=current;updateActivity();if(!chat)status(unboundNotice());prepare();return;}
+      navigationRevision++;
       if(target)drafts.set(identity(target),draft.value);
       if(target&&loaded){conversations.delete(identity(target));conversations.set(identity(target),{chat,messages,startCursor,tailCursor,nextCursor,streamSupported,position:restorePosition?.position??list.scrollTop,follow:restorePosition?.follow??nearBottom()});if(conversations.size>8)conversations.delete(conversations.keys().next().value);}
       window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();
-      stopStream();streamSupported=false;restorePosition=null;target=current;loadRequest?.abort();lastFailure=null;lastDiagnostic='';newOutput=false;sendStatus('');generation++;loaded=false;lastPaint=null;busy(false);messages=[];startCursor=tailCursor=0;nextCursor=null;rendered.clear();renderedOutgoing.clear();list.replaceChildren(older,working);older.hidden=true;historyStatus.hidden=true;latest.hidden=refresh.hidden=true;
+      stopStream();streamSupported=false;restorePosition=null;target=current;loadRequest?.abort();lastFailure=null;lastDiagnostic='';newOutput=false;sendStatus('');generation++;loaded=false;lastPaint=null;busy(false);messages=[];startCursor=tailCursor=0;nextCursor=null;following=true;readingAnchor=null;for(const entry of [...rendered.values(),...renderedOutgoing.values()])contentResize?.unobserve(entry.node);rendered.clear();renderedOutgoing.clear();list.replaceChildren(older,working);older.hidden=true;historyStatus.hidden=true;latest.hidden=refresh.hidden=true;
       chat=target?.chatId?{id:target.chatId,agent:target.agent,title:target.title}:null;
       const cached=conversations.get(identity(target));if(cached){({chat,messages,startCursor,tailCursor,nextCursor,streamSupported}=cached);loaded=true;}
       updateActivity();
@@ -304,10 +351,10 @@
       if(cached){if(open){paint();list.scrollTop=cached.follow?list.scrollHeight:cached.position;updateLatest();}else restorePosition=cached;}if(open)focusSurface();if(chat){load(loaded?'poll':'initial');startStream();}prepare();
     }
     // Open at the latest messages; older history is fetched only on request.
-    setInterval(()=>{if(open&&!document.hidden){prepare();if(!streamReady)load();}},2000);
+    setInterval(()=>{if(open&&!document.hidden){if(!chat){status(unboundNotice());updateActivity();}prepare();if(!streamReady)load();}},2000);
     document.addEventListener('visibilitychange',()=>{if(document.hidden)stopStream();else if(open){load();startStream();}});
     window.addEventListener('pagehide',()=>{stopStream();loadRequest?.abort();});
-    window.SwitchboardConversation.hasUnsentWork=()=>!!pending||[...outgoing.values()].some(items=>items.length)||!!draft.value||[...drafts.values()].some(Boolean)||[...attachments.values()].some(files=>files.length);
+    window.SwitchboardConversation.hasUnsentWork=()=>!!pendingSends.size||[...outgoing.values()].some(items=>items.length)||!!draft.value||[...drafts.values()].some(Boolean)||[...attachments.values()].some(files=>files.length);
     window.SwitchboardConversation.wantsConversation=()=>open;window.SwitchboardConversation.update=update;window.SwitchboardConversation.isOpen=()=>open&&!panel.hidden;window.SwitchboardConversation.focus=focusSurface;window.SwitchboardConversation.showTerminal=()=>show(false);update();
   }};
 })();

@@ -17,7 +17,7 @@ test('Conversation shows the model, animates real work and keeps delivery receip
   });
   await page.goto('http://activity.test/');await page.getByText('Earlier answer',{exact:true}).waitFor();
   const activity=page.locator('.conversation-activity'),working=page.locator('.conversation-working');
-  assert.equal(await activity.textContent(),'6.1 Sol · medium · Ready');
+  assert.equal(await activity.textContent(),'Ready');assert.equal(await page.locator('.conversation-model').textContent(),'6.1 Sol · medium');
   const labels=page.locator('.conversation-message.assistant .conversation-label');
   assert.equal(await labels.first().textContent(),'6.1 Sol · low');
   assert.equal(await labels.last().textContent(),'6.1 Sol · medium');
@@ -27,7 +27,7 @@ test('Conversation shows the model, animates real work and keeps delivery receip
   await page.locator('.conversation-outgoing').getByText('Queued',{exact:true}).waitFor();
   assert.equal(await working.isVisible(),false,'Queue acknowledgement must not pretend the agent is working');
   await page.evaluate(()=>{current.state='working';SwitchboardConversation.update();});
-  assert.equal(await activity.textContent(),'6.1 Sol · medium · Working…');
+  assert.equal(await activity.textContent(),'Working…');assert.equal(await page.locator('.conversation-model').textContent(),'6.1 Sol · medium');
   assert.equal(await working.isVisible(),true);
   assert.equal(await working.evaluate(node=>getComputedStyle(node,'::before').animationName),'conversation-spin');
   assert.equal(await activity.evaluate(node=>getComputedStyle(node,'::before').animationName),'conversation-pulse');
@@ -39,7 +39,7 @@ test('Conversation shows the model, animates real work and keeps delivery receip
   await page.emulateMedia({reducedMotion:'no-preference'});
   model='gpt-6-astra';effort='high';
   await Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/')),page.evaluate(()=>intervals.forEach(fn=>fn()))]);
-  await page.waitForFunction(()=>document.querySelector('.conversation-activity').textContent==='6 Astra · high · Working…');
+  await page.waitForFunction(()=>document.querySelector('.conversation-model').textContent==='6 Astra · high');assert.equal(await activity.textContent(),'Working…');
   assert.equal(await labels.first().textContent(),'6.1 Sol · low','Historical messages keep the model and effort that produced them');
   for(const state of ['ready','approval','input','waiting']){
    await page.evaluate(state=>{current.state=state;SwitchboardConversation.update();},state);
@@ -48,7 +48,7 @@ test('Conversation shows the model, animates real work and keeps delivery receip
   }
   model=null;effort=null;
   await Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/')),page.evaluate(()=>intervals.forEach(fn=>fn()))]);
-  await page.waitForFunction(()=>document.querySelector('.conversation-activity').textContent==='Codex · Waiting on an agent');
+  await page.waitForFunction(()=>document.querySelector('.conversation-model').textContent==='Codex');assert.equal(await activity.textContent(),'Waiting on an agent');
   await page.evaluate(()=>{current={...current,key:'shell',agent:null,chatId:null,state:'unknown'};SwitchboardConversation.update();});
   assert.equal(await page.locator('.conversation-notice').textContent(),'No agent');assert.equal(await working.isVisible(),false);
   assert.deepEqual(errors,[]);
