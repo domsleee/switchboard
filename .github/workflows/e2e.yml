@@ -133,6 +133,15 @@ jobs:
         run: node tools/switchboard/resumable-viewer.test.cjs target/dev-opt/zellij${{ runner.os == 'Windows' && '.exe' || '' }}
       - name: Prove production attachment survives connection service replacement
         run: node tools/switchboard/attachment-update.test.cjs target/dev-opt/zellij${{ runner.os == 'Windows' && '.exe' || '' }} target/dev-opt/zellij${{ runner.os == 'Windows' && '.exe' || '' }}
+      - name: Prove Windows updater and rollback preserve production attachments
+        if: runner.os == 'Windows'
+        env:
+          SWITCHBOARD_TEST_AUTO_UPDATE: '1'
+          SWITCHBOARD_TEST_CANDIDATE_COMMIT: ${{ github.sha }}
+        run: |
+          cp target/dev-opt/zellij.exe "$RUNNER_TEMP/attachment-update-candidate.exe"
+          SWITCHBOARD_COMMIT=0000000000000000000000000000000000000000 cargo build --locked --profile dev-opt --features resumable_viewer_proof
+          node tools/switchboard/update_windows_browser.test.cjs target/dev-opt/zellij.exe "$RUNNER_TEMP/attachment-update-candidate.exe"
       - name: Preserve proof evidence
         if: always()
         uses: actions/upload-artifact@v7
