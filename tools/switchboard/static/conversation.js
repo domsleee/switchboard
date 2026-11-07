@@ -122,13 +122,13 @@
       if(!open||!target||!binding()||loading)return;if(!loaded)kind='initial';const version=generation,chat=binding(),started=performance.now(),request=new AbortController();loadRequest=request;let timedOut=false,catchUp=false;busy(true);const timeout=setTimeout(()=>{timedOut=true;request.abort();},15000);
       const initial=kind==='initial',prepend=kind==='older',cursor=nextCursor??tailCursor;
       historyStatus.hidden=!prepend;historyStatus.textContent='Loading earlier messages…';
-      const params={host:target.chatHost||target.host,limit:50};
+      const params={host:target.chatHost||target.host,limit:initial&&(mobile||navigator.connection?.saveData)?15:50};
       if(initial)params.tail=true;else if(prepend)params.before=startCursor;else params.cursor=cursor;
       try{const data=await get('/api/chats/'+encodeURIComponent(chat.id)+'?'+new URLSearchParams(params),request.signal);if(version!==generation)return;
         chat.project=data.project||chat.project;chat.thread=data.session_id||chat.thread;const page=data.messages||[],start=data.start_cursor??(initial?0:prepend?Math.max(0,startCursor-page.length):cursor);
-        if(initial){messages=page;startCursor=start;tailCursor=start;nextCursor=data.next_cursor??null;}
+        if(initial){messages=page;startCursor=start;tailCursor=start+Math.max(0,page.length-1);nextCursor=data.next_cursor??null;}
         else if(prepend){messages=page.concat(messages);startCursor=start;}
-        else{messages=messages.slice(0,Math.max(0,start-startCursor)).concat(page);tailCursor=start;nextCursor=data.next_cursor??null;}
+        else{messages=messages.slice(0,Math.max(0,start-startCursor)).concat(page);tailCursor=start+Math.max(0,page.length-1);nextCursor=data.next_cursor??null;}
         loaded=true;refresh.hidden=true;paint(prepend,initial);const warning=partialNotice(data);status(warning,!warning);if(warning){reportLoad(kind,'partial',started);lastFailure='partial';}else if(lastFailure){reportLoad(kind,'recovered',started);lastFailure=null;}updateLatest();catchUp=nextCursor!==null&&!prepend;
       }catch(error){if(version===generation&&!(!timedOut&&request.signal.aborted)){const outcome=timedOut?'timeout':error.code||'network';lastFailure=outcome;reportLoad(kind,outcome,started);const message=timedOut?'Loading took too long. Retrying…':error.code?error.message:'Connection interrupted. Retrying…';if(prepend){older.textContent='Retry earlier messages';older.hidden=false;}else{status(message);refresh.hidden=false;updateLatest();}}}finally{clearTimeout(timeout);if(loadRequest===request)loadRequest=null;if(version===generation){busy(false);historyStatus.hidden=true;if(catchUp)setTimeout(()=>{if(version===generation)load();},0);else if(loaded&&startCursor>0&&older.hidden&&list.scrollHeight<=list.clientHeight)setTimeout(()=>{if(version===generation)load('older');},0);}}
     }
