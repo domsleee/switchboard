@@ -19,8 +19,9 @@
     if(capture)capture.focus({preventScroll:true});
     else window.term?.focus();
   }
+  function conversationOpen(){return !!parent.document.getElementById('terminals')?.classList.contains('conversation-open');}
   function restoreTerminalFocus(origin = focusOrigin) {
-    if (!parent.document.hasFocus() || parent.document.querySelector('dialog[open]') ||
+    if (conversationOpen() || !parent.document.hasFocus() || parent.document.querySelector('dialog[open]') ||
       (window.frameElement && !window.frameElement.classList.contains('active'))) return;
     const active = parent.document.activeElement;
     // Focus still in this frame but on nothing (a reconnect reload or a pane
@@ -64,7 +65,7 @@
   window.addEventListener('blur',()=>{shiftPressedAt=null;shiftReleasedAt=null;});
   function viewportSupported(){return !!window.__zjSupportsTabViewport && !!latest?.tab_viewport;}
   function physicalViewport(){
-    if(!viewportSupported())return;
+    if(conversationOpen()||!viewportSupported())return;
     const cell=window.term?._core?._renderService?.dimensions?.css?.cell;
     if(!cell?.width||!cell.height)return;
     const mobile=document.body.classList.contains('zj-mobile-active');
@@ -85,7 +86,7 @@
     },
     report(size,ownership){
       const tab=latest?.active_pane?.tab_position;
-      if(!viewportSupported()||!Number.isInteger(tab)||!window.__zjSendControl)return false;
+      if(conversationOpen()||!viewportSupported()||!Number.isInteger(tab)||!window.__zjSendControl)return false;
       const signature=JSON.stringify([tab,size.cols,size.rows]);
       if(ownership===undefined && lastViewport===signature)return false;
       lastViewport=signature;
@@ -487,6 +488,11 @@
       }
     }
     send(data) {
+      // The stock client also sends legacy/forced resizes when no physical
+      // viewport is available. Conversation must not resize the native terminal.
+      if(controlSocket===this&&conversationOpen()){
+        try{if(JSON.parse(data)?.payload?.type==='TerminalResize')return;}catch{}
+      }
       if(controlSocket===this)diagnostics?.sent(data);
       if(terminalSocket===this&&this.readyState===1)predict?.sent(data);
       return super.send(data);

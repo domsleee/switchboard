@@ -261,9 +261,9 @@ fn check_claude(dir: &Path) -> Check {
     if let Some(record) = installed {
         if !record["installPath"]
             .as_str()
-            .is_some_and(|p| super::agent_skills::plugin_current(Path::new(p)))
+            .is_some_and(|p| super::agent_skills::plugin_complete(Path::new(p)))
         {
-            missing.push("Plugin skills missing or out of date");
+            missing.push("Plugin skills missing or unreadable");
         }
     }
     if !automatic {
@@ -294,9 +294,9 @@ fn check_copilot(dir: &Path) -> Check {
     if plugin.as_ref().is_some_and(|p| {
         !p["cache_path"]
             .as_str()
-            .is_some_and(|root| super::agent_skills::plugin_current(Path::new(root)))
+            .is_some_and(|root| super::agent_skills::plugin_complete(Path::new(root)))
     }) {
-        missing.push("Plugin skills missing or out of date");
+        missing.push("Plugin skills missing or unreadable");
     }
     if settings["extraKnownMarketplaces"]["switchboard"]["autoUpdate"] != true {
         missing.push("Auto-update off");
@@ -755,6 +755,14 @@ async fn run(program: &Path, args: &[&str], folders: &[PathBuf]) -> Result<(), S
     Err(format!("{shown} failed: {tail}"))
 }
 
+fn verify_plugin_setup(check: Check) -> Result<(), String> {
+    if check.state == "ready" {
+        Ok(())
+    } else {
+        Err(format!("Setup finished but {}", check.detail))
+    }
+}
+
 async fn set_up(agent: Agent) -> Result<(), String> {
     let folders = search_path();
     let dir = agent.home();
@@ -807,7 +815,8 @@ async fn set_up(agent: Agent) -> Result<(), String> {
             turn_on_auto_update(
                 &dir.join("settings.json"),
                 json!({"source": "github", "repo": REPO, "sparsePaths": [".claude-plugin", "plugins"]}),
-            )
+            )?;
+            verify_plugin_setup(check_claude(&dir))
         },
         Agent::Copilot => {
             let copilot = find_program("copilot", &folders).ok_or("Copilot CLI not found")?;
@@ -830,7 +839,8 @@ async fn set_up(agent: Agent) -> Result<(), String> {
             turn_on_auto_update(
                 &dir.join("settings.json"),
                 json!({"source": "github", "repo": REPO}),
-            )
+            )?;
+            verify_plugin_setup(check_copilot(&dir))
         },
         Agent::Codex => {
             let codex = find_program("codex", &folders).ok_or("Codex not found")?;
@@ -1339,6 +1349,46 @@ mod tests {
         );
         assert_eq!(settings["enabledPlugins"][PLUGIN], true);
         assert!(dir.join("settings.json.switchboard.bak").is_file());
+    }
+
+    #[test]
+    fn switchboard_agent_setup_accepts_independently_updated_plugins() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        let plugin = dir.join("active-plugin");
+        write(
+            &dir.join("plugins/installed_plugins.json"),
+            &json!({"plugins":{PLUGIN:[{"scope":"user","installPath":plugin}]}}).to_string(),
+        );
+        write(
+            &dir.join("config.json"),
+            &json!({"installedPlugins":[{"name":"switchboard","marketplace":"switchboard","cache_path":plugin}]}).to_string(),
+        );
+        turn_on_auto_update(&dir.join("settings.json"), json!({})).unwrap();
+        for (name, body) in super::super::agent_skills::SKILLS {
+            write(&plugin.join("skills").join(name).join("SKILL.md"), body);
+        }
+        let skill = plugin.join("skills/message-board/SKILL.md");
+        // A plugin update can change instructions before the relay is updated.
+        write(&skill, "---\r\nname: message-board\r\ndescription: Updated messaging\r\n---\r\nNew instructions.\r\n");
+        for check in [check_claude(dir), check_copilot(dir)] {
+            assert_eq!(check.state, "ready");
+            assert!(verify_plugin_setup(check).is_ok());
+        }
+        for contents in ["", " \r\n\t"] {
+            write(&skill, contents);
+            for check in [check_claude(dir), check_copilot(dir)] {
+                assert_eq!(check.state, "setup");
+                assert!(verify_plugin_setup(check)
+                    .unwrap_err()
+                    .contains("skills missing or unreadable"));
+            }
+        }
+        std::fs::remove_file(&skill).unwrap();
+        for check in [check_claude(dir), check_copilot(dir)] {
+            assert_eq!(check.state, "setup");
+            assert!(verify_plugin_setup(check).is_err());
+        }
     }
 
     #[test]
