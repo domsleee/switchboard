@@ -37,8 +37,8 @@ async function availablePort() {
     await new Promise(resolve => server.close(resolve));
     return port;
 }
-async function waitFor(check, message) {
-    for(let n=0;n<150;n++) {try {if(await check()) return;} catch {} await sleep(100);}
+async function waitFor(check, message, attempts=150) {
+    for(let n=0;n<attempts;n++) {try {if(await check()) return;} catch {} await sleep(100);}
     throw Error(message);
 }
 async function stop(child) {
@@ -147,7 +147,17 @@ let native, relay, browser, updateController, created=false;
   assert.deepEqual((await(await fetch(url+'/api/health')).json()).attachment_workers,workers,'Worker survives');
   assert.deepEqual(identities(),before,'Panes survive');process.kill(fixturePid,0);
   assert.ok(await page.evaluate(()=>{const w=document.querySelector('#terminals>iframe.active').contentWindow;return w.term===window.savedTerm&&w.document===window.savedDocument;}),'Document and renderer survive');
-  await page.waitForFunction(()=>document.querySelector('#terminals>iframe.active').contentWindow.testOutput.includes('OUT:000400'));
+  await waitFor(()=>fs.readFileSync(path.join(dir,'output.txt'),'utf8').includes('OUT:000400'),'Fixture did not emit final output',600);
+  // Native render deltas can split text with cursor moves; assert what xterm displays.
+  try {await page.waitForFunction(()=>{
+    const term=document.querySelector('#terminals>iframe.active').contentWindow.term;
+    return Array.from({length:term.buffer.active.length},(_,i)=>term.buffer.active.getLine(i)?.translateToString()||'').some(line=>line.includes('OUT:000400'));
+  });} catch(error){
+    console.error('Rendered fixture output:',JSON.stringify(await page.evaluate(()=>{
+      const w=document.querySelector('#terminals>iframe.active').contentWindow,term=w.term,owner=w.testPair.terminal.owner;
+      return {rows:Array.from({length:term.buffer.active.length},(_,i)=>term.buffer.active.getLine(i)?.translateToString()||''),failure:w.__zjResumeFailure,stopped:owner.stopped,pending:owner.pending.length};
+    })));throw error;
+  }
   assert.equal(fs.readFileSync(path.join(dir,'input.bin'),'utf8'),expected);
   const otherDir=path.join(dir,'other');fs.mkdirSync(otherDir);
   cli('-s',name,'action','new-tab','--name','Other','--',process.env.PYTHON||(process.platform==='win32'?'python':'python3'),'-u',path.join(root,'tools/switchboard/resumable-viewer/fixture.py'),otherDir);
