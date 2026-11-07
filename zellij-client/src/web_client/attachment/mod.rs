@@ -498,13 +498,8 @@ async fn attachment(
     viewer.notify.notify_waiters();
     os.send_to_server(ClientToServerMsg::ClientExited);
     app.connection_table.lock().unwrap().remove_client(&id);
-    {
-        let mut journal = viewer.journal.lock().unwrap();
-        // Only the authenticated failure/receipt is needed after native exit.
-        let failure = journal.failure.take();
-        *journal = Journal::default();
-        journal.failure = failure;
-    }
+    // Keep the generation so an existing transport can deliver its final error.
+    viewer.journal.lock().unwrap().release_payloads();
     viewer.retired.send_replace(true);
     // Retain a lightweight receipt beyond the browser retry deadline, including
     // explicit recovery after a pause. Other failures need only brief delivery.
