@@ -189,7 +189,8 @@
       // While the agent works, an empty composer offers Stop in the send button's place.
       form.classList.toggle('can-stop',state==='working'&&!!chat&&!!target?.session&&Number.isInteger(target?.pane));
       const project=String(chat?.project||'').replace(/[\\/]+$/,'').split(/[\\/]/).pop();
-      const where=[target?.agent?providerLabel():'',target?.computer,project].filter(Boolean).join(' · ');if(context.textContent!==where)context.textContent=where;
+      const where=[project,target?.computer].filter(Boolean).join(' · ');if(context.textContent!==where)context.textContent=where;
+      const prompt=target?.agent?`Ask ${providerLabel()} a follow-up…`:'Message…';if(draft.placeholder!==prompt)draft.placeholder=prompt;
       transportNotice.hidden=!chat||!(target?.terminalReady===false&&target?.agent!=='claude'&&!(target?.agent==='codex'&&/^[0-9a-f-]{36}$/.test(chat.thread||'')));
       insert.setAttribute('aria-label',transportNotice.hidden?'Send':'Send via Terminal');insert.title=transportNotice.hidden?'Send message':'Send via Terminal and return to Conversation';
     }

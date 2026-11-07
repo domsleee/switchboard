@@ -1,8 +1,10 @@
+/* Inter (SIL OFL 1.1, see inter-OFL.txt), Latin subset, bundled so text looks the same on every computer. */
+@font-face{font-family:"Switchboard Inter";src:url(/inter.woff2) format("woff2");font-weight:400 700;font-style:normal;font-display:swap;unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
 #terminals{isolation:isolate}
 #terminals.conversation-open>iframe{display:none}
 
 /* Mode switch: a quiet segmented control at the header's right edge. */
-.conversation-modes{position:absolute;right:16px;top:12px;z-index:6;display:flex;gap:2px;padding:3px;border:1px solid #ffffff12;border-radius:10px;background:#141518;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI",system-ui,Roboto,"Helvetica Neue",sans-serif}
+.conversation-modes{position:absolute;right:16px;top:12px;z-index:6;display:flex;gap:2px;padding:3px;border:1px solid #ffffff12;border-radius:10px;background:#141518;font-family:"Switchboard Inter",-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif}
 .conversation-modes[hidden]{display:none}
 .conversation-modes button{min-height:28px;padding:4px 11px;border:0;border-radius:7px;background:transparent;color:#8b8b96;font:500 12px/1 inherit;font-family:inherit;cursor:pointer;transition:color .12s,background .12s}
 .conversation-modes button[aria-pressed="true"]{background:#26272c;color:#f2f2f4;box-shadow:0 1px 2px #0006,inset 0 1px 0 #ffffff0a}
@@ -12,13 +14,13 @@
 .conversation-panel{
   --chat-width:46rem;--bg:#0f1012;--surface:#16171a;--raised:#1b1c20;--line:#ffffff0f;--line-2:#ffffff1a;
   --text:#dcdce1;--text-2:#c2c2ca;--muted:#a1a1ab;--step:#8e8e98;--faint:#6a6a74;--accent:#8fb4ff;--code-bg:#0b0c0e;
-  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI",system-ui,Roboto,"Helvetica Neue",sans-serif;
+  --sans:"Switchboard Inter",-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
   --mono:"SF Mono",ui-monospace,Menlo,"JetBrains Mono",Consolas,"Cascadia Mono",monospace;
   --chev:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m3.5 2 3 3-3 3'/%3E%3C/svg%3E");
-  --rail:-20px;--block:16px;
+  --rail:2px;--block:16px;--edge:max(24px,calc((100% - var(--chat-width))/2));
   --chat-border:var(--line-2);
   position:absolute;inset:0;z-index:5;background:var(--bg);color:var(--text);display:flex;flex-direction:column;color-scheme:dark;
-  font:400 16px/1.6 var(--sans);-webkit-font-smoothing:antialiased}
+  font:400 15px/1.65 var(--sans);letter-spacing:-.006em;font-feature-settings:"cv11";-webkit-font-smoothing:antialiased}
 .conversation-panel,.conversation-panel *{box-sizing:border-box}
 /* Hide the panel without discarding its layout. display:none would make every
    return from Terminal lay out the whole loaded transcript again. */
@@ -39,7 +41,7 @@
 .conversation-activity{flex-shrink:0;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;font-weight:400;color:var(--muted)}
 .conversation-activity:empty{display:none}
 .conversation-activity::before{content:"";order:-1;width:6px;height:6px;border-radius:50%;background:#5ad18f}
-.conversation-activity.working{color:var(--muted)}
+.conversation-activity.working{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .conversation-activity.working::before{background:var(--accent);animation:conversation-pulse 1.4s ease-in-out infinite}
 .conversation-panel .conversation-terminal-action{margin-left:auto;min-height:30px;padding:4px 12px;border:1px solid #e0b25c55;background:#e0b25c14;color:#f1cf8c;font-weight:500;white-space:nowrap}
 .conversation-panel .conversation-terminal-action:hover{background:#e0b25c24;color:#ffe2a8}
@@ -53,12 +55,14 @@
 .conversation-recovery button{min-height:40px;border-color:var(--line-2);background:var(--raised)}
 
 /* Transcript */
-.conversation-messages{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:28px max(40px,calc((100% - var(--chat-width))/2)) 20px;-webkit-mask-image:linear-gradient(#000,#000 calc(100% - 40px),#0000);mask-image:linear-gradient(#000,#000 calc(100% - 40px),#0000);scrollbar-width:thin;scrollbar-color:#2c2d33 transparent;overflow-anchor:none}
+.conversation-messages{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:28px var(--edge) 20px;-webkit-mask-image:linear-gradient(#000,#000 calc(100% - 40px),#0000);mask-image:linear-gradient(#000,#000 calc(100% - 40px),#0000);scrollbar-width:thin;scrollbar-color:#2c2d33 transparent;overflow-anchor:none}
 .conversation-message{margin:0 0 28px;overflow-wrap:anywhere}
 .conversation-message.user{width:fit-content;max-width:min(80%,36rem);background:#1d1e22;color:#ececef;border-radius:14px;padding:8px 14px;margin-left:auto;line-height:1.55}
 .conversation-message.user:not(:first-of-type){margin-top:12px}
 /* Speaker is clear from layout; keep the label for screen readers only. */
 .conversation-label{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.conversation-message.user+.conversation-message.assistant:not(.commentary)>.conversation-label,.conversation-message.user+.conversation-message.commentary:not(.live)>.conversation-label{position:static;width:auto;height:auto;margin:0 0 6px;overflow:visible;clip-path:none;display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;letter-spacing:0;color:var(--text-2)}
+.conversation-message.user+.conversation-message.commentary:not(.live)>.conversation-label{margin-left:-18px}
 
 .conversation-notification{font-size:13px;color:var(--muted);margin-bottom:20px}
 .conversation-notification>summary{width:fit-content;max-width:100%;min-height:36px;padding:6px 0;line-height:24px;cursor:pointer}
@@ -68,7 +72,7 @@
 
 /* Activity log: progress updates sit on a rail in the left gutter, so their
    text shares the answer's left edge. */
-.conversation-message.commentary{position:relative;margin:0;padding:0 0 10px;font-size:14px;line-height:1.5;color:var(--step)}
+.conversation-message.commentary{position:relative;margin:0;padding:0 0 10px 18px;font-size:14px;line-height:1.5;color:var(--step)}
 .conversation-message.commentary::before{content:"";position:absolute;left:var(--rail);top:7.5px;width:6px;height:6px;border-radius:50%;background:#5d5e66;z-index:1}
 .conversation-message.commentary::after{content:"";position:absolute;left:calc(var(--rail) + 2.5px);top:8px;bottom:-8px;width:1px;background:#34353c;display:none}
 .conversation-message.commentary:has(+.commentary)::after,.conversation-message.commentary:has(+.conversation-working:not([hidden]))::after,.conversation-message.commentary:has(+.commentary.live+.conversation-working:not([hidden]))::after{display:block}
@@ -80,34 +84,35 @@
 .conversation-message.commentary.live{display:none}
 
 /* Live row: pulsing marker on the rail, the current step, and a quiet timer. */
-.conversation-working{position:relative;display:block;margin:0 0 28px;padding:0;font-size:14px;line-height:1.5}
-.conversation-working-dot{position:absolute;left:calc(var(--rail) - 1px);top:6.5px;width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 4px #8fb4ff26;animation:conversation-pulse 1.4s ease-in-out infinite}
-.conversation-working-step{margin-right:8px}
+.conversation-working{position:relative;display:block;margin:0 0 28px;padding:0 0 0 18px;font-size:14px;line-height:1.5}
+.conversation-working-dot{position:absolute;left:-1px;top:4px;width:12px;height:12px;border-radius:50%;border:1.5px solid #ffffff2b;border-top-color:var(--accent);animation:conversation-spin .9s linear infinite}
+@keyframes conversation-spin{to{transform:rotate(360deg)}}
+.conversation-working-step{margin-right:6px}
+.conversation-working-time::before{content:"· ";color:var(--faint)}
 .conversation-working-step::before{content:attr(data-step);color:transparent;background:linear-gradient(90deg,#c9c9d1 0%,#c9c9d1 40%,#ffffff 50%,#c9c9d1 60%,#c9c9d1 100%) 0 0/300% 100%;-webkit-background-clip:text;background-clip:text;animation:conversation-shimmer 2.4s linear infinite}
-.conversation-working-time{display:inline-block;padding:0 7px;border-radius:999px;background:#ffffff0d;font-size:12px;line-height:20px;vertical-align:1px;color:var(--muted);font-variant-numeric:tabular-nums}
+.conversation-working-time{font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
 .conversation-working-time:empty{display:none}
 @keyframes conversation-pulse{50%{opacity:.4}}
 @keyframes conversation-shimmer{from{background-position:100% 0}to{background-position:0 0}}
-@media(prefers-reduced-motion:reduce){.conversation-working-dot,.conversation-working-step::before,.conversation-activity.working::before{animation:none}.conversation-working-step::before{color:#b4b4bd}}
+@media(prefers-reduced-motion:reduce){.conversation-working-dot{animation-duration:3s}.conversation-working-step::before,.conversation-activity.working::before{animation:none}.conversation-working-step::before{color:#b4b4bd}}
 
 /* Folded progress: one disclosure row in place of a finished run. */
-.conversation-panel .conversation-steps{display:flex;align-items:center;gap:8px;width:calc(100% + 16px);min-height:34px;margin:0 0 12px -8px;padding:4px 8px;border-color:transparent;font-size:14px;font-weight:500;color:#c2c2ca;border-radius:8px;text-align:left}
+.conversation-panel .conversation-steps{display:flex;align-items:center;gap:7px;width:fit-content;max-width:calc(100% + 16px);min-height:32px;margin:0 0 10px -8px;padding:4px 10px 4px 8px;border-color:transparent;font-size:13.5px;font-weight:500;letter-spacing:0;color:#b4b4bd;border-radius:8px;text-align:left}
 .conversation-panel .conversation-steps::before{content:"";order:-1;width:12px;height:12px;flex-shrink:0;background:currentColor;transition:transform .15s;-webkit-mask:var(--chev) center/contain no-repeat;mask:var(--chev) center/contain no-repeat}
 .conversation-panel .conversation-steps[aria-expanded="true"]::before{transform:rotate(90deg)}
-.conversation-panel .conversation-steps::after{content:"";flex:1;height:1px;background:var(--line);margin-left:6px}
 .conversation-panel .conversation-steps:hover{color:var(--text);background:#ffffff08}
 
 /* Rich content: one block gap between paragraphs, lists, code and tables. */
 .conversation-message p{margin:0 0 12px;white-space:pre-wrap}
 .conversation-message p:last-child{margin:0}
 .conversation-message>strong,.conversation-message strong{font-size:inherit;font-weight:600;color:#ececef}
-.conversation-message h1,.conversation-message h2,.conversation-message h3,.conversation-message h4{line-height:1.35;margin:26px 0 6px;font-size:17px;font-weight:600;letter-spacing:-.01em;color:#f4f4f5}
-.conversation-message h1{font-size:21px}.conversation-message h2{font-size:18px}
+.conversation-message h1,.conversation-message h2,.conversation-message h3,.conversation-message h4{line-height:1.35;margin:22px 0 6px;font-size:16.5px;font-weight:600;letter-spacing:-.017em;color:#f4f4f5}
+.conversation-message h1{font-size:22px}.conversation-message h2{font-size:19px}
 .conversation-message.assistant:not(.commentary)>.conversation-label+p{color:#ececef}
 .conversation-message.assistant>.conversation-label+h1,.conversation-message.assistant>.conversation-label+h2,.conversation-message.assistant>.conversation-label+h3{margin-top:0}
 .conversation-message blockquote{margin:var(--block) 0;padding-left:14px;border-left:2px solid var(--line-2);color:var(--text-2)}
-.conversation-message a{color:var(--accent);text-decoration:underline;text-decoration-color:#8fb4ff55;text-underline-offset:3px;text-decoration-thickness:1px}
-.conversation-message a:hover{text-decoration-color:currentColor}
+.conversation-message a{color:#ececef;text-decoration:underline;text-decoration-color:#ececef66;text-underline-offset:3px;text-decoration-thickness:1px}
+.conversation-message a:hover{color:var(--accent);text-decoration-color:currentColor}
 .conversation-message ul,.conversation-message ol{margin:6px 0 var(--block);padding-left:22px}
 .conversation-message li{margin:4px 0;padding-left:2px}
 .conversation-message li::marker{color:var(--faint)}
@@ -121,20 +126,20 @@
 /* Code card: language and Copy above an inset surface. */
 .conversation-code{margin:var(--block) 0;border:1px solid #ffffff12;border-radius:12px;background:#0c0d0f;overflow:hidden}
 .conversation-code>pre{margin:0;border:0;border-radius:0;padding:12px 16px 14px;background:linear-gradient(270deg,#0c0d0f 40%,#0c0d0f00) 100% 0/32px 100% no-repeat local,linear-gradient(270deg,#8fb4ff2e,#8fb4ff00) 100% 0/14px 100% no-repeat scroll,#0c0d0f}
-.conversation-code-bar{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:30px;padding:0 4px 0 16px;border-bottom:1px solid #ffffff0a;background:#ffffff05;font:500 11px/1 var(--mono);color:#a8a8b2}
-.conversation-panel .conversation-code-bar button{display:inline-flex;align-items:center;gap:5px;min-height:26px;padding:3px 8px;font:500 11.5px var(--sans);color:#a8a8b2}
+.conversation-code-bar{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:30px;padding:0 4px 0 16px;border-bottom:1px solid #ffffff0a;background:#ffffff05;font:500 11.5px/1 var(--mono);color:#b4b4bd}
+.conversation-panel .conversation-code-bar button{display:inline-flex;align-items:center;gap:5px;min-height:26px;padding:3px 8px;font:500 12px var(--sans);color:#b4b4bd}
 .conversation-panel .conversation-code-bar button::before{content:"";width:13px;height:13px;background:currentColor;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14' fill='none' stroke='black' stroke-width='1.3' stroke-linejoin='round'%3E%3Crect x='4.5' y='4.5' width='7.5' height='7.5' rx='1.6'/%3E%3Cpath d='M9.5 4.5V3.6A1.6 1.6 0 0 0 7.9 2H3.6A1.6 1.6 0 0 0 2 3.6v4.3a1.6 1.6 0 0 0 1.6 1.6h.9'/%3E%3C/svg%3E") center/contain no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14' fill='none' stroke='black' stroke-width='1.3' stroke-linejoin='round'%3E%3Crect x='4.5' y='4.5' width='7.5' height='7.5' rx='1.6'/%3E%3Cpath d='M9.5 4.5V3.6A1.6 1.6 0 0 0 7.9 2H3.6A1.6 1.6 0 0 0 2 3.6v4.3a1.6 1.6 0 0 0 1.6 1.6h.9'/%3E%3C/svg%3E") center/contain no-repeat}
 .conversation-panel .conversation-code-bar button:hover{color:var(--text)}
 .conversation-code .tok-k{color:#c4a7ff}.conversation-code .tok-s{color:#a5d6a7}.conversation-code .tok-c{color:#6a6a74;font-style:italic}.conversation-code .tok-n{color:#f4b678}.conversation-code .tok-f{color:#8fc4ff}.conversation-code .tok-p{color:#7c7c86}
 
 /* Tables: a header fill and row rules, no outer frame. */
 .conversation-table{max-width:100%;overflow:auto;margin:var(--block) 0}
-.conversation-table table{width:100%;border-collapse:collapse;font-size:14px;line-height:1.45;font-variant-numeric:tabular-nums}
-.conversation-table td{padding:6px 24px 6px 0;border-bottom:1px solid var(--line);vertical-align:top}
+.conversation-table table{width:auto;border-collapse:collapse;font-size:14px;line-height:1.45;font-variant-numeric:tabular-nums}
+.conversation-table td{padding:6px 32px 6px 0;border-bottom:1px solid var(--line);vertical-align:top}
 .conversation-table td:last-child{padding-right:0}
 .conversation-table td:not(:first-child){text-align:right}
-.conversation-table thead td{font-size:12px;font-weight:500;letter-spacing:.01em;color:var(--muted);border-bottom-color:var(--line-2)}
-.conversation-table tr:not(:first-child) td:last-child{font-weight:600;color:#f4f4f5}
+.conversation-table thead td{font-size:12.5px;font-weight:500;letter-spacing:0;color:#b4b4bd;border-bottom-color:var(--line-2)}
+
 .conversation-table tr:last-child td{border-bottom:0}
 
 .conversation-messages>button{display:block;margin:0 auto 24px;border-color:var(--line-2)}
@@ -144,8 +149,8 @@
 .conversation-actions button:last-child{width:auto;padding:4px 12px;white-space:nowrap}
 
 /* Composer: a card with the draft on top and a toolbar below. */
-.conversation-compose{position:relative;align-self:center;width:min(var(--chat-width),calc(100% - 48px));margin:0 0 max(20px,env(safe-area-inset-bottom));border:1px solid var(--line-2);border-radius:14px;background:var(--surface);padding:4px 8px 8px;display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;align-items:center;gap:0 4px;flex-shrink:0;box-shadow:0 12px 32px -10px #000c;transition:border-color .15s,box-shadow .15s}
-.conversation-compose:focus-within{border-color:#ffffff2e}
+.conversation-compose{position:relative;align-self:center;width:min(var(--chat-width),calc(100% - 48px));margin:0 0 max(20px,env(safe-area-inset-bottom));border:1px solid #ffffff1f;border-radius:14px;background:#17181b;padding:4px 8px 8px;display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;align-items:center;gap:0 4px;flex-shrink:0;box-shadow:0 12px 32px -10px #000c;transition:border-color .15s,box-shadow .15s}
+.conversation-compose:focus-within{border-color:#ffffff38;box-shadow:0 0 0 3px #ffffff0b,0 12px 32px -10px #000c}
 .conversation-compose textarea{grid-column:1/-1;grid-row:2;resize:none;max-height:160px;min-height:40px;width:100%;background:transparent;color:var(--text);border:0;outline:none;padding:8px 6px 4px;font:15px/1.5 var(--sans);field-sizing:fixed;overflow-y:hidden}
 .conversation-compose textarea::placeholder{color:#8a8a94}
 .conversation-compose button{display:grid;place-items:center;padding:0;box-shadow:none}
@@ -154,16 +159,16 @@
 .conversation-compose>button[type=submit]::before{content:"";width:15px;height:15px;background:currentColor;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 13V3M3.5 7.5 8 3l4.5 4.5'/%3E%3C/svg%3E") center/contain no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 13V3M3.5 7.5 8 3l4.5 4.5'/%3E%3C/svg%3E") center/contain no-repeat}
 .conversation-compose>button[type=submit]:hover{background:#fff;color:#000}
 .conversation-compose:has(textarea:placeholder-shown):not(:has(.conversation-attachment))>button[type=submit]{background:#2a2b30;color:#8b8b96}
-.conversation-compose .conversation-stop{display:none;background:#ececef;color:#0f1012}
+.conversation-compose .conversation-stop{display:none;background:#2a2b30;color:#ececef;box-shadow:inset 0 0 0 1px #ffffff26}
 .conversation-compose .conversation-stop::before{content:"";width:9px;height:9px;border-radius:2px;background:currentColor}
-.conversation-compose .conversation-stop:hover{background:#fff;color:#000}
+.conversation-compose .conversation-stop:hover{background:#34353b;color:#fff}
 .conversation-compose.can-stop:has(textarea:placeholder-shown):not(:has(.conversation-attachment))>button[type=submit]{display:none}
 .conversation-compose.can-stop:has(textarea:placeholder-shown):not(:has(.conversation-attachment)) .conversation-stop{display:grid}
 .conversation-compose .conversation-attach{grid-column:1;grid-row:3;width:30px;height:30px;min-height:30px;border-radius:8px;color:var(--muted);font-size:0}
 .conversation-compose .conversation-attach::before{content:"";width:16px;height:16px;background:currentColor;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round'%3E%3Cpath d='M8 3v10M3 8h10'/%3E%3C/svg%3E") center/contain no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round'%3E%3Cpath d='M8 3v10M3 8h10'/%3E%3C/svg%3E") center/contain no-repeat}
 .conversation-compose .conversation-attach:hover{background:#ffffff0d;color:var(--text)}
-.conversation-compose .conversation-model{grid-column:3;grid-row:3;max-width:16em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 8px;margin-right:4px;font-size:12.5px}
-.conversation-compose button.conversation-model{display:inline-flex;align-items:center;gap:4px;width:auto;height:30px;min-height:30px;padding:0 8px 0 10px;border-radius:8px;color:var(--text-2);font-weight:500}
+.conversation-compose .conversation-model{grid-column:2;grid-row:3;justify-self:start;max-width:16em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 8px;margin-right:4px;font-size:12.5px}
+.conversation-compose button.conversation-model{display:inline-flex;align-items:center;gap:5px;width:auto;height:30px;min-height:30px;padding:0 9px 0 10px;border-radius:999px;border:1px solid #ffffff17;color:var(--text-2);font-weight:500}
 .conversation-compose button.conversation-model:enabled::after{content:"";flex-shrink:0;width:10px;height:10px;background:currentColor;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m2.5 4 2.5 2.5L7.5 4'/%3E%3C/svg%3E") center/contain no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m2.5 4 2.5 2.5L7.5 4'/%3E%3C/svg%3E") center/contain no-repeat}
 .conversation-compose button.conversation-model:enabled:hover{background:#ffffff0d;color:var(--text)}
 .conversation-compose .conversation-send-notice{grid-column:1/-1;grid-row:4;color:var(--text-2);font-size:12px;line-height:1.5;padding:4px 6px 0}
@@ -205,7 +210,7 @@
 .conversation-media-dialog{width:calc(100vw - 32px);height:calc(100dvh - 32px);max-width:1400px;max-height:none;background:#121315;color:#ececef;border:1px solid #ffffff1a;border-radius:12px;padding:0;color-scheme:dark}
 .conversation-media-dialog[open]{display:flex;flex-direction:column}
 .conversation-media-dialog::backdrop{background:#000c}
-.conversation-media-dialog header,.conversation-media-dialog footer{display:flex;align-items:center;gap:14px;padding:12px 16px;flex-shrink:0;font:13px -apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI",system-ui,Roboto,"Helvetica Neue",sans-serif}
+.conversation-media-dialog header,.conversation-media-dialog footer{display:flex;align-items:center;gap:14px;padding:12px 16px;flex-shrink:0;font:13px "Switchboard Inter",-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif}
 .conversation-media-dialog header span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .conversation-media-dialog a{color:#8fb4ff}
 .conversation-media-dialog button{min-height:44px;background:#1c1d21;color:#ececef;border:1px solid #ffffff1a;border-radius:8px;padding:8px 12px}
@@ -219,12 +224,11 @@
 /* Phones. The keyboard changes the visual viewport, not necessarily 100dvh. */
 @media(max-width:700px),(pointer:coarse) and (max-width:1000px){
   body.conversation-open{overflow:hidden;overscroll-behavior:none}
-  .conversation-panel{font-size:15px;--rail:2px}
+  .conversation-panel{font-size:15px}
   /* One row: the sidebar toggle on the left, the mode switch on the right. */
   .conversation-panel>header{min-height:58px;padding:8px 92px 8px 58px}
   .conversation-heading strong{font-size:15.5px}
   .conversation-subtitle{font-size:12px;gap:8px}
-  .conversation-activity{order:-1}
   .conversation-panel .conversation-terminal-action{min-height:40px}
   body.conversation-open #sidebar-toggle{position:fixed;top:calc(var(--chat-top,0px) + 8px);border-color:transparent;background:transparent}
   /* Icon-only modes so the title keeps the row; the text stays the accessible name. */
@@ -238,18 +242,18 @@
   .conversation-history-status{top:calc(var(--conversation-header-height,58px) + 8px)}
   body.conversation-open .conversation-panel{position:fixed;top:var(--chat-top,0px);left:0;right:0;bottom:auto;height:var(--chat-height,100dvh)}
   .conversation-messages{padding:20px 16px 12px;scrollbar-width:none}
-  .conversation-message.commentary,.conversation-working{padding-left:18px}
   .conversation-panel .conversation-steps{width:calc(100% + 12px);margin-left:-6px;padding-left:6px;padding-right:6px}
   .conversation-messages::-webkit-scrollbar{width:0}
   .conversation-messages.scrolling{scrollbar-width:thin}
   .conversation-messages.scrolling::-webkit-scrollbar{width:3px}
   .conversation-messages.scrolling::-webkit-scrollbar-thumb{background:#2c2d33;border-radius:3px}
-  .conversation-message{margin-bottom:24px}
+  .conversation-message{margin-bottom:20px}
   .conversation-message.user{max-width:88%;font-size:15px}
   .conversation-message.commentary,.conversation-working{font-size:13.5px}
-  .conversation-message h1{font-size:18px}.conversation-message h2{font-size:16.5px}.conversation-message h3,.conversation-message h4{font-size:15.5px}
+  .conversation-message h1{font-size:20px}.conversation-message h2{font-size:18px}.conversation-message h3,.conversation-message h4{font-size:16px}
   .conversation-table table{font-size:13.5px}.conversation-table thead td{font-size:12px}
-  .conversation-message pre{font-size:13px}
+  .conversation-message pre{font-size:12px}
+  .conversation-code>pre{padding-left:12px;padding-right:12px}
   .conversation-notification>summary{min-height:44px;padding:10px 0}
   /* Wide code: a stronger edge fade and a visible scrollbar say it scrolls. */
   .conversation-code>pre{padding-bottom:10px;scrollbar-width:thin;scrollbar-color:#55565e transparent}
@@ -258,10 +262,7 @@
   .conversation-compose{width:calc(100% - 32px);padding:2px 6px 6px;margin-bottom:max(8px,env(safe-area-inset-bottom));border-radius:18px;box-shadow:none}
   .conversation-compose textarea{font-size:16px;min-height:42px;padding:9px 6px 4px}
   .conversation-compose>button[type=submit],.conversation-compose .conversation-stop,.conversation-compose .conversation-attach{width:36px;height:36px;min-height:36px}
-  .conversation-compose button.conversation-model{height:36px;min-height:36px;padding:0 6px;max-width:10.5em}
-  /* Phones show only the model family; the full name stays in the title. */
-  .conversation-compose .conversation-model[data-short]{font-size:0;max-width:none}
-  .conversation-compose .conversation-model[data-short]::before{content:attr(data-short);font-size:12.5px}
+  .conversation-compose button.conversation-model{height:34px;min-height:34px;padding:0 10px;max-width:13em}
   .conversation-attachments{margin:4px 4px 0}
   .conversation-actions{position:absolute;bottom:calc(var(--composer-height,64px) + 12px);width:auto;left:50%;right:auto;transform:translateX(-50%);padding:0}
   .conversation-actions button{min-width:40px;min-height:36px}
