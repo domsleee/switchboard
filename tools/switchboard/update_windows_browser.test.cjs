@@ -89,6 +89,9 @@ function start(binary,args,label) {
         page.setDefaultTimeout(45000);
         await page.addInitScript(()=>{
             const Original=window.WebSocket;window.__acceptanceSockets=[];
+            window.addEventListener('zellij-resumable-sockets',({detail})=>{
+                for(const channel of ['terminal','control']){const socket=detail[channel];socket.url='/ws/'+channel;window.__acceptanceSockets.push(socket);}
+            });
             window.WebSocket=class extends Original {constructor(...args){super(...args);window.__acceptanceSockets.push(this);}};
         });
         await page.goto(url);await page.waitForSelector('#tabs .tab-select');
