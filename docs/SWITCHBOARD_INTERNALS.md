@@ -272,8 +272,11 @@ shows whether each computer's agents are set up to report, as part of every comp
 `/api/tasks` answer (`switchboard` and `agents`). Each relay reads the agents' own files
 rather than running them: Claude's `plugins/installed_plugins.json`, `settings.json` and
 `plugins/known_marketplaces.json`; Copilot's `config.json` (comment lines first) and
-`settings.json`; Codex's `hooks.json`, plus the `[hooks.state."<hooks.json>:<event>:<group>:<hook>"]`
-entries Codex writes to `config.toml` once the user trusts a hook. An agent counts as
+`settings.json`; Codex's enabled Switchboard plugin, its `hooks/codex.json`, and the
+`[hooks.state."switchboard@switchboard:hooks/codex.json:<event>:<group>:<hook>"]`
+entries Codex writes to `config.toml` once the user trusts a plugin hook. A saved
+`plugins/switchboard-hook-trust.json` proof binds Health to the plugin files and settings
+that Codex actually verified. An agent counts as
 installed when its program is on the relay's PATH, the PATH in `tasks.json` or a usual
 install folder, and its settings folder exists. The time of each agent's last hook is
 kept in `~/.config/switchboard/agent-reports.json`. `POST /api/tasks/setup`
@@ -282,8 +285,9 @@ fixed setup in the background; requests name an agent, never a command. Codex ho
 run `~/.local/share/switchboard/codex-agent-hook` (`.cmd` on Windows), which the relay
 rewrites at startup to run its current executable, so the hook text Codex trusted stays
 the same across updates even though Windows runs each release from its own folder.
-Hooks from builds that named the executable directly read as out of date until set up
-again. The same section shows the relay's build and whether
+Once Codex lists all nine plugin hooks as trusted, setup removes Switchboard's old
+global `hooks.json` entries, preserving other hooks and a backup. A failed check keeps
+the global hooks. The same section shows the relay's build and whether
 its automatic update is on: the `switchboard-update.timer` user unit is enabled on Linux,
 the `dev.switchboard.update` LaunchAgent is loaded on macOS, and on Windows the tray, which
 runs the checks, holds its `Local\SwitchboardTray` mutex.

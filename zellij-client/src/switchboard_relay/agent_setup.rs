@@ -491,7 +491,7 @@ fn codex_hooks(config: &Value) -> Vec<(&'static str, usize, usize, String)> {
 }
 
 /// Codex runs a new or changed hook only after the user trusts it, recording
-/// `[hooks.state."<hooks.json>:<event>:<group>:<hook>"]` in config.toml.
+/// `[hooks.state."switchboard@switchboard:hooks/codex.json:<event>:<group>:<hook>"]` in config.toml.
 fn codex_trusted(dir: &Path, event: &str, group: usize, hook: usize) -> bool {
     let snake = CODEX_EVENTS
         .iter()
@@ -602,7 +602,19 @@ fn codex_plugin_list_ready(listed: &Value, trusted: bool) -> bool {
     listed["data"].as_array().is_some_and(|entries| {
         !entries.is_empty()
             && entries.iter().all(|entry| {
+                let switchboard: Vec<_> = entry["hooks"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|hook| {
+                        hook["key"]
+                            .as_str()
+                            .is_some_and(|key| key.starts_with("switchboard@switchboard:"))
+                    })
+                    .collect();
                 entry["errors"].as_array().is_none_or(Vec::is_empty)
+                    && switchboard.len() == CODEX_EVENTS.len() + 2
+                    && switchboard.iter().all(|hook| is_codex_plugin_hook(hook))
                     && CODEX_EVENTS.iter().all(|(_, event, _)| {
                         let count = if matches!(*event, "session_start" | "stop") {
                             2
@@ -630,7 +642,6 @@ async fn trust_codex_hooks(codex: &Path, folders: &[PathBuf], dir: &Path) -> Res
     let fail = |e: &dyn std::fmt::Display| format!("codex app-server: {e}");
     let mut command = tokio::process::Command::new(codex);
     command
-        .arg("--no-daemon")
         .arg("app-server")
         .env("CODEX_HOME", dir)
         .current_dir(home())
@@ -669,7 +680,7 @@ async fn trust_codex_hooks(codex: &Path, folders: &[PathBuf], dir: &Path) -> Res
                     .next_line()
                     .await
                     .map_err(|e| fail(&e))?
-                    .ok_or_else(|| format!("codex app-server exited during {method}"))?;
+                    .ok_or_else(|| format!("codex app-server exited during {method}; check its configuration and update Codex if app-server support is missing"))?;
                 let Ok(message) = serde_json::from_str::<Value>(&line) else {
                     continue;
                 };
@@ -690,6 +701,25 @@ async fn trust_codex_hooks(codex: &Path, folders: &[PathBuf], dir: &Path) -> Res
         .await?;
         let listed = call("hooks/list", json!({"cwds": []})).await?;
         if !codex_plugin_list_ready(&listed, false) {
+            let errors = listed["data"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .flat_map(|entry| entry["errors"].as_array().into_iter().flatten())
+                .map(|error| {
+                    error
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| error.to_string())
+                })
+                .collect::<Vec<_>>()
+                .join(" · ");
+            if !errors.is_empty() {
+                return Err(format!(
+                    "Codex hook configuration errors: {}; global hooks were kept",
+                    errors.chars().take(1000).collect::<String>()
+                ));
+            }
             return Err(
                 "Codex did not load all Switchboard plugin hooks; global hooks were kept".into(),
             );
@@ -944,7 +974,7 @@ fn remove_legacy_codex_hooks(file: &Path) -> Result<(), String> {
     let mut emptied = Vec::new();
     for (event, groups) in hooks.iter_mut() {
         let Some(groups) = groups.as_array_mut() else {
-            return Err(format!("hooks.{event} is not a list"));
+            continue;
         };
         let before_groups = groups.len();
         groups.retain_mut(|group| {
@@ -1114,6 +1144,12 @@ async fn set_up(agent: Agent) -> Result<(), String> {
                         "--sparse",
                         "plugins",
                     ],
+                    &folders,
+                )
+                .await?;
+                run(
+                    &codex,
+                    &["plugin", "marketplace", "upgrade", "switchboard"],
                     &folders,
                 )
                 .await?;
@@ -1886,7 +1922,7 @@ mod tests {
                 {"type":"command","command":"echo personal"},
                 {"type":"command","command":codex_command(&launcher)}]}],
             "Stop":[{"hooks":[{"type":"command","command":codex_command_with_wait(&launcher, true)}]}],
-            "OtherEvent":[{"hooks":[{"type":"command","command":"echo other"}]}], "EmptyEvent":[]
+            "OtherEvent":[{"hooks":[{"type":"command","command":"echo other"}]}], "EmptyEvent":[], "_note":"personal metadata"
         }});
         write_json(&file, &original).unwrap();
         assert_eq!(
@@ -1922,6 +1958,7 @@ mod tests {
         assert_eq!(migrated["description"], "User hooks");
         assert_eq!(migrated["custom"], 42);
         assert_eq!(migrated["hooks"]["EmptyEvent"], json!([]));
+        assert_eq!(migrated["hooks"]["_note"], "personal metadata");
         assert_eq!(migrated["hooks"]["SessionStart"][0]["matcher"], "startup");
         assert_eq!(
             migrated["hooks"]["SessionStart"][0]["hooks"],
@@ -1990,7 +2027,6 @@ mod tests {
                 vec!["plugin", "add", PLUGIN],
             ] {
                 let output = tokio::process::Command::new(&codex)
-                    .arg("--no-daemon")
                     .args(args)
                     .env("CODEX_HOME", &dir)
                     .current_dir(&market)
@@ -2084,6 +2120,12 @@ mod tests {
         handlers.push(json!({"key":"/user/hooks.json:stop:0:0", "command":"echo personal", "trustStatus":"untrusted", "currentHash":"sha256:other"}));
         let mut listed = json!({"data":[{"errors":[],"hooks":handlers}]});
         assert!(codex_plugin_list_ready(&listed, false));
+        listed["data"][0]["hooks"].as_array_mut().unwrap().push(json!({"key":"switchboard@switchboard:hooks/hooks.json:session_start:0:0", "command":"zellij"}));
+        assert!(
+            !codex_plugin_list_ready(&listed, false),
+            "inherited Claude hooks must block migration"
+        );
+        listed["data"][0]["hooks"].as_array_mut().unwrap().pop();
         assert!(!codex_plugin_list_ready(&listed, true));
         let edits = codex_trust_edits(&listed);
         assert_eq!(edits.len(), 9);

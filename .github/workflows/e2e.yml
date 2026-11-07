@@ -128,6 +128,19 @@ jobs:
           cargo test --locked -p zellij-server --features resumable_viewer_proof resumable_proof --lib
       - name: Build experimental engine
         run: cargo build --locked --profile dev-opt --features resumable_viewer_proof
+      - name: Install isolated Codex for plugin hook proof
+        run: |
+          npm install --prefix "$RUNNER_TEMP/codex-hook-proof" @openai/codex@0.167.0
+          node - "$RUNNER_TEMP/codex-hook-proof/node_modules" <<'NODE' >> "$GITHUB_ENV"
+          const fs=require('node:fs'),path=require('node:path'),root=process.argv[2];
+          const binary=fs.readdirSync(root,{recursive:true}).find(name=>/[/\\]vendor[/\\].*[/\\]bin[/\\]codex(?:\.exe)?$/.test(name));
+          if(!binary)throw Error('Installed Codex native binary not found');
+          console.log('CODEX_TEST_BINARY='+path.join(root,binary));
+          NODE
+      - name: Prove Codex executes its plugin hooks through Switchboard
+        env:
+          SWITCHBOARD_TEST_BINARY: target/dev-opt/zellij${{ runner.os == 'Windows' && '.exe' || '' }}
+        run: node tools/switchboard/codex-plugin-hooks.test.cjs
       - name: Prove bridge replacement and rollback with a real terminal
         env:
           # CI checks recovery and integrity with scheduling headroom. Local proof stays at 250 ms.

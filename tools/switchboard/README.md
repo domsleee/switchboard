@@ -112,7 +112,10 @@ needs it, on any computer. Setup does only this:
   confirms every plugin hook is trusted, setup removes Switchboard's old entries
   from `~/.codex/hooks.json`, keeping other hooks and a backup. A failed trust check
   leaves those entries intact. Health requests setup for an older plugin and
-  **Trust hooks** for an untrusted one. Changed plugin hook content needs trust again.
+  **Trust hooks** for an untrusted one. Changed plugin content needs trust again.
+  Dotfiles' `csol` and `castra` shortcuts pass `--dangerously-bypass-hook-trust`,
+  which runs enabled hooks for that invocation without saving trust; direct Codex
+  launches still use the saved trust that setup verifies.
   If the plugin updates before the relay, finish setup with the updated relay and
   restart Codex before trusting its new hooks, so legacy and plugin hooks do not run together.
 
