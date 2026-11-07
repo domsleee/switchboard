@@ -1,0 +1,112 @@
+{
+  "description": "Switchboard status reporting and incoming messages for Codex.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.local/share/switchboard/codex-agent-hook\"",
+            "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}/hooks/codex.ps1\"",
+            "statusMessage": "Registering this conversation with Switchboard",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "\"$HOME/.local/share/switchboard/codex-agent-hook\" --wait",
+            "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}/hooks/codex.ps1\" -WaitForMessages",
+            "statusMessage": "Listening for Switchboard messages",
+            "async": true,
+            "timeout": 31536000
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.local/share/switchboard/codex-agent-hook\"",
+            "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}/hooks/codex.ps1\"",
+            "statusMessage": "Reporting Switchboard activity and checking messages",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.local/share/switchboard/codex-agent-hook\"",
+            "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}/hooks/codex.ps1\"",
+            "statusMessage": "Updating Switchboard and checking messages",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.local/share/switchboard/codex-agent-hook\"",
+            "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}/hooks/codex.ps1\"",
+            "statusMessage": "Reporting an approval request to Switchboard",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.local/share/switchboard/codex-agent-hook\"",
+            "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}/hooks/codex.ps1\"",
+            "statusMessage": "Reporting completion and checking Switchboard messages",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "\"$HOME/.local/share/switchboard/codex-agent-hook\" --wait",
+            "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}/hooks/codex.ps1\" -WaitForMessages",
+            "statusMessage": "Listening for Switchboard messages",
+            "async": true,
+            "timeout": 31536000
+          }
+        ]
+      }
+    ],
+    "Interrupt": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.local/share/switchboard/codex-agent-hook\"",
+            "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}/hooks/codex.ps1\"",
+            "statusMessage": "Clearing interrupted activity in Switchboard",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.local/share/switchboard/codex-agent-hook\"",
+            "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}/hooks/codex.ps1\"",
+            "statusMessage": "Closing this conversation in Switchboard",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}

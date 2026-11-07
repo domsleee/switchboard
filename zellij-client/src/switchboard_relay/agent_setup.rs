@@ -3,8 +3,7 @@
 //! every paired computer, next to the build this relay runs and its last self-update.
 //!
 //! Browsers and paired computers can only ask for an agent's setup by name. What it
-//! runs is fixed here: the `switchboard` plugin for Claude Code and Copilot CLI, and
-//! the skills plugin plus separate command hooks in `~/.codex/hooks.json` for Codex.
+//! runs is fixed here: the `switchboard` plugin for Claude Code, Copilot CLI and Codex.
 mod dotfiles;
 
 use super::*;
@@ -16,6 +15,7 @@ use std::{
 };
 
 const PLUGIN: &str = "switchboard@switchboard";
+const CODEX_HOOK_SOURCE: &str = "switchboard@switchboard:hooks/codex.json";
 const REPO: &str = "domsleee/switchboard";
 const SETUP_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// Reports are saved at most this often per agent, so a restart keeps them.
@@ -424,10 +424,12 @@ pub(super) fn install_codex_launcher(home: &Path, binary: &Path) -> std::io::Res
 
 /// Codex hooks run through a shell, as `zellij agent-resume install`'s do; Windows
 /// PowerShell gets the payload as UTF-8 and pipes it to the launcher.
+#[cfg(test)]
 fn codex_command(launcher: &Path) -> String {
     codex_command_with_wait(launcher, false)
 }
 
+#[cfg(test)]
 fn codex_command_with_wait(launcher: &Path, wait: bool) -> String {
     let launcher = launcher.to_string_lossy();
     let args = if wait { " --wait" } else { "" };
@@ -489,8 +491,8 @@ fn codex_hooks(config: &Value) -> Vec<(&'static str, usize, usize, String)> {
 }
 
 /// Codex runs a new or changed hook only after the user trusts it, recording
-/// `[hooks.state."<hooks.json>:<event>:<group>:<hook>"]` in config.toml.
-fn codex_trusted(dir: &Path, hooks_file: &Path, event: &str, group: usize, hook: usize) -> bool {
+/// `[hooks.state."switchboard@switchboard:hooks/codex.json:<event>:<group>:<hook>"]` in config.toml.
+fn codex_trusted(dir: &Path, event: &str, group: usize, hook: usize) -> bool {
     let snake = CODEX_EVENTS
         .iter()
         .find(|(name, _, _)| *name == event)
@@ -508,9 +510,9 @@ fn codex_trusted(dir: &Path, hooks_file: &Path, event: &str, group: usize, hook:
         .and_then(|s| s.as_table())
         .is_some_and(|state| {
             state.iter().any(|(key, value)| {
-                key.strip_suffix(&suffix)
-                    .is_some_and(|file| same_path(Path::new(file), hooks_file))
+                key.strip_suffix(&suffix) == Some(CODEX_HOOK_SOURCE)
                     && value.get("trusted_hash").is_some()
+                    && value.get("trusted_content_hash").is_some()
             })
         })
 }
@@ -523,9 +525,11 @@ fn codex_trust_edits(listed: &Value) -> serde_json::Map<String, Value> {
         .into_iter()
         .flatten()
         .flat_map(|entry| entry["hooks"].as_array().into_iter().flatten())
-        .filter(|hook| hook["command"].as_str().is_some_and(is_codex_hook))
+        .filter(|hook| is_codex_plugin_hook(hook))
         .filter(|hook| matches!(hook["trustStatus"].as_str(), Some("untrusted" | "modified")))
         .filter_map(|hook| {
+            // Codex returns definition/content hashes joined by '/'; batchWrite
+            // splits them into trusted_hash and trusted_content_hash itself.
             Some((
                 hook["key"].as_str()?.to_owned(),
                 json!({"trusted_hash": hook["currentHash"].as_str()?}),
@@ -534,15 +538,112 @@ fn codex_trust_edits(listed: &Value) -> serde_json::Map<String, Value> {
         .collect()
 }
 
+fn is_codex_plugin_hook(hook: &Value) -> bool {
+    hook["key"]
+        .as_str()
+        .and_then(|key| key.strip_prefix(CODEX_HOOK_SOURCE))
+        .is_some_and(|suffix| suffix.starts_with(':'))
+}
+
+/// Saved trust keys survive plugin updates and disabling individual hooks. Bind
+/// Health's readiness to the exact plugin/config snapshot Codex actually checked.
+fn codex_trust_fingerprint(dir: &Path) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    fn hash_files(path: &Path, hash: &mut Sha256) -> Option<()> {
+        let mut entries = std::fs::read_dir(path)
+            .ok()?
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            hash.update(entry.file_name().to_string_lossy().as_bytes());
+            hash.update([0]);
+            let kind = entry.file_type().ok()?;
+            if kind.is_dir() {
+                hash_files(&entry.path(), hash)?;
+            } else if kind.is_file() {
+                hash.update(std::fs::read(entry.path()).ok()?);
+            } else {
+                return None;
+            }
+            hash.update([0]);
+        }
+        Some(())
+    }
+    let text = std::fs::read_to_string(dir.join("config.toml")).ok()?;
+    let config: toml::Table = text.parse().ok()?;
+    let states = config.get("hooks")?.get("state")?.as_table()?;
+    let ours: BTreeMap<_, _> = states
+        .iter()
+        .filter(|(key, _)| key.starts_with(CODEX_HOOK_SOURCE))
+        .collect();
+    let mut hash = Sha256::new();
+    hash.update([u8::from(codex_hooks_enabled(&config))]);
+    hash.update(serde_json::to_vec(&ours).ok()?);
+    hash.update(serde_json::to_vec(config.get("plugins")?.get(PLUGIN)?).ok()?);
+    hash_files(&codex_plugin_cache(dir), &mut hash)?;
+    Some(
+        hash.finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
+    )
+}
+
+fn codex_trust_proof_current(dir: &Path) -> bool {
+    codex_trust_fingerprint(dir).is_some_and(|fingerprint| {
+        read_json(&dir.join("plugins/switchboard-hook-trust.json"))
+            .is_some_and(|proof| proof["fingerprint"] == fingerprint)
+    })
+}
+
+/// A successful empty hooks/list is not proof that the installed plugin works.
+fn codex_plugin_list_ready(listed: &Value, trusted: bool) -> bool {
+    listed["data"].as_array().is_some_and(|entries| {
+        !entries.is_empty()
+            && entries.iter().all(|entry| {
+                let switchboard: Vec<_> = entry["hooks"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|hook| {
+                        hook["key"]
+                            .as_str()
+                            .is_some_and(|key| key.starts_with("switchboard@switchboard:"))
+                    })
+                    .collect();
+                entry["errors"].as_array().is_none_or(Vec::is_empty)
+                    && switchboard.len() == CODEX_EVENTS.len() + 2
+                    && switchboard.iter().all(|hook| is_codex_plugin_hook(hook))
+                    && CODEX_EVENTS.iter().all(|(_, event, _)| {
+                        let count = if matches!(*event, "session_start" | "stop") {
+                            2
+                        } else {
+                            1
+                        };
+                        (0..count).all(|index| {
+                            let key = format!("{CODEX_HOOK_SOURCE}:{event}:0:{index}");
+                            entry["hooks"].as_array().into_iter().flatten().any(|hook| {
+                                hook["key"] == key
+                                    && hook["enabled"] != false
+                                    && (!trusted || hook["trustStatus"] == "trusted")
+                            })
+                        })
+                    })
+            })
+    })
+}
+
 /// Trust Switchboard's hooks the way Codex's own "Trust all and continue" does: ask
 /// `codex app-server` for each hook's key and hash, then record those in config.toml.
 /// Codex computes the hashes, and hooks other programs installed stay untrusted.
-async fn trust_codex_hooks(codex: &Path, folders: &[PathBuf]) -> Result<(), String> {
+async fn trust_codex_hooks(codex: &Path, folders: &[PathBuf], dir: &Path) -> Result<(), String> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let fail = |e: &dyn std::fmt::Display| format!("codex app-server: {e}");
     let mut command = tokio::process::Command::new(codex);
     command
         .arg("app-server")
+        .env("CODEX_HOME", dir)
         .current_dir(home())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -579,7 +680,7 @@ async fn trust_codex_hooks(codex: &Path, folders: &[PathBuf]) -> Result<(), Stri
                     .next_line()
                     .await
                     .map_err(|e| fail(&e))?
-                    .ok_or_else(|| format!("codex app-server exited during {method}"))?;
+                    .ok_or_else(|| format!("codex app-server exited during {method}; check its configuration and update Codex if app-server support is missing"))?;
                 let Ok(message) = serde_json::from_str::<Value>(&line) else {
                     continue;
                 };
@@ -598,7 +699,32 @@ async fn trust_codex_hooks(codex: &Path, folders: &[PathBuf]) -> Result<(), Stri
             json!({"clientInfo": {"name": "switchboard", "version": env!("SWITCHBOARD_COMMIT")}}),
         )
         .await?;
-        let edits = codex_trust_edits(&call("hooks/list", json!({"cwds": []})).await?);
+        let listed = call("hooks/list", json!({"cwds": []})).await?;
+        if !codex_plugin_list_ready(&listed, false) {
+            let errors = listed["data"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .flat_map(|entry| entry["errors"].as_array().into_iter().flatten())
+                .map(|error| {
+                    error
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| error.to_string())
+                })
+                .collect::<Vec<_>>()
+                .join(" · ");
+            if !errors.is_empty() {
+                return Err(format!(
+                    "Codex hook configuration errors: {}; global hooks were kept",
+                    errors.chars().take(1000).collect::<String>()
+                ));
+            }
+            return Err(
+                "Codex did not load all Switchboard plugin hooks; global hooks were kept".into(),
+            );
+        }
+        let edits = codex_trust_edits(&listed);
         if !edits.is_empty() {
             call(
                 "config/batchWrite",
@@ -607,6 +733,23 @@ async fn trust_codex_hooks(codex: &Path, folders: &[PathBuf]) -> Result<(), Stri
             )
             .await?;
         }
+        let fingerprint = codex_trust_fingerprint(dir);
+        let listed = call("hooks/list", json!({"cwds": []})).await?;
+        if !codex_plugin_list_ready(&listed, true) {
+            return Err(
+                "Codex has not trusted all Switchboard plugin hooks; global hooks were kept".into(),
+            );
+        }
+        let fingerprint = fingerprint
+            .filter(|before| codex_trust_fingerprint(&dir).as_ref() == Some(before))
+            .ok_or(
+                "Switchboard plugin or hook settings changed while checking trust; retry setup",
+            )?;
+        write_json(
+            &dir.join("plugins/switchboard-hook-trust.json"),
+            &json!({"fingerprint":fingerprint}),
+        )
+        .map_err(|error| format!("Could not save the plugin hook trust check: {error}"))?;
         Ok(())
     };
     let result = tokio::time::timeout(Duration::from_secs(60), session)
@@ -616,22 +759,66 @@ async fn trust_codex_hooks(codex: &Path, folders: &[PathBuf]) -> Result<(), Stri
     result
 }
 
-fn same_path(a: &Path, b: &Path) -> bool {
-    if cfg!(windows) {
-        a.to_string_lossy()
-            .replace('/', "\\")
-            .eq_ignore_ascii_case(&b.to_string_lossy().replace('/', "\\"))
-    } else {
-        a == b
-    }
+fn codex_plugin_cache(dir: &Path) -> PathBuf {
+    dir.join("plugins/cache/switchboard/switchboard/local")
 }
 
-/// The skills plugin is separate from Codex's status hooks. Hook reports cannot
-/// prove that the plugin is installed or enabled.
+fn codex_hooks_enabled(config: &toml::Table) -> bool {
+    config
+        .get("features")
+        .and_then(|features| {
+            features
+                .get("hooks")
+                .or_else(|| features.get("codex_hooks"))
+        })
+        .and_then(|enabled| enabled.as_bool())
+        .unwrap_or(true)
+}
+
+/// The Codex manifest must select its own shell-form hooks, never Claude's args form.
+fn codex_plugin_hooks_complete(cache: &Path) -> bool {
+    let config = read_json(&cache.join("hooks/codex.json")).unwrap_or(Value::Null);
+    let expected: Value = serde_json::from_str(include_str!(
+        "../../../plugins/switchboard/hooks/codex.json"
+    ))
+    .unwrap();
+    CODEX_EVENTS.iter().all(|(event, _, _)| {
+        let group = &config["hooks"][event][0];
+        group
+            .get("matcher")
+            .is_none_or(|m| matches!(m.as_str(), Some("" | "*")))
+            && expected["hooks"][event][0]["hooks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .enumerate()
+                .all(|(index, required)| {
+                    let hook = &group["hooks"][index];
+                    hook["type"] == "command"
+                        && hook["command"] == required["command"]
+                        && hook["commandWindows"] == required["commandWindows"]
+                        && hook["async"] == required["async"]
+                        && hook["args"].is_null()
+                        && hook["if"].is_null()
+                        && hook["asyncRewake"].is_null()
+                        && hook["timeout"]
+                            .as_u64()
+                            .is_some_and(|timeout| timeout >= required["timeout"].as_u64().unwrap())
+                })
+    }) && cache.join("hooks/codex.ps1").is_file()
+}
+
+/// A report from a legacy global hook cannot prove that the plugin is ready.
 fn check_codex_plugin(dir: &Path) -> Result<(), &'static str> {
     let config = std::fs::read_to_string(dir.join("config.toml"))
         .ok()
         .and_then(|text| text.parse::<toml::Table>().ok());
+    if config
+        .as_ref()
+        .is_some_and(|config| !codex_hooks_enabled(config))
+    {
+        return Err("Codex hooks are turned off in config.toml");
+    }
     let plugin = config
         .as_ref()
         .and_then(|c| c.get("plugins"))
@@ -642,19 +829,14 @@ fn check_codex_plugin(dir: &Path) -> Result<(), &'static str> {
     if plugin.get("enabled").and_then(|v| v.as_bool()) != Some(true) {
         return Err("Switchboard plugin turned off");
     }
-    let cache = dir.join("plugins/cache/switchboard/switchboard/local");
+    let cache = codex_plugin_cache(dir);
     let manifest = read_json(&cache.join(".codex-plugin/plugin.json"));
     let Some(manifest) =
         manifest.filter(|m| m["name"] == "switchboard" && m["skills"] == "./skills/")
     else {
         return Err("Switchboard plugin cache missing or invalid");
     };
-    // Codex otherwise discovers the shared Claude hooks, whose exec-form args it
-    // ignores, launching bare zellij. Its own hooks live in ~/.codex/hooks.json.
-    if !manifest["hooks"]["hooks"]
-        .as_object()
-        .is_some_and(|hooks| hooks.is_empty())
-    {
+    if manifest["hooks"] != "./hooks/codex.json" || !codex_plugin_hooks_complete(&cache) {
         return Err("Switchboard plugin hooks are incompatible; refresh the plugin");
     }
     for skill in ["close-tab", "interactive", "message-board", "sudo"] {
@@ -665,38 +847,11 @@ fn check_codex_plugin(dir: &Path) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn check_codex(dir: &Path, launcher: &Path, reported_since_setup: bool) -> Check {
-    let file = dir.join("hooks.json");
-    let config = read_json(&file).unwrap_or(Value::Null);
-    let hooks = codex_hooks(&config);
-    let expected = codex_command(launcher);
-    let complete = CODEX_EVENTS.iter().all(|(event, _, _)| {
-        hooks
-            .iter()
-            .any(|(e, _, _, command)| e == event && *command == expected)
-    }) && ["SessionStart", "Stop"].iter().all(|event| {
-        config["hooks"][event]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .any(|group| {
-                group["hooks"].as_array().into_iter().flatten().any(|hook| {
-                    hook["command"] == codex_command_with_wait(launcher, true)
-                        && hook["async"] == true
-                        && hook["timeout"] == crate::message_board::hooks::WATCH_TIMEOUT
-                })
-            })
-    });
-    if hooks.is_empty() {
+fn check_codex(dir: &Path, launcher: &Path) -> Check {
+    if let Err(detail) = check_codex_plugin(dir) {
         return Check {
             state: "setup",
-            detail: "Status hooks not installed".into(),
-        };
-    }
-    if !complete {
-        return Check {
-            state: "setup",
-            detail: "Status hooks are out of date".into(),
+            detail: detail.into(),
         };
     }
     if !launcher.is_file() {
@@ -705,13 +860,22 @@ fn check_codex(dir: &Path, launcher: &Path, reported_since_setup: bool) -> Check
             detail: "Status hook launcher missing".into(),
         };
     }
-    let trusted = hooks
-        .iter()
-        .all(|(event, g, h, _)| codex_trusted(dir, &file, event, *g, *h));
-    if trusted || reported_since_setup {
+    let trusted = codex_trust_proof_current(dir)
+        && CODEX_EVENTS.iter().all(|(event, _, _)| {
+            codex_trusted(dir, event, 0, 0)
+                && (!matches!(*event, "SessionStart" | "Stop") || codex_trusted(dir, event, 0, 1))
+        });
+    let legacy =
+        read_json(&dir.join("hooks.json")).is_some_and(|config| !codex_hooks(&config).is_empty());
+    if trusted && legacy {
+        Check {
+            state: "setup",
+            detail: "Legacy Switchboard hooks need migration to the plugin".into(),
+        }
+    } else if trusted {
         Check {
             state: "ready",
-            detail: "Status hooks installed and trusted".into(),
+            detail: "Plugin hooks installed and trusted".into(),
         }
     } else {
         Check {
@@ -730,11 +894,16 @@ pub(super) fn trust_codex_hooks_on_start() {
         let Some(codex) = find_program("codex", &folders) else {
             return;
         };
-        if !dir.is_dir() || check_codex(&dir, &codex_launcher(&home()), false).state != "approve" {
+        if !dir.is_dir() || check_codex_plugin(&dir).is_err() {
             return;
         }
-        match trust_codex_hooks(&codex, &folders).await {
-            Ok(()) => log::info!("Trusted Switchboard's Codex hooks"),
+        match trust_codex_hooks(&codex, &folders, &dir)
+            .await
+            .and_then(|()| remove_legacy_codex_hooks(&dir.join("hooks.json")))
+        {
+            Ok(()) => {
+                log::info!("Trusted Switchboard's Codex plugin hooks and migrated global hooks")
+            },
             Err(error) => {
                 log::warn!("Cannot trust Switchboard's Codex hooks: {error}");
                 logs::record(
@@ -782,46 +951,57 @@ fn turn_on_auto_update(settings_file: &Path, source: Value) -> Result<(), String
         .map_err(|e| format!("Could not save {}: {e}", settings_file.display()))
 }
 
-/// Replace Switchboard's Codex hooks with current ones, keeping every other hook.
-fn install_codex_hooks(file: &Path, command: &str, wait_command: &str) -> Result<(), String> {
-    let mut config = match std::fs::read_to_string(file) {
-        Ok(text) => serde_json::from_str::<Value>(&text)
-            .map_err(|e| format!("{} is not valid JSON: {e}", file.display()))?,
-        Err(_) => json!({}),
+/// Called only after Codex positively lists all plugin hooks as trusted.
+/// Read the current file after that potentially slow operation; preserve other edits.
+fn remove_legacy_codex_hooks(file: &Path) -> Result<(), String> {
+    let original = match std::fs::read_to_string(file) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("Could not read {}: {error}", file.display())),
     };
+    let mut config: Value = serde_json::from_str(&original)
+        .map_err(|e| format!("{} is not valid JSON: {e}", file.display()))?;
     let Some(root) = config.as_object_mut() else {
         return Err(format!("{} is not a JSON object", file.display()));
     };
-    let hooks = root.entry("hooks").or_insert_with(|| json!({}));
+    let Some(hooks) = root.get_mut("hooks") else {
+        return Ok(());
+    };
     let Some(hooks) = hooks.as_object_mut() else {
         return Err("hooks is not an object".into());
     };
-    for (event, _, timeout) in CODEX_EVENTS {
-        let groups = hooks.entry(event).or_insert_with(|| json!([]));
+    let mut removed = false;
+    let mut emptied = Vec::new();
+    for (event, groups) in hooks.iter_mut() {
         let Some(groups) = groups.as_array_mut() else {
-            return Err(format!("hooks.{event} is not a list"));
+            continue;
         };
+        let before_groups = groups.len();
         groups.retain_mut(|group| {
             let Some(list) = group.get_mut("hooks").and_then(Value::as_array_mut) else {
                 return true;
             };
             let before = list.len();
             list.retain(|hook| !hook["command"].as_str().is_some_and(is_codex_hook));
+            removed |= before != list.len();
             !(before > 0 && list.is_empty())
         });
-        groups
-            .push(json!({"hooks": [{"type": "command", "command": command, "timeout": timeout}]}));
-        if matches!(event, "SessionStart" | "Stop") {
-            groups.last_mut().unwrap()["hooks"]
-                .as_array_mut()
-                .unwrap()
-                .push(json!({
-                    "type":"command", "command":wait_command, "async":true,
-                    "timeout":crate::message_board::hooks::WATCH_TIMEOUT
-                }));
+        if before_groups > 0 && groups.is_empty() {
+            emptied.push(event.clone());
         }
     }
-    back_up(file);
+    if !removed {
+        return Ok(());
+    }
+    hooks.retain(|event, _| !emptied.contains(event));
+    let backup = file.with_extension("json.switchboard.bak");
+    if !backup.exists() {
+        std::fs::copy(file, &backup)
+            .map_err(|e| format!("Could not back up {}: {e}", file.display()))?;
+    }
+    if std::fs::read_to_string(file).ok().as_deref() != Some(original.as_str()) {
+        return Err("Codex hooks changed during migration; retry setup".into());
+    }
     write_json(file, &config).map_err(|e| format!("Could not save {}: {e}", file.display()))
 }
 
@@ -967,6 +1147,12 @@ async fn set_up(agent: Agent) -> Result<(), String> {
                     &folders,
                 )
                 .await?;
+                run(
+                    &codex,
+                    &["plugin", "marketplace", "upgrade", "switchboard"],
+                    &folders,
+                )
+                .await?;
                 run(&codex, &["plugin", "add", PLUGIN], &folders).await?;
                 check_codex_plugin(&dir).map_err(String::from)?;
             }
@@ -974,14 +1160,10 @@ async fn set_up(agent: Agent) -> Result<(), String> {
                 .map_err(|e| format!("Cannot find Switchboard's executable: {e}"))?;
             install_codex_launcher(&home(), &binary)
                 .map_err(|e| format!("Could not write the Codex hook launcher: {e}"))?;
-            install_codex_hooks(
-                &dir.join("hooks.json"),
-                &codex_command(&codex_launcher(&home())),
-                &codex_command_with_wait(&codex_launcher(&home()), true),
-            )?;
-            trust_codex_hooks(&codex, &folders).await.map_err(|error| {
-                format!("Hooks installed, but trusting them failed ({error}). Start Codex and choose “Trust all and continue” when it asks to review hooks")
-            })
+            trust_codex_hooks(&codex, &folders, &dir).await.map_err(|error| {
+                format!("Plugin installed, but trusting its hooks failed ({error}). Global hooks were kept. Start Codex and review the Switchboard plugin hooks")
+            })?;
+            remove_legacy_codex_hooks(&dir.join("hooks.json"))
         },
     }
 }
@@ -1169,20 +1351,7 @@ fn describe(agent: Agent) -> Value {
         match agent {
             Agent::Claude => check_claude(&dir),
             Agent::Copilot => check_copilot(&dir),
-            Agent::Codex => {
-                let since = setup.finished.unwrap_or(0);
-                match check_codex_plugin(&dir) {
-                    Err(detail) => Check {
-                        state: "setup",
-                        detail: detail.into(),
-                    },
-                    Ok(()) => check_codex(
-                        &dir,
-                        &codex_launcher(&home()),
-                        report.is_some_and(|at| at > since),
-                    ),
-                }
-            },
+            Agent::Codex => check_codex(&dir, &codex_launcher(&home())),
         }
     };
     json!({
@@ -1664,12 +1833,38 @@ mod tests {
         );
         assert_eq!(
             check_codex_plugin(dir),
+            Err("Switchboard plugin hooks are incompatible; refresh the plugin")
+        );
+        write(
+            &cache.join("hooks/codex.json"),
+            include_str!("../../../plugins/switchboard/hooks/codex.json"),
+        );
+        write(
+            &cache.join("hooks/codex.ps1"),
+            include_str!("../../../plugins/switchboard/hooks/codex.ps1"),
+        );
+        assert_eq!(
+            check_codex_plugin(dir),
             Err("Switchboard plugin skills missing")
         );
         for skill in ["close-tab", "interactive", "message-board", "sudo"] {
             write(&cache.join("skills").join(skill).join("SKILL.md"), "skill");
         }
         assert_eq!(check_codex_plugin(dir), Ok(()));
+        for feature in ["hooks", "codex_hooks"] {
+            write(
+                &dir.join("config.toml"),
+                &format!("[plugins.\"{PLUGIN}\"]\nenabled = true\n[features]\n{feature} = false\n"),
+            );
+            assert_eq!(
+                check_codex_plugin(dir),
+                Err("Codex hooks are turned off in config.toml")
+            );
+        }
+        write(
+            &dir.join("config.toml"),
+            &format!("[plugins.\"{PLUGIN}\"]\nenabled = true\n"),
+        );
         let manifest_file = cache.join(".codex-plugin/plugin.json");
         let mut manifest = read_json(&manifest_file).unwrap();
         manifest.as_object_mut().unwrap().remove("hooks");
@@ -1691,107 +1886,267 @@ mod tests {
         );
     }
 
-    #[test]
-    fn switchboard_agent_setup_installs_codex_hooks_beside_others_and_waits_for_trust() {
-        let dir = tempfile::tempdir().unwrap();
-        let dir = dir.path();
-        let file = dir.join("hooks.json");
-        let launcher = codex_launcher(dir);
-        let command = codex_command(&launcher);
-        write(
-            &file,
-            r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"'/z' agent-resume record --agent codex","timeout":10}]}],"Stop":[{"hooks":[{"type":"command","command":"say done"}]}]}}"#,
-        );
-        assert_eq!(check_codex(dir, &launcher, false).state, "setup");
-        install_codex_hooks(&file, &command, &codex_command_with_wait(&launcher, true)).unwrap();
-        assert_eq!(
-            check_codex(dir, &launcher, false).detail,
-            "Status hook launcher missing"
-        );
-        install_codex_launcher(dir, Path::new("/opt/switch board/zellij")).unwrap();
-        // Installing again replaces Switchboard's hooks instead of adding more.
-        install_codex_hooks(&file, &command, &codex_command_with_wait(&launcher, true)).unwrap();
-        let config = read_json(&file).unwrap();
-        assert_eq!(
-            config["hooks"]["SessionStart"][0]["hooks"][0]["command"],
-            "'/z' agent-resume record --agent codex"
-        );
-        assert_eq!(config["hooks"]["Stop"].as_array().unwrap().len(), 2);
-        assert_eq!(
-            config["hooks"]["Stop"][0]["hooks"][0]["command"],
-            "say done"
-        );
-        assert_eq!(config["hooks"]["Interrupt"][0]["hooks"][0]["timeout"], 3);
-        assert_eq!(codex_hooks(&config).len(), CODEX_EVENTS.len() + 2);
-
-        let check = check_codex(dir, &launcher, false);
-        assert_eq!(check.state, "approve", "{check:?}");
-        assert_eq!(
-            check_codex(dir, &launcher, true).state,
-            "ready",
-            "a report proves trust"
-        );
-        // Codex 0.164 records trust per hook position after "Trust all and continue".
-        let state: String = codex_hooks(&config)
-            .iter()
-            .map(|(event, g, h, _)| {
-                let snake = CODEX_EVENTS.iter().find(|e| e.0 == *event).unwrap().1;
-                // A TOML string escapes the backslashes of a Windows path, as Codex writes it.
-                format!(
-                    "[hooks.state.\"{}:{snake}:{g}:{h}\"]\ntrusted_hash = \"sha256:00\"\n\n",
-                    file.display().to_string().replace('\\', "\\\\")
-                )
-            })
-            .collect();
+    fn install_test_codex_plugin(dir: &Path) {
+        let cache = codex_plugin_cache(dir);
         write(
             &dir.join("config.toml"),
-            &format!("[tui]\nscreen_reader_detection_done = true\n\n[hooks.state]\n\n{state}"),
+            "[plugins.\"switchboard@switchboard\"]\nenabled = true\n",
         );
-        assert_eq!(check_codex(dir, &launcher, false).state, "ready");
-        // An update moves the executable (Windows runs each release from its own
-        // folder): only the launcher changes, so the trusted hooks stay ready.
-        install_codex_launcher(dir, Path::new("/releases/abc123/zellij")).unwrap();
-        assert!(std::fs::read_to_string(&launcher)
-            .unwrap()
-            .contains("/releases/abc123/zellij"));
-        assert_eq!(read_json(&file).unwrap(), config);
-        assert_eq!(check_codex(dir, &launcher, false).state, "ready");
-        // Hooks from the first builds named the executable directly; setup replaces them.
-        let old = r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"'/z' agent-hook --agent codex"}]}]}}"#;
-        write(&file, old);
-        assert_eq!(
-            check_codex(dir, &launcher, false).detail,
-            "Status hooks are out of date"
+        write(
+            &cache.join(".codex-plugin/plugin.json"),
+            include_str!("../../../plugins/switchboard/.codex-plugin/plugin.json"),
         );
-        install_codex_hooks(&file, &command, &codex_command_with_wait(&launcher, true)).unwrap();
-        assert_eq!(
-            codex_hooks(&read_json(&file).unwrap()).len(),
-            CODEX_EVENTS.len() + 2
+        write(
+            &cache.join("hooks/codex.json"),
+            include_str!("../../../plugins/switchboard/hooks/codex.json"),
         );
+        write(
+            &cache.join("hooks/codex.ps1"),
+            include_str!("../../../plugins/switchboard/hooks/codex.ps1"),
+        );
+        for skill in ["close-tab", "interactive", "message-board", "sudo"] {
+            write(&cache.join("skills").join(skill).join("SKILL.md"), "skill");
+        }
     }
 
     #[test]
-    fn switchboard_agent_setup_trusts_only_its_own_untrusted_codex_hooks() {
-        // Shape of Codex 0.164's `hooks/list` answer.
-        let hook = |key: &str, command: &str, status: &str| {
-            json!({"key": key, "command": command, "handlerType": "command",
-                   "currentHash": format!("sha256:{key}"), "trustStatus": status})
-        };
-        let listed = json!({"data": [{"cwd": "/home/me", "errors": [], "warnings": [], "hooks": [
-            hook("/h.json:stop:0:0", "'/home/me/.local/share/switchboard/codex-agent-hook'", "untrusted"),
-            hook("/h.json:post_tool_use:0:0", "'/home/me/.local/share/switchboard/codex-agent-hook'", "modified"),
-            hook("/h.json:session_end:0:0", "'/home/me/.local/share/switchboard/codex-agent-hook'", "trusted"),
-            hook("/h.json:stop:1:0", "notify-send done", "untrusted"),
-        ]}]});
-        let edits = codex_trust_edits(&listed);
+    fn switchboard_codex_migration_preserves_unrelated_and_shared_hooks() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        install_test_codex_plugin(dir);
+        let launcher = codex_launcher(dir);
+        install_codex_launcher(dir, Path::new("/release/zellij")).unwrap();
+        let file = dir.join("hooks.json");
+        let original = json!({"description":"User hooks", "custom":42, "hooks": {
+            "SessionStart":[{"matcher":"startup", "hooks":[
+                {"type":"command","command":"echo personal"},
+                {"type":"command","command":codex_command(&launcher)}]}],
+            "Stop":[{"hooks":[{"type":"command","command":codex_command_with_wait(&launcher, true)}]}],
+            "OtherEvent":[{"hooks":[{"type":"command","command":"echo other"}]}], "EmptyEvent":[], "_note":"personal metadata"
+        }});
+        write_json(&file, &original).unwrap();
         assert_eq!(
-            Value::Object(edits),
-            json!({
-                "/h.json:stop:0:0": {"trusted_hash": "sha256:/h.json:stop:0:0"},
-                "/h.json:post_tool_use:0:0": {"trusted_hash": "sha256:/h.json:post_tool_use:0:0"},
-            })
+            check_codex(dir, &launcher).state,
+            "approve",
+            "legacy activity cannot prove plugin trust"
         );
-        assert!(codex_trust_edits(&json!({})).is_empty());
+        let state: String = CODEX_EVENTS.iter().flat_map(|(event, snake, _)| {
+            let count = if matches!(*event, "SessionStart" | "Stop") { 2 } else { 1 };
+            (0..count).map(move |index| format!("[hooks.state.\"{CODEX_HOOK_SOURCE}:{snake}:0:{index}\"]\ntrusted_hash = \"sha256:00\"\ntrusted_content_hash = \"sha256:11\"\n"))
+        }).collect();
+        write(
+            &dir.join("config.toml"),
+            &format!("[plugins.\"{PLUGIN}\"]\nenabled = true\n{state}"),
+        );
+        assert_eq!(
+            check_codex(dir, &launcher).state,
+            "approve",
+            "saved hashes alone are insufficient"
+        );
+        write_json(
+            &dir.join("plugins/switchboard-hook-trust.json"),
+            &json!({"fingerprint":codex_trust_fingerprint(dir).unwrap()}),
+        )
+        .unwrap();
+        assert_eq!(
+            check_codex(dir, &launcher).state,
+            "setup",
+            "duplicate hooks need migration"
+        );
+        remove_legacy_codex_hooks(&file).unwrap();
+        let migrated = read_json(&file).unwrap();
+        assert_eq!(migrated["description"], "User hooks");
+        assert_eq!(migrated["custom"], 42);
+        assert_eq!(migrated["hooks"]["EmptyEvent"], json!([]));
+        assert_eq!(migrated["hooks"]["_note"], "personal metadata");
+        assert_eq!(migrated["hooks"]["SessionStart"][0]["matcher"], "startup");
+        assert_eq!(
+            migrated["hooks"]["SessionStart"][0]["hooks"],
+            json!([{ "type":"command", "command":"echo personal" }])
+        );
+        assert!(migrated["hooks"].get("Stop").is_none());
+        assert_eq!(
+            migrated["hooks"]["OtherEvent"],
+            original["hooks"]["OtherEvent"]
+        );
+        assert_eq!(
+            read_json(&file.with_extension("json.switchboard.bak")).unwrap(),
+            original
+        );
+        assert_eq!(check_codex(dir, &launcher).state, "ready");
+        let script = codex_plugin_cache(dir).join("hooks/codex.ps1");
+        let original_script = std::fs::read_to_string(&script).unwrap();
+        write(&script, &format!("{original_script}\n# updated plugin"));
+        assert_eq!(
+            check_codex(dir, &launcher).state,
+            "approve",
+            "changed plugin content invalidates trust proof"
+        );
+        write(&script, &original_script);
+        let settings = std::fs::read_to_string(dir.join("config.toml")).unwrap();
+        write(
+            &dir.join("config.toml"),
+            &settings.replacen("trusted_hash =", "enabled = false\ntrusted_hash =", 1),
+        );
+        assert_eq!(
+            check_codex(dir, &launcher).state,
+            "approve",
+            "a disabled hook cannot appear healthy"
+        );
+        write(&dir.join("config.toml"), &settings);
+        remove_legacy_codex_hooks(&file).unwrap();
+        assert_eq!(read_json(&file).unwrap(), migrated);
+        install_codex_launcher(dir, Path::new("/new-release/zellij")).unwrap();
+        assert_eq!(check_codex(dir, &launcher).state, "ready");
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires CODEX_TEST_BINARY; installs only into an isolated Codex home"]
+    async fn switchboard_codex_plugin_runtime_migration() {
+        let codex =
+            PathBuf::from(std::env::var_os("CODEX_TEST_BINARY").expect("set CODEX_TEST_BINARY"));
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("codex");
+        std::fs::create_dir_all(&dir).unwrap();
+        let market = temp.path().join("marketplace");
+        let plugin = market.join("plugins/switchboard");
+        write(
+            &market.join(".agents/plugins/marketplace.json"),
+            include_str!("../../../.agents/plugins/marketplace.json"),
+        );
+        write(
+            &plugin.join(".codex-plugin/plugin.json"),
+            r#"{"name":"switchboard","skills":"./skills/","hooks":{"hooks":{}}}"#,
+        );
+        for (name, body) in super::super::agent_skills::SKILLS {
+            write(&plugin.join("skills").join(name).join("SKILL.md"), body);
+        }
+        let install = || async {
+            for args in [
+                vec!["plugin", "marketplace", "add", market.to_str().unwrap()],
+                vec!["plugin", "add", PLUGIN],
+            ] {
+                let output = tokio::process::Command::new(&codex)
+                    .args(args)
+                    .env("CODEX_HOME", &dir)
+                    .current_dir(&market)
+                    .output()
+                    .await
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        };
+        install().await;
+        assert!(
+            check_codex_plugin(&dir).is_err(),
+            "old skills-only plugin needs migration"
+        );
+        let file = dir.join("hooks.json");
+        write_json(
+            &file,
+            &json!({"hooks":{"Stop":[{"hooks":[
+                {"type":"command","command":"echo personal"},
+                {"type":"command","command":codex_command(&codex_launcher(temp.path()))}
+            ]}]}}),
+        )
+        .unwrap();
+        write(
+            &plugin.join(".codex-plugin/plugin.json"),
+            include_str!("../../../plugins/switchboard/.codex-plugin/plugin.json"),
+        );
+        write(
+            &plugin.join("hooks/codex.json"),
+            include_str!("../../../plugins/switchboard/hooks/codex.json"),
+        );
+        write(
+            &plugin.join("hooks/codex.ps1"),
+            include_str!("../../../plugins/switchboard/hooks/codex.ps1"),
+        );
+        install().await;
+        assert_eq!(
+            check_codex_plugin(&dir),
+            Ok(()),
+            "reinstall refreshes an old installed cache"
+        );
+        let launcher = codex_launcher(temp.path());
+        install_codex_launcher(temp.path(), Path::new("/fixture/zellij")).unwrap();
+        assert_eq!(check_codex(&dir, &launcher).state, "approve");
+        trust_codex_hooks(&codex, &search_path(), &dir)
+            .await
+            .unwrap();
+        assert_eq!(
+            check_codex(&dir, &launcher).state,
+            "setup",
+            "trusted plugin must still migrate duplicates"
+        );
+        remove_legacy_codex_hooks(&file).unwrap();
+        assert_eq!(check_codex(&dir, &launcher).state, "ready");
+        assert_eq!(
+            read_json(&file).unwrap()["hooks"]["Stop"][0]["hooks"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let script = codex_plugin_cache(&dir).join("hooks/codex.ps1");
+        let text = std::fs::read_to_string(&script).unwrap();
+        write(&script, &format!("{text}\n# changed plugin content"));
+        assert_eq!(check_codex(&dir, &launcher).state, "approve");
+        trust_codex_hooks(&codex, &search_path(), &dir)
+            .await
+            .unwrap();
+        assert_eq!(check_codex(&dir, &launcher).state, "ready");
+    }
+
+    #[test]
+    fn switchboard_codex_trust_requires_all_current_plugin_handlers() {
+        let mut handlers = Vec::new();
+        for (event, snake, _) in CODEX_EVENTS {
+            for index in 0..if matches!(event, "SessionStart" | "Stop") {
+                2
+            } else {
+                1
+            } {
+                handlers.push(
+                    json!({"key":format!("{CODEX_HOOK_SOURCE}:{snake}:0:{index}"),
+                    "currentHash":"sha256:definition/sha256:content", "trustStatus":"untrusted"}),
+                );
+            }
+        }
+        handlers.push(json!({"key":"/user/hooks.json:stop:0:0", "command":"echo personal", "trustStatus":"untrusted", "currentHash":"sha256:other"}));
+        let mut listed = json!({"data":[{"errors":[],"hooks":handlers}]});
+        assert!(codex_plugin_list_ready(&listed, false));
+        listed["data"][0]["hooks"].as_array_mut().unwrap().push(json!({"key":"switchboard@switchboard:hooks/hooks.json:session_start:0:0", "command":"zellij"}));
+        assert!(
+            !codex_plugin_list_ready(&listed, false),
+            "inherited Claude hooks must block migration"
+        );
+        listed["data"][0]["hooks"].as_array_mut().unwrap().pop();
+        assert!(!codex_plugin_list_ready(&listed, true));
+        let edits = codex_trust_edits(&listed);
+        assert_eq!(edits.len(), 9);
+        assert!(edits
+            .values()
+            .all(|trust| trust["trusted_hash"] == "sha256:definition/sha256:content"));
+        assert!(!codex_plugin_list_ready(&json!({"data":[]}), false));
+        assert!(!codex_plugin_list_ready(
+            &json!({"data":[{"hooks":[]}]}),
+            false
+        ));
+        for handler in listed["data"][0]["hooks"].as_array_mut().unwrap() {
+            if is_codex_plugin_hook(handler) {
+                handler["trustStatus"] = json!("trusted");
+            }
+        }
+        assert!(codex_plugin_list_ready(&listed, true));
+        listed["data"][0]["hooks"][0]["enabled"] = json!(false);
+        assert!(!codex_plugin_list_ready(&listed, true));
+        listed["data"][0]["hooks"].as_array_mut().unwrap().remove(0);
+        assert!(!codex_plugin_list_ready(&listed, false));
     }
 
     #[test]
@@ -1815,12 +2170,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("hooks.json");
         write(&file, "{not json");
-        assert!(install_codex_hooks(
-            &file,
-            "x agent-hook --agent codex",
-            "x agent-hook --agent codex --wait"
-        )
-        .is_err());
+        assert!(remove_legacy_codex_hooks(&file).is_err());
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "{not json");
         let settings = dir.path().join("settings.json");
         write(&settings, "[]");

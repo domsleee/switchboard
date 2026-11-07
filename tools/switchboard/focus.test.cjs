@@ -502,10 +502,13 @@ async function browserFocusFixture({mismatch=null,acknowledge=true,platform,hasT
     },platform);
     await context.route('**/*',async route=>{
       const pathname=new URL(route.request().url()).pathname;
+      // A real relay holds unchanged attention watches. Immediate fixture replies
+      // otherwise re-render every two seconds and erase notifications mid-tap.
+      if(pathname==='/api/attention'&&new URL(route.request().url()).searchParams.get('after')==='1')return;
       const json=value=>route.fulfill({contentType:'application/json',body:JSON.stringify(value)});
       if(pathname==='/api/hosts')return json([{id:'mac',name:'Mac'}]);
       if(pathname==='/api/hosts/mac')return json({id:'mac',name:'Mac',sessions:[{name:'main',web_clients_allowed:true}]});
-      if(pathname==='/api/attention')return json({tabs:[41,42].map((id,position)=>({host:'mac',session:'main',id,position,name:'Terminal '+id,
+      if(pathname==='/api/attention')return json({version:1,tabs:[41,42].map((id,position)=>({host:'mac',session:'main',id,position,name:'Terminal '+id,
         panes:[{pane_id:id===mismatch?9:position+7,is_plugin:false,tab_position:position}]})),
         panes:conversation?[7,8].map(pane_id=>({host:'mac',session:'main',pane_id,agent:'codex',state:'ready',chat_id:'chat-'+pane_id})):[],errors:[]});
       if(conversation&&pathname.startsWith('/api/chats/'))return json({messages:[{role:'assistant',text:'Fixture conversation'}],next_cursor:null});
@@ -583,6 +586,9 @@ for(const hasTouch of [false,true])test(`conversation composer keeps focus throu
     if(hasTouch)await button(42).tap();else await button(42).click();
     assert.equal(await draft.evaluate(node=>node===document.activeElement),true,'Switching tabs focuses the new composer');
     await page.keyboard.type('second draft');assert.equal(await draft.inputValue(),'second draft');
+    // The first tab is still working; reveal it instead of relying on a fixture
+    // poll to overwrite it as ready and pull it out of the Snoozed group.
+    if(hasTouch)await page.locator('#snoozed-toggle').tap();else await page.locator('#snoozed-toggle').click();
     if(hasTouch)await button(41).tap();else await button(41).click();
     assert.equal(await draft.evaluate(node=>node===document.activeElement),true,'Switching back focuses the restored composer');
     assert.equal(await draft.inputValue(),'continue typing','Switching back restores the draft');
