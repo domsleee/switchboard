@@ -504,7 +504,7 @@ async function browserFocusFixture({mismatch=null,acknowledge=true,platform,hasT
       const pathname=new URL(route.request().url()).pathname;
       // A real relay holds unchanged attention watches. Immediate fixture replies
       // otherwise re-render every two seconds and erase notifications mid-tap.
-      if(pathname==='/api/attention'&&new URL(route.request().url()).searchParams.has('after'))return;
+      if(pathname==='/api/attention'&&new URL(route.request().url()).searchParams.get('after')==='1')return;
       const json=value=>route.fulfill({contentType:'application/json',body:JSON.stringify(value)});
       if(pathname==='/api/hosts')return json([{id:'mac',name:'Mac'}]);
       if(pathname==='/api/hosts/mac')return json({id:'mac',name:'Mac',sessions:[{name:'main',web_clients_allowed:true}]});

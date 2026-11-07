@@ -40,15 +40,13 @@ test('Windows Health activates a ready build through the tray without a startabl
     assert.doesNotMatch(await group.textContent(),/needs a newer updater/);
     assert.match(await group.textContent(),/Terminals briefly reconnect; running commands continue/);
     if(process.env.WINDOWS_ACTIVATION_SCREENSHOTS)await group.screenshot({path:process.env.WINDOWS_ACTIVATION_SCREENSHOTS+'/after.png'});
-    const activation=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/tasks/update');
-    await button.click();await activation;await refresh();
+    await button.click();await refresh();
     assert.deepEqual(actions,[{activate:commit}],'local activation queues the exact ready build');
     assert.equal(await button.isDisabled(),true,'do not dispatch twice while the tray is about to update');
     assert.match(await group.textContent(),/Update requested/);
     computer.local=false;computer.host='mesh-desktop';sb.updatePhase='waiting';await refresh();
     await page.locator('.computer-summary').click();
-    const pairedActivation=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/tasks/update');
-    await button.click();await pairedActivation;await refresh();
+    await button.click();await refresh();
     assert.deepEqual(actions.at(-1),{host:'mesh-desktop',activate:commit},'paired activation targets the owning computer');
     sb.updatePhase='current';sb.readyUpdate=null;sb.activationTarget=null;await refresh();
     assert.equal(await button.count(),0,'a tray without a waiting build has no startable update action');
