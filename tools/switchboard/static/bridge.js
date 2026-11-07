@@ -487,10 +487,15 @@
         });
       }
   }
+  function suppressConversationResize(socket,data){
+    if(controlSocket!==socket||!conversationOpen())return false;
+    try{return JSON.parse(data)?.payload?.type==='TerminalResize';}catch{return false;}
+  }
   window.addEventListener("zellij-resumable-sockets",event=>{
     for (const socket of [event.detail.terminal,event.detail.control]) {
       const send=socket.send;
       socket.send=function(data){
+        if(suppressConversationResize(this,data))return;
         if(controlSocket===this)diagnostics?.sent(data);
         if(terminalSocket===this&&this.readyState===1)predict?.sent(data);
         return send.call(this,data);
@@ -506,9 +511,7 @@
     send(data) {
       // The stock client also sends legacy/forced resizes when no physical
       // viewport is available. Conversation must not resize the native terminal.
-      if(controlSocket===this&&conversationOpen()){
-        try{if(JSON.parse(data)?.payload?.type==='TerminalResize')return;}catch{}
-      }
+      if(suppressConversationResize(this,data))return;
       if(controlSocket===this)diagnostics?.sent(data);
       if(terminalSocket===this&&this.readyState===1)predict?.sent(data);
       return super.send(data);
