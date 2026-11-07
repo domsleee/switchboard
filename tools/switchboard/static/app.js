@@ -496,7 +496,7 @@ function moveSelected(direction) {
 function terminalsSettling(){
   const machines=[...hosts.values()];
   return !attentionLoaded||loading&&!machines.length||machines.some(host=>host.connecting&&!host.sessions&&!host.error)
-    ||[...sessions.values()].some(entry=>!entry.state&&!entry.disconnected&&!hosts.get(entry.host)?.error);
+    ||[...sessions.values()].some(entry=>!entry.suspended&&!entry.state&&!entry.disconnected&&!hosts.get(entry.host)?.error);
 }
 // Says why the tab list is empty, with the one action that fixes it.
 function sidebarEmpty(tabs,shown){
@@ -559,7 +559,7 @@ function render() {
   const tabs = sidebarTabs();
   const previous = selected,wasRestoring=restoringTab;
   const selection=tabs.find(t=>t.key===selected);
-  if(selection){if(selection.entry.state)restoringTab=false;}
+  if(selection){if(selection.entry.state||selection.entry.suspended)restoringTab=false;}
   // Pick the top sidebar tab, not whichever machine's terminal answered first.
   else if(!waitingForRequestedTab()){restoringTab=false;selected=terminalsSettling()?null:tabs[0]?.key||null;}
   const liveKeys=new Set(tabs.map(item=>item.key));
@@ -666,7 +666,7 @@ function render() {
   if(!current){$('artifact-preview').hidden=true;$('artifact-frame').contentWindow?.location.replace('about:blank');}
   // The sidebar says why nothing is selected; the main area repeats only its
   // action, which matters on phones where the sidebar is a closed drawer.
-  $('empty').hidden=!!current?.entry.state;
+  $('empty').hidden=!!current?.entry.state||!!globalThis.SwitchboardConversation?.isOpen?.();
   if(!current?.entry.state){
     const hint=restoringTab||startingEntry?null:emptyHint,action=$('empty-action');
     $('empty-text').textContent=restoringTab?'Connecting to the requested terminal…':startingEntry?'Starting a terminal…':current||terminalsSettling()?'Connecting…':'No terminal selected';
@@ -776,7 +776,8 @@ function focus(item,background=false) {
   $('artifact-frame').contentWindow?.location.replace('about:blank');
   const active=item.entry.state.active_pane;
   const panes=tabPanes(item.entry,item.tab);
-  const pane=panes.find(p=>p.pane_id===active?.pane_id && p.is_plugin===active?.is_plugin)||panes[0];
+  const preferred=item.entry.resumePane||active;
+  const pane=panes.find(p=>p.pane_id===preferred?.pane_id && p.is_plugin===preferred?.is_plugin)||panes[0];
   if(!pane){const waiting=item.entry.needsFocus;item.entry.needsFocus=true;setStatus('Waiting for terminal metadata…');if(!waiting)refreshAttention(true);return;}
   item.entry.needsFocus=false;
   if(active?.pane_id!==pane.pane_id||active?.is_plugin!==pane.is_plugin)item.entry.frame.contentWindow.SwitchboardClipboard?.clearSelection();
@@ -869,11 +870,22 @@ function renderMachines() {
   let cursor=container.firstChild;
   for(const label of nodes){if(label!==cursor)container.insertBefore(label,cursor);else cursor=cursor.nextSibling;}
 }
+// Conversation reads the catalog/transcript APIs. Even a hidden terminal socket
+// attaches with a physical size and constrains the native tab before its first resize.
+function syncTerminalConnection(entry) {
+  const suspended=!!globalThis.SwitchboardConversation?.wantsConversation?.();
+  const src=entry.cached||suspended?'about:blank':`/hosts/${encodeURIComponent(entry.host)}/${encodeURIComponent(entry.name)}`;
+  if(suspended&&entry.state?.active_pane)entry.resumePane=entry.state.active_pane;
+  entry.suspended=suspended;
+  if(entry.frame.getAttribute('src')===src)return;
+  entry.state=null;entry.disconnected=false;entry.requestedPane=null;entry.focusPending=false;entry.needsFocus=true;
+  entry.frame.src=src;
+}
 function connectSession(host,name,starting=false,cached=false) {
   const key=sessionKey(host.id,name);
   const existing=sessions.get(key);
   if(existing){
-    if(existing.cached&&!cached){existing.cached=false;existing.frame.src=`/hosts/${encodeURIComponent(host.id)}/${encodeURIComponent(name)}`;}
+    if(existing.cached&&!cached){existing.cached=false;syncTerminalConnection(existing);}
     return existing;
   }
   const frame=document.createElement('iframe');frame.title=`${host.name}: ${name}`;
@@ -886,9 +898,8 @@ function connectSession(host,name,starting=false,cached=false) {
       sidebarKeydown(event);
     },true);
   };
-  frame.src=cached?'about:blank':`/hosts/${encodeURIComponent(host.id)}/${encodeURIComponent(name)}`;
   frame.allow='clipboard-read; clipboard-write';
-  const entry={host:host.id,name,frame,state:null,starting,cached,catalogUnavailable:catalogUnavailable(host.id,name)};sessions.set(key,entry);
+  const entry={host:host.id,name,frame,state:null,starting,cached,catalogUnavailable:catalogUnavailable(host.id,name)};sessions.set(key,entry);syncTerminalConnection(entry);
   setCatalog(entry,tabCatalog.filter(tab=>tab.host===entry.host&&tab.session===entry.name));$('terminals').append(frame);
   if(starting)entry.startTimeout=setTimeout(()=>{
     if(entry.starting){entry.starting=false;entry.closeError='Terminal did not start. Check the machine connection and use + to try again.';render();}
@@ -958,12 +969,13 @@ function recordTerminalDiagnostic(entry,type,diagnostic){
 window.addEventListener('message',event=>{
   if(event.origin!==location.origin)return;
   const entry=[...sessions.values()].find(e=>e.frame.contentWindow===event.source);
-  if(!entry)return;
+  if(!entry||entry.suspended)return;
   if(event.data?.type==='zellij-state') {
     entry.disconnected=false;
     const previousPosition=entry.state?.active_pane?.tab_position;
     const previousPane=entry.state?.active_pane;
     entry.state=event.data.payload;
+    if(entry.state.active_pane?.pane_id===entry.resumePane?.pane_id&&entry.state.active_pane?.is_plugin===entry.resumePane?.is_plugin)entry.resumePane=null;
     updateCreatedTabs(entry);
     if(entry.launchOnStart&&entry.state.active_pane&&sessionTabs(entry).length&&!event.data.focus_pending){
       const launch=entry.launchOnStart;delete entry.launchOnStart;
@@ -1763,12 +1775,14 @@ const browserDiagnostics=window.SwitchboardBrowserDiagnostics?.(diagnostic=>{
 });
 
 window.SwitchboardConversation?.install({
+  modeChanged(){for(const entry of sessions.values())syncTerminalConnection(entry);render();},
   selection(){
     const item=allTabs().find(item=>item.key===selected);if(!item)return null;
-    const active=item.entry.state?.active_pane,panes=tabPanes(item.entry,item.tab).filter(p=>!p.is_plugin);
-    const pane=panes.find(p=>p.pane_id===active?.pane_id)||panes[0];if(!pane)return null;
+    const active=item.entry.state?.active_pane,panes=(!item.entry.state?item.tab.panes:tabPanes(item.entry,item.tab)).filter(p=>!p.is_plugin);
+    const preferred=item.entry.resumePane||active;
+    const pane=panes.find(p=>p.pane_id===preferred?.pane_id)||panes.find(p=>p.is_focused)||panes[0];if(!pane)return null;
     const state=paneAttention.get(attentionKey(item.entry.host,item.entry.name,pane.pane_id));
-    return {key:JSON.stringify([item.entry.host,item.entry.name,pane.pane_id]),host:item.entry.host,chatHost:hosts.get(item.entry.host)?.local?'local':item.entry.host,pane:pane.pane_id,frame:item.entry.frame,title:tabTitle(item),agent:state?.agent,state:state?.state,chatId:state?.chat_id};
+    return {key:JSON.stringify([item.entry.host,item.entry.name,pane.pane_id]),host:item.entry.host,chatHost:hosts.get(item.entry.host)?.local?'local':item.entry.host,pane:pane.pane_id,frame:item.entry.frame,terminalReady:!item.entry.suspended&&!item.entry.disconnected&&!item.entry.needsFocus&&!item.entry.focusPending&&active?.pane_id===pane.pane_id,title:tabTitle(item),agent:state?.agent,state:state?.state,chatId:state?.chat_id};
   },
-  terminal(target){const item=allTabs().find(item=>item.key===selected);if(item&&item.entry.frame===target.frame)focus(item);}
+  terminal(target){const item=allTabs().find(item=>item.key===selected);if(item&&item.entry.frame===target.frame){item.entry.frame.focus();focus(item);}}
 });
