@@ -658,6 +658,21 @@ impl PollState {
                     recreated = true;
                 }
             }
+            // What the screen alone said, and the hook that may override it, for the change log.
+            // A deferred row's screen was not read this scan. Rows reused from the previous
+            // snapshot also carry no command, so their hook is not looked up either.
+            let deferred = row["deferred"] == json!(true);
+            let screen = if deferred {
+                "unread"
+            } else {
+                row["state"].as_str().unwrap_or("unknown")
+            }
+            .to_owned();
+            let mut hook = if deferred && row.get("command").is_none() {
+                "unread"
+            } else {
+                "none"
+            };
             // Only local scans list commands, so only local panes take hooks and runs.
             let mut waiting_on_run = false;
             if let Some(command) = row.as_object_mut().unwrap().remove("command") {
@@ -665,6 +680,14 @@ impl PollState {
                     self.forget_hook(row);
                 }
                 self.apply_hook(row, &command);
+                // After apply_hook, which drops a hook from an agent the pane no longer runs.
+                if let (Some(session), Some(pane)) =
+                    (row["session"].as_str(), row["pane_id"].as_u64())
+                {
+                    if let Some(hooked) = self.hooks.get(&(session.to_owned(), pane)) {
+                        hook = hooked.state;
+                    }
+                }
                 waiting_on_run = self.waiting_on_run(row);
             }
             if row.as_object_mut().unwrap().remove("deferred") == Some(json!(true))
@@ -738,6 +761,15 @@ impl PollState {
                     },
                     _ => json!(unix_seconds()),
                 };
+                if !previous.is_null() && previous["state"] != row["state"] {
+                    log::info!(
+                        "Switchboard pane {host} {} {}: {} -> {} (screen {screen}, hook {hook})",
+                        row["session"].as_str().unwrap_or(""),
+                        row["pane_id"],
+                        previous["state"].as_str().unwrap_or("unknown"),
+                        row["state"].as_str().unwrap_or("unknown"),
+                    );
+                }
                 changed |= previous != observed;
                 self.observed.insert(key.clone(), observed);
             }
