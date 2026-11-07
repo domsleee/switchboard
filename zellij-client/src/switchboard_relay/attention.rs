@@ -162,6 +162,12 @@ pub(crate) fn classify(pane: &Value, screen: &str) -> Value {
     json!({"state":"ready","agent":agent,"token":token})
 }
 
+fn unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
 fn quiet_shell(pane: &Value) -> bool {
     static SHELL: LazyLock<regex::Regex> = LazyLock::new(|| {
         regex::Regex::new(r"(?:^|[\\/])(?:nu|zsh|bash|fish|pwsh|powershell)(?:\.exe)?(?:\s|$)")
@@ -186,7 +192,7 @@ fn snapshot(name: &str, panes: &[Value], screens: &HashMap<u64, String>, deferre
         };
         let tab = tabs.entry(tab_id).or_insert_with(||json!({"session":name,"id":tab_id,"position":pane["tab_position"],"name":pane["tab_name"],"panes":[]}));
         if pane["is_selectable"] != false && pane["is_suppressed"] != true {
-            tab["panes"].as_array_mut().unwrap().push(json!({"pane_id":pane["id"],"is_plugin":pane["is_plugin"],"tab_position":pane["tab_position"],"title":pane["title"].as_str().unwrap_or(""),"is_floating":pane["is_floating"] == true}));
+            tab["panes"].as_array_mut().unwrap().push(json!({"pane_id":pane["id"],"is_plugin":pane["is_plugin"],"tab_position":pane["tab_position"],"title":pane["title"].as_str().unwrap_or(""),"is_floating":pane["is_floating"] == true,"cwd":pane["pane_cwd"]}));
         }
         if pane["is_plugin"] == true || pane["is_selectable"] == false {
             continue;
@@ -722,8 +728,21 @@ impl PollState {
                         row["token"].as_str().unwrap_or("idle")
                     ));
                 }
+                // When the pane last changed state or finished a turn: the sidebar shows its age.
+                observed["since"] = match previous["since"].as_u64() {
+                    Some(since)
+                        if previous["state"] == row["state"]
+                            && previous["generation"].as_u64() == Some(generation) =>
+                    {
+                        json!(since)
+                    },
+                    _ => json!(unix_seconds()),
+                };
                 changed |= previous != observed;
                 self.observed.insert(key.clone(), observed);
+            }
+            if let Some(since) = self.observed.get(&key).and_then(|o| o["since"].as_u64()) {
+                row["since"] = json!(since);
             }
             if row["state"] == "ready" {
                 row["token"] = json!(format!(

@@ -601,6 +601,27 @@ snoozedHeader.onclick=()=>{
   if(dragging||Date.now()<suppressTabClickUntil)return;
   snoozedOpen=!snoozedOpen;localStorage.setItem(`switchboard-snoozed-open:${filter}`,String(snoozedOpen));render();
 };
+// A row's top-right corner: what the tab is doing, or how long ago its state changed.
+const statusWords={'Password needed':'Password','Approval needed':'Approve','Input needed':'Answer','Working':'Working','Waiting on an agent':'Waiting','Ready to review':'Done'};
+function tabProject(item){
+  const dir=item.tab.panes.find(p=>!p.is_plugin&&typeof p.cwd==='string'&&p.cwd)?.cwd;
+  if(!dir)return '';
+  const path=dir.replace(/[\\/]+$/,'');
+  if(/^(?:\/Users\/[^/]+|\/home\/[^/]+|\/root|[A-Za-z]:\\Users\\[^\\]+)$/i.test(path))return '~';
+  return path.split(/[\\/]/).pop()||path;
+}
+function tabAge(item){
+  const since=Math.max(0,...statesForTab(item).map(state=>Number.isFinite(state.since)?state.since:0));
+  if(!since)return '';
+  const seconds=Math.max(0,Date.now()/1000-since);
+  return seconds<60?'now':seconds<3600?`${Math.floor(seconds/60)}m`:seconds<86400?`${Math.floor(seconds/3600)}h`:`${Math.floor(seconds/86400)}d`;
+}
+function tabAgent(item){return statesForTab(item).find(state=>state.agent)?.agent||'';}
+const agentIcons={
+  claude:'<svg viewBox="0 0 16 16" fill="none" stroke="#d97757" stroke-width="1.7" stroke-linecap="round"><path d="M8 1.5v13M1.5 8h13M3.4 3.4l9.2 9.2M12.6 3.4l-9.2 9.2"/></svg>',
+  codex:'<svg viewBox="0 0 16 16" fill="none" stroke="#a3aec0" stroke-width="1.5" stroke-linejoin="round"><path d="M8 1.5l5.6 3.25v6.5L8 14.5l-5.6-3.25v-6.5z"/><circle cx="8" cy="8" r="2.2"/></svg>',
+  copilot:'<svg viewBox="0 0 16 16" fill="none" stroke="#a3aec0" stroke-width="1.5" stroke-linecap="round"><rect x="2" y="4" width="12" height="9" rx="4"/><path d="M6 8v1.5M10 8v1.5"/></svg>',
+};
 function updateTabTooltips(){
   // Touch users have the actions menu; avoid measuring every row during polling.
   if(mobileSidebar.matches){for(const button of tabButtons.values())button.removeAttribute('title');return;}
@@ -648,9 +669,14 @@ function render() {
       actions.onclick=()=>{const bounds=actions.getBoundingClientRect();openTabMenu(button._item,bounds.right,bounds.top,actions);};
       row.append(button,actions);button._row=row;
       button.onkeydown=event=>{if(event.key==='ContextMenu'||event.shiftKey&&event.key==='F10'){event.preventDefault();const bounds=button.getBoundingClientRect();openTabMenu(button._item,bounds.right,bounds.top,button);}};
-      const star=document.createElement('span');star.className='star';star.setAttribute('aria-hidden','true');
+      const where=document.createElement('small');where.className='tab-where';
+      const status=document.createElement('span');status.className='tab-status';status.setAttribute('aria-hidden','true');
+      const star=document.createElement('span');star.className='star';
+      status.append(star,document.createElement('span'));
       const name=document.createElement('span');name.className='tab-name';
-      const label=document.createElement('small');button.append(star,name,label);
+      const agent=document.createElement('span');agent.className='tab-agent';agent.setAttribute('aria-hidden','true');
+      button.append(where,status,name,agent);
+      Object.assign(button,{_where:where,_status:status,_star:star,_name:name,_agent:agent});
       button.ondragstart=event=>{
         dragging=true;
         dragState={key:button._item.key,clientY:event.clientY,target:null};
@@ -674,15 +700,20 @@ function render() {
     const elevated=item.tab.name.replace(/^\*\s*/,'')==='Administrator';
     const status=unavailable?'Status unavailable':stateLabel==='Ready'?'':stateLabel;
     const duplicate=titleCounts.get(JSON.stringify([item.entry.host,title]))>1;
-    const subtitle=`${machine}${duplicate?' · '+item.entry.name:''}${status?' · '+status:''}${flagged?' · For review':''}${isPinned(item.key)?' · Pinned':''}`;
+    const project=tabProject(item);
+    const subtitle=`${project?project+' · ':''}${machine}${duplicate?' · '+item.entry.name:''}${isPinned(item.key)?' · Pinned':''}`;
     button.className='tab-select'+(item.key===selected?' selected':'')+(starred?' needs-attention':'')+(elevated?' elevated':'');
     button.setAttribute('aria-pressed',String(item.key===selected));
-    button.setAttribute('aria-label',`${title}${elevated&&title!=='Administrator'?', Administrator':''}, ${machine}, ${item.entry.name}${status?', '+status:''}${flagged?', Flagged for review':''}`);
-    const dot=button.children[0];dot.hidden=false;
-    dot.className='star '+(unavailable?'unavailable':starred?'attention':stateLabel==='Working'?'working':stateLabel.startsWith('Waiting')?'waiting':'quiet');
-    if(button.children[1].textContent!==title)button.children[1].textContent=title;
+    button.setAttribute('aria-label',`${title}${elevated&&title!=='Administrator'?', Administrator':''}, ${project?project+', ':''}${machine}, ${item.entry.name}${status?', '+status:''}${flagged?', Flagged for review':''}${isPinned(item.key)?', Pinned':''}`);
+    button._star.className='star '+(unavailable?'unavailable':starred?'attention':stateLabel==='Working'?'working':stateLabel.startsWith('Waiting')?'waiting':'quiet');
+    const short=unavailable?'Unavailable':statusWords[stateLabel]||(flagged?'Review':tabAge(item));
+    button._status.dataset.tone=unavailable?'':stateLabel==='Ready to review'?'done':starred?'attention':'';
+    if(button._status.lastChild.textContent!==short)button._status.lastChild.textContent=short;
+    if(button._name.textContent!==title)button._name.textContent=title;
     button.dataset.agentState=unavailable?'Status unavailable':stateLabel;
-    if(button.children[2].textContent!==subtitle)button.children[2].textContent=subtitle;
+    if(button._where.textContent!==subtitle)button._where.textContent=subtitle;
+    const agentName=tabAgent(item);
+    if(button._agent.dataset.agent!==agentName){button._agent.dataset.agent=agentName;button._agent.innerHTML=agentIcons[agentName]||'';}
     const row=button._row,actions=row.lastElementChild;row._item=item;
     row.classList.toggle('active',item.key===selected);
     row.classList.toggle('hidden-tab',item.hidden);
