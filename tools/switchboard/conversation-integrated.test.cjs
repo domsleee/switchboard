@@ -129,6 +129,24 @@ test('integrated Conversation journeys use production markup and preserve delive
     }finally{await f.close();}
    }
   });
+  await t.test('a Terminal round trip keeps the laid-out transcript and its reading position',async()=>{
+   const messages=Array.from({length:120},(_,n)=>({role:n%2?'assistant':'user',text:`Message ${n}. `+'Long transcript text. '.repeat(30)}));
+   const f=await fixture({viewport:{width:1280,height:800},messages}),{page}=f;try{
+    const list=page.locator('.conversation-messages'),swap=async()=>{
+     await page.getByRole('button',{name:'Terminal',exact:true}).click();
+     // Hidden, the panel keeps its layout so returning does not lay out every message again.
+     assert.deepEqual(await page.locator('.conversation-panel').evaluate(node=>[node.hidden,node.getAttribute('aria-hidden'),getComputedStyle(node).display,getComputedStyle(node).contentVisibility]),[true,'true','flex','hidden']);
+     assert.equal(await page.evaluate(()=>{const box=document.getElementById('terminals').getBoundingClientRect();return document.elementFromPoint(box.left+box.width/2,box.top+box.height/2)?.tagName;}),'IFRAME','The hidden panel must not take the terminal’s clicks');
+     await page.getByRole('button',{name:'Conversation',exact:true}).click();await page.waitForFunction(()=>!document.querySelector('[aria-label="Refresh"]').disabled);
+    };
+    await page.getByText('Message 119.',{exact:false}).waitFor();
+    await list.evaluate(node=>{node.scrollTop=node.scrollHeight/2;});
+    const reading=await list.evaluate(node=>node.scrollTop);await swap();
+    assert.equal(await list.evaluate(node=>node.scrollTop),reading,'Returning keeps the reading position');
+    await list.evaluate(node=>{node.scrollTop=node.scrollHeight;});await swap();
+    assert.ok(await list.evaluate(node=>node.scrollHeight-node.scrollTop-node.clientHeight)<2,'Returning keeps following the latest message');
+   }finally{await f.close();}
+  });
   await t.test('unbound startup fails visibly, retries explicitly, and leaves shell tabs at No agent',async()=>{
    const f=await fixture({bound:false}),{page}=f;try{
     await page.waitForFunction(()=>document.querySelector('.conversation-notice').textContent.includes('Connecting'));
