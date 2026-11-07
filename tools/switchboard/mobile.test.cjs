@@ -60,7 +60,7 @@ test('phone sidebar, actions, Settings, Computers and Messages fit without horiz
           assert.equal(await input.evaluate(el=>getComputedStyle(el).fontSize),'16px');
         }
         for (const selector of ['#new-tab-project-lookup','#new-tab-attach']) {
-          const button=page.locator(selector),box=await button.boundingBox();
+          const button=page.locator(selector);await button.scrollIntoViewIfNeeded();const box=await button.boundingBox();
           assert.ok(box.width>=44&&box.height>=44,`${selector} must fit a touch target`);
           assert.equal(await button.evaluate(el=>{const r=el.getBoundingClientRect();return document.elementFromPoint(r.x+r.width/2,r.bottom-1)===el;}),true,`${selector} must not overlap another control`);
         }
