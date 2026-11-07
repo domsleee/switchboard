@@ -21,6 +21,7 @@ pub(crate) struct Client {
     origin: url::Url,
     token: Option<String>,
     http: HttpClient,
+    timeout: Duration,
 }
 impl Client {
     pub(crate) fn load(path: &std::path::Path) -> anyhow::Result<Self> {
@@ -60,6 +61,7 @@ impl Client {
             origin: config.url,
             token: Some(token_file(&config.token_file)?),
             http: builder.build()?,
+            timeout: Duration::from_secs(15),
         })
     }
     pub(crate) fn request_response(
@@ -81,6 +83,7 @@ impl Client {
             .map(|v| serde_json::to_vec(&v).unwrap())
             .unwrap_or_default();
         let mut builder = Request::builder()
+            .timeout(self.timeout)
             .method(method)
             .uri(url.as_str())
             .header("Content-Type", "application/json");
@@ -108,7 +111,7 @@ impl Client {
             serde_json::from_slice(&bytes).context("Relay returned an invalid response; check that it supports this command before retrying with the same key")?;
         Ok((status.as_u16(), value))
     }
-    fn request(
+    pub(super) fn request(
         &self,
         method: &str,
         path: &str,
@@ -150,7 +153,31 @@ impl Client {
                 .timeout(Duration::from_secs(15))
                 .redirect_policy(RedirectPolicy::None)
                 .build()?,
+            timeout: Duration::from_secs(15),
         })
+    }
+
+    pub(super) fn for_hook() -> anyhow::Result<Self> {
+        let mut client = if let Some(path) = std::env::var_os("SWITCHBOARD_BOARD_CONFIG") {
+            Self::load(std::path::Path::new(&path))?
+        } else {
+            Self::relay(&local_relay_url(
+                std::env::var("SWITCHBOARD_RELAY_URL").ok().as_deref(),
+            ))?
+        };
+        // A disconnected board must not hold up a tool hook or the user's turn.
+        client.timeout = Duration::from_secs(2);
+        Ok(client)
+    }
+
+    pub(super) fn hook_namespace(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        hash.update(self.origin.as_str());
+        if let Some(token) = &self.token {
+            hash.update(token);
+        }
+        hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
     }
 }
 fn body(path: &Option<PathBuf>) -> anyhow::Result<String> {

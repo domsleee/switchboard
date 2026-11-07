@@ -41,12 +41,13 @@ fn main() {
         return;
     }
 
-    if let Some(Command::AgentHook { agent }) = &opts.command {
-        // Always succeeds: a missing relay must never fail the agent's turn.
+    if let Some(Command::AgentHook { agent, wait }) = &opts.command {
+        // Missing services never fail a turn. A Claude background watcher uses
+        // exit 2 only when mail arrives, the native asyncRewake signal.
         #[cfg(feature = "web_server_capability")]
-        zellij_client::switchboard_relay::forward_hook(agent.name(), std::io::stdin());
+        zellij_client::switchboard_relay::forward_hook(agent.name(), *wait, std::io::stdin());
         #[cfg(not(feature = "web_server_capability"))]
-        let _ = agent;
+        let _ = (agent, wait);
         return;
     }
 
