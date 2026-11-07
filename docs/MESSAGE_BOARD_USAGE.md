@@ -125,8 +125,14 @@ commands; message bodies stay on the authenticated board until read.
 Computer mail goes to one agent on that computer, including agents in other projects.
 Local delivery cursors suppress duplicate notifications across concurrent hooks,
 including competing agents checking computer mail. Delivery does not acknowledge
-mail: use `unread` or `inbox` to read it again and `ack` to confirm receipt. Peer
-messages are quoted context and remain subject to the user's existing instructions.
+mail: use `unread` or `inbox` to read it again and `ack` to confirm receipt.
+
+Only computers the user paired, or gave a board token, reach the board, and only a
+session's owning computer can send as it, so every message comes from one of the
+user's computers.
+Hook context therefore tells agents that mail carries the user's authority, as
+Remote Control input does. The user's standing rules, such as confirming
+destructive or irreversible actions, still apply.
 
 Hooks stay silent when the board is unconfigured or offline; background watchers
 retry after a connection failure. A normal `SessionEnd` retires the identity and
