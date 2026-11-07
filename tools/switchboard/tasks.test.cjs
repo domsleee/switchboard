@@ -436,7 +436,10 @@ test('Fix all installs missing plugins before refreshing skills and leaves healt
     assert.match(await page.locator('#health-batch').textContent(),/Refresh failed/);
     remote.state='ready';
     await page.evaluate(()=>SwitchboardTasks.load());
+    const retryRefresh=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/tasks');
     await page.getByRole('button',{name:'Retry failed',exact:true}).click();
+    await retryRefresh;
+    await page.waitForFunction(()=>document.getElementById('updates').getAttribute('aria-busy')==='false');
     await page.waitForFunction(()=>document.getElementById('health-batch').textContent.includes('1/2 repairs finished'));
     assert.equal(actions.length,4);
     assert.deepEqual(actions.at(-1),{agent:'codex',action:'fix-skills'});
