@@ -238,6 +238,11 @@ impl SessionConfiguration {
     pub fn set_client_runtime_configuration(&mut self, client_id: ClientId, client_config: Config) {
         self.runtime_config.insert(client_id, client_config);
     }
+    /// Client ids are issued in rotation and never reused soon, so a departed
+    /// client's full config copy would otherwise stay for the session's life.
+    pub fn remove_client(&mut self, client_id: ClientId) {
+        self.runtime_config.remove(&client_id);
+    }
     pub fn get_client_keybinds(&self, client_id: &ClientId) -> &Keybinds {
         self.runtime_config
             .get(client_id)
@@ -570,6 +575,9 @@ fn remove_client_and_flush_forwards(
     session_data: &Arc<RwLock<Option<SessionMetaData>>>,
 ) {
     let _ = os_input.remove_client(client_id);
+    if let Some(session) = session_data.write().unwrap().as_mut() {
+        session.session_configuration.remove_client(client_id);
+    }
     let stuck_tokens = session_state.write().unwrap().remove_client(client_id);
     if stuck_tokens.is_empty() {
         return;
@@ -877,6 +885,18 @@ mod session_state_tests {
     fn remove_client_returns_empty_when_no_forwards_in_flight() {
         let mut s = with_client(1);
         assert!(s.remove_client(1).is_empty());
+    }
+
+    #[test]
+    fn departed_clients_release_their_runtime_config() {
+        let mut configuration = SessionConfiguration::default();
+        for client_id in 1..=3 {
+            configuration.set_client_runtime_configuration(client_id, Config::default());
+        }
+        configuration.remove_client(2);
+        let mut kept: Vec<_> = configuration.runtime_config.keys().copied().collect();
+        kept.sort_unstable();
+        assert_eq!(kept, vec![1, 3]);
     }
 
     #[test]
