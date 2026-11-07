@@ -33,7 +33,7 @@
     const binding=()=>chat;
     function status(text,quiet=false){notice.textContent=text;notice.hidden=quiet;}
     function busy(value){loading=value;older.disabled=refresh.disabled=value;}
-    function focusSurface(){if(!panel.hidden&&!panel.contains(document.activeElement))panel.focus({preventScroll:true});}
+    function focusSurface(){if(!panel.hidden)(form.hidden?panel:draft).focus({preventScroll:true});}
     function show(value){if(!value){loadRequest?.abort();window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();}open=value;root.classList.toggle('conversation-open',open);modeChanged();try{localStorage.setItem(modeKey,value?'conversation':'terminal');}catch{}panel.hidden=!value;toggle.setAttribute('aria-pressed',String(value));back.setAttribute('aria-pressed',String(!value));if(value){document.getElementById('artifact-preview').hidden=true;update();if(binding()&&!messages.length)load('initial');focusSurface();}else if(target)terminal(target);viewport();}
 
     toggle.onclick=()=>show(true);back.onclick=()=>show(false);

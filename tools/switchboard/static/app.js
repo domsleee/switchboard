@@ -790,14 +790,17 @@ window.addEventListener('focus',()=>{
   const current=allTabs().find(item=>item.key===selected);
   if(current&&document.hasFocus())current.entry.frame.contentWindow.postMessage({type:'zellij-window-focus'},location.origin);
 });
-// Passive chrome should not interrupt typing. Cancel only the mouse's default
-// focus transfer; clicks still run, and keyboard navigation keeps normal focus.
+// Passive chrome should not interrupt typing. Cancel the default focus transfer;
+// clicks still run, and keyboard navigation keeps normal focus. Conversation
+// also preserves its composer and soft keyboard through passive touch taps.
 let chromePointerType='mouse';
 document.addEventListener('pointerdown',event=>{chromePointerType=event.pointerType;},true);
 document.addEventListener('mousedown',event=>{
-  if(event.defaultPrevented||event.button!==0||event.altKey||event.ctrlKey||event.metaKey||event.shiftKey||chromePointerType!=='mouse'||event.sourceCapabilities?.firesTouchEvents)return;
+  const conversationOpen=globalThis.SwitchboardConversation?.isOpen?.()||false;
+  if(event.defaultPrevented||event.button!==0||event.altKey||event.ctrlKey||event.metaKey||event.shiftKey||!conversationOpen&&(chromePointerType!=='mouse'||event.sourceCapabilities?.firesTouchEvents))return;
   const frame=$('terminals').querySelector('iframe.active');
-  if(!frame||document.activeElement!==frame||!document.hasFocus()||document.hidden||
+  const input=conversationOpen?$('terminals').querySelector('.conversation-compose textarea'):frame;
+  if(!input||document.activeElement!==input||!document.hasFocus()||document.hidden||
     !$('artifact-preview').hidden||!$('tab-menu').hidden||document.querySelector('dialog[open]'))return;
   const target=event.target;
   if(!target.closest('#sidebar,#sidebar-toggle,#sidebar-backdrop,#status,#terminals')||target.closest('#selection-tools'))return;

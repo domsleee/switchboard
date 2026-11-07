@@ -489,7 +489,7 @@ for(const touchscreen of [false,true])test(`sidebar selection supports immediate
   }finally{await browser.close();}
 });
 
-async function browserFocusFixture({mismatch=null,acknowledge=true,platform,hasTouch=false}={}){
+async function browserFocusFixture({mismatch=null,acknowledge=true,platform,hasTouch=false,conversation=false}={}){
   const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
   const browser=await chromium.launch({headless:true});
   try{
@@ -506,7 +506,9 @@ async function browserFocusFixture({mismatch=null,acknowledge=true,platform,hasT
       if(pathname==='/api/hosts')return json([{id:'mac',name:'Mac'}]);
       if(pathname==='/api/hosts/mac')return json({id:'mac',name:'Mac',sessions:[{name:'main',web_clients_allowed:true}]});
       if(pathname==='/api/attention')return json({tabs:[41,42].map((id,position)=>({host:'mac',session:'main',id,position,name:'Terminal '+id,
-        panes:[{pane_id:id===mismatch?9:position+7,is_plugin:false,tab_position:position}]})),panes:[],errors:[]});
+        panes:[{pane_id:id===mismatch?9:position+7,is_plugin:false,tab_position:position}]})),
+        panes:conversation?[7,8].map(pane_id=>({host:'mac',session:'main',pane_id,agent:'codex',state:'ready',chat_id:'chat-'+pane_id})):[],errors:[]});
+      if(conversation&&pathname.startsWith('/api/chats/'))return json({messages:[{role:'assistant',text:'Fixture conversation'}],next_cursor:null});
       if(pathname==='/api/hosts/mac/close-tab'){
         closes.push(route.request().postDataJSON());
         return json({ok:true});
@@ -525,7 +527,7 @@ async function browserFocusFixture({mismatch=null,acknowledge=true,platform,hasT
         sendState(7);
       </script>`});
       const file=pathname==='/'?'index.html':pathname.slice(1);
-      if(!['index.html','app.js','bridge.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
+      if(!['index.html','app.js','bridge.js','close.js','titles.js','style.css',...(conversation?['conversation.js','conversation.css']:[])].includes(file))return route.fulfill({status:404,body:''});
       return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
     });
     await page.goto('https://switchboard.test/?host=mac&session=main&tab=41');
@@ -539,6 +541,60 @@ async function browserFocusFixture({mismatch=null,acknowledge=true,platform,hasT
     throw error;
   }
 }
+
+for(const hasTouch of [false,true])test(`conversation composer keeps focus through sidebar interactions with touch ${hasTouch}`,
+  {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
+  const {browser,page,pageErrors,button}=await browserFocusFixture({hasTouch,conversation:true});
+  try{
+    page.setDefaultTimeout(5000);
+    await page.evaluate(()=>{
+      groups.mac='work';
+      for(const pane of [7,8])paneAttention.set(attentionKey('mac','main',pane),{agent:'codex',state:'ready',chat_id:'chat-'+pane});
+      render();
+    });
+    await page.getByRole('button',{name:'Conversation',exact:true}).click();
+    const draft=page.getByLabel('Reply draft');
+    assert.equal(await draft.evaluate(node=>node===document.activeElement),true,'Opening Conversation focuses the composer');
+    await draft.fill('keep typing');
+    await draft.evaluate(node=>node.setSelectionRange(0,4));
+    await page.evaluate(()=>{
+      setHidden(allTabs().find(item=>item.tab.id===42),true);
+      paneAttention.get(attentionKey('mac','main',7)).state='working';render();
+    });
+    for(const selector of ['#hidden-toggle .chevron','#hidden-toggle','#snoozed-toggle','#snoozed-toggle',
+      '#filters [data-filter="work"]','#filters [data-filter="all"]','#tab-count','.sidebar-brand strong',
+      '#status-message','#dismiss-status','#sidebar-toggle','#sidebar-toggle']){
+      if(selector==='#status-message'||selector==='#dismiss-status')await page.evaluate(()=>setStatus('Fixture notification',true));
+      if(hasTouch)await page.locator(selector).tap();else await page.locator(selector).click();
+      assert.equal(await draft.evaluate(node=>node===document.activeElement),true,selector);
+      assert.deepEqual(await draft.evaluate(node=>[node.selectionStart,node.selectionEnd]),[0,4],selector+' preserves the draft selection');
+    }
+    await page.keyboard.type('continue');assert.equal(await draft.inputValue(),'continue typing');
+    await page.evaluate(()=>{setHidden(allTabs().find(item=>item.tab.id===42),false);render();});
+    if(hasTouch)await button(42).tap();else await button(42).click();
+    assert.equal(await draft.evaluate(node=>node===document.activeElement),true,'Switching tabs focuses the new composer');
+    await page.keyboard.type('second draft');assert.equal(await draft.inputValue(),'second draft');
+    if(hasTouch)await button(41).tap();else await button(41).click();
+    assert.equal(await draft.evaluate(node=>node===document.activeElement),true,'Switching back focuses the restored composer');
+    assert.equal(await draft.inputValue(),'continue typing','Switching back restores the draft');
+    await page.locator('#tab-search').click();await page.keyboard.type('Terminal');
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'tab-search');
+    await page.keyboard.press('Enter');assert.equal(await draft.evaluate(node=>node===document.activeElement),true);
+    await page.locator('#settings').click();assert.equal(await page.evaluate(()=>document.activeElement.closest('dialog')?.id),'panel');
+    await page.locator('#close-panel').click();
+    await page.waitForFunction(()=>document.activeElement===document.querySelector('.conversation-compose textarea'));
+    await page.evaluate(()=>{setHidden(allTabs().find(item=>item.tab.id===42),true);render();});
+    await page.locator('#hidden-toggle').focus();await page.keyboard.press('Space');
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'hidden-toggle','Keyboard navigation keeps its focus');
+    await page.locator('#tabs .tab-actions').first().click();assert.equal(await page.evaluate(()=>document.activeElement.closest('#tab-menu')?.id),'tab-menu');
+    await page.keyboard.press('Escape');
+    await page.locator('#new-tab').click();assert.equal(await page.evaluate(()=>document.activeElement.closest('dialog')?.id),'new-tab-dialog');
+    await page.keyboard.press('Escape');
+    await page.getByRole('button',{name:'Terminal',exact:true}).click();
+    assert.equal(await page.locator('.conversation-panel').isVisible(),false);
+    assert.deepEqual(pageErrors,[]);
+  }finally{await browser.close();}
+});
 
 test('passive mouse clicks keep terminal typing and selection without switching native focus',
   {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
