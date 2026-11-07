@@ -61,6 +61,44 @@ test('tab hover only expands clipped titles; context and shortcuts stay in the c
   }finally{await browser.close();}
 });
 
+test('touch screens show the tab menu button only on the selected tab',
+  {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
+  const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch({headless:true});
+  try{
+    const context=await browser.newContext({viewport:{width:390,height:740},isMobile:true,hasTouch:true});
+    const page=await context.newPage(),errors=[];
+    page.setDefaultTimeout(5000);
+    page.on('pageerror',error=>errors.push(error.message));
+    await page.addInitScript(()=>{window.setInterval=()=>0;});
+    const tabs=['Polish the sidebar','Online shopping research for the new desk'].map((name,i)=>
+      ({host:'mac',session:'main',id:i+1,position:i,name,panes:[{pane_id:i+1,is_plugin:false,tab_position:i}]}));
+    await page.route('**/*',route=>{
+      const url=new URL(route.request().url()),path=url.pathname;
+      const json=value=>route.fulfill({contentType:'application/json',body:JSON.stringify(value)});
+      if(path==='/api/attention'&&url.searchParams.has('after'))return;
+      if(path==='/api/hosts')return json([{id:'mac',name:'Mac'}]);
+      if(path==='/api/hosts/mac')return json({id:'mac',name:'Mac',sessions:[{name:'main',web_clients_allowed:true}]});
+      if(path==='/api/attention')return json({tabs,panes:[],errors:[]});
+      if(path.startsWith('/api/'))return json({});
+      if(path.startsWith('/hosts/'))return route.fulfill({contentType:'text/html',body:`<script>const panes=${JSON.stringify(tabs.flatMap(t=>t.panes))};parent.postMessage({type:'zellij-state',payload:{session_name:'main',panes,active_pane:panes[0]}},location.origin);</script>`});
+      const file=path==='/'?'index.html':path.slice(1);
+      if(!/^[\w.-]+$/.test(file)||!fs.existsSync(__dirname+'/static/'+file))return route.fulfill({status:404,body:''});
+      return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file)});
+    });
+    await page.goto('https://switchboard.test/');
+    await page.locator('.tab-row.active').waitFor({state:'attached'});
+    await page.locator('#sidebar-toggle').tap();
+    const selected=page.locator('.tab-row.active .tab-actions'),other=page.locator('.tab-row:not(.active)');
+    assert.equal(await selected.isVisible(),true);
+    assert.equal(await other.locator('.tab-actions').isVisible(),false);
+    // The unselected row's name gets the width the button would have taken.
+    assert.equal(await other.locator('.tab-name').evaluate(el=>el.scrollWidth<=el.clientWidth),true);
+    await selected.tap();
+    assert.equal(await page.locator('#tab-menu').isVisible(),true);
+    assert.deepEqual(errors,[]);
+  }finally{await browser.close();}
+});
+
 // All HTTP and terminal state is local fixture data; never attach to user sessions.
 test('sidebar actions, selection tools, stable status updates, resizing and mobile navigation',
   {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
