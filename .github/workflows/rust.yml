@@ -102,6 +102,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Check installer lock lifecycle
+        run: python3 tools/switchboard/update_lock.test.py -v
+
       - name: Install Protoc
         uses: arduino/setup-protoc@v3
         with:
