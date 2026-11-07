@@ -62,7 +62,10 @@ of the agent's current compacted context or active rewind branch.
 ## Current terminal conversation
 
 The sidebar's **Conversation** button opens the selected pane's transcript directly;
-**Terminal** returns to the same pane. The chat opens at the latest messages, loads
+**Terminal** returns to the same pane. Phones and browsers with data saving enabled
+initially fetch only the latest 15 messages. Subsequent polls fetch from the last
+loaded message, so an unchanged chat does not download its whole page again and
+updates to the latest message remain visible. The chat opens at the latest messages, loads
 earlier messages as you scroll up, and omits session setup messages from the view.
 Incoming replies preserve existing message elements and your reading position. Agent hooks supply `transcript_path`, which the
 relay maps to an opaque `chat_id` in the pane's attention record. This uses the same

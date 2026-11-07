@@ -71,7 +71,7 @@ test('current conversation opens directly, stays pane-local, and follows a new c
 });
 
 test('phone chat opens the latest page, hides setup, and preserves messages and reading position',{skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
- const {chromium}=require(process.env.PLAYWRIGHT_MODULE),requests=[];
+ const {chromium}=require(process.env.PLAYWRIGHT_MODULE),requests=[],payloads=[];
  const history=Array.from({length:503},(_,i)=>({role:i%2?'assistant':'user',text:`Message ${i}: ${'Conversation content. '.repeat(12)}`}));
  history[480]={role:'user',text:'# AGENTS.md instructions for /example\nInternal setup'};
  history[481]={role:'user',text:'<environment_context>Internal environment</environment_context>'};
@@ -84,9 +84,11 @@ test('phone chat opens the latest page, hides setup, and preserves messages and 
    const url=new URL(route.request().url());
    if(url.pathname.startsWith('/api/chats/')){
     requests.push(Object.fromEntries(url.searchParams));
+    const limit=Number(url.searchParams.get('limit'));
     const end=url.searchParams.has('before')?Number(url.searchParams.get('before')):history.length;
-    const start=url.searchParams.has('tail')||url.searchParams.has('before')?Math.max(0,end-50):Number(url.searchParams.get('cursor'));
-    const messages=history.slice(start,Math.min(start+50,end)),next=start+messages.length;
+    const start=url.searchParams.has('tail')||url.searchParams.has('before')?Math.max(0,end-limit):Number(url.searchParams.get('cursor'));
+    const messages=history.slice(start,Math.min(start+limit,end)),next=start+messages.length;
+    payloads.push(messages);
     return route.fulfill({json:{messages,start_cursor:start,previous_cursor:start||null,next_cursor:next<end?next:null}});
    }
    if(url.pathname==='/')return route.fulfill({contentType:'text/html',body:`<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/conversation.css"><style>body{margin:0}#terminals{position:relative;height:100dvh}</style><main id="terminals"><iframe id="terminal" class="active"></iframe><section id="artifact-preview" hidden></section></main><script src="/conversation.js"></script><script>window.current={key:'pane1',host:'local',pane:1,agent:'codex',state:'working',chatId:'codex-long',frame:document.getElementById('terminal')};SwitchboardConversation.install({selection:()=>current,terminal:()=>{}});</script>`});
@@ -95,7 +97,12 @@ test('phone chat opens the latest page, hides setup, and preserves messages and 
   await page.goto('http://chat.test/');
   await page.getByText('Checking the final result…',{exact:true}).waitFor();
   assert.equal(requests.length,1);assert.equal(requests[0].tail,'true');
-  assert.equal(await page.locator('.conversation-message').count(),48);
+  assert.equal(requests[0].limit,'15');
+  assert.equal(await page.locator('.conversation-message').count(),15);
+  assert.ok(JSON.stringify(payloads[0]).length<JSON.stringify(history.slice(-50)).length*.4,'Initial phone download is less than 40% of the old page');
+  await page.evaluate(()=>intervals.forEach(fn=>fn()));
+  await page.waitForFunction(()=>!document.querySelector('[aria-label="Refresh"]').disabled);
+  assert.equal(requests.at(-1).cursor,'502');assert.equal(payloads.at(-1).length,1);
   assert.equal(await page.getByText(/Session instructions|Internal setup|Internal environment|Enter to send/).count(),0);
   assert.equal(await page.getByText('Working…',{exact:true}).isVisible(),true);
   assert.ok(await page.evaluate(()=>{const n=document.querySelector('.conversation-messages');return n.scrollHeight-n.scrollTop-n.clientHeight<3;}));
@@ -108,14 +115,26 @@ test('phone chat opens the latest page, hides setup, and preserves messages and 
   assert.equal(await page.evaluate(()=>savedMessage.isConnected),true);
   assert.equal(await page.evaluate(()=>document.querySelector('.conversation-messages').scrollTop),100);
   await page.evaluate(()=>{document.querySelector('.conversation-messages').scrollTop=0;window.anchor=document.querySelector('.conversation-message');window.anchorY=anchor.getBoundingClientRect().y;});
-  await page.waitForFunction(()=>document.querySelectorAll('.conversation-message').length===99);
-  assert.equal(requests.at(-1).before,'453');
+  await page.waitForFunction(()=>document.querySelectorAll('.conversation-message').length===64);
+  assert.equal(requests.at(-1).before,'488');
+  history[503].text='The result is ready, with an update.';
+  await page.evaluate(()=>intervals.forEach(fn=>fn()));
+  await page.getByText('The result is ready, with an update.',{exact:true}).waitFor({state:'attached'});
+  assert.equal(requests.at(-1).cursor,'503');assert.equal(payloads.at(-1).length,1);
   assert.ok(await page.evaluate(()=>Math.abs(anchor.getBoundingClientRect().y-anchorY)<3));
   await page.getByRole('button',{name:'Scroll to bottom',exact:true}).click();
   assert.ok(await page.evaluate(()=>{const n=document.querySelector('.conversation-messages');return n.scrollHeight-n.scrollTop-n.clientHeight<3;}));
   await page.evaluate(()=>{current.state='ready';SwitchboardConversation.update();});
   assert.equal(await page.locator('.conversation-activity').textContent(),'codex');
   assert.equal(await page.getByRole('button',{name:/Load.*messages/}).count(),0);
+  // A burst larger than one page still catches up without skipping messages.
+  const beforeBurst=requests.length;
+  for(let i=0;i<60;i++)history.push({role:'assistant',text:'Burst reply '+i});
+  await page.evaluate(()=>intervals.forEach(fn=>fn()));
+  await page.getByText('Burst reply 59',{exact:true}).waitFor({state:'attached'});
+  assert.equal(await page.getByText(/^Burst reply /).count(),60);
+  assert.deepEqual(requests.slice(beforeBurst).map(r=>r.cursor),['503','553']);
+  assert.equal(await page.getByText('Message 488:',{exact:false}).count(),1);
   if(process.env.MODE_SCREENSHOTS)await page.screenshot({path:process.env.MODE_SCREENSHOTS+'/phone-chat.png'});
  }finally{await browser.close();}
 });
