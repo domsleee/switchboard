@@ -22,6 +22,8 @@ struct MessageOffset {
     start: u64,
     bytes: usize,
     item: usize,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
 }
 struct HistoryIndex {
     path: PathBuf,
@@ -121,6 +123,8 @@ impl HistoryIndex {
                     // providers whose envelopes contain several or deduplicated messages.
                     let mut record = Chat {
                         agent: self.chat.agent.clone(),
+                        model: self.chat.model.clone(),
+                        reasoning_effort: self.chat.reasoning_effort.clone(),
                         ..Chat::default()
                     };
                     record.record(&value, 0);
@@ -132,7 +136,13 @@ impl HistoryIndex {
                             .iter()
                             .position(|candidate| *candidate == message)
                         {
-                            self.messages.push(MessageOffset { start, bytes, item });
+                            self.messages.push(MessageOffset {
+                                start,
+                                bytes,
+                                item,
+                                model: self.chat.model.clone(),
+                                reasoning_effort: self.chat.reasoning_effort.clone(),
+                            });
                             if !complete {
                                 self.provisional += 1;
                             }
@@ -175,6 +185,8 @@ impl HistoryIndex {
             title: self.chat.title.clone(),
             session_id: self.chat.session_id.clone(),
             project: self.chat.project.clone(),
+            model: self.chat.model.clone(),
+            reasoning_effort: self.chat.reasoning_effort.clone(),
             partial: self.chat.partial,
             partial_reasons: self.chat.partial_reasons.clone(),
             ..Chat::default()
@@ -187,6 +199,8 @@ impl HistoryIndex {
             let value: Value = serde_json::from_slice(&bytes)?;
             let mut record = Chat {
                 agent: chat.agent.clone(),
+                model: entry.model.clone(),
+                reasoning_effort: entry.reasoning_effort.clone(),
                 ..Chat::default()
             };
             record.record(&value, 0);
@@ -284,6 +298,8 @@ struct Chat {
     agent: String,
     title: String,
     project: String,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
     messages: Vec<Value>,
     partial: bool,
     partial_reasons: Vec<&'static str>,
@@ -333,6 +349,15 @@ impl Chat {
         }
         self.messages
             .push(json!({"role":role,"text":text,"timestamp":timestamp}));
+        if role == "assistant" {
+            let message = self.messages.last_mut().unwrap();
+            if let Some(model) = &self.model {
+                message["model"] = json!(model);
+            }
+            if let Some(effort) = &self.reasoning_effort {
+                message["reasoning_effort"] = json!(effort);
+            }
+        }
     }
     // Only explicit user/assistant content parts, never tool output or reasoning.
     fn push_parts(&mut self, role: &str, parts: &Value, timestamp: Value) {
@@ -478,6 +503,14 @@ impl Chat {
         }
         match self.agent.as_str() {
             "claude" => {
+                if v["type"] == "assistant" {
+                    if let Some(model) = v["message"]["model"]
+                        .as_str()
+                        .filter(|model| !model.is_empty() && *model != "<synthetic>")
+                    {
+                        self.model = Some(clip(model, 128));
+                    }
+                }
                 if let Some(id) = v["sessionId"].as_str() {
                     self.session_id = id.into();
                 }
@@ -497,6 +530,17 @@ impl Chat {
             },
             "codex" => {
                 let p = &v["payload"];
+                if v["type"] == "turn_context" {
+                    self.model = p["model"]
+                        .as_str()
+                        .filter(|model| !model.is_empty())
+                        .map(|model| clip(model, 128));
+                    self.reasoning_effort = p["effort"]
+                        .as_str()
+                        .or_else(|| p["reasoning_effort"].as_str())
+                        .filter(|effort| !effort.is_empty())
+                        .map(|effort| clip(effort, 32));
+                }
                 if v["type"] == "session_meta" {
                     self.session_id = p["id"].as_str().unwrap_or_default().into();
                     self.project = p["cwd"].as_str().unwrap_or_default().into();
@@ -538,7 +582,8 @@ impl Chat {
     }
     fn summary(&self) -> Value {
         json!({"id":self.id,"session_id":clip(&self.session_id,256),"agent":self.agent,"title":self.title,
-            "project":clip(&self.project,4096),"timestamp":self.messages.last().map(|m| &m["timestamp"]),"partial":self.partial,"partial_reasons":self.partial_reasons})
+            "project":clip(&self.project,4096),"model":self.model,"reasoning_effort":self.reasoning_effort,
+            "timestamp":self.messages.last().map(|m| &m["timestamp"]),"partial":self.partial,"partial_reasons":self.partial_reasons})
     }
 }
 fn roots() -> Vec<(&'static str, PathBuf)> {
@@ -799,7 +844,7 @@ fn read_page(chat: &Chat, p: &Params) -> Value {
     };
     let page:Vec<_>=chat.messages[start..end].iter().take(p.limit()).map(|m| {
         let text=m["text"].as_str().unwrap_or_default();
-        json!({"role":m["role"],"timestamp":m["timestamp"],"text":clip(text,4000),"truncated":text.chars().count()>4000,"phase":m["phase"],"attachments":m["attachments"],"markdown":markdown_events(&clip(text,4000))})
+        json!({"role":m["role"],"timestamp":m["timestamp"],"text":clip(text,4000),"truncated":text.chars().count()>4000,"phase":m["phase"],"model":m["model"],"reasoning_effort":m["reasoning_effort"],"attachments":m["attachments"],"markdown":markdown_events(&clip(text,4000))})
     }).collect();
     let next = start.saturating_add(page.len());
     result["start_cursor"] = json!(start);
@@ -1272,6 +1317,74 @@ pub(in crate::switchboard_relay) async fn gateway(request: Request) -> Response 
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn switchboard_chats_keep_model_and_effort_with_each_turn_and_live_page() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("models.jsonl");
+        let context = |model: &str, effort: Value| json!({"type":"turn_context","payload":{"model":model,"effort":effort}});
+        let reply = |text: &str| json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":text}]}});
+        let records = [
+            context("gpt-6.1-sol", json!("medium")),
+            reply("First answer"),
+            context("gpt-6-astra", json!("high")),
+            reply("Second answer"),
+        ];
+        fs::write(
+            &path,
+            records
+                .iter()
+                .map(|record| format!("{record}\n"))
+                .collect::<String>(),
+        )
+        .unwrap();
+        let mut index = HistoryIndex::new("codex", dir.path(), &path);
+        let params = Params {
+            tail: true,
+            limit: Some(1),
+            ..Params::default()
+        };
+        let latest = index.page(&params).unwrap();
+        assert_eq!(latest["model"], "gpt-6-astra");
+        assert_eq!(latest["reasoning_effort"], "high");
+        assert_eq!(latest["messages"][0]["model"], "gpt-6-astra");
+        assert_eq!(latest["messages"][0]["reasoning_effort"], "high");
+        let older = index
+            .page(&Params {
+                before: Some(1),
+                ..params.clone()
+            })
+            .unwrap();
+        assert_eq!(
+            older["model"], "gpt-6-astra",
+            "Reading old history must not change the current model"
+        );
+        assert_eq!(older["messages"][0]["model"], "gpt-6.1-sol");
+        assert_eq!(older["messages"][0]["reasoning_effort"], "medium");
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, "{}", context("gpt-6.1-sol", Value::Null)).unwrap();
+        let changed = index.page(&params).unwrap();
+        assert_eq!(changed["model"], "gpt-6.1-sol");
+        assert!(
+            changed["reasoning_effort"].is_null(),
+            "Do not reuse an effort that was not reported for the new turn"
+        );
+        assert_eq!(changed["messages"][0]["model"], "gpt-6-astra");
+        assert_eq!(changed["messages"][0]["reasoning_effort"], "high");
+        drop(file);
+        fs::write(&path, format!("{}\n", reply("Replaced history"))).unwrap();
+        let replaced = index.page(&params).unwrap();
+        assert!(replaced["model"].is_null());
+        assert!(replaced["messages"][0]["model"].is_null());
+        let mut claude = Chat {
+            agent: "claude".into(),
+            ..Chat::default()
+        };
+        claude.record(&json!({"type":"assistant","message":{"model":"claude-opus-4-6","content":"Claude reply"}}), 0);
+        assert_eq!(claude.summary()["model"], "claude-opus-4-6");
+        assert_eq!(claude.messages[0]["model"], "claude-opus-4-6");
+        assert!(claude.summary()["reasoning_effort"].is_null());
+    }
 
     #[test]
     fn switchboard_chats_index_reads_beyond_file_and_message_limits() {

@@ -42,7 +42,7 @@ test('Conversation never attaches a terminal, including initial mobile load and 
   assert.deepEqual(connections,[],'Mobile Conversation must not load a terminal page at all');
   assert.equal(await page.locator('iframe[title="Ubuntu: main"]').getAttribute('src'),'about:blank');
   await page.getByLabel('Reply draft').fill('Hello without resizing');await page.getByRole('button',{name:'Send',exact:true}).click();
-  await page.waitForFunction(()=>document.querySelector('.conversation-outgoing.queued')?.textContent.includes('Waiting for agent…'));
+  await page.waitForFunction(()=>document.querySelector('.conversation-outgoing.queued')?.textContent.includes('Queued'));
   assert.equal(replies[0].message,'Hello without resizing');assert.deepEqual(connections,[]);
   await page.evaluate(()=>activate(allTabs().find(t=>t.tab.id===2)));
   await page.setViewportSize({width:844,height:390});
@@ -70,7 +70,7 @@ test('Conversation never attaches a terminal, including initial mobile load and 
   await page.getByRole('button',{name:'Conversation',exact:true}).click();
   await page.waitForFunction(()=>[...sessions.values()].every(e=>e.suspended&&e.frame.getAttribute('src')==='about:blank'&&!e.state));
   await page.getByLabel('Reply draft').fill('Reply to the focused split pane');
-  await page.getByRole('button',{name:'Send',exact:true}).click();await page.getByText('Waiting for agent…',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'Send',exact:true}).click();await page.getByText('Queued',{exact:true}).waitFor();
   assert.equal(replies.at(-1).thread,thread.slice(0,-1)+'3','Suspension must preserve the second pane in a split tab');
   await page.getByRole('button',{name:'Terminal',exact:true}).click();
   await page.waitForFunction(()=>[...sessions.values()][0].state?.active_pane?.pane_id===3);

@@ -45,8 +45,9 @@
     const header=el('header'),heading=el('div',undefined,'conversation-heading'),title=el('strong'),activity=el('span',undefined,'conversation-activity');activity.setAttribute('role','status');heading.append(title,activity);header.append(heading);
     const notice=el('p','Loading this terminal’s conversation…','conversation-notice');notice.setAttribute('role','status');
     const list=el('div',undefined,'conversation-messages'),older=el('button','Load older messages'),refresh=el('button','↻'),latest=el('button','↓');refresh.setAttribute('aria-label','Refresh');refresh.title='Refresh conversation';latest.setAttribute('aria-label','Scroll to bottom');latest.title='Scroll to bottom';older.hidden=true;
+    const working=el('div','Working…','conversation-working');working.hidden=true;working.setAttribute('role','status');
     const historyStatus=el('span',undefined,'conversation-history-status');historyStatus.hidden=true;historyStatus.setAttribute('role','status');
-    const actions=el('div',undefined,'conversation-actions');actions.append(refresh,latest);list.append(older);latest.hidden=refresh.hidden=true;
+    const actions=el('div',undefined,'conversation-actions');actions.append(refresh,latest);list.append(older,working);latest.hidden=refresh.hidden=true;
     const form=el('form',undefined,'conversation-compose'),draft=el('textarea'),insert=el('button','↑');draft.rows=1;draft.maxLength=16000;draft.placeholder='Message…';draft.setAttribute('aria-label','Reply draft');insert.type='submit';insert.setAttribute('aria-label','Send');insert.title='Send message';const attach=el('button','+','conversation-attach'),picker=el('input'),files=el('div',undefined,'conversation-attachments');attach.type='button';attach.setAttribute('aria-label','Attach files');attach.title='Attach photos or files';picker.type='file';picker.multiple=true;picker.hidden=true;files.hidden=true;form.append(files,attach,draft,insert,picker);
     const sendNotice=el('small',undefined,'conversation-send-notice');sendNotice.hidden=true;sendNotice.setAttribute('role','status');form.append(sendNotice);
     function sendStatus(text){const follow=nearBottom();sendNotice.textContent=text;sendNotice.hidden=!text;if(form.isConnected){sizeDraft();if(follow){list.scrollTop=list.scrollHeight;updateLatest();}}}
@@ -55,6 +56,19 @@
     let chat=null;
     const binding=()=>chat;
     function status(text,quiet=false){notice.textContent=text;notice.hidden=quiet;}
+    function modelLabel(value){
+      const name=value?.model?String(value.model).replace(/^gpt-/i,'').replace(/-/g,' ').replace(/\b[a-z]/g,char=>char.toUpperCase()):'';
+      return name?[name,value.reasoning_effort].filter(Boolean).join(' · '):'';
+    }
+    function providerLabel(){const agent=target?.agent||chat?.agent;return agent?agent[0].toUpperCase()+agent.slice(1):'Assistant';}
+    function agentLabel(){return modelLabel(chat)||providerLabel();}
+    function updateActivity(){
+      const state=target?.state,label=state==='working'?'Working…':state==='approval'?'Approval needed in Terminal':state==='input'?'Input needed in Terminal':state==='waiting'?'Waiting on an agent':state==='ready'?'Ready':'';
+      activity.textContent=chat||target?.agent?[agentLabel(),label].filter(Boolean).join(' · '):'';
+      activity.classList.toggle('working',state==='working');
+      const follow=nearBottom();working.hidden=state!=='working'||!chat;
+      if(follow)list.scrollTop=list.scrollHeight;
+    }
     function unboundNotice(){return target?.starting?'Starting agent…':target?.agent?'This agent has not reported its conversation yet. This view will connect automatically.':'No agent';}
     function busy(value){loading=value;older.disabled=refresh.disabled=value;}
     function focusSurface(){if(!panel.hidden)(form.hidden?panel:draft).focus({preventScroll:true});}
@@ -88,7 +102,7 @@
     function setupMessage(item){return item.role==='user'&&/^(?:# AGENTS\.md instructions|<environment_context>|<permissions instructions>|<skills_instructions>)/.test((item.text||'').trimStart());}
     function normalizeMessage(value){return String(value||'').replace(/\r\n/g,'\n');}
     function sameMessage(a,b){return normalizeMessage(a)===normalizeMessage(b);}
-    function outgoingLabel(state){return state==='sending'?'Sending…':state==='queued'||state==='sent'?'Waiting for agent…':'Could not confirm sending';}
+    function outgoingLabel(state){return state==='sending'?'Sending…':state==='queued'?'Queued':state==='sent'?'Sent':'Could not confirm sending';}
     function sendItem(sent,state,detail){sent.state=state;sent.detail=detail||'';if(identity(target)===sent.key)paint();}
     function nearBottom(){return list.scrollHeight-list.scrollTop-list.clientHeight<80;}
     function updateLatest(){latest.hidden=nearBottom();if(latest.hidden)newOutput=false;latest.textContent=newOutput?'↓ New messages':'↓ Latest';actions.hidden=latest.hidden&&refresh.hidden;}
@@ -108,18 +122,18 @@
       const follow=initial||nearBottom(),height=list.scrollHeight,position=list.scrollTop,keys=new Set();
       if(!follow&&!prepend&&!initial)newOutput=true;
       older.hidden=true;
-      let previous=older,previousRole=null;
+      let previous=older,previousRole=null,previousSpeaker=null;
       for(const [offset,item] of messages.entries()){
         if(setupMessage(item))continue;
-        const key=startCursor+offset,signature=JSON.stringify(item);keys.add(key);
+        const key=startCursor+offset,signature=JSON.stringify(item),speaker=item.role==='user'?'You':modelLabel(item)||providerLabel();keys.add(key);
         let entry=rendered.get(key);
         if(!entry||entry.signature!==signature){
-          const article=el('article',undefined,'conversation-message '+item.role+(item.phase==='commentary'?' commentary':'')),label=el('div',item.role==='user'?'You':binding()?.agent||'Assistant','conversation-label');article.append(label);
+          const article=el('article',undefined,'conversation-message '+item.role+(item.phase==='commentary'?' commentary':'')),label=el('div',speaker,'conversation-label');article.append(label);
           if(window.SwitchboardConversationMedia&&(item.markdown||item.attachments))window.SwitchboardConversationMedia.render(article,item,{host:target.host,project:binding()?.project});else textBlocks(article,item.text||'');
           if(item.truncated)article.append(el('small','Message truncated by history API. Open the terminal for full context.'));
           entry?.node.remove();entry={signature,node:article};rendered.set(key,entry);
         }
-        entry.node.classList.toggle('continuation',previousRole==='assistant'&&item.role==='assistant');previousRole=item.role;
+        entry.node.classList.toggle('continuation',previousRole==='assistant'&&item.role==='assistant'&&previousSpeaker===speaker);previousRole=item.role;previousSpeaker=speaker;
         if(previous.nextSibling!==entry.node)previous.after(entry.node);
         previous=entry.node;
       }
@@ -138,6 +152,7 @@
         if(previous.nextSibling!==entry.node)previous.after(entry.node);previous=entry.node;
       }
       const outgoingIds=new Set(visibleOutgoing.map(item=>item.id));for(const [id,entry] of renderedOutgoing)if(!outgoingIds.has(id)){entry.node.remove();renderedOutgoing.delete(id);}
+      list.append(working);
       if(prepend)list.scrollTop=position+list.scrollHeight-height;
       else if(follow)list.scrollTop=list.scrollHeight;
       updateLatest();
@@ -145,6 +160,9 @@
     function applyPage(data,kind,cursor){
       const initial=kind==='initial',prepend=kind==='older',page=data.messages||[],start=data.start_cursor??(initial?0:prepend?Math.max(0,startCursor-page.length):cursor);
       chat.project=data.project||chat.project;chat.thread=data.session_id||chat.thread;
+      if('model' in data)chat.model=data.model;
+      if('reasoning_effort' in data)chat.reasoning_effort=data.reasoning_effort;
+      updateActivity();
       if(initial){messages=page;startCursor=start;tailCursor=start+Math.max(0,page.length-1);nextCursor=data.next_cursor??null;}
       else if(prepend){messages=page.concat(messages);startCursor=start;}
       else{if(start<startCursor){messages=page;startCursor=start;}else messages=messages.slice(0,Math.max(0,start-startCursor)).concat(page);tailCursor=start+Math.max(0,page.length-1);nextCursor=data.next_cursor??null;}
@@ -224,7 +242,7 @@
       const sendKey=sent.sendKey;
       try{
         const response=await fetch('/api/hosts/'+encodeURIComponent(sent.host)+'/codex/reply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({thread:sent.thread,message:sent.payload,send_key:sendKey})});
-        const result=await response.json();complete(sent,response.ok&&result.status==='queued',response.ok&&result.status==='queued'?'Waiting for agent…':result.detail||'Could not confirm sending. Retry to check its status.');
+        const result=await response.json();complete(sent,response.ok&&result.status==='queued',response.ok&&result.status==='queued'?'':result.detail||'Could not confirm sending. Retry to check its status.');
       }catch{complete(sent,false,'Could not confirm sending. Retry to check its status.');}
     }
     form.onsubmit=async event=>{
@@ -246,7 +264,7 @@
       if(native){
         const prior=retryKeys.get(key),sendKey=prior?.payload===payload?prior.id:id;sent.sendKey=sendKey;retryKeys.set(key,{payload,id:sendKey});
         try{const response=await fetch('/api/hosts/'+encodeURIComponent(target.host)+'/codex/reply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({thread:chat.thread,message:payload,send_key:sendKey})});
-          sent.sendKey=sendKey;const result=await response.json();complete(sent,response.ok&&result.status==='queued',response.ok&&result.status==='queued'?'Waiting for agent…':result.detail||'Could not confirm sending. Retry to check its status.');
+          sent.sendKey=sendKey;const result=await response.json();complete(sent,response.ok&&result.status==='queued',response.ok&&result.status==='queued'?'':result.detail||'Could not confirm sending. Retry to check its status.');
         }catch{complete(sent,false,'Could not confirm sending. Retry to check its status.');}return;
       }
       // Agents without a native reply API need the visible terminal connection.
@@ -263,21 +281,20 @@
     };
     window.addEventListener('message',event=>{
       if(event.origin!==location.origin||!pending||pending.native||event.source!==pending.frame.contentWindow||event.data?.type!=='zellij-conversation-paste-result'||event.data.id!==pending.id)return;
-      complete(pending,event.data.ok,event.data.ok?'Waiting for agent…':event.data.error||'Open the terminal and try again.');
+      complete(pending,event.data.ok,event.data.ok?'':event.data.error||'Open the terminal and try again.');
     });
     function update(){
       root.classList.toggle('conversation-open',open);
       const current=selection();modes.hidden=!current;
       title.textContent=current?.title||'Conversation';
-      activity.textContent=current?.state==='working'?'Working…':current?.state==='approval'?'Approval needed in Terminal':current?.state==='input'?'Input needed in Terminal':current?.agent||'';
-      activity.classList.toggle('working',current?.state==='working');
-      if(identity(current)===identity(target)){target=current;if(!chat)status(unboundNotice());prepare();return;}
+      if(identity(current)===identity(target)){target=current;updateActivity();if(!chat)status(unboundNotice());prepare();return;}
       if(target)drafts.set(identity(target),draft.value);
       if(target&&loaded){conversations.delete(identity(target));conversations.set(identity(target),{chat,messages,startCursor,tailCursor,nextCursor,streamSupported,position:restorePosition?.position??list.scrollTop,follow:restorePosition?.follow??nearBottom()});if(conversations.size>8)conversations.delete(conversations.keys().next().value);}
       window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();
-      stopStream();streamSupported=false;restorePosition=null;target=current;loadRequest?.abort();lastFailure=null;lastDiagnostic='';newOutput=false;sendStatus('');generation++;loaded=false;lastPaint=null;busy(false);messages=[];startCursor=tailCursor=0;nextCursor=null;rendered.clear();renderedOutgoing.clear();list.replaceChildren(older);older.hidden=true;historyStatus.hidden=true;latest.hidden=refresh.hidden=true;
+      stopStream();streamSupported=false;restorePosition=null;target=current;loadRequest?.abort();lastFailure=null;lastDiagnostic='';newOutput=false;sendStatus('');generation++;loaded=false;lastPaint=null;busy(false);messages=[];startCursor=tailCursor=0;nextCursor=null;rendered.clear();renderedOutgoing.clear();list.replaceChildren(older,working);older.hidden=true;historyStatus.hidden=true;latest.hidden=refresh.hidden=true;
       chat=target?.chatId?{id:target.chatId,agent:target.agent,title:target.title}:null;
       const cached=conversations.get(identity(target));if(cached){({chat,messages,startCursor,tailCursor,nextCursor,streamSupported}=cached);loaded=true;}
+      updateActivity();
       form.hidden=!chat;actions.hidden=true;
       if(!target){panel.hidden=true;viewport();return;}draft.value=drafts.get(identity(target))||'';
       panel.hidden=!open;paintFiles();viewport();
