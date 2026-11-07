@@ -47,6 +47,32 @@ try { Stop-Captured $identity '\bserve\b' } catch { $rejected = $true }
 if (!$rejected) { throw 'A failed stop of a still-running service was ignored' }
 Write-Output 'PASS: captured service stop rejects engines, unrelated processes and reused PIDs, stops the relay''s own subscribers, and tolerates a service that already exited'
 
+$function = $ast.Find({ param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-CapturedPanes'
+}, $true)
+. ([scriptblock]::Create($function.Extent.Text))
+$module = New-Module {
+    $script:reads = 0
+    $script:closed = $true
+    function Get-SwitchboardLiveSessions {
+        $script:reads++
+        'main'
+        if ($script:reads -eq 1 -or !$script:closed) { 'temporary' }
+    }
+    function Get-SwitchboardPaneSnapshot($Binary, $Prefix, $Session, $TimeoutSeconds) {
+        if ($Session -eq 'temporary') { throw 'Expected a pane array' }
+        '[{"id":1}]'
+    }
+}
+$panes = Get-CapturedPanes 'fixture.exe'
+if ($panes.Count -ne 1 -or !$panes.ContainsKey('main')) { throw 'A closed session prevented a snapshot of the remaining session' }
+& $module { $script:reads = 0; $script:closed = $false }
+$rejected = $false
+try { Get-CapturedPanes 'fixture.exe' | Out-Null } catch { $rejected = $_.Exception.Message -match 'Expected a pane array' }
+if (!$rejected) { throw 'Malformed pane output from a live session was ignored' }
+Remove-Module $module
+Write-Output 'PASS: snapshot tolerates a session closing during inspection and rejects malformed live pane output'
+
 
 # Tray identity and settings come from the running tray, not the updater's location.
 $module = Import-Module (Join-Path $PSScriptRoot 'windows_releases.psm1') -Force -PassThru

@@ -192,15 +192,29 @@ function Get-SwitchboardProtectedProcesses($Processes) {
     # exit on their own during an update; that is not an update failure.
     foreach ($engine in @($Processes | Where-Object { $_.Name -ieq 'zellij.exe' -and $_.CommandLine -match '(?:^|\s)--server(?:\s|=)' })) {
         if (!$engine.CreationDate) { throw 'Cannot establish engine process creation time' }
-        [pscustomobject]@{id=$engine.ProcessId; started=(ConvertTo-SwitchboardProcessTime $engine.CreationDate)}
+        $socket = Get-SwitchboardCommandLineValue $engine.CommandLine '--server'
+        [pscustomobject]@{id=$engine.ProcessId; started=(ConvertTo-SwitchboardProcessTime $engine.CreationDate);
+            session=($socket -split '[\\/]')[-1]}
     }
 }
 
-function Assert-SwitchboardProcesses($Baseline) {
+function Assert-SwitchboardProcesses($Baseline, [switch]$AllowExited) {
     $current = @{}
     foreach ($process in (Get-SwitchboardWindowsProcesses)) { $current[[string]$process.ProcessId] = $process }
     foreach ($process in $Baseline) {
         $live = $current[[string]$process.id]
+        # Service verification can outlive a short-lived session. An absent
+        # process has exited; a reused PID must still fail the identity check.
+        if (!$live -and $AllowExited) {
+            if ($process.PSObject.Properties['session'] -and $process.session) {
+                $suffix = '(?:[\\/]|\s)' + [regex]::Escape($process.session) + '"?\s*$'
+                if (@($current.Values | Where-Object { $_.Name -ieq 'zellij.exe' -and
+                    $_.CommandLine -match '(?:^|\s)--server(?:\s|=)' -and $_.CommandLine -match $suffix }).Count) {
+                    throw "Terminal engine process changed: $($process.id)"
+                }
+            }
+            continue
+        }
         if (!$live -or !$live.CreationDate -or (ConvertTo-SwitchboardProcessTime $live.CreationDate) -cne $process.started) {
             throw "Terminal engine process changed: $($process.id)"
         }
