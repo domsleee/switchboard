@@ -41,8 +41,9 @@ above_prompt = [
   # Before 2.1: "✻ Thinking… (12s · esc to interrupt)".
   '(?:^|\n|[•✻✽✶✳])[^\n]{0,70}\([^\n]{0,160}esc(?:ape)? to interrupt[^\n]{0,60}\)',
   # 2.1+: "· Perambulating… (23s · ↓ 1.4k tokens)", or "· Perambulating…" before
-  # the timer starts. Its finished line has no "…".
-  '(?:^|\n)[ \t]*[·✢✳✶✻✽*][ \t]+[^\n(]{1,60}…[ \t]*(?:\(\d+[hms]|\n)',
+  # the timer starts. Its finished line has no "…". While a hook runs (2.1.319):
+  # "✽ Fermenting… (running PreToolUse hook · 9m 34s · ↓ 38.2k tokens)".
+  '(?:^|\n)[ \t]*[·✢✳✶✻✽*][ \t]+[^\n(]{1,60}…[ \t]*(?:\((?:running [^\n()·]{1,40} · )?\d+[hms]|\n)',
   '(?:^|\n)[ \t]*[·✢✳✶✻✽*][ \t]+waiting for [1-9]\d* background agents? to finish',
   # A Monitor keeps waiting after the reply ends: "1 monitor still running".
   '\b[1-9]\d* monitors? still running',
