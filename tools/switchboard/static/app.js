@@ -6,13 +6,40 @@ function humanTime(date,now=Date.now()){
   const ago=new Intl.RelativeTimeFormat(undefined,{numeric:'auto'}).format(Math.round(elapsed/size),unit);
   return `${date.toLocaleString(undefined,{weekday:'short',day:'numeric',month:'short',year:'numeric',hour:'numeric',minute:'2-digit'})} (${ago})`;
 }
-fetch('/api/health',{cache:'no-store'}).then(response=>response.ok?response.json():null).then(build=>{
-  if(build&&/^[a-f0-9]{7,40}$/.test(build.commit)&&/^\d{4}-\d{2}-\d{2}$/.test(build.commit_date)){
-    $('build-version').textContent=`${build.commit} · ${build.commit_date}`;
-    const when=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})$/.test(build.commit_timestamp)?new Date(build.commit_timestamp):null;
-    $('build-version').title=`Commit ${build.commit} · ${when?humanTime(when):build.commit_date}`;
+// Stamp the HTML itself: an update between loading the page and its first
+// health request must not make stale assets look current.
+(()=>{
+  const valid=commit=>typeof commit==='string'&&/^[a-f0-9]{7,40}$/.test(commit);
+  let loaded=document.querySelector('meta[name="switchboard-build"]')?.content;
+  let checking=false,reloadTimer=null,reloading=false;
+  const same=(a,b)=>a.startsWith(b)||b.startsWith(a);
+  const safe=()=>document.hidden&&!document.querySelector('dialog[open]')&&!globalThis.SwitchboardConversation?.hasUnsentWork?.();
+  async function check(){
+    if(checking||reloading)return;checking=true;
+    clearTimeout(reloadTimer);reloadTimer=null;
+    try{
+      const response=await fetch('/api/health',{cache:'no-store'});
+      const build=response.ok?await response.json():null;
+      if(!valid(build?.commit))return;
+      if(!valid(loaded))loaded=build.commit;
+      if(same(loaded,build.commit)){
+        if(/^\d{4}-\d{2}-\d{2}$/.test(build.commit_date)){
+          $('build-version').textContent=`${build.commit} · ${build.commit_date}`;
+          const when=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})$/.test(build.commit_timestamp)?new Date(build.commit_timestamp):null;
+          $('build-version').title=`Commit ${build.commit} · ${when?humanTime(when):build.commit_date}`;
+        }
+      }else if(safe()){
+        // Give pending terminal input time to flush after leaving the tab.
+        reloadTimer=setTimeout(()=>{if(safe()){reloading=true;location.reload();}},2000);
+      }
+    }catch(_){}finally{checking=false;}
   }
-}).catch(()=>{});
+  document.addEventListener('visibilitychange',()=>{
+    clearTimeout(reloadTimer);reloadTimer=null;void check();
+  });
+  window.addEventListener('pageshow',()=>void check());
+  setInterval(check,30000);void check();
+})();
 const hosts = new Map(), sessions = new Map();
 const tabButtons=new Map();
 const mobileSidebar=matchMedia("(max-width:700px), (pointer:coarse) and (max-width:1000px)");

@@ -37,6 +37,7 @@ test('current conversation opens directly, stays pane-local, and follows a new c
  // Only an acknowledgement from this terminal clears the sent draft.
  await page.evaluate(()=>{window.dispatchEvent(new MessageEvent('message',{origin:location.origin,source:current.frame.contentWindow,data:{type:'zellij-conversation-paste-result',id:sent[0].id,ok:true}}));});
  assert.equal(await page.getByLabel('Reply draft').inputValue(),'');
+ assert.equal(await page.evaluate(()=>SwitchboardConversation.hasUnsentWork()),false);
  assert.equal(await page.getByRole('button',{name:'Send',exact:true}).isEnabled(),true);
  await page.getByLabel('Reply draft').fill('draft one');
  await page.evaluate(()=>{current.state='working';});await page.getByLabel('Reply draft').press('Enter');
@@ -44,7 +45,7 @@ test('current conversation opens directly, stays pane-local, and follows a new c
  await poll();
  assert.equal(await page.locator('.conversation-send-notice').isVisible(),true);
  await page.evaluate(()=>{current.state='ready';});
- await page.evaluate(()=>{current={...current,key:'pane2',pane:2,chatId:null};SwitchboardConversation.update();});assert.equal(await page.getByLabel('Reply draft').inputValue(),'');assert.equal(await page.locator('.conversation-message').count(),0);
+ await page.evaluate(()=>{current={...current,key:'pane2',pane:2,chatId:null};SwitchboardConversation.update();});assert.equal(await page.getByLabel('Reply draft').inputValue(),'');assert.equal(await page.locator('.conversation-message').count(),0);assert.equal(await page.evaluate(()=>SwitchboardConversation.hasUnsentWork()),true,'A draft in another pane blocks automatic refresh');
  await page.evaluate(()=>{current={...current,key:'pane1',pane:1,chatId:'codex-one'};SwitchboardConversation.update();});assert.equal(await page.getByLabel('Reply draft').inputValue(),'draft one');await page.locator('.conversation-message').first().waitFor();
  // A new/unreported session in the same pane must not retain the old transcript or draft.
  await page.evaluate(()=>{current={...current,chatId:null};SwitchboardConversation.update();});
