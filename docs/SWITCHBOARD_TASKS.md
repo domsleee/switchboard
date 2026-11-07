@@ -66,7 +66,7 @@ error.
   empty), and `changed` lines. Paired computers answer `/switchboard/tasks` through
   the pairing gateway.
 - Settings → **Health** shows every group, with Check again inside its details, a per-task Run, Log, and
-  Pause/Resume. A failure or a `changed:` line puts a row in the sidebar. **Clear**
+  Pause/Resume. A failure puts a count on the sidebar's Health button; a `changed:` line shows only in Health. **Clear**
   stores `seen` on the computer that owns the group, so the row clears on every
   computer.
 

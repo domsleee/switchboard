@@ -61,7 +61,7 @@ test('Windows Health activates a ready build through the tray without a startabl
 });
 
 // All HTTP is local fixture data; never attach to user sessions.
-test('Update tasks show per computer, flag failures and changes in the sidebar, and act on the right computer',
+test('Update tasks show per computer, count only failures in the sidebar, and act on the right computer',
   {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
   const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
   const browser=await chromium.launch({headless:true});
@@ -103,15 +103,15 @@ test('Update tasks show per computer, flag failures and changes in the sidebar, 
 
     const notices=page.locator('#task-notices .task-notice-open');
     await notices.waitFor();
-    assert.deepEqual(await notices.allTextContents(),['Health · 2']);
+    assert.deepEqual(await notices.allTextContents(),['Health · 1'],'successful changes are not counted as problems');
     assert.equal(await notices.getAttribute('data-status'),'attention');
-    assert.equal(await notices.getAttribute('aria-label'),'Health: 2 task results, 1 need attention');
-    assert.equal(await notices.getAttribute('title'),'Mac · dotfiles ✗ agent plugins: codex failed\nWorkstation · dotfiles ↑ nushell 0.104\nOpen Health');
+    assert.equal(await notices.getAttribute('aria-label'),'Health: 1 need attention');
+    assert.equal(await notices.getAttribute('title'),'Mac · dotfiles ✗ agent plugins: codex failed\nOpen Health');
     const footerHeight=(await page.locator('#sidebar-bottom').boundingBox()).height;
-    const extra=Array.from({length:20},(_,i)=>({...windows,name:`Extra task ${i}`}));
+    const extra=Array.from({length:20},(_,i)=>({...dotfiles,name:`Extra task ${i}`}));
     tasks.computers[1].groups.push(...extra);
     await page.evaluate(()=>SwitchboardTasks.load());
-    assert.equal(await notices.textContent(),'Health · 22');
+    assert.equal(await notices.textContent(),'Health · 21');
     assert.equal((await page.locator('#sidebar-bottom').boundingBox()).height,footerHeight,'more results use no extra sidebar space');
     await page.setViewportSize({width:390,height:740});
     await page.locator('#sidebar-toggle').click();
@@ -152,15 +152,15 @@ test('Update tasks show per computer, flag failures and changes in the sidebar, 
     await computers.nth(1).getByRole('button',{name:'Check again'}).click();
     await page.waitForFunction(()=>document.querySelector('#updates .task-group[open]'));
     assert.equal(await mac.nth(0).getAttribute('open'),'','Expanded groups stay open across reloads');
-    await computers.nth(1).getByRole('button',{name:'Clear result',exact:true}).click();
-    await page.waitForFunction(()=>document.querySelector('#task-notices .task-notice-open').textContent==='Health · 1');
+    await Promise.all([page.waitForRequest(r=>r.url().endsWith('/api/tasks/action')),
+      computers.nth(1).getByRole('button',{name:'Clear result',exact:true}).click()]);
     assert.deepEqual(actions,[
       {group:'dotfiles',action:'run',task:'agent plugins'},
       {group:'dotfiles',action:'run',host:'mesh-workstation'},
       {group:'dotfiles',action:'clear',host:'mesh-workstation'}]);
     dotfiles.notice=false;windows.notice=true;
     await page.evaluate(()=>SwitchboardTasks.load());
-    assert.equal(await notices.getAttribute('data-status'),'changed','successful changes do not look like failures');
+    await page.waitForFunction(()=>document.getElementById('task-notices').hidden,null,{timeout:5000});
     await page.keyboard.press('Escape');
 
     tasks={computers:[{name:'Mac',local:true,groups:[],error:null,switchboard:{commit:'abc1234'},agents:[]}]};
