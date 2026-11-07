@@ -276,6 +276,9 @@ pub struct BuildInfo {
     pub commit_date: String,
     #[serde(default)]
     pub commit_timestamp: String,
+    /// Viewers can attach hidden (`hidden=true`) without sizing their tab.
+    #[serde(default)]
+    pub hidden_attach: bool,
 }
 
 #[derive(Deserialize)]
@@ -287,6 +290,9 @@ pub struct TerminalParams {
     pub cell_height: Option<u16>,
     /// Lines per wheel report when the browser scrolls finely (1); absent keeps 3.
     pub wheel_lines: Option<u32>,
+    /// The browser shows another view, so this viewer must not size the tab.
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 #[derive(Deserialize)]

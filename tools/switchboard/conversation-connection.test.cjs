@@ -231,3 +231,54 @@ test('Desktop Conversation follows a new tab while the connected viewer and cata
   assert.deepEqual(errors,[]);
  }finally{await browser.close();}
 });
+
+test('Where viewers attach hidden, Conversation connects the selected terminal in the background so Terminal never reloads it',
+ {skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
+ const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch();
+ try{
+  const page=await browser.newPage({viewport:{width:1200,height:900}});page.setDefaultTimeout(10000);
+  const errors=[],connections=[];page.on('pageerror',e=>errors.push(e.message));
+  await page.addInitScript(()=>{try{localStorage.setItem('switchboard-view-mode','conversation');}catch{}});
+  const pane=(id,session)=>({pane_id:id,is_plugin:false,tab_id:id,tab_position:0,tab_name:session,title:session,is_focused:true});
+  const tabs=['main','other'].map((session,i)=>({host:'local',session,id:i+1,position:0,name:session,panes:[pane(i+1,session)]}));
+  await page.route('http://conversation.test/**',async route=>{
+   const p=new URL(route.request().url()).pathname,json=value=>route.fulfill({json:value});
+   if(p==='/api/mesh')return json({members:[]});
+   if(p==='/api/hosts')return json([{id:'local',name:'Ubuntu',local:true}]);
+   if(p==='/api/hosts/local')return json({id:'local',name:'Ubuntu',local:true,version:{commit:'abc1234',commit_date:'2026-11-07',hidden_attach:true},sessions:['main','other'].map(name=>({name,web_clients_allowed:true}))});
+   if(p==='/api/attention')return json({tabs,panes:tabs.map(tab=>({host:'local',session:tab.session,pane_id:tab.panes[0].pane_id,agent:'codex',state:'ready',token:'r',seen:true,chat_id:'chat-'+tab.id})),errors:[]});
+   if(p.startsWith('/api/chats/'))return json({id:p.split('/').at(-1),agent:'codex',session_id:null,messages:[{role:'assistant',text:'Reply in '+p.split('/').at(-1)}],start_cursor:0,next_cursor:null});
+   if(p.startsWith('/hosts/')){
+    const session=p.split('/').at(-1),own=pane(session==='main'?1:2,session);connections.push(session);
+    return route.fulfill({contentType:'text/html',body:`<script>
+      window.focusRequests=[];
+      const state=id=>parent.postMessage({type:'zellij-state',focus_id:id,payload:{session_name:${JSON.stringify(session)},active_pane:${JSON.stringify(own)},panes:${JSON.stringify([own])}}},location.origin);
+      addEventListener('message',event=>{if(event.data.type==='zellij-focus'){focusRequests.push(event.data);state(event.data.focus_id);}});state(null);
+     </script>`});
+   }
+   if(p.startsWith('/api/'))return json({});
+   const file=path.join(__dirname,'static',p==='/'?'index.html':p.slice(1));
+   if(!fs.existsSync(file))return route.fulfill({status:404,body:''});
+   return route.fulfill({path:file,contentType:p.endsWith('.js')?'text/javascript':p.endsWith('.css')?'text/css':'text/html'});
+  });
+  const entry=session=>`[...sessions.values()].find(e=>e.name===${JSON.stringify(session)})`;
+  const connected=session=>page.waitForFunction(`(()=>{const e=${entry(session)};return !!e&&!e.suspended&&!!e.state&&!e.needsFocus&&!e.focusPending;})()`);
+  await page.goto('http://conversation.test/?host=local&session=main&tab=1');
+  await page.getByText('Reply in chat-1',{exact:true}).waitFor();
+  await connected('main');
+  assert.deepEqual(connections,['main'],'A saved Conversation connects only the selected terminal');
+  assert.equal(await page.evaluate(()=>document.activeElement===document.querySelector('.conversation-compose textarea')),true,'The background terminal leaves the composer focused');
+  assert.equal(await page.evaluate(`${entry('main')}.frame.contentWindow.focusRequests.every(request=>request.preserve_focus)`),true);
+  await page.evaluate(()=>activate(allTabs().find(item=>item.tab.id===2)));
+  await page.getByText('Reply in chat-2',{exact:true}).waitFor();
+  await connected('other');
+  assert.deepEqual(connections,['main','other'],'Selecting another terminal in Conversation connects it in the background');
+  await page.getByRole('button',{name:'Terminal',exact:true}).click();
+  assert.equal(await page.evaluate(`(()=>{const e=${entry('other')};return !!e.state&&!e.frame.inert&&!e.needsFocus;})()`),true,'Terminal is ready at once');
+  await page.getByRole('button',{name:'Conversation',exact:true}).click();
+  await page.evaluate(`${entry('other')}.frame.contentWindow.eval("parent.postMessage({type:'zellij-disconnected'},location.origin)")`);
+  assert.equal(await page.evaluate(`(()=>{const e=${entry('other')};return !e.suspended&&e.frame.getAttribute('src')!=='about:blank';})()`),true,'A dropped viewer may reconnect hidden instead of reloading on Terminal');
+  assert.deepEqual(connections,['main','other']);
+  assert.deepEqual(errors,[]);
+ }finally{await browser.close();}
+});

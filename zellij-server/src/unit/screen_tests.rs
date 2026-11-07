@@ -10853,6 +10853,31 @@ fn hidden_browser_viewer_never_sizes_its_tab() {
 }
 
 #[test]
+fn viewer_hidden_before_attach_never_sizes_the_tab() {
+    let large = Size {
+        cols: 200,
+        rows: 60,
+    };
+    let small = Size { cols: 80, rows: 24 };
+    let mut screen = create_new_screen(large, true, true);
+    new_tab(&mut screen, 1, 0);
+    screen.connected_clients.borrow_mut().insert(1, true);
+    screen.set_client_size(1, large);
+    // The browser behind Conversation reports hidden before AttachClient.
+    screen.set_viewer_hidden(2, true).expect("TEST");
+    screen.add_client(2, true).expect("TEST");
+    screen.set_client_size(2, small);
+    screen.recompute_tab_size(0).expect("TEST");
+    assert_eq!(screen.tabs[&0].size, large);
+    assert!(screen.tab_viewport_for_client(2).unwrap().hidden);
+    screen.remove_client(2).expect("TEST");
+    assert!(!screen.hidden_viewers.contains(&2));
+    // A late report from a departed client does not mark its reused id.
+    screen.set_viewer_hidden(2, true).expect("TEST");
+    assert!(!screen.hidden_viewers.contains(&2));
+}
+
+#[test]
 fn hidden_browser_viewer_does_not_constrain_a_phone() {
     let large = Size {
         cols: 200,

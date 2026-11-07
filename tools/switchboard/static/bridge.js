@@ -110,6 +110,9 @@
   // an older engine never does, so the sidebar disconnects that viewer instead.
   let sentHidden=null,hiddenAck=0;
   function viewerHidden(){return conversationOpen()||!!window.frameElement&&!window.frameElement.classList.contains('active');}
+  // The web client asks on every attach, so a viewer that loads or reconnects
+  // behind Conversation never sizes the tab for other screens.
+  window.__zjViewerHidden=viewerHidden;
   function updateHidden(){
     if(!latest||!window.__zjSendControl||controlSocket?.readyState!==1)return;
     const hidden=viewerHidden();

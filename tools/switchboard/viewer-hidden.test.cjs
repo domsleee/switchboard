@@ -41,6 +41,8 @@ test('hidden viewers leave terminal sizing, and Conversation disconnects only wh
     await page.goto('https://switchboard.test/?host=mac&session=main&tab=1');
     await page.waitForFunction(()=>[...sessions.values()].length===2&&[...sessions.values()].every(e=>e.state));
     assert.deepEqual(await hiddenSent('mac'),[],'The selected viewer stays in sizing');
+    const attachHidden=title=>page.locator(`iframe[title="${title}: main"]`).evaluate(frame=>frame.contentWindow.__zjViewerHidden());
+    assert.deepEqual([await attachHidden('Mac'),await attachHidden('Windows')],[false,true],'The web client attaches a background viewer hidden');
     assert.deepEqual(await hiddenSent('windows'),[true],'A background viewer leaves sizing');
     await page.evaluate(()=>activate(allTabs().find(t=>t.entry.host==='windows')));
     await page.waitForFunction(()=>(window.controls||[]).some(c=>c.host==='mac'&&c.hidden===true));
@@ -49,6 +51,7 @@ test('hidden viewers leave terminal sizing, and Conversation disconnects only wh
     await page.waitForFunction(()=>(window.controls||[]).filter(c=>c.host==='mac'&&c.type==='SetViewerHidden').length===2);
     await page.getByRole('button',{name:'Conversation',exact:true}).click();
     await page.waitForFunction(()=>(window.controls||[]).filter(c=>c.host==='mac'&&c.type==='SetViewerHidden').length===3);
+    assert.equal(await attachHidden('Mac'),true,'A viewer that reconnects behind Conversation attaches hidden');
     await page.waitForTimeout(2300);
     assert.equal(await frameSrc('Mac'),'/hosts/mac/main','A confirmed hidden viewer stays connected through Conversation');
     await page.evaluate(()=>activate(allTabs().find(t=>t.entry.host==='windows')));

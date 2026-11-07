@@ -760,6 +760,8 @@ function render() {
   const startingEntry=[...sessions.values()].find(entry=>entry.starting&&(filter==='all'||groups[entry.host]===filter));
   const currentEntry=current?.entry||(waitingForRequestedTab()?sessions.get(sessionKey(...JSON.parse(selected).slice(0,2))):startingEntry);
   for (const entry of sessions.values()) entry.frame.classList.toggle('active',entry===currentEntry);
+  // Selecting another computer's tab in Conversation connects its terminal in the background.
+  if(globalThis.SwitchboardConversation?.wantsConversation?.())for(const entry of sessions.values())syncTerminalConnection(entry);
   updateSelectionTools(current);
   window.SwitchboardConversation?.update?.();
   updateMobileTerminalViewport();
@@ -866,7 +868,9 @@ function focus(item,background=false) {
   const activeElement=document.activeElement;
   // A sidebar click may wait for metadata with its button still focused.
   const fromTabButton=!!activeElement&&activeElement===tabButtons.get(tabKey(item.entry,item.tab));
-  if(background&&(document.hidden||!document.hasFocus()||!$('artifact-preview').hidden||document.querySelector('dialog[open]')||activeElement&&activeElement!==document.body&&activeElement!==item.entry.frame&&!fromTabButton)){
+  // Behind Conversation the terminal focuses its pane without taking keyboard focus,
+  // so it is already on the right pane when Terminal is shown.
+  if(background&&(document.hidden||!document.hasFocus()||!$('artifact-preview').hidden||document.querySelector('dialog[open]')||!conversationOpen&&activeElement&&activeElement!==document.body&&activeElement!==item.entry.frame&&!fromTabButton)){
     item.entry.needsFocus=true;return;
   }
   // A polling retry must not blur/disable a terminal while its control socket
@@ -977,15 +981,19 @@ function renderMachines() {
   let cursor=container.firstChild;
   for(const label of nodes){if(label!==cursor)container.insertBefore(label,cursor);else cursor=cursor.nextSibling;}
 }
-// Conversation reads the catalog/transcript APIs. Even a hidden terminal socket
+// Conversation reads the catalog/transcript APIs. An older engine's terminal socket
 // attaches with a physical size and constrains the native tab before its first resize,
-// and a phone viewer can force-resize shared tabs. So Conversation never attaches a
-// viewer and disconnects phone viewers. A desktop viewer that is already connected
-// stays connected (its resizes are suppressed), so switching back is instant.
+// and a phone viewer can force-resize shared tabs. So Conversation disconnects phone
+// viewers and attaches no viewer on those engines. A desktop viewer that is already
+// connected stays connected (its resizes are suppressed). Where viewers attach hidden,
+// the selected terminal also connects (or reconnects) behind Conversation, so
+// switching back never reloads it.
 function syncTerminalConnection(entry) {
   const live=`/hosts/${encodeURIComponent(entry.host)}/${encodeURIComponent(entry.name)}`;
   const suspended=!!globalThis.SwitchboardConversation?.wantsConversation?.()&&
-    !(!mobileSidebar.matches&&!entry.hideUnsupported&&!entry.cached&&!!entry.state&&!entry.suspending&&entry.frame.getAttribute('src')===live);
+    !(!mobileSidebar.matches&&!entry.hideUnsupported&&!entry.cached&&!entry.suspending&&
+      (!!entry.state&&entry.frame.getAttribute('src')===live||
+        entry.frame.classList.contains('active')&&!!hosts.get(entry.host)?.version?.hidden_attach));
   const src=entry.cached||suspended?'about:blank':live;
   if(suspended&&entry.state?.active_pane)entry.resumePane=entry.state.active_pane;
   entry.suspended=suspended;

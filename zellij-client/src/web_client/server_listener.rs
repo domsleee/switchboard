@@ -38,6 +38,7 @@ pub fn zellij_server_listener(
     client_pixel_dims: Option<SizeInPixels>,
     pending_welcome_sessions: PendingWelcomeSessions,
     sharing_recovery: Option<crate::web_client::sharing_recovery::SharingRecovery>,
+    viewer_hidden: bool,
 ) {
     let _server_listener_thread = std::thread::Builder::new()
         .name("server_listener".to_string())
@@ -153,7 +154,7 @@ pub fn zellij_server_listener(
                         // or a read-only watcher uses the ordinary authenticated path.
                         match recovery.connect_existing(&session_name, &zellij_ipc_pipe, false,
                             || os_input.try_connect_to_server(&zellij_ipc_pipe),
-                            || os_input.send_to_server(first_message.clone())) {
+                            || send_attach(&*os_input, viewer_hidden, first_message.clone())) {
                             Ok(true) => {},
                             Ok(false) => {
                                 log::warn!("Refusing connection to {session_name}: recovery pin no longer matches the session socket; restart the web service without SWITCHBOARD_RECOVER_UNSHARED_SESSION");
@@ -169,6 +170,9 @@ pub fn zellij_server_listener(
                                 return;
                             },
                         }
+                    } else if viewer_hidden && session_exists {
+                        os_input.connect_to_server(&zellij_ipc_pipe);
+                        send_attach(&*os_input, true, first_message);
                     } else {
                         session_manager.spawn_session_if_needed(
                             &session_name,
@@ -347,6 +351,15 @@ pub fn zellij_server_listener(
                 }
             }
         });
+}
+
+/// A hidden viewer reports itself before attaching. The server keeps the report
+/// for the not-yet-attached client, so the attach size never sizes the tab.
+fn send_attach(os_input: &dyn ClientOsApi, viewer_hidden: bool, first_message: ClientToServerMsg) {
+    if viewer_hidden {
+        os_input.send_to_server(ClientToServerMsg::SetViewerHidden { hidden: true });
+    }
+    os_input.send_to_server(first_message);
 }
 
 fn handle_exit_reason(client_connection_bus: &mut ClientConnectionBus, exit_reason: ExitReason) {

@@ -181,6 +181,9 @@ export function initWebSockets(boot, term, fitAddon) {
         // Fine scrolling: the wheel handler sends one report per line, so Zellij
         // scrolls one line per report instead of three.
         if (fineScrolling()) queryString += "&wheel_lines=1";
+        // A viewer the embedding page hides (Switchboard's Conversation) attaches
+        // without sizing its tab for the screens people can see.
+        if (window.__zjViewerHidden?.()) queryString += "&hidden=true";
         const wsTerminalUrl = `${url}${queryString}`;
 
         if (nextBoot.resumable?.protocol === 1) {
