@@ -16,8 +16,10 @@ const dir = fs.mkdtempSync(path.join(process.platform==='win32'?(process.env.RUN
 const installed = path.join(dir,process.platform==='win32'?'zellij.exe':'zellij');
 const config = path.join(dir, 'config.kdl');
 const name = `update-acceptance-${crypto.randomBytes(8).toString('hex')}`;
-const env = {...process.env, HOME:dir, USERPROFILE:dir, APPDATA:path.join(dir,'appdata'), LOCALAPPDATA:path.join(dir,'localappdata'), XDG_DATA_HOME:path.join(dir,'data'), XDG_CACHE_HOME:path.join(dir,'cache'), ZELLIJ_SOCKET_DIR:path.join(dir,'sockets'),
+const env = {...process.env, HOME:dir, USERPROFILE:dir, APPDATA:path.join(dir,'AppData','Roaming'), LOCALAPPDATA:path.join(dir,'AppData','Local'), XDG_DATA_HOME:path.join(dir,'data'), XDG_CACHE_HOME:path.join(dir,'cache'), ZELLIJ_SOCKET_DIR:path.join(dir,'sockets'),
     SWITCHBOARD_ATTACHMENT_DIRECTORY:path.join(dir,'attachments'), SWITCHBOARD_RELEASES_DIR:path.join(dir,'releases'), SWITCHBOARD_VIEWER_LOCK:path.join(dir,'viewers.lock'), TERM:'xterm-256color'};
+// Windows known-folder lookup verifies these profile directories before CLI startup.
+for(const folder of [env.APPDATA,env.LOCALAPPDATA])fs.mkdirSync(folder,{recursive:true});
 for (const key of ['ZELLIJ','ZELLIJ_SESSION_NAME','ZELLIJ_CONFIG_FILE','ZELLIJ_CONFIG_DIR']) delete env[key];
 env.ZELLIJ_CONFIG_FILE = config;
 let cliSequence=0;
