@@ -2167,6 +2167,12 @@ esac
         assert_eq!(classify(&claude, busy)["state"], "working");
         let starting = busy.replace(" (23s · ↓ 1.4k tokens · thought for 1s)", "");
         assert_eq!(classify(&claude, &starting)["state"], "working");
+        // Claude Code 2.1.319, captured with dump-screen while a PreToolUse hook ran mid-turn.
+        let hooked = busy.replace(
+            "· Perambulating… (23s",
+            "✽ Fermenting… (running PreToolUse hook · 9m 34s",
+        );
+        assert_eq!(classify(&claude, &hooked)["state"], "working");
         let waiting = busy.replace(
             "Perambulating… (23s · ↓ 1.4k tokens · thought for 1s)",
             "Waiting for 2 background agents to finish",
