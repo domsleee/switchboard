@@ -647,6 +647,46 @@ mod orchestration {
         viewer
     }
 
+    fn wait_started(harness: &Harness, minutes_ago: u64) {
+        let mut state = harness.state();
+        state["ready"]["since"] = (super::super::epoch() - minutes_ago * 60).into();
+        fs::write(harness.updater.state_path(), state.to_string()).unwrap();
+    }
+
+    #[serial]
+    #[test]
+    fn switchboard_update_stops_waiting_for_legacy_viewers_after_ten_minutes() {
+        let harness = Harness::new(false);
+        let _viewer = held_viewer(&harness);
+        harness.publish(&full('b'), 5, "");
+        harness.updater.run().unwrap();
+        wait_started(&harness, 9);
+        let since = harness.state()["ready"]["since"].clone();
+        // A newer build keeps the original wait instead of restarting it.
+        harness.publish(&full('c'), 6, "");
+        harness.updater.run().unwrap();
+        assert!(harness.calls().is_empty());
+        assert_eq!(harness.state()["ready"]["commit"], full('c'));
+        assert_eq!(harness.state()["ready"]["since"], since);
+        wait_started(&harness, 10);
+        harness.updater.run().unwrap();
+        assert_eq!(harness.state()["commit"], full('c'));
+        assert_eq!(harness.calls().lines().count(), 1);
+    }
+
+    #[serial]
+    #[test]
+    fn switchboard_update_retry_of_failed_build_still_waits_for_viewers() {
+        let harness = Harness::new(false);
+        harness.publish(&full('b'), 5, "broken");
+        assert!(harness.updater.run().is_err());
+        let calls = harness.calls();
+        let _viewer = held_viewer(&harness);
+        wait_started(&harness, 60);
+        harness.updater.run().unwrap();
+        assert_eq!(harness.calls(), calls);
+    }
+
     #[serial]
     #[test]
     fn switchboard_update_explicit_activation_is_one_shot_and_serialized() {

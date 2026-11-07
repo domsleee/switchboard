@@ -1008,13 +1008,23 @@ async fn proxy(
     if let Ok(websocket) = websocket {
         // Resumable paths terminate in a retained attachment worker. Legacy
         // terminal/control sockets still exclude destructive service updates.
-        let viewer = if path.split('?').next() == Some("/ws/resume") {
+        let endpoint = path.split('?').next().unwrap_or_default();
+        let viewer = if endpoint == "/ws/resume" {
             None
         } else {
-            Some(
-                crate::switchboard_viewers::viewer()
-                    .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "Update in progress"))?,
-            )
+            let viewer = crate::switchboard_viewers::viewer()
+                .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "Update in progress"))?;
+            // Names what delays automatic updates on this computer.
+            let agent = request
+                .headers()
+                .get(header::USER_AGENT)
+                .and_then(|agent| agent.to_str().ok())
+                .unwrap_or("unknown client");
+            logs::record(
+                "updates",
+                &format!("Legacy connection {endpoint} on {id} delays automatic updates ({agent})"),
+            );
+            Some(viewer)
         };
         let upstream = tokio::time::timeout(Duration::from_secs(20), host.websocket(&path))
             .await
