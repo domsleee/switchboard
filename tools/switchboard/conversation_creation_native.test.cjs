@@ -5,7 +5,8 @@ const fs=require('node:fs'),path=require('node:path'),net=require('node:net');
 const {execFileSync,spawn}=require('node:child_process');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const binary=path.resolve(process.argv[2]||'target/release/zellij');
-const dir=fs.mkdtempSync(path.join(require('node:os').tmpdir(),'sbn-create-')),config=path.join(dir,'config.kdl');
+// macOS's per-user temporary path exceeds its Unix socket path limit.
+const dir=fs.mkdtempSync(path.join(process.platform==='darwin'?'/tmp':require('node:os').tmpdir(),'sbn-create-')),config=path.join(dir,'config.kdl');
 const session='__conversation_create_'+path.basename(dir),empty=session+'_empty';
 const env={...process.env,ZELLIJ_SOCKET_DIR:path.join(dir,'sockets'),TERM:'xterm-256color'};
 for(const key of ['ZELLIJ','ZELLIJ_SESSION_NAME','ZELLIJ_PANE_ID','ZELLIJ_CONFIG_FILE','ZELLIJ_CONFIG_DIR','SWITCHBOARD_RECOVER_UNSHARED_SESSION'])delete env[key];
