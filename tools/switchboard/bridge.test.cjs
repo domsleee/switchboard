@@ -5,7 +5,7 @@ const fs=require('node:fs');
 const source=fs.readFileSync(__dirname+'/static/bridge.js','utf8');
 function harness(withDiagnostics=false,platform='MacIntel',predict){
   const handlers={},messages=[],properties=new Map(),classes=new Set(),frames=[],resizes=[],timers=new Map();let timerId=0, terminal;
-  let modal=false,focused=false,browserFocused=false,frameActive=true,bottomRows=2,firstRow='Zellij (main)',now=0;
+  let modal=false,focused=false,browserFocused=false,frameActive=true,bottomRows=2,firstRow='Zellij (main)',now=0,fetchHandler;
   class Socket{constructor(url){if(String(url).includes('/ws/terminal'))terminal=this;this.handlers={};this.readyState=1;this.sent=[];}addEventListener(type,fn){this.handlers[type]=fn;}send(data){this.sent.push(data);}}
   const parent={postMessage:data=>messages.push(data)};
   const window={WebSocket:Socket,addEventListener:(type,fn)=>handlers[type]=fn,dispatchEvent:()=>resizes.push(1),innerWidth:800,innerHeight:600,
@@ -18,12 +18,50 @@ function harness(withDiagnostics=false,platform='MacIntel',predict){
     documentElement:{style:{getPropertyValue:key=>properties.get(key)||'',setProperty:(key,val)=>properties.set(key,val)}}};
   parent.document=document;
   const diagnosticsSource=withDiagnostics?fs.readFileSync(__dirname+'/static/terminal-diagnostics.js','utf8'):'';
-  vm.runInNewContext(diagnosticsSource+source,{window,document,parent,navigator:{platform},performance:{now:()=>now,timeOrigin:1000000},location:{pathname:'/hosts/windows/main',origin:'http://localhost:8090'},localStorage:{getItem:()=>null},MutationObserver:class{observe(){}},requestAnimationFrame:fn=>frames.push(fn),setTimeout:fn=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id),Event:class{},TextEncoder});
+  vm.runInNewContext(diagnosticsSource+source,{window,document,parent,fetch:(...args)=>fetchHandler(...args),navigator:{platform},performance:{now:()=>now,timeOrigin:1000000},location:{pathname:'/hosts/windows/main',origin:'http://localhost:8090'},localStorage:{getItem:()=>null},MutationObserver:class{observe(){}},requestAnimationFrame:fn=>frames.push(fn),setTimeout:fn=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id),Event:class{},TextEncoder});
   const key=(code,extra={})=>{const event={code,altKey:true,ctrlKey:false,metaKey:false,shiftKey:false,preventDefault(){this.prevented=true;},stopImmediatePropagation(){this.stopped=true;},...extra};handlers.keydown(event);return event;};
   const state=(payload={})=>{const socket=new window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');socket.handlers.message({data:JSON.stringify({type:'MobileState',payload})});while(frames.length)frames.shift()();};
   const error=(...lines)=>{const socket=new window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');socket.handlers.message({data:JSON.stringify({type:'LogError',lines})});};
-  return{window,handlers,parent,messages,properties,classes,key,state,error,setTime:v=>now=v,setFocus:v=>focused=v,setBodyFocus:()=>{focused=false;document.activeElement=document.body;},setBrowserFocus:v=>browserFocused=v,setFrameActive:v=>frameActive=v,setModal:v=>modal=v,setBottomRows:v=>bottomRows=v,setFirstRow:v=>firstRow=v,frames,resizes,timers};
+  return{window,handlers,parent,messages,properties,classes,key,state,error,setFetch:fn=>fetchHandler=fn,setTime:v=>now=v,setFocus:v=>focused=v,setBodyFocus:()=>{focused=false;document.activeElement=document.body;},setBrowserFocus:v=>browserFocused=v,setFrameActive:v=>frameActive=v,setModal:v=>modal=v,setBottomRows:v=>bottomRows=v,setFirstRow:v=>firstRow=v,frames,resizes,timers};
 }
+
+test('Model launches use the updated service while a retained worker only focuses the returned pane',async()=>{
+  for(const command of ['c','csol','castra']){
+    const h=harness(),sent=[],requests=[];let respond;
+    h.window.__zjSendControl=message=>sent.push(message);
+    const pane=pane_id=>({pane_id,is_plugin:false});
+    h.state({session_name:'main',active_pane:pane(1),panes:[pane(1)]});
+    h.setFetch(async(url,options)=>{requests.push({url,body:JSON.parse(options.body)});return new Promise(resolve=>respond=resolve);});
+    const launch={type:'zellij-new-tab',project:'sample',command,prompt:'go',images:['/tmp/a.png'],elevated:true};
+    const create=()=>h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:launch});
+    create();create();
+    assert.deepEqual(requests,[{url:'/hosts/windows/new-tab',body:{session:'main',project:'sample',command,prompt:'go',images:['/tmp/a.png'],elevated:true}}]);
+    assert.deepEqual(sent,[],'An old worker must never receive a model launch');
+    h.state({session_name:'main',active_pane:pane(3),panes:[pane(1),pane(2),pane(3)]});
+    assert.equal(h.window.term.options.disableStdin,true,'An unrelated new pane does not complete creation');
+    respond({ok:true,json:async()=>({pane_id:2})});await new Promise(setImmediate);
+    assert.deepEqual(JSON.parse(JSON.stringify(sent)),[{type:'FocusPane',pane_id:2,is_plugin:false}]);
+    assert.equal(h.window.term.options.disableStdin,true);
+    h.state({session_name:'main',active_pane:pane(2),panes:[pane(1),pane(2),pane(3)]});
+    assert.equal(h.window.term.options.disableStdin,false);
+  }
+});
+
+test('A failed or timed out model launch is never retried or focused after cancellation',async()=>{
+  for(const failure of ['http','invalid','timeout']){
+    const h=harness(),sent=[];let respond,requests=0;
+    h.window.__zjSendControl=message=>sent.push(message);
+    h.state({session_name:'main',active_pane:{pane_id:1,is_plugin:false},panes:[{pane_id:1,is_plugin:false}]});
+    h.setFetch(()=>{requests++;return new Promise(resolve=>respond=resolve);});
+    h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-new-tab',project:'sample',command:'c',prompt:''}});
+    if(failure==='timeout')[...h.timers.values()][0]();
+    respond(failure==='http'?{ok:false,status:503,text:async()=>'Service unavailable'}:{ok:true,json:async()=>({pane_id:failure==='invalid'?'bad':2})});
+    await new Promise(setImmediate);
+    assert.equal(requests,1);assert.deepEqual(sent,[]);
+    assert.equal(h.window.term.options.disableStdin,false);
+    assert.equal(h.messages.filter(m=>m.type==='zellij-new-tab-failed').length,1);
+  }
+});
 test('Instant typing misses name their pane, and switching panes clears pending guesses without a report',()=>{
   let report,resets=0;
   const h=harness(false,'MacIntel',{install:options=>{report=options.report;return {reset:()=>resets++,attach(){},sent(){}};}});

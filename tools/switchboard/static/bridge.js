@@ -180,7 +180,7 @@
     viewportTab=tab;
     bottomButton.hidden=scrollport.scrollHeight-scrollport.clientHeight-scrollport.scrollTop<cell.height;
   }
-  function releaseNewTab(outcome) {
+  function releaseNewTab(outcome,detail) {
     if(!pendingNewTab)return;
     const pending=pendingNewTab,now=performance.timeOrigin+performance.now();
     clearTimeout(pending.timeout);
@@ -194,8 +194,8 @@
       control_socket:controlSocket?.readyState??null,
     }},location.origin);
     if(outcome!=='ready'){
-      const message=outcome==='timeout'?'No new tab received. Check the connection and try again.':
-        'Tab creation interrupted by a connection change. Check the connection and try again.';
+      const message=detail||(outcome==='timeout'?'No new tab received. Check the connection and try again.':
+        'Tab creation interrupted by a connection change. Check the connection and try again.');
       showEscapeStatus(message,true);
       parent.postMessage({type:'zellij-new-tab-failed',request_id:pending.requestId,message},location.origin);
     }
@@ -208,8 +208,24 @@
     }
     // Unlike focus, creation is not idempotent. Retry only an unsent request.
     pendingNewTab.sentAt=performance.timeOrigin+performance.now();
+    if(typeof pendingNewTab.prompt==='string'){
+      createAgentTab(pendingNewTab);return;
+    }
     try{window.__zjSendControl({type:'NewTab',elevated:pendingNewTab.elevated,project:pendingNewTab.project,command:pendingNewTab.command,prompt:pendingNewTab.prompt,images:pendingNewTab.images});}
     catch(_){releaseNewTab('send-failed');}
+  }
+  async function createAgentTab(pending){
+    // Workers deliberately survive updates. Resolve model launches in the current
+    // web service, since a retained worker may still hardcode the old Sol default.
+    try{
+      const response=await fetch(`/hosts/${host}/new-tab`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:latest.session_name,project:pending.project,command:pending.command,prompt:pending.prompt,images:pending.images,elevated:pending.elevated})});
+      if(!response.ok)throw Error(response.status===404?'Update Switchboard on this computer to create this tab.':await response.text());
+      const result=await response.json();
+      if(!Number.isInteger(result.pane_id)||result.pane_id<0)throw Error('The new tab did not return its identity. Check the tab list before retrying.');
+      if(pendingNewTab!==pending)return;
+      pending.createdPane=result.pane_id;
+      window.__zjSendControl({type:'FocusPane',pane_id:result.pane_id,is_plugin:false});
+    }catch(error){if(pendingNewTab===pending)releaseNewTab('send-failed',error.message||'Could not confirm tab creation. Check the tab list before retrying.');}
   }
   function holdFocusInput() {
     if(controlSocket?.resumable)return; // focus and input share one ordered worker stream
@@ -457,7 +473,8 @@
     latest = payload;
     diagnostics?.state(payload);
     if(viewportSupported())window.dispatchEvent(new Event('zellij:rendering-resize'));
-    const created=pendingNewTab&&pendingNewTab.sentAt!==null&&latest.active_pane&&!latest.active_pane.is_plugin&&!pendingNewTab.panes.has(latest.active_pane.pane_id);
+    const created=pendingNewTab&&pendingNewTab.sentAt!==null&&latest.active_pane&&!latest.active_pane.is_plugin&&!pendingNewTab.panes.has(latest.active_pane.pane_id)&&
+      (typeof pendingNewTab.prompt!=='string'||latest.active_pane.pane_id===pendingNewTab.createdPane);
     if(created){const origin=pendingNewTab.focusOrigin;releaseNewTab('ready');restoreTerminalFocus(origin);}
     const missingFocus=pendingFocus && Array.isArray(latest.panes) && !latest.panes.some(pane=>pane.pane_id===pendingFocus.pane_id && pane.is_plugin===pendingFocus.is_plugin);
     if(missingFocus)rejectFocus();
