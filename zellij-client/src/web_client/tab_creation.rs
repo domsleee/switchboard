@@ -4,11 +4,17 @@ use super::{
     types::AppState,
     websocket_handlers::{prompt_agent, prompt_command, tab_command},
 };
+use crate::os_input_output::ClientOsApi;
 use axum::{extract::State, http::StatusCode, Extension, Json};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::{ffi::OsString, process::Stdio, time::Duration};
-use zellij_utils::data::WebSharing;
+use std::{ffi::OsString, path::PathBuf, process::Stdio, time::Duration};
+use zellij_utils::{
+    cli::CliAction,
+    data::WebSharing,
+    input::actions::Action,
+    ipc::{ClientToServerMsg, ExitReason, IpcReceiveError, ServerToClientMsg},
+};
 
 type Error = (StatusCode, &'static str);
 #[derive(Deserialize)]
@@ -105,17 +111,113 @@ async fn cli(state: &AppState, args: Vec<OsString>) -> Result<String, Error> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-async fn panes(state: &AppState, session: &str) -> Result<Vec<Value>, Error> {
-    let catalog = cli(
-        state,
-        vec![
-            "-s".into(),
-            session.into(),
-            "action".into(),
-            "list-panes".into(),
-            "--json".into(),
-            "--all".into(),
-        ],
+const FAILED: Error = (
+    StatusCode::BAD_GATEWAY,
+    "Terminal command failed; check the tab list before retrying",
+);
+
+/// Sends one action over the session's socket and returns the lines it
+/// prints, as `zellij -s <session> action ...` would. Starting that CLI loads
+/// the configuration and probes every session first, about 250 ms per call on
+/// Windows; this process already speaks the same IPC protocol.
+fn session_action(session: &str, action: Action) -> Result<String, Error> {
+    let os_input = crate::os_input_output::get_cli_client_os_input()
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot run terminal command"))?;
+    let socket = zellij_utils::consts::ZELLIJ_SOCK_DIR.join(session);
+    // One attempt: a missing session fails now rather than at the timeout.
+    os_input
+        .try_connect_to_server(&socket)
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot run terminal command"))?;
+    os_input.send_to_server(ClientToServerMsg::Action {
+        action,
+        terminal_id: None,
+        client_id: None,
+        is_cli_client: true,
+    });
+    if os_input.send_failure().is_some() {
+        return Err(FAILED);
+    }
+    // The engine unblocks a client after each action, following its output.
+    let mut output = String::new();
+    let result = loop {
+        match os_input.try_recv_from_server() {
+            Ok((ServerToClientMsg::UnblockInputThread, _)) => break Ok(output),
+            Ok((ServerToClientMsg::Log { lines }, _)) => lines
+                .iter()
+                .for_each(|line| output.push_str(&format!("{line}\n"))),
+            Ok((ServerToClientMsg::LogError { .. }, _))
+            | Ok((
+                ServerToClientMsg::Exit {
+                    exit_reason: ExitReason::Error(_),
+                },
+                _,
+            ))
+            | Err(IpcReceiveError::Disconnected) => break Err(FAILED),
+            Ok((
+                ServerToClientMsg::Exit {
+                    exit_reason: ExitReason::CustomExitStatus(status),
+                },
+                _,
+            )) => break if status == 0 { Ok(output) } else { Err(FAILED) },
+            Ok((ServerToClientMsg::Exit { .. }, _)) => break Ok(output),
+            _ => {},
+        }
+    };
+    os_input.send_to_server(ClientToServerMsg::ClientExited);
+    result
+}
+
+async fn action(session: &str, action: Action) -> Result<String, Error> {
+    let session = session.to_owned();
+    let task = tokio::task::spawn_blocking(move || session_action(&session, action));
+    tokio::time::timeout(Duration::from_secs(15), task)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                "Tab creation timed out; check the tab list before retrying",
+            )
+        })?
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot run terminal command"))?
+}
+
+/// The action `zellij action new-tab --no-focus --cwd <cwd> [--name <name>] -- <command>` sends.
+fn new_tab_action(cwd: PathBuf, name: Option<String>, command: Vec<String>) -> Option<Action> {
+    let current_dir = cwd.clone();
+    Action::actions_from_cli(
+        CliAction::NewTab {
+            name,
+            layout: None,
+            layout_string: None,
+            layout_dir: None,
+            cwd: Some(cwd),
+            initial_command: command,
+            initial_plugin: None,
+            close_on_exit: false,
+            start_suspended: false,
+            block_until_exit: false,
+            block_until_exit_success: false,
+            block_until_exit_failure: false,
+            no_focus: true,
+        },
+        Box::new(move || current_dir.clone()),
+        None,
+    )
+    .ok()?
+    .pop()
+}
+
+async fn panes(session: &str) -> Result<Vec<Value>, Error> {
+    let catalog = action(
+        session,
+        Action::ListPanes {
+            show_tab: false,
+            show_command: false,
+            show_state: false,
+            show_geometry: false,
+            show_all: true,
+            output_json: true,
+        },
     )
     .await?;
     // A simultaneous close can unblock a successful CLI before it prints.
@@ -180,7 +282,7 @@ pub(super) async fn create(
         // Wait on a read before issuing the one mutating new-tab request.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         loop {
-            if panes(&state, &target.session)
+            if panes(&target.session)
                 .await
                 .is_ok_and(|panes| !panes.is_empty())
             {
@@ -208,32 +310,29 @@ pub(super) async fn create(
         })
         .unwrap_or(target.command);
     let run = tab_command(shell, command, Some(cwd.clone()), target.elevated);
-    let mut args: Vec<OsString> = vec![
-        "-s".into(),
-        target.session.clone().into(),
-        "action".into(),
-        "new-tab".into(),
-        "--no-focus".into(),
-        "--cwd".into(),
-        cwd.into_os_string(),
-    ];
-    if target.elevated {
-        args.extend(["--name".into(), "Administrator".into()]);
+    let command = std::iter::once(run.command.to_string_lossy().into_owned())
+        .chain(run.args)
+        .collect();
+    let new_tab = new_tab_action(
+        cwd,
+        target.elevated.then(|| "Administrator".to_owned()),
+        command,
+    )
+    .ok_or((StatusCode::BAD_REQUEST, "Invalid tab request"))?;
+    // `new-tab` prints a stable tab ID, then the terminal it started the command in.
+    let reply = action(&target.session, new_tab).await?;
+    let (tab_id, pane_id) = created_ids(&reply).ok_or((
+        StatusCode::BAD_GATEWAY,
+        "Tab created but its identity was not returned; check the tab list",
+    ))?;
+    if let Some(pane_id) = pane_id {
+        return Ok(Json(json!({"pane_id":pane_id,"tab_id":tab_id})));
     }
-    args.push("--".into());
-    args.push(run.command.into_os_string());
-    args.extend(run.args.into_iter().map(OsString::from));
-    // `new-tab` prints a stable tab ID. Pane IDs diverge as soon as a tab has
-    // multiple panes, so resolve the command's terminal from that tab's catalog.
-    let tab_id: u32 = cli(&state, args).await?.trim().parse().map_err(|_| {
-        (
-            StatusCode::BAD_GATEWAY,
-            "Tab created but its identity was not returned; check the tab list",
-        )
-    })?;
+    // Without the terminal, resolve it from the tab's catalog. Listing costs a
+    // command and folder lookup for every terminal in the session.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
-        let panes = panes(&state, &target.session).await?;
+        let panes = panes(&target.session).await?;
         if let Some(pane_id) = created_pane(&panes, tab_id) {
             return Ok(Json(json!({"pane_id":pane_id,"tab_id":tab_id})));
         }
@@ -245,6 +344,13 @@ pub(super) async fn create(
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+fn created_ids(reply: &str) -> Option<(u32, Option<u32>)> {
+    let mut lines = reply.lines().map(str::trim);
+    let tab_id = lines.next()?.parse().ok()?;
+    let pane_id = lines.find_map(|line| line.strip_prefix("terminal_")?.parse().ok());
+    Some((tab_id, pane_id))
 }
 
 fn created_pane(panes: &[Value], tab_id: u32) -> Option<u32> {
@@ -260,6 +366,53 @@ fn created_pane(panes: &[Value], tab_id: u32) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zellij_utils::{data::CommandOrPlugin, input::command::RunCommandAction};
+    #[test]
+    fn switchboard_tab_creation_reads_the_started_terminal_from_the_reply() {
+        assert_eq!(created_ids("8\nterminal_17\n"), Some((8, Some(17))));
+        assert_eq!(created_ids("8\n"), Some((8, None)));
+        assert_eq!(created_ids("8\nplugin_3\n"), Some((8, None)));
+        assert_eq!(created_ids(""), None);
+        assert_eq!(created_ids("terminal_17\n"), None);
+    }
+    #[test]
+    fn switchboard_tab_creation_sends_the_cli_new_tab_action() {
+        let cwd = std::env::temp_dir().join("project");
+        let action = new_tab_action(
+            cwd.clone(),
+            Some("Administrator".into()),
+            vec![
+                "nu".into(),
+                "--interactive".into(),
+                "--execute".into(),
+                "csol".into(),
+            ],
+        );
+        let Some(Action::NewTab {
+            tiled_layout: None,
+            tab_name,
+            should_change_focus_to_new_tab: false,
+            cwd: tab_cwd,
+            initial_panes: Some(panes),
+            first_pane_unblock_condition: None,
+            ..
+        }) = action
+        else {
+            panic!("expected an unfocused new tab, got {action:?}");
+        };
+        assert_eq!(tab_name.as_deref(), Some("Administrator"));
+        assert_eq!(tab_cwd.as_ref(), Some(&cwd));
+        assert_eq!(
+            panes,
+            vec![CommandOrPlugin::Command(RunCommandAction {
+                command: "nu".into(),
+                args: vec!["--interactive".into(), "--execute".into(), "csol".into()],
+                cwd: Some(cwd),
+                hold_on_close: true,
+                ..Default::default()
+            })]
+        );
+    }
     #[test]
     fn switchboard_tab_creation_resolves_the_terminal_from_the_returned_tab_id() {
         let panes = vec![
