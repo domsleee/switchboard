@@ -379,10 +379,17 @@ fn tags(text: &str) -> Option<Vec<(&str, &str)>> {
 // an empty display hides the record.
 fn claude_command(text: &str) -> Option<String> {
     let text = text.trim();
-    if matches!(
-        text,
-        "[Request interrupted by user]" | "[Request interrupted by user for tool use]"
-    ) {
+    // Prefixes of Claude Code's interruption notices (`ERe` in its 2.1.319 bundle).
+    if [
+        "[Request interrupted",
+        "[Agent call interrupted",
+        "[Tool call ",
+        "The user doesn't want to take this action right now.",
+    ]
+    .iter()
+    .any(|prefix| text.starts_with(prefix))
+        && text.ends_with([']', '.'])
+    {
         return Some(String::new());
     }
     let tags = tags(text)?;
@@ -407,63 +414,25 @@ fn claude_command(text: &str) -> Option<String> {
     ])
     .then(String::new)
 }
-// Codex writes its own context into user-role items, one element per content part.
-// Some(display) replaces the part's text; an empty display drops the part.
-fn codex_user_text(text: &str, has_image: bool) -> Option<String> {
-    let trimmed = text.trim();
-    // Codex wraps each attached image in `<image name=[Image #1]>` … `</image>` parts.
-    if has_image
-        && (trimmed == "</image>"
-            || (trimmed.starts_with("<image name=")
-                && trimmed.ends_with('>')
-                && !trimmed.contains('\n')))
-    {
-        return Some(String::new());
-    }
-    if let Some(rest) = trimmed.strip_prefix("# AGENTS.md instructions") {
-        if rest
-            .split_once('\n')
-            .and_then(|(_, body)| tags(body))
-            .is_some_and(|t| t.len() == 1 && t[0].0 == "INSTRUCTIONS")
-        {
-            return Some(String::new());
-        }
-    }
-    let [(name, inner)] = tags(trimmed)?[..] else {
+// Codex records the user's answers to its questions as a user message holding JSON.
+fn codex_question_reply(text: &str) -> Option<String> {
+    let [("send_user_message_question_reply", inner)] = tags(text)?[..] else {
         return None;
     };
-    match name {
-        "environment_context"
-        | "user_instructions"
-        | "turn_aborted"
-        | "skill"
-        | "subagent_notification"
-        | "user_action"
-        | "recommended_plugins" => Some(String::new()),
-        "user_shell_command" => Some(format!(
-            "!{}",
-            tags(inner)?.first().filter(|t| t.0 == "command")?.1
-        )),
-        // The user's answers to the agent's questions.
-        "send_user_message_question_reply" => {
-            serde_json::from_str::<Vec<Value>>(inner)
-                .ok()
-                .map(|answers| {
-                    answers
-                        .iter()
-                        .map(|a| {
-                            let answer = a["answer"].as_str().unwrap_or_default();
-                            match a["question"].as_str().filter(|q| !q.is_empty()) {
-                                Some(question) => format!("> {question}\n\n{answer}"),
-                                None => answer.into(),
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n\n")
-                })
-        },
-        _ => None,
-    }
+    let answers = serde_json::from_str::<Vec<Value>>(inner).ok()?;
+    Some(
+        answers
+            .iter()
+            .map(|a| {
+                let answer = a["answer"].as_str().unwrap_or_default();
+                match a["question"].as_str().filter(|q| !q.is_empty()) {
+                    Some(question) => format!("> {question}\n\n{answer}"),
+                    None => answer.into(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    )
 }
 impl Chat {
     fn incomplete(&mut self, reason: &'static str) {
@@ -657,20 +626,26 @@ impl Chat {
                 if let Some(title) = v["customTitle"].as_str() {
                     self.title = clip(title, 120);
                 }
-                // Meta records are Claude Code's own additions (skill bodies, an
-                // `[Image: source: …]` line per pasted image), not what the user typed.
-                // Background task notifications are user records with a system
-                // prompt source, without isMeta. Use provenance so pasted XML stays visible.
-                let system_prompt = v["type"] == "user" && v["promptSource"] == "system";
+                // Claude Code's own test for "the human typed this" (`Q5`/`Cl` in its
+                // 2.1.319 bundle): no meta, compaction or transcript-only flag, and an
+                // origin that is absent (older records) or human. Task notifications,
+                // peer messages, skill bodies and summaries all fail it, while text a
+                // human pastes still passes because it carries the human origin.
+                let origin = match &v["origin"]["kind"] {
+                    Value::Null if v["commandMode"] == "task-notification" => {
+                        Some("task-notification")
+                    },
+                    kind => kind.as_str(),
+                };
+                let human = v["type"] != "user"
+                    || (v["isMeta"] != true
+                        && v["isCompactSummary"] != true
+                        && v["isVisibleInTranscriptOnly"] != true
+                        && origin.is_none_or(|kind| kind == "human"));
                 let command = (v["type"] == "user" && v["promptSource"].is_null())
                     .then(|| claude_command(&content(&v["message"]["content"])))
                     .flatten();
-                // A compaction summary is a user record Claude Code writes itself.
-                if matches!(v["type"].as_str(), Some("user" | "assistant"))
-                    && v["isMeta"] != true
-                    && v["isCompactSummary"] != true
-                    && !system_prompt
-                {
+                if matches!(v["type"].as_str(), Some("user" | "assistant")) && human {
                     if let Some(command) = command {
                         self.push("user", command, v["timestamp"].clone());
                     } else {
@@ -710,47 +685,72 @@ impl Chat {
                         .filter(|effort| !effort.is_empty())
                         .map(|effort| clip(effort, 32));
                 }
-                if v["type"] == "session_meta" {
+                // A forked sub-agent copies its parent's session_meta after its own.
+                if v["type"] == "session_meta" && self.session_id.is_empty() {
                     self.session_id = p["id"].as_str().unwrap_or_default().into();
                     self.project = p["cwd"].as_str().unwrap_or_default().into();
                 }
-                // event_msg duplicates these messages. Read only canonical response items.
-                if v["type"] == "response_item" && p["type"] == "message" {
-                    let before = self.messages.len();
-                    let user_parts =
-                        p["content"]
-                            .as_array()
-                            .filter(|_| p["role"] == "user")
-                            .map(|parts| {
-                                let has_image =
-                                    parts.iter().any(|part| part["type"] == "input_image");
-                                parts
-                                    .iter()
-                                    .filter_map(|part| {
-                                        match part["text"]
-                                            .as_str()
-                                            .and_then(|t| codex_user_text(t, has_image))
-                                        {
-                                            Some(text) if text.is_empty() => None,
-                                            Some(text) => {
-                                                Some(json!({"type":"input_text","text":text}))
-                                            },
-                                            None => Some(part.clone()),
-                                        }
-                                    })
-                                    .collect::<Value>()
-                            });
-                    self.push_parts(
-                        p["role"].as_str().unwrap_or_default(),
-                        user_parts.as_ref().unwrap_or(&p["content"]),
-                        v["timestamp"].clone(),
-                    );
-                    if self.messages.len() > before
-                        && p["role"] == "assistant"
-                        && matches!(p["phase"].as_str(), Some("commentary" | "final"))
+                // Read what Codex's own history shows (app-server-protocol thread_history.rs):
+                // user_message/agent_message events in legacy rollouts, completed
+                // UserMessage/AgentMessage items in paginated ones. Codex leaves injected
+                // context, compaction summaries and a fork's copied history out of both;
+                // response_item messages are model input and include all of them.
+                let item = &p["item"];
+                let (role, parts, phase) = match (v["type"].as_str(), p["type"].as_str()) {
+                    (Some("event_msg"), Some("user_message")) => {
+                        let mut parts = vec![json!({"type":"text","text":p["message"]})];
+                        for url in p["images"].as_array().into_iter().flatten() {
+                            parts.push(json!({"type":"input_image","image_url":url}));
+                        }
+                        for path in p["local_images"].as_array().into_iter().flatten() {
+                            parts.push(json!({"type":"local_image","path":path}));
+                        }
+                        ("user", Value::Array(parts), &Value::Null)
+                    },
+                    (Some("event_msg"), Some("agent_message")) => (
+                        "assistant",
+                        json!([{"type":"text","text":p["message"]}]),
+                        &p["phase"],
+                    ),
+                    (Some("event_msg"), Some("item_completed"))
+                        if item["type"] == "UserMessage" =>
                     {
-                        self.messages.last_mut().unwrap()["phase"] = p["phase"].clone();
-                    }
+                        ("user", item["content"].clone(), &Value::Null)
+                    },
+                    // AgentMessage content parts are typed "Text".
+                    (Some("event_msg"), Some("item_completed"))
+                        if item["type"] == "AgentMessage" =>
+                    {
+                        let text = item["content"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|part| part["text"].as_str())
+                            .collect::<String>();
+                        (
+                            "assistant",
+                            json!([{"type":"text","text":text}]),
+                            &item["phase"],
+                        )
+                    },
+                    _ => return,
+                };
+                let parts = match parts.as_array() {
+                    Some(list) if role == "user" => list
+                        .iter()
+                        .map(
+                            |part| match part["text"].as_str().and_then(codex_question_reply) {
+                                Some(text) => json!({"type":"text","text":text}),
+                                None => part.clone(),
+                            },
+                        )
+                        .collect(),
+                    _ => parts,
+                };
+                let before = self.messages.len();
+                self.push_parts(role, &parts, v["timestamp"].clone());
+                if self.messages.len() > before && phase == "commentary" {
+                    self.messages.last_mut().unwrap()["phase"] = json!("commentary");
                 }
             },
             "copilot" => {
@@ -1695,7 +1695,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("models.jsonl");
         let context = |model: &str, effort: Value| json!({"type":"turn_context","payload":{"model":model,"effort":effort}});
-        let reply = |text: &str| json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":text}]}});
+        let reply = |text: &str| json!({"type":"event_msg","payload":{"type":"agent_message","message":text}});
         let records = [
             context("gpt-6.1-sol", json!("medium")),
             reply("First answer"),
@@ -1839,13 +1839,18 @@ mod tests {
         )
         .unwrap();
         for i in 0..50_002 {
-            writeln!(file, "{}", json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":format!("Message {i}")}]}})).unwrap();
+            writeln!(file, "{}", json!({"type":"event_msg","payload":{"type":"user_message","message":format!("Message {i}")}})).unwrap();
         }
         // A sparse, oversized tool record crosses the old 64 MiB cutoff without
         // allocating that much RAM. Valid messages on both sides remain pageable.
         file.set_len(FILE_BYTES + 128).unwrap();
         file.seek(SeekFrom::End(0)).unwrap();
-        writeln!(file, "\n{}", json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Newest reply"}]}})).unwrap();
+        writeln!(
+            file,
+            "\n{}",
+            json!({"type":"event_msg","payload":{"type":"agent_message","message":"Newest reply"}})
+        )
+        .unwrap();
         drop(file);
         let mut index = HistoryIndex::new("codex", dir.path(), &path);
         let tail = index
@@ -2030,6 +2035,14 @@ mod tests {
             (claude(json!(pasted), json!("typed")), Some(pasted)),
             (claude(json!("reply ok"), json!("sdk")), Some("reply ok")),
             (claude(json!("Interrupted? [Request interrupted by user]"), Value::Null), Some("Interrupted? [Request interrupted by user]")),
+            (claude(text("[Tool call interrupted: the session ended before this call's result was recorded, so its outcome is unknown. Check whether it took effect before relying on it or running it again.]"), Value::Null), None),
+            // Claude Code's own provenance flags and origins.
+            (json!({"type":"user","isVisibleInTranscriptOnly":true,"isCompactSummary":true,"message":{"content":"This session is being continued from a previous conversation."}}), None),
+            (json!({"type":"user","isVisibleInTranscriptOnly":true,"message":{"content":"transcript only"}}), None),
+            (json!({"type":"user","origin":{"kind":"coordinator"},"message":{"content":"from the coordinator"}}), None),
+            (json!({"type":"user","origin":{"kind":"channel"},"message":{"content":"from a channel"}}), None),
+            (json!({"type":"user","commandMode":"task-notification","message":{"content":"<task-notification>old</task-notification>"}}), None),
+            (json!({"type":"user","origin":{"kind":"human"},"promptSource":"typed","message":{"content":"<task-notification>pasted</task-notification>"}}), Some("<task-notification>pasted</task-notification>")),
         ];
         for (record, expected) in &cases {
             let c = chat("claude", vec![record.clone()]);
@@ -2040,23 +2053,23 @@ mod tests {
             );
         }
 
-        let codex = |parts: Value| json!({"type":"response_item","payload":{"type":"message","role":"user","content":parts}});
-        let part = |t: &str| json!({"type":"input_text","text":t});
-        let image = json!({"type":"input_image","image_url":"data:image/png;base64,iVBORw0KGgo="});
+        // Records copied from Codex 0.167 rollouts. Only the events Codex's own history
+        // reads become messages; response_item model input never does.
+        let input = |t: &str| json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":t}]}});
+        let legacy = |t: &str| json!({"type":"event_msg","payload":{"type":"user_message","message":t,"images":[],"local_images":[]}});
+        let paginated = |content: Value| json!({"type":"event_msg","payload":{"type":"item_completed","turn_id":"t","item":{"type":"UserMessage","id":"u","content":content}}});
+        let reply = "<send_user_message_question_reply>\n[{\"answer\":\"Updates waiting for viewers\",\"question\":\"Which chat?\",\"questionItemId\":\"q\"}]\n</send_user_message_question_reply>";
         let cases = [
-            (codex(json!([part("# AGENTS.md instructions for /repo\n\n<INSTRUCTIONS>\nBe brief.\n</INSTRUCTIONS>"), part("<environment_context>\n  <cwd>/repo</cwd>\n  <shell>zsh</shell>\n</environment_context>")])), None),
-            (codex(json!([part("<user_instructions>\nBe brief.\n</user_instructions>")])), None),
-            (codex(json!([part("<turn_aborted>\nThe user interrupted the previous turn on purpose.\n</turn_aborted>")])), None),
-            (codex(json!([part("<skill>\n<name>full-send</name>\n<path>/x/SKILL.md</path>\n</skill>")])), None),
-            (codex(json!([part("<subagent_notification>\n{\"agent_id\":\"a\",\"status\":{\"completed\":\"done\"}}\n</subagent_notification>")])), None),
-            (codex(json!([part("<user_action>\n  <context>User initiated a review task.</context>\n  <action>review</action>\n</user_action>")])), None),
-            (codex(json!([part("<recommended_plugins>\nHere is a list of plugins\n</recommended_plugins>")])), None),
-            (codex(json!([part("<user_shell_command>\n<command>\nls -la\n</command>\n<result>\nExit code: 0\n</result>\n</user_shell_command>")])), Some("!ls -la")),
-            (codex(json!([part("<send_user_message_question_reply>\n[{\"answer\":\"Updates waiting for viewers\",\"question\":\"Which chat?\",\"questionItemId\":\"q\"}]\n</send_user_message_question_reply>")])), Some("> Which chat?\n\nUpdates waiting for viewers")),
-            (codex(json!([part("<image name=[Image #1] path=\"/tmp/a.png\">"), image, part("</image>"), part("it is in [Image #1]")])), Some("it is in [Image #1]")),
-            // Without an image, the same text is the human's.
-            (codex(json!([part("</image>")])), Some("</image>")),
-            (codex(json!([part("Why does <environment_context> leak?")])), Some("Why does <environment_context> leak?")),
+            (input("# AGENTS.md instructions for /repo\n\n<INSTRUCTIONS>\nBe brief.\n</INSTRUCTIONS>"), None),
+            (input("<environment_context>\n  <cwd>/repo</cwd>\n</environment_context>"), None),
+            (input("typed, but this copy is model input"), None),
+            (legacy("has mac updated?"), Some("has mac updated?")),
+            (paginated(json!([{"type":"text","text":"why hasnt it updated yet?","text_elements":[]}])), Some("why hasnt it updated yet?")),
+            (paginated(json!([{"type":"text","text":reply,"text_elements":[]}])), Some("> Which chat?\n\nUpdates waiting for viewers")),
+            (paginated(json!([{"type":"text","text":"it is in [Image #1]","text_elements":[]},{"type":"local_image","path":"/tmp/a.png"}])), Some("it is in [Image #1]")),
+            (json!({"type":"event_msg","payload":{"type":"user_message","message":"see this","images":["data:image/png;base64,iVBORw0KGgo="],"local_images":[]}}), Some("see this")),
+            (json!({"type":"event_msg","payload":{"type":"agent_message","message":"Checking.","phase":"commentary"}}), Some("Checking.")),
+            (json!({"type":"event_msg","payload":{"type":"item_completed","turn_id":"t","item":{"type":"AgentMessage","id":"a","phase":"final_answer","content":[{"type":"Text","text":"Done."}]}}}), Some("Done.")),
         ];
         for (record, expected) in &cases {
             let c = chat("codex", vec![record.clone()]);
@@ -2066,8 +2079,29 @@ mod tests {
                 "{record}"
             );
         }
-        let c = chat("codex", vec![cases[9].0.clone()]);
-        assert_eq!(c.messages[0]["attachments"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            chat("codex", vec![cases[6].0.clone()]).messages[0]["attachments"][0]["url"],
+            "/tmp/a.png"
+        );
+        assert_eq!(
+            chat("codex", vec![cases[7].0.clone()]).messages[0]["attachments"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let page = read_page(
+            &chat("codex", vec![cases[8].0.clone(), cases[9].0.clone()]),
+            &Params::default(),
+        );
+        assert_eq!(page["messages"][0]["phase"], "commentary");
+
+        // A forked sub-agent keeps its own id after the parent's copied session_meta.
+        let meta = |id: &str| json!({"type":"session_meta","payload":{"id":id,"cwd":"/repo"}});
+        assert_eq!(
+            chat("codex", vec![meta("child"), meta("parent")]).session_id,
+            "child"
+        );
 
         // Live appends and paged reads filter the same way.
         let records: Vec<_> = cases.iter().map(|(record, _)| record.clone()).collect();
@@ -2086,7 +2120,7 @@ mod tests {
         }
         let whole = read_page(&chat("codex", records), &tail);
         assert_eq!(index.page(&tail).unwrap()["messages"], whole["messages"]);
-        assert_eq!(whole["message_count"], 5);
+        assert_eq!(whole["message_count"], 7);
     }
 
     #[test]
@@ -2220,11 +2254,11 @@ mod tests {
         let c = chat(
             "codex",
             vec![
-                json!({"type":"response_item","payload":{"type":"message","role":"user","content":[
+                json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[
                     {"type":"local_image","path":"C:\\work\\shot.png"},
                     {"type":"input_image","image_url":"data:image/svg+xml;base64,aGVsbG8="},
                     {"type":"input_image","image_url":"data:image/png;base64,INVALID!"}
-                ]}}),
+                ]}}}),
             ],
         );
         let attachments = &c.messages[0]["attachments"];
@@ -2260,7 +2294,7 @@ mod tests {
                 json!({"type":"session_meta","payload":{"id":"x1","cwd":"/repo"}}),
                 json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"question"}]}}),
                 json!({"type":"event_msg","payload":{"type":"user_message","message":"question"}}),
-                json!({"type":"response_item","payload":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"answer"}]}}),
+                json!({"type":"event_msg","payload":{"type":"agent_message","phase":"commentary","message":"answer"}}),
             ],
         );
         assert_eq!(c.messages.len(), 2);
@@ -2577,7 +2611,9 @@ mod tests {
     fn switchboard_chats_live_tail_and_skipped_records_keep_later_messages() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("chat.jsonl");
-        let record = json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Hello"}]}}).to_string();
+        let record =
+            json!({"type":"event_msg","payload":{"type":"user_message","message":"Hello"}})
+                .to_string();
         fs::write(&path, format!("{record}\n{{\"type\":")).unwrap();
         let chat = read_file("codex", dir.path(), &path).unwrap();
         assert!(
