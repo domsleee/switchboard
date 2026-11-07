@@ -21,7 +21,8 @@ test('Conversation shows the model, animates real work and keeps delivery receip
   const labels=page.locator('.conversation-message.assistant .conversation-label');
   assert.equal(await labels.first().textContent(),'Codex');
   assert.equal(await labels.last().textContent(),'Codex');assert.equal(await page.locator('.conversation-compose .conversation-model').count(),1,'The model shows once, in the composer');
-  assert.equal(await labels.last().isVisible(),false,'Consecutive assistant messages share one label');
+  // Speaker labels stay for screen readers; layout shows who is speaking.
+  for(const label of [labels.first(),labels.last()]){const box=await label.boundingBox();assert.ok(!box||box.width<=1&&box.height<=1,'Speaker labels are visually hidden');}
   assert.equal(await working.isVisible(),false);
   await page.getByLabel('Reply draft').fill('Please continue');await page.getByRole('button',{name:'Send',exact:true}).click();
   await page.locator('.conversation-outgoing').getByText('Queued',{exact:true}).waitFor();
@@ -29,7 +30,7 @@ test('Conversation shows the model, animates real work and keeps delivery receip
   await page.evaluate(()=>{current.state='working';SwitchboardConversation.update();});
   assert.equal(await activity.textContent(),'Working…');assert.equal(await page.locator('.conversation-model').textContent(),'6.1 Sol · medium');
   assert.equal(await working.isVisible(),true);
-  assert.equal(await working.evaluate(node=>getComputedStyle(node.firstElementChild).animationName),'conversation-typing');
+  assert.equal(await working.evaluate(node=>getComputedStyle(node.firstElementChild).animationName),'conversation-spin');
   assert.equal(await activity.evaluate(node=>getComputedStyle(node,'::before').animationName),'conversation-pulse');
   assert.equal(await page.getByText('Waiting for agent…',{exact:true}).count(),0);
   assert.equal(await page.locator('.conversation-messages').evaluate(node=>node.lastElementChild.className),'conversation-working');

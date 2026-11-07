@@ -79,6 +79,7 @@
           const url=resolve(event.url,context);element=node(url?'a':'span');if(url){element.href=url;element.target='_blank';element.rel='noopener noreferrer';}
         }else element=node(allowed.has(event.tag)?event.tag:'span');
         if(event.tag==='ol'&&Number.isSafeInteger(event.start)&&event.start>0)element.start=event.start;
+        if(event.tag==='pre'&&typeof event.lang==='string'&&/^[\w+#.-]{1,24}$/.test(event.lang))element.dataset.lang=event.lang;
         if(event.tag==='table'){const wrap=node('div');wrap.className='conversation-table';current().append(wrap);wrap.append(element);}else current().append(element);
         stack.push(element);
       }else if(event.type==='end'){if(stack.length>1)stack.pop();}

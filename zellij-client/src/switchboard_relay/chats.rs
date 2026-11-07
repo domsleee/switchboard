@@ -864,6 +864,8 @@ fn markdown_events(source: &str) -> Vec<Value> {
             Tag::Image { dest_url, .. } => json!({"type":"start","tag":"image","url":dest_url.as_ref()}),
             Tag::Heading { level, .. } => json!({"type":"start","tag":format!("{level}")}),
             Tag::List(start) => json!({"type":"start","tag":if start.is_some(){"ol"}else{"ul"},"start":start}),
+            // The fence's language labels the code card and picks its highlighting.
+            Tag::CodeBlock(pulldown_cmark::CodeBlockKind::Fenced(info)) => json!({"type":"start","tag":"pre","lang":info.split(|c: char| c.is_whitespace() || c == ',').next().unwrap_or("")}),
             tag => json!({"type":"start","tag":match tag {
                 Tag::Paragraph=>"p",Tag::BlockQuote(_)=>"blockquote",Tag::CodeBlock(_)=>"pre",
                 Tag::Item=>"li",Tag::Emphasis=>"em",Tag::Strong=>"strong",Tag::Strikethrough=>"del",
