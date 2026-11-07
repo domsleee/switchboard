@@ -95,6 +95,8 @@ int main(int argc,char**argv){if(argc>1&&strcmp(argv[1],"queue")==0){if(argc!=6)
     await hook('Stop',restarted.pane_id);
     await until(async()=>{await page.evaluate(()=>refreshAttention(true));return page.evaluate(id=>[...paneAttention.values()].some(p=>p.pane_id===id&&p.chat_id),restarted.pane_id);},'Resumed agent did not bind its conversation');
     await page.getByRole('button',{name:'Conversation',exact:true}).click();
+    // The initial transcript response supplies the native thread ID used for replies.
+    await page.locator('.conversation-notice').waitFor({state:'hidden'});
     await page.getByLabel('Reply draft').fill('native conversation reply');
     await until(()=>page.getByRole('button',{name:'Send',exact:true}).isEnabled(),'Conversation reply did not become ready');
     const replyResponse=page.waitForResponse(r=>r.url().endsWith('/codex/reply'));
