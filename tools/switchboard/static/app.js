@@ -1196,6 +1196,7 @@ let newTabElevated=false;
 $('new-tab').onclick=()=>openNewTabDialog(false);
 $('new-admin-tab').onclick=()=>openNewTabDialog(true);
 function openNewTabDialog(elevated){
+  if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.showTerminal();
   newTabElevated=elevated;
   $('new-tab-title').textContent=elevated?'New administrator tab':'New tab';
   $('new-tab-command').value='c';newTabCommandLookup.close();newTabProjectLookup.close();
@@ -1205,7 +1206,7 @@ function openNewTabDialog(elevated){
   const current=allTabs().find(t=>t.key===selected)?.entry;
   for(const [key,entry] of [...sessions].sort((a,b)=>Number(b[1]===current)-Number(a[1]===current)||Number(b[1].name==='main')-Number(a[1].name==='main'))){
     if([...select.options].some(option=>JSON.parse(option.value)[0]===entry.host))continue;
-    if(!entry.state||!sessionTabs(entry).length)continue;
+    if(!sessionTabs(entry).length)continue;
     const option=document.createElement('option');option.value=key;option.textContent=hosts.get(entry.host)?.name||entry.host;option.selected=entry===current;select.append(option);
   }
   // A machine's first session starts a plain shell, so it cannot be elevated.
@@ -1286,12 +1287,22 @@ for(const dialog of document.querySelectorAll('dialog')){
   dialog.addEventListener('pointerdown',event=>{pressedOutside=outside(event);});
   dialog.addEventListener('click',event=>{if(pressedOutside&&outside(event))dialog.close();pressedOutside=false;});
 }
+$('new-tab-dialog').addEventListener('close',()=>{$('new-tab-form').pendingSubmission=null;});
 $('new-tab-form').onsubmit=event=>{
-  event.preventDefault();createNewTab($('new-tab-target').value,{project:$('new-tab-project').value.trim(),command:$('new-tab-command').value.trim(),elevated:newTabElevated});
+  event.preventDefault();const request={};$('new-tab-form').pendingSubmission=request;
+  createNewTab($('new-tab-target').value,{project:$('new-tab-project').value.trim(),command:$('new-tab-command').value.trim(),elevated:newTabElevated},()=>$('new-tab-form').pendingSubmission===request&&$('new-tab-dialog').open);
 };
-function createNewTab(key,launch){
+async function createNewTab(key,launch,isCurrent=()=>true){
   if(!launch.project||!launch.command)return;
   let entry=sessions.get(key);
+  // Opening New tab from Conversation starts the viewer connection. Keep the
+  // dialog usable, but do not mistake that connecting session for an empty host.
+  if(entry&&!entry.state&&sessionTabs(entry).length){
+    const deadline=Date.now()+10000;
+    while(isCurrent()&&sessions.get(key)===entry&&!entry.state&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,50));
+    if(!isCurrent())return;
+    if(sessions.get(key)!==entry||!entry.state){setStatus('Terminal is not connected yet. Try creating the tab again.',true);return;}
+  }
   if(!entry?.state){
     const [id,name]=JSON.parse(key),host=hosts.get(id);
     if(!host||host.error||host.sessions?.length!==0)return;

@@ -216,7 +216,7 @@ test('headless browser keeps iframe, selection, URL and input focus through fail
     assert.equal(await page.evaluate(()=>!!document.activeElement.closest('.conversation-panel')),true);
     await page.keyboard.type('not terminal input');
     assert.equal(await page.locator('.conversation-panel').isVisible(),true);
-    assert.equal(await page.frameLocator('iframe[title="Mac: main"]').locator('#terminal-input').inputValue(),'');
+    assert.equal(await page.locator('iframe[title="Mac: main"]').getAttribute('src'),'about:blank');
     await page.keyboard.press('Escape');
     await page.waitForFunction(()=>document.activeElement===document.querySelector('iframe[title="Mac: main"]'));
     assert.equal(await page.locator('.conversation-panel').isVisible(),false);
@@ -225,6 +225,7 @@ test('headless browser keeps iframe, selection, URL and input focus through fail
     await page.evaluate(()=>activate(allTabs().find(item=>item.entry.host==='windows')));
     await page.waitForFunction(()=>document.activeElement===document.querySelector('iframe[title="Windows: main"]'));
 
+    await input.fill('typed before failure');
     async function unchanged(){
       assert.equal(page.url(),requested);
       assert.deepEqual(await page.evaluate(()=>({same:originalFrame===document.querySelector('iframe.active'),focused:document.activeElement===originalFrame&&originalFrame.contentDocument.activeElement.id==='terminal-input',selection:document.querySelector('#tabs .selected')?._item.key,value:originalFrame.contentDocument.querySelector('input').value})),
