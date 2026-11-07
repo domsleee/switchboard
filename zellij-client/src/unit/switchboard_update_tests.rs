@@ -180,6 +180,13 @@ impl Harness {
         };
         harness.write_helpers(&harness.root.join("helpers"), "installed");
         if launchd {
+            // Real helper checks must not snapshot unrelated engines from the
+            // developer's desktop or another acceptance test. Keep this fixture's
+            // services visible while excluding outside terminal engines.
+            write_executable(
+                &harness.root.join("fakebin/ps"),
+                &format!("#!/bin/sh\n/bin/ps \"$@\" | awk -v root='{}' 'index($0, \"--server\") == 0 || index($0, root) != 0'\n", harness.root.display()),
+            );
             // Start web and relay the way the dev.zellij.switchboard job and
             // the switchboard.service unit do.
             let installed = installed.display();
