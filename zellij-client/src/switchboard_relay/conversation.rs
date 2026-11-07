@@ -1,4 +1,5 @@
-//! The one startup dialog Conversation can complete without opening a terminal viewer.
+//! What Conversation does to a pane without opening a terminal viewer: complete
+//! Codex's startup hooks review, and type a reply into Claude's empty prompt.
 use super::*;
 use serde::Serialize;
 
@@ -60,10 +61,8 @@ pub(super) async fn handler(
     local(&host, target).await.map(IntoResponse::into_response)
 }
 
-pub(super) async fn local(host: &Host, target: Target) -> Result<Json<Value>, Error> {
-    // Two viewers must not both confirm the same dialog.
-    static PREPARING: Mutex<()> = Mutex::const_new(());
-    let _guard = PREPARING.lock().await;
+/// Reads the selected pane after checking it is still the one the browser chose.
+async fn checked_screen(host: &Host, target: &Target) -> Result<(Value, String), Error> {
     control::validate_session(&target.session)?;
     if !control::sessions(host)
         .await
@@ -77,7 +76,7 @@ pub(super) async fn local(host: &Host, target: Target) -> Result<Json<Value>, Er
         .await
         .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot read terminal panes"))?;
     let pane = panes
-        .iter()
+        .into_iter()
         .find(|pane| {
             pane["id"] == target.pane_id
                 && pane["tab_id"] == target.tab_id
@@ -86,21 +85,30 @@ pub(super) async fn local(host: &Host, target: Target) -> Result<Json<Value>, Er
                 && pane["is_held"] != true
         })
         .ok_or((StatusCode::CONFLICT, "The selected pane changed"))?;
-    let id = target.pane_id.to_string();
     let screen = control::run_local(
         host,
         &target.session,
-        &["dump-screen", "-p", &id],
+        &["dump-screen", "-p", &target.pane_id.to_string()],
         Duration::from_secs(5),
     )
     .await
     .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot read the selected pane"))?;
-    if attention::classify(pane, &screen)["agent"] != "codex" {
+    Ok((pane, screen))
+}
+
+// Two viewers must not both act on the same screen.
+static ACTING: Mutex<()> = Mutex::const_new(());
+
+pub(super) async fn local(host: &Host, target: Target) -> Result<Json<Value>, Error> {
+    let _guard = ACTING.lock().await;
+    let (pane, screen) = checked_screen(host, &target).await?;
+    if attention::classify(&pane, &screen)["agent"] != "codex" {
         return Ok(Json(json!({"trusted":false})));
     }
     let Some(keys) = trust_keys(&screen) else {
         return Ok(Json(json!({"trusted":false})));
     };
+    let id = target.pane_id.to_string();
     let mut args = vec!["write", "-p", &id];
     args.extend_from_slice(keys);
     control::run_local(host, &target.session, &args, Duration::from_secs(5))
@@ -109,11 +117,151 @@ pub(super) async fn local(host: &Host, target: Target) -> Result<Json<Value>, Er
     Ok(Json(json!({"trusted":true})))
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Reply {
+    session: String,
+    pane_id: u32,
+    tab_id: u32,
+    text: String,
+}
+
+/// Claude's prompt box is empty: the last `❯` line holds nothing but its
+/// placeholder, and only blank lines sit between it and the box's lower rule.
+/// The same check the terminal bridge makes before pasting a reply.
+fn claude_prompt_empty(screen: &str) -> bool {
+    let lines: Vec<&str> = screen.lines().collect();
+    let Some(index) = lines
+        .iter()
+        .rposition(|line| line.trim_start().starts_with('❯'))
+    else {
+        return false;
+    };
+    let prompt = lines[index].trim_start()['❯'.len_utf8()..].trim();
+    // Narrow panes cut the placeholder short with an ellipsis.
+    let placeholder = prompt.len() > 5
+        && prompt.starts_with("Try \"")
+        && (prompt.ends_with('"') || prompt.ends_with('…'));
+    if !prompt.is_empty() && !placeholder {
+        return false;
+    }
+    for line in &lines[index + 1..] {
+        let text = line.trim();
+        if text.is_empty() {
+            continue;
+        }
+        return text.chars().all(|c| matches!(c, '─' | '━' | ' '));
+    }
+    true
+}
+
+pub(super) async fn reply_handler(
+    State(state): State<RelayState>,
+    RoutePath(id): RoutePath<String>,
+    Json(reply): Json<Reply>,
+) -> Result<Response, Error> {
+    control::validate_session(&reply.session)?;
+    let host = state
+        .host(&id)
+        .ok_or((StatusCode::NOT_FOUND, "Unknown computer"))?;
+    if host.config.escape_transport.as_deref() == Some("gateway") {
+        let response = host
+            .request(
+                Method::POST,
+                "/switchboard/conversation/reply",
+                serde_json::to_vec(&reply).unwrap().into(),
+                "application/json",
+            )
+            .await
+            .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot reach the other computer"))?;
+        return Ok((response.status, response.body).into_response());
+    }
+    reply_local(&host, reply)
+        .await
+        .map(IntoResponse::into_response)
+}
+
+pub(super) const REPLY_LIMIT: usize = 16000;
+
+pub(super) async fn reply_local(host: &Host, reply: Reply) -> Result<Json<Value>, Error> {
+    let text = &reply.text;
+    if text.trim().is_empty()
+        || text.len() > REPLY_LIMIT
+        || text
+            .chars()
+            .any(|c| c.is_control() && c != '\n' && c != '\t')
+    {
+        return Err((StatusCode::BAD_REQUEST, "Invalid reply"));
+    }
+    let _guard = ACTING.lock().await;
+    let target = Target {
+        session: reply.session.clone(),
+        pane_id: reply.pane_id,
+        tab_id: reply.tab_id,
+    };
+    let (pane, screen) = checked_screen(host, &target).await?;
+    if attention::classify(&pane, &screen)["agent"] != "claude" {
+        return Err((StatusCode::CONFLICT, "The selected pane is not Claude"));
+    }
+    if !claude_prompt_empty(&screen) {
+        return Err((
+            StatusCode::CONFLICT,
+            "Clear the terminal prompt before sending.",
+        ));
+    }
+    let id = reply.pane_id.to_string();
+    let session = &reply.session;
+    // `--` keeps a reply that starts with `-` from reading as an option.
+    control::run_local(
+        host,
+        session,
+        &["paste", "-p", &id, "--", text],
+        Duration::from_secs(5),
+    )
+    .await
+    .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot type the reply"))?;
+    control::run_local(
+        host,
+        session,
+        &["write", "-p", &id, "13"],
+        Duration::from_secs(5),
+    )
+    .await
+    .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot submit the reply"))?;
+    Ok(Json(json!({"ok":true})))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     // Captured from Codex 0.167.0 in an isolated CODEX_HOME, before any prompt.
     const REVIEW: &str = "\n  Hooks need review\n  1 hook is new or changed.\n  Hooks can run outside the sandbox after you trust them.\n\n› 1. Review hooks\n  2. Trust all and continue\n  3. Continue without trusting (hooks won't run)\n\n  enter confirm · esc skip\n\n";
+
+    const RULE: &str = "────────────────────────────────────────";
+    // Claude Code 2.1.318 idle prompt, captured with dump-screen; ❯ is followed by U+00A0.
+    const CLAUDE_IDLE: &str = "● Done.\n\n────────────────────────────────────────\n❯\u{a0}\n────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n";
+
+    #[test]
+    fn switchboard_conversation_types_only_into_an_empty_claude_prompt() {
+        assert!(claude_prompt_empty(CLAUDE_IDLE));
+        assert!(claude_prompt_empty(
+            &CLAUDE_IDLE.replace("❯\u{a0}", "❯ Try \"fix lint errors\"")
+        ));
+        // Captured from a 25-column Claude Code 2.1.319 pane.
+        assert!(claude_prompt_empty(
+            &CLAUDE_IDLE.replace("❯\u{a0}", "❯ Try \"write a test for …")
+        ));
+        for screen in [
+            CLAUDE_IDLE.replace("❯\u{a0}", "❯\u{a0}[Pasted text #1 +3 lines]"),
+            CLAUDE_IDLE.replace("❯\u{a0}", "❯ draft"),
+            CLAUDE_IDLE.replace("❯\u{a0}\n", "❯\u{a0}first line\n  second line\n"),
+            CLAUDE_IDLE.replace("❯\u{a0}\n", "❯\u{a0}\n  second line\n"),
+            "Do you want to proceed?\n❯ 1. Yes\n  2. No\n".into(),
+            "dom@mac ~ %".into(),
+        ] {
+            assert!(!claude_prompt_empty(&screen), "{screen}");
+        }
+    }
 
     #[test]
     fn switchboard_conversation_confirms_only_the_startup_hook_menu() {
@@ -177,6 +325,7 @@ mod tests {
 if "%~4"=="list-panes" goto catalog
 if "%~4"=="dump-screen" goto screen
 if "%~4"=="write" goto write
+if "%~4"=="paste" goto write
 exit /b 1
 :catalog
 type "{}"
@@ -205,7 +354,7 @@ type nul >"{}"
 case "$4" in
 list-panes) cat '{}' ;;
 dump-screen) cat '{}' ;;
-write) printf '%s\n' "$*" >> '{}'; : > '{}' ;;
+write|paste) printf '%s\n' "$*" >> '{}'; : > '{}' ;;
 *) exit 1 ;;
 esac
 "#,
@@ -290,8 +439,40 @@ esac
         assert_eq!(local(&host, target()).await.unwrap().0["trusted"], true);
         assert_eq!(local(&host, target()).await.unwrap().0["trusted"], false);
         assert_eq!(
-            std::fs::read_to_string(actions).unwrap().trim(),
+            std::fs::read_to_string(&actions).unwrap().trim(),
             "-s fixture action write -p 7 27 91 66 13"
+        );
+
+        // Claude replies type into an empty prompt only.
+        std::fs::remove_file(&actions).unwrap();
+        std::fs::write(
+            &catalog,
+            r#"[{"id":7,"tab_id":8,"pane_command":"claude","is_plugin":false}]"#,
+        )
+        .unwrap();
+        let reply = |text: &str| Reply {
+            session: "fixture".into(),
+            pane_id: 7,
+            tab_id: 8,
+            text: text.into(),
+        };
+        std::fs::write(&screen, format!("{RULE}\n❯ half typed\n{RULE}\n")).unwrap();
+        assert_eq!(
+            reply_local(&host, reply("hi")).await.unwrap_err().0,
+            StatusCode::CONFLICT
+        );
+        for bad in ["", "  ", "a\x1b[201~b", &"x".repeat(REPLY_LIMIT + 1)] {
+            assert_eq!(
+                reply_local(&host, reply(bad)).await.unwrap_err().0,
+                StatusCode::BAD_REQUEST
+            );
+        }
+        assert!(!actions.exists());
+        std::fs::write(&screen, CLAUDE_IDLE).unwrap();
+        assert_eq!(reply_local(&host, reply("-v")).await.unwrap().0["ok"], true);
+        assert_eq!(
+            std::fs::read_to_string(&actions).unwrap().trim(),
+            "-s fixture action paste -p 7 -- -v\n-s fixture action write -p 7 13"
         );
         server.abort();
     }

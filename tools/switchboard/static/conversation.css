@@ -17,11 +17,12 @@
 .conversation-activity{grid-column:1;min-width:0;font-size:12px;line-height:1.5;color:#a8b5c9;overflow-wrap:anywhere}
 .conversation-panel .conversation-terminal-action{grid-column:2;grid-row:2;min-height:36px;border-color:#3c485e;white-space:nowrap}
 .conversation-activity.working::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:#a4bfff;box-shadow:0 0 0 3px #a4bfff14;margin:0 7px 1px 2px;animation:conversation-pulse 1.4s ease-in-out infinite}
-.conversation-working{display:flex;align-items:center;gap:10px;margin:0 0 24px;color:#acbad2;font-size:13px}
-.conversation-working::before{content:"";width:14px;height:14px;flex-shrink:0;border:2px solid #35435e;border-top-color:#b9cfff;border-radius:50%;animation:conversation-spin .8s linear infinite}
-@keyframes conversation-spin{to{transform:rotate(360deg)}}
+.conversation-working{display:flex;gap:5px;margin:0 0 24px;padding:6px 0}
+.conversation-working span{width:6px;height:6px;border-radius:50%;background:#8fa3c7;opacity:.3;animation:conversation-typing 1.2s ease-in-out infinite}
+.conversation-working span:nth-child(2){animation-delay:.15s}.conversation-working span:nth-child(3){animation-delay:.3s}
+@keyframes conversation-typing{30%{opacity:1;transform:translateY(-2px)}60%,100%{opacity:.3;transform:none}}
 @keyframes conversation-pulse{50%{opacity:.35}}
-@media(prefers-reduced-motion:reduce){.conversation-working::before,.conversation-activity.working::before{animation:none}}
+@media(prefers-reduced-motion:reduce){.conversation-working span{animation:none;opacity:.7}.conversation-activity.working::before{animation:none}}
 .conversation-panel button{background:transparent;color:#a8b5c9;border:1px solid transparent;min-height:36px;padding:6px 10px;font:12px system-ui;border-radius:8px;cursor:pointer}
 .conversation-panel button:hover{background:#28313f;color:#f0f4ff}
 .conversation-panel button:focus-visible{outline:2px solid #adc5ff;outline-offset:2px}

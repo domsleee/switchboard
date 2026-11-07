@@ -9,7 +9,7 @@ test('integrated Conversation journeys use production markup and preserve delive
  async function fixture(options={}){
   const page=await browser.newPage({viewport:options.viewport||{width:390,height:844},isMobile:true,hasTouch:true});page.setDefaultTimeout(7000);
   if(options.clock)await page.clock.install();
-  const f={page,errors:[],connections:[],requests:[],preparations:[],history:new Map([[1,options.messages||[{role:'assistant',text:'Review response',model:'gpt-6.1-sol',reasoning_effort:'medium'}]],[2,[{role:'assistant',text:'Second conversation'}]]]),agent:options.agent||'codex',state:'ready',bound:options.bound!==false,model:'gpt-6.1-sol',effort:'medium',replyMode:'queue',autoHistory:false,prepareStatus:200,releaseReplies:[],releaseImages:[],delayImages:!!options.delayImages};
+  const f={page,errors:[],connections:[],requests:[],preparations:[],claudeReplies:[],claudeReplyStatus:404,history:new Map([[1,options.messages||[{role:'assistant',text:'Review response',model:'gpt-6.1-sol',reasoning_effort:'medium'}]],[2,[{role:'assistant',text:'Second conversation'}]]]),agent:options.agent||'codex',state:'ready',bound:options.bound!==false,model:'gpt-6.1-sol',effort:'medium',replyMode:'queue',autoHistory:false,prepareStatus:200,releaseReplies:[],releaseImages:[],delayImages:!!options.delayImages};
   await page.addInitScript(()=>{localStorage.setItem('switchboard-mobile-view-mode','conversation');localStorage.setItem('switchboard-view-mode','conversation');window.reviewIntervals=[];window.setInterval=fn=>reviewIntervals.push(fn);window.reviewOffset=0;const now=Date.now.bind(Date);Date.now=()=>now()+reviewOffset;window.reviewPastes=[];window.reviewHoldBridge=false;});
   const pane=id=>({pane_id:id,is_plugin:false,tab_id:id,tab_position:id-1,title:'Conversation '+id,is_focused:true});
   const thread=id=>'00000000-0000-4000-8000-'+String(id).padStart(12,'0');
@@ -22,6 +22,7 @@ test('integrated Conversation journeys use production markup and preserve delive
    if(p==='/api/hosts/fixture')return json({id:'fixture',name:'Fixture desktop',local:true,sessions:[{name:'main',web_clients_allowed:true}]});
    if(p==='/api/attention')return json({tabs:[1,2].map(id=>({host:'fixture',session:'main',id,position:id-1,name:'Conversation '+id,panes:[pane(id)]})),panes:[1,2].map(id=>({host:'fixture',session:'main',pane_id:id,...(f.agent?{agent:f.agent}:{}),state:f.state,...(f.bound?{chat_id:'chat-'+id}:{})})),errors:[]});
    if(p.startsWith('/api/chats/')){const id=Number(p.split('-').at(-1));return json({id:'chat-'+id,model:f.model,reasoning_effort:f.effort,session_id:f.agent==='codex'?thread(id):null,messages:f.history.get(id)||[],start_cursor:0,next_cursor:null});}
+   if(p.endsWith('/conversation/reply')){f.claudeReplies.push(route.request().postDataJSON());return route.fulfill({status:f.claudeReplyStatus,json:{ok:true}});}
    if(p.endsWith('/conversation/prepare')){f.preparations.push(route.request().postDataJSON());return route.fulfill({status:f.prepareStatus,json:{trusted:false}});}
    if(p.endsWith('/codex/reply')){
     const data=route.request().postDataJSON(),id=Number(data.thread.slice(-12));f.requests.push(data);
@@ -138,14 +139,27 @@ test('integrated Conversation journeys use production markup and preserve delive
     f.agent=null;f.bound=false;f.state='unknown';await f.refresh();assert.equal(await page.locator('.conversation-notice').textContent(),'No agent');assert.equal(await page.getByRole('button',{name:'Retry connection',exact:true}).isVisible(),false);assert.deepEqual(f.connections,[]);
    }finally{await f.close();}
   });
+  await t.test('Claude replies go through the relay without leaving Conversation',async()=>{
+   const f=await fixture({agent:'claude'}),{page}=f;f.claudeReplyStatus=200;try{
+    await page.getByText('Review response',{exact:true}).waitFor();
+    await page.evaluate(()=>{window.leftConversation=false;new MutationObserver(()=>{if(!SwitchboardConversation.isOpen())leftConversation=true;}).observe(document.body,{subtree:true,attributes:true});});
+    assert.equal(await page.locator('.conversation-transport-notice').isVisible(),false);
+    await page.getByLabel('Reply draft').fill('Claude reply');await page.getByRole('button',{name:'Send',exact:true}).click();
+    await page.locator('.conversation-outgoing').getByText('Sent',{exact:true}).waitFor();
+    assert.deepEqual(f.claudeReplies,[{session:'main',tab_id:1,pane_id:1,text:'Claude reply'}]);
+    assert.equal(await page.evaluate(()=>reviewPastes.length),0);
+    assert.equal(await page.evaluate(()=>leftConversation||!SwitchboardConversation.isOpen()||![...sessions.values()].every(entry=>entry.suspended)),false);
+    assert.equal(await page.getByLabel('Reply draft').inputValue(),'');
+   }finally{await f.close();}
+  });
+  // Relays from before the reply route answer 404; Claude then pastes through Terminal.
   await t.test('Claude terminal handoff returns after acknowledgement and respects explicit navigation',async()=>{
    const f=await fixture({agent:'claude'}),{page}=f;try{
     await page.getByText('Review response',{exact:true}).waitFor();await page.getByLabel('Reply draft').fill('Claude reply');
-    assert.equal(await page.locator('.conversation-transport-notice').isVisible(),true);
-    await page.getByRole('button',{name:'Send via Terminal',exact:true}).click();
+    await page.getByRole('button',{name:'Send',exact:true}).click();
     await page.waitForFunction(()=>reviewPastes.length===1&&SwitchboardConversation.isOpen()&&[...sessions.values()].every(entry=>entry.suspended));
     assert.equal(await page.getByLabel('Reply draft').inputValue(),'');assert.equal(await page.evaluate(()=>reviewPastes[0].text),'Claude reply');
-    await page.evaluate(()=>reviewHoldBridge=true);await page.getByLabel('Reply draft').fill('Delayed Claude reply');await page.getByRole('button',{name:'Send via Terminal',exact:true}).click();
+    await page.evaluate(()=>reviewHoldBridge=true);await page.getByLabel('Reply draft').fill('Delayed Claude reply');await page.getByRole('button',{name:'Send',exact:true}).click();
     await page.waitForFunction(()=>reviewPastes.length===2);await page.getByRole('button',{name:'Terminal',exact:true}).click();
     await page.evaluate(()=>{const sent=reviewPastes[1],frame=[...sessions.values()][0].frame;window.dispatchEvent(new MessageEvent('message',{origin:location.origin,source:frame.contentWindow,data:{type:'zellij-conversation-paste-result',id:sent.id,ok:true}}));});
     assert.equal(await page.getByRole('button',{name:'Terminal',exact:true}).getAttribute('aria-pressed'),'true','Acknowledgement must not undo a deliberate Terminal choice');

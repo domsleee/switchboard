@@ -97,8 +97,10 @@ or working. The transcript supplies the native session ID. A retry keeps the sam
 send key, and the destination stores a receipt to prevent a duplicate submission.
 “Queued” means Codex accepted the message, not that it has read it. These browser
 replies retain user text; the separate agent-to-agent `/codex/queue` route keeps its
-forwarded-message annotation. Claude replies use the existing guarded terminal
-composer, including while working. Approval and interactive prompts still require
+forwarded-message annotation. Claude replies use `/api/hosts/HOST/conversation/reply`,
+including while working: the relay pastes the reply into the pane and presses Enter
+only when Claude's prompt box is empty, so Conversation stays on screen. Relays
+without that route answer 404 and the browser falls back to pasting through Terminal. Approval and interactive prompts still require
 Terminal. In Conversation, Codex's exact startup **Hooks need review** menu is
 completed automatically by choosing **Trust all and continue**. Codex records its
 own trust hashes. This applies only to the selected shared Codex pane and never
