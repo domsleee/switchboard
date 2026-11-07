@@ -437,6 +437,23 @@ fn local_catalog(hosts: &serde_json::Value) -> Result<(String, Vec<Session>)> {
     Ok((id, sessions))
 }
 
+fn live_session_names(output: &str) -> Result<Vec<String>> {
+    ensure!(!output.trim().is_empty(), "Empty native session listing");
+    let pattern = regex::Regex::new(
+        r"^(.+) \[Created [^\]\r\n]+\](?: (\(current\)|\(EXITED - attach to resurrect\)))?\s*$",
+    )?;
+    let mut names = Vec::new();
+    for line in output.lines().filter(|line| !line.is_empty()) {
+        let row = pattern
+            .captures(line)
+            .context("Invalid native session listing")?;
+        if row.get(2).map(|state| state.as_str()) != Some("(EXITED - attach to resurrect)") {
+            names.push(row[1].to_owned());
+        }
+    }
+    Ok(names)
+}
+
 /// Whether the updater should install published build `run_number`: it is newer than
 /// the last build tried, or that build with attempts left.
 fn is_due(state: &State, run_number: u64) -> bool {
@@ -717,6 +734,16 @@ impl Updater {
         if let Ok(local) = self.local_host_id() {
             pending.sessions.retain(|session| session.0 == local);
         }
+        // A journal may outlive short-lived sessions by hours. Check the
+        // engines independently before deciding that the relay lost them;
+        // its own catalog alone cannot distinguish a closed session from a bug.
+        if let Some(catalog) = &catalog {
+            if pending.sessions.iter().any(|s| !catalog.contains(s)) {
+                if let Ok(live) = self.native_sessions() {
+                    pending.sessions.retain(|s| live.contains(&s.1));
+                }
+            }
+        }
         let pending = &pending;
         match resolve_pending(pending, health.as_ref(), catalog.as_deref()) {
             Resolution::Discard(running) => {
@@ -734,6 +761,7 @@ impl Updater {
                 );
                 println!("{notice}");
                 state.notice = Some(notice);
+                state.error = None;
                 state.pending = None;
                 state.save(&self.state_path())
             },
@@ -1215,6 +1243,24 @@ impl Updater {
         local_catalog(&hosts).map(|(id, _)| id)
     }
 
+    fn native_sessions(&self) -> Result<Vec<String>> {
+        let mut command = Command::new(self.selected_binary()?);
+        if let Some(config) = &self.config {
+            command.arg("--config").arg(config);
+        }
+        command.args(["list-sessions", "--no-formatting"]);
+        match run_command(command, Duration::from_secs(15)) {
+            Ok(output) => live_session_names(&output),
+            Err(error)
+                if error.to_string()
+                    == format!("{} failed: No active zellij sessions found.", self.exe()) =>
+            {
+                Ok(Vec::new())
+            },
+            Err(error) => Err(error),
+        }
+    }
+
     fn wait_ready(
         &self,
         commit: Option<&str>,
@@ -1230,9 +1276,14 @@ impl Updater {
                 .local_json::<serde_json::Value>("/api/hosts", Duration::from_secs(30))
                 .and_then(|hosts| local_catalog(&hosts))
                 .is_ok_and(|(local, catalog)| {
+                    let missing = sessions
+                        .iter()
+                        .any(|s| (!filter_legacy_peers || s.0 == local) && !catalog.contains(s));
+                    let live = missing.then(|| self.native_sessions().ok()).flatten();
                     sessions
                         .iter()
                         .filter(|s| !filter_legacy_peers || s.0 == local)
+                        .filter(|s| live.as_ref().is_none_or(|names| names.contains(&s.1)))
                         .all(|s| catalog.contains(s))
                 });
             if ready {

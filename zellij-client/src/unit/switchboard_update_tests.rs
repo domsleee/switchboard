@@ -947,6 +947,58 @@ mod orchestration {
 
     #[serial]
     #[test]
+    fn closed_sessions_do_not_force_recovery_but_missing_live_sessions_do() {
+        let mut harness = Harness::new(false);
+        harness.updater.check = true;
+        harness.interrupted(OLD, "");
+        let mut state = State::load(&harness.updater.state_path()).unwrap();
+        let mut pending = state.pending.clone().unwrap();
+        pending
+            .sessions
+            .push(("mac".into(), "temporary".into(), true));
+        state.error = Some("Previous rollback verification failed".into());
+
+        for listing in [
+            "main [Created 12days ago]\\ntemporary [Created 1m ago]",
+            "invalid native listing",
+        ] {
+            write_executable(
+                &harness.updater.binary,
+                &format!("#!/bin/sh\nprintf '{listing}\\n'\n"),
+            );
+            let error = harness
+                .updater
+                .settle_pending(&mut state, &pending)
+                .unwrap_err();
+            assert!(error.to_string().contains("requires recovery"));
+            assert!(state.pending.is_some());
+            assert!(harness
+                .updater
+                .wait_ready(Some(OLD), &pending.sessions, false)
+                .is_err());
+        }
+        write_executable(
+            &harness.updater.binary,
+            "#!/bin/sh\necho 'main [Created 12days ago]'\n",
+        );
+        harness
+            .updater
+            .settle_pending(&mut state, &pending)
+            .unwrap();
+        assert!(state.pending.is_none());
+        assert!(state.error.is_none());
+        harness
+            .updater
+            .wait_ready(Some(OLD), &pending.sessions, false)
+            .unwrap();
+        assert!(
+            harness.calls().is_empty(),
+            "healthy services must not restart"
+        );
+    }
+
+    #[serial]
+    #[test]
     fn check_discards_stale_pending_but_refuses_while_services_need_recovery() {
         let mut harness = Harness::new(false);
         harness.updater.check = true;
@@ -1223,4 +1275,15 @@ fn switchboard_update_catalog_ignores_remote_session_churn() {
         local_catalog(&serde_json::json!([{"id":"local","local":true,"error":"unavailable"}]))
             .is_err()
     );
+}
+
+#[test]
+fn switchboard_update_native_catalog_excludes_exited_sessions_and_rejects_bad_output() {
+    assert_eq!(
+        live_session_names("main [Created 12days ago] (current)\r\ntemporary [Created 1m ago] (EXITED - attach to resurrect)\r\nwork session [Created 2m ago]\r\n").unwrap(),
+        ["main", "work session"]
+    );
+    assert!(live_session_names("error reading session directory").is_err());
+    assert!(live_session_names("").is_err());
+    assert!(live_session_names("main [Created 1m ago]\nmalformed").is_err());
 }

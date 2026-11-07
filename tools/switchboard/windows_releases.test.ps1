@@ -171,7 +171,28 @@ try {
     $candidate = New-Fixture 'new' 'no-sessions'
     Invoke-SwitchboardWindowsUpdate -Candidate $candidate -Directory $fixture.Directory | Out-Null
     Assert ((Get-SwitchboardReleaseState $fixture.Directory).sha256 -ceq $fixture.NewHash) 'No-session installation failed'
-    Write-Output "PASS: $checks Windows release checks; actual PowerShell/files/subprocesses, simulated Windows process and Zellij responses."
+    & $module {
+        $baseline = @([pscustomobject]@{id=10; started='original'})
+        function script:Get-SwitchboardWindowsProcesses { @() }
+        $rejected = $false
+        try { Assert-SwitchboardProcesses $baseline } catch { $rejected = $true }
+        if (!$rejected) { throw 'Strict engine preservation accepted an exited engine' }
+        Assert-SwitchboardProcesses $baseline -AllowExited
+        function script:Get-SwitchboardWindowsProcesses {
+            [pscustomobject]@{ProcessId=10; CreationDate='replacement'}
+        }
+        $rejected = $false
+        try { Assert-SwitchboardProcesses $baseline -AllowExited } catch { $rejected = $true }
+        if (!$rejected) { throw 'An engine replacement was mistaken for a closed session' }
+        $baseline[0] | Add-Member NoteProperty session 'main'
+        function script:Get-SwitchboardWindowsProcesses {
+            [pscustomobject]@{ProcessId=11; CreationDate='replacement'; Name='zellij.exe'; CommandLine='zellij.exe --server C:\sessions\main'}
+        }
+        $rejected = $false
+        try { Assert-SwitchboardProcesses $baseline -AllowExited } catch { $rejected = $true }
+        if (!$rejected) { throw 'A new engine PID for the same session was accepted' }
+    }
+    Write-Output "PASS: $checks Windows release checks; closed engines are allowed only during service verification, reused PIDs still fail."
 } finally {
     Remove-Module $module -Force
     Remove-Item -LiteralPath $root -Recurse -Force
