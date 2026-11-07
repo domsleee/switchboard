@@ -45,6 +45,12 @@
 .conversation-compose button{grid-column:2;grid-row:1;display:grid;place-items:center;background:#b9ceff;color:#182440;font-size:24px;font-weight:500;width:40px;height:40px;min-height:40px;padding:0;border-radius:50%;box-shadow:0 2px 8px #0002}
 .conversation-compose button:hover{background:#d2e0ff;color:#10203d}
 .conversation-compose .conversation-send-notice{grid-column:1/-1;grid-row:2;color:#b6c5df;font-size:12px;line-height:1.5;padding:0 2px 4px}
+.conversation-outgoing{margin-left:auto;max-width:min(82%,48rem);background:#202a39;border:1px solid #35445b;border-radius:18px 18px 4px 18px;padding:14px 16px}
+.conversation-outgoing-status{display:flex;align-items:center;justify-content:flex-end;gap:12px;margin-top:10px;color:#a9bad7;font-size:11px}
+.conversation-outgoing-file{margin-top:8px;padding:8px 10px;border:1px solid #42516a;border-radius:8px;color:#d3def0;font-size:12px}
+.conversation-outgoing.failed{border-color:#79544c}
+.conversation-outgoing.failed .conversation-outgoing-status{color:#f0b6a8}
+.conversation-outgoing-status button{border:0;background:transparent;color:#c6d8f5;text-decoration:underline;cursor:pointer}
 @media(max-width:700px){
 .conversation-panel header{min-height:76px;padding-left:20px;padding-right:205px}
 .conversation-modes{right:12px;top:15px}
