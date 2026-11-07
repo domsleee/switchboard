@@ -64,14 +64,14 @@ let browser,web,passed=false;const tokens=[];
   action(session,'set-web-sharing','off');
   await waitFor(async()=>(await catalog()).some(s=>s.name===session&&!s.web_clients_allowed),'Sharing did not turn off');
   assert.equal((await writable.request.post(url+'/new-tab',{data:target})).status(),403,'Unshared session rejects creation');
-  await page.close();run('kill-session',session);
-  await waitFor(async()=>(await catalog()).length===0,'Session catalog did not empty');
+  await page.close();
+  // A computer whose sessions are all unshared starts its first shared session beside them.
   fs.unlinkSync(marker);
   const first=await writable.request.post(url+'/new-tab',{data:{...target,session:empty}});
   assert.equal(first.status(),200,await first.text());
-  await waitFor(()=>fs.readFileSync(marker,'utf8').trim()==='created','First tab on empty computer did not run command');
+  await waitFor(()=>fs.readFileSync(marker,'utf8').trim()==='created','First tab beside unshared sessions did not run command');
   const firstResult=await first.json();assert.ok(panes(empty).some(p=>p.id===firstResult.pane_id));
-  passed=true;console.log('PASS: authenticated Conversation creates tabs without attaching viewers, resizing the desktop or changing its focus; read-only/unshared access is rejected; empty computers can start their first session.');
+  passed=true;console.log('PASS: authenticated Conversation creates tabs without attaching viewers, resizing the desktop or changing its focus; read-only/unshared access is rejected; a computer without a shared session can start its first one.');
 }finally{
   if(!passed)try{const current=panes(session);fs.writeFileSync(path.join(dir,'panes.json'),JSON.stringify(current,null,2));for(const pane of current.filter(p=>!p.is_plugin))fs.writeFileSync(path.join(dir,`pane-${pane.id}.txt`),action(session,'dump-screen','-p',String(pane.id)));console.error('Fixture logs:',dir);}catch{}
   if(browser)await browser.close();

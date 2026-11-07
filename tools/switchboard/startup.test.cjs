@@ -57,6 +57,21 @@ test('existing and unshared sessions are never replaced, and an offline machine 
   offline.catalog({...host,sessions:[]});await offline.context.refresh();assert.equal(offline.mounted.length,0);
 });
 
+test('+ starts a session on a machine whose sessions are all unshared, under a free name',async()=>{
+  const host={id:'windows',name:'Windows',sessions:[{name:'adamant-duck',web_clients_allowed:false}]},w=workspace(host),c=w.context;
+  await c.refresh();assert.equal(w.mounted.length,0);
+  assert.equal(c.firstSessionName(host),'main');
+  create(w);assert.deepEqual(w.mounted.map(frame=>frame.src),['/hosts/windows/main']);
+  // An unshared main stays the user's; + must not attach to it.
+  const privateMain={...host,sessions:[{name:'main',web_clients_allowed:false},{name:'main-2',web_clients_allowed:false}]};
+  assert.equal(c.firstSessionName(privateMain),'main-3');
+  const taken=workspace(privateMain);await taken.context.refresh();create(taken);assert.equal(taken.mounted.length,0);
+  taken.elements.get('new-tab-target').value=JSON.stringify(['windows','main-3']);create(taken);
+  assert.deepEqual(taken.mounted.map(frame=>frame.src),['/hosts/windows/main-3']);
+  assert.equal(c.firstSessionName({...host,sessions:[{name:'work',web_clients_allowed:true}]}),null);
+  assert.equal(c.firstSessionName({...host,error:'Offline'}),null);
+});
+
 test('a failed startup times out without retry loops and can be retried explicitly',async()=>{
   const w=workspace({id:'windows',name:'Windows',sessions:[]});await w.context.refresh();
   create(w);

@@ -2,7 +2,7 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
 
-for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine starts nothing until + creates its first terminal; ':''}new terminals appear before attention discovery, remain focused, and acquire stable tab IDs without duplicates`,
+for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only unshared sessions starts nothing until + creates its first terminal; ':''}new terminals appear before attention discovery, remain focused, and acquire stable tab IDs without duplicates`,
   {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
   const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
   const browser=await chromium.launch({headless:true});
@@ -20,7 +20,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
       const json=data=>route.fulfill({contentType:'application/json',body:JSON.stringify(data)});
       if(path==='/api/health')return json({commit:'abc123def',commit_date:'2026-10-04',...(emptyMachine?{commit_timestamp:'2026-10-04T13:24:56+11:00'}:{})});
       if(path==='/api/hosts')return json([{id:'windows',name:'Windows'}]);
-      if(path==='/api/hosts/windows')return json({id:'windows',name:'Windows',sessions:connected?[{name:'main',web_clients_allowed:true}]:[]});
+      if(path==='/api/hosts/windows')return json({id:'windows',name:'Windows',sessions:connected?[{name:'main',web_clients_allowed:true}]:[{name:'adamant-duck',web_clients_allowed:false}]});
       if(path==='/api/attention')return json({tabs:failed||!catalogReady?[]:nativeTabs(),panes:[],errors:failed?[{host:'windows',message:'Unavailable'}]:[]});
       if(path==='/api/diagnostics/new-tab'){diagnostics.push(route.request().postDataJSON());return route.fulfill({status:204});}
       if(path==='/api/hosts/windows/close-tab'){closes++;return json({ok:true});}
