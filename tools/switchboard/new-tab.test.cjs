@@ -24,6 +24,16 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
       if(path==='/api/attention')return json({tabs:failed||!catalogReady?[]:nativeTabs(),panes:[],errors:failed?[{host:'windows',message:'Unavailable'}]:[]});
       if(path==='/api/diagnostics/new-tab'){diagnostics.push(route.request().postDataJSON());return route.fulfill({status:204});}
       if(path==='/api/hosts/windows/close-tab'){closes++;return json({ok:true});}
+      if(path==='/hosts/windows/new-tab'){
+        const launch=route.request().postDataJSON(),viewer=page.frames().find(frame=>frame.url().includes('/hosts/windows/'));
+        assert.equal(launch.session,'main');
+        await viewer.evaluate(launch=>{
+          window.creationRequested=true;window.creationElevated=launch.elevated;
+          window.creationLaunch={project:launch.project,command:launch.command,prompt:launch.prompt,images:launch.images};
+        },launch);
+        await viewer.waitForFunction(()=>!window.creationRequested);
+        return json({pane_id:await viewer.evaluate(()=>window.creationPane)});
+      }
       if(path.endsWith('/attachments')){
         if(delayUpload)await new Promise(resolve=>releaseUpload=resolve);
         if(uploadError)return route.fulfill({status:503,body:'unavailable'});
@@ -37,11 +47,11 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
         const input=document.querySelector('input');let count=${created},active=count;
         window.term={element:document.querySelector('#terminal'),options:{disableStdin:false},focus(){input.focus()},blur(){input.blur()},
           _core:{_renderService:{dimensions:{css:{cell:{width:8,height:16}}}}},buffer:{active:{viewportY:0,getLine:()=>({translateToString:()=>''})}},onRender(){},onResize(){}};
-        window.__zjSendControl=message=>{if(message.type==='NewTab'&&window.controlSocket.readyState===1){window.creationRequested=true;window.creationElevated=message.elevated;window.creationLaunch={project:message.project,command:message.command,prompt:message.prompt,images:message.images};}};
+        window.__zjSendControl=message=>{if(message.type==='NewTab')throw Error('Model launch reached the retained worker');if(message.type==='FocusPane'&&window.controlSocket.readyState===1){active=message.pane_id===7?0:message.pane_id-8;state();}};
       </script><script src="/bridge.js"></script><script>
         const socket=window.controlSocket=new WebSocket('wss://switchboard.test/ws/control');
         function state(){const panes=Array.from({length:count+1},(_,i)=>({pane_id:i?8+i:7,is_plugin:false,tab_position:i,title:'~'}));socket.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'MobileState',payload:{session_name:'main',panes,active_pane:panes[active],tabs:panes.map((p,i)=>({position:i,name:i?'New shell '+i:'Original',active:i===active}))}})}));}
-        window.confirmCreation=()=>{count++;active=count;window.creationRequested=false;state()};state();
+        window.confirmCreation=()=>{count++;window.creationPane=8+count;window.creationRequested=false;state()};state();
       </script>`});}
       const file=path==='/'?'index.html':path.slice(1);
       if(!['index.html','app.js','bridge.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
@@ -264,5 +274,5 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
     assert.ok(diagnostics.some(diagnostic=>diagnostic.outcome==='ready'&&diagnostic.pane_id===9&&diagnostic.sent_ms>=diagnostic.delivery_ms));
     assert.ok(diagnostics.some(diagnostic=>diagnostic.outcome==='disconnected'));
     assert.deepEqual(errors,[]);
-  }finally{await browser.close();}
+  }finally{for(const context of browser.contexts())await context.unrouteAll({behavior:'ignoreErrors'});await browser.close();}
 });
