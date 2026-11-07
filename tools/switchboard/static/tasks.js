@@ -2,7 +2,7 @@
 // Settings → Health, per computer: the Switchboard build it runs and whether its
 // agents report their own status (with a Set up button for each that doesn't), then
 // the update tasks from its ~/.config/switchboard/tasks.json. Task failures or
-// changes get a row in the sidebar until someone clears them, on any computer.
+// changes share a compact sidebar summary until cleared in Health, on any computer.
 (()=>{
   const byId=id=>document.getElementById(id);
   const element=(tag,className,text)=>{const node=document.createElement(tag);if(className)node.className=className;if(text!==undefined)node.textContent=text;return node;};
@@ -371,15 +371,14 @@
     const list=byId('task-notices');if(!list)return;
     const notices=computers.flatMap(computer=>(computer.groups||[]).filter(group=>group.notice).map(group=>({computer,group})));
     list.hidden=!notices.length;
-    list.replaceChildren(...notices.map(({computer,group})=>{
-      const row=element('div','task-notice');row.dataset.status=group.status;
-      const text=`${computer.name} · ${group.name} ${line(group)}`;
-      const open=element('button','task-notice-open',text);open.type='button';open.title=`${text}\nOpen Updates`;
-      open.onclick=()=>globalThis.openPanel?.('health');
-      const clear=element('button','task-notice-clear','×');clear.type='button';clear.title='Clear on every computer';clear.setAttribute('aria-label',`Clear ${computer.name} ${group.name}`);
-      clear.onclick=()=>act(computer,group,'clear');
-      row.append(open,clear);return row;
-    }));
+    if(!notices.length){list.replaceChildren();return;}
+    const attention=notices.filter(({group})=>groupIssue(group)).length;
+    const open=element('button','task-notice-open',`Health · ${notices.length}`);open.type='button';
+    open.dataset.status=attention?'attention':'changed';
+    open.setAttribute('aria-label',`Health: ${notices.length} task results, ${attention} need attention`);
+    open.title=notices.map(({computer,group})=>`${computer.name} · ${group.name} ${line(group)}`).join('\n')+'\nOpen Health';
+    open.onclick=()=>globalThis.openPanel?.('health');
+    list.replaceChildren(open);
   }
   async function load(){
     if(loading)return;loading=true;

@@ -42,10 +42,28 @@ test('Update tasks show per computer, flag failures and changes in the sidebar, 
     await page.goto('https://switchboard.test/');
 
     const notices=page.locator('#task-notices .task-notice-open');
-    await page.waitForFunction(()=>document.querySelectorAll('#task-notices .task-notice').length===2);
-    assert.deepEqual(await notices.allTextContents(),['Mac · dotfiles ✗ agent plugins: codex failed','Workstation · dotfiles ↑ nushell 0.104']);
+    await notices.waitFor();
+    assert.deepEqual(await notices.allTextContents(),['Health · 2']);
+    assert.equal(await notices.getAttribute('data-status'),'attention');
+    assert.equal(await notices.getAttribute('aria-label'),'Health: 2 task results, 1 need attention');
+    assert.equal(await notices.getAttribute('title'),'Mac · dotfiles ✗ agent plugins: codex failed\nWorkstation · dotfiles ↑ nushell 0.104\nOpen Health');
+    const footerHeight=(await page.locator('#sidebar-bottom').boundingBox()).height;
+    const extra=Array.from({length:20},(_,i)=>({...windows,name:`Extra task ${i}`}));
+    tasks.computers[1].groups.push(...extra);
+    await page.evaluate(()=>SwitchboardTasks.load());
+    assert.equal(await notices.textContent(),'Health · 22');
+    assert.equal((await page.locator('#sidebar-bottom').boundingBox()).height,footerHeight,'more results use no extra sidebar space');
+    await page.setViewportSize({width:390,height:740});
+    await page.locator('#sidebar-toggle').click();
+    const healthBounds=await notices.boundingBox(),settingsBounds=await page.locator('#settings').boundingBox();
+    assert.ok(healthBounds.width>0&&healthBounds.x>=0&&healthBounds.x+healthBounds.width<=settingsBounds.x,'Health fits beside Settings on mobile');
+    assert.equal(healthBounds.y,settingsBounds.y,'mobile results stay on the utility row');
+    assert.ok(healthBounds.height>=44,'mobile health control keeps a touch target');
+    tasks.computers[1].groups.splice(1);
+    await page.evaluate(()=>SwitchboardTasks.load());
+    await page.setViewportSize({width:1280,height:900});
 
-    await notices.first().click();
+    await notices.focus();await page.keyboard.press('Enter');
     assert.equal(await page.locator('#panel-title').textContent(),'Health');
     const computers=page.locator('#updates .task-computer');
     assert.deepEqual(await computers.locator('h4').allTextContents(),['Mac','Workstation','Old PC']);
@@ -74,13 +92,16 @@ test('Update tasks show per computer, flag failures and changes in the sidebar, 
     await computers.nth(1).getByRole('button',{name:'Check again'}).click();
     await page.waitForFunction(()=>document.querySelector('#updates .task-group[open]'));
     assert.equal(await mac.nth(0).getAttribute('open'),'','Expanded groups stay open across reloads');
-    await page.keyboard.press('Escape');
-    await page.locator('#task-notices .task-notice-clear').nth(1).click();
-    await page.waitForFunction(()=>document.querySelectorAll('#task-notices .task-notice').length===1);
+    await computers.nth(1).getByRole('button',{name:'Clear result',exact:true}).click();
+    await page.waitForFunction(()=>document.querySelector('#task-notices .task-notice-open').textContent==='Health · 1');
     assert.deepEqual(actions,[
       {group:'dotfiles',action:'run',task:'agent plugins'},
       {group:'dotfiles',action:'run',host:'mesh-workstation'},
       {group:'dotfiles',action:'clear',host:'mesh-workstation'}]);
+    dotfiles.notice=false;windows.notice=true;
+    await page.evaluate(()=>SwitchboardTasks.load());
+    assert.equal(await notices.getAttribute('data-status'),'changed','successful changes do not look like failures');
+    await page.keyboard.press('Escape');
 
     tasks={computers:[{name:'Mac',local:true,groups:[],error:null,switchboard:{commit:'abc1234'},agents:[]}]};
     await page.waitForFunction(()=>document.querySelector('#updates')?.getAttribute('aria-busy')==='false');

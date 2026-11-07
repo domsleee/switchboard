@@ -196,13 +196,10 @@ dialog p{font-size:12px;color:#9ba7bd}
 .task-change{color:#9dc2fa}
 .task-tail{margin:5px 0 0 16px;padding:6px 8px;font-size:11px;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere;background:#0b0d11;border:1px solid #1d222b;border-radius:4px;color:#c6ccd6}
 .task-footer{display:flex;gap:16px;padding:4px 14px 10px 42px}
-#task-notices{display:grid;gap:4px;margin-bottom:8px}
+#task-notices{display:flex;min-width:0}
 #task-notices[hidden]{display:none}
-.task-notice{display:flex;align-items:center;min-width:0;border:1px solid #2b303b;border-radius:6px;background:#161a21}
-.task-notice[data-status=failed]{border-color:#6b3434}
-.task-notice-open{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;font-size:11px;padding:5px 8px;border:0;background:transparent;color:#d6dbe3}
-.task-notice-clear{flex-shrink:0;border:0;background:transparent;color:#8590a3;padding:4px 8px}
-.task-notice-clear:hover,.task-notice-open:hover{color:#fff}
+.task-notice-open{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#sidebar-utilities .task-notice-open[data-status=attention]{color:#e6bd75}
 .log-timing{border-top:1px solid #1d222b}
 .log-timing summary{padding:7px 14px;font-size:12px;color:#8590a3;cursor:pointer}
 .log-timing summary:hover{color:#b5bfd0}
