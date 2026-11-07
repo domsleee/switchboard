@@ -55,6 +55,7 @@
     let chat=null;
     const binding=()=>chat;
     function status(text,quiet=false){notice.textContent=text;notice.hidden=quiet;}
+    function unboundNotice(){return target?.starting?'Starting agent…':target?.agent?'This agent has not reported its conversation yet. This view will connect automatically.':'No agent';}
     function busy(value){loading=value;older.disabled=refresh.disabled=value;}
     function focusSurface(){if(!panel.hidden)(form.hidden?panel:draft).focus({preventScroll:true});}
     function show(value){if(!value){stopStream();loadRequest?.abort();window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();}open=value;root.classList.toggle('conversation-open',open);modeChanged();try{localStorage.setItem(modeKey,value?'conversation':'terminal');}catch{}panel.hidden=!value;toggle.setAttribute('aria-pressed',String(value));back.setAttribute('aria-pressed',String(!value));if(value){document.getElementById('artifact-preview').hidden=true;update();if(loaded){paint(false,restorePosition===null&&lastPaint===null);if(restorePosition!==null){list.scrollTop=restorePosition.follow?list.scrollHeight:restorePosition.position;restorePosition=null;updateLatest();}}if(binding())load(loaded?'poll':'initial');startStream();focusSurface();}else if(target)terminal(target);viewport();}
@@ -270,7 +271,7 @@
       title.textContent=current?.title||'Conversation';
       activity.textContent=current?.state==='working'?'Working…':current?.state==='approval'?'Approval needed in Terminal':current?.state==='input'?'Input needed in Terminal':current?.agent||'';
       activity.classList.toggle('working',current?.state==='working');
-      if(identity(current)===identity(target)){target=current;prepare();return;}
+      if(identity(current)===identity(target)){target=current;if(!chat)status(unboundNotice());prepare();return;}
       if(target)drafts.set(identity(target),draft.value);
       if(target&&loaded){conversations.delete(identity(target));conversations.set(identity(target),{chat,messages,startCursor,tailCursor,nextCursor,streamSupported,position:restorePosition?.position??list.scrollTop,follow:restorePosition?.follow??nearBottom()});if(conversations.size>8)conversations.delete(conversations.keys().next().value);}
       window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();
@@ -280,7 +281,7 @@
       form.hidden=!chat;actions.hidden=true;
       if(!target){panel.hidden=true;viewport();return;}draft.value=drafts.get(identity(target))||'';
       panel.hidden=!open;paintFiles();viewport();
-      status(chat?'Loading conversation…':'This terminal has not reported its conversation yet. Continue in Terminal; this view will connect automatically when the agent reports it.',loaded);
+      status(chat?'Loading conversation…':unboundNotice(),loaded);
       if(cached){if(open){paint();list.scrollTop=cached.follow?list.scrollHeight:cached.position;updateLatest();}else restorePosition=cached;}if(open)focusSurface();if(chat){load(loaded?'poll':'initial');startStream();}prepare();
     }
     // Open at the latest messages; older history is fetched only on request.

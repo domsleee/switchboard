@@ -15,10 +15,14 @@ test('Conversation never attaches a terminal, including initial mobile load and 
    if(p==='/api/mesh')return json({members:[]});
    if(p==='/api/hosts')return json([{id:'local',name:'Ubuntu',local:true}]);
    if(p==='/api/hosts/local')return json({id:'local',name:'Ubuntu',local:true,sessions:[{name:'main',web_clients_allowed:true}]});
-   if(p==='/api/attention')return json({tabs,panes:[1,2,3].map(id=>({host:'local',session:'main',pane_id:id,agent:'codex',state:'ready',chat_id:`chat-${id}`})),errors:[]});
+   if(p==='/api/attention')return json({tabs,panes:tabs.flatMap(tab=>tab.panes).map(pane=>({host:'local',session:'main',pane_id:pane.pane_id,agent:'codex',state:'ready',chat_id:`chat-${pane.pane_id}`})),errors:[]});
    if(p.startsWith('/api/chats/'))return json({id:p.split('/').at(-1),agent:'codex',session_id:native?(p.endsWith('chat-3')?thread.slice(0,-1)+'3':thread):null,messages:[{role:'assistant',text:'Ready for a reply'}],start_cursor:0,next_cursor:null});
    if(p==='/api/hosts/local/codex/reply'){replies.push(route.request().postDataJSON());return json({status:'queued'});}
-   if(p==='/hosts/local/new-tab'){creations.push(route.request().postDataJSON());return json({pane_id:4});}
+   if(p==='/hosts/local/new-tab'){
+    creations.push(route.request().postDataJSON());const id=10+creations.length,tab_id=5+creations.length;
+    tabs.push({host:'local',session:'main',id:tab_id,position:tabs.length,name:'New agent',panes:[{...pane(id),tab_id,tab_position:tabs.length}]});
+    return json({pane_id:id,tab_id});
+   }
    if(p==='/hosts/local/project-list')return json(['switchboard']);
    if(p.startsWith('/hosts/')){
     connections.push(p);
@@ -83,12 +87,17 @@ test('Conversation never attaches a terminal, including initial mobile load and 
   await page.getByRole('button',{name:'Conversation',exact:true}).click();
   await page.locator('#new-tab').click();await page.locator('#new-tab-dialog').waitFor({state:'visible'});
   await page.keyboard.press('Escape');assert.equal(creations.length,0);
-  await page.locator('#new-tab').click();await page.locator('#new-tab-form button[type="submit"]').click();
-  await page.waitForFunction(()=>[...sessions.values()].some(e=>e.apiCreationPane===4));
-  assert.equal(await page.locator('#new-tab-dialog').evaluate(el=>el.open),false);
-  assert.equal(creations.length,1);assert.equal(creations[0].command,'c');
-  assert.equal(connections.length,3,'Creating a tab in Conversation must never attach a terminal');
-  assert.equal(await page.getByRole('button',{name:'Conversation',exact:true}).getAttribute('aria-pressed'),'true');
+  for(const command of ['c','castra','csol']){
+   const count=creations.length+1;
+   await page.locator('#new-tab').click();await page.locator('#new-tab-command').fill(command);await page.locator('#new-tab-command').press('Tab');await page.locator('#new-tab-form button[type="submit"]').click();
+   await page.waitForFunction(id=>allTabs().find(t=>t.key===selected)?.tab.id===id,5+count);
+   assert.equal(await page.locator('#new-tab-dialog').evaluate(el=>el.open),false);
+   assert.equal(creations.at(-1).command,command);
+   assert.equal(await page.evaluate(()=>allTabs().find(t=>t.key===selected).tab.panes[0].pane_id),10+creations.length);
+   assert.equal(connections.length,3,'Creating a tab in Conversation must never attach a terminal');
+   assert.equal(await page.getByRole('button',{name:'Conversation',exact:true}).getAttribute('aria-pressed'),'true');
+  }
+  assert.equal(creations.length,3);
   assert.deepEqual(errors,[]);
  }finally{await browser.close();}
 });
