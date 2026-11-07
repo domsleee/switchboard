@@ -1392,6 +1392,8 @@ $('new-admin-tab').onclick=()=>openNewTabDialog(true);
 function openNewTabDialog(elevated){
   newTabElevated=elevated;
   $('new-tab-title').textContent=elevated?'New administrator tab':'New tab';
+  // A fresh dialog cancels any submission still uploading for the previous one.
+  $('new-tab-form').pendingSubmission=null;newTabBusy(false);
   $('new-tab-prompt').value='';clearNewTabFiles();newTabProjectLookup.close();
   $('new-tab-project').value='switchboard';updateNewTabProject();
   // Each browser remembers its last model; Sol is the default.
@@ -1543,7 +1545,8 @@ $('new-tab-prompt').addEventListener('paste',event=>{
 $('new-tab-form').addEventListener('dragover',event=>{if(event.dataTransfer?.types.includes('Files'))event.preventDefault();});
 $('new-tab-form').addEventListener('drop',event=>{if(event.dataTransfer?.files.length){event.preventDefault();addNewTabFiles([...event.dataTransfer.files]);}});
 $('new-tab-prompt').onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing&&!matchMedia('(pointer:coarse)').matches){event.preventDefault();$('new-tab-form').requestSubmit();}};
-$('new-tab-dialog').addEventListener('close',()=>{$('new-tab-form').pendingSubmission=null;newTabBusy(false);clearNewTabFiles();});
+// The close event is queued; a reopen before it arrives owns the dialog, so leave its draft alone.
+$('new-tab-dialog').addEventListener('close',()=>{if($('new-tab-dialog').open)return;$('new-tab-form').pendingSubmission=null;newTabBusy(false);clearNewTabFiles();});
 $('new-tab-form').onsubmit=async event=>{
   event.preventDefault();const form=$('new-tab-form');if(form.pendingSubmission)return;
   const key=$('new-tab-target').value,project=$('new-tab-project').value.trim(),command=$('new-tab-model').value,text=$('new-tab-prompt').value,files=[...newTabFiles],elevated=newTabElevated;

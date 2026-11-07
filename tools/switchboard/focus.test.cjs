@@ -576,7 +576,9 @@ for(const hasTouch of [false,true])test(`conversation composer keeps focus throu
     for(const selector of ['#hidden-toggle .chevron','#hidden-toggle','#snoozed-toggle','#snoozed-toggle',
       '#filters [data-filter="work"]','#filters [data-filter="all"]','#tab-count','.sidebar-brand strong',
       '#status-message','#dismiss-status','#sidebar-toggle','#sidebar-toggle']){
-      if(selector==='#status-message'||selector==='#dismiss-status')await page.evaluate(()=>setStatus('Fixture notification',true));
+      // render() rewrites the status from its own errors, and a fixture poll can render before
+      // the click; a session error survives that render.
+      if(selector==='#status-message'||selector==='#dismiss-status')await page.evaluate(()=>{[...sessions.values()][0].closeError='Fixture notification';render();});
       if(hasTouch)await page.locator(selector).tap();else await page.locator(selector).click();
       assert.equal(await draft.evaluate(node=>node===document.activeElement),true,selector);
       assert.deepEqual(await draft.evaluate(node=>[node.selectionStart,node.selectionEnd]),[0,4],selector+' preserves the draft selection');
@@ -628,7 +630,9 @@ test('passive mouse clicks keep terminal typing and selection without switching 
     for(const selector of ['#hidden-toggle .chevron','#hidden-toggle','#snoozed-toggle','#snoozed-toggle',
       '#filters [data-filter="work"]','#filters [data-filter="all"]','#tab-count','.sidebar-brand strong',
       '#status-message','#dismiss-status','#sidebar-toggle','#sidebar-toggle']){
-      if(selector==='#status-message'||selector==='#dismiss-status')await page.evaluate(()=>setStatus('Fixture notification',true));
+      // render() rewrites the status from its own errors, and a fixture poll can render before
+      // the click; a session error survives that render.
+      if(selector==='#status-message'||selector==='#dismiss-status')await page.evaluate(()=>{[...sessions.values()][0].closeError='Fixture notification';render();});
       await page.locator(selector).click();
       assert.equal(await page.evaluate(()=>{const frame=document.querySelector('iframe.active');
         return document.activeElement===frame&&frame.contentDocument.activeElement.id==='terminal-input';}),true,selector);
