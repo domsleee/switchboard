@@ -99,6 +99,8 @@ export class ResumableConnection {
         this.nonce ||= crypto.randomUUID();
         const query = new URLSearchParams({ session: this.session, web_client_id: this.viewer,
             generation: this.generation, nonce: this.nonce, applied: this.applied, ...this.dimensions });
+        // Only a new attachment reads this; a retained one keeps its reported state.
+        if (window.__zjViewerHidden?.()) query.set('hidden', 'true');
         const socket = this.socket = new WebSocket(`${this.base}/ws/resume?${query}`);
         this.connected = false;
         this.lastReceived = Date.now();

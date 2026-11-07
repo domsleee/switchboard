@@ -2435,6 +2435,13 @@ impl Screen {
     /// A hidden viewer gives up its tab's size, so the screens people can see decide it.
     pub fn set_viewer_hidden(&mut self, client_id: ClientId, hidden: bool) -> Result<()> {
         if !self.connected_clients.borrow().contains_key(&client_id) {
+            // A browser behind Conversation asks before it attaches, so its first
+            // size never reaches other screens. remove_client clears the entry.
+            if hidden && !self.departed_clients.contains(&client_id) {
+                self.hidden_viewers.insert(client_id);
+            } else {
+                self.hidden_viewers.remove(&client_id);
+            }
             return Ok(());
         }
         let changed = if hidden {
@@ -5718,6 +5725,7 @@ impl Screen {
                 .iter()
                 .filter(|(_client_id, is_web_client)| **is_web_client)
                 .count(),
+            hidden_attach: true,
             plugins: Default::default(), // these are filled in by the wasm thread
             tab_history: self.tab_history.clone(),
             pane_history: self
@@ -11723,6 +11731,7 @@ pub(crate) fn screen_thread_main(
                         .iter()
                         .filter(|(_client_id, is_web_client)| **is_web_client)
                         .count(),
+                    hidden_attach: true,
                     plugins: Default::default(),
                     tab_history: screen.tab_history.clone(),
                     pane_history: screen

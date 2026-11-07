@@ -63,6 +63,7 @@ impl SessionManager for RealSessionManager {
                 name: info.name,
                 web_clients_allowed: info.web_clients_allowed,
                 sharing_recovery: false,
+                hidden_attach: info.hidden_attach,
                 tab_count: info.tabs.len(),
                 pane_count: info.panes.panes.values().map(|panes| panes.len()).sum(),
                 connected_clients: info.connected_clients,
@@ -256,6 +257,9 @@ pub struct WebSessionInfo {
     pub web_clients_allowed: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub sharing_recovery: bool,
+    /// A viewer can attach hidden (`hidden=true`) without sizing this session's tab.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden_attach: bool,
     pub tab_count: usize,
     pub pane_count: usize,
     pub connected_clients: usize,
@@ -287,6 +291,9 @@ pub struct TerminalParams {
     pub cell_height: Option<u16>,
     /// Lines per wheel report when the browser scrolls finely (1); absent keeps 3.
     pub wheel_lines: Option<u32>,
+    /// The browser shows another view, so this viewer must not size the tab.
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 #[derive(Deserialize)]

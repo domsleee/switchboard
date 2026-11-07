@@ -110,6 +110,9 @@
   // an older engine never does, so the sidebar disconnects that viewer instead.
   let sentHidden=null,hiddenAck=0;
   function viewerHidden(){return conversationOpen()||!!window.frameElement&&!window.frameElement.classList.contains('active');}
+  // The web client asks on every attach, so a viewer that loads or reconnects
+  // behind Conversation never sizes the tab for other screens.
+  window.__zjViewerHidden=viewerHidden;
   function updateHidden(){
     if(!latest||!window.__zjSendControl||controlSocket?.readyState!==1)return;
     const hidden=viewerHidden();
@@ -471,6 +474,9 @@
     const was=latest?.active_pane,now=payload?.active_pane;
     if(was&&(was.pane_id!==now?.pane_id||was.is_plugin!==now?.is_plugin))predict?.reset();
     latest = payload;
+    // The first state says how the viewer attached: hidden behind Conversation, it
+    // must still rejoin sizing if Terminal was shown before this state arrived.
+    if(sentHidden===null&&typeof payload?.tab_viewport?.hidden==='boolean')sentHidden=payload.tab_viewport.hidden;
     diagnostics?.state(payload);
     if(viewportSupported())window.dispatchEvent(new Event('zellij:rendering-resize'));
     const created=pendingNewTab&&pendingNewTab.sentAt!==null&&latest.active_pane&&!latest.active_pane.is_plugin&&!pendingNewTab.panes.has(latest.active_pane.pane_id)&&

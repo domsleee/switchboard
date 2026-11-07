@@ -96,6 +96,8 @@ pub(super) struct ResumeQuery {
     pub cell_width: Option<u16>,
     pub cell_height: Option<u16>,
     pub wheel_lines: Option<u32>,
+    #[serde(default)]
+    pub hidden: bool,
 }
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -217,6 +219,7 @@ async fn resume(
             query.rows,
             query.cols,
             query.wheel_lines.unwrap_or(0),
+            query.hidden,
         ));
     }
     *viewer.touched.lock().unwrap() = Instant::now();
@@ -349,6 +352,7 @@ async fn attachment(
     rows: Option<u16>,
     cols: Option<u16>,
     wheel_lines: u32,
+    hidden: bool,
 ) {
     let app = &worker.app;
     let os = match app.client_os_api_factory.create_client_os_api() {
@@ -390,6 +394,7 @@ async fn attachment(
         None,
         app.pending_welcome_sessions.clone(),
         app.sharing_recovery.clone(),
+        hidden,
     );
     if !matches!(
         tokio::time::timeout(Duration::from_secs(30), attachment).await,

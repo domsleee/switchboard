@@ -93,6 +93,7 @@ panes {
 connected_clients 2
 web_clients_allowed true
 web_client_count 2
+hidden_attach true
 available_layouts {
     layout1 source="file"
     layout2 source="built-in"

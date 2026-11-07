@@ -3309,6 +3309,8 @@ class ResumableConnection {
         this.nonce ||= crypto.randomUUID();
         const query = new URLSearchParams({ session: this.session, web_client_id: this.viewer,
             generation: this.generation, nonce: this.nonce, applied: this.applied, ...this.dimensions });
+        // Only a new attachment reads this; a retained one keeps its reported state.
+        if (window.__zjViewerHidden?.()) query.set('hidden', 'true');
         const socket = this.socket = new WebSocket(`${this.base}/ws/resume?${query}`);
         this.connected = false;
         this.lastReceived = Date.now();
@@ -3625,6 +3627,9 @@ function initWebSockets(boot, term, fitAddon) {
         // Fine scrolling: the wheel handler sends one report per line, so Zellij
         // scrolls one line per report instead of three.
         if (fineScrolling()) queryString += "&wheel_lines=1";
+        // A viewer the embedding page hides (Switchboard's Conversation) attaches
+        // without sizing its tab for the screens people can see.
+        if (window.__zjViewerHidden?.()) queryString += "&hidden=true";
         const wsTerminalUrl = `${url}${queryString}`;
 
         if (nextBoot.resumable?.protocol === 1) {

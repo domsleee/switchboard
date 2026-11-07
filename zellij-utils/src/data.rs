@@ -1850,6 +1850,10 @@ pub struct SessionInfo {
     pub plugins: BTreeMap<u32, PluginInfo>,
     pub web_clients_allowed: bool,
     pub web_client_count: usize,
+    /// This session's server keeps a viewer's hidden report from before it attaches,
+    /// so a browser behind another view can attach without sizing the tab. Older
+    /// session servers, still running after an update, leave this false.
+    pub hidden_attach: bool,
     pub tab_history: BTreeMap<ClientId, Vec<usize>>,
     pub pane_history: BTreeMap<ClientId, Vec<PaneId>>,
     pub creation_time: Duration,
