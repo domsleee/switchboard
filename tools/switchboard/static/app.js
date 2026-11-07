@@ -272,7 +272,8 @@ function updateCreatedTabs(entry){
     paneId=active.pane_id;entry.starting=false;clearTimeout(entry.startTimeout);
     if(entry.selectOnStart){selected=JSON.stringify([entry.host,entry.name,'pane',paneId]);restoringTab=false;entry.needsFocus=true;}
   }
-  else if(creating&&active&&!active.is_plugin&&!entry.pendingNewTab?.paneIds?.has(active.pane_id))paneId=active.pane_id;
+  // Conversation creates tabs without moving the viewer's focus, so its active pane is never the new one.
+  else if(creating&&active&&!active.is_plugin&&!entry.pendingNewTab?.api&&!entry.pendingNewTab?.paneIds?.has(active.pane_id))paneId=active.pane_id;
   else if(requested?.[0]===entry.host&&requested[1]===entry.name&&requested[2]==='pane'&&Number.isInteger(requested[3]))paneId=requested[3];
   if(Number.isInteger(paneId)&&state.panes?.some(p=>!p.is_plugin&&p.pane_id===paneId)){
     entry.provisionalTabs??=[];
@@ -294,7 +295,9 @@ function updateCreatedTabs(entry){
   entry.provisionalTabs=(entry.provisionalTabs||[]).filter(tab=>{
     if(tab.fallback&&(!entry.catalogUnavailable||entry.catalog?.length))return false;
     const pane=state.panes?.find(p=>!p.is_plugin&&p.pane_id===tab.id);
-    if(!pane)return false;
+    // A tab Conversation just created can reach the viewer after the creation response.
+    if(!pane)return tab.id===entry.apiCreationPane&&!tab.confirmed;
+    tab.confirmed=true;
     tab.position=pane.tab_position;
     tab.name=state.tabs?.find(t=>t.position===pane.tab_position)?.name||(tab.fallback?'Terminal':'New tab');
     tab.panes=state.panes.filter(p=>p.tab_position===pane.tab_position);
@@ -1488,9 +1491,9 @@ async function createConversationTab(key,launch){
   const entry=sessions.get(key)||connectSession(host,name,true);
   if(entry.pendingNewTab){setStatus('A tab is already being created on this computer.',true);return;}
   const pending=entry.pendingNewTab=new Set(sessionTabs(entry).map(tab=>tabKey(entry,tab)));
-  pending.requestId=entry.newTabRequestId=(entry.newTabRequestId||0)+1;
+  pending.requestId=entry.newTabRequestId=(entry.newTabRequestId||0)+1;pending.api=true;
   entry.creatingTab={id:'creating',pending:true,name:'Creating tab…',position:Infinity,panes:[]};
-  const placeholder=selected=tabKey(entry,entry.creatingTab);restoringTab=false;
+  const placeholder=selected=tabKey(entry,entry.creatingTab);restoringTab=false;entry.followActiveTab=false;
   if(filter!=='all'&&groups[hostId]!==filter)setFilter('all');$('tab-search').value='';
   sidebarOpen=false;updateSidebar();$('new-tab-dialog').close();render();globalThis.SwitchboardConversation.focus();
   try{

@@ -175,3 +175,59 @@ test('Desktop keeps a connected terminal through Conversation so switching back 
   assert.deepEqual(errors,[]);
  }finally{await browser.close();}
 });
+
+test('Desktop Conversation follows a new tab while the connected viewer and catalog lag behind it',
+ {skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
+ const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch();
+ try{
+  const page=await browser.newPage({viewport:{width:1200,height:900}});page.setDefaultTimeout(10000);
+  const errors=[];page.on('pageerror',e=>errors.push(e.message));
+  const pane={pane_id:1,is_plugin:false,tab_id:1,tab_position:0,tab_name:'Agent',title:'Agent',is_focused:true};
+  const created={pane_id:7,is_plugin:false,tab_id:4,tab_position:1,tab_name:'New agent',title:'New agent',is_focused:true};
+  const tabs=[{host:'local',session:'main',id:1,position:0,name:'Agent',panes:[pane]}];
+  let releaseCreation;const creationGate=new Promise(resolve=>releaseCreation=resolve);
+  await page.route('http://conversation.test/**',async route=>{
+   const p=new URL(route.request().url()).pathname,json=value=>route.fulfill({json:value});
+   if(p==='/api/mesh')return json({members:[]});
+   if(p==='/api/hosts')return json([{id:'local',name:'Ubuntu',local:true}]);
+   if(p==='/api/hosts/local')return json({id:'local',name:'Ubuntu',local:true,sessions:[{name:'main',web_clients_allowed:true}]});
+   if(p==='/api/attention')return json({tabs,panes:tabs.flatMap(tab=>tab.panes).map(p=>({host:'local',session:'main',pane_id:p.pane_id,agent:'codex',state:'ready',token:'r',seen:true,chat_id:'chat-'+p.pane_id})),errors:[]});
+   if(p.startsWith('/api/chats/'))return json({id:p.split('/').at(-1),agent:'codex',session_id:null,messages:[{role:'assistant',text:'Reply from '+p.split('/').at(-1)}],start_cursor:0,next_cursor:null});
+   if(p==='/hosts/local/new-tab'){await creationGate;return json({pane_id:created.pane_id,tab_id:created.tab_id});}
+   if(p==='/hosts/local/project-list')return json(['switchboard']);
+   if(p.startsWith('/hosts/'))return route.fulfill({contentType:'text/html',body:`<script>
+      let panes=${JSON.stringify([pane])};
+      const state=()=>parent.postMessage({type:'zellij-state',payload:{session_name:'main',active_pane:${JSON.stringify(pane)},panes,tabs:[{position:0,name:'Agent'},{position:1,name:'New agent'}]}},location.origin);
+      window.addPane=pane=>{panes=[...panes,pane];state();};window.pushState=state;
+      addEventListener('message',event=>{if(event.data.type==='zellij-focus')state();});state();
+     </script>`});
+   if(p.startsWith('/api/'))return json({});
+   const file=path.join(__dirname,'static',p==='/'?'index.html':p.slice(1));
+   if(!fs.existsSync(file))return route.fulfill({status:404,body:''});
+   return route.fulfill({path:file,contentType:p.endsWith('.js')?'text/javascript':p.endsWith('.css')?'text/css':'text/html'});
+  });
+  await page.goto('http://conversation.test/?host=local&session=main&tab=1');
+  await page.waitForFunction(()=>[...sessions.values()][0]?.state);
+  await page.getByRole('button',{name:'Conversation',exact:true}).click();
+  await page.getByText('Reply from chat-1',{exact:true}).waitFor();
+  await page.locator('#new-tab').click();await page.locator('#new-tab-prompt').fill('Start');
+  await page.locator('#new-tab-form button[type="submit"]').click();
+  await page.waitForFunction(()=>allTabs().find(t=>t.key===selected)?.tab.id==='creating');
+  // The connected viewer reports its unchanged focus while the request is in flight.
+  await page.evaluate(()=>{[...sessions.values()][0].frame.contentWindow.pushState();return refreshAttention(true);});
+  assert.equal(await page.evaluate(()=>allTabs().find(t=>t.key===selected)?.tab.id),'creating','Viewer focus on the old tab must not end creation');
+  releaseCreation();
+  await page.waitForFunction(id=>allTabs().find(t=>t.key===selected)?.tab.id===id,created.pane_id);
+  // Neither the scanner nor the viewer has seen the new pane yet.
+  await page.evaluate(()=>{[...sessions.values()][0].frame.contentWindow.pushState();return refreshAttention(true);});
+  assert.equal(await page.evaluate(()=>allTabs().find(t=>t.key===selected)?.tab.panes[0]?.pane_id),created.pane_id,'The new tab stays selected before anything reports its pane');
+  await page.evaluate(pane=>[...sessions.values()][0].frame.contentWindow.addPane(pane),created);
+  assert.equal(await page.evaluate(()=>allTabs().find(t=>t.key===selected)?.tab.panes[0]?.pane_id),created.pane_id);
+  tabs.push({host:'local',session:'main',id:created.tab_id,position:1,name:'New agent',panes:[created]});
+  await page.evaluate(()=>refreshAttention(true));
+  await page.waitForFunction(id=>allTabs().find(t=>t.key===selected)?.tab.id===id,created.tab_id);
+  await page.getByText('Reply from chat-7',{exact:true}).waitFor();
+  assert.equal(await page.getByRole('button',{name:'Conversation',exact:true}).getAttribute('aria-pressed'),'true');
+  assert.deepEqual(errors,[]);
+ }finally{await browser.close();}
+});

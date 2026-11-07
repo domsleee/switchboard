@@ -8,7 +8,10 @@
 .conversation-modes button:focus-visible{outline:2px solid #adc5ff;outline-offset:2px}
 .conversation-panel{--chat-width:44rem;--chat-border:#303743;position:absolute;inset:0;z-index:5;background:#12151b;color:#e3e8f1;display:flex;flex-direction:column;color-scheme:dark;font:15px/1.75 system-ui,sans-serif}
 .conversation-panel,.conversation-panel *{box-sizing:border-box}
-.conversation-panel[hidden],.conversation-panel [hidden]{display:none!important}
+/* Hide the panel without discarding its layout. display:none would make every
+   return from Terminal lay out the whole loaded transcript again. */
+.conversation-panel[hidden]{content-visibility:hidden;opacity:0;z-index:-1}
+.conversation-panel [hidden]{display:none!important}
 .conversation-panel:focus{outline:none}
 .conversation-panel>header{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px 16px;flex-shrink:0;min-height:96px;padding:12px 210px 12px 28px;border-bottom:1px solid #232a35;background:#151920}
 .conversation-heading{display:flex;flex-direction:column;min-width:0;gap:2px;grid-column:1/-1}
