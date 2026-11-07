@@ -118,7 +118,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
       }
       if(number===2){
         await page.locator('#new-tab-prompt').fill('Update this project');
-        await page.getByLabel('Model',{exact:true}).selectOption({label:'Claude'});
+        await page.getByLabel('Model',{exact:true}).selectOption({label:'c'});
         await page.locator('#new-tab-project').fill('dot');
         await page.getByRole('option',{name:'dotfiles',exact:true}).waitFor();
         await page.keyboard.press('Tab');
