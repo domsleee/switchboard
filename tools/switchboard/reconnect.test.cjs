@@ -180,6 +180,45 @@ test('temporary HTTP errors retry quietly without asking for credentials', async
   assert.deepEqual(f.sockets[2].sent, ['recovered']);
 });
 
+test('initial loading reports a gateway error without opening a token dialog', async () => {
+  const f = fixture(); f.ctx.httpError = 502;
+  f.ctx.getSecurityToken = async () => { f.ctx.prompts++; throw Error('Unexpected token dialog'); };
+  const result = f.ctx.fetchSession('main').then(() => null, error => error);
+  await f.flush();
+  assert.equal(f.ctx.prompts, 0);
+  assert.equal(f.ctx.disconnected, undefined, 'the caller owns error presentation');
+  assert.match((await result).message, /502/);
+});
+
+test('initial loading waits for an updating attachment without opening a token dialog', async () => {
+  const f = fixture(); f.ctx.httpError = 503;
+  f.ctx.getSecurityToken = async () => { f.ctx.prompts++; throw Error('Unexpected token dialog'); };
+  const result = f.ctx.fetchSession('main').then(value => value, error => error);
+  await f.flush();
+  assert.equal(f.ctx.prompts, 0);
+  assert.equal(f.ctx.disconnected, undefined);
+  f.ctx.httpError = null; await f.advance(1000);
+  assert.equal((await result).session_name, 'main');
+});
+
+test('a managed terminal retries rejected authentication through its relay without a token dialog', async () => {
+  const f = fixture(); await f.attach();
+  f.ctx.window.__switchboardManagedFocus = true; f.ctx.authExpired = true;
+  f.sockets[0].drop(); await f.advance(1000);
+  assert.equal(f.ctx.prompts, 0);
+  assert.equal(f.ctx.disconnected, undefined);
+  f.ctx.authExpired = false; await f.advance(250); await f.attach();
+  f.client.sendAnsiKey('recovered');
+  assert.deepEqual(f.sockets[2].sent, ['recovered']);
+});
+
+test('initial loading in a managed terminal leaves authentication to the relay', async () => {
+  const f = fixture();
+  f.ctx.window.__switchboardManagedFocus = true; f.ctx.authExpired = true;
+  await assert.rejects(f.ctx.fetchSession('main'), /Switchboard could not authenticate/);
+  assert.equal(f.ctx.prompts, 0);
+});
+
 test('long outages show a non-focusing status and recover without a page reload', async () => {
   const f = fixture(); await f.attach(); f.ctx.offline = true;
   f.sockets[0].drop();

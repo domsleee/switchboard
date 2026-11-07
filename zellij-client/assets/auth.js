@@ -98,7 +98,7 @@ function authenticate() {
  * @param {string} url - Absolute URL to request
  * @param {Object} options - fetch options, merged over the credentialed defaults
  * @param {Object} recovery - quiet returns non-auth failures for background retry; timeoutMs applies per request
- * @returns {Promise<Response>} The successful response (or non-auth failure when quiet)
+ * @returns {Promise<Response>} The response (including temporary attachment unavailability)
  */
 export async function authorizedFetch(url, options = {}, { quiet = false, timeoutMs } = {}) {
     while (true) {
@@ -115,11 +115,17 @@ export async function authorizedFetch(url, options = {}, { quiet = false, timeou
         }
 
         if (response.status !== 401) {
+            // Bootstrap handles 503 while an attachment worker updates. Other
+            // failures belong to the caller, never the authentication dialog.
+            if (quiet || response.status === 503) return response;
+            throw new Error(`Error ${response.status} connecting to server.`);
+        }
+
+        // Switchboard owns the upstream credentials and refreshes them in its
+        // relay. Asking inside its iframe cannot repair that connection.
+        if (window.__switchboardManagedFocus) {
             if (quiet) return response;
-            await showErrorModal(
-                "Error",
-                `Error ${response.status} connecting to server.`
-            );
+            throw new Error("Switchboard could not authenticate this terminal. Reload after the connection recovers.");
         }
 
         // A request in flight across an authentication was answered against the
