@@ -61,6 +61,14 @@ test('outgoing replies stay visible through queue acknowledgement and reconcile 
   assert.equal(await page.evaluate(()=>pastes.length),2);
   assert.deepEqual(replies.at(-1),{pane_id:1,text:'Relay reply'});
   assert.equal(await draft.inputValue(),'');
+  // A turn that ended with background work still running takes replies.
+  await page.evaluate(()=>{current.state='waiting';SwitchboardConversation.update();});
+  await draft.fill('While waiting');await send.click();await page.waitForFunction(()=>document.querySelector('.conversation-compose textarea').value==='');
+  assert.deepEqual(replies.at(-1),{pane_id:1,text:'While waiting'});
+  await page.evaluate(()=>{current.state='approval';SwitchboardConversation.update();});
+  const sent=replies.length;
+  await draft.fill('Needs approval');await send.click();await page.getByText('The agent needs attention in Terminal. Your draft is kept.',{exact:true}).waitFor();
+  assert.equal(replies.length,sent);assert.equal(await draft.inputValue(),'Needs approval');
   assert.deepEqual(errors,[]);
  }finally{held?.();await browser.close();}
 });
