@@ -301,7 +301,17 @@ body.sidebar-collapsed #artifact-preview header{padding-left:42px}
   #link-apps input{width:100%;flex-shrink:1}
 }
 
-@media(hover:none){#tabs .tab-actions{opacity:1;background:transparent}#tabs .tab-select{padding-right:40px}}
+/* Touch screens can't hover to reveal a row's menu button, so only the selected tab shows one.
+   The other rows use the freed width for their names. */
+@media(hover:none){
+  #tabs .tab-actions{background:transparent}
+  #tabs .tab-row.active .tab-actions{opacity:1}
+  #tabs .tab-row:not(.active) .tab-actions{display:none}
+  #tabs .tab-row.active .tab-select{padding-right:40px}
+  #tabs .tab-row:not(.active) .tab-select{padding-right:12px}
+}
+/* Phones use a 44px button, so the selected row keeps the wider mobile padding. */
+@media(hover:none) and (max-width:700px){#tabs .tab-row.active .tab-select{padding-right:54px}}
 
 #new-tab-dialog{width:500px;max-width:calc(100vw - 32px);padding:16px;overflow:visible}
 /* A landscape phone is shorter than the form; scroll it so Create stays reachable. */
@@ -348,7 +358,7 @@ body.sidebar-collapsed #artifact-preview header{padding-left:42px}
 #new-tab-form .dialog-actions button{font-size:11px;height:26px;padding:3px 8px}
 #new-tab-form button[type=submit]{background:#30466b;border-color:#507bb3}
 
-@media(pointer:coarse){button,select,.sidebar-actions a{min-height:44px}#tabs .tab-actions{opacity:1}}
+@media(pointer:coarse){button,select,.sidebar-actions a{min-height:44px}}
 
 @media(max-width:700px), (pointer:coarse){
   #new-tab-form input,#new-tab-form select{height:46px;font-size:16px}
