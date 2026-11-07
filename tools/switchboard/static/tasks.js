@@ -369,13 +369,13 @@
   }
   function renderNotices(){
     const list=byId('task-notices');if(!list)return;
-    const notices=computers.flatMap(computer=>(computer.groups||[]).filter(group=>group.notice).map(group=>({computer,group})));
+    // Successful changes stay in Health; only problems earn a sidebar count.
+    const notices=computers.flatMap(computer=>(computer.groups||[]).filter(group=>group.notice&&groupIssue(group)).map(group=>({computer,group})));
     list.hidden=!notices.length;
     if(!notices.length){list.replaceChildren();return;}
-    const attention=notices.filter(({group})=>groupIssue(group)).length;
     const open=element('button','task-notice-open',`Health · ${notices.length}`);open.type='button';
-    open.dataset.status=attention?'attention':'changed';
-    open.setAttribute('aria-label',`Health: ${notices.length} task results, ${attention} need attention`);
+    open.dataset.status='attention';
+    open.setAttribute('aria-label',`Health: ${notices.length} need attention`);
     open.title=notices.map(({computer,group})=>`${computer.name} · ${group.name} ${line(group)}`).join('\n')+'\nOpen Health';
     open.onclick=()=>globalThis.openPanel?.('health');
     list.replaceChildren(open);
