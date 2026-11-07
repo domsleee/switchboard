@@ -26,9 +26,17 @@ if os.name == 'nt':
     # ReadFile's console byte conversion can replace each half of a surrogate pair.
     # Read UTF-16 console characters and retain a high surrogate until its pair arrives.
     console_decoder = codecs.getincrementaldecoder('utf-16-le')()
+    kernel.ReadConsoleW.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+    kernel.ReadConsoleW.restype = wintypes.BOOL
+    input_handle = kernel.GetStdHandle(-10 & 0xffffffff)
     def read_input():
+        buffer = ctypes.create_string_buffer(8192)
+        count = wintypes.DWORD()
         while True:
-            text = console_decoder.decode(msvcrt.getwch().encode('utf-16-le', 'surrogatepass'))
+            if not kernel.ReadConsoleW(input_handle, buffer, 4096, ctypes.byref(count), None):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if not count.value: return b''
+            text = console_decoder.decode(buffer.raw[:count.value * 2])
             if text: return text.encode('utf-8')
 else:
     import tty
