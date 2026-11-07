@@ -5,18 +5,20 @@ test('Conversation never attaches a terminal, including initial mobile load and 
  const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch();
  try{
   const page=await browser.newPage({viewport:{width:390,height:844},isMobile:true,hasTouch:true});page.setDefaultTimeout(10000);
-  let native=true;const errors=[],connections=[],replies=[],creations=[];page.on('pageerror',e=>errors.push(e.message));
+  let native=true;const errors=[],connections=[],replies=[],creations=[],reviews=[],tokens=new Map();page.on('pageerror',e=>errors.push(e.message));
   const pane=id=>({pane_id:id,is_plugin:false,tab_id:id===3?2:id,tab_position:id===3?2:id,tab_name:`Agent ${id}`,title:`Agent ${id}`,is_focused:true});
   const tabs=[1,2].map(id=>({host:'local',session:'main',id,position:id,name:`Agent ${id}`,panes:id===2?[pane(2),pane(3)]:[pane(id)]}));
   const thread='12345678-1234-1234-1234-123456789abc';
+  let releaseHistory;const historyGate=new Promise(resolve=>releaseHistory=resolve);
   await page.route('http://conversation.test/**',async route=>{
    const url=new URL(route.request().url()),p=url.pathname,json=value=>route.fulfill({json:value});
    if(p==='/api/health')return json({});
    if(p==='/api/mesh')return json({members:[]});
    if(p==='/api/hosts')return json([{id:'local',name:'Ubuntu',local:true}]);
    if(p==='/api/hosts/local')return json({id:'local',name:'Ubuntu',local:true,sessions:[{name:'main',web_clients_allowed:true}]});
-   if(p==='/api/attention')return json({tabs,panes:tabs.flatMap(tab=>tab.panes).map(pane=>({host:'local',session:'main',pane_id:pane.pane_id,agent:'codex',state:'ready',chat_id:`chat-${pane.pane_id}`})),errors:[]});
-   if(p.startsWith('/api/chats/'))return json({id:p.split('/').at(-1),agent:'codex',session_id:native?(p.endsWith('chat-3')?thread.slice(0,-1)+'3':thread):null,messages:[{role:'assistant',text:'Ready for a reply'}],start_cursor:0,next_cursor:null});
+   if(p==='/api/attention')return json({tabs,panes:tabs.flatMap(tab=>tab.panes).map(pane=>({host:'local',session:'main',pane_id:pane.pane_id,agent:'codex',state:'ready',token:tokens.get(pane.pane_id)||`result-${pane.pane_id}`,seen:false,chat_id:`chat-${pane.pane_id}`})),errors:[]});
+   if(p==='/api/attention/ack'){reviews.push(route.request().postDataJSON());return json({ok:true});}
+   if(p.startsWith('/api/chats/')){await historyGate;return json({id:p.split('/').at(-1),agent:'codex',session_id:native?(p.endsWith('chat-3')?thread.slice(0,-1)+'3':thread):null,messages:[{role:'assistant',text:'Ready for a reply'}],start_cursor:0,next_cursor:null});}
    if(p==='/api/hosts/local/codex/reply'){replies.push(route.request().postDataJSON());return json({status:'queued'});}
    if(p==='/hosts/local/new-tab'){
     creations.push(route.request().postDataJSON());const id=10+creations.length,tab_id=5+creations.length;
@@ -38,13 +40,26 @@ test('Conversation never attaches a terminal, including initial mobile load and 
    return route.fulfill({path:file,contentType:p.endsWith('.js')?'text/javascript':p.endsWith('.css')?'text/css':'text/html'});
   });
   await page.goto('http://conversation.test/?host=local&session=main&tab=1');
+  await page.getByText('Loading conversation…',{exact:true}).waitFor();
+  assert.deepEqual(reviews,[],'Selecting a conversation does not review output before it loads');
+  releaseHistory();
   await page.getByText('Ready for a reply',{exact:true}).waitFor();
+  await page.waitForFunction(()=>document.querySelector('.tab-select.selected')?.dataset.agentState==='Ready');
+  assert.deepEqual(reviews,[{host:'local',session:'main',pane_id:1,token:'result-1'}],'Viewing the conversation reviews its result without a terminal focus acknowledgement');
+  assert.equal(await page.locator('.tab-select:not(.selected)').getAttribute('data-agent-state'),'Ready to review','Unopened conversations remain unread');
+  tokens.set(1,'result-1-new');
+  await page.evaluate(()=>refreshAttention(true));
+  await page.waitForFunction(()=>document.querySelector('.tab-select.selected')?.dataset.agentState==='Ready');
+  assert.ok(reviews.some(review=>review.pane_id===1&&review.token==='result-1-new'),'A new result is reviewed while its conversation stays visible');
   assert.deepEqual(connections,[],'Mobile Conversation must not load a terminal page at all');
   assert.equal(await page.locator('iframe[title="Ubuntu: main"]').getAttribute('src'),'about:blank');
   await page.getByLabel('Reply draft').fill('Hello without resizing');await page.getByRole('button',{name:'Send',exact:true}).click();
   await page.waitForFunction(()=>document.querySelector('.conversation-outgoing.queued')?.textContent.includes('Waiting for agent…'));
   assert.equal(replies[0].message,'Hello without resizing');assert.deepEqual(connections,[]);
   await page.evaluate(()=>activate(allTabs().find(t=>t.tab.id===2)));
+  await page.waitForFunction(()=>JSON.parse(localStorage.getItem('switchboard-attention-seen')||'{}')['["local","main",2]']==='result-2');
+  assert.ok(reviews.some(review=>review.pane_id===2));
+  assert.ok(!reviews.some(review=>review.pane_id===3),'A split pane whose conversation was not shown stays unread');
   await page.setViewportSize({width:844,height:390});
   assert.deepEqual(connections,[],'Switching tabs and rotating in Conversation must not attach');
   await page.getByRole('button',{name:'Terminal',exact:true}).click();

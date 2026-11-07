@@ -434,17 +434,26 @@ function autoLabel(item){
   return '';
 }
 const reviewSent=new Map();
-function acknowledgeAttention(item){
+function acknowledgeAttention(item,paneId){
   let changed=false;
   // The relay stores the review with the computer running the tab, so other
   // viewers clear it too. The local copy only hides it in this browser, so a
   // review the owner never recorded (it was offline) is sent again later.
-  for(const state of statesForTab(item))if(state.state==='ready'&&!state.seen&&Date.now()-(reviewSent.get(state.key+state.token)||0)>10000){
+  for(const state of statesForTab(item))if((paneId===undefined||state.pane_id===paneId)&&state.state==='ready'&&!state.seen&&Date.now()-(reviewSent.get(state.key+state.token)||0)>10000){
     reviewSent.set(state.key+state.token,Date.now());
     if(seenAttention[state.key]!==state.token){seenAttention[state.key]=state.token;changed=true;}
     fetch('/api/attention/ack',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:state.host,session:state.session,pane_id:state.pane_id,token:state.token})}).catch(()=>{});
   }
   if(changed)localStorage.setItem('switchboard-attention-seen',JSON.stringify(seenAttention));
+  return changed;
+}
+function acknowledgeConversation(view){
+  if(!globalThis.SwitchboardConversation?.isOpen?.()||document.hidden||!document.hasFocus()||!$('artifact-preview').hidden||document.querySelector('dialog[open]'))return;
+  const item=allTabs().find(item=>item.key===selected);
+  if(!item||item.entry.host!==view.host||item.entry.name!==view.session||!item.tab.panes.some(p=>!p.is_plugin&&p.pane_id===view.pane))return;
+  const state=paneAttention.get(attentionKey(view.host,view.session,view.pane));
+  if(!view.chatId||state?.chat_id!==view.chatId)return;
+  if(acknowledgeAttention(item,view.pane))render();
 }
 function isReady(item){return !!(ready[item.key] || item.tab.name.startsWith('*') || askpassForTab(item) || statesForTab(item).some(needsAttention));}
 function matchesSearch(item){
@@ -1129,7 +1138,7 @@ window.addEventListener('message',event=>{
     syncActiveTab(entry);
     if(entry.pendingNewTab&&!activeTab(entry))refreshAttention(true);
     const current=allTabs().find(item=>item.key===selected);
-    if(current?.entry===entry && entry.acknowledgeTab===selected && !entry.requestedPane && !entry.focusPending && activeTab(entry)?.id===current.tab.id){acknowledgeAttention(current);entry.acknowledgeTab=null;}
+    if(!globalThis.SwitchboardConversation?.isOpen?.() && current?.entry===entry && entry.acknowledgeTab===selected && !entry.requestedPane && !entry.focusPending && activeTab(entry)?.id===current.tab.id){acknowledgeAttention(current);entry.acknowledgeTab=null;}
     render();
     if(entry.needsFocus && entry.frame.classList.contains('active')){
       const current=allTabs().find(item=>item.key===selected);if(current)focus(current,true);
@@ -1902,7 +1911,7 @@ async function refreshAttention(immediate=false,watch=false){
       updateCreatedTabs(entry);
     }
     const current=allTabs().find(item=>item.key===selected);
-    if(current && document.hasFocus() && !document.hidden && $('artifact-preview').hidden && !document.querySelector('dialog[open]') && !current.entry.requestedPane && !current.entry.focusPending && activeTab(current.entry)?.id===current.tab.id)acknowledgeAttention(current);
+    if(!globalThis.SwitchboardConversation?.isOpen?.() && current && document.hasFocus() && !document.hidden && $('artifact-preview').hidden && !document.querySelector('dialog[open]') && !current.entry.requestedPane && !current.entry.focusPending && activeTab(current.entry)?.id===current.tab.id)acknowledgeAttention(current);
     render();
     const selectedTab=allTabs().find(item=>item.key===selected);if(selectedTab?.entry.needsFocus)focus(selectedTab,true);
     // A relay without versions answers at once, so wait before asking again.
@@ -1933,6 +1942,7 @@ const browserDiagnostics=window.SwitchboardBrowserDiagnostics?.(diagnostic=>{
 });
 
 window.SwitchboardConversation?.install({
+  viewed:acknowledgeConversation,
   modeChanged(){for(const entry of sessions.values())syncTerminalConnection(entry);render();},
   selection(){
     const item=allTabs().find(item=>item.key===selected);if(!item)return null;
