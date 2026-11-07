@@ -127,14 +127,16 @@ function Check-ForUpdates {
     }
 }
 function Stop-StaleRelay {
-    $config = [regex]::Escape($relayConfig.Replace('\','/'))
+    $config = [IO.Path]::GetFullPath($relayConfig)
     $ids = @(Get-NetTCPConnection -LocalPort $RelayPort -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique)
     if ($script:relay -and !$script:relay.HasExited) { $ids += $script:relay.Id }
     foreach ($id in ($ids | Select-Object -Unique)) {
         $live = Get-CimInstance Win32_Process -Filter "ProcessId=$id"
         # Only this installation's relay; never a session server or another program on the port.
         if (!$live -or $live.Name -ine 'zellij.exe' -or $live.CommandLine -notmatch '\bserve\s' -or
-            $live.CommandLine -match '(?:^|\s)--server(?:\s|=)' -or $live.CommandLine.Replace('\','/') -notmatch $config) { continue }
+            $live.CommandLine -match '(?:^|\s)--server(?:\s|=)') { continue }
+        $hostConfig = Get-SwitchboardCommandLineValue $live.CommandLine '--host-config'
+        if (!$hostConfig -or [IO.Path]::GetFullPath($hostConfig) -ine $config) { continue }
         # Its screen subscribers inherit the listening socket and would keep the port.
         $subscribers = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$id" | Where-Object { $_.CommandLine -match '\bsubscribe\b' })
         Add-Content -LiteralPath $log -Value ("$([DateTime]::UtcNow.ToString('o')) Stopping unresponsive relay: $id")

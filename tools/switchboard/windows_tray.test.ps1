@@ -148,11 +148,12 @@ try {
     $ReleaseDirectory = Join-Path $root 'releases2'; $null = Initialize-SwitchboardReleaseStore $old $ReleaseDirectory
     $script:selectedHash = $null; $script:relayFailures = 0; $script:relay = $null
     $script:health = 'offline'; $script:relayExits = $true
-    $script:listeners = @(4242, 5151)
+    $script:listeners = @(4242, 5151, 6161)
     $script:processes = @(
         [pscustomobject]@{ProcessId=4242; ParentProcessId=1; Name='zellij.exe'; CommandLine=('"C:\r\zellij.exe" serve --port 8123 --host-config "' + $relayConfig + '"')},
         [pscustomobject]@{ProcessId=4343; ParentProcessId=4242; Name='zellij.exe'; CommandLine='"C:\r\zellij.exe" -s main subscribe --format json'},
-        [pscustomobject]@{ProcessId=5151; ParentProcessId=1; Name='other.exe'; CommandLine=('other.exe serve --host-config "' + $relayConfig + '"')})
+        [pscustomobject]@{ProcessId=5151; ParentProcessId=1; Name='other.exe'; CommandLine=('other.exe serve --host-config "' + $relayConfig + '"')},
+        [pscustomobject]@{ProcessId=6161; ParentProcessId=1; Name='zellij.exe'; CommandLine=('"C:\r\zellij.exe" serve --port 8123 --host-config "' + $relayConfig + '.old"')})
     1..3 | ForEach-Object { Start-Servers }
     Assert ($script:killCalls -eq 0) 'Relay was stopped before it had been unhealthy for four checks'
     Start-Servers
