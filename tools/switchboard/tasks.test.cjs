@@ -139,6 +139,13 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
       return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
     });
     await page.goto('https://switchboard.test/');
+    await page.evaluate(()=>{
+      const status=document.querySelector('#status-message');
+      const {get,set}=Object.getOwnPropertyDescriptor(Node.prototype,'textContent');
+      window.__healthStatusMessages=[];
+      // Sidebar refreshes can replace this notification before Playwright polls it.
+      Object.defineProperty(status,'textContent',{configurable:true,get(){return get.call(this);},set(value){set.call(this,value);window.__healthStatusMessages.push(String(value));}});
+    });
     await page.locator('#settings').click();await page.getByRole('tab',{name:'Health'}).click();
     const groups=page.locator('#updates .switchboard-group');
     await page.waitForFunction(()=>document.querySelectorAll('#updates .switchboard-group').length===4);
@@ -272,7 +279,7 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
     assert.equal(await laptop.locator('.task-row').first().locator('.task-tail').textContent(),'This build cannot reach paired computers yet');
     assert.equal(await mac.getByRole('button',{name:'Update now'}).count(),0,'no button without an update job to start');
     await laptop.getByRole('button',{name:'Check for updates'}).click();
-    await page.waitForFunction(()=>document.querySelector('#status-message')?.textContent==='Checking for a newer build on Laptop…');
+    await page.waitForFunction(()=>window.__healthStatusMessages.includes('Checking for a newer build on Laptop…'));
     assert.deepEqual(updates,[{host:'mesh-laptop'}]);
     const sb=tasks.computers.find(c=>c.host==='mesh-laptop').switchboard;
     sb.lastUpdateError=null;sb.activateUpdate=true;sb.readyUpdate={commit:'b'.repeat(40),since:Math.floor(Date.now()/1000)-120};sb.updatePhase='waiting';
@@ -289,7 +296,7 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
       await page.evaluate(()=>SwitchboardTasks.load());
     }
     await laptop.getByRole('button',{name:'Update now',exact:true}).click();
-    await page.waitForFunction(()=>document.querySelector('#status-message')?.textContent==='Update requested on Laptop; terminals will briefly reconnect…');
+    await page.waitForFunction(()=>window.__healthStatusMessages.includes('Update requested on Laptop; terminals will briefly reconnect…'));
     assert.deepEqual(updates.at(-1),{host:'mesh-laptop',activate:'b'.repeat(40)});
     sb.updatePhase='requested';
     await page.evaluate(()=>SwitchboardTasks.load());
@@ -303,7 +310,7 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
     assert.equal(await laptop.getByRole('button',{name:'Update now',exact:true}).isDisabled(),false);
     await laptop.getByRole('button',{name:'Update now',exact:true}).click();
     assert.deepEqual(updates.at(-1),{host:'mesh-laptop',activate:'b'.repeat(40)});
-    await page.waitForFunction(message=>document.querySelector('#status-message')?.textContent===message,updateWarning);
+    await page.waitForFunction(message=>window.__healthStatusMessages.includes(message),updateWarning);
 
     // Refresh recovers a superseded selection without reauthorizing that build.
     sb.updatePhase='failed';
