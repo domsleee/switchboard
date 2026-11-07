@@ -372,7 +372,9 @@ with open(sys.argv[1], 'a+') as lock:
             assert.equal(JSON.parse(fs.readFileSync(path.join(state,'state.json'))).ready.commit,commit);
             assert.notEqual(await runUpdate(['--activate',commit]),0,'Injected handoff fails');
             assert.equal(installs,2,'Failed handoff runs rollback');
-            await connected();await command(`printf '%s%s\\n' "ROLLBACK_LIVE_" "$SB_STATE"`,'ROLLBACK_LIVE_'+marker);
+            await connected();
+            if(reconnectTarget)await selectedPane(reconnectTarget);
+            await command(`printf '%s%s\\n' "ROLLBACK_LIVE_" "$SB_STATE"`,'ROLLBACK_LIVE_'+marker);
             assert.equal((await(await fetch(url+'/api/health')).json()).commit,originalCommit);
             assert.equal(await runUpdate([]),0);assert.equal(installs,2,'Failed activation does not force a later automatic attempt');
             assert.equal(await runUpdate(['--activate',commit]),0);
