@@ -414,11 +414,22 @@ fn deliver(
     })
 }
 
+/// Whether a hook comes from an agent that a Claude Code tool started in that
+/// Claude's pane. Claude Code also sets `CLAUDECODE=1` for its own hooks, so a
+/// Claude hook belongs to the pane when it comes from an interactive session: a
+/// `claude -p` started by a tool reports the `sdk-cli` entrypoint instead.
+pub(crate) fn nested(agent: &str, env: impl Fn(&str) -> Option<String>) -> bool {
+    env("CLAUDECODE").is_some()
+        && !(agent == "claude" && env("CLAUDE_CODE_ENTRYPOINT").as_deref() == Some("cli"))
+}
+
 pub(crate) fn run(agent: &str, input: &[u8], wait: bool) {
-    // A nested Claude shares its parent's pane. Ignore its events; unsupported
+    // A nested agent shares its parent's pane. Ignore its events; unsupported
     // agents keep their existing status hooks.
     if !matches!(agent, "claude" | "codex")
-        || std::env::var("CLAUDECODE").is_ok_and(|value| !value.is_empty())
+        || nested(agent, |name| {
+            std::env::var(name).ok().filter(|value| !value.is_empty())
+        })
         || std::env::var("ZELLIJ_SESSION_NAME")
             .unwrap_or_default()
             .is_empty()

@@ -46,7 +46,8 @@ test('agent hooks deliver and reply across machines, suppress duplicates, preser
     const ids={claude:crypto.randomUUID(),codex:crypto.randomUUID()};
     function hook(agent,event='PostToolUse',wait=false,override={}){
       const {session=ids[agent],machine=agent==='claude'?'windows':'mac',...extra}=override;
-      const env={...base,SWITCHBOARD_BOARD_CONFIG:clients[machine],...extra};
+      // Claude Code sets CLAUDECODE=1 for its own hooks.
+      const env={...base,SWITCHBOARD_BOARD_CONFIG:clients[machine],...(agent==='claude'?{CLAUDECODE:'1',CLAUDE_CODE_ENTRYPOINT:'cli'}:{}),...extra};
       return run(['agent-hook','--agent',agent,...(wait?['--wait']:[])],env,JSON.stringify({session_id:session,cwd:root,hook_event_name:event}));
     }
     async function sync(...args){const r=await hook(...args).done;assert.equal(r.code,0,r.stderr);return r.stdout?JSON.parse(r.stdout):null;}
@@ -99,7 +100,7 @@ test('agent hooks deliver and reply across machines, suppress duplicates, preser
     assert.equal((await watcher.done).code,0,'ending a session stops its watcher without a wake-up');watcher=null;
     await sync('claude','SessionEnd');assert.ok(!(await api('windows','participants')).items.some(p=>p.id===b.id));
     const resumed=await sync('claude','SessionStart');assert.ok(JSON.stringify(resumed).includes(b.id));assert.ok(JSON.stringify(resumed).includes(old.id));
-    const nested=await hook('claude','SessionStart',false,{session:crypto.randomUUID(),CLAUDECODE:'1'}).done;assert.equal(nested.code,0);assert.equal(nested.stdout,'');
+    const nested=await hook('claude','SessionStart',false,{session:crypto.randomUUID(),CLAUDE_CODE_ENTRYPOINT:'sdk-cli'}).done;assert.equal(nested.code,0);assert.equal(nested.stdout,'');
     await stop(board);board=null;
     const offline=await hook('codex').done;assert.equal(offline.code,0);assert.equal(offline.stdout,'','offline messaging never blocks the agent');
   }finally{await stop(watcher?.child);await stop(board);for(const child of children)await stop(child);fs.rmSync(root,{recursive:true,force:true});}
