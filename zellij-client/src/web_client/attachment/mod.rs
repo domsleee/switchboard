@@ -436,7 +436,8 @@ async fn attachment(
                             if !matches!(payload,
                                 WebClientToWebServerControlMessagePayload::TerminalResize(_) |
                                 WebClientToWebServerControlMessagePayload::TerminalMetrics(_) |
-                                WebClientToWebServerControlMessagePayload::SetTabViewport { .. }
+                                WebClientToWebServerControlMessagePayload::SetTabViewport { .. } |
+                                WebClientToWebServerControlMessagePayload::SetViewerHidden { .. }
                             ) {
                                 if stdin.pending_finalize() { stdin.finalize(&*os,&mut mouse); }
                                 ensure!(!stdin.has_pending_bytes(),"Incomplete terminal sequence before a control command; attachment stopped to preserve its target pane");

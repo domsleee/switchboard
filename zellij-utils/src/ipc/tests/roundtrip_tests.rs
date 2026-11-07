@@ -339,6 +339,9 @@ fn test_client_messages() {
             ownership,
         });
     }
+    for hidden in [false, true] {
+        test_client_roundtrip!(ClientToServerMsg::SetViewerHidden { hidden });
+    }
     test_client_roundtrip!(ClientToServerMsg::DetachSession {
         client_ids: vec![1],
     });
@@ -3980,6 +3983,7 @@ fn test_server_messages() {
                 owner_active: true,
                 is_owner: false,
                 constrained: true,
+                hidden: true,
             }),
             session_name: String::new(),
             now_secs: 0,

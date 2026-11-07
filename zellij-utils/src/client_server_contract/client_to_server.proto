@@ -33,7 +33,12 @@ message ClientToServerMsg {
     SetMobileRenderPreferencesMsg set_mobile_render_preferences = 26;
     HostTerminalFocusChangedMsg host_terminal_focus_changed = 27;
     SetTabViewportMsg set_tab_viewport = 28;
+    SetViewerHiddenMsg set_viewer_hidden = 29;
   }
+}
+
+message SetViewerHiddenMsg {
+  bool hidden = 1;
 }
 
 message SetTabViewportMsg {

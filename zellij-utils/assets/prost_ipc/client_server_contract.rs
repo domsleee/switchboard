@@ -3079,7 +3079,7 @@ impl ThemeHue {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ClientToServerMsg {
-    #[prost(oneof="client_to_server_msg::Message", tags="1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28")]
+    #[prost(oneof="client_to_server_msg::Message", tags="1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29")]
     pub message: ::core::option::Option<client_to_server_msg::Message>,
 }
 /// Nested message and enum types in `ClientToServerMsg`.
@@ -3143,7 +3143,15 @@ pub mod client_to_server_msg {
         HostTerminalFocusChanged(super::HostTerminalFocusChangedMsg),
         #[prost(message, tag="28")]
         SetTabViewport(super::SetTabViewportMsg),
+        #[prost(message, tag="29")]
+        SetViewerHidden(super::SetViewerHiddenMsg),
     }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SetViewerHiddenMsg {
+    #[prost(bool, tag="1")]
+    pub hidden: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -3646,4 +3654,6 @@ pub struct TabViewportMsg {
     pub is_owner: bool,
     #[prost(bool, tag="5")]
     pub constrained: bool,
+    #[prost(bool, tag="6")]
+    pub hidden: bool,
 }

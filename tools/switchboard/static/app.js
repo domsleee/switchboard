@@ -967,10 +967,15 @@ function renderMachines() {
   for(const label of nodes){if(label!==cursor)container.insertBefore(label,cursor);else cursor=cursor.nextSibling;}
 }
 // Conversation reads the catalog/transcript APIs. Even a hidden terminal socket
-// attaches with a physical size and constrains the native tab before its first resize.
+// attaches with a physical size and constrains the native tab before its first resize,
+// and a phone viewer can force-resize shared tabs. So Conversation never attaches a
+// viewer and disconnects phone viewers. A desktop viewer that is already connected
+// stays connected (its resizes are suppressed), so switching back is instant.
 function syncTerminalConnection(entry) {
-  const suspended=!!globalThis.SwitchboardConversation?.wantsConversation?.();
-  const src=entry.cached||suspended?'about:blank':`/hosts/${encodeURIComponent(entry.host)}/${encodeURIComponent(entry.name)}`;
+  const live=`/hosts/${encodeURIComponent(entry.host)}/${encodeURIComponent(entry.name)}`;
+  const suspended=!!globalThis.SwitchboardConversation?.wantsConversation?.()&&
+    !(!mobileSidebar.matches&&!entry.hideUnsupported&&!entry.cached&&!!entry.state&&!entry.suspending&&entry.frame.getAttribute('src')===live);
+  const src=entry.cached||suspended?'about:blank':live;
   if(suspended&&entry.state?.active_pane)entry.resumePane=entry.state.active_pane;
   entry.suspended=suspended;
   if(!suspended)entry.suspendFailure=false;
@@ -982,7 +987,7 @@ function syncTerminalConnection(entry) {
     retireTerminal(entry,retire);
     return;
   }
-  entry.state=null;entry.disconnected=false;entry.requestedPane=null;entry.focusPending=false;entry.needsFocus=true;
+  entry.state=null;entry.disconnected=false;entry.requestedPane=null;entry.focusPending=false;entry.needsFocus=true;entry.hideUnsupported=false;
   entry.frame.src=src;
 }
 function terminalTransition(entry,busy) {
@@ -1225,7 +1230,19 @@ window.addEventListener('message',event=>{
     recordTerminalDiagnostic(entry,'clipboard',event.data.diagnostic);
   }else if(event.data?.type==='zellij-clipboard'){
     setStatus(event.data.ok?'Copied to this browser.':event.data.error||'Copy failed; use the terminal’s clipboard panel.',!event.data.ok);
-  }else if(event.data?.type==='zellij-disconnected'){entry.disconnected=true;entry.needsFocus=true;render();}
+  }else if(event.data?.type==='zellij-hide-unsupported'){
+    // This engine still sizes tabs for hidden viewers. Disconnect it during Conversation.
+    entry.hideUnsupported=true;syncTerminalConnection(entry);render();
+  }else if(event.data?.type==='zellij-disconnected'){
+    entry.disconnected=true;entry.needsFocus=true;
+    // A hidden viewer's reconnect would attach again, sized while hidden. Stop it;
+    // Terminal reconnects when it is shown.
+    if(globalThis.SwitchboardConversation?.wantsConversation?.()){
+      if(entry.state?.active_pane)entry.resumePane=entry.state.active_pane;
+      entry.state=null;syncTerminalConnection(entry);
+    }
+    render();
+  }
 });
 $('artifact-back').onclick=()=>{const current=allTabs().find(item=>item.key===selected);if(current)focus(current);else $('artifact-preview').hidden=true;};
 // The open preview owns one history entry. Back closes the preview; closing it any other way drops the entry.
@@ -1933,7 +1950,7 @@ $('sidebar-toggle').onclick=()=>{
   updateSidebar();
 };
 $('sidebar-backdrop').onclick=()=>{sidebarOpen=false;updateSidebar();};
-mobileSidebar.addEventListener('change',()=>{sidebarOpen=false;updateSidebar();});
+mobileSidebar.addEventListener('change',()=>{sidebarOpen=false;updateSidebar();for(const entry of sessions.values())syncTerminalConnection(entry);render();});
 $('tab-search').oninput=render;
 $('tab-search').onkeydown=event=>{if(event.key==='Enter'){const item=listedTabs()[0];if(item){event.preventDefault();activate(item);if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.focus();else item.entry.frame.focus();}}};
 let sidebarWidth=Number(localStorage.getItem('switchboard-sidebar-width'))||242;
@@ -2029,7 +2046,13 @@ const browserDiagnostics=window.SwitchboardBrowserDiagnostics?.(diagnostic=>{
 
 window.SwitchboardConversation?.install({
   viewed:acknowledgeConversation,
-  modeChanged(){for(const entry of sessions.values())syncTerminalConnection(entry);render();},
+  modeChanged(){
+    for(const entry of sessions.values())syncTerminalConnection(entry);render();
+    // A viewer kept connected through Conversation reclaims its tab size, which
+    // another computer may have taken meanwhile.
+    const current=allTabs().find(item=>item.key===selected);
+    if(!globalThis.SwitchboardConversation.wantsConversation()&&current?.entry.state&&document.hasFocus())current.entry.frame.contentWindow?.postMessage({type:'zellij-window-focus'},location.origin);
+  },
   selection(){
     const item=allTabs().find(item=>item.key===selected);if(!item)return null;
     const active=item.entry.state?.active_pane,panes=(!item.entry.state?item.tab.panes:tabPanes(item.entry,item.tab)).filter(p=>!p.is_plugin);

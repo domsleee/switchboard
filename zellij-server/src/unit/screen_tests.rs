@@ -10786,6 +10786,74 @@ fn tab_viewport_owner_transfer_and_release() {
 }
 
 #[test]
+fn hidden_browser_viewer_never_sizes_its_tab() {
+    let large = Size {
+        cols: 200,
+        rows: 60,
+    };
+    let small = Size { cols: 80, rows: 24 };
+    let mut screen = create_new_screen(large, true, true);
+    new_tab(&mut screen, 1, 0);
+    screen.connected_clients.borrow_mut().insert(1, true);
+    screen.add_client(2, false).expect("TEST");
+    screen.set_client_size(2, large);
+    // A small browser owns the tab, so the native terminal shows its size.
+    screen
+        .set_tab_viewport(1, small, 0, Some(true))
+        .expect("TEST");
+    assert_eq!(screen.tabs[&0].size, small);
+    screen.set_viewer_hidden(1, true).expect("TEST");
+    assert_eq!(screen.tabs[&0].size, large, "hiding releases the tab");
+    let viewport = screen.tab_viewport_for_client(1).unwrap();
+    assert!(viewport.hidden && !viewport.owner_active);
+    // Resizes and claims from a hidden viewer change nothing.
+    screen.set_client_size(1, Size { cols: 40, rows: 10 });
+    screen.recompute_tab_size(0).expect("TEST");
+    screen
+        .set_tab_viewport(1, small, 0, Some(true))
+        .expect("TEST");
+    assert_eq!(screen.tabs[&0].size, large);
+    assert!(!screen.tab_viewport_for_client(1).unwrap().owner_active);
+    screen.set_viewer_hidden(1, false).expect("TEST");
+    assert!(!screen.tab_viewport_for_client(1).unwrap().hidden);
+    screen
+        .set_tab_viewport(1, small, 0, Some(true))
+        .expect("TEST");
+    assert_eq!(screen.tabs[&0].size, small, "a shown viewer claims again");
+    screen.set_viewer_hidden(1, true).expect("TEST");
+    screen.remove_client(1).expect("TEST");
+    assert!(!screen.hidden_viewers.contains(&1));
+}
+
+#[test]
+fn hidden_browser_viewer_does_not_constrain_a_phone() {
+    let large = Size {
+        cols: 200,
+        rows: 60,
+    };
+    let desktop = Size {
+        cols: 100,
+        rows: 30,
+    };
+    let phone = Size { cols: 50, rows: 40 };
+    let mut screen = create_new_screen(large, true, true);
+    new_tab(&mut screen, 1, 0);
+    screen.connected_clients.borrow_mut().insert(1, true);
+    screen.add_client(2, true).expect("TEST");
+    screen.set_tab_viewport(1, desktop, 0, None).expect("TEST");
+    screen.set_viewer_hidden(1, true).expect("TEST");
+    // Before the phone's first viewport claim, only its attach size counts.
+    screen.set_client_size(2, phone);
+    screen.recompute_tab_size(0).expect("TEST");
+    assert_eq!(screen.tabs[&0].size, phone);
+    assert_eq!(
+        screen.reference_size_for_client(2),
+        None,
+        "a hidden desktop is no size reference for the phone"
+    );
+}
+
+#[test]
 fn tab_viewport_keeps_unsupported_terminals_within_bounds() {
     let large = Size {
         cols: 200,

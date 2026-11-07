@@ -216,7 +216,7 @@ test('headless browser keeps iframe, selection, URL and input focus through fail
     assert.equal(await page.evaluate(()=>!!document.activeElement.closest('.conversation-panel')),true);
     await page.keyboard.type('not terminal input');
     assert.equal(await page.locator('.conversation-panel').isVisible(),true);
-    assert.equal(await page.locator('iframe[title="Mac: main"]').getAttribute('src'),'about:blank');
+    assert.equal((await page.frameLocator('iframe[title="Mac: main"]').locator('#terminal-input').inputValue()).includes('not terminal input'),false);
     await page.keyboard.press('Escape');
     await page.waitForFunction(()=>document.activeElement===document.querySelector('iframe[title="Mac: main"]'));
     assert.equal(await page.locator('.conversation-panel').isVisible(),false);

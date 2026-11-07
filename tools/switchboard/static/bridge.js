@@ -105,6 +105,28 @@
     if(size&&window.__zjViewport.report(size,true))claimedViewportTab=tab;
   }
   window.addEventListener('focus',()=>{claimFocusedViewport(true);if(!pendingFocus&&!pendingNewTab)restoreTerminalFocus(null);});
+  // A viewer behind Conversation or another sidebar tab must not size the
+  // terminal on other screens. The engine confirms in tab_viewport.hidden;
+  // an older engine never does, so the sidebar disconnects that viewer instead.
+  let sentHidden=null,hiddenAck=0;
+  function viewerHidden(){return conversationOpen()||!!window.frameElement&&!window.frameElement.classList.contains('active');}
+  function updateHidden(){
+    if(!latest||!window.__zjSendControl||controlSocket?.readyState!==1)return;
+    const hidden=viewerHidden();
+    if(hidden===(sentHidden??false)){sentHidden=hidden;return;}
+    sentHidden=hidden;clearTimeout(hiddenAck);
+    window.__zjSendControl({type:'SetViewerHidden',hidden});
+    if(hidden){
+      claimedViewportTab=null;
+      hiddenAck=setTimeout(()=>{if(sentHidden&&latest?.tab_viewport?.hidden!==true)parent.postMessage({type:'zellij-hide-unsupported'},location.origin);},2000);
+    }else claimFocusedViewport(true);
+  }
+  if(window.frameElement){
+    const watch=new MutationObserver(()=>updateHidden());
+    watch.observe(window.frameElement,{attributes:true,attributeFilter:['class']});
+    const terminals=parent.document.getElementById('terminals');
+    if(terminals)watch.observe(terminals,{attributes:true,attributeFilter:['class']});
+  }
   function moveTerminal(terminal,target,before=null){
     const active=document.activeElement,focused=terminal.contains(active)&&document.hasFocus();
     // Moving a focused textarea with append/before blurs it. Prefer a state
@@ -444,6 +466,7 @@
       else{diagnostics?.ack();releaseFocus();restoreTerminalFocus();}
     }
     parent.postMessage({type: 'zellij-state', host, payload, focus_id:focusId, focus_pending:!!pendingFocus}, location.origin);
+    updateHidden();
     requestAnimationFrame(updateChrome);
   }
   function observeSocket(socket,url) {
@@ -480,7 +503,7 @@
           disconnectedPane = desiredFocus || latest?.active_pane || disconnectedPane;
           latest = undefined;
           diagnostics?.finish('disconnected');
-          lastViewport=null;claimedViewportTab=null;updateViewport();
+          lastViewport=null;claimedViewportTab=null;sentHidden=null;clearTimeout(hiddenAck);updateViewport();
           releaseFocus();
           parent.postMessage({type:'zellij-disconnected',host},location.origin);
           releaseNewTab('disconnected');
