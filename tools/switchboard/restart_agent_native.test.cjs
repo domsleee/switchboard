@@ -97,7 +97,8 @@ int main(int argc,char**argv){fcntl(0,F_SETFL,O_NONBLOCK);FILE*f=fopen(${JSON.st
     await page.getByRole('button',{name:'Conversation',exact:true}).click();
     await page.getByLabel('Reply draft').fill('native conversation reply');
     await page.getByLabel('Reply draft').press('Enter');
-    await until(()=>fs.existsSync(path.join(dir,'input'))&&fs.readFileSync(path.join(dir,'input'),'utf8').includes('native conversation reply\n'),'Conversation Send did not submit to the native agent');
+    try {await until(()=>fs.existsSync(path.join(dir,'input'))&&fs.readFileSync(path.join(dir,'input'),'utf8').includes('native conversation reply\n'),'Conversation Send did not submit to the native agent');}
+    catch(error){console.error('Conversation fixture state:',JSON.stringify(await page.evaluate(()=>({notice:document.querySelector('.conversation-send-notice')?.textContent,draft:document.querySelector('[aria-label="Reply draft"]')?.value,frames:[...document.querySelectorAll('#terminals>iframe')].map(f=>({failure:f.contentWindow.__zjResumeFailure,state:f.contentWindow.__zjLastMobileState}))}))));console.error('Fixture input:',JSON.stringify(fs.existsSync(path.join(dir,'input'))?fs.readFileSync(path.join(dir,'input'),'utf8'):null));throw error;}
     await until(async()=>await page.getByLabel('Reply draft').inputValue()==='','Sent draft did not clear');
     assert.equal(await page.locator('.conversation-panel').isVisible(),true);
     console.log('PASS: real menu + endpoint restarted only the intended agent, retained tab and other pane, resumed exact UUID and flags, rejected busy/draft/stale targets. Screenshots: '+dir);
