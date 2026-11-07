@@ -342,6 +342,7 @@ fn test_client_messages() {
     for hidden in [false, true] {
         test_client_roundtrip!(ClientToServerMsg::SetViewerHidden { hidden });
     }
+    test_client_roundtrip!(ClientToServerMsg::Redraw);
     test_client_roundtrip!(ClientToServerMsg::DetachSession {
         client_ids: vec![1],
     });

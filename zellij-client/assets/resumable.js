@@ -157,7 +157,9 @@ export class ResumableConnection {
     }
     async apply(record) {
         if (this.stopped) return;
-        if (!Number.isSafeInteger(record.seq) || record.seq < 1 || record.seq > this.applied + 1) throw new Error('Terminal output sequence gap');
+        // A resync record follows terminal output the server dropped for a
+        // viewer that fell too far behind; the engine repaints the screen.
+        if (!Number.isSafeInteger(record.seq) || record.seq < 1 || (record.seq > this.applied + 1 && record.resync !== true)) throw new Error('Terminal output sequence gap');
         if (record.seq <= this.applied) return;
         if (record.channel === 'terminal') {
             // websockets.js supplies this callback after cursor/title filtering.

@@ -3145,7 +3145,13 @@ pub mod client_to_server_msg {
         SetTabViewport(super::SetTabViewportMsg),
         #[prost(message, tag="29")]
         SetViewerHidden(super::SetViewerHiddenMsg),
+        #[prost(message, tag="30")]
+        Redraw(super::RedrawMsg),
     }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RedrawMsg {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

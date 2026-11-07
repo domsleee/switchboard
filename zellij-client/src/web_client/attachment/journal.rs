@@ -5,6 +5,9 @@ use std::collections::VecDeque;
 
 pub const INPUT_LIMIT: usize = 64 * 1024;
 const OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
+const RECORD_LIMIT: usize = 4096;
+/// Starts a repaint on a terminal that missed output. The engine's redraw follows.
+const RESYNC: &str = "\x1b[0m";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -18,6 +21,10 @@ pub(super) struct Output {
     pub seq: u64,
     pub channel: &'static str,
     pub data: String,
+    /// Terminal output before this record was dropped. The browser accepts
+    /// the sequence gap and the engine repaints the screen.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub resync: bool,
 }
 #[derive(Default)]
 pub(super) struct Journal {
@@ -29,6 +36,8 @@ pub(super) struct Journal {
     pub applied: u64,
     bytes: usize,
     pub failure: Option<String>,
+    /// Set when terminal output was dropped; the attachment asks the engine to repaint.
+    pub redraw: bool,
 }
 impl Journal {
     pub fn release_payloads(&mut self) {
@@ -120,17 +129,37 @@ impl Journal {
         if self.failure.is_some() {
             return;
         }
-        if self.bytes.saturating_add(data.len()) > OUTPUT_LIMIT || self.output.len() >= 4096 {
-            self.failure =
-                Some("Terminal replay buffer exhausted; reconnect cannot safely continue".into());
-            return;
+        if self.over_limit(data.len()) {
+            // A viewer that falls far behind (a hidden browser tab, a long
+            // disconnect) gets a repaint instead of every frame it missed.
+            // Control records carry state the browser waits on, so they stay.
+            self.output.retain(|o| o.channel != "terminal");
+            for record in &mut self.output {
+                record.resync = true;
+            }
+            self.bytes = self.output.iter().map(|o| o.data.len()).sum();
+            self.redraw = true;
+            self.push("terminal", RESYNC.into(), true);
+            if self.over_limit(data.len()) {
+                self.failure = Some(
+                    "Terminal replay buffer exhausted; reconnect cannot safely continue".into(),
+                );
+                return;
+            }
         }
+        self.push(channel, data, false);
+    }
+    fn over_limit(&self, incoming: usize) -> bool {
+        self.bytes.saturating_add(incoming) > OUTPUT_LIMIT || self.output.len() >= RECORD_LIMIT
+    }
+    fn push(&mut self, channel: &'static str, data: String, resync: bool) {
         self.emitted += 1;
         self.bytes += data.len();
         self.output.push_back(Output {
             seq: self.emitted,
             channel,
             data,
+            resync,
         });
     }
 }
@@ -189,12 +218,48 @@ mod tests {
         assert_eq!(j.resume(2, "valid", 1).unwrap(), 3);
     }
     #[test]
-    fn switchboard_attachment_overflow_fails_without_silent_truncation() {
+    fn switchboard_attachment_overflow_resyncs_terminal_and_keeps_control() {
         let mut j = Journal::default();
-        j.emit("terminal", "x".repeat(OUTPUT_LIMIT));
-        j.emit("terminal", "y".into());
+        j.resume(0, "first", 0).unwrap();
+        j.emit("terminal", "a".into());
+        j.acknowledge(1).unwrap();
+        j.emit("control", "focus".into());
+        for _ in 0..RECORD_LIMIT {
+            j.emit("terminal", "frame".into());
+        }
+        assert!(
+            j.failure.is_none(),
+            "A slow viewer must not lose its terminal"
+        );
+        assert!(std::mem::take(&mut j.redraw));
+        let kept: Vec<_> = j
+            .output
+            .iter()
+            .map(|o| (o.channel, o.data.as_str(), o.resync))
+            .collect();
+        assert_eq!(kept[0], ("control", "focus", true));
+        assert_eq!(kept[1], ("terminal", RESYNC, true));
+        assert!(kept[2..].iter().all(|o| o == &("terminal", "frame", false)));
+        let seqs: Vec<_> = j.output.iter().map(|o| o.seq).collect();
+        assert!(seqs.windows(2).all(|w| w[0] < w[1]));
+        assert_eq!(*seqs.last().unwrap(), j.emitted);
+        // The browser can still acknowledge a dropped record it already had.
+        j.acknowledge(5).unwrap();
+        assert_eq!(j.output.front().unwrap().seq, seqs[1]);
+        assert_eq!(j.resume(1, "second", 5).unwrap(), 2);
+
+        let mut big = Journal::default();
+        big.emit("terminal", "x".repeat(OUTPUT_LIMIT));
+        big.emit("terminal", "y".into());
+        assert!(big.failure.is_none());
+        assert_eq!(big.bytes, RESYNC.len() + 1);
+    }
+    #[test]
+    fn switchboard_attachment_overflow_fails_when_control_alone_exceeds_limit() {
+        let mut j = Journal::default();
+        j.emit("control", "x".repeat(OUTPUT_LIMIT));
+        j.emit("control", "y".into());
         assert!(j.failure.is_some());
-        assert_eq!(j.output.len(), 1);
         assert!(j.resume(0, "first", 0).is_err());
     }
     #[test]

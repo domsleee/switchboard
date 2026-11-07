@@ -2359,6 +2359,15 @@ pub(crate) fn route_thread_main(
                                     should_break = true;
                                 }
                             },
+                            ClientToServerMsg::Redraw => {
+                                send_to_screen_or_retry_queue!(
+                                    senders,
+                                    ScreenInstruction::Redraw(client_id),
+                                    instruction.clone(),
+                                    retry_queue
+                                )
+                                .with_context(err_context)?;
+                            },
                             ClientToServerMsg::TerminalResize { new_size } => {
                                 // For watchers: send size to Screen for rendering adjustments, but
                                 // this does not affect the screen size
@@ -2959,6 +2968,14 @@ pub(crate) fn route_thread_main(
                             let _ = send_to_screen_or_retry_queue!(
                                 senders,
                                 ScreenInstruction::SetViewerHidden { client_id, hidden },
+                                instruction,
+                                retry_queue
+                            );
+                        },
+                        ClientToServerMsg::Redraw => {
+                            let _ = send_to_screen_or_retry_queue!(
+                                senders,
+                                ScreenInstruction::Redraw(client_id),
                                 instruction,
                                 retry_queue
                             );

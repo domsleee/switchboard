@@ -412,8 +412,14 @@ async fn attachment(
     let mut held_since = Instant::now();
     let mut auth_checked = Instant::now();
     loop {
-        if viewer.journal.lock().unwrap().failure.is_some() {
-            break;
+        {
+            let mut journal = viewer.journal.lock().unwrap();
+            if journal.failure.is_some() {
+                break;
+            }
+            if std::mem::take(&mut journal.redraw) {
+                os.send_to_server(ClientToServerMsg::Redraw);
+            }
         }
         tokio::select! {
             Some(delivery)=input.recv()=>{
