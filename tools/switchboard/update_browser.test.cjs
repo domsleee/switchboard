@@ -228,9 +228,12 @@ let recoveryPanes, reconnectTarget;
             },pane.id);
         }
         async function selectPane(pane,target=page){
-            const index=await target.evaluate(id=>[...document.querySelectorAll('#tabs .tab-select')].findIndex(b=>b._item?.tab.id===id),pane.tab_id);
-            assert.ok(index>=0,'Expected tab is present in the sidebar');
-            await target.locator('#tabs .tab-select').nth(index).click();
+            // Catalog recovery can reorder rows between lookup and click.
+            // Retain the chosen button rather than clicking its former index.
+            const handle=await target.evaluateHandle(id=>[...document.querySelectorAll('#tabs .tab-select')].find(b=>b._item?.tab.id===id),pane.tab_id);
+            const button=handle.asElement();
+            assert.ok(button,'Expected tab is present in the sidebar');
+            try{await button.click();}finally{await handle.dispose();}
             await selectedPane(pane,target);
         }
         if(!recoveryMode){
