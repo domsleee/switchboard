@@ -251,7 +251,7 @@ notification, `Stop` and `SessionEnd` events to `/api/agent-hook` with the Zelli
 session and pane from `ZELLIJ_SESSION_NAME` and `ZELLIJ_PANE_ID`. That status replaces
 the screen reading for the pane while it still runs Claude. A `Stop` that lists a
 running background task is `waiting`; Claude starts a new turn when the task ends.
-Hooks of a Claude started inside another Claude carry `CLAUDECODE=1` and are ignored.
+Hooks of an agent started from a Claude Code tool carry `CLAUDECODE=1` and are ignored. Claude Code 2.1.319+ sets `CLAUDECODE=1` in its own hooks too, so a Claude hook is ignored only when the Claude named by `CLAUDE_PID` was itself started with `CLAUDECODE`.
 The same CLI delivers message-board mail as hook context for Claude and Codex.
 Their `SessionStart` and `Stop` hooks start one background `--wait` watcher per
 conversation: Claude uses `asyncRewake` and Codex's watcher calls its native queue.

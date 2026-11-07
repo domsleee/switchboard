@@ -414,11 +414,41 @@ fn deliver(
     })
 }
 
+/// An agent started from a Claude Code tool shares that Claude's pane, so its hooks must not
+/// speak for the pane. Its hooks inherit `CLAUDECODE`, but Claude Code 2.1.319+ also sets it
+/// in its own hooks, so for Claude ask whether the Claude running the hook started with it.
+pub(crate) fn nested(agent: &str, env: impl Fn(&str) -> Option<String>) -> bool {
+    if env("CLAUDECODE").is_none() {
+        return false;
+    }
+    if agent != "claude" {
+        return true;
+    }
+    let Some(pid) = env("CLAUDE_PID").and_then(|pid| pid.parse::<u32>().ok()) else {
+        return true;
+    };
+    let pid = sysinfo::Pid::from_u32(pid);
+    let mut system = sysinfo::System::new();
+    system.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(&[pid]),
+        false,
+        sysinfo::ProcessRefreshKind::nothing().with_environ(sysinfo::UpdateKind::Always),
+    );
+    system.process(pid).is_none_or(|claude| {
+        claude.environ().iter().any(|var| {
+            var.to_str()
+                .and_then(|var| var.strip_prefix("CLAUDECODE="))
+                .is_some_and(|value| !value.is_empty())
+        })
+    })
+}
+
 pub(crate) fn run(agent: &str, input: &[u8], wait: bool) {
-    // A nested Claude shares its parent's pane. Ignore its events; unsupported
-    // agents keep their existing status hooks.
+    // Unsupported agents keep their existing status hooks.
     if !matches!(agent, "claude" | "codex")
-        || std::env::var("CLAUDECODE").is_ok_and(|value| !value.is_empty())
+        || nested(agent, |name| {
+            std::env::var(name).ok().filter(|v| !v.is_empty())
+        })
         || std::env::var("ZELLIJ_SESSION_NAME")
             .unwrap_or_default()
             .is_empty()
@@ -501,6 +531,57 @@ pub(crate) fn run(agent: &str, input: &[u8], wait: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "child process for only_a_claude_started_by_a_claude_tool_is_nested"]
+    fn hook_fixture_process() {
+        std::thread::sleep(Duration::from_secs(30));
+    }
+
+    #[test]
+    fn only_a_claude_started_by_a_claude_tool_is_nested() {
+        // macOS hides the environment of system programs such as sleep, so run this test binary.
+        let claude = |inherited: bool| {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "message_board::hooks::tests::hook_fixture_process",
+                ])
+                .args(["--ignored", "--quiet"])
+                .env_remove("CLAUDECODE")
+                .stdout(std::process::Stdio::null());
+            if inherited {
+                command.env("CLAUDECODE", "1");
+            }
+            command.spawn().unwrap()
+        };
+        let (mut top, mut child) = (claude(false), claude(true));
+        let hook = |pid: u32| {
+            move |name: &str| match name {
+                "CLAUDECODE" => Some("1".to_owned()),
+                "CLAUDE_PID" => Some(pid.to_string()),
+                _ => None,
+            }
+        };
+        assert!(
+            !nested("claude", hook(top.id())),
+            "Claude sets CLAUDECODE in its own hooks"
+        );
+        assert!(
+            nested("claude", hook(child.id())),
+            "started from a Claude tool"
+        );
+        assert!(
+            nested("codex", hook(top.id())),
+            "Codex started from a Claude tool"
+        );
+        assert!(!nested("claude", |_| None), "outside Claude");
+        for process in [&mut top, &mut child] {
+            process.kill().unwrap();
+            process.wait().unwrap();
+        }
+    }
 
     #[cfg(windows)]
     #[test]

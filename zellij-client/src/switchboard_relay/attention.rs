@@ -1368,8 +1368,7 @@ fn hook_request(
 ) -> Option<isahc::Request<Vec<u8>>> {
     use isahc::config::Configurable;
     use std::io::Read;
-    // An agent started from a Claude Code tool shares the pane with that Claude.
-    if env("CLAUDECODE").is_some() {
+    if crate::message_board::hooks::nested(agent, &env) {
         return None;
     }
     let (session, pane) = (env("ZELLIJ_SESSION_NAME")?, env("ZELLIJ_PANE_ID")?);
