@@ -217,7 +217,9 @@ let native, relay, browser, updateController, created=false;
   // A stale sidebar target must never send queued typing to the old pane.
   await page.evaluate(()=>{
     const pair=document.querySelector('#terminals>iframe.active').contentWindow.testPair;
-    pair.terminal.owner.socket.close();
+    const socket=pair.terminal.owner.socket,handler=socket.onmessage;
+    // Lose the first error response, then require resume to deliver the retained failure.
+    socket.onmessage=event=>{if(JSON.parse(event.data).type==='error'){socket.onmessage=null;socket.close();}else handler(event);};
     pair.control.send(JSON.stringify({web_client_id:pair.control.owner.viewer,payload:{type:'FocusPane',pane_id:4294967294,is_plugin:false}}));
     pair.terminal.send('WRONG_PANE');
   });
