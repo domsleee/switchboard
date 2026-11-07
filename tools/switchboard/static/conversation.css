@@ -95,12 +95,12 @@
 
 /* The phone keyboard changes the visual viewport, not necessarily 100dvh. */
 .conversation-compose{grid-template-columns:36px minmax(0,1fr) 40px;gap:8px}
-.conversation-compose textarea{grid-column:2;grid-row:2;field-sizing:fixed;overflow-y:hidden}
-.conversation-compose>button[type=submit]{grid-column:3;grid-row:2}
-.conversation-compose .conversation-attach{grid-column:1;grid-row:2;width:36px;height:40px;background:transparent;color:#a9bad7;font-size:28px;box-shadow:none}
+.conversation-compose textarea{grid-column:2;grid-row:auto;field-sizing:fixed;overflow-y:hidden}
+.conversation-compose>button[type=submit]{grid-column:3;grid-row:auto}
+.conversation-compose .conversation-attach{grid-column:1;grid-row:auto;width:36px;height:40px;background:transparent;color:#a9bad7;font-size:28px;box-shadow:none}
 .conversation-compose .conversation-attach:hover{background:#303c50;color:#e2ecff}
-.conversation-compose .conversation-send-notice{grid-row:3}
-.conversation-attachments{grid-column:1/-1;grid-row:1;display:flex;gap:8px;overflow-x:auto;padding-bottom:4px}
+.conversation-compose .conversation-send-notice{grid-row:auto}
+.conversation-attachments{grid-column:1/-1;grid-row:auto;display:flex;gap:8px;overflow-x:auto;padding-bottom:4px}
 .conversation-attachment{position:relative;flex:0 0 150px;min-width:0;border:1px solid #3c485e;border-radius:12px;padding:8px 28px 8px 10px;display:flex;flex-direction:column;justify-content:center;font-size:12px;line-height:1.5}
 .conversation-attachment>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .conversation-attachment>small{font-size:10px;color:#a9bad7}
