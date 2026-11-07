@@ -302,6 +302,8 @@ body.sidebar-collapsed #artifact-preview header{padding-left:42px}
 @media(hover:none){#tabs .tab-actions{opacity:1;background:transparent}#tabs .tab-select{padding-right:40px}}
 
 #new-tab-dialog{width:500px;max-width:calc(100vw - 32px);padding:16px;overflow:visible}
+/* A landscape phone is shorter than the form; scroll it so Create stays reachable. */
+@media(max-height:500px){#new-tab-dialog{overflow:auto}}
 #new-tab-form{display:grid;grid-template-columns:62px minmax(0,1fr);gap:6px 8px}
 #new-tab-form h2{grid-column:1/-1;margin:0 0 2px;font-size:14px}
 #new-tab-form label{color:#b8c1cf;font-size:12px;margin:6px 0 0;align-self:start}
