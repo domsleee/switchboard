@@ -751,3 +751,45 @@ test('settings pages never paint white while they load',
     assert.ok(worst<0.01,`${(worst*100).toFixed(1)}% of the settings page painted white while loading`);
   }finally{await browser.close();}
 });
+
+test('working tabs show their age in blue, and long titles run under the status to the agent icon',
+  {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
+  const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch({headless:true});
+  try{
+    const page=await browser.newPage({viewport:{width:1100,height:600}}),errors=[];
+    page.setDefaultTimeout(5000);
+    page.on('pageerror',error=>errors.push(error.message));
+    const now=Date.now()/1000;
+    const names=['Terminal swapping spec review and cleanup','Fresh task'];
+    // The first tab's shell pane changed state more recently; that must not count as working time.
+    const tabs=names.map((name,i)=>({host:'mac',session:'main',id:i+1,position:i,name,panes:[{pane_id:i+1,is_plugin:false,tab_position:i},...(i?[]:[{pane_id:9,is_plugin:false,tab_position:i}])]}));
+    const panes=[now-372,now-20].map((since,i)=>({host:'mac',session:'main',pane_id:i+1,tab_id:i+1,state:'working',since,agent:'claude'}));
+    panes.push({host:'mac',session:'main',pane_id:9,tab_id:1,state:'unknown',since:now-120});
+    await page.route('**/*',route=>{
+      const url=new URL(route.request().url()),path=url.pathname;
+      const json=value=>route.fulfill({contentType:'application/json',body:JSON.stringify(value)});
+      if(path==='/api/attention'&&url.searchParams.has('after'))return;
+      if(path==='/api/hosts')return json([{id:'mac',name:'Mac'}]);
+      if(path==='/api/hosts/mac')return json({id:'mac',name:'Mac',sessions:[{name:'main',web_clients_allowed:true}]});
+      if(path==='/api/attention')return json({tabs,panes,errors:[]});
+      if(path.startsWith('/api/'))return json({});
+      if(path.startsWith('/hosts/'))return route.fulfill({contentType:'text/html',body:'<body style="background:#111318"></body>'});
+      const file=path==='/'?'index.html':path.slice(1);
+      if(!/^[\w.-]+$/.test(file)||!fs.existsSync(__dirname+'/static/'+file))return route.fulfill({status:404,body:''});
+      return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file)});
+    });
+    await page.goto('https://switchboard.test/');
+    await page.locator('#snoozed-toggle').click();
+    await page.waitForFunction(()=>document.querySelectorAll('#tabs .tab-select').length===2);
+    const card=name=>page.locator('#tabs .tab-select').filter({has:page.locator('.tab-name',{hasText:name})});
+    const old=card(names[0]);
+    assert.equal(await old.locator('.tab-status').textContent(),'Working 6m');
+    assert.equal(await old.locator('.tab-status').getAttribute('data-tone'),'working');
+    assert.equal(await card(names[1]).locator('.tab-status').textContent(),'Working');
+    const box=selector=>old.locator(selector).boundingBox();
+    const [name,status,agent]=[await box('.tab-name'),await box('.tab-status'),await box('.tab-agent')];
+    assert.ok(name.x+name.width>status.x+20,'the title extends under the status');
+    assert.ok(Math.abs(agent.x-10-(name.x+name.width))<1,'the title stops 10px before the agent icon');
+    assert.deepEqual(errors,[]);
+  }finally{await browser.close();}
+});
