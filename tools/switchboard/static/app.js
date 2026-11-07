@@ -162,6 +162,13 @@ function updateTabUrl(item){
   if(url.href!==location.href)history.replaceState(history.state,'',url);
 }
 function sessionKey(host, name) { return JSON.stringify([host, name]); }
+// The session + starts on a computer with no shared session, or null when it has one.
+// Its unshared sessions stay private, so the new one takes the first free name.
+function firstSessionName(host){
+  if(!host||host.error||!Array.isArray(host.sessions)||host.sessions.some(session=>session.web_clients_allowed))return null;
+  const taken=new Set(host.sessions.map(session=>session.name));
+  for(let i=1;;i++){const name=i===1?'main':`main-${i}`;if(!taken.has(name))return name;}
+}
 function tabKey(entry, tab) { return JSON.stringify([entry.host, entry.name, tab.pending?'pane':'tab', tab.id]); }
 // Tabs created after this browser first saw their session go last, oldest first.
 // Native tab IDs only grow within a session, so a higher ID is a newer tab.
@@ -1392,8 +1399,10 @@ function openNewTabDialog(elevated){
     const option=document.createElement('option');option.value=key;option.textContent=hosts.get(entry.host)?.name||entry.host;option.selected=entry===current;select.append(option);
   }
   // A machine's first session starts a plain shell, so it cannot be elevated.
-  if(!elevated)for(const host of hosts.values())if(!host.error&&host.sessions?.length===0&&![...select.options].some(option=>option.value===sessionKey(host.id,'main'))){
-    const option=document.createElement('option');option.value=sessionKey(host.id,'main');option.textContent=host.name;select.append(option);
+  if(!elevated)for(const host of hosts.values()){
+    const name=firstSessionName(host);
+    if(!name||[...select.options].some(option=>option.value===sessionKey(host.id,name)))continue;
+    const option=document.createElement('option');option.value=sessionKey(host.id,name);option.textContent=host.name;select.append(option);
   }
   if(!select.options.length){setStatus(elevated&&hosts.size?'Open a regular tab on the machine first, then an administrator tab.':'No machines are connected. Check your machines in Settings.',true);return;}
   loadNewTabProjects();
@@ -1566,7 +1575,7 @@ async function createNewTab(key,launch,isCurrent=()=>true){
   }
   if(!entry?.state){
     const [id,name]=JSON.parse(key),host=hosts.get(id);
-    if(!host||host.error||host.sessions?.length!==0)return;
+    if(firstSessionName(host)!==name)return;
     if(entry&&!entry.starting){entry.frame.remove();sessions.delete(key);}
     const created=connectSession(host,name,true);created.selectOnStart=true;created.launchOnStart=launch;
     if(filter!=='all'&&groups[id]!==filter)setFilter('all');$('tab-search').value='';

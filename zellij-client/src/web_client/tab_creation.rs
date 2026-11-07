@@ -139,17 +139,23 @@ pub(super) async fn create(
         return Err((StatusCode::BAD_REQUEST, "Invalid tab request"));
     }
     let sessions = state.session_manager.list_sessions();
-    if let Some(session) = sessions.iter().find(|s| s.name == target.session) {
-        if !session.web_clients_allowed
-            && !state
+    let shared = |name: &str, allowed: bool| {
+        allowed
+            || state
                 .sharing_recovery
                 .as_ref()
-                .is_some_and(|r| r.catalog_allowed(&target.session, false))
-        {
+                .is_some_and(|r| r.catalog_allowed(name, false))
+    };
+    if let Some(session) = sessions.iter().find(|s| s.name == target.session) {
+        if !shared(&session.name, session.web_clients_allowed) {
             return Err((StatusCode::FORBIDDEN, "Session is not shared"));
         }
     } else {
-        if !sessions.is_empty() {
+        // A computer's first shared session starts here; once it has one, tabs go there.
+        if sessions
+            .iter()
+            .any(|s| shared(&s.name, s.web_clients_allowed))
+        {
             return Err((StatusCode::NOT_FOUND, "Session is unavailable"));
         }
         if state.config.lock().unwrap().options.web_sharing == Some(WebSharing::Disabled) {
