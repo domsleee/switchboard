@@ -261,7 +261,11 @@ let native, relay, browser, updateController, created=false;
     for(let cycle=0;cycle<65;cycle++){
       await large.reload();
       await large.waitForFunction(()=>window.testPair?.terminal.readyState===1);
-      await large.evaluate(()=>window.__zjSuspendTerminal());
+      // This intermittently finds the owner already stopped; name the cause when it does.
+      await large.evaluate(()=>window.__zjSuspendTerminal()).catch(async error=>{
+        const why=await large.evaluate(()=>JSON.stringify({failure:window.__zjResumeFailure??null,readyState:window.testPair?.terminal.readyState}));
+        throw Error(`Reload cycle ${cycle}: ${error.message} ${why}`);
+      });
     }
     await large.reload();await large.waitForFunction(()=>window.testPair?.terminal.readyState===1);
     await large.evaluate(()=>window.testPair.terminal.send('\x1b[200~unfinished'));
