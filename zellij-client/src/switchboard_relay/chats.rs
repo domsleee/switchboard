@@ -552,8 +552,10 @@ impl Chat {
                 // Background task notifications are user records with a system
                 // prompt source, without isMeta. Use provenance so pasted XML stays visible.
                 let system_prompt = v["type"] == "user" && v["promptSource"] == "system";
+                // A compaction summary is a user record Claude Code writes itself.
                 if matches!(v["type"].as_str(), Some("user" | "assistant"))
                     && v["isMeta"] != true
+                    && v["isCompactSummary"] != true
                     && !system_prompt
                 {
                     self.push_parts(
@@ -888,12 +890,13 @@ fn markdown_events(source: &str) -> Vec<Value> {
 // files as attachments in history too. Only recognize our upload directory.
 fn uploaded_attachments(text: &str) -> Option<(String, Vec<Value>)> {
     let normalized = text.replace("\r\n", "\n");
-    let (body, files) = normalized
-        .rsplit_once("\n\nAttached files:\n")
-        .or_else(|| {
+    // New tab sends Claude "Attached images:"; the composer sends "Attached files:".
+    let (body, files) = ["Attached files:\n", "Attached images:\n"]
+        .into_iter()
+        .find_map(|header| {
             normalized
-                .strip_prefix("Attached files:\n")
-                .map(|files| ("", files))
+                .rsplit_once(&format!("\n\n{header}"))
+                .or_else(|| normalized.strip_prefix(header).map(|files| ("", files)))
         })?;
     let lines = files.lines().collect::<Vec<_>>();
     if lines.is_empty() || lines.len() > 8 {
@@ -1612,6 +1615,13 @@ mod tests {
             json!(markdown_events("Check **this screenshot**."))
         );
         let only = uploaded_attachments(&format!("\n\nAttached files:\n{windows}")).unwrap();
+        let (body, images) =
+            uploaded_attachments(&format!("look\n\nAttached images:\n{unix}")).unwrap();
+        assert_eq!(
+            (body.as_str(), images[0]["kind"].as_str()),
+            ("look", Some("file"))
+        );
+        assert!(uploaded_attachments(&format!("Attached images:\n{unix}")).is_some());
         assert_eq!(only.0, "");
         assert_eq!(only.1.len(), 1);
         assert!(uploaded_attachments(&format!("Attached files:\r\n{windows}\r\n")).is_some());
@@ -1778,12 +1788,15 @@ mod tests {
         human["promptSource"] = json!("typed");
         human["turnOrigin"] = json!("human");
         let legacy = json!({"type":"user","message":{"content":"Measure the change"}});
+        let summary = json!({"type":"user","isVisibleInTranscriptOnly":true,"isCompactSummary":true,
+            "message":{"role":"user","content":"This session is being continued from a previous conversation that ran out of context."}});
         let progress = json!({"type":"assistant","message":{"content":[{"type":"text","text":"Waiting for the dev-opt build."}]}});
         let answer = json!({"type":"assistant","message":{"content":[{"type":"text","text":"Build finished."}]}});
         let records = vec![
             notification.clone(),
             legacy,
             progress,
+            summary,
             notification,
             human,
             answer,
@@ -1791,7 +1804,7 @@ mod tests {
         let c = chat("claude", records.clone());
         assert_eq!(c.messages.len(), 4);
         assert_eq!(c.title, "Measure the change");
-        assert_eq!(c.messages[2]["text"], records[4]["message"]["content"]);
+        assert_eq!(c.messages[2]["text"], records[5]["message"]["content"]);
 
         // Live appends and paged reads must use the same filtering and cursors.
         let dir = tempfile::tempdir().unwrap();
