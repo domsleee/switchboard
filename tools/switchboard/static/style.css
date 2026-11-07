@@ -3,9 +3,10 @@
 body{margin:0;height:100dvh;display:flex;flex-direction:column}
 strong{font-size:13px}
 button,select{font:inherit;font-size:11px;border:1px solid #363e4d;background:#222732;color:inherit;border-radius:4px;padding:3px 7px;cursor:pointer}
-button:hover{background:#303949}
+@media(hover:hover){button:hover{background:#303949}}
 button:focus-visible,#new-tab-form button[type="submit"]:focus{outline:2px solid #9dc2fa;outline-offset:1px}
 button.selected{background:#30466b;border-color:#6f9cdd}
+button,a,select{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
 button:disabled{opacity:.5;cursor:default}
 #filters{display:flex;gap:4px}
 #filters button{border-color:transparent;background:transparent;color:#a3aec0;padding:4px 8px}
@@ -30,8 +31,8 @@ body.sidebar-collapsed #sidebar-toggle{left:8px}
 #tabs:has(:is(#hidden-toggle,#snoozed-toggle)){scroll-padding-bottom:40px}
 #tabs:has(#hidden-toggle):has(#snoozed-toggle){scroll-padding-bottom:75px}
 #tabs .tab-select{flex-shrink:0;display:grid;grid-template-columns:8px minmax(0,1fr);column-gap:7px;row-gap:3px;white-space:normal;text-align:left;padding:9px 34px 9px 9px;min-height:52px;width:100%;border-color:transparent;background:transparent;user-select:none}
-#tabs .tab-select:hover{background:#222732}
-#tabs .tab-select.selected{background:#263d5f;border-color:#507bb3}
+@media(hover:hover){#tabs .tab-select:hover{background:#222732}}
+#tabs .tab-select.selected{background:#202630;border-color:transparent}
 #tabs .tab-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:550;line-height:1.35;grid-column:2}
 #tabs .tab-select.elevated .tab-name::before{content:"\1F6E1\FE0F";margin-right:4px}
 #tabs small{color:#a3aec0;font-size:10px;grid-column:2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
