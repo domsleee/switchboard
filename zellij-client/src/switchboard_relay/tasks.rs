@@ -1236,6 +1236,9 @@ async fn update_locally(activate: Option<String>) -> Response {
             )
                 .into_response();
         }
+        // The Windows tray consumes this request on its next check, without a job to start.
+        #[cfg(windows)]
+        return (StatusCode::ACCEPTED, Json(json!({"ok": true}))).into_response();
     }
     match super::update_watch::update_now().await {
         Ok(()) => (StatusCode::ACCEPTED, Json(json!({"ok": true}))).into_response(),

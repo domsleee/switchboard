@@ -1204,13 +1204,15 @@ fn update_phase(state: &Value, requested: bool, running: bool) -> &'static str {
 
 /// The build this relay runs, whether it updates itself and whether its last update failed.
 fn switchboard() -> Value {
-    let automatic = automatic_updates();
-    let update_state =
-        read_json(&home().join(".local/share/switchboard/automatic-updates/state.json"))
-            .unwrap_or(Value::Null);
-    let request =
-        read_json(&home().join(".local/share/switchboard/automatic-updates/activate.json"))
-            .unwrap_or(Value::Null);
+    switchboard_in(
+        &home().join(".local/share/switchboard/automatic-updates"),
+        automatic_updates(),
+    )
+}
+
+fn switchboard_in(directory: &Path, automatic: bool) -> Value {
+    let update_state = read_json(&directory.join("state.json")).unwrap_or(Value::Null);
+    let request = read_json(&directory.join("activate.json")).unwrap_or(Value::Null);
     let request_active = [&request, &update_state["activation"]]
         .iter()
         .any(|request| {
@@ -1218,11 +1220,7 @@ fn switchboard() -> Value {
                 .as_u64()
                 .is_some_and(|expires| expires >= now() / 1000 && expires <= now() / 1000 + 300)
         });
-    let phase = update_phase(
-        &update_state,
-        request_active,
-        update_running(&home().join(".local/share/switchboard/automatic-updates")),
-    );
+    let phase = update_phase(&update_state, request_active, update_running(directory));
     json!({
         "updatePhase": phase,
         "commit": env!("SWITCHBOARD_COMMIT"),
@@ -1234,7 +1232,8 @@ fn switchboard() -> Value {
         "updateNotice": update_state["notice"],
         "readyUpdate": update_state["ready"],
         "activationTarget": update_state["ready"]["commit"].as_str().or(update_state["pending"]["target"].as_str()),
-        "activateUpdate": automatic && cfg!(any(target_os = "linux", target_os = "macos")),
+        // Windows consumes activation requests on the tray's next update check.
+        "activateUpdate": automatic,
     })
 }
 
@@ -1278,6 +1277,29 @@ pub(super) fn set_up_locally(request: &SetupRequest) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switchboard_health_advertises_activation_with_a_scheduled_updater() {
+        let directory = tempfile::tempdir().unwrap();
+        let commit = "b".repeat(40);
+        write_json(
+            &directory.path().join("state.json"),
+            &json!({"ready":{"commit":commit,"since":now() / 1000}}),
+        )
+        .unwrap();
+        let status = switchboard_in(directory.path(), true);
+        assert_eq!(status["activateUpdate"], true);
+        assert_eq!(status["activationTarget"], commit);
+        assert_eq!(status["updatePhase"], "waiting");
+        // The Windows tray can activate without a separately startable update job.
+        assert_eq!(
+            status["updateNow"],
+            cfg!(any(target_os = "linux", target_os = "macos"))
+        );
+        let stopped = switchboard_in(directory.path(), false);
+        assert_eq!(stopped["activateUpdate"], false);
+        assert_eq!(stopped["updateNow"], false);
+    }
 
     #[test]
     fn switchboard_update_pending_journal_is_not_a_running_job() {

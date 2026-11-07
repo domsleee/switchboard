@@ -286,9 +286,9 @@
     const update=element('div','task-row');update.dataset.status=updates;
     const head=element('div','task-head');
     head.append(dot(updates),element('span','task-name','Automatic updates'),element('small','task-meta',updating?'on · updating':updates==='ok'?'on':updates==='attention'?(sb.lastUpdateError?'on · last update failed':'on · update waiting'):updates==='failed'?'off':'unknown on this build'));
-    if(sb.updateNow){
+    const activate=sb.activateUpdate&&(sb.activationTarget||sb.readyUpdate?.commit);
+    if(sb.updateNow||activate){
       const actions=element('span','task-links');
-      const activate=sb.activateUpdate&&(sb.activationTarget||sb.readyUpdate?.commit);
       const run=button(activate?'Update now':'Check for updates',activate?`Activate ${activate.slice(0,7)} on ${computer.name}; terminals briefly reconnect`:`Check for a newer build on ${computer.name}`,()=>updateNow(computer));run.className='task-run';run.disabled=updating;
       actions.append(run);head.append(actions);
     }

@@ -1,5 +1,60 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs');
 
+test('Windows Health activates a ready build through the tray without a startable update job',
+  {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
+  const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch({headless:true});
+  try{
+    const page=await browser.newPage({viewport:{width:900,height:700}}),actions=[],errors=[];
+    page.setDefaultTimeout(5000);
+    page.on('pageerror',error=>errors.push(error.message));
+    const commit='b'.repeat(40),sb={commit:'aaaaaaa',automaticUpdates:true,updateNow:false,activateUpdate:false,
+      readyUpdate:{commit,since:Math.floor(Date.now()/1000)-360},activationTarget:commit,updatePhase:'waiting'};
+    const computer={name:'Desktop',local:true,agents:[],groups:[],switchboard:sb};
+    await page.addInitScript(()=>{window.setInterval=()=>0;});
+    await page.route('**/*',async route=>{
+      const request=route.request(),path=new URL(request.url()).pathname;
+      const json=value=>route.fulfill({contentType:'application/json',body:JSON.stringify(value)});
+      if(path==='/api/tasks')return json({computers:[computer]});
+      if(path==='/api/tasks/update'){
+        actions.push(JSON.parse(request.postData()));sb.updatePhase='requested';return json({ok:true});
+      }
+      if(path==='/api/hosts')return json([]);
+      if(path.startsWith('/api/'))return json({});
+      if(path==='/tasks.js'||path==='/style.css')return route.fulfill({contentType:path.endsWith('.js')?'text/javascript':'text/css',body:fs.readFileSync(__dirname+'/static'+path,'utf8')});
+      return route.fulfill({contentType:'text/html',body:'<meta charset="utf-8"><link rel="stylesheet" href="/style.css"><div id="panel-health"><p id="health-summary"></p><div id="updates"></div></div><p id="status-message"></p><script src="/tasks.js"></script>'});
+    });
+    await page.goto('https://health.test/');
+    const refresh=async()=>{
+      await page.waitForFunction(()=>document.querySelector('#updates')?.getAttribute('aria-busy')==='false');
+      await page.evaluate(()=>SwitchboardTasks.load());
+    };
+    await refresh();
+    await page.locator('.computer-summary').click();
+    const group=page.locator('.switchboard-group'),button=group.getByRole('button',{name:'Update now',exact:true});
+    assert.match(await group.textContent(),/needs a newer updater/,'older services keep their capability warning');
+    assert.equal(await button.count(),0);
+    if(process.env.WINDOWS_ACTIVATION_SCREENSHOTS)await group.screenshot({path:process.env.WINDOWS_ACTIVATION_SCREENSHOTS+'/before.png'});
+    sb.activateUpdate=true;await refresh();
+    assert.equal(await button.isVisible(),true);
+    assert.equal(await group.getByRole('button',{name:'Check for updates',exact:true}).count(),0);
+    assert.doesNotMatch(await group.textContent(),/needs a newer updater/);
+    assert.match(await group.textContent(),/Terminals briefly reconnect; running commands continue/);
+    if(process.env.WINDOWS_ACTIVATION_SCREENSHOTS)await group.screenshot({path:process.env.WINDOWS_ACTIVATION_SCREENSHOTS+'/after.png'});
+    await button.click();await refresh();
+    assert.deepEqual(actions,[{activate:commit}],'local activation queues the exact ready build');
+    assert.equal(await button.isDisabled(),true,'do not dispatch twice while the tray is about to update');
+    assert.match(await group.textContent(),/Update requested/);
+    computer.local=false;computer.host='mesh-desktop';sb.updatePhase='waiting';await refresh();
+    await page.locator('.computer-summary').click();
+    await button.click();await refresh();
+    assert.deepEqual(actions.at(-1),{host:'mesh-desktop',activate:commit},'paired activation targets the owning computer');
+    sb.updatePhase='current';sb.readyUpdate=null;sb.activationTarget=null;await refresh();
+    assert.equal(await button.count(),0,'a tray without a waiting build has no startable update action');
+    assert.equal(await group.getByRole('button',{name:'Check for updates',exact:true}).count(),0);
+    assert.deepEqual(errors,[]);
+  }finally{await browser.close();}
+});
+
 // All HTTP is local fixture data; never attach to user sessions.
 test('Update tasks show per computer, flag failures and changes in the sidebar, and act on the right computer',
   {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
