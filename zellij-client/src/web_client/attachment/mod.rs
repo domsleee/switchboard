@@ -171,6 +171,19 @@ async fn resume(
     if query.session != worker.session {
         return StatusCode::FORBIDDEN.into_response();
     }
+    // A transport may lose the terminal error while disconnecting. Authenticate
+    // first, then deliver the retained failure over WebSocket so the browser can
+    // stop retrying immediately instead of hiding an HTTP upgrade rejection.
+    let failure = viewer.journal.lock().unwrap().failure.clone();
+    if let Some(error) = failure {
+        return ws.on_upgrade(move |mut socket| async move {
+            let _ = socket
+                .send(Message::Text(
+                    json!({"type":"error","message":error}).to_string().into(),
+                ))
+                .await;
+        });
+    }
     let generation =
         match viewer
             .journal
