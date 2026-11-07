@@ -95,6 +95,7 @@ int main(int argc,char**argv){if(argc==6&&!strcmp(argv[1],"queue")&&!strcmp(argv
     await hook('Stop',restarted.pane_id);
     await until(async()=>{await page.evaluate(()=>refreshAttention(true));return page.evaluate(id=>[...paneAttention.values()].some(p=>p.pane_id===id&&p.chat_id),restarted.pane_id);},'Resumed agent did not bind its conversation');
     await page.getByRole('button',{name:'Conversation',exact:true}).click();
+    await page.waitForFunction(()=>document.querySelector('.conversation-notice')?.hidden===true);
     await page.getByLabel('Reply draft').fill('native conversation reply');
     await page.getByLabel('Reply draft').press('Enter');
     try {await until(()=>fs.existsSync(path.join(dir,'queued'))&&fs.readFileSync(path.join(dir,'queued'),'utf8')===sid+'\nnative conversation reply\n','Conversation Send did not queue to the native agent');}
