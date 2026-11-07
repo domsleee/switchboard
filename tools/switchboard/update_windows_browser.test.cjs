@@ -120,7 +120,7 @@ function start(binary,args,label) {
             await page.locator('#terminals>iframe.active').contentFrame().locator('.xterm-helper-textarea').focus();
             await page.keyboard.type(text);await page.keyboard.press('Enter');await hasOutput(expected);
         }
-        const sidebarNames=()=>page.evaluate(session=>[...document.querySelectorAll('#tabs .tab-select')].filter(b=>b._item?.entry.name===session).map(b=>[b._item.tab.id,b.children[1].textContent]).sort((a,b)=>a[0]-b[0]),name);
+        const sidebarNames=()=>page.evaluate(session=>[...document.querySelectorAll('#tabs .tab-select')].filter(b=>b._item?.entry.name===session).map(b=>[b._item.tab.id,b.querySelector('.tab-name').textContent]).sort((a,b)=>a[0]-b[0]),name);
         await select(first);
         const heartbeat=path.join(dir,'heartbeat'), agentDir=path.join(dir,'codex');fs.mkdirSync(agentDir);
         fs.writeFileSync(agentScript,`const fs=require('node:fs');let n=0;setInterval(()=>{fs.writeFileSync(process.argv[2],String(++n));process.stdout.write('HEARTBEAT:'+n+'\\n');},750);`);

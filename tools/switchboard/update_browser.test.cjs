@@ -195,12 +195,12 @@ let recoveryPanes, reconnectTarget;
         await connected();
         const sidebarNames=()=>page.evaluate(session=>[...document.querySelectorAll('#tabs .tab-select')]
             .filter(button=>button._item?.entry.name===session)
-            .map(button=>[button._item.tab.id,button.children[1].textContent])
+            .map(button=>[button._item.tab.id,button.querySelector('.tab-name').textContent])
             .sort((a,b)=>a[0]-b[0]),name);
         let beforeSidebarNames;
         if(recoveryMode){
             await page.waitForFunction(expected=>expected.every(([id,title])=>[...document.querySelectorAll('#tabs .tab-select')]
-                .some(button=>button._item?.tab.id===id&&button.children[1].textContent===title)),beforeNames);
+                .some(button=>button._item?.tab.id===id&&button.querySelector('.tab-name').textContent===title)),beforeNames);
             beforeSidebarNames=await sidebarNames();
             assert.deepEqual(beforeSidebarNames,beforeNames,'Recovery preserves the original displayed tab names');
         }
