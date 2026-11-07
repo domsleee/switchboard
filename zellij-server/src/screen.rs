@@ -9878,6 +9878,8 @@ pub(crate) fn screen_thread_main(
                         .or_default()
                         .push(ScreenInstruction::HoldPane(id, exit_status, run_command));
                 }
+                // The pane's EOF render can arrive before this; draw the exit banner now.
+                screen.render(None)?;
                 screen.log_and_report_session_state()?;
             },
             ScreenInstruction::UpdatePaneName(

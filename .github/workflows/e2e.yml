@@ -20,6 +20,8 @@ concurrency:
 jobs:
   browser:
     name: Rust relay and browser recovery
+    # Slowest check, and macOS runners are scarce (release builds wait for them).
+    if: github.event_name != 'pull_request'
     runs-on: macos-latest
     timeout-minutes: 30
     env:
@@ -93,7 +95,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # The macOS and Windows legs are the slowest, and macOS runners are scarce
+        # (release builds wait for them), so pull requests check Linux only.
+        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     defaults:

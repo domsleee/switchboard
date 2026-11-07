@@ -8,6 +8,7 @@
 //   --cpu-load N      busy-loop N extra processes while measuring (default 0)
 //   --tls             serve the engine over HTTPS with a pinned self-signed cert (needs openssl)
 //   --max-p95 MS      fail when p95 echo latency exceeds MS
+//   --rtt MS          delay relay<->engine traffic by MS round trip, like typing into a paired computer
 //   --predict         turn on Instant typing, clear each line with Ctrl+Backspace (delete word) instead
 //                     of Ctrl+U, and fail if any guess is not confirmed by the echo
 // Read-only probe of an existing session (times the relay's attention CLI calls, types nothing):
@@ -25,7 +26,7 @@ const binary=path.resolve(args[0]);
 const keys=Number(option('keys',60)),gap=Number(option('gap',120)),hammer=Number(option('hammer',0));
 const tabs=Number(option('tabs',4)),scrollback=Number(option('scrollback',10000)),cpuLoad=Number(option('cpu-load',0));
 const predictEcho=args.includes('--predict');
-const tls=args.includes('--tls'),maxP95=option('max-p95'),probe=option('probe');
+const rtt=Number(option('rtt',0)),tls=args.includes('--tls'),maxP95=option('max-p95'),probe=option('probe');
 const windows=process.platform==='win32';
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const stats=values=>{const s=[...values].sort((a,b)=>a-b),q=p=>s[Math.min(s.length-1,Math.floor(p*s.length))];return s.length?{n:s.length,p50:+q(0.5).toFixed(1),p95:+q(0.95).toFixed(1),max:+s[s.length-1].toFixed(1)}:{n:0};};
@@ -53,7 +54,11 @@ const kdl=s=>JSON.stringify(s.replace(/\\/g,'/'));
 async function port(){const server=net.createServer();await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const p=server.address().port;await new Promise(resolve=>server.close(resolve));return p;}
 async function until(check,message){for(let n=0;n<300;n++){try{if(await check())return;}catch{}await delay(100);}throw Error(message);}
 async function stop(child){if(!child||child.exitCode!==null)return;const done=new Promise(resolve=>child.once('exit',resolve));child.kill();await Promise.race([done,delay(3000).then(()=>{if(child.exitCode===null)child.kill('SIGKILL');})]);}
-let native,relay,browser,tokenName,created=false,failed=false;const burners=[];
+let native,relay,browser,proxy,tokenName,created=false,failed=false;const burners=[];
+// Forwards each chunk after half the round trip each way; equal delays keep the byte order.
+const delayed=(target,ms)=>new Promise(resolve=>{const open=new Set(),server=net.createServer(client=>{const upstream=net.connect(target,'127.0.0.1');open.add(client).add(upstream);
+  for(const [from,to] of [[client,upstream],[upstream,client]]){from.on('data',data=>setTimeout(()=>to.write(data),ms));from.on('end',()=>setTimeout(()=>to.end(),ms));from.on('error',()=>to.destroy());}});
+  server.stop=()=>{server.close();for(const socket of open)socket.destroy();};server.listen(0,'127.0.0.1',()=>resolve(server));});
 (async()=>{
   try{
     fs.copyFileSync(binary,installed);fs.chmodSync(installed,0o755);
@@ -84,7 +89,8 @@ let native,relay,browser,tokenName,created=false,failed=false;const burners=[];
     tokenName=tokenLine.split(': ')[0];
     const token=path.join(dir,'token');fs.writeFileSync(token,tokenLine.slice(tokenName.length+2).trim(),{mode:0o600});
     const nativePort=await port(),relayPort=await port(),url='http://127.0.0.1:'+relayPort;
-    const host={id:'fixture',name:'Private fixture',url:(tls?'https':'http')+'://127.0.0.1:'+nativePort,token_file:token,zellij_binary:installed};
+    if(rtt)proxy=await delayed(nativePort,rtt/2);
+    const host={id:'fixture',name:'Private fixture',url:(tls?'https':'http')+'://127.0.0.1:'+(proxy?proxy.address().port:nativePort),token_file:token,zellij_binary:installed};
     if(fingerprint)host.tls_fingerprint=fingerprint;
     const hosts=path.join(dir,'hosts.json');fs.writeFileSync(hosts,JSON.stringify({hosts:[host]}),{mode:0o600});
     const log=file=>fs.openSync(path.join(dir,file),'a');
@@ -94,17 +100,23 @@ let native,relay,browser,tokenName,created=false,failed=false;const burners=[];
     browser=await chromium.launch({headless:true});
     const page=await browser.newPage({viewport:{width:1200,height:800}});page.setDefaultTimeout(30000);
     await page.addInitScript(()=>{
-      // Digit sent on the terminal socket -> first parsed frame whose cursor line shows it after the "> " prompt
-      // (echo_ms); arrival_ms is when the last frame before that parse reached the socket.
+      // Digit key press -> first parsed frame whose cursor line shows it after the "> " prompt (echo_ms),
+      // so time queued behind unacknowledged input counts; arrival_ms is when the last output frame
+      // before that parse reached the socket.
       const Original=window.WebSocket;window.__latency=[];window.__arrival=[];window.__pending=[];window.__bytes=[];let typed='',hooked=false;window.__reset=()=>{typed='';window.__latency=[];window.__arrival=[];window.__pending=[];window.__bytes=[];};
       const check=()=>{const b=window.term.buffer.active,line=b.getLine(b.baseY+b.cursorY)?.translateToString(true)||'';
         while(window.__pending.length&&line.startsWith('> '+typed.slice(0,window.__pending[0].len))){const p=window.__pending.shift();window.__latency.push(performance.now()-p.t);window.__arrival.push(window.__lastArrival-p.t);}};
+      window.addEventListener('keydown',event=>{
+        if(!window.term)return;
+        if(!hooked){hooked=true;window.term.onWriteParsed(check);}
+        if(/^[0-9]$/.test(event.key)&&!event.ctrlKey){typed+=event.key;window.__pending.push({len:typed.length,t:performance.now()});}
+        else if(event.ctrlKey&&['u','w','c','backspace'].includes(event.key.toLowerCase()))typed='';
+      },true);
       window.WebSocket=class extends Original{
-        constructor(...a){super(...a);if(String(a[0]).includes('/ws/terminal'))this.addEventListener('message',event=>window.__lastArrival=performance.now());this.addEventListener('message',event=>window.__bytes.push(event.data.length??event.data.size??event.data.byteLength));}
-        send(data){if(String(this.url).includes('/ws/terminal')&&typeof data==='string'){
-          if(!hooked&&window.term){hooked=true;window.term.onWriteParsed(check);}
-          if(/^[0-9]$/.test(data)){typed+=data;window.__pending.push({len:typed.length,t:performance.now()});}else if(data==='\x15'||data==='\x17'||data==='\x03')typed='';}
-          return super.send(data);}
+        constructor(...a){super(...a);const url=String(a[0]);
+          // /ws/resume wraps output in JSON beside acks and heartbeats; only output is a frame.
+          if(url.includes('/ws/terminal')||url.includes('/ws/resume'))this.addEventListener('message',event=>{if(!url.includes('/ws/resume')||(()=>{try{return JSON.parse(event.data).type==='output';}catch{return false;}})())window.__lastArrival=performance.now();});
+          this.addEventListener('message',event=>window.__bytes.push(event.data.length??event.data.size??event.data.byteLength));}
       };
     });
     if(predictEcho)await page.addInitScript(()=>{try{localStorage.setItem('switchboard-predictive-echo','true');}catch{}});
@@ -129,13 +141,16 @@ let native,relay,browser,tokenName,created=false,failed=false;const burners=[];
     hammering=false;await Promise.all(loops);
     const {latency,arrival,lost,bytes}=await frame.evaluate(()=>({latency:window.__latency,arrival:window.__arrival,lost:window.__pending.length,bytes:window.__bytes}));
     const prediction=predictEcho?await frame.evaluate(()=>window.__switchboardPredict?.stats()):undefined;
-    const result={kind:'disposable private terminal',prediction,platform:process.platform,tls,tabs,scrollback,cpu_load:cpuLoad,hammer,hammer_scans:scans,duration_s:(Date.now()-started)/1000,echo_ms:stats(latency),arrival_ms:stats(arrival),lost_echoes:lost,terminal_frame_bytes:stats(bytes)};
+    const result={kind:'disposable private terminal',prediction,platform:process.platform,rtt,gap,tls,tabs,scrollback,cpu_load:cpuLoad,hammer,hammer_scans:scans,duration_s:(Date.now()-started)/1000,echo_ms:stats(latency),arrival_ms:stats(arrival),lost_echoes:lost,terminal_frame_bytes:stats(bytes)};
     // Per-call cost of what each attention scan spawns (one list-panes plus one dump-screen per busy pane).
     Object.assign(result,timeCli((...a)=>cli('-s',name,'action',...a),busy));
     console.log(JSON.stringify(result,null,2));
+    // A transport change once left this hook blind while the run still passed.
+    if(rtt&&!(result.echo_ms.p50>=rtt))throw Error(`p50 echo ${result.echo_ms.p50} ms is under the ${rtt} ms round trip; the delay is not on the terminal path`);
+    if(keys&&result.echo_ms.n<keys*0.9)throw Error(`Measured ${result.echo_ms.n} of ${keys} echoes; the echo hook no longer sees typing`);
     if(maxP95&&!(result.echo_ms.p95<=Number(maxP95)))throw Error(`p95 echo ${result.echo_ms.p95} ms exceeds ${maxP95} ms`);
     if(lost)throw Error(lost+' keystrokes never echoed');
     if(predictEcho&&!(prediction?.guessed>0&&prediction.dropped===0&&prediction.confirmed===prediction.guessed))throw Error('Instant typing guessed wrong: '+JSON.stringify(prediction));
   }catch(error){failed=true;console.error('Private fixture logs:',dir);throw error;}
-  finally{for(const b of burners)b.kill();if(browser)await browser.close();if(created)try{cli('kill-session',name);}catch{}await stop(relay);await stop(native);if(tokenName)try{cli('web','--revoke-token',tokenName);}catch{}if(!failed)fs.rmSync(dir,{recursive:true,force:true});}
+  finally{for(const b of burners)b.kill();proxy?.stop();if(browser)await browser.close();if(created)try{cli('kill-session',name);}catch{}await stop(relay);await stop(native);if(tokenName)try{cli('web','--revoke-token',tokenName);}catch{}if(!failed)fs.rmSync(dir,{recursive:true,force:true});}
 })().catch(error=>{console.error(error);process.exitCode=1;});
