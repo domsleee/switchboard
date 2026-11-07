@@ -15,6 +15,20 @@ load is kept beside it as `session-layout.unreadable-<time>.kdl`.
 To check this on Windows with private test sessions:
 `node tools/switchboard/restart_windows.test.cjs path\to\zellij.exe`.
 
+## Switch between Claude and Codex
+
+When the agent is ready, click its model name in Conversation, or choose
+**Handover context…** from the tab's actions. Choose Claude (`c`) or Codex
+(`csol` or `castra`), add the next request, and press **Switch model**.
+The agent changes in the same tab and working directory. Switchboard checks
+the destination alias before replacing the original process.
+
+The handover carries attributed user and assistant messages, including the
+original request and recent exchanges, within 64 KB. Included messages keep
+their complete text. The dialog reports omitted history; the context file
+links back to the saved source conversation. Attachments, tool state and
+private reasoning are excluded. Finish or stop a running turn before switching.
+
 ## Install on a Mac
 
 You need Rust, the Xcode command line tools and `jq`. From this repository:

@@ -35,7 +35,7 @@ struct HistoryIndex {
     observed: Option<(u64, std::time::SystemTime)>,
     provisional: usize,
     provisional_state: Option<Chat>,
-    page_cache: Option<(usize, usize, bool, Option<usize>, Value)>,
+    page_cache: Option<(usize, usize, bool, Option<usize>, bool, Value)>,
 }
 static HISTORY: LazyLock<SyncMutex<HashMap<String, Arc<SyncMutex<HistoryIndex>>>>> =
     LazyLock::new(Default::default);
@@ -174,8 +174,10 @@ impl HistoryIndex {
         let previous = self.observed;
         self.update()?;
         if previous == self.observed {
-            if let Some((cursor, limit, tail, before, page)) = &self.page_cache {
-                if (*cursor, *limit, *tail, *before) == (p.cursor, p.limit(), p.tail, p.before) {
+            if let Some((cursor, limit, tail, before, context, page)) = &self.page_cache {
+                if (*cursor, *limit, *tail, *before, *context)
+                    == (p.cursor, p.limit(), p.tail, p.before, p.context)
+                {
                     return Ok(page.clone());
                 }
             }
@@ -239,6 +241,7 @@ impl HistoryIndex {
             &chat,
             &Params {
                 limit: p.limit,
+                context: p.context,
                 ..Params::default()
             },
         );
@@ -247,7 +250,14 @@ impl HistoryIndex {
         page["message_count"] = json!(self.messages.len());
         page["previous_cursor"] = if start > 0 { json!(start) } else { Value::Null };
         page["next_cursor"] = if next < end { json!(next) } else { Value::Null };
-        self.page_cache = Some((p.cursor, p.limit(), p.tail, p.before, page.clone()));
+        self.page_cache = Some((
+            p.cursor,
+            p.limit(),
+            p.tail,
+            p.before,
+            p.context,
+            page.clone(),
+        ));
         Ok(page)
     }
 }
@@ -287,6 +297,8 @@ pub(super) struct Params {
     tail: bool,
     before: Option<usize>,
     project: Option<String>,
+    #[serde(default)]
+    context: bool,
 }
 impl Params {
     fn valid(&self) -> bool {
@@ -936,6 +948,13 @@ fn read_page(chat: &Chat, p: &Params) -> Value {
         json!({"role":m["role"],"timestamp":m["timestamp"],"text":clip(text,4000),"truncated":text.chars().count()>4000,"phase":m["phase"],"model":m["model"],"reasoning_effort":m["reasoning_effort"],"attachments":m["attachments"],"markdown":markdown_events(&clip(text,4000))})
     }).collect();
     for (message, source) in page.iter_mut().zip(&chat.messages[start..end]) {
+        if p.context {
+            // Portable handovers need complete attributed text, not the display
+            // preview. Bound each record and explicitly mark anything too long.
+            let text = source["text"].as_str().unwrap_or_default();
+            message["context_text"] = json!(clip(text, 64000));
+            message["context_truncated"] = json!(text.chars().count() > 64000);
+        }
         if source["role"] == "user" {
             // Display stays clipped; receipt matching must cover every message
             // accepted by the composer, including an attached-file suffix.
@@ -1221,6 +1240,9 @@ async fn remote(host: &Host, p: &Params, id: Option<&str>) -> Value {
         if let Some(project) = &p.project {
             query.append_pair("project", project);
         }
+        if p.context {
+            query.append_pair("context", "true");
+        }
         query.finish()
     };
     let path = format!("/switchboard/chats/{}?{}", id.unwrap_or("search"), query);
@@ -1346,6 +1368,28 @@ pub(super) async fn read(
     }
     result["stream"] = json!(true);
     Json(result).into_response()
+}
+
+pub(super) async fn context_count(id: &str) -> Result<usize, Error> {
+    if !valid_id(id) {
+        return Err((StatusCode::BAD_REQUEST, "Invalid source conversation"));
+    }
+    let page = local_async(
+        Params {
+            limit: Some(1),
+            tail: true,
+            ..Params::default()
+        },
+        Some(id.into()),
+    )
+    .await;
+    page["message_count"]
+        .as_u64()
+        .and_then(|count| usize::try_from(count).ok())
+        .ok_or((
+            StatusCode::CONFLICT,
+            "Cannot verify the source history before switching models",
+        ))
 }
 
 /// One browser connection follows the selected transcript. The owning computer's
@@ -2081,6 +2125,50 @@ mod tests {
                 }
             )["messages"][0]["text"],
             "reply"
+        );
+    }
+    #[test]
+    fn switchboard_chats_handover_retains_complete_text_and_separates_cached_previews() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.jsonl");
+        let text = format!("{} final constraint", "\u{1f680}".repeat(5000));
+        fs::write(
+            &path,
+            format!("{}\n", json!({"type":"user","message":{"content":text}})),
+        )
+        .unwrap();
+        let mut index = HistoryIndex::new("claude", dir.path(), &path);
+        let preview = index.page(&Params::default()).unwrap();
+        assert_eq!(preview["messages"][0]["truncated"], true);
+        assert!(preview["messages"][0].get("context_text").is_none());
+        let context = index
+            .page(&Params {
+                context: true,
+                ..Params::default()
+            })
+            .unwrap();
+        assert_eq!(context["messages"][0]["context_text"], text);
+        assert_eq!(context["messages"][0]["context_truncated"], false);
+        let preview = index.page(&Params::default()).unwrap();
+        assert!(preview["messages"][0].get("context_text").is_none());
+
+        let mut chat = Chat::default();
+        chat.push("assistant", "x".repeat(64001), Value::Null);
+        let context = read_page(
+            &chat,
+            &Params {
+                context: true,
+                ..Params::default()
+            },
+        );
+        assert_eq!(context["messages"][0]["context_truncated"], true);
+        assert!(
+            context["messages"][0]["context_text"]
+                .as_str()
+                .unwrap()
+                .chars()
+                .count()
+                <= 64001
         );
     }
     #[test]

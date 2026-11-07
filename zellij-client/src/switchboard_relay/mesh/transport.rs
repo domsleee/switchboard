@@ -811,7 +811,7 @@ async fn terminal_response(
             .map(IntoResponse::into_response);
     }
     if path == "/switchboard/restart-agent" && request.method() == Method::POST {
-        let bytes = to_bytes(request.into_body(), 4096)
+        let bytes = to_bytes(request.into_body(), 128 * 1024)
             .await
             .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid restart request"))?;
         let target = serde_json::from_slice::<restart::Target>(&bytes)

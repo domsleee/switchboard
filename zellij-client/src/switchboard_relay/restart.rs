@@ -105,6 +105,50 @@ pub(super) struct Target {
     chat_id: String,
     #[serde(default)]
     confirm_interrupt: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    handover: Option<Handover>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+enum HandoverModel {
+    #[serde(rename = "c")]
+    Claude,
+    #[serde(rename = "csol")]
+    Sol,
+    #[serde(rename = "castra")]
+    Astra,
+}
+impl HandoverModel {
+    fn alias(&self) -> &'static str {
+        match self {
+            Self::Claude => "c",
+            Self::Sol => "csol",
+            Self::Astra => "castra",
+        }
+    }
+}
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Handover {
+    model: HandoverModel,
+    prompt: String,
+    source_messages: usize,
+}
+impl Target {
+    fn valid_handover(&self) -> Result<(), Error> {
+        if self.handover.as_ref().is_some_and(|handover| {
+            handover.prompt.trim().is_empty()
+                || handover.prompt.len() > conversation::REPLY_LIMIT
+                || handover.source_messages > 10_000_000
+                || handover
+                    .prompt
+                    .chars()
+                    .any(|c| c.is_control() && c != '\n' && c != '\t')
+        }) {
+            return Err((StatusCode::BAD_REQUEST, "Invalid context handover prompt"));
+        }
+        Ok(())
+    }
 }
 
 fn refused(message: &'static str) -> Error {
@@ -117,6 +161,7 @@ pub(super) async fn handler(
     Json(target): Json<Target>,
 ) -> Result<Response, Error> {
     control::validate_session(&target.session)?;
+    target.valid_handover()?;
     let host = state
         .host(&id)
         .ok_or((StatusCode::NOT_FOUND, "Unknown computer"))?;
@@ -145,6 +190,7 @@ pub(super) async fn local(
     poll: &Arc<Mutex<attention::PollState>>,
     target: Target,
 ) -> Result<Json<Value>, Error> {
+    target.valid_handover()?;
     // Serialize explicit requests. A duplicate then sees the replaced pane missing.
     static RESTARTING: Mutex<()> = Mutex::const_new(());
     let _guard = RESTARTING
@@ -182,6 +228,11 @@ pub(super) async fn local(
     .await
     .map_err(|_| refused("Cannot check the agent's prompt"))?;
     let working = hook_working || attention::classify(pane, &screen)["state"] == "working";
+    if working && target.handover.is_some() {
+        return Err(refused(
+            "Finish or stop the current turn before switching models",
+        ));
+    }
     if working && !target.confirm_interrupt {
         return Err(refused(
             "Confirm that the current turn should be interrupted",
@@ -190,6 +241,13 @@ pub(super) async fn local(
     if !working && crate::switchboard_absorb::prompt_empty(identity.agent, &screen).is_err() {
         return Err(refused("Clear any unsent prompt before restarting"));
     }
+    if let Some(handover) = &target.handover {
+        if chats::context_count(&target.chat_id).await? != handover.source_messages {
+            return Err(refused(
+                "The conversation changed. Reload context before switching models",
+            ));
+        }
+    }
     let run = resume_command(
         &identity.command,
         identity.agent,
@@ -197,6 +255,18 @@ pub(super) async fn local(
         identity.cwd.clone(),
     )
     .map_err(|_| refused("This agent launch cannot be resumed safely"))?;
+    let (executable, launch_args) = if let Some(handover) = &target.handover {
+        let run = crate::web_client::handover_command(
+            handover.model.alias(),
+            &handover.prompt,
+            identity.cwd.clone(),
+        )
+        .await
+        .map_err(refused)?;
+        (run.command, run.args)
+    } else {
+        (identity.executable.clone(), run.args)
+    };
     if !identity.cwd.is_dir() || !identity.executable.is_file() {
         return Err(refused(
             "The agent executable or working folder is no longer available",
@@ -222,6 +292,13 @@ pub(super) async fn local(
             "The conversation changed while checking the restart",
         ));
     }
+    if let Some(handover) = &target.handover {
+        if chats::context_count(&target.chat_id).await? != handover.source_messages {
+            return Err(refused(
+                "The conversation changed. Reload context before switching models",
+            ));
+        }
+    }
     // Hold the replacement until the original process has exited, so two agents never
     // write the same conversation. An error after replacement leaves a recoverable held pane.
     let marker = format!("Switchboard restart {}", uuid::Uuid::new_v4());
@@ -241,9 +318,9 @@ pub(super) async fn local(
         "--cwd".into(),
         identity.cwd.to_string_lossy().into_owned(),
         "--".into(),
-        identity.executable.to_string_lossy().into_owned(),
+        executable.to_string_lossy().into_owned(),
     ];
-    args.extend(run.args);
+    args.extend(launch_args);
     control::run_local(
         host,
         &target.session,
@@ -353,5 +430,41 @@ mod tests {
         let mut missing = valid;
         missing.as_object_mut().unwrap().remove("pane_id");
         assert!(serde_json::from_value::<Target>(missing).is_err());
+    }
+    #[test]
+    fn switchboard_handover_accepts_only_known_models_and_bounded_literal_prompts() {
+        let base = json!({"session":"main","pane_id":65,"tab_id":64,"chat_id":"codex-test"});
+        let restart: Target = serde_json::from_value(base.clone()).unwrap();
+        assert!(
+            serde_json::to_value(restart)
+                .unwrap()
+                .get("handover")
+                .is_none(),
+            "Ordinary restarts remain compatible with older peers"
+        );
+        for model in ["c", "csol", "castra"] {
+            let mut value = base.clone();
+            value["handover"] =
+                json!({"model":model,"prompt":"Literal $(text)\nNext request","source_messages":2});
+            assert!(serde_json::from_value::<Target>(value)
+                .unwrap()
+                .valid_handover()
+                .is_ok());
+        }
+        let mut value = base;
+        value["handover"] = json!({"model":"sh -c bad","prompt":"text","source_messages":2});
+        assert!(serde_json::from_value::<Target>(value.clone()).is_err());
+        value["handover"]["model"] = json!("c");
+        for text in [
+            String::new(),
+            "\x1b[2J".into(),
+            "x".repeat(conversation::REPLY_LIMIT + 1),
+        ] {
+            value["handover"]["prompt"] = json!(text);
+            assert!(serde_json::from_value::<Target>(value.clone())
+                .unwrap()
+                .valid_handover()
+                .is_err());
+        }
     }
 }
