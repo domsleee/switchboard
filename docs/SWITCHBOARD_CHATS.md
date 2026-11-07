@@ -73,6 +73,29 @@ connects automatically when a hook arrives; it never guesses another chat. Chat 
 survives relay restarts without restoring a stale working state, and is cleared when the
 agent exits or the pane's process changes.
 
+## Mobile replies and attachments
+
+The composer’s **+** button opens the phone’s photo/file picker. Up to eight files,
+20 MiB each, upload to the selected conversation’s computer before sending. Draft
+attachments have previews, upload status and remove buttons; changing tabs keeps
+each chat’s draft separate. Uploads are stored in private, uniquely named directories
+under `~/.local/share/switchboard/attachments`; uploads older than seven days are
+cleaned up during later uploads. Replies include the stored file paths so the agent
+can read the files on its own computer.
+
+Codex replies use `/api/hosts/HOST/codex/reply` and its native queue, whether idle
+or working. The transcript supplies the native session ID. A retry keeps the same
+send key, and the destination stores a receipt to prevent a duplicate submission.
+“Queued” means Codex accepted the message, not that it has read it. These browser
+replies retain user text; the separate agent-to-agent `/codex/queue` route keeps its
+forwarded-message annotation. Claude replies use the existing guarded terminal
+composer, including while working. Approval and interactive prompts still require
+Terminal.
+
+On phones the chat follows `visualViewport` as the keyboard opens, pans or closes.
+The textarea grows only to a bounded height; short drafts do not get a scrollbar.
+Desktop Enter sends; on a touch device Enter adds a line and the arrow button sends.
+
 ## Coverage and bounds
 
 Always inspect coverage before concluding that a conversation does not exist:

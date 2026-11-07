@@ -6,6 +6,7 @@ pub(crate) mod askpass;
 pub(crate) mod attention;
 mod skill_health;
 pub use attention::forward_hook;
+mod attachments;
 mod chats;
 mod control;
 mod hostname;
@@ -1380,6 +1381,11 @@ fn app(state: RelayState) -> Router {
             "/api/hosts/{host}/codex/queue",
             post(native_messages::handler),
         )
+        .route(
+            "/api/hosts/{host}/codex/reply",
+            post(native_messages::reply_handler),
+        )
+        .route("/api/hosts/{host}/attachments", post(attachments::handler))
         .route("/api/hosts/{host}/escape", post(control::escape))
         .route("/api/open-link", post(control::open_link))
         .route("/api/open-file", post(control::open_file))

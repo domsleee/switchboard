@@ -781,6 +781,12 @@ async fn terminal_response(
     if path == "/switchboard/logs" && request.method() == Method::GET {
         return Ok(Json(logs::local()).into_response());
     }
+    if request.uri().path() == "/switchboard/attachments" && request.method() == Method::POST {
+        return attachments::local(request).await;
+    }
+    if path == "/switchboard/codex/reply" && request.method() == Method::POST {
+        return Ok(native_messages::gateway_reply(request).await);
+    }
     if path == "/switchboard/codex/queue" && request.method() == Method::POST {
         return Ok(native_messages::gateway(request).await);
     }
