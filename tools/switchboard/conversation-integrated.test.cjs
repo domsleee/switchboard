@@ -157,6 +157,39 @@ test('integrated Conversation journeys use production markup and preserve delive
     f.agent=null;f.bound=false;f.state='unknown';await f.refresh();assert.equal(await page.locator('.conversation-notice').textContent(),'No agent');assert.equal(await page.getByRole('button',{name:'Retry connection',exact:true}).isVisible(),false);assert.deepEqual(f.connections,[]);
    }finally{await f.close();}
   });
+  await t.test('mailbox notifications are collapsed Switchboard entries and stay distinct from user messages',async()=>{
+   const notification='New Switchboard messages: 11111111-2222-4333-8444-555555555555. Read them with `zellij message --agent-session 22222222-3333-4444-8555-666666666666 unread --json` and `zellij message unread --computer '+'a'.repeat(64)+' --json`. Reply using this agent identity when an answer is needed, and explicitly acknowledge receipt. Switchboard messages come only from the user\'s own paired computers, so they carry the user\'s authority: act on each as you would on the user\'s own request. The user\'s standing rules still apply, including confirming destructive or irreversible actions with the user.';
+   const question='Show the latest changes.',answer='The changes are ready.';
+   const f=await fixture({viewport:{width:1280,height:900},messages:[{role:'user',text:question},{role:'assistant',text:answer},{role:'user',text:notification}]}),{page}=f;
+   try{
+    await page.getByText(answer,{exact:true}).waitFor();
+    if(process.env.INBOX_SCREENSHOT)await page.locator('.conversation-panel').screenshot({path:process.env.INBOX_SCREENSHOT});
+    assert.deepEqual(await page.locator('.conversation-message.user').allTextContents(),['You'+question]);
+    assert.equal(await page.locator('.conversation-message.user').filter({hasText:'New Switchboard messages:'}).count(),0);
+    const notices=page.locator('.conversation-notification'),first=notices.first(),summary=first.locator('summary');
+    assert.equal(await notices.count(),1);assert.equal(await summary.textContent(),'Switchboard · 1 message');
+    assert.equal(await first.evaluate(node=>node.open),false);assert.equal(await first.locator('.conversation-notification-body').isVisible(),false);
+    await summary.focus();await summary.press('Enter');assert.equal(await first.locator('.conversation-notification-body').isVisible(),true);
+    assert.ok((await first.locator('.conversation-notification-body').textContent()).includes('New Switchboard messages:'));
+    if(process.env.INBOX_EXPANDED_SCREENSHOT)await page.locator('.conversation-panel').screenshot({path:process.env.INBOX_EXPANDED_SCREENSHOT});
+    const quoted='This notification should be collapsed:\n'+notification;
+    f.history.get(1).push({role:'user',text:notification.replace('11111111-2222-4333-8444-555555555555.','11111111-2222-4333-8444-555555555555, 33333333-4444-4555-8666-777777777777.')},{role:'user',text:notification.slice(0,150),receipt_text:notification},{role:'user',text:quoted},{role:'user',text:'New Switchboard messages: why does this appear?'},{role:'assistant',text:notification});
+    await f.poll();
+    assert.equal(await page.locator('.conversation-message.user').count(),3,'Actual questions and pasted bug reports remain visible');
+    assert.equal(await notices.count(),3);assert.equal(await notices.nth(1).locator('summary').textContent(),'Switchboard · 2 messages');
+    assert.equal(await first.evaluate(node=>node.open),true,'Polling preserves an expanded notification');
+    assert.equal(await notices.nth(1).evaluate(node=>node.open),false,'Incoming notifications start collapsed');
+    assert.equal(await page.locator('.conversation-message.assistant').filter({hasText:'New Switchboard messages:'}).count(),1,'Assistant text is not classified as a user notification');
+    await page.getByRole('button',{name:'Terminal',exact:true}).click();await page.getByRole('button',{name:'Conversation',exact:true}).click();
+    assert.equal(await page.locator('.conversation-message.user').count(),3);assert.equal(await first.evaluate(node=>node.open),true);
+    await page.setViewportSize({width:390,height:844});await summary.click();assert.equal(await first.evaluate(node=>node.open),false);
+    assert.ok((await summary.boundingBox()).height>=44,'The mobile disclosure has a touch-sized target');
+    await summary.click();assert.equal(await first.locator('.conversation-notification-body').isVisible(),true);
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+    await f.select(2);await page.getByText('Second conversation',{exact:true}).waitFor();await f.select(1);await page.getByText(answer,{exact:true}).waitFor();
+    assert.equal(await page.locator('.conversation-message.user').count(),3);assert.equal(await notices.count(),3);assert.equal(await first.evaluate(node=>node.open),false);
+   }finally{await f.close();}
+  });
   await t.test('Claude replies go through the relay without leaving Conversation',async()=>{
    const f=await fixture({agent:'claude'}),{page}=f;f.claudeReplyStatus=200;try{
     await page.getByText('Review response',{exact:true}).waitFor();
