@@ -236,7 +236,7 @@
         if(after&&count>=2){
           const before=visible[i-1]?.item.role==='user'?visible[i-1].item:visible[i].item;
           const elapsed=(Date.parse(after.item.timestamp)-Date.parse(before.timestamp))/1000;
-          const run={start:visible[i].key,collapsed:!expandedRuns.has(identity(target)+':'+visible[i].key),label:(Number.isFinite(elapsed)&&elapsed>0?`Worked for ${duration(elapsed)} · `:'')+`${count} steps`};
+          const run={start:visible[i].key,collapsed:!expandedRuns.has(identity(target)+':'+visible[i].key),label:(Number.isFinite(elapsed)&&elapsed>0?`${providerLabel()} worked for ${duration(elapsed)} · `:`${providerLabel()} · `)+`${count} steps`};
           for(let j=i;j<=end;j++)runs.set(visible[j].key,run);
         }
         i=end+1;

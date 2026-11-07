@@ -29,7 +29,7 @@ test('Conversation folds finished progress, keeps the live step, and gives code 
   await page.goto('http://layout.test/');await page.getByText('Checking Windows',{exact:true}).waitFor();
   // The finished run folds behind one summary; the run still in progress stays open.
   const summary=page.locator('.conversation-steps');
-  assert.equal(await summary.count(),1);assert.equal(await summary.textContent(),'Worked for 1m 12s · 2 steps');
+  assert.equal(await summary.count(),1);assert.equal(await summary.textContent(),'Claude worked for 1m 12s · 2 steps');
   assert.equal(await summary.getAttribute('aria-expanded'),'false');
   assert.equal(await page.getByText('Reading app.js',{exact:true}).isVisible(),false);
   assert.equal(await page.getByText('Checking Windows',{exact:true}).isVisible(),true);
