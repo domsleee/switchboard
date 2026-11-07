@@ -1240,9 +1240,8 @@ fn hook_status(agent: &'static str, event: &Value) -> Option<Hooked> {
     })
 }
 
-/// Receives agent hook events: Claude Code's HTTP hooks from the switchboard plugin,
-/// and Codex and Copilot's command hooks through `zellij agent-hook`, which names
-/// its agent in `X-Agent`. Both name their Zellij session and pane in headers; events
+/// Receives events through `zellij agent-hook` (and older Claude HTTP hooks).
+/// Command hooks name the agent in `X-Agent`; both name their session and pane in headers. Events
 /// from outside Zellij carry neither and are ignored. A Claude started by another
 /// Claude in the same pane inherits `CLAUDECODE=1` and is ignored too, so it can't
 /// overwrite the pane's own status.
@@ -1317,15 +1316,23 @@ pub(super) async fn hook(
     StatusCode::NO_CONTENT
 }
 
-/// `zellij agent-hook`: forwards a command hook's event (Codex, Copilot) to `hook`
-/// on the local relay, naming the pane from the agent's Zellij environment.
-pub fn forward_hook(agent: &str, input: impl std::io::Read) {
+/// `zellij agent-hook`: forwards status to the relay and delivers mail through
+/// lifecycle context. Background --wait hooks only watch for incoming mail.
+pub fn forward_hook(agent: &str, wait: bool, input: impl std::io::Read) {
     use isahc::ReadResponseExt;
+    use std::io::Read;
+    let mut body = Vec::new();
+    if input.take(16 << 20).read_to_end(&mut body).is_err() {
+        return;
+    }
     let env = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
     let relay = crate::message_board::local_relay_url(env("SWITCHBOARD_RELAY_URL").as_deref());
-    if let Some(request) = hook_request(agent, input, env, &relay) {
-        let _ = isahc::send(request).map(|mut response| response.consume());
+    if !wait {
+        if let Some(request) = hook_request(agent, body.as_slice(), env, &relay) {
+            let _ = isahc::send(request).map(|mut response| response.consume());
+        }
     }
+    crate::message_board::hooks::run(agent, &body, wait);
 }
 
 fn hook_request(

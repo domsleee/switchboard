@@ -154,6 +154,8 @@ jobs:
 
       - name: Check Switchboard installer
         run: cargo test -p zellij-client --features web_server_capability switchboard_update::install --lib
+      - name: Check Windows message hook launcher
+        run: cargo test -p zellij-client --features web_server_capability message_board_hook_queues_with_a_windows_cmd_launcher --lib
 
   integration-test:
     name: Integration Test
