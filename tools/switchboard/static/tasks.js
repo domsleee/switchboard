@@ -375,7 +375,27 @@
     }
   }
   const runAll=byId('fix-all-health');if(runAll)runAll.onclick=()=>runBatch(repairTargets());
-  const refresh=byId('refresh-updates');if(refresh)refresh.onclick=load;
+  async function refreshHealth(){
+    const refresh=byId('refresh-updates');
+    if(refresh)refresh.disabled=true;
+    try{
+      // A status GET cannot replace a superseded downloaded release. Start a
+      // fresh guarded check without repeating the rejected activation target.
+      const stale=computers.filter(computer=>computer.switchboard?.updateNow&&
+        computer.switchboard?.lastUpdateError?.includes('The requested update was superseded'));
+      const results=await Promise.all(stale.map(async computer=>{
+        try{
+          const response=await fetch('/api/tasks/update',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(computer.host?{host:computer.host}:{})});
+          const reply=await response.json().catch(()=>null);
+          if(!response.ok)throw Error(reply?.error||'Could not check for updates');
+          return `Checking for a newer build on ${computer.name}…`;
+        }catch(error){return `${computer.name}: ${error.message}`;}
+      }));
+      await load();
+      if(results.length)alertStatus(results.join(' · '));
+    }finally{if(refresh)refresh.disabled=false;}
+  }
+  const refresh=byId('refresh-updates');if(refresh)refresh.onclick=refreshHealth;
   globalThis.SwitchboardTasks={load};
   load();setInterval(load,60000);
 })();
