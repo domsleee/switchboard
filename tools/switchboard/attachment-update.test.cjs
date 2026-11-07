@@ -206,7 +206,14 @@ let native, relay, browser, updateController, created=false;
     await waitFor(()=>fs.readFileSync(path.join(dir,'input.bin'),'utf8')===expected,'Refused retirement preserves partial paste for completion');
     const largeContext=await browser.newContext({viewport:{width:1800,height:1000}}),nativeUrl=`http://127.0.0.1:${nativePort}`;
     assert.equal((await largeContext.request.post(nativeUrl+'/command/login',{data:{auth_token:fs.readFileSync(tokenPath,'utf8'),remember_me:true}})).status(),200);
-    const large=await largeContext.newPage();
+    const large=await largeContext.newPage(),largeAttaches=[];
+    large.on('pageerror',error=>console.error('Large browser error:',error.message));
+    // Attach and resume answers, so a reload that never opens names the refusal.
+    large.on('response',async response=>{
+      const url=new URL(response.url());
+      if(url.pathname.endsWith('/session')&&response.request().method()==='POST')largeAttaches.push(`session ${response.status()} ${(await response.text().catch(()=>'')).slice(0,120)}`);
+    });
+    large.on('websocket',socket=>{if(socket.url().includes('/ws/resume'))socket.on('close',()=>largeAttaches.push('resume socket closed'));});
     await large.addInitScript(()=>window.addEventListener('zellij-resumable-sockets',e=>window.testPair=e.detail));
     await large.goto(nativeUrl+'/'+name);
     await large.waitForFunction(()=>window.testPair?.terminal.readyState===1);
@@ -259,8 +266,12 @@ let native, relay, browser, updateController, created=false;
     await waitFor(()=>columns()>smallColumns+40,'Large viewer regains terminal dimensions after retirement');
     await large.evaluate(()=>window.__zjSuspendTerminal());
     for(let cycle=0;cycle<65;cycle++){
+      largeAttaches.length=0;
       await large.reload();
-      await large.waitForFunction(()=>window.testPair?.terminal.readyState===1);
+      await large.waitForFunction(()=>window.testPair?.terminal.readyState===1).catch(async error=>{
+        const why=await large.evaluate(()=>JSON.stringify({failure:window.__zjResumeFailure??null,readyState:window.testPair?.terminal.readyState??null,status:document.body.innerText.slice(-200)}));
+        throw Error(`Reload cycle ${cycle} never opened: ${error.message} ${why} ${JSON.stringify(largeAttaches.slice(-6))}`);
+      });
       // This intermittently finds the owner already stopped; name the cause when it does.
       await large.evaluate(()=>window.__zjSuspendTerminal()).catch(async error=>{
         const why=await large.evaluate(()=>JSON.stringify({failure:window.__zjResumeFailure??null,readyState:window.testPair?.terminal.readyState}));

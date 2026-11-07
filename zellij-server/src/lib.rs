@@ -641,6 +641,8 @@ pub(crate) struct SessionState {
     /// empty synthetic reply so `Screen`'s `forward_in_flight` slot
     /// releases and the queued forwards keep moving.
     forwards_in_flight: HashMap<u32, ClientId>,
+    /// The most recently issued client id.
+    last_client_id: ClientId,
 }
 
 impl SessionState {
@@ -651,24 +653,29 @@ impl SessionState {
             watchers: HashMap::new(),
             last_active_client: None,
             forwards_in_flight: HashMap::new(),
+            last_client_id: 0,
         }
     }
+    /// Issues ids in rotation instead of the lowest free one. Cleanup for a client
+    /// that just left (its RemoveClient, queued screen and send work) is keyed by
+    /// its id and can still be in flight; reusing that id at once let it remove
+    /// the client that attached next.
     pub fn new_client(&mut self) -> ClientId {
-        let all_ids: HashSet<ClientId> = self
-            .clients
-            .keys()
-            .copied()
-            .chain(self.watchers.keys().copied())
-            .collect();
-
-        let mut next_client_id = 1;
-        loop {
-            if all_ids.contains(&next_client_id) {
-                next_client_id += 1;
-            } else {
+        let mut next_client_id = self.last_client_id;
+        for _ in 0..ClientId::MAX {
+            next_client_id = next_client_id.checked_add(1).unwrap_or(1);
+            if !self.clients.contains_key(&next_client_id)
+                && !self.watchers.contains_key(&next_client_id)
+            {
                 break;
             }
         }
+        assert!(
+            !self.clients.contains_key(&next_client_id)
+                && !self.watchers.contains_key(&next_client_id),
+            "every client id is in use"
+        );
+        self.last_client_id = next_client_id;
         self.clients.insert(next_client_id, None);
         next_client_id
     }
@@ -797,6 +804,27 @@ mod session_state_tests {
         let mut s = SessionState::new();
         s.clients.insert(id, None);
         s
+    }
+
+    #[test]
+    fn new_client_does_not_reissue_the_id_of_a_client_that_just_left() {
+        let mut s = SessionState::new();
+        let first = s.new_client();
+        let second = s.new_client();
+        s.remove_client(first);
+        let next = s.new_client();
+        assert_ne!(
+            next, first,
+            "late cleanup for {first} would remove this client"
+        );
+        assert_ne!(next, second);
+    }
+
+    #[test]
+    fn new_client_wraps_and_skips_ids_in_use() {
+        let mut s = with_client(1);
+        s.last_client_id = ClientId::MAX;
+        assert_eq!(s.new_client(), 2);
     }
 
     #[test]
