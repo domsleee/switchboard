@@ -170,6 +170,21 @@ test('integrated Conversation journeys use production markup and preserve delive
     assert.equal(await page.getByLabel('Reply draft').inputValue(),'');
    }finally{await f.close();}
   });
+  await t.test('Codex and Claude commands attach only after leaving Conversation and keep Terminal available',async()=>{
+   for(const agent of ['codex','claude']){
+    const f=await fixture({agent}),{page}=f;try{
+     await page.getByText('Review response',{exact:true}).waitFor();
+     const draft=page.getByLabel('Reply draft');await draft.fill('/ren');await draft.press('Enter');
+     assert.equal(await draft.inputValue(),'/rename ');assert.equal(f.connections.length,0);
+     await draft.fill('/rename Example');await page.getByRole('button',{name:'Send',exact:true}).click();
+     await page.waitForFunction(()=>reviewPastes.length===1&&!SwitchboardConversation.isOpen());
+     assert.equal(await page.evaluate(()=>reviewPastes[0].text),'/rename Example');
+     assert.equal(await page.evaluate(()=>reviewPastes[0].pane_id),1);assert.equal(f.requests.length,0);assert.equal(f.claudeReplies.length,0);
+     await page.getByRole('button',{name:'Conversation',exact:true}).click();
+     assert.equal(await draft.inputValue(),'');assert.equal(await page.locator('.conversation-outgoing').count(),0);
+    }finally{await f.close();}
+   }
+  });
   // Relays from before the reply route answer 404; Claude then pastes through Terminal.
   await t.test('Claude terminal handoff returns after acknowledgement and respects explicit navigation',async()=>{
    const f=await fixture({agent:'claude'}),{page}=f;try{

@@ -56,6 +56,40 @@
     const form=el('form',undefined,'conversation-compose'),draft=el('textarea'),insert=el('button','↑');draft.rows=1;draft.maxLength=16000;draft.placeholder='Message…';draft.setAttribute('aria-label','Reply draft');insert.type='submit';insert.setAttribute('aria-label','Send');insert.title='Send message';const attach=el('button','+','conversation-attach'),picker=el('input'),files=el('div',undefined,'conversation-attachments');attach.type='button';attach.setAttribute('aria-label','Attach files');attach.title='Attach photos or files';picker.type='file';picker.multiple=true;picker.hidden=true;files.hidden=true;form.append(files,attach,draft,model,insert,picker);
     const sendNotice=el('small',undefined,'conversation-send-notice');sendNotice.hidden=true;sendNotice.setAttribute('role','status');form.append(sendNotice);
     const transportNotice=el('small','Replies use Terminal briefly, then return here.','conversation-transport-notice');transportNotice.hidden=true;form.append(transportNotice);
+    const completions=el('div',undefined,'conversation-completions');completions.id='conversation-completions';completions.hidden=true;completions.setAttribute('role','listbox');completions.setAttribute('aria-label','Commands and skills');form.prepend(completions);
+    draft.setAttribute('aria-autocomplete','list');draft.setAttribute('aria-controls',completions.id);draft.setAttribute('aria-expanded','false');
+    const commands={codex:[['rename','Rename this conversation'],['compact','Compact conversation context'],['model','Choose a model'],['permissions','Change permissions'],['status','Show session status'],['skills','Browse skills'],['diff','Show changes'],['review','Review changes'],['resume','Resume a conversation'],['fork','Fork this conversation'],['new','Start a new conversation']],claude:[['rename','Rename this conversation'],['compact','Compact conversation context'],['model','Choose a model'],['permissions','Change permissions'],['status','Show session status'],['help','Show commands'],['clear','Clear conversation context'],['resume','Resume a conversation']]};
+    const skillLists=new Map();let completionItems=[],completionIndex=0,completionToken=null;
+    function completionContext(){
+      if(!open||!target||document.activeElement!==draft||draft.selectionStart!==draft.selectionEnd)return null;
+      const before=draft.value.slice(0,draft.selectionStart),slash=/^\/[\w:.-]*$/.exec(before),skill=/(?:^|\s)(\$[\w:.-]*)$/.exec(before);
+      return slash?{prefix:'/',query:before.slice(1),start:0,end:before.length}:skill&&target.agent==='codex'?{prefix:'$',query:skill[1].slice(1),start:before.length-skill[1].length,end:before.length}:null;
+    }
+    function closeCompletions(){completions.hidden=true;completionItems=[];draft.setAttribute('aria-expanded','false');draft.removeAttribute('aria-activedescendant');}
+    function selectCompletion(index){
+      const item=completionItems[index],context=completionContext();if(!item||!context)return;
+      draft.setRangeText(context.prefix+item.name+' ',context.start,context.end,'end');closeCompletions();draft.oninput();draft.focus({preventScroll:true});
+    }
+    function paintCompletions(reset=true){
+      const context=completionContext();if(!context){closeCompletions();return;}
+      const token=JSON.stringify([identity(target),context]);if(reset&&token!==completionToken)completionIndex=0;completionToken=token;
+      const key=JSON.stringify([target.host,chat?.project||'']),skills=skillLists.get(key);
+      const source=context.prefix==='/'?(commands[target.agent]||[]).map(([name,description])=>({name,description})):skills?.items||[];
+      completionItems=source.filter(item=>item.name.toLowerCase().startsWith(context.query.toLowerCase())).slice(0,30);
+      completions.replaceChildren();completionIndex=Math.min(completionIndex,Math.max(0,completionItems.length-1));
+      completionItems.forEach((item,index)=>{const option=el('button',undefined,'conversation-completion');option.type='button';option.id='conversation-completion-'+index;option.setAttribute('role','option');option.setAttribute('aria-selected',String(index===completionIndex));option.append(el('strong',context.prefix+item.name),el('span',item.description));option.onpointerdown=event=>event.preventDefault();option.onclick=()=>selectCompletion(index);completions.append(option);});
+      if(context.prefix==='$'&&!completionItems.length)completions.append(el('small',skills?.error||(!skills||skills.pending?'Loading skills…':'No matching skills')));
+      completions.hidden=!completionItems.length&&context.prefix!=='$';draft.setAttribute('aria-expanded',String(!completions.hidden));
+      if(completionItems.length){draft.setAttribute('aria-activedescendant','conversation-completion-'+completionIndex);completions.children[completionIndex].scrollIntoView({block:'nearest'});}else draft.removeAttribute('aria-activedescendant');
+      if(context.prefix==='$'&&(!skills||Date.now()-skills.at>60000)&&!skills?.pending)void loadSkills(key,target.host,chat?.project||'');
+    }
+    async function loadSkills(key,host,cwd){
+      const entry={pending:true,at:Date.now()};skillLists.set(key,entry);
+      try{const response=await fetch('/api/hosts/'+encodeURIComponent(host)+'/conversation/skills',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd}),signal:AbortSignal.timeout(15000)});if(!response.ok)throw Error();const result=await response.json();if(!Array.isArray(result.skills))throw Error();entry.items=result.skills.filter(item=>typeof item.name==='string'&&typeof item.description==='string');}
+      catch{entry.error='Skills unavailable. You can still type a skill name.';}
+      finally{entry.pending=false;if(key===JSON.stringify([target?.host,chat?.project||'']))paintCompletions();}
+    }
+    draft.addEventListener('focus',()=>paintCompletions());draft.addEventListener('click',()=>paintCompletions());draft.addEventListener('blur',closeCompletions);
     let sendNoticeReceipt=null;
     function sendStatus(text,receipt=null){const follow=nearBottom();sendNoticeReceipt=receipt;if(sendNotice.textContent!==text)sendNotice.textContent=text;sendNotice.hidden=!text;if(form.isConnected){sizeDraft();if(follow){list.scrollTop=list.scrollHeight;updateLatest();}}}
     panel.append(header,notice,recovery,list,historyStatus,actions,form);root.append(panel);
@@ -89,7 +123,7 @@
     function unboundNotice(){const startup=startupState();return startup?.error||(startup&&Date.now()-startup.started>=30000?'The agent has not connected. Retry or open Terminal.':target?.starting?'Starting agent…':target?.agent?'Connecting to this agent’s conversation…':'No agent');}
     function busy(value){loading=value;older.disabled=refresh.disabled=value;}
     function focusSurface(){if(!panel.hidden)(form.hidden?panel:draft).focus({preventScroll:true});}
-    function show(value,transient=false){if(!transient)modeRevision++;if(!value){stopStream();loadRequest?.abort();window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();}open=value;root.classList.toggle('conversation-open',open);modeChanged();if(!transient)try{localStorage.setItem(modeKey,value?'conversation':'terminal');}catch{}setPanelHidden(!value);toggle.setAttribute('aria-pressed',String(value));back.setAttribute('aria-pressed',String(!value));if(value){document.getElementById('artifact-preview').hidden=true;update();if(loaded){paint(false,restorePosition===null&&lastPaint===null);if(restorePosition!==null){list.scrollTop=restorePosition.follow?list.scrollHeight:restorePosition.position;restorePosition=null;updateLatest();}}if(binding())load(loaded?'poll':'initial');startStream();focusSurface();}else if(target)terminal(target);viewport();}
+    function show(value,transient=false){if(!transient)modeRevision++;if(!value){closeCompletions();stopStream();loadRequest?.abort();window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();}open=value;root.classList.toggle('conversation-open',open);modeChanged();if(!transient)try{localStorage.setItem(modeKey,value?'conversation':'terminal');}catch{}setPanelHidden(!value);toggle.setAttribute('aria-pressed',String(value));back.setAttribute('aria-pressed',String(!value));if(value){document.getElementById('artifact-preview').hidden=true;update();if(loaded){paint(false,restorePosition===null&&lastPaint===null);if(restorePosition!==null){list.scrollTop=restorePosition.follow?list.scrollHeight:restorePosition.position;restorePosition=null;updateLatest();}}if(binding())load(loaded?'poll':'initial');startStream();focusSurface();}else if(target)terminal(target);viewport();}
 
     toggle.onclick=()=>show(true);back.onclick=()=>show(false);
     let loadRequest=null,lastFailure=null,lastDiagnostic='',lastDiagnosticAt=0,newOutput=false,scrollIdle;
@@ -270,8 +304,15 @@
     }
     picker.onchange=()=>{const selected=[...picker.files],destination=pickerTarget;picker.value='';pickerTarget=null;void addFiles(selected,destination);};
     draft.addEventListener('paste',event=>{const selected=[...(event.clipboardData?.files||[])];if(selected.length){event.preventDefault();void addFiles(selected);}});
-    draft.oninput=()=>{if(target){const key=identity(target);drafts.set(key,draft.value);draftVersions.set(key,(draftVersions.get(key)||0)+1);}sizeDraft();if(!pendingFor())sendStatus('');};
-    draft.onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing&&!matchMedia('(pointer:coarse)').matches){event.preventDefault();form.requestSubmit();}};
+    draft.oninput=()=>{if(target){const key=identity(target);drafts.set(key,draft.value);draftVersions.set(key,(draftVersions.get(key)||0)+1);}sizeDraft();if(!pendingFor())sendStatus('');paintCompletions();};
+    draft.onkeydown=event=>{
+      if(event.isComposing)return;
+      if(!completions.hidden&&!event.ctrlKey&&!event.altKey&&!event.metaKey){
+        if(event.key==='Escape'){event.preventDefault();event.stopPropagation();closeCompletions();return;}
+        if(completionItems.length&&['ArrowDown','ArrowUp','Tab','Enter'].includes(event.key)&&!event.shiftKey){event.preventDefault();event.stopPropagation();if(event.key==='Tab'||event.key==='Enter')selectCompletion(completionIndex);else{completionIndex=(completionIndex+(event.key==='ArrowDown'?1:-1)+completionItems.length)%completionItems.length;paintCompletions(false);}return;}
+      }
+      if(event.key==='Enter'&&!event.shiftKey&&!matchMedia('(pointer:coarse)').matches){event.preventDefault();form.requestSubmit();}
+    };
     function clearSentDraft(sent){
       if(sent.draftCleared)return;sent.draftCleared=true;
       if(retryKeys.get(sent.key)?.id===sent.sendKey)retryKeys.delete(sent.key);
@@ -284,7 +325,7 @@
     function returnToConversation(sent){if(sent.returnHere&&!open&&modeRevision===sent.modeRevision&&navigationRevision===sent.navigationRevision&&identity(selection())===sent.key)show(true,true);}
     function complete(sent,ok,message,uncertain=false){
       if(pendingFor(sent.key)!==sent)return;pendingSends.delete(sent.key);
-      if(ok){clearSentDraft(sent);sendItem(sent,sent.native||sent.relay?'queued':'sent');}
+      if(ok){clearSentDraft(sent);if(sent.command){outgoing.set(sent.key,(outgoing.get(sent.key)||[]).filter(item=>item!==sent));if(identity(target)===sent.key)paint();}else sendItem(sent,sent.native||sent.relay?'queued':'sent');}
       else sendItem(sent,uncertain?'uncertain':'failed',message);
       returnToConversation(sent);
       if(identity(target)===sent.key){sendStatus(ok?'':message,sent);if(ok)load();}paintFiles();
@@ -312,14 +353,16 @@
       const selected=fileList();if(selected.some(item=>!item.path)){sendStatus(selected.some(item=>item.error)?'Remove failed attachments before sending.':'Wait for attachments to finish uploading.');return;}
       const text=draft.value,payload=text+(selected.length?'\n\nAttached files:\n'+selected.map(item=>item.path).join('\n'):'');
       if(/[\x00-\x08\x0b-\x1f\x7f]/.test(payload)){sendStatus('The draft contains terminal control characters. Remove them first.');return;}
-      const native=current.agent==='codex'&&/^[0-9a-f-]{36}$/.test(chat.thread||'');
+      const command=/^\/[a-z][\w:.-]*(?:\s|$)/i.test(text),native=!command&&current.agent==='codex'&&/^[0-9a-f-]{36}$/.test(chat.thread||'');
+      if(command&&selected.length){sendStatus('Send commands without attachments. Your draft is kept.');return;}
+      if(command&&current.state!=='ready'){sendStatus('Wait for the agent to finish before sending a command. Your draft is kept.');return;}
       if(current.state==='working'&&!native&&current.agent!=='claude'){sendStatus('Still connecting to this conversation. Try sending again in a moment.');return;}
       if(new TextEncoder().encode(payload).length>(native?8192:16000)){sendStatus('This message is too long. Shorten it before sending.');return;}
       const retry=native&&(outgoing.get(identity(target))||[]).find(item=>['failed','uncertain'].includes(item.state)&&item.native&&sameMessage(item.payload,payload));
       if(retry){retrySend(retry,true);return;}
       const key=identity(target),id='conversation-'+Array.from(crypto.getRandomValues(new Uint32Array(4)),n=>n.toString(16)).join('-');
       const items=outgoing.get(key)||[],failedBridge=!native&&items.find(item=>item.state==='failed'&&!item.native&&sameMessage(item.payload,payload));
-      const sent={id,key,frame:target.frame,text,payload,files:[...selected],native,host:target.host,thread:chat.thread,draftRevision:draftVersions.get(key)||0,baseline:failedBridge?failedBridge.baseline:startCursor+messages.length-1,sendKey:id,state:'sending'};
+      const sent={id,key,frame:target.frame,text,payload,files:[...selected],native,command,host:target.host,thread:chat.thread,draftRevision:draftVersions.get(key)||0,baseline:failedBridge?failedBridge.baseline:startCursor+messages.length-1,sendKey:id,state:'sending'};
       if(failedBridge)items[items.indexOf(failedBridge)]=sent;else items.push(sent);
       outgoing.set(key,items);pendingSends.set(key,sent);insert.disabled=true;paintFiles();sendStatus('');paint();
       if(native){
@@ -328,7 +371,7 @@
       }
       // The relay types Claude replies into the pane, so Conversation stays on screen.
       // Older relays answer 404 and use the terminal below.
-      if(current.agent==='claude'){
+      if(current.agent==='claude'&&!command){
         try{
           const response=await fetch('/api/hosts/'+encodeURIComponent(sent.host)+'/conversation/reply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:current.session,tab_id:current.tab,pane_id:current.pane,text:payload}),signal:AbortSignal.timeout(20000)});
           if(response.status!==404){sent.relay=true;complete(sent,response.ok,response.ok?'':(await response.text())||'Could not send the reply. Your draft is kept.');return;}
@@ -336,8 +379,8 @@
       }
       // Agents without a native reply API need the visible terminal connection.
       // Attach only after leaving Conversation, then wait for the selected pane.
-      if(current.terminalReady===false){
-        sent.returnHere=true;sent.modeRevision=modeRevision;sent.navigationRevision=navigationRevision;show(false,true);
+      if(command||current.terminalReady===false){
+        sent.returnHere=!command;sent.modeRevision=modeRevision;sent.navigationRevision=navigationRevision;show(false,true);
         const deadline=Date.now()+10000;
         while(pendingFor(key)===sent&&identity(selection())===key&&!selection()?.terminalReady&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,50));
         if(pendingFor(key)!==sent)return;
@@ -356,7 +399,7 @@
       const current=selection();modes.hidden=!current;
       title.textContent=current?.title||'Conversation';
       if(identity(current)===identity(target)){target=current;updateActivity();if(!chat)status(unboundNotice());prepare();return;}
-      navigationRevision++;
+      closeCompletions();navigationRevision++;
       if(target)drafts.set(identity(target),draft.value);
       if(target&&loaded){conversations.delete(identity(target));conversations.set(identity(target),{chat,messages,startCursor,tailCursor,nextCursor,streamSupported,position:restorePosition?.position??list.scrollTop,follow:restorePosition?.follow??nearBottom()});if(conversations.size>8)conversations.delete(conversations.keys().next().value);}
       window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();

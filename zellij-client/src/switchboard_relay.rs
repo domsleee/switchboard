@@ -1423,6 +1423,10 @@ fn app(state: RelayState) -> Router {
             post(conversation::reply_handler),
         )
         .route(
+            "/api/hosts/{host}/conversation/skills",
+            post(conversation::skills_handler),
+        )
+        .route(
             "/api/hosts/{host}/codex/queue",
             post(native_messages::handler),
         )
