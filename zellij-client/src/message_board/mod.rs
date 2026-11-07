@@ -79,6 +79,9 @@ struct Participant {
     terminal: Option<TerminalLocation>,
     active: bool,
     created_at: u64,
+    /// When the agent last checked its own mail. Absent from older board hosts.
+    #[serde(default)]
+    last_seen: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -117,6 +120,9 @@ struct Delivery {
     machine_id: String,
     machine_name: String,
     acknowledged_at: Option<u64>,
+    /// The recipient agent's last mail check. Absent for computers and older board hosts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recipient_last_seen: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

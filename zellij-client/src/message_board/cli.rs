@@ -429,7 +429,9 @@ pub fn run_cli(cli: &MessageCli) -> anyhow::Result<()> {
                 reply_to: None,
             };
             eprintln!("Send key: {}", request.send_key);
-            client.request("POST", "messages", Some(serde_json::to_value(request)?))?
+            let sent = client.request("POST", "messages", Some(serde_json::to_value(request)?))?;
+            warn_quiet_recipients(&sent, super::now());
+            sent
         },
         MessageCommand::Reply {
             message_id,
@@ -448,7 +450,9 @@ pub fn run_cli(cli: &MessageCli) -> anyhow::Result<()> {
                 reply_to: Some(message_id.clone()),
             };
             eprintln!("Send key: {}", request.send_key);
-            client.request("POST", "messages", Some(serde_json::to_value(request)?))?
+            let sent = client.request("POST", "messages", Some(serde_json::to_value(request)?))?;
+            warn_quiet_recipients(&sent, super::now());
+            sent
         },
         MessageCommand::Serve | MessageCommand::Queue { .. } => unreachable!(),
     };
@@ -465,6 +469,43 @@ pub fn run_cli(cli: &MessageCli) -> anyhow::Result<()> {
         print_record(&result);
     }
     Ok(())
+}
+/// A recipient whose watcher stopped (an agent that exited without retiring, or a
+/// computer that is asleep) still accepts mail but never reads it. Say so.
+fn warn_quiet_recipients(message: &serde_json::Value, now: u64) {
+    for warning in quiet_recipients(message, now) {
+        eprintln!("{warning}");
+    }
+}
+fn quiet_recipients(message: &serde_json::Value, now: u64) -> Vec<String> {
+    // An idle agent checks every 2 s (recorded every 30 s). A busy one checks after
+    // each tool call, so a single long call can still trip this; hence "may have".
+    const QUIET_MS: u64 = 2 * 60 * 1000;
+    let deliveries = message["deliveries"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    deliveries
+        .iter()
+        .filter_map(|delivery| {
+            let seen = delivery["recipient_last_seen"].as_u64()?;
+            let quiet = now.checked_sub(seen).filter(|ms| *ms > QUIET_MS)?;
+            Some(format!(
+                "Warning: {} on {} last checked its mail {} ago, so it may have exited. The message is in its inbox; it reads it only if it comes back.",
+                delivery["name"].as_str().unwrap_or("The recipient"),
+                delivery["machine_name"].as_str().unwrap_or("its computer"),
+                quiet_age(quiet)
+            ))
+        })
+        .collect()
+}
+fn quiet_age(ms: u64) -> String {
+    let minutes = ms / 60_000;
+    match minutes {
+        0..=89 => format!("{minutes} min"),
+        90..=2879 => format!("{} h", minutes / 60),
+        _ => format!("{} days", minutes / 1440),
+    }
 }
 fn print_record(value: &serde_json::Value) {
     if let Some(body) = value.get("body").and_then(|v| v.as_str()) {
@@ -502,6 +543,24 @@ fn safe_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn message_board_send_warns_only_about_quiet_agent_recipients() {
+        let now = 10 * 24 * 3_600_000;
+        let message = json!({"deliveries":[
+            {"name":"gone","machine_name":"Linux","recipient_last_seen": now - 3 * 3_600_000},
+            {"name":"live","machine_name":"Mac","recipient_last_seen": now - 30_000},
+            {"name":"old-host","machine_name":"Windows"},
+            {"name":"long-gone","machine_name":"Linux","recipient_last_seen": now - 9 * 24 * 3_600_000},
+        ]});
+        assert_eq!(
+            quiet_recipients(&message, now),
+            vec![
+                "Warning: gone on Linux last checked its mail 3 h ago, so it may have exited. The message is in its inbox; it reads it only if it comes back.",
+                "Warning: long-gone on Linux last checked its mail 9 days ago, so it may have exited. The message is in its inbox; it reads it only if it comes back.",
+            ]
+        );
+    }
 
     #[test]
     fn switchboard_native_messages_cli_uses_relay_without_board_registration() {
