@@ -93,6 +93,11 @@ test('touch screens show the tab menu button only on the selected tab',
     assert.equal(await other.locator('.tab-actions').isVisible(),false);
     // The unselected row's name gets the width the button would have taken.
     assert.equal(await other.locator('.tab-name').evaluate(el=>el.scrollWidth<=el.clientWidth),true);
+    // The selected row's content stops before its button.
+    assert.ok(await page.locator('.tab-row.active').evaluate(row=>{
+      const select=row.querySelector('.tab-select'),button=row.querySelector('.tab-actions').getBoundingClientRect();
+      return select.getBoundingClientRect().right-parseFloat(getComputedStyle(select).paddingRight)<=button.left;
+    }));
     await selected.tap();
     assert.equal(await page.locator('#tab-menu').isVisible(),true);
     assert.deepEqual(errors,[]);

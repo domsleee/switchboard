@@ -306,10 +306,12 @@ body.sidebar-collapsed #artifact-preview header{padding-left:42px}
 @media(hover:none){
   #tabs .tab-actions{background:transparent}
   #tabs .tab-row.active .tab-actions{opacity:1}
-  #tabs .tab-row:not(.active) .tab-actions:not([aria-expanded=true]){display:none}
+  #tabs .tab-row:not(.active) .tab-actions{display:none}
   #tabs .tab-row.active .tab-select{padding-right:40px}
   #tabs .tab-row:not(.active) .tab-select{padding-right:12px}
 }
+/* Phones use a 44px button, so the selected row keeps the wider mobile padding. */
+@media(hover:none) and (max-width:700px){#tabs .tab-row.active .tab-select{padding-right:54px}}
 
 #new-tab-dialog{width:500px;max-width:calc(100vw - 32px);padding:16px;overflow:visible}
 /* A landscape phone is shorter than the form; scroll it so Create stays reachable. */
