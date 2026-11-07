@@ -43,7 +43,9 @@
     }
     const modes=el('div',undefined,'conversation-modes');modes.hidden=true;modes.setAttribute('role','group');modes.setAttribute('aria-label','View mode');
     const back=el('button','Terminal'),toggle=el('button','Conversation','conversation-toggle');back.type=toggle.type='button';back.setAttribute('aria-pressed',String(!open));toggle.setAttribute('aria-pressed',String(open));modes.append(back,toggle);root.append(modes);
-    const panel=el('section',undefined,'conversation-panel');panel.hidden=true;panel.tabIndex=-1;panel.setAttribute('aria-label','Agent conversation');
+    const panel=el('section',undefined,'conversation-panel');
+    // CSS keeps a hidden panel laid out (see conversation.css), so hide it from assistive technology here.
+    const setPanelHidden=value=>{panel.hidden=value;panel.setAttribute('aria-hidden',String(value));};setPanelHidden(true);panel.tabIndex=-1;panel.setAttribute('aria-label','Agent conversation');
     const header=el('header'),heading=el('div',undefined,'conversation-heading'),title=el('strong'),model=el('span',undefined,'conversation-model'),activity=el('span',undefined,'conversation-activity'),terminalAction=el('button','Open Terminal','conversation-terminal-action');model.title='Last reported model';activity.setAttribute('role','status');terminalAction.type='button';terminalAction.hidden=true;terminalAction.onclick=()=>show(false);heading.append(title);header.append(heading,activity,terminalAction);
     const notice=el('p','Loading this terminal’s conversation…','conversation-notice');notice.setAttribute('role','status');
     const list=el('div',undefined,'conversation-messages'),older=el('button','Load older messages'),refresh=el('button','↻'),latest=el('button','↓');refresh.setAttribute('aria-label','Refresh');refresh.title='Refresh conversation';latest.setAttribute('aria-label','Scroll to bottom');latest.title='Scroll to bottom';older.hidden=true;
@@ -86,7 +88,7 @@
     function unboundNotice(){const startup=startupState();return startup?.error||(startup&&Date.now()-startup.started>=30000?'The agent has not connected. Retry or open Terminal.':target?.starting?'Starting agent…':target?.agent?'Connecting to this agent’s conversation…':'No agent');}
     function busy(value){loading=value;older.disabled=refresh.disabled=value;}
     function focusSurface(){if(!panel.hidden)(form.hidden?panel:draft).focus({preventScroll:true});}
-    function show(value,transient=false){if(!transient)modeRevision++;if(!value){stopStream();loadRequest?.abort();window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();}open=value;root.classList.toggle('conversation-open',open);modeChanged();if(!transient)try{localStorage.setItem(modeKey,value?'conversation':'terminal');}catch{}panel.hidden=!value;toggle.setAttribute('aria-pressed',String(value));back.setAttribute('aria-pressed',String(!value));if(value){document.getElementById('artifact-preview').hidden=true;update();if(loaded){paint(false,restorePosition===null&&lastPaint===null);if(restorePosition!==null){list.scrollTop=restorePosition.follow?list.scrollHeight:restorePosition.position;restorePosition=null;updateLatest();}}if(binding())load(loaded?'poll':'initial');startStream();focusSurface();}else if(target)terminal(target);viewport();}
+    function show(value,transient=false){if(!transient)modeRevision++;if(!value){stopStream();loadRequest?.abort();window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();}open=value;root.classList.toggle('conversation-open',open);modeChanged();if(!transient)try{localStorage.setItem(modeKey,value?'conversation':'terminal');}catch{}setPanelHidden(!value);toggle.setAttribute('aria-pressed',String(value));back.setAttribute('aria-pressed',String(!value));if(value){document.getElementById('artifact-preview').hidden=true;update();if(loaded){paint(false,restorePosition===null&&lastPaint===null);if(restorePosition!==null){list.scrollTop=restorePosition.follow?list.scrollHeight:restorePosition.position;restorePosition=null;updateLatest();}}if(binding())load(loaded?'poll':'initial');startStream();focusSurface();}else if(target)terminal(target);viewport();}
 
     toggle.onclick=()=>show(true);back.onclick=()=>show(false);
     let loadRequest=null,lastFailure=null,lastDiagnostic='',lastDiagnosticAt=0,newOutput=false,scrollIdle;
@@ -113,6 +115,10 @@
       return 'Some history is unavailable. Showing the messages that could be read.';
     }
     const rendered=new Map(),renderedOutgoing=new Map();
+    // Each message is serialized once. Polls replace only the newest page, so a
+    // long transcript's earlier messages keep their objects and signatures.
+    const signatures=new WeakMap();
+    function signatureOf(item){let signature=signatures.get(item);if(signature===undefined){signature=JSON.stringify(item);signatures.set(item,signature);}return signature;}
     function setupMessage(item){return item.role==='user'&&/^(?:# AGENTS\.md instructions|<environment_context>|<permissions instructions>|<skills_instructions>)/.test((item.text||'').trimStart());}
     function normalizeMessage(value){return String(value||'').replace(/\r\n/g,'\n');}
     function sameMessage(a,b){return normalizeMessage(a)===normalizeMessage(b);}
@@ -148,7 +154,8 @@
       consumedTranscript.set(key,used);
       outgoing.set(key,sentItems.filter(item=>item.transcriptCursor===undefined));
       const visibleOutgoing=sentItems.filter(item=>item.transcriptCursor===undefined);
-      const snapshot=JSON.stringify([messages,visibleOutgoing.map(({id,text,files,state,detail})=>({id,text,files:files.map(file=>file.name),state,detail}))]);if(snapshot===lastPaint)return;
+      const snapshot={start:startCursor,messages:messages.map(signatureOf),outgoing:JSON.stringify(visibleOutgoing.map(({id,text,files,state,detail})=>({id,text,files:files.map(file=>file.name),state,detail})))};
+      if(lastPaint&&lastPaint.start===snapshot.start&&lastPaint.outgoing===snapshot.outgoing&&lastPaint.messages.length===snapshot.messages.length&&snapshot.messages.every((signature,i)=>signature===lastPaint.messages[i]))return;
       lastPaint=snapshot;
       const follow=initial||nearBottom(),height=list.scrollHeight,position=list.scrollTop,keys=new Set();
       if(!follow&&!prepend&&!initial)newOutput=true;
@@ -156,7 +163,7 @@
       let previous=older,previousRole=null,previousSpeaker=null;
       for(const [offset,item] of messages.entries()){
         if(setupMessage(item))continue;
-        const key=startCursor+offset,signature=JSON.stringify(item),speaker=item.role==='user'?'You':providerLabel();keys.add(key);
+        const key=startCursor+offset,signature=snapshot.messages[offset],speaker=item.role==='user'?'You':providerLabel();keys.add(key);
         let entry=rendered.get(key);
         if(!entry||entry.signature!==signature){
           const article=el('article',undefined,'conversation-message '+item.role+(item.phase==='commentary'?' commentary':'')),label=el('div',speaker,'conversation-label');article.append(label);
@@ -356,8 +363,8 @@
       const cached=conversations.get(identity(target));if(cached){({chat,messages,startCursor,tailCursor,nextCursor,streamSupported}=cached);loaded=true;}
       updateActivity();
       form.hidden=!chat;actions.hidden=true;
-      if(!target){panel.hidden=true;viewport();return;}draft.value=drafts.get(identity(target))||'';
-      panel.hidden=!open;paintFiles();viewport();
+      if(!target){setPanelHidden(true);viewport();return;}draft.value=drafts.get(identity(target))||'';
+      setPanelHidden(!open);paintFiles();viewport();
       status(chat?'Loading conversation…':unboundNotice(),loaded);
       if(cached){if(open){paint();list.scrollTop=cached.follow?list.scrollHeight:cached.position;updateLatest();}else restorePosition=cached;}if(open)focusSurface();if(chat){load(loaded?'poll':'initial');startStream();}prepare();
     }

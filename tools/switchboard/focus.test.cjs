@@ -219,7 +219,7 @@ test('headless browser keeps iframe, selection, URL and input focus through fail
     assert.equal((await page.frameLocator('iframe[title="Mac: main"]').locator('#terminal-input').inputValue()).includes('not terminal input'),false);
     await page.keyboard.press('Escape');
     await page.waitForFunction(()=>document.activeElement===document.querySelector('iframe[title="Mac: main"]'));
-    assert.equal(await page.locator('.conversation-panel').isVisible(),false);
+    assert.equal(await page.locator('.conversation-panel').evaluate(node=>node.hidden&&getComputedStyle(node).opacity==='0'),true);
     assert.equal(await page.frameLocator('iframe[title="Mac: main"]').locator('#terminal-input').inputValue(),'');
     await page.locator('#tab-search').fill('');
     await page.evaluate(()=>activate(allTabs().find(item=>item.entry.host==='windows')));
@@ -606,7 +606,7 @@ for(const hasTouch of [false,true])test(`conversation composer keeps focus throu
     await page.locator('#new-tab').click();assert.equal(await page.evaluate(()=>document.activeElement.closest('dialog')?.id),'new-tab-dialog');
     await page.keyboard.press('Escape');
     await page.getByRole('button',{name:'Terminal',exact:true}).click();
-    assert.equal(await page.locator('.conversation-panel').isVisible(),false);
+    assert.equal(await page.locator('.conversation-panel').evaluate(node=>node.hidden&&getComputedStyle(node).opacity==='0'),true);
     assert.deepEqual(pageErrors,[]);
   }finally{await browser.close();}
 });
