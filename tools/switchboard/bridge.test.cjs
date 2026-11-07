@@ -680,3 +680,28 @@ test('Copilot Send checks the live boxed composer, including multiline drafts',(
  const send=()=>h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-conversation-paste',id:'c',pane_id:7,agent:'copilot',submit:true,text:'reply'}});
  send();assert.deepEqual(writes,['reply','\r']);lines[2]='┃ unsent draft';send();assert.equal(writes.length,2);assert.equal(h.messages.at(-1).ok,false);
 });
+
+test('Conversation never claims or reports the hidden terminal viewport',()=>{
+  const h=harness(),sent=[];let open=true;
+  h.parent.document.getElementById=id=>id==='terminals'?{classList:{contains:()=>open}}:null;
+  h.window.__zjSupportsTabViewport=true;h.window.__zjSendControl=message=>sent.push(message);h.setBrowserFocus(true);
+  const payload={active_pane:{pane_id:1,is_plugin:false,tab_position:0},tab_viewport:{owner_active:false}};
+  h.state(payload);h.handlers.focus();
+  assert.equal(h.window.__zjViewport.dimensions(),undefined);
+  assert.equal(h.window.__zjViewport.report({cols:40,rows:30}),false);
+  assert.equal(sent.length,0);
+  open=false;h.handlers.focus();
+  assert.equal(sent.length,1);assert.equal(sent[0].ownership,true);
+  open=true;h.state(payload);h.handlers.focus();assert.equal(sent.length,1);
+});
+
+test('Conversation blocks stock fallback and forced TerminalResize but keeps control connected',()=>{
+  const h=harness();let open=true;
+  h.parent.document.getElementById=id=>id==='terminals'?{classList:{contains:()=>open}}:null;
+  const socket=new h.window.WebSocket('ws://localhost:8090/hosts/windows/ws/control');
+  const resize=JSON.stringify({web_client_id:1,payload:{type:'TerminalResize',rows:30,cols:40}});
+  socket.send(resize);assert.equal(socket.sent.length,0);
+  const input=JSON.stringify({web_client_id:1,payload:{type:'Key',key:'Enter'}});
+  socket.send(input);assert.deepEqual(socket.sent,[input]);
+  open=false;socket.send(resize);assert.deepEqual(socket.sent,[input,resize]);
+});
