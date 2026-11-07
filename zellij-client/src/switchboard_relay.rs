@@ -10,6 +10,7 @@ pub use attention::forward_hook;
 mod attachments;
 mod chats;
 mod control;
+mod conversation;
 pub(crate) use control::own_executable;
 mod hostname;
 pub(crate) mod interactive;
@@ -1372,6 +1373,7 @@ fn app(state: RelayState) -> Router {
         .route("/api/interactive", post(interactive::wait))
         .route("/api/chats/search", get(chats::search))
         .route("/api/chats/{id}", get(chats::read))
+        .route("/api/chats/{id}/stream", get(chats::stream))
         .route("/api/logs", get(logs::handler))
         .route("/api/tasks", get(tasks::handler))
         .route("/api/tasks/action", post(tasks::action))
@@ -1401,6 +1403,10 @@ fn app(state: RelayState) -> Router {
         .route("/api/message-board/{*path}", any(message_board))
         .route("/api/hosts/{host}/close-tab", post(control::close_tab))
         .route("/api/hosts/{host}/restart-agent", post(restart::handler))
+        .route(
+            "/api/hosts/{host}/conversation/prepare",
+            post(conversation::handler),
+        )
         .route(
             "/api/hosts/{host}/codex/queue",
             post(native_messages::handler),

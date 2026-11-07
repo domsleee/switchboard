@@ -63,9 +63,15 @@ of the agent's current compacted context or active rewind branch.
 
 The sidebar's **Conversation** button opens the selected pane's transcript directly;
 **Terminal** returns to the same pane. Phones and browsers with data saving enabled
-initially fetch only the latest 15 messages. Subsequent polls fetch from the last
-loaded message, so an unchanged chat does not download its whole page again and
-updates to the latest message remain visible. The chat opens at the latest messages, loads
+initially fetch only the latest 15 messages. A server-sent event stream follows the last
+loaded message, including changes to that message. Updates appear as soon as the
+agent writes them to its transcript; providers that only save completed messages
+cannot expose individual tokens through this reader. The selected chat preloads
+while Terminal is visible, and the eight most recently visited chats remain in
+memory so returning to them renders immediately while refreshing in the background.
+The stream closes when the page is hidden or the selected pane changes, and
+reconnects from the last cursor. Older relays and failed streams use polling.
+The chat opens at the latest messages, loads
 earlier messages as you scroll up, and omits session setup messages from the view.
 Incoming replies preserve existing message elements and your reading position. Agent hooks supply `transcript_path`, which the
 relay maps to an opaque `chat_id` in the pane's attention record. This uses the same
@@ -93,7 +99,11 @@ send key, and the destination stores a receipt to prevent a duplicate submission
 replies retain user text; the separate agent-to-agent `/codex/queue` route keeps its
 forwarded-message annotation. Claude replies use the existing guarded terminal
 composer, including while working. Approval and interactive prompts still require
-Terminal.
+Terminal. In Conversation, Codex's exact startup **Hooks need review** menu is
+completed automatically by choosing **Trust all and continue**. Codex records its
+own trust hashes. This applies only to the selected shared Codex pane and never
+answers other approval or input dialogs. A selected **Continue without trusting**
+option is left alone.
 
 On phones the chat follows `visualViewport` as the keyboard opens, pans or closes.
 The textarea grows only to a bounded height; short drafts do not get a scrollbar.
@@ -115,11 +125,16 @@ Read failures return an `error` field, including `not_found`, `unreadable` or
 `discovery_incomplete` or `unsupported_storage`. Invalid parameters return HTTP 400; an unknown host is 404.
 A successful HTTP 200 alone does not establish complete coverage.
 
-Each source scans at most 100 files/sessions per request. JSONL reads stop at
+Each source searches at most 100 files/sessions per request. Search JSONL reads stop at
 64 MiB per file, 8 MiB per line and 50,000 extracted messages. A source stops
 starting files after reading 128 MiB (one final file can exceed that budget).
 Large or malformed transcripts are explicitly partial; pagination does not
-recover the portion beyond those per-file bounds. OpenCode caps text parts at
+recover the portion beyond those search bounds. Direct JSONL reads, including
+Conversation, index the complete transcript without file-size or message-count
+cutoffs. The index retains record offsets, reads only appended bytes on updates,
+and decodes just the requested page. Records over 8 MiB are skipped while later
+messages remain available. Up to sixteen idle indexes are retained in memory;
+embedded previews share a 2 MiB budget per returned page. OpenCode caps text parts at
 1 Mi characters and uses a 128 MiB source budget. At most two local disk scans
 run at once; peer requests have a 15-second timeout and fan out four at a time.
 

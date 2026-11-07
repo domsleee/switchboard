@@ -204,24 +204,20 @@ How Switchboard works, its shortcuts and its diagnostics are in
 
 ### Conversation view
 
-Open **Conversation** above a terminal, choose the agent, and search for the chat
-running in that pane. Search stays on that computer. Select the matching chat;
-Switchboard reads saved messages without starting or resuming an agent. Chat
-links and reply drafts are kept separately per pane for the current page lifetime.
-Use **Choose chat** to correct a selection, and **Search next page** when the
-bounded history search has more files to scan. Coverage and truncated messages
-are shown explicitly. **Load next messages** advances through a longer transcript.
-The visible transcript's last loaded page refreshes every five seconds when you
-are not interacting with it; **Refresh** also checks it immediately. Codex progress
-messages collapse when phase metadata is available. Tool output is not exposed
-by the history API; use **Terminal** for full context.
+Open **Conversation** above a terminal to read the chat reported by that pane's
+agent hooks. Phones open Conversation by default. The selected chat preloads in
+Terminal mode, and recently visited conversations render immediately from memory.
+A live stream follows new transcript messages and updates without attaching a
+terminal viewer. Long chats keep their latest messages available beyond the old
+history limits; scroll up for earlier pages. The stream shows text when the agent
+saves it, so providers that save only completed messages do not stream individual
+tokens. Tool output remains in **Terminal**.
 
-**Reply in terminal** inserts the draft into the exact active pane, then shows the
-terminal. Review it and press Enter there. It does not submit a prompt, answer an
-approval, start an SDK session, or resume the saved chat. A wrong pane, disconnected
-terminal, control characters, or multiline input without bracketed-paste support
-is rejected. Drafts stay available when insertion fails. If confirmation times out,
-check the terminal before retrying. Approval prompts remain in the terminal.
+Use the composer to send replies and attach files. Codex uses its native message
+queue; other agents use the guarded terminal connection. Drafts remain separate
+per pane and survive failed sends. Conversation automatically chooses **Trust all
+and continue** on Codex's exact startup hook-review menu. Other approval and input
+prompts still require Terminal.
 
 The conversation view renders Markdown headings, lists, tables, fenced code,
 links, and media without executing transcript HTML. Image references open an

@@ -790,6 +790,16 @@ async fn terminal_response(
     if path == "/switchboard/codex/queue" && request.method() == Method::POST {
         return Ok(native_messages::gateway(request).await);
     }
+    if path == "/switchboard/conversation/prepare" && request.method() == Method::POST {
+        let bytes = to_bytes(request.into_body(), 4096)
+            .await
+            .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid conversation request"))?;
+        let target = serde_json::from_slice::<conversation::Target>(&bytes)
+            .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid conversation target"))?;
+        return conversation::local(&host, target)
+            .await
+            .map(IntoResponse::into_response);
+    }
     if path == "/switchboard/restart-agent" && request.method() == Method::POST {
         let bytes = to_bytes(request.into_body(), 4096)
             .await
