@@ -121,11 +121,8 @@ pub(super) async fn sessions(host: &Host) -> anyhow::Result<Vec<String>> {
         .collect())
 }
 
-/// Shared sessions with their creation time in Unix seconds, when the engine reports it.
-pub(super) async fn shared_sessions(host: &Host) -> anyhow::Result<Vec<(String, Option<u64>)>> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
+/// Every session the engine lists, shared or not.
+pub(super) async fn session_catalog(host: &Host) -> anyhow::Result<Vec<Value>> {
     let response = tokio::time::timeout(
         Duration::from_secs(20),
         host.request(
@@ -140,12 +137,20 @@ pub(super) async fn shared_sessions(host: &Host) -> anyhow::Result<Vec<(String, 
         response.status == StatusCode::OK,
         "Cannot validate sessions"
     );
-    let catalog: Value = serde_json::from_slice(&response.body)?;
+    let mut catalog: Value = serde_json::from_slice(&response.body)?;
+    match catalog["sessions"].take() {
+        Value::Array(sessions) => Ok(sessions),
+        _ => anyhow::bail!("Invalid session catalog"),
+    }
+}
+
+/// Shared sessions with their creation time in Unix seconds, when the engine reports it.
+pub(super) async fn shared_sessions(host: &Host) -> anyhow::Result<Vec<(String, Option<u64>)>> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
     let mut names = Vec::new();
-    for session in catalog["sessions"]
-        .as_array()
-        .ok_or_else(|| anyhow::anyhow!("Invalid session catalog"))?
-    {
+    for session in session_catalog(host).await? {
         if session["web_clients_allowed"] == true {
             if let Some(name) = session["name"].as_str() {
                 validate_session(name).map_err(|_| anyhow::anyhow!("Invalid shared session"))?;
