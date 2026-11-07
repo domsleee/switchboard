@@ -595,7 +595,7 @@ function renderHiddenHeader(tabs,shown,searching){
 }
 const snoozedHeader=document.createElement('button');
 snoozedHeader.id='snoozed-toggle';
-snoozedHeader.innerHTML='<span class="chevron" aria-hidden="true">›</span><span>Snoozed</span><span class="count"></span>';
+snoozedHeader.innerHTML='<span class="chevron" aria-hidden="true">›</span><span>Working</span><span class="count"></span>';
 snoozedHeader.title='Working tabs keep running here and return when they finish or need you.';
 snoozedHeader.onclick=()=>{
   if(dragging||Date.now()<suppressTabClickUntil)return;
@@ -694,7 +694,7 @@ function render() {
   if(showSnoozedGroup){
     if(!nodes.includes(snoozedHeader))nodes.push(snoozedHeader);
     snoozedHeader.setAttribute('aria-expanded',String(snoozedOpen||searching));
-    snoozedHeader.setAttribute('aria-label',`Snoozed tabs, ${snoozedTabs.length}`);
+    snoozedHeader.setAttribute('aria-label',`Working tabs, ${snoozedTabs.length}`);
     snoozedHeader.lastElementChild.textContent=searching?`${snoozedShown.length} / ${snoozedTabs.length}`:String(snoozedTabs.length);
   }else snoozedHeader.remove();
   if(showHiddenGroup&&!nodes.includes(hiddenHeader))nodes.push(hiddenHeader);
@@ -1776,7 +1776,7 @@ function updateTabMenu(){
   const pin=$('pin-tab'),isPin=isPinned(item.key);
   pin.disabled=!!item.tab.pending&&!Number.isInteger(item.tab.id);
   pin.textContent=isPin?'Unpin':'Pin';
-  pin.title=isPin?'Allow automatic snoozing':'Keep in the list while working';
+  pin.title=isPin?'Allow automatic grouping':'Keep in the list while working';
   const hide=$('hide-tab');
   hide.disabled=!!item.tab.pending&&!Number.isInteger(item.tab.id);
   hide.textContent=item.hidden?'Show in list':'Hide';
