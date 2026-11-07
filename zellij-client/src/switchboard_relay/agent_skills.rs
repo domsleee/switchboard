@@ -1,4 +1,4 @@
-//! Compare the active installed plugin with skills shipped by this relay.
+//! Check required skills without tying independently updated plugins to the relay version.
 use super::*;
 
 pub(super) const SKILLS: &[(&str, &str)] = &[
@@ -19,15 +19,11 @@ pub(super) const SKILLS: &[(&str, &str)] = &[
         include_str!("../../../plugins/switchboard/skills/sudo/SKILL.md"),
     ),
 ];
-fn digest(body: &str) -> String {
-    Sha256::digest(body.replace("\r\n", "\n").as_bytes())
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
-}
-pub(super) fn plugin_current(plugin: &Path) -> bool {
-    SKILLS.iter().all(|(name, expected)| {
+// Plugin managers can install a newer revision while an older relay is still
+// running. Different text is not evidence that the installed plugin is stale.
+pub(super) fn plugin_complete(plugin: &Path) -> bool {
+    SKILLS.iter().all(|(name, _)| {
         std::fs::read_to_string(plugin.join("skills").join(name).join("SKILL.md"))
-            .is_ok_and(|body| digest(&body) == digest(expected))
+            .is_ok_and(|body| !body.trim().is_empty())
     })
 }
