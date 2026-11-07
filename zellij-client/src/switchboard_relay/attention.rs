@@ -826,10 +826,11 @@ impl PollState {
         // working screen can show that approval was given before that hook arrives.
         // Codex can compact a follow-up before UserPromptSubmit replaces the old Stop.
         // Keep the hook as a fallback when the screen no longer shows active work.
-        if matches!(
+        if (matches!(
             (hooked.agent, hooked.state),
             ("claude", "approval") | ("codex", "ready")
-        ) && row["agent"] == hooked.agent
+        ) || (hooked.state == "ready" && hooked.token.is_none()))
+            && row["agent"] == hooked.agent
             && row["state"] == "working"
         {
             return;
@@ -1197,6 +1198,11 @@ struct Hooked {
 /// Copilot's PascalCase hooks share these event names and fields.
 fn hook_status(agent: &'static str, event: &Value) -> Option<Hooked> {
     let state = match event["hook_event_name"].as_str()? {
+        // Compaction can happen during a turn; keep its screen-derived state.
+        "SessionStart" if agent == "claude" => match event["source"].as_str() {
+            Some("startup" | "resume" | "clear" | "fork") => "ready",
+            _ => "unknown",
+        },
         "Interrupt" => "unknown",
         "UserPromptSubmit" | "PostToolUse" | "PostToolUseFailure" => "working",
         "PermissionRequest" => "approval",
@@ -1222,7 +1228,7 @@ fn hook_status(agent: &'static str, event: &Value) -> Option<Hooked> {
     };
     // Each turn is a new result: Claude names it with a prompt ID, Codex with a
     // turn ID, and Copilot only timestamps it.
-    let token = (state == "ready").then(|| {
+    let token = (state == "ready" && event["hook_event_name"] != "SessionStart").then(|| {
         let turn = ["prompt_id", "turn_id", "timestamp", "session_id"]
             .iter()
             .find_map(|field| event[field].as_str());
@@ -1240,9 +1246,8 @@ fn hook_status(agent: &'static str, event: &Value) -> Option<Hooked> {
     })
 }
 
-/// Receives agent hook events: Claude Code's HTTP hooks from the switchboard plugin,
-/// and Codex and Copilot's command hooks through `zellij agent-hook`, which names
-/// its agent in `X-Agent`. Both name their Zellij session and pane in headers; events
+/// Receives events through `zellij agent-hook` (and older Claude HTTP hooks).
+/// Command hooks name the agent in `X-Agent`; both name their session and pane in headers. Events
 /// from outside Zellij carry neither and are ignored. A Claude started by another
 /// Claude in the same pane inherits `CLAUDECODE=1` and is ignored too, so it can't
 /// overwrite the pane's own status.
@@ -1317,15 +1322,23 @@ pub(super) async fn hook(
     StatusCode::NO_CONTENT
 }
 
-/// `zellij agent-hook`: forwards a command hook's event (Codex, Copilot) to `hook`
-/// on the local relay, naming the pane from the agent's Zellij environment.
-pub fn forward_hook(agent: &str, input: impl std::io::Read) {
+/// `zellij agent-hook`: forwards status to the relay and delivers mail through
+/// lifecycle context. Background --wait hooks only watch for incoming mail.
+pub fn forward_hook(agent: &str, wait: bool, input: impl std::io::Read) {
     use isahc::ReadResponseExt;
+    use std::io::Read;
+    let mut body = Vec::new();
+    if input.take(16 << 20).read_to_end(&mut body).is_err() {
+        return;
+    }
     let env = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
     let relay = crate::message_board::local_relay_url(env("SWITCHBOARD_RELAY_URL").as_deref());
-    if let Some(request) = hook_request(agent, input, env, &relay) {
-        let _ = isahc::send(request).map(|mut response| response.consume());
+    if !wait {
+        if let Some(request) = hook_request(agent, body.as_slice(), env, &relay) {
+            let _ = isahc::send(request).map(|mut response| response.consume());
+        }
     }
+    crate::message_board::hooks::run(agent, &body, wait);
 }
 
 fn hook_request(
@@ -1629,7 +1642,17 @@ esac
             event("Notification", json!({"notification_type":"idle_prompt"})),
             None
         );
-        assert_eq!(event("SessionStart", json!({})), None);
+        assert_eq!(event("SessionStart", json!({})), Some("unknown"));
+        for source in ["startup", "resume", "clear", "fork"] {
+            assert_eq!(
+                event("SessionStart", json!({"source":source})),
+                Some("ready")
+            );
+        }
+        assert_eq!(
+            event("SessionStart", json!({"source":"compact"})),
+            Some("unknown")
+        );
         // Claude Code 2.1.318: Stop lists the background tasks a finished turn left running.
         let shell =
             json!({"id":"b","type":"shell","status":"running","command":"sleep 8 && echo BG_DONE"});
@@ -1947,6 +1970,48 @@ esac
         );
         assert!(state.poll.lock().await.hooks.is_empty());
     }
+    #[test]
+    fn switchboard_claude_start_binds_conversation_before_first_prompt() {
+        let root = std::env::var_os("CLAUDE_CONFIG_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::home_dir().unwrap().join(".claude"));
+        let mut event = json!({"hook_event_name":"SessionStart", "source":"resume",
+            "session_id":"6af084f2-0b7d-4ac5-9c1c-0bd11e5f577c",
+            "transcript_path":root.join("projects/test/6af084f2-0b7d-4ac5-9c1c-0bd11e5f577c.jsonl")});
+        for source in ["startup", "resume", "clear", "fork", "compact"] {
+            event["source"] = json!(source);
+            let hooked = hook_status("claude", &event).unwrap();
+            let id = hooked
+                .chat_id
+                .clone()
+                .expect("startup reports exact transcript");
+            assert!(hooked.token.is_none(), "startup is not an unread reply");
+            let mut poll = PollState::default();
+            poll.hooks.insert(("main".into(), 80), hooked);
+            let mut pane =
+                json!({"session":"main","pane_id":80,"agent":"claude","state":"working"});
+            poll.apply_hook(&mut pane, &json!("claude"));
+            assert_eq!(pane["chat_id"], id);
+            assert_eq!(
+                pane["state"], "working",
+                "startup must not hide active work"
+            );
+        }
+        let config: Value = serde_json::from_str(include_str!(
+            "../../../plugins/switchboard/hooks/hooks.json"
+        ))
+        .unwrap();
+        let hooks = config["hooks"]["SessionStart"][0]["hooks"]
+            .as_array()
+            .unwrap();
+        assert!(
+            hooks
+                .iter()
+                .any(|hook| hook == &config["hooks"]["UserPromptSubmit"][0]["hooks"][0]),
+            "startup must report using the same pane headers as turn hooks"
+        );
+    }
+
     #[test]
     fn switchboard_conversation_identity_follows_hooks_and_survives_restart() {
         let root = std::env::var_os("CODEX_HOME")

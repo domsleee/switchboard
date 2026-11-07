@@ -237,12 +237,17 @@ completion line, so a finish must be observed to raise a new notification.
 Unrecognized Copilot dialogs report unknown.
 
 Claude Code tabs with the `switchboard` plugin (`plugins/switchboard`)
-report their own status: its HTTP hooks post `UserPromptSubmit`, tool, permission,
+report their own status: its command hooks run `zellij agent-hook --agent claude`, posting `UserPromptSubmit`, tool, permission,
 notification, `Stop` and `SessionEnd` events to `/api/agent-hook` with the Zellij
 session and pane from `ZELLIJ_SESSION_NAME` and `ZELLIJ_PANE_ID`. That status replaces
 the screen reading for the pane while it still runs Claude. A `Stop` that lists a
 running background task is `waiting`; Claude starts a new turn when the task ends.
 Hooks of a Claude started inside another Claude carry `CLAUDECODE=1` and are ignored.
+The same CLI delivers message-board mail as hook context for Claude and Codex.
+Their `SessionStart` and `Stop` hooks start one background `--wait` watcher per
+conversation: Claude uses `asyncRewake` and Codex's watcher calls its native queue.
+See [automatic delivery](MESSAGE_BOARD_USAGE.md#automatic-delivery) for identity,
+duplicate suppression and explicit receipt behavior.
 
 Copilot CLI loads the same plugin through its root `plugin.json`, whose command hooks
 (`copilot-hooks.json`) run `zellij agent-hook --agent copilot`. That command posts the

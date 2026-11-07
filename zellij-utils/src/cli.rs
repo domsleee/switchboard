@@ -169,6 +169,9 @@ pub enum Command {
     AgentHook {
         #[clap(long, value_enum)]
         agent: crate::agent_resumption::AgentKind,
+        /// Wait for new mail in a background lifecycle hook
+        #[clap(long)]
+        wait: bool,
     },
 
     /// Switchboard automatic updates

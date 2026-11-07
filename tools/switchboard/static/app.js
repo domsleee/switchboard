@@ -16,6 +16,22 @@ fetch('/api/health',{cache:'no-store'}).then(response=>response.ok?response.json
 const hosts = new Map(), sessions = new Map();
 const tabButtons=new Map();
 const mobileSidebar=matchMedia("(max-width:700px), (pointer:coarse) and (max-width:1000px)");
+// An iframe's visual viewport does not report the keyboard covering its parent.
+// Resize the terminal frame from the outer visual viewport so its normal fit
+// handler sees the space actually available above the keyboard.
+function updateMobileTerminalViewport(){
+  const view=window.visualViewport;
+  if(view&&view.scale!==1)return; // Preserve browser pinch zoom.
+  const active=mobileSidebar.matches&&!$('terminals').classList.contains('conversation-open');
+  document.body.classList.toggle('mobile-terminal-viewport',active);
+  if(active){
+    document.body.style.setProperty('--terminal-visible-height',(view?.height||innerHeight)+'px');
+    document.body.style.setProperty('--terminal-visible-top',(view?.offsetTop||0)+'px');
+  }
+}
+window.visualViewport?.addEventListener('resize',updateMobileTerminalViewport);
+window.visualViewport?.addEventListener('scroll',updateMobileTerminalViewport);
+window.addEventListener('resize',updateMobileTerminalViewport);
 let sidebarCollapsed=localStorage.getItem("switchboard-sidebar-collapsed")==="true",sidebarOpen=false;
 let filter = requestedFilter(), selected = requestedTab(), restoringTab=!!selected, loading = false, dragging = false, hostsLoaded = false;
 const dragType='application/x-zellij-switchboard-tab';
@@ -665,6 +681,7 @@ function render() {
   for (const entry of sessions.values()) entry.frame.classList.toggle('active',entry===currentEntry);
   updateSelectionTools(current);
   window.SwitchboardConversation?.update?.();
+  updateMobileTerminalViewport();
   if(!$('tab-menu').hidden)updateTabMenu();
   if(!current){$('artifact-preview').hidden=true;$('artifact-frame').contentWindow?.location.replace('about:blank');}
   // The sidebar says why nothing is selected; the main area repeats only its
@@ -1823,3 +1840,6 @@ window.SwitchboardConversation?.install({
   },
   terminal(target){const item=allTabs().find(item=>item.key===selected);if(item&&item.entry.frame===target.frame){item.entry.frame.focus();focus(item);}}
 });
+
+new MutationObserver(updateMobileTerminalViewport).observe($('terminals'),{attributes:true,attributeFilter:['class']});
+updateMobileTerminalViewport();

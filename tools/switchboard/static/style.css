@@ -350,3 +350,7 @@ body.sidebar-collapsed #artifact-preview header{padding-left:42px}
 .task-computer[open]>.computer-summary .computer-title::after{transform:rotate(90deg)}
 .computer-summary:focus-visible{outline:2px solid #9dc2fa;outline-offset:-2px}
 @media(max-width:480px){.health-actions{width:100%;justify-content:flex-end}.computer-summary{padding:13px 12px}.task-title{flex-wrap:wrap;gap:2px}.task-head{flex-wrap:wrap}.task-meta{white-space:normal;flex-basis:45%}.task-row{padding-left:28px}.task-state{white-space:normal}.task-title small{white-space:normal}}
+
+/* Keep the terminal and its controls inside the area above the phone keyboard. */
+body.mobile-terminal-viewport{position:fixed;top:var(--terminal-visible-top,0px);left:0;width:100%;height:var(--terminal-visible-height,100dvh);overflow:hidden}
+body.mobile-terminal-viewport #terminals:has(.conversation-modes:not([hidden]))>iframe{top:64px;height:calc(100% - 64px)}
