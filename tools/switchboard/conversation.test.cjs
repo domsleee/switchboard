@@ -120,7 +120,7 @@ test('phone chat opens the latest page, hides setup, and preserves messages and 
   await page.getByLabel('Reply draft').fill('A mobile draft');await page.getByLabel('Reply draft').press('Enter');
   assert.equal(await page.getByLabel('Reply draft').inputValue(),'A mobile draft\n');
   const bounds=await page.locator('.conversation-compose').boundingBox();assert.ok(bounds.height<130);
-  await page.evaluate(()=>{window.savedMessage=document.querySelector('.conversation-message:last-child');document.querySelector('.conversation-messages').scrollTop=100;window.savedTop=document.querySelector('.conversation-messages').scrollTop;});
+  await page.evaluate(()=>{window.savedMessage=[...document.querySelectorAll('.conversation-message')].at(-1);document.querySelector('.conversation-messages').scrollTop=100;window.savedTop=document.querySelector('.conversation-messages').scrollTop;});
   history.push({role:'assistant',text:'The result is ready.'});
   await page.evaluate(()=>intervals.forEach(fn=>fn()));await page.getByText('The result is ready.',{exact:true}).waitFor({state:'attached'});
   assert.equal(await page.evaluate(()=>savedMessage.isConnected),true);
@@ -136,7 +136,7 @@ test('phone chat opens the latest page, hides setup, and preserves messages and 
   await page.getByRole('button',{name:'Scroll to bottom',exact:true}).click();
   assert.ok(await page.evaluate(()=>{const n=document.querySelector('.conversation-messages');return n.scrollHeight-n.scrollTop-n.clientHeight<3;}));
   await page.evaluate(()=>{current.state='ready';SwitchboardConversation.update();});
-  assert.equal(await page.locator('.conversation-activity').textContent(),'codex');
+  assert.equal(await page.locator('.conversation-activity').textContent(),'Codex · Ready');
   assert.equal(await page.getByRole('button',{name:/Load.*messages/}).count(),0);
   // A burst larger than one page still catches up without skipping messages.
   const beforeBurst=requests.length;

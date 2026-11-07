@@ -20,7 +20,7 @@ test('outgoing replies stay visible through queue acknowledgement and reconcile 
   await draft.fill('Same message');await send.click();await outgoing.getByText('Sending…',{exact:true}).waitFor();
   assert.equal(await outgoing.count(),1);assert.equal(await draft.inputValue(),'Same message');
   await poll();assert.equal(await outgoing.count(),1,'Old matching transcript must not acknowledge a new send');
-  hold=false;held();await outgoing.getByText('Waiting for agent…',{exact:true}).waitFor();
+  hold=false;held();await outgoing.getByText('Queued',{exact:true}).waitFor();
   assert.equal(await draft.inputValue(),'');assert.equal(await page.locator('.conversation-send-notice').isVisible(),false);assert.equal(await page.evaluate(()=>SwitchboardConversation.hasUnsentWork()),true);
   // Two identical sends need two distinct transcript entries.
   await draft.fill('Same message');await send.click();await page.waitForFunction(()=>document.querySelectorAll('.conversation-outgoing.queued').length===2);
@@ -41,7 +41,7 @@ test('outgoing replies stay visible through queue acknowledgement and reconcile 
   // Retry a native receipt without replacing a newly typed draft.
   fail=true;await draft.fill('Uncertain send');await send.click();await outgoing.getByRole('button',{name:'Retry'}).waitFor();
   const retryKey=requests.at(-1).send_key;await draft.fill('My next thought');fail=false;
-  await outgoing.getByRole('button',{name:'Retry'}).click();await outgoing.getByText('Waiting for agent…',{exact:true}).waitFor();
+  await outgoing.getByRole('button',{name:'Retry'}).click();await outgoing.getByText('Queued',{exact:true}).waitFor();
   assert.equal(requests.at(-1).send_key,retryKey);assert.equal(await draft.inputValue(),'My next thought');
   history.push({role:'user',text:'Uncertain send'});await poll();await page.waitForFunction(()=>document.querySelectorAll('.conversation-outgoing').length===0);
   // A superseded bridge timeout must not fail a later manual attempt.
@@ -51,7 +51,7 @@ test('outgoing replies stay visible through queue acknowledgement and reconcile 
   await outgoing.getByText('Fixture failure',{exact:true}).waitFor();await send.click();
   await page.evaluate(()=>timers[0]());assert.equal(await outgoing.count(),1);assert.equal(await outgoing.getByText('Sending…',{exact:true}).count(),1);
   await page.evaluate(()=>window.dispatchEvent(new MessageEvent('message',{origin:location.origin,source:current.frame.contentWindow,data:{type:'zellij-conversation-paste-result',id:pastes[1].id,ok:true}})));
-  await outgoing.getByText('Waiting for agent…',{exact:true}).waitFor();history.push({role:'user',text:'Bridge reply'});await poll();
+  await outgoing.getByText('Sent',{exact:true}).waitFor();history.push({role:'user',text:'Bridge reply'});await poll();
   await page.waitForFunction(()=>document.querySelectorAll('.conversation-outgoing').length===0);
   assert.deepEqual(errors,[]);
  }finally{held?.();await browser.close();}
