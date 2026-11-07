@@ -256,7 +256,7 @@
     }
     // Open at the latest messages; older history is fetched only on request.
     setInterval(()=>{if(open&&!document.hidden)load();},2000);
-    window.SwitchboardConversation.hasUnsentWork=()=>!!pending||!!draft.value||[...drafts.values()].some(Boolean)||[...attachments.values()].some(files=>files.length);
+    window.SwitchboardConversation.hasUnsentWork=()=>!!pending||[...outgoing.values()].some(items=>items.length)||!!draft.value||[...drafts.values()].some(Boolean)||[...attachments.values()].some(files=>files.length);
     window.SwitchboardConversation.wantsConversation=()=>open;window.SwitchboardConversation.update=update;window.SwitchboardConversation.isOpen=()=>open&&!panel.hidden;window.SwitchboardConversation.focus=focusSurface;window.SwitchboardConversation.showTerminal=()=>show(false);update();
   }};
 })();

@@ -21,7 +21,7 @@ test('outgoing replies stay visible through queue acknowledgement and reconcile 
   assert.equal(await outgoing.count(),1);assert.equal(await draft.inputValue(),'Same message');
   await poll();assert.equal(await outgoing.count(),1,'Old matching transcript must not acknowledge a new send');
   hold=false;held();await outgoing.getByText('Waiting for agent…',{exact:true}).waitFor();
-  assert.equal(await draft.inputValue(),'');assert.equal(await page.locator('.conversation-send-notice').isVisible(),false);
+  assert.equal(await draft.inputValue(),'');assert.equal(await page.locator('.conversation-send-notice').isVisible(),false);assert.equal(await page.evaluate(()=>SwitchboardConversation.hasUnsentWork()),true);
   // Two identical sends need two distinct transcript entries.
   await draft.fill('Same message');await send.click();await page.waitForFunction(()=>document.querySelectorAll('.conversation-outgoing.queued').length===2);
   assert.notEqual(requests[0].send_key,requests[1].send_key);
@@ -32,7 +32,7 @@ test('outgoing replies stay visible through queue acknowledgement and reconcile 
   await page.getByText('Earlier answer',{exact:true}).waitFor();assert.equal(await outgoing.count(),0);
   await page.evaluate(()=>{current=original;SwitchboardConversation.update();});await outgoing.waitFor();
   history.push({role:'user',text:'Same message'});await poll();await page.waitForFunction(()=>document.querySelectorAll('.conversation-outgoing').length===0);
-  assert.equal(await page.locator('.conversation-message.user').count(),3);
+  assert.equal(await page.locator('.conversation-message.user').count(),3);assert.equal(await page.evaluate(()=>SwitchboardConversation.hasUnsentWork()),false);
   // Transcript may arrive before the HTTP acknowledgement.
   hold=true;await draft.fill('Fast transcript');await send.click();await outgoing.getByText('Sending…',{exact:true}).waitFor();
   history.push({role:'user',text:'Fast transcript'});await poll();await page.waitForFunction(()=>document.querySelectorAll('.conversation-outgoing').length===0);
