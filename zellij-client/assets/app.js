@@ -3275,7 +3275,12 @@ class ResumableConnection {
         let part = '', length = 0;
         const append = text => {
             const bytes = new TextEncoder().encode(text).length;
-            this.pending.push({ seq: this.nextInput++, channel, data: text, bytes });
+            const tail = this.pending.at(-1);
+            // Keys typed while a record awaits its ack leave together, one round trip for all
+            // of them. A record already sent stays byte-identical for its resend.
+            if (channel === 'terminal' && tail?.channel === channel && !tail.sent && tail.bytes + bytes <= FRAME_LIMIT) {
+                tail.data += text; tail.bytes += bytes;
+            } else this.pending.push({ seq: this.nextInput++, channel, data: text, bytes });
             this.bytes += bytes;
         };
         for (const character of data) {
@@ -3288,8 +3293,8 @@ class ResumableConnection {
     }
     flush() {
         if (this.stopped || !this.connected || !this.pending.length || this.inflight !== null) return;
-        const { bytes, ...input } = this.pending[0];
-        this.inflight = input.seq;
+        const { bytes, sent, ...input } = this.pending[0];
+        this.pending[0].sent = true; this.inflight = input.seq;
         this.socket.send(JSON.stringify({ type: 'input', generation: this.generation, input }));
     }
     acknowledge(sequence) {
