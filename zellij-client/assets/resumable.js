@@ -53,7 +53,7 @@ export class ResumableConnection {
         if (this.stopped) throw new Error('Terminal attachment has ended');
         const size = new TextEncoder().encode(data).length;
         if (this.bytes + size > QUEUE_LIMIT) {
-            this.fail('Pending terminal input reached its limit. Input was retained; reconnect explicitly before continuing.');
+            this.fail('Pending terminal input reached its limit. This input was not sent; the earlier queue was retained.');
             return;
         }
         if (channel === 'control' && size > FRAME_LIMIT) {
