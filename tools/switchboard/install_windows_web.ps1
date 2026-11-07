@@ -91,6 +91,7 @@ $icon.Add_DoubleClick({ Start-Process $relayUrl })
 $logs.Add_Click({ Start-Process explorer.exe $directory })
 $quit.Add_Click({ [Windows.Forms.Application]::ExitThread() })
 $script:relay = $null
+$script:relayFailures = 0
 $script:selectedHash = $null
 $script:nextUpdate = [DateTime]::MinValue
 $script:updater = $null
@@ -125,6 +126,25 @@ function Check-ForUpdates {
         Add-Content -LiteralPath $log -Value ("$([DateTime]::UtcNow.ToString('o')) Automatic update: " + $_.Exception.Message)
     }
 }
+function Stop-StaleRelay {
+    $config = [IO.Path]::GetFullPath($relayConfig)
+    $ids = @(Get-NetTCPConnection -LocalPort $RelayPort -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique)
+    if ($script:relay -and !$script:relay.HasExited) { $ids += $script:relay.Id }
+    foreach ($id in ($ids | Select-Object -Unique)) {
+        $live = Get-CimInstance Win32_Process -Filter "ProcessId=$id"
+        # Only this installation's relay; never a session server or another program on the port.
+        if (!$live -or $live.Name -ine 'zellij.exe' -or $live.CommandLine -notmatch '\bserve\s' -or
+            $live.CommandLine -match '(?:^|\s)--server(?:\s|=)') { continue }
+        $hostConfig = Get-SwitchboardCommandLineValue $live.CommandLine '--host-config'
+        if (!$hostConfig -or [IO.Path]::GetFullPath($hostConfig) -ine $config) { continue }
+        # Its screen subscribers inherit the listening socket and would keep the port.
+        $subscribers = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$id" | Where-Object { $_.CommandLine -match '\bsubscribe\b' })
+        Add-Content -LiteralPath $log -Value ("$([DateTime]::UtcNow.ToString('o')) Stopping unresponsive relay: $id")
+        Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
+        Wait-Process -Id $id -Timeout 5 -ErrorAction SilentlyContinue
+        foreach ($subscriber in $subscribers) { Stop-Process -Id $subscriber.ProcessId -Force -ErrorAction SilentlyContinue }
+    }
+}
 function Start-Servers {
     try {
         $handoff = Join-Path $HOME '.local/share/switchboard/automatic-updates/handoff.json'
@@ -151,9 +171,13 @@ function Start-Servers {
         }
         try {
             $response = Invoke-WebRequest "http://127.0.0.1:$RelayPort/api/health" -Headers @{Host="switchboard.localhost:$RelayPort"} -UseBasicParsing -TimeoutSec 2
-            if ($response.StatusCode -eq 200 -and ($response.Content | ConvertFrom-Json).relay -eq 'rust') { $status.Text = 'Switchboard running'; return }
+            if ($response.StatusCode -eq 200 -and ($response.Content | ConvertFrom-Json).relay -eq 'rust') { $script:relayFailures = 0; $status.Text = 'Switchboard running'; return }
         } catch {}
-        if ($script:relay -and !$script:relay.HasExited) { $status.Text = 'Switchboard starting...'; return }
+        $script:relayFailures++
+        # A hung relay keeps its port, so every replacement exits at bind. After
+        # about a minute unhealthy, stop the relay this installation owns.
+        if ($script:relayFailures -ge 4) { $script:relayFailures = 0; Stop-StaleRelay }
+        elseif ($script:relay -and !$script:relay.HasExited) { $status.Text = 'Switchboard starting...'; return }
         $relayArgs = 'serve --port ' + $RelayPort + ' --host-config "' + $relayConfig + '"'
         $script:relay = Start-Process -FilePath $Binary -ArgumentList $relayArgs -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $directory 'relay.log') -RedirectStandardError (Join-Path $directory 'relay-error.log')
         if ($script:relay.WaitForExit(200)) { throw 'Relay exited during startup (see relay-error.log)' }
