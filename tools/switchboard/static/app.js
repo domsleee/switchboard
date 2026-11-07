@@ -13,7 +13,10 @@ function humanTime(date,now=Date.now()){
   let loaded=document.querySelector('meta[name="switchboard-build"]')?.content;
   let checking=false,reloadTimer=null,reloading=false;
   const same=(a,b)=>a.startsWith(b)||b.startsWith(a);
-  const safe=()=>document.hidden&&!document.querySelector('dialog[open]')&&!globalThis.SwitchboardConversation?.hasUnsentWork?.();
+  // A terminal page can own queued input or an acknowledged partial paste,
+  // including legacy remote viewers. Service updates are independent; page
+  // refresh waits until every viewer has safely retired or closed.
+  const safe=()=>document.hidden&&!document.querySelector('dialog[open]')&&!document.querySelector('#terminals>iframe:not([src="about:blank"])')&&!globalThis.SwitchboardConversation?.hasUnsentWork?.();
   async function check(){
     if(checking||reloading)return;checking=true;
     clearTimeout(reloadTimer);reloadTimer=null;
@@ -29,7 +32,7 @@ function humanTime(date,now=Date.now()){
           $('build-version').title=`Commit ${build.commit} · ${when?humanTime(when):build.commit_date}`;
         }
       }else if(safe()){
-        // Give pending terminal input time to flush after leaving the tab.
+        // Recheck after the delay: a viewer or draft may have opened meanwhile.
         reloadTimer=setTimeout(()=>{if(safe()){reloading=true;location.reload();}},2000);
       }
     }catch(_){}finally{checking=false;}
