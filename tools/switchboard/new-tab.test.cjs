@@ -21,7 +21,8 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
       if(path==='/api/health')return json({commit:'abc123def',commit_date:'2026-10-04',...(emptyMachine?{commit_timestamp:'2026-10-04T13:24:56+11:00'}:{})});
       if(path==='/api/hosts')return json([{id:'windows',name:'Windows'}]);
       if(path==='/api/hosts/windows')return json({id:'windows',name:'Windows',sessions:connected?[{name:'main',web_clients_allowed:true}]:[{name:'adamant-duck',web_clients_allowed:false}]});
-      if(path==='/api/attention')return json({tabs:failed||!catalogReady?[]:nativeTabs(),panes:[],errors:failed?[{host:'windows',message:'Unavailable'}]:[]});
+      if(path==='/api/attention'&&new URL(route.request().url()).searchParams.has('after'))return;
+      if(path==='/api/attention')return json({version:1,tabs:failed||!catalogReady?[]:nativeTabs(),panes:[],errors:failed?[{host:'windows',message:'Unavailable'}]:[]});
       if(path==='/api/diagnostics/new-tab'){diagnostics.push(route.request().postDataJSON());return route.fulfill({status:204});}
       if(path==='/api/hosts/windows/close-tab'){closes++;return json({ok:true});}
       if(path.endsWith('/attachments')){
