@@ -16,7 +16,7 @@ test('outgoing replies stay visible through queue acknowledgement and reconcile 
   });
   await page.goto('http://send.test/');await page.getByText('Earlier answer',{exact:true}).waitFor();
   const draft=page.getByLabel('Reply draft'),send=page.getByRole('button',{name:'Send',exact:true}),outgoing=page.locator('.conversation-outgoing');
-  const poll=async()=>{await Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/')),page.evaluate(()=>intervals.forEach(fn=>fn()))]);await page.evaluate(()=>new Promise(requestAnimationFrame));};
+  const poll=async()=>{await page.waitForFunction(()=>!document.querySelector('button[aria-label=Refresh]').disabled);await Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/')),page.evaluate(()=>intervals.forEach(fn=>fn()))]);await page.waitForFunction(()=>!document.querySelector('button[aria-label=Refresh]').disabled);};
   await draft.fill('Same message');await send.click();await outgoing.getByText('Sending…',{exact:true}).waitFor();
   assert.equal(await outgoing.count(),1);assert.equal(await draft.inputValue(),'Same message');
   await poll();assert.equal(await outgoing.count(),1,'Old matching transcript must not acknowledge a new send');
