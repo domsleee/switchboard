@@ -30,7 +30,7 @@ let native,relay,browser,tokenName,created=false;
 #include <unistd.h>
 #include <string.h>
 #include <fcntl.h>
-int main(int argc,char**argv){fcntl(0,F_SETFL,O_NONBLOCK);FILE*f=fopen(${JSON.stringify(path.join('/PLACEHOLDER','launches'))},"a");fprintf(f,"%d",getpid());for(int i=1;i<argc;i++)fprintf(f,"|%s",argv[i]);fprintf(f,"\\n");fclose(f);char previous[64]="";for(;;){char input[4096];int count=read(0,input,sizeof(input));if(count>0){f=fopen(${JSON.stringify(path.join('/PLACEHOLDER','input'))},"a");fwrite(input,1,count,f);fclose(f);previous[0]=0;}char mode[64]="ready";f=fopen(${JSON.stringify(path.join('/PLACEHOLDER','mode'))},"r");if(f){fgets(mode,64,f);fclose(f);}if(strcmp(mode,previous)){printf("\\033[2J\\033[H\\033]0;codex - Restart fixture\\007Worked for 1s\\r\\n\\r\\n› %s\\r\\nGPT-6 · ? for shortcuts\\r\\n",strcmp(mode,"draft")==0?"unsent draft":strcmp(mode,"multiline")==0?"\\r\\n  unsent draft":"Ask Codex to do anything");fflush(stdout);strcpy(previous,mode);}usleep(100000);}}`.replaceAll('/PLACEHOLDER',dir));
+int main(int argc,char**argv){if(argc>1&&strcmp(argv[1],"queue")==0){if(argc!=6)return 2;FILE*q=fopen(${JSON.stringify(path.join('/PLACEHOLDER','queued'))},"a");if(!q)return 3;for(int i=2;i<argc;i++)fprintf(q,"%s\\n",argv[i]);fclose(q);return 0;}fcntl(0,F_SETFL,O_NONBLOCK);FILE*f=fopen(${JSON.stringify(path.join('/PLACEHOLDER','launches'))},"a");fprintf(f,"%d",getpid());for(int i=1;i<argc;i++)fprintf(f,"|%s",argv[i]);fprintf(f,"\\n");fclose(f);char previous[64]="";for(;;){char input[4096];int count=read(0,input,sizeof(input));if(count>0){f=fopen(${JSON.stringify(path.join('/PLACEHOLDER','input'))},"a");fwrite(input,1,count,f);fclose(f);previous[0]=0;}char mode[64]="ready";f=fopen(${JSON.stringify(path.join('/PLACEHOLDER','mode'))},"r");if(f){fgets(mode,64,f);fclose(f);}if(strcmp(mode,previous)){printf("\\033[2J\\033[H\\033]0;codex - Restart fixture\\007Worked for 1s\\r\\n\\r\\n› %s\\r\\nGPT-6 · ? for shortcuts\\r\\n",strcmp(mode,"draft")==0?"unsent draft":strcmp(mode,"multiline")==0?"\\r\\n  unsent draft":"Ask Codex to do anything");fflush(stdout);strcpy(previous,mode);}usleep(100000);}}`.replaceAll('/PLACEHOLDER',dir));
     execFileSync(process.platform==='darwin'?'xcrun':'cc',process.platform==='darwin'?['clang','-isysroot',execFileSync('xcrun',['--sdk','macosx','--show-sdk-path'],{encoding:'utf8'}).trim(),c,'-o',fixture]:[c,'-o',fixture]);
     cli('attach','--create-background',name,'--','/bin/bash','--noprofile','--norc','-c','exec codex --model fixture "initial prompt"');created=true;
     let first;
@@ -95,9 +95,16 @@ int main(int argc,char**argv){fcntl(0,F_SETFL,O_NONBLOCK);FILE*f=fopen(${JSON.st
     await hook('Stop',restarted.pane_id);
     await until(async()=>{await page.evaluate(()=>refreshAttention(true));return page.evaluate(id=>[...paneAttention.values()].some(p=>p.pane_id===id&&p.chat_id),restarted.pane_id);},'Resumed agent did not bind its conversation');
     await page.getByRole('button',{name:'Conversation',exact:true}).click();
+    // The initial transcript response supplies the native thread ID used for replies.
+    await page.locator('.conversation-notice').waitFor({state:'hidden'});
     await page.getByLabel('Reply draft').fill('native conversation reply');
+    await until(()=>page.getByRole('button',{name:'Send',exact:true}).isEnabled(),'Conversation reply did not become ready');
+    const replyResponse=page.waitForResponse(r=>r.url().endsWith('/codex/reply'));
     await page.getByLabel('Reply draft').press('Enter');
-    await until(()=>fs.existsSync(path.join(dir,'input'))&&fs.readFileSync(path.join(dir,'input'),'utf8').includes('native conversation reply\n'),'Conversation Send did not submit to the native agent');
+    const reply=await replyResponse;assert.equal(reply.status(),200);assert.equal((await reply.json()).status,'queued');
+    assert.deepEqual(fs.readFileSync(path.join(dir,'queued'),'utf8').trimEnd().split('\n'),['--thread',sid,'--message','native conversation reply']);
+    assert.equal(launches().length,2,'Queueing must not start another interactive agent');
+    assert.equal(fs.existsSync(path.join(dir,'input')),false,'Native replies must not type into the terminal');
     await until(async()=>await page.getByLabel('Reply draft').inputValue()==='','Sent draft did not clear');
     assert.equal(await page.locator('.conversation-panel').isVisible(),true);
     console.log('PASS: real menu + endpoint restarted only the intended agent, retained tab and other pane, resumed exact UUID and flags, rejected busy/draft/stale targets. Screenshots: '+dir);
