@@ -617,8 +617,8 @@ function tabProject(item){
   if(/^(?:\/Users\/[^/]+|\/home\/[^/]+|\/root|[A-Za-z]:\\Users\\[^\\]+)$/i.test(path))return '~';
   return path.split(/[\\/]/).pop()||path;
 }
-function tabAge(item){
-  const since=Math.max(0,...statesForTab(item).map(state=>Number.isFinite(state.since)?state.since:0));
+function tabAge(item,only){
+  const since=Math.max(0,...statesForTab(item).filter(state=>!only||state.state===only).map(state=>Number.isFinite(state.since)?state.since:0));
   if(!since)return '';
   const seconds=Math.max(0,Date.now()/1000-since);
   return seconds<60?'now':seconds<3600?`${Math.floor(seconds/60)}m`:seconds<86400?`${Math.floor(seconds/3600)}h`:`${Math.floor(seconds/86400)}d`;
@@ -713,8 +713,9 @@ function render() {
     button.setAttribute('aria-pressed',String(item.key===selected));
     button.setAttribute('aria-label',`${title}${elevated&&title!=='Administrator'?', Administrator':''}, ${project?project+', ':''}${machine}, ${item.entry.name}${status?', '+status:''}${flagged?', Flagged for review':''}${isPinned(item.key)?', Pinned':''}`);
     button._star.className='star '+(unavailable?'unavailable':starred?'attention':stateLabel==='Working'?'working':stateLabel.startsWith('Waiting')?'waiting':'quiet');
-    const short=unavailable?'Unavailable':statusWords[stateLabel]||(flagged?'Review':tabAge(item));
-    button._status.dataset.tone=unavailable?'':stateLabel==='Ready to review'?'done':starred?'attention':'';
+    const working=stateLabel==='Working'?tabAge(item,'working'):'';
+    const short=unavailable?'Unavailable':working&&working!=='now'?`Working ${working}`:statusWords[stateLabel]||(flagged?'Review':tabAge(item));
+    button._status.dataset.tone=unavailable?'':stateLabel==='Ready to review'?'done':starred?'attention':stateLabel==='Working'?'working':'';
     if(button._status.lastChild.textContent!==short)button._status.lastChild.textContent=short;
     if(button._name.textContent!==title)button._name.textContent=title;
     button.dataset.agentState=unavailable?'Status unavailable':stateLabel;

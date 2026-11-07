@@ -30,21 +30,23 @@ body.sidebar-collapsed #sidebar-toggle{left:8px}
 /* Keep scrolled tabs clear of the pinned group headers. */
 #tabs:has(:is(#hidden-toggle,#snoozed-toggle)){scroll-padding-bottom:40px}
 #tabs:has(#hidden-toggle):has(#snoozed-toggle){scroll-padding-bottom:75px}
-/* Two lines: project · computer and status or age, then title and agent. */
-#tabs .tab-select{flex-shrink:0;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;column-gap:10px;row-gap:3px;white-space:normal;text-align:left;padding:9px 12px;min-height:52px;width:100%;border-color:transparent;border-radius:8px;background:transparent;user-select:none}
+/* Two lines: project · computer and status or age, then title and agent. The title runs under
+   the status and stops only at the agent icon, so a wide status does not narrow it. */
+#tabs .tab-select{flex-shrink:0;display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;column-gap:0;row-gap:3px;white-space:normal;text-align:left;padding:9px 12px;min-height:52px;width:100%;border-color:transparent;border-radius:8px;background:transparent;user-select:none}
 @media(hover:hover){#tabs .tab-select:hover{background:#1b1f27}}
 #tabs .tab-select.selected{background:#202630;border-color:transparent}
 #tabs .tab-where{grid-area:1/1;color:#8b93a3;font-size:11px;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#tabs .tab-status{grid-area:1/2;justify-self:end;display:flex;align-items:center;gap:5px;color:#8b93a3;font-size:11px;line-height:1.3;font-variant-numeric:tabular-nums;white-space:nowrap}
+#tabs .tab-status{grid-area:1/2/2/4;justify-self:end;margin-left:10px;display:flex;align-items:center;gap:5px;color:#8b93a3;font-size:11px;line-height:1.3;font-variant-numeric:tabular-nums;white-space:nowrap}
 #tabs .tab-status[data-tone=attention]{color:#f0bc63;font-weight:600}
 #tabs .tab-status[data-tone=done]{color:#5fd38d;font-weight:600}
-#tabs .tab-name{grid-area:2/1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:400;line-height:1.2;color:#e5e7eb}
+#tabs .tab-name{grid-area:2/1/3/3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:400;line-height:1.2;color:#e5e7eb}
 #tabs .tab-select.elevated .tab-name::before{content:"\1F6E1\FE0F";margin-right:4px}
-#tabs .tab-agent{grid-area:2/2;justify-self:end;display:flex;width:14px;height:14px}
+#tabs .tab-agent{grid-area:2/3;justify-self:end;margin-left:10px;display:flex;width:14px;height:14px}
 #tabs .tab-agent svg{width:14px;height:14px}
 #tabs .tab-select.needs-attention .tab-name{color:#fff;font-weight:500}
 #tabs .star{display:none;flex-shrink:0;box-sizing:border-box;width:12px;height:12px;border-radius:50%;font-size:0}
-#tabs .star.working{display:block;border:2px solid #343a46;border-top-color:#a3aec0;animation:tab-spin 1s linear infinite}
+#tabs .tab-status[data-tone=working]{color:#7eaaf2}
+#tabs .star.working{display:block;border:1.5px dashed currentColor;animation:tab-spin 3s linear infinite}
 #tabs .star.waiting{display:block;border:2px solid #8cabe9}
 #tabs .star.unavailable{display:block;border:1px solid #a3aec0}
 #tabs .tab-status[data-tone=attention] .star{display:block;width:7px;height:7px;background:#f0bc63}
