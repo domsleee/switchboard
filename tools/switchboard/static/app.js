@@ -1589,14 +1589,16 @@ $('new-tab-form').onsubmit=async event=>{
   $('new-tab-error').textContent=files.length?'Uploading attachments…':'';
   try{
     const images=[],others=[],host=JSON.parse(key)[0];
-    for(const item of files){
+    // Upload together: each one is a round trip to the destination computer.
+    const uploaded=await Promise.all(files.map(async item=>{
       const response=await fetch('/api/hosts/'+encodeURIComponent(host)+'/attachments?'+new URLSearchParams({name:item.file.name}),{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:item.file});
-      if(!isCurrent())return;
+      if(!isCurrent())return null;
       if(!response.ok)throw Error('Could not upload '+item.file.name+'. Try again.');
       const data=await response.json();if(typeof data.path!=='string'||!data.path||/[\x00-\x1f]/.test(data.path))throw Error('Invalid attachment response. Try again.');
-      (item.file.type.startsWith('image/')?images:others).push(data.path);
-    }
+      return data.path;
+    }));
     if(!isCurrent())return;
+    files.forEach((item,index)=>(item.file.type.startsWith('image/')?images:others).push(uploaded[index]));
     let prompt=text;
     if(handover){
       $('new-tab-error').textContent='Preparing handover…';
