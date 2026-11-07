@@ -185,6 +185,7 @@
       if(follow)list.scrollTop=list.scrollHeight;
       const startup=startupState(),stalled=!!startup&&(!!startup.error||Date.now()-startup.started>=30000);
       terminalAction.hidden=!['approval','input'].includes(state)&&!stalled;recovery.hidden=!stalled||!!chat;
+      const noComposer=!chat&&!firstMessage();if(form.hidden!==noComposer){form.hidden=noComposer;sizeDraft();}
       insert.disabled=!!pendingFor();
       // While the agent works, an empty composer offers Stop in the send button's place.
       form.classList.toggle('can-stop',state==='working'&&!!chat&&!!target?.session&&Number.isInteger(target?.pane));
@@ -194,8 +195,11 @@
       transportNotice.hidden=!chat||!(target?.terminalReady===false&&target?.agent!=='claude'&&!(target?.agent==='codex'&&/^[0-9a-f-]{36}$/.test(chat.thread||'')));
       insert.setAttribute('aria-label',transportNotice.hidden?'Send':'Send via Terminal');insert.title=transportNotice.hidden?'Send message':'Send via Terminal and return to Conversation';
     }
-    function startupState(){if(!target||chat||!target.agent&&!target.starting)return null;const key=identity(target);if(!startups.has(key)&&open&&!document.hidden)startups.set(key,{started:Date.now()});return startups.get(key);}
-    function unboundNotice(){const startup=startupState();return startup?.error||(startup&&Date.now()-startup.started>=30000?'The agent has not connected. Retry or open Terminal.':target?.starting?'Starting agent…':target?.agent?'Connecting to this agent’s conversation…':'No agent');}
+    // A new Claude at its empty prompt has no transcript until its first message, which
+    // the relay types into the prompt. Its connection timer starts after that message.
+    function firstMessage(){return !chat&&target?.agent==='claude'&&target.state==='ready'&&!!target.session&&Number.isInteger(target.pane);}
+    function startupState(){if(!target||chat||!target.agent&&!target.starting)return null;const key=identity(target);if(firstMessage()){startups.delete(key);return null;}if(!startups.has(key)&&open&&!document.hidden)startups.set(key,{started:Date.now()});return startups.get(key);}
+    function unboundNotice(){if(firstMessage())return 'Send a message to start the conversation.';const startup=startupState();return startup?.error||(startup&&Date.now()-startup.started>=30000?'The agent has not connected. Retry or open Terminal.':target?.starting?'Starting agent…':target?.agent?'Connecting to this agent’s conversation…':'No agent');}
     function busy(value){loading=value;older.disabled=refresh.disabled=value;}
     function focusSurface(){if(!panel.hidden)(form.hidden?panel:draft).focus({preventScroll:true});}
     function show(value,transient=false){if(!transient)modeRevision++;if(!value){closeCompletions();stopStream();loadRequest?.abort();window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();}open=value;root.classList.toggle('conversation-open',open);modeChanged();if(!transient)try{localStorage.setItem(modeKey,value?'conversation':'terminal');}catch{}setPanelHidden(!value);toggle.setAttribute('aria-pressed',String(value));back.setAttribute('aria-pressed',String(!value));if(value){document.getElementById('artifact-preview').hidden=true;update();if(loaded){paint(false,restorePosition===null&&lastPaint===null);if(restorePosition!==null){list.scrollTop=restorePosition.follow?list.scrollHeight:restorePosition.position;restorePosition=null;updateLatest();}}if(binding())load(loaded?'poll':'initial');startStream();focusSurface();}else if(target)terminal(target);viewport();}
@@ -469,13 +473,13 @@
       await sendNative(sent);
     }
     form.onsubmit=async event=>{
-      event.preventDefault();const current=selection();if(!target||identity(current)!==identity(target)||!binding()||(!draft.value.trim()&&!fileList().length)||pendingFor())return;
+      event.preventDefault();const current=selection();if(!target||identity(current)!==identity(target)||!binding()&&!firstMessage()||(!draft.value.trim()&&!fileList().length)||pendingFor())return;
       // Waiting: the turn ended while background work runs; the prompt still takes input.
       if(!['ready','waiting','working'].includes(current.state)){sendStatus('The agent needs attention in Terminal. Your draft is kept.');return;}
       const selected=fileList();if(selected.some(item=>!item.path)){sendStatus(selected.some(item=>item.error)?'Remove failed attachments before sending.':'Wait for attachments to finish uploading.');return;}
       const text=draft.value,payload=text+(selected.length?'\n\nAttached files:\n'+selected.map(item=>item.path).join('\n'):'');
       if(/[\x00-\x08\x0b-\x1f\x7f]/.test(payload)){sendStatus('The draft contains terminal control characters. Remove them first.');return;}
-      const command=/^\/[a-z][\w:.-]*(?:\s|$)/i.test(text),native=!command&&current.agent==='codex'&&/^[0-9a-f-]{36}$/.test(chat.thread||'');
+      const command=/^\/[a-z][\w:.-]*(?:\s|$)/i.test(text),native=!command&&current.agent==='codex'&&/^[0-9a-f-]{36}$/.test(chat?.thread||'');
       if(command&&selected.length){sendStatus('Send commands without attachments. Your draft is kept.');return;}
       if(command&&!['ready','waiting'].includes(current.state)){sendStatus('Wait for the agent to finish before sending a command. Your draft is kept.');return;}
       if(current.state==='working'&&!native&&current.agent!=='claude'){sendStatus('Still connecting to this conversation. Try sending again in a moment.');return;}
@@ -484,7 +488,7 @@
       if(retry){retrySend(retry,true);return;}
       const key=identity(target),id='conversation-'+Array.from(crypto.getRandomValues(new Uint32Array(4)),n=>n.toString(16)).join('-');
       const items=outgoing.get(key)||[],failedBridge=!native&&items.find(item=>item.state==='failed'&&!item.native&&sameMessage(item.payload,payload));
-      const sent={id,key,frame:target.frame,text,payload,files:[...selected],native,command,host:target.host,thread:chat.thread,draftRevision:draftVersions.get(key)||0,baseline:failedBridge?failedBridge.baseline:startCursor+messages.length-1,sendKey:id,state:'sending'};
+      const sent={id,key,frame:target.frame,text,payload,files:[...selected],native,command,host:target.host,thread:chat?.thread,draftRevision:draftVersions.get(key)||0,baseline:failedBridge?failedBridge.baseline:startCursor+messages.length-1,sendKey:id,state:'sending'};
       if(failedBridge)items[items.indexOf(failedBridge)]=sent;else items.push(sent);
       outgoing.set(key,items);pendingSends.set(key,sent);insert.disabled=true;paintFiles();sendStatus('');paint();
       if(native){
@@ -529,8 +533,7 @@
       chat=target?.chatId?{id:target.chatId,agent:target.agent,title:target.title}:null;
       if(target&&chat&&handoverDrafts.has(target.key)){drafts.set(identity(target),handoverDrafts.get(target.key));handoverDrafts.delete(target.key);}
       const cached=conversations.get(identity(target));if(cached){({chat,messages,startCursor,tailCursor,nextCursor,streamSupported}=cached);loaded=true;}
-      updateActivity();
-      form.hidden=!chat;actions.hidden=true;
+      updateActivity();actions.hidden=true;
       if(!target){setPanelHidden(true);viewport();return;}draft.value=drafts.get(identity(target))||'';
       setPanelHidden(!open);paintFiles();viewport();
       status(chat?'Loading conversation…':unboundNotice(),loaded);
