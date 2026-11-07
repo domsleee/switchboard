@@ -9,14 +9,14 @@
       }
     });
   }
-  window.SwitchboardConversation={install({selection,terminal,modeChanged=()=>{},viewed=()=>{}}){
+  window.SwitchboardConversation={install({selection,terminal,modeChanged=()=>{},viewed=()=>{},switchModel=null}){
     const root=document.getElementById('terminals'),drafts=new Map(),attachments=new Map(),retryKeys=new Map();
     const mobile=matchMedia('(max-width:700px), (pointer:coarse) and (max-width:1000px)').matches;
     const modeKey=mobile?'switchboard-mobile-view-mode':'switchboard-view-mode';
     let savedMode;try{savedMode=localStorage.getItem(modeKey);}catch{}
     let target=null,open=savedMode? savedMode==='conversation':mobile,generation=0,startCursor=0,tailCursor=0,nextCursor=null,messages=[],loading=false,loaded=false,lastPaint=null,modeRevision=0,navigationRevision=0;
     const outgoing=new Map(),consumedTranscript=new Map(),pendingSends=new Map(),startups=new Map(),draftVersions=new Map();
-    const conversations=new Map();
+    const conversations=new Map(),handoverDrafts=new Map();
     let stream=null,streamReady=false,streamSupported=false,streamPages=[],restorePosition=null;
     async function prepare(){
       if(!open||document.hidden||!target||target.agent!=='codex'||!target.session||!Number.isInteger(target.tab))return;
@@ -46,7 +46,7 @@
     const panel=el('section',undefined,'conversation-panel');
     // CSS keeps a hidden panel laid out (see conversation.css), so hide it from assistive technology here.
     const setPanelHidden=value=>{panel.hidden=value;panel.setAttribute('aria-hidden',String(value));};setPanelHidden(true);panel.tabIndex=-1;panel.setAttribute('aria-label','Agent conversation');
-    const header=el('header'),heading=el('div',undefined,'conversation-heading'),title=el('strong'),model=el('span',undefined,'conversation-model'),activity=el('span',undefined,'conversation-activity'),terminalAction=el('button','Open Terminal','conversation-terminal-action');model.title='Last reported model';activity.setAttribute('role','status');terminalAction.type='button';terminalAction.hidden=true;terminalAction.onclick=()=>show(false);heading.append(title);header.append(heading,activity,terminalAction);
+    const header=el('header'),heading=el('div',undefined,'conversation-heading'),title=el('strong'),model=el(switchModel?'button':'span',undefined,'conversation-model'),activity=el('span',undefined,'conversation-activity'),terminalAction=el('button','Open Terminal','conversation-terminal-action');model.title=switchModel?'Switch between Claude and Codex with context':'Last reported model';if(switchModel){model.type='button';model.setAttribute('aria-label','Switch model with context');model.onclick=()=>switchModel(target);}activity.setAttribute('role','status');terminalAction.type='button';terminalAction.hidden=true;terminalAction.onclick=()=>show(false);heading.append(title);header.append(heading,activity,terminalAction);
     const notice=el('p','Loading this terminal’s conversation…','conversation-notice');notice.setAttribute('role','status');
     const list=el('div',undefined,'conversation-messages'),older=el('button','Load older messages'),refresh=el('button','↻'),latest=el('button','↓');refresh.setAttribute('aria-label','Refresh');refresh.title='Refresh conversation';latest.setAttribute('aria-label','Scroll to bottom');latest.title='Scroll to bottom';older.hidden=true;
     const working=el('div',undefined,'conversation-working');working.append(el('span'),el('span'),el('span'));working.hidden=true;working.setAttribute('aria-hidden','true');
@@ -74,6 +74,7 @@
     function updateActivity(){
       const state=target?.state,label=state==='working'?'Working…':state==='approval'?'Approval needed':state==='input'?'Input needed':state==='waiting'?'Waiting on an agent':state==='ready'?'Ready':'';
       const name=chat||target?.agent?agentLabel():'';if(model.textContent!==name)model.textContent=name;
+      if(switchModel)model.disabled=!target?.switchAvailable||!chat||!!pendingFor()||!!(outgoing.get(identity(target))||[]).length||!!(attachments.get(identity(target))||[]).length;
       if(activity.textContent!==label)activity.textContent=label;
       activity.classList.toggle('working',state==='working');
       const follow=nearBottom();working.hidden=state!=='working'||!chat;
@@ -251,6 +252,7 @@
         remove.onclick=()=>{attachments.set(identity(target),fileList().filter(file=>file!==item));if(item.preview)URL.revokeObjectURL(item.preview);paintFiles();};chip.append(remove);files.append(chip);
       }
       attach.disabled=insert.disabled=!!pendingFor();sizeDraft();if(follow){list.scrollTop=list.scrollHeight;updateLatest();}
+      if(switchModel)updateActivity();
     }
     let pickerTarget=null;
     attach.onclick=()=>{pickerTarget=target;picker.click();};
@@ -360,6 +362,7 @@
       window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();
       stopStream();streamSupported=false;restorePosition=null;target=current;loadRequest?.abort();lastFailure=null;lastDiagnostic='';newOutput=false;sendStatus('');generation++;loaded=false;lastPaint=null;busy(false);messages=[];startCursor=tailCursor=0;nextCursor=null;following=true;readingAnchor=null;for(const entry of [...rendered.values(),...renderedOutgoing.values()])contentResize?.unobserve(entry.node);rendered.clear();renderedOutgoing.clear();list.replaceChildren(older,working);older.hidden=true;historyStatus.hidden=true;latest.hidden=refresh.hidden=true;
       chat=target?.chatId?{id:target.chatId,agent:target.agent,title:target.title}:null;
+      if(target&&chat&&handoverDrafts.has(target.key)){drafts.set(identity(target),handoverDrafts.get(target.key));handoverDrafts.delete(target.key);}
       const cached=conversations.get(identity(target));if(cached){({chat,messages,startCursor,tailCursor,nextCursor,streamSupported}=cached);loaded=true;}
       updateActivity();
       form.hidden=!chat;actions.hidden=true;
@@ -374,6 +377,14 @@
     window.addEventListener('focus',()=>{if(open&&!document.hidden)load();});
     window.addEventListener('pagehide',()=>{stopStream();loadRequest?.abort();});
     window.SwitchboardConversation.hasUnsentWork=()=>!!pendingSends.size||[...outgoing.values()].some(items=>items.length)||!!draft.value||[...drafts.values()].some(Boolean)||[...attachments.values()].some(files=>files.length);
+    const handoverKey=source=>JSON.stringify([JSON.stringify([source.host,source.target.session,source.target.pane_id]),source.chatId]);
+    window.SwitchboardConversation.canHandover=source=>{const key=handoverKey(source);return !pendingFor(key)&&!(outgoing.get(key)||[]).length&&!(attachments.get(key)||[]).length;};
+    window.SwitchboardConversation.handoverDraft=source=>identity(target)===handoverKey(source)?draft.value:drafts.get(handoverKey(source))||'';
+    window.SwitchboardConversation.handoverSent=(source,text,pane)=>{
+      const key=handoverKey(source),original=identity(target)===key?draft.value:drafts.get(key)||'',next=JSON.stringify([source.host,source.target.session,pane]);
+      if(identity(target)===key)draft.value='';drafts.delete(key);
+      if(original&&original!==text){if(target?.key===next&&!draft.value){draft.value=original;drafts.set(identity(target),original);}else handoverDrafts.set(next,original);}
+    };
     window.SwitchboardConversation.wantsConversation=()=>open;window.SwitchboardConversation.update=update;window.SwitchboardConversation.isOpen=()=>open&&!panel.hidden;window.SwitchboardConversation.focus=focusSurface;window.SwitchboardConversation.showTerminal=()=>show(false);update();
   }};
 })();
