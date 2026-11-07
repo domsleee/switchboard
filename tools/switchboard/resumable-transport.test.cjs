@@ -58,3 +58,55 @@ test('blackholed transport reconnects without waiting for a close event and stop
  f.timers.shift()();f.advance(121000);f.intervals.at(-1)();
  assert.equal(f.client.stopped,true);assert.equal(f.window.__zjPendingTerminalInput[0].data,'retained');
 });
+
+test('Conversation retirement drains input across reconnect and waits for confirmed retirement',async()=>{
+ const f=fixture();f.client.terminal.send('queued');f.sockets[0].drop();
+ const retired=f.client.retire();let completed=false;retired.then(()=>completed=true);
+ f.timers.shift()();const next=f.sockets[1];next.message({type:'hello',generation:2,input_ack:0});
+ assert.equal(next.sent[0].input.data,'queued');assert.equal(next.sent.some(m=>m.type==='retire'),false);
+ next.message({type:'ack',input_ack:1});f.client.checkRetirement();
+ assert.equal(next.sent.at(-1).type,'retire');assert.equal(completed,false);
+ // Losing the receipt must reconnect to the same owner, not create a replacement.
+ next.drop();f.timers.shift()();f.sockets[2].message({type:'retired'});
+ assert.equal(await retired,true);assert.equal(f.client.stopped,true);assert.equal(f.client.pending.length,0);
+});
+test('returning to Terminal cancels retirement while preserving buffered input',async()=>{
+ const f=fixture();f.sockets[0].drop();f.client.terminal.send('kept');let wanted=true;
+ const retired=f.client.retire(()=>wanted);wanted=false;f.client.checkRetirement();
+ assert.equal(await retired,false);assert.equal(f.client.stopped,false);assert.equal(f.client.pending[0].data,'kept');
+});
+test('unconfirmed retirement keeps the owner and its pending input for recovery',async()=>{
+ const f=fixture();f.sockets[0].drop();f.client.terminal.send('kept');
+ const retired=f.client.retire();const rejected=assert.rejects(retired,/pending input is kept/);
+ f.advance(120001);f.client.checkRetirement();await rejected;
+ assert.equal(f.client.stopped,false);assert.equal(f.client.pending[0].data,'kept');
+});
+
+test('a parser retirement refusal leaves the live stream available to finish input',async()=>{
+ const f=fixture();const retired=f.client.retire();const rejected=assert.rejects(retired,/incomplete/);
+ f.sockets[0].message({type:'retirement_rejected',message:'incomplete input'});await rejected;
+ f.client.terminal.send('finish');assert.equal(f.client.stopped,false);assert.equal(f.sockets[0].sent.at(-1).input.data,'finish');
+});
+
+ test('returning after retirement was sent waits for confirmation instead of exposing an unusable owner',async()=>{
+ const f=fixture();let wanted=true;const retired=f.client.retire(()=>wanted);wanted=false;f.client.checkRetirement();
+ assert.equal(f.client.retiring,true);assert.equal(f.client.pending.length,0);
+ f.sockets[0].message({type:'retired'});assert.equal(await retired,true);
+});
+test('a retirement timeout preserves the owner and recovers a lost parser refusal on explicit retry',async()=>{
+ const f=fixture();const retired=f.client.retire();
+ const rejected=assert.rejects(retired,e=>e.unresolvedRetirement===true);
+ f.advance(120001);f.client.checkRetirement();await rejected;
+ assert.equal(f.client.stopped,false);assert.equal(f.client.retirementPaused,true);
+ const retry=f.client.retire(()=>false);const refusal=assert.rejects(retry,/incomplete/);
+ f.sockets[1].message({type:'hello',generation:2,input_ack:0});
+ assert.equal(f.sockets[1].sent.at(-1).type,'retire');
+ f.sockets[1].message({type:'retirement_rejected',message:'incomplete sequence'});await refusal;
+ f.client.terminal.send('finish');assert.equal(f.sockets[1].sent.at(-1).input.data,'finish');
+});
+test('retry after a retirement timeout accepts the retained receipt without creating a viewer',async()=>{
+ const f=fixture();const retired=f.client.retire();const rejected=assert.rejects(retired,/unconfirmed/);
+ f.advance(120001);f.client.checkRetirement();await rejected;
+ const retry=f.client.retire(()=>false);f.sockets[1].message({type:'retired'});
+ assert.equal(await retry,true);assert.equal(f.client.stopped,true);
+});

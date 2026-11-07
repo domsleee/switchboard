@@ -48,6 +48,21 @@ test('Conversation never attaches a terminal, including initial mobile load and 
   assert.equal(connections.length,1,'Terminal attaches and focuses the selected catalog pane');
   await page.evaluate(()=>[...sessions.values()][0].frame.contentWindow.selectThird());
   await page.waitForFunction(()=>[...sessions.values()][0].state?.active_pane?.pane_id===3);
+  for(const outcome of ['cancel','refuse']){
+   await page.evaluate(()=>{
+    const w=[...sessions.values()][0].frame.contentWindow;
+    w.__zjSuspendTerminal=()=>new Promise((resolve,reject)=>{w.finishRetirement=()=>resolve(false);w.refuseRetirement=()=>reject(new Error('incomplete sequence'));});
+   });
+   await page.getByRole('button',{name:'Conversation',exact:true}).click();
+   await page.evaluate(()=>activate(allTabs().find(t=>t.tab.id===1)));
+   await page.getByRole('button',{name:'Terminal',exact:true}).click();
+   assert.equal(await page.evaluate(()=>[...sessions.values()][0].frame.inert),true);
+   await page.evaluate(outcome=>{const w=[...sessions.values()][0].frame.contentWindow;w[outcome==='cancel'?'finishRetirement':'refuseRetirement']();},outcome);
+   await page.waitForFunction(()=>![...sessions.values()][0].frame.inert);
+   assert.equal(await page.evaluate(()=>allTabs().find(t=>t.key===selected).tab.id),2,'Selected tab must match the confirmed native pane before typing resumes');
+   await page.evaluate(()=>{const e=[...sessions.values()][0];delete e.frame.contentWindow.__zjSuspendTerminal;activate(allTabs().find(t=>t.tab.id===2));e.frame.contentWindow.selectThird();});
+   await page.waitForFunction(()=>[...sessions.values()][0].state?.active_pane?.pane_id===3);
+  }
   await page.getByRole('button',{name:'Conversation',exact:true}).click();
   await page.waitForFunction(()=>[...sessions.values()].every(e=>e.suspended&&e.frame.getAttribute('src')==='about:blank'&&!e.state));
   await page.getByLabel('Reply draft').fill('Reply to the focused split pane');
