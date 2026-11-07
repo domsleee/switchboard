@@ -464,19 +464,7 @@ fn peer_failure(status: StatusCode) -> &'static str {
     }
 }
 
-pub(super) async fn execute_host(
-    host: &Host,
-    session: &str,
-    action: ControlAction,
-) -> Result<(), Error> {
-    validate_session(session)?;
-    // Only local engines reach here: configured hosts are local and peers use their gateway.
-    let names = sessions(host)
-        .await
-        .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot validate session"))?;
-    if !names.iter().any(|name| name == session) {
-        return Err((StatusCode::NOT_FOUND, "Session is unavailable"));
-    }
+pub(super) async fn require_writable_host(host: &Host) -> Result<(), Error> {
     let cookie = host
         .cookie
         .lock()
@@ -499,6 +487,23 @@ pub(super) async fn execute_host(
             "Writable host authentication is required",
         ));
     }
+    Ok(())
+}
+
+pub(super) async fn execute_host(
+    host: &Host,
+    session: &str,
+    action: ControlAction,
+) -> Result<(), Error> {
+    validate_session(session)?;
+    // Only local engines reach here: configured hosts are local and peers use their gateway.
+    let names = sessions(host)
+        .await
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot validate session"))?;
+    if !names.iter().any(|name| name == session) {
+        return Err((StatusCode::NOT_FOUND, "Session is unavailable"));
+    }
+    require_writable_host(host).await?;
     let close = !matches!(action, ControlAction::Escape(_));
     let panes = list_panes(host, session, close, Duration::from_secs(5))
         .await

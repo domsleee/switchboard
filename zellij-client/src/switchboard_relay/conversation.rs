@@ -72,6 +72,7 @@ pub(super) async fn local(host: &Host, target: Target) -> Result<Json<Value>, Er
     {
         return Err((StatusCode::CONFLICT, "Session is not shared"));
     }
+    control::require_writable_host(host).await?;
     let panes = control::list_panes(host, &target.session, true, Duration::from_secs(5))
         .await
         .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot read terminal panes"))?;
@@ -227,6 +228,46 @@ esac
             tab_id: 8,
         };
         std::fs::write(&screen, REVIEW).unwrap();
+        assert_eq!(
+            local(&host, target()).await.unwrap_err().0,
+            StatusCode::FORBIDDEN
+        );
+        assert!(
+            !actions.exists(),
+            "An invalid host token must not write to the pane"
+        );
+        use zellij_utils::web_authentication_tokens::{
+            create_session_token, create_token, revoke_token,
+        };
+        struct Tokens(Vec<String>);
+        impl Drop for Tokens {
+            fn drop(&mut self) {
+                for name in &self.0 {
+                    let _ = revoke_token(name);
+                }
+            }
+        }
+        let mut tokens = Tokens(Vec::new());
+        for read_only in [true, false] {
+            let (auth, name) = create_token(
+                Some(format!("conversation-test-{}", uuid::Uuid::new_v4())),
+                read_only,
+            )
+            .unwrap();
+            tokens.0.push(name);
+            let session = create_session_token(&auth, false).unwrap();
+            *host.cookie.lock().await = Some(format!("session_token={session}"));
+            if read_only {
+                assert_eq!(
+                    local(&host, target()).await.unwrap_err().0,
+                    StatusCode::FORBIDDEN
+                );
+                assert!(
+                    !actions.exists(),
+                    "A view-only host must not confirm hook trust"
+                );
+            }
+        }
         assert!(local(
             &host,
             Target {
