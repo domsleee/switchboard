@@ -18,6 +18,8 @@ try {
     Invoke-Expression $startFunction.Extent.Text
     $updateFunction = $ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Check-ForUpdates'},$true)
     Invoke-Expression $updateFunction.Extent.Text
+    $stopFunction = $ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Stop-StaleRelay'},$true)
+    Invoke-Expression $stopFunction.Extent.Text
     $old = Join-Path $root 'old.exe'; [IO.File]::WriteAllText($old,'old')
     $ReleaseDirectory = Join-Path $root 'releases'
     $oldPath = Initialize-SwitchboardReleaseStore $old $ReleaseDirectory
@@ -53,13 +55,23 @@ try {
                 -ArgumentList '-NoLogo -NoProfile -NonInteractive -Command "Start-Sleep -Milliseconds 750; exit 7"' `
                 -WindowStyle Hidden -PassThru -RedirectStandardOutput $RedirectStandardOutput -RedirectStandardError $RedirectStandardError
         }
-        $child = [pscustomobject]@{HasExited=$script:relayExits}
+        $child = [pscustomobject]@{HasExited=$script:relayExits; Id=9000 + $script:starts.Count}
         $child | Add-Member ScriptMethod WaitForExit { param($milliseconds) $this.HasExited }
         $child
     }
-    function Stop-Process {
+    $script:stopped = @(); $script:listeners = @(); $script:processes = @()
+    function Stop-Process([int]$Id, [switch]$Force, $ErrorAction) {
         $script:killCalls++
-        throw 'Tray fixture may not stop any process'
+        $script:stopped += $Id
+    }
+    function Wait-Process { }
+    function Get-NetTCPConnection([int]$LocalPort, [string]$State, $ErrorAction) {
+        Assert ($LocalPort -eq $RelayPort) 'Tray looked for the relay on the wrong port'
+        $script:listeners | ForEach-Object { [pscustomobject]@{OwningProcess=$_} }
+    }
+    function Get-CimInstance([string]$ClassName, [string]$Filter) {
+        if ($Filter -match '^ProcessId=(\d+)$') { $script:processes | Where-Object { $_.ProcessId -eq [int]$Matches[1] } }
+        elseif ($Filter -match '^ParentProcessId=(\d+)$') { $script:processes | Where-Object { $_.ParentProcessId -eq [int]$Matches[1] } }
     }
     Start-Servers
     Assert ($status.Text -eq 'Switchboard running') 'Healthy services were not identified'
@@ -130,6 +142,25 @@ try {
     Start-Servers
     Assert ($status.Text -eq 'Switchboard unavailable (see logs)' -and $script:starts.Count -eq $startsBeforeCorrupt) 'Corrupt release selection launched or claimed a service'
     Assert ($script:killCalls -eq 0) 'Tray tried to stop a process during recovery or release selection'
+
+    # A hung relay this installation started elsewhere (e.g. by an update) keeps
+    # the port; after four failed checks the tray stops it and its subscriber.
+    $ReleaseDirectory = Join-Path $root 'releases2'; $null = Initialize-SwitchboardReleaseStore $old $ReleaseDirectory
+    $script:selectedHash = $null; $script:relayFailures = 0; $script:relay = $null
+    $script:health = 'offline'; $script:relayExits = $true
+    $script:listeners = @(4242, 5151)
+    $script:processes = @(
+        [pscustomobject]@{ProcessId=4242; ParentProcessId=1; Name='zellij.exe'; CommandLine=('"C:\r\zellij.exe" serve --port 8123 --host-config "' + $relayConfig + '"')},
+        [pscustomobject]@{ProcessId=4343; ParentProcessId=4242; Name='zellij.exe'; CommandLine='"C:\r\zellij.exe" -s main subscribe --format json'},
+        [pscustomobject]@{ProcessId=5151; ParentProcessId=1; Name='other.exe'; CommandLine=('other.exe serve --host-config "' + $relayConfig + '"')})
+    1..3 | ForEach-Object { Start-Servers }
+    Assert ($script:killCalls -eq 0) 'Relay was stopped before it had been unhealthy for four checks'
+    Start-Servers
+    Assert (($script:stopped -join ',') -eq '4242,4343') 'Hung relay and its subscriber were not stopped, or another program was'
+    Assert ((Get-Content $log -Raw) -match 'Stopping unresponsive relay: 4242') 'Stopping the relay was not logged'
+    $stoppedCount = $script:killCalls; $script:health = 'rust'
+    1..5 | ForEach-Object { Start-Servers }
+    Assert ($script:killCalls -eq $stoppedCount -and $status.Text -eq 'Switchboard running') 'A healthy relay was stopped'
     Write-Output "PASS: $checks tray supervision checks; actual tray function/release files, simulated services. No startup configuration was changed."
 } finally {
     if ($script:updater) {
