@@ -1198,7 +1198,16 @@ window.addEventListener('message',event=>{
     recordTerminalDiagnostic(entry,'clipboard',event.data.diagnostic);
   }else if(event.data?.type==='zellij-clipboard'){
     setStatus(event.data.ok?'Copied to this browser.':event.data.error||'Copy failed; use the terminal’s clipboard panel.',!event.data.ok);
-  }else if(event.data?.type==='zellij-disconnected'){entry.disconnected=true;entry.needsFocus=true;render();}
+  }else if(event.data?.type==='zellij-disconnected'){
+    entry.disconnected=true;entry.needsFocus=true;
+    // A hidden viewer's reconnect would attach again, sized while hidden. Stop it;
+    // Terminal reconnects when it is shown.
+    if(globalThis.SwitchboardConversation?.wantsConversation?.()){
+      if(entry.state?.active_pane)entry.resumePane=entry.state.active_pane;
+      entry.state=null;syncTerminalConnection(entry);
+    }
+    render();
+  }
 });
 $('artifact-back').onclick=()=>{const current=allTabs().find(item=>item.key===selected);if(current)focus(current);else $('artifact-preview').hidden=true;};
 // The open preview owns one history entry. Back closes the preview; closing it any other way drops the entry.

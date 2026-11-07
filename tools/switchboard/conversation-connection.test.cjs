@@ -162,9 +162,16 @@ test('Desktop keeps a connected terminal through Conversation so switching back 
   }
   assert.equal(connections.length,1,'Switching modes never reloads a connected desktop viewer');
   await page.getByRole('button',{name:'Conversation',exact:true}).click();
+  await page.evaluate(()=>{const w=[...sessions.values()][0].frame.contentWindow;w.eval("parent.postMessage({type:'zellij-disconnected'},location.origin)");});
+  await page.waitForFunction(()=>{const e=[...sessions.values()][0];return e.suspended&&e.frame.getAttribute('src')==='about:blank';});
+  assert.equal(connections.length,1,'A viewer that drops during Conversation stays disconnected instead of reattaching hidden');
+  await page.getByRole('button',{name:'Terminal',exact:true}).click();
+  await page.waitForFunction(()=>[...sessions.values()][0].state);
+  assert.equal(connections.length,2,'Terminal reconnects a dropped viewer when shown');
+  await page.getByRole('button',{name:'Conversation',exact:true}).click();
   await page.setViewportSize({width:390,height:844});
   await page.waitForFunction(()=>[...sessions.values()].every(e=>e.suspended&&e.frame.getAttribute('src')==='about:blank'));
-  assert.equal(connections.length,1,'A phone-width Conversation disconnects and never attaches');
+  assert.equal(connections.length,2,'A phone-width Conversation disconnects and never attaches');
   assert.deepEqual(errors,[]);
  }finally{await browser.close();}
 });
