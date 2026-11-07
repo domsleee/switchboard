@@ -355,6 +355,85 @@ fn content(v: &Value) -> String {
         })
         .unwrap_or_default()
 }
+/// Split text that is only `<name …>inner</name>` elements into (name, inner) pairs.
+fn tags(text: &str) -> Option<Vec<(&str, &str)>> {
+    let mut rest = text.trim();
+    let mut found = Vec::new();
+    while !rest.is_empty() {
+        let open = rest.strip_prefix('<')?;
+        let (head, after) = open.split_once('>')?;
+        let name = head.split(' ').next().filter(|name| {
+            !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        })?;
+        let (inner, after) = after.split_once(&format!("</{name}>"))?;
+        found.push((name, inner.trim()));
+        rest = after.trim_start();
+    }
+    (!found.is_empty()).then_some(found)
+}
+// Claude Code records slash commands, `!` commands, their output and interrupts
+// as user records without a prompt source. Some(display) replaces the text;
+// an empty display hides the record.
+fn claude_command(text: &str) -> Option<String> {
+    let text = text.trim();
+    // Prefixes of Claude Code's interruption notices (`ERe` in its 2.1.319 bundle).
+    if [
+        "[Request interrupted",
+        "[Agent call interrupted",
+        "[Tool call ",
+        "The user doesn't want to take this action right now.",
+    ]
+    .iter()
+    .any(|prefix| text.starts_with(prefix))
+        && text.ends_with([']', '.'])
+    {
+        return Some(String::new());
+    }
+    let tags = tags(text)?;
+    let only = |names: &[&str]| tags.iter().all(|(name, _)| names.contains(name));
+    let get = |key| tags.iter().find(|(name, _)| *name == key).map(|(_, v)| *v);
+    if only(&["command-name", "command-message", "command-args"]) {
+        let name = get("command-name")?;
+        return Some(
+            format!("{name} {}", get("command-args").unwrap_or(""))
+                .trim_end()
+                .into(),
+        );
+    }
+    if only(&["bash-input"]) {
+        return Some(format!("!{}", get("bash-input")?));
+    }
+    only(&[
+        "local-command-stdout",
+        "local-command-stderr",
+        "bash-stdout",
+        "bash-stderr",
+    ])
+    .then(String::new)
+}
+// Codex records the user's answers to its questions as a user message holding JSON.
+fn codex_question_reply(text: &str) -> Option<String> {
+    let [("send_user_message_question_reply", inner)] = tags(text)?[..] else {
+        return None;
+    };
+    let answers = serde_json::from_str::<Vec<Value>>(inner).ok()?;
+    Some(
+        answers
+            .iter()
+            .map(|a| {
+                let answer = a["answer"].as_str().unwrap_or_default();
+                match a["question"].as_str().filter(|q| !q.is_empty()) {
+                    Some(question) => format!("> {question}\n\n{answer}"),
+                    None => answer.into(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    )
+}
 impl Chat {
     fn incomplete(&mut self, reason: &'static str) {
         self.partial = true;
@@ -547,22 +626,35 @@ impl Chat {
                 if let Some(title) = v["customTitle"].as_str() {
                     self.title = clip(title, 120);
                 }
-                // Meta records are Claude Code's own additions (skill bodies, an
-                // `[Image: source: …]` line per pasted image), not what the user typed.
-                // Background task notifications are user records with a system
-                // prompt source, without isMeta. Use provenance so pasted XML stays visible.
-                let system_prompt = v["type"] == "user" && v["promptSource"] == "system";
-                // A compaction summary is a user record Claude Code writes itself.
-                if matches!(v["type"].as_str(), Some("user" | "assistant"))
-                    && v["isMeta"] != true
-                    && v["isCompactSummary"] != true
-                    && !system_prompt
-                {
-                    self.push_parts(
-                        v["type"].as_str().unwrap(),
-                        &v["message"]["content"],
-                        v["timestamp"].clone(),
-                    );
+                // Claude Code's own test for "the human typed this" (`Q5`/`Cl` in its
+                // 2.1.319 bundle): no meta, compaction or transcript-only flag, and an
+                // origin that is absent (older records) or human. Task notifications,
+                // peer messages, skill bodies and summaries all fail it, while text a
+                // human pastes still passes because it carries the human origin.
+                let origin = match &v["origin"]["kind"] {
+                    Value::Null if v["commandMode"] == "task-notification" => {
+                        Some("task-notification")
+                    },
+                    kind => kind.as_str(),
+                };
+                let human = v["type"] != "user"
+                    || (v["isMeta"] != true
+                        && v["isCompactSummary"] != true
+                        && v["isVisibleInTranscriptOnly"] != true
+                        && origin.is_none_or(|kind| kind == "human"));
+                let command = (v["type"] == "user" && v["promptSource"].is_null())
+                    .then(|| claude_command(&content(&v["message"]["content"])))
+                    .flatten();
+                if matches!(v["type"].as_str(), Some("user" | "assistant")) && human {
+                    if let Some(command) = command {
+                        self.push("user", command, v["timestamp"].clone());
+                    } else {
+                        self.push_parts(
+                            v["type"].as_str().unwrap(),
+                            &v["message"]["content"],
+                            v["timestamp"].clone(),
+                        );
+                    }
                 }
                 // Claude marks no phase. Text followed by a tool call is a progress
                 // note, which Codex reports as commentary; the turn's last text is the answer.
@@ -593,24 +685,72 @@ impl Chat {
                         .filter(|effort| !effort.is_empty())
                         .map(|effort| clip(effort, 32));
                 }
-                if v["type"] == "session_meta" {
+                // A forked sub-agent copies its parent's session_meta after its own.
+                if v["type"] == "session_meta" && self.session_id.is_empty() {
                     self.session_id = p["id"].as_str().unwrap_or_default().into();
                     self.project = p["cwd"].as_str().unwrap_or_default().into();
                 }
-                // event_msg duplicates these messages. Read only canonical response items.
-                if v["type"] == "response_item" && p["type"] == "message" {
-                    let before = self.messages.len();
-                    self.push_parts(
-                        p["role"].as_str().unwrap_or_default(),
-                        &p["content"],
-                        v["timestamp"].clone(),
-                    );
-                    if self.messages.len() > before
-                        && p["role"] == "assistant"
-                        && matches!(p["phase"].as_str(), Some("commentary" | "final"))
+                // Read what Codex's own history shows (app-server-protocol thread_history.rs):
+                // user_message/agent_message events in legacy rollouts, completed
+                // UserMessage/AgentMessage items in paginated ones. Codex leaves injected
+                // context, compaction summaries and a fork's copied history out of both;
+                // response_item messages are model input and include all of them.
+                let item = &p["item"];
+                let (role, parts, phase) = match (v["type"].as_str(), p["type"].as_str()) {
+                    (Some("event_msg"), Some("user_message")) => {
+                        let mut parts = vec![json!({"type":"text","text":p["message"]})];
+                        for url in p["images"].as_array().into_iter().flatten() {
+                            parts.push(json!({"type":"input_image","image_url":url}));
+                        }
+                        for path in p["local_images"].as_array().into_iter().flatten() {
+                            parts.push(json!({"type":"local_image","path":path}));
+                        }
+                        ("user", Value::Array(parts), &Value::Null)
+                    },
+                    (Some("event_msg"), Some("agent_message")) => (
+                        "assistant",
+                        json!([{"type":"text","text":p["message"]}]),
+                        &p["phase"],
+                    ),
+                    (Some("event_msg"), Some("item_completed"))
+                        if item["type"] == "UserMessage" =>
                     {
-                        self.messages.last_mut().unwrap()["phase"] = p["phase"].clone();
-                    }
+                        ("user", item["content"].clone(), &Value::Null)
+                    },
+                    // AgentMessage content parts are typed "Text".
+                    (Some("event_msg"), Some("item_completed"))
+                        if item["type"] == "AgentMessage" =>
+                    {
+                        let text = item["content"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|part| part["text"].as_str())
+                            .collect::<String>();
+                        (
+                            "assistant",
+                            json!([{"type":"text","text":text}]),
+                            &item["phase"],
+                        )
+                    },
+                    _ => return,
+                };
+                let parts = match parts.as_array() {
+                    Some(list) if role == "user" => list
+                        .iter()
+                        .map(
+                            |part| match part["text"].as_str().and_then(codex_question_reply) {
+                                Some(text) => json!({"type":"text","text":text}),
+                                None => part.clone(),
+                            },
+                        )
+                        .collect(),
+                    _ => parts,
+                };
+                let before = self.messages.len();
+                self.push_parts(role, &parts, v["timestamp"].clone());
+                if self.messages.len() > before && phase == "commentary" {
+                    self.messages.last_mut().unwrap()["phase"] = json!("commentary");
                 }
             },
             "copilot" => {
@@ -889,52 +1029,80 @@ fn markdown_events(source: &str) -> Vec<Value> {
 // read them. Keep the raw text for delivery reconciliation, but display those
 // files as attachments in history too. Only recognize our upload directory.
 fn uploaded_attachments(text: &str) -> Option<(String, Vec<Value>)> {
-    let normalized = text.replace("\r\n", "\n");
-    // New tab sends Claude "Attached images:"; the composer sends "Attached files:".
-    let (body, files) = ["Attached files:\n", "Attached images:\n"]
+    let mut body = text.replace("\r\n", "\n");
+    let mut attachments = Vec::new();
+    // New tab sends Claude "Attached files:" then "Attached images:"; the composer sends "Attached files:".
+    // Take the last suffix first.
+    while let Some((rest, files)) = ["Attached files:\n", "Attached images:\n"]
         .into_iter()
-        .find_map(|header| {
-            normalized
-                .rsplit_once(&format!("\n\n{header}"))
-                .or_else(|| normalized.strip_prefix(header).map(|files| ("", files)))
-        })?;
-    let lines = files.lines().collect::<Vec<_>>();
-    if lines.is_empty() || lines.len() > 8 {
+        .filter_map(|header| {
+            body.rsplit_once(&format!("\n\n{header}"))
+                .or_else(|| body.strip_prefix(header).map(|files| ("", files)))
+        })
+        .max_by_key(|(rest, _)| rest.len())
+    {
+        let lines = files.lines().collect::<Vec<_>>();
+        if lines.is_empty() || lines.len() > 8 {
+            break;
+        }
+        let Some(mut found) = lines
+            .into_iter()
+            .map(uploaded_file)
+            .collect::<Option<Vec<_>>>()
+        else {
+            break;
+        };
+        found.append(&mut attachments);
+        attachments = found;
+        body = rest.into();
+    }
+    // A New tab handover (handover.js `prompt`) wraps the request in instructions.
+    if let Some((path, request)) = body
+        .strip_prefix("Read the context handover file at ")
+        .and_then(|rest| rest.split_once(" before acting. "))
+        .and_then(|(path, rest)| Some((path, rest.split_once("\n\nCurrent user request:\n")?.1)))
+    {
+        if let Some(file) = serde_json::from_str::<String>(path)
+            .ok()
+            .as_deref()
+            .and_then(uploaded_file)
+        {
+            attachments.insert(0, file);
+            body = request.into();
+        }
+    }
+    (!attachments.is_empty()).then_some((body, attachments))
+}
+fn uploaded_file(path: &str) -> Option<Value> {
+    if path.len() > 4096 || path.chars().any(char::is_control) {
         return None;
     }
-    let mut attachments = Vec::new();
-    for path in lines {
-        if path.len() > 4096 || path.chars().any(char::is_control) {
-            return None;
-        }
-        let normalized = path.replace('\\', "/");
-        let absolute = normalized.starts_with('/')
-            || normalized.starts_with("~/")
-            || (normalized
-                .as_bytes()
-                .first()
-                .is_some_and(u8::is_ascii_alphabetic)
-                && normalized.as_bytes().get(1..3) == Some(b":/"));
-        let (directory, name) = normalized.rsplit_once('/')?;
-        let (root, id) = directory.rsplit_once('/')?;
-        if !absolute
-            || normalized.starts_with("//")
-            || !root.ends_with("/.local/share/switchboard/attachments")
-            || id.len() != 36
-            || uuid::Uuid::parse_str(id).is_err()
-            || matches!(name, "" | "." | "..")
-        {
-            return None;
-        }
-        let extension = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-        let kind = match extension.as_str() {
-            "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "svg" => "image",
-            "mp4" | "webm" | "mov" | "m4v" => "video",
-            _ => "file",
-        };
-        attachments.push(json!({"kind":kind,"name":clip(name,120),"url":path}));
+    let normalized = path.replace('\\', "/");
+    let absolute = normalized.starts_with('/')
+        || normalized.starts_with("~/")
+        || (normalized
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphabetic)
+            && normalized.as_bytes().get(1..3) == Some(b":/"));
+    let (directory, name) = normalized.rsplit_once('/')?;
+    let (root, id) = directory.rsplit_once('/')?;
+    if !absolute
+        || normalized.starts_with("//")
+        || !root.ends_with("/.local/share/switchboard/attachments")
+        || id.len() != 36
+        || uuid::Uuid::parse_str(id).is_err()
+        || matches!(name, "" | "." | "..")
+    {
+        return None;
     }
-    Some((body.into(), attachments))
+    let extension = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    let kind = match extension.as_str() {
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "svg" => "image",
+        "mp4" | "webm" | "mov" | "m4v" => "video",
+        _ => "file",
+    };
+    Some(json!({"kind":kind,"name":clip(name,120),"url":path}))
 }
 
 fn read_page(chat: &Chat, p: &Params) -> Value {
@@ -1527,7 +1695,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("models.jsonl");
         let context = |model: &str, effort: Value| json!({"type":"turn_context","payload":{"model":model,"effort":effort}});
-        let reply = |text: &str| json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":text}]}});
+        let reply = |text: &str| json!({"type":"event_msg","payload":{"type":"agent_message","message":text}});
         let records = [
             context("gpt-6.1-sol", json!("medium")),
             reply("First answer"),
@@ -1671,13 +1839,18 @@ mod tests {
         )
         .unwrap();
         for i in 0..50_002 {
-            writeln!(file, "{}", json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":format!("Message {i}")}]}})).unwrap();
+            writeln!(file, "{}", json!({"type":"event_msg","payload":{"type":"user_message","message":format!("Message {i}")}})).unwrap();
         }
         // A sparse, oversized tool record crosses the old 64 MiB cutoff without
         // allocating that much RAM. Valid messages on both sides remain pageable.
         file.set_len(FILE_BYTES + 128).unwrap();
         file.seek(SeekFrom::End(0)).unwrap();
-        writeln!(file, "\n{}", json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Newest reply"}]}})).unwrap();
+        writeln!(
+            file,
+            "\n{}",
+            json!({"type":"event_msg","payload":{"type":"agent_message","message":"Newest reply"}})
+        )
+        .unwrap();
         drop(file);
         let mut index = HistoryIndex::new("codex", dir.path(), &path);
         let tail = index
@@ -1844,6 +2017,151 @@ mod tests {
     }
 
     #[test]
+    fn switchboard_chats_show_only_what_the_human_typed() {
+        // Shapes copied from Claude Code 2.1.x and Codex transcripts; None means hidden.
+        let claude = |content: Value, source: Value| json!({"type":"user","promptSource":source,"message":{"role":"user","content":content}});
+        let text = |t: &str| json!([{"type":"text","text":t}]);
+        let pasted =
+            "<command-name>/model</command-name>\n<command-message>model</command-message>";
+        let cases = [
+            (claude(text("[Request interrupted by user]"), Value::Null), None),
+            (claude(text("[Request interrupted by user for tool use]"), Value::Null), None),
+            (claude(json!("<command-name>/model</command-name>\n            <command-message>model</command-message>\n            <command-args></command-args>"), Value::Null), Some("/model")),
+            (claude(json!("<command-message>dotfiles-skills:bro</command-message>\n<command-name>/dotfiles-skills:bro</command-name>\n<command-args>fix it</command-args>"), Value::Null), Some("/dotfiles-skills:bro fix it")),
+            (claude(json!("<local-command-stdout>Set model to `Fable 5.1`</local-command-stdout>"), Value::Null), None),
+            (claude(json!("<bash-input>ssh-copy-id danny@danny-pc.local</bash-input>"), Value::Null), Some("!ssh-copy-id danny@danny-pc.local")),
+            (claude(json!("<bash-stdout></bash-stdout><bash-stderr>ERROR: Host key verification failed.</bash-stderr>"), Value::Null), None),
+            // Typed and programmatic (`claude -p`, T3 Code) prompts show as written.
+            (claude(json!(pasted), json!("typed")), Some(pasted)),
+            (claude(json!("reply ok"), json!("sdk")), Some("reply ok")),
+            (claude(json!("Interrupted? [Request interrupted by user]"), Value::Null), Some("Interrupted? [Request interrupted by user]")),
+            (claude(text("[Tool call interrupted: the session ended before this call's result was recorded, so its outcome is unknown. Check whether it took effect before relying on it or running it again.]"), Value::Null), None),
+            // Claude Code's own provenance flags and origins.
+            (json!({"type":"user","isVisibleInTranscriptOnly":true,"isCompactSummary":true,"message":{"content":"This session is being continued from a previous conversation."}}), None),
+            (json!({"type":"user","isVisibleInTranscriptOnly":true,"message":{"content":"transcript only"}}), None),
+            (json!({"type":"user","origin":{"kind":"coordinator"},"message":{"content":"from the coordinator"}}), None),
+            (json!({"type":"user","origin":{"kind":"channel"},"message":{"content":"from a channel"}}), None),
+            (json!({"type":"user","commandMode":"task-notification","message":{"content":"<task-notification>old</task-notification>"}}), None),
+            (json!({"type":"user","origin":{"kind":"human"},"promptSource":"typed","message":{"content":"<task-notification>pasted</task-notification>"}}), Some("<task-notification>pasted</task-notification>")),
+        ];
+        for (record, expected) in &cases {
+            let c = chat("claude", vec![record.clone()]);
+            assert_eq!(
+                c.messages.first().map(|m| m["text"].as_str().unwrap()),
+                *expected,
+                "{record}"
+            );
+        }
+
+        // Records copied from Codex 0.167 rollouts. Only the events Codex's own history
+        // reads become messages; response_item model input never does.
+        let input = |t: &str| json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":t}]}});
+        let legacy = |t: &str| json!({"type":"event_msg","payload":{"type":"user_message","message":t,"images":[],"local_images":[]}});
+        let paginated = |content: Value| json!({"type":"event_msg","payload":{"type":"item_completed","turn_id":"t","item":{"type":"UserMessage","id":"u","content":content}}});
+        let reply = "<send_user_message_question_reply>\n[{\"answer\":\"Updates waiting for viewers\",\"question\":\"Which chat?\",\"questionItemId\":\"q\"}]\n</send_user_message_question_reply>";
+        let cases = [
+            (input("# AGENTS.md instructions for /repo\n\n<INSTRUCTIONS>\nBe brief.\n</INSTRUCTIONS>"), None),
+            (input("<environment_context>\n  <cwd>/repo</cwd>\n</environment_context>"), None),
+            (input("typed, but this copy is model input"), None),
+            (legacy("has mac updated?"), Some("has mac updated?")),
+            (paginated(json!([{"type":"text","text":"why hasnt it updated yet?","text_elements":[]}])), Some("why hasnt it updated yet?")),
+            (paginated(json!([{"type":"text","text":reply,"text_elements":[]}])), Some("> Which chat?\n\nUpdates waiting for viewers")),
+            (paginated(json!([{"type":"text","text":"it is in [Image #1]","text_elements":[]},{"type":"local_image","path":"/tmp/a.png"}])), Some("it is in [Image #1]")),
+            (json!({"type":"event_msg","payload":{"type":"user_message","message":"see this","images":["data:image/png;base64,iVBORw0KGgo="],"local_images":[]}}), Some("see this")),
+            (json!({"type":"event_msg","payload":{"type":"agent_message","message":"Checking.","phase":"commentary"}}), Some("Checking.")),
+            (json!({"type":"event_msg","payload":{"type":"item_completed","turn_id":"t","item":{"type":"AgentMessage","id":"a","phase":"final_answer","content":[{"type":"Text","text":"Done."}]}}}), Some("Done.")),
+        ];
+        for (record, expected) in &cases {
+            let c = chat("codex", vec![record.clone()]);
+            assert_eq!(
+                c.messages.first().map(|m| m["text"].as_str().unwrap()),
+                *expected,
+                "{record}"
+            );
+        }
+        assert_eq!(
+            chat("codex", vec![cases[6].0.clone()]).messages[0]["attachments"][0]["url"],
+            "/tmp/a.png"
+        );
+        assert_eq!(
+            chat("codex", vec![cases[7].0.clone()]).messages[0]["attachments"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let page = read_page(
+            &chat("codex", vec![cases[8].0.clone(), cases[9].0.clone()]),
+            &Params::default(),
+        );
+        assert_eq!(page["messages"][0]["phase"], "commentary");
+
+        // A forked sub-agent keeps its own id after the parent's copied session_meta.
+        let meta = |id: &str| json!({"type":"session_meta","payload":{"id":id,"cwd":"/repo"}});
+        assert_eq!(
+            chat("codex", vec![meta("child"), meta("parent")]).session_id,
+            "child"
+        );
+
+        // Live appends and paged reads filter the same way.
+        let records: Vec<_> = cases.iter().map(|(record, _)| record.clone()).collect();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("live.jsonl");
+        let mut file = fs::File::create(&path).unwrap();
+        let mut index = HistoryIndex::new("codex", dir.path(), &path);
+        let tail = Params {
+            tail: true,
+            limit: Some(50),
+            ..Params::default()
+        };
+        for record in &records {
+            writeln!(file, "{record}").unwrap();
+            index.page(&tail).unwrap();
+        }
+        let whole = read_page(&chat("codex", records), &tail);
+        assert_eq!(index.page(&tail).unwrap()["messages"], whole["messages"]);
+        assert_eq!(whole["message_count"], 7);
+    }
+
+    #[test]
+    fn switchboard_chats_read_switchboard_prompt_wrappers() {
+        // Each producer's wrapper must stay in step with this reader.
+        let handover_js = include_str!("../../../tools/switchboard/static/handover.js");
+        assert!(handover_js.contains(
+            "'Read the context handover file at '+JSON.stringify(path)+' before acting. "
+        ));
+        assert!(handover_js.contains("\\n\\nCurrent user request:\\n'+"));
+        for js in [
+            include_str!("../../../tools/switchboard/static/app.js"),
+            include_str!("../../../tools/switchboard/static/conversation.js"),
+        ] {
+            assert!(js.contains("'\\n\\nAttached files:\\n'"));
+        }
+        let root = "/Users/me/.local/share/switchboard/attachments";
+        let handover = format!(
+            "{root}/4d6b6f6e-8c4f-4f43-9a9c-31f3c1f1a2b3/switchboard-context-handover.json"
+        );
+        let file = format!("{root}/5d6b6f6e-8c4f-4f43-9a9c-31f3c1f1a2b3/notes.txt");
+        let image = format!("{root}/6d6b6f6e-8c4f-4f43-9a9c-31f3c1f1a2b3/shot.png");
+        // New tab for Claude: handover.js prompt, app.js file suffix, then the relay's image suffix.
+        let prompt = format!(
+            "Read the context handover file at {} before acting. It contains attributed historical messages.\n\nCurrent user request:\nKeep going\n\nAttached files:\n{file}\n\nAttached images:\n{image}",
+            serde_json::to_string(&handover).unwrap()
+        );
+        let (body, attachments) = uploaded_attachments(&prompt).unwrap();
+        assert_eq!(body, "Keep going");
+        let urls: Vec<_> = attachments
+            .iter()
+            .map(|a| a["url"].as_str().unwrap())
+            .collect();
+        assert_eq!(urls, [&handover, &file, &image]);
+        // A handover path outside the upload directory is left as written.
+        let foreign = prompt.replace(&handover, "/tmp/switchboard-context-handover.json");
+        let (body, _) = uploaded_attachments(&foreign).unwrap();
+        assert!(body.starts_with("Read the context handover file at "));
+    }
+
+    #[test]
     fn switchboard_chats_index_retries_live_records_and_replaced_files() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("live.jsonl");
@@ -1936,11 +2254,11 @@ mod tests {
         let c = chat(
             "codex",
             vec![
-                json!({"type":"response_item","payload":{"type":"message","role":"user","content":[
+                json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[
                     {"type":"local_image","path":"C:\\work\\shot.png"},
                     {"type":"input_image","image_url":"data:image/svg+xml;base64,aGVsbG8="},
                     {"type":"input_image","image_url":"data:image/png;base64,INVALID!"}
-                ]}}),
+                ]}}}),
             ],
         );
         let attachments = &c.messages[0]["attachments"];
@@ -1976,7 +2294,7 @@ mod tests {
                 json!({"type":"session_meta","payload":{"id":"x1","cwd":"/repo"}}),
                 json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"question"}]}}),
                 json!({"type":"event_msg","payload":{"type":"user_message","message":"question"}}),
-                json!({"type":"response_item","payload":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"answer"}]}}),
+                json!({"type":"event_msg","payload":{"type":"agent_message","phase":"commentary","message":"answer"}}),
             ],
         );
         assert_eq!(c.messages.len(), 2);
@@ -2293,7 +2611,9 @@ mod tests {
     fn switchboard_chats_live_tail_and_skipped_records_keep_later_messages() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("chat.jsonl");
-        let record = json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Hello"}]}}).to_string();
+        let record =
+            json!({"type":"event_msg","payload":{"type":"user_message","message":"Hello"}})
+                .to_string();
         fs::write(&path, format!("{record}\n{{\"type\":")).unwrap();
         let chat = read_file("codex", dir.path(), &path).unwrap();
         assert!(

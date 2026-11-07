@@ -111,7 +111,7 @@ int main(int argc,char**argv){if(argc>1&&strcmp(argv[1],"queue")==0){if(argc!=6)
     assert.equal(await page.locator('.conversation-panel').isVisible(),true);
     // A provider switch reuses the guarded replacement path. Fake aliases keep
     // this an isolated process/argv test without contacting either provider.
-    fs.appendFileSync(transcript,JSON.stringify({type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:'Original task'}]}})+'\n');
+    fs.appendFileSync(transcript,JSON.stringify({type:'event_msg',payload:{type:'user_message',message:'Original task',images:[],local_images:[]}})+'\n');
     await hook('Stop',restarted.pane_id);
     let switchState;await until(async()=>{const data=await(await fetch(url+'/api/attention')).json();switchState=data.panes.find(p=>p.pane_id===restarted.pane_id);return switchState?.restart_available;},'Source agent did not bind before handover');
     const switchTarget={session:name,pane_id:restarted.pane_id,tab_id:first.tab_id,chat_id:switchState.chat_id};
