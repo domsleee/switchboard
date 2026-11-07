@@ -4,8 +4,9 @@ use axum::extract::Query;
 use serde::Serialize;
 use std::{
     fs,
-    io::{BufRead, BufReader, Read},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom},
     path::PathBuf,
+    sync::{LazyLock, Mutex as SyncMutex},
 };
 
 const AGENTS: &[&str] = &["claude", "codex", "muse", "copilot", "opencode"];
@@ -13,6 +14,237 @@ const FILE_BYTES: u64 = 64 * 1024 * 1024;
 const SCAN_BYTES: u64 = 128 * 1024 * 1024;
 const LINE_BYTES: u64 = 8 * 1024 * 1024;
 const PAGE_FILES: usize = 100;
+
+// Only selected transcripts are indexed. Offsets keep memory independent of tool output
+// and message size; subsequent reads scan just the bytes appended by the agent.
+#[derive(Clone)]
+struct MessageOffset {
+    start: u64,
+    bytes: usize,
+    item: usize,
+}
+struct HistoryIndex {
+    path: PathBuf,
+    chat: Chat,
+    messages: Vec<MessageOffset>,
+    offset: u64,
+    observed: Option<(u64, std::time::SystemTime)>,
+    provisional: usize,
+    provisional_state: Option<Chat>,
+    page_cache: Option<(usize, usize, bool, Option<usize>, Value)>,
+}
+static HISTORY: LazyLock<SyncMutex<HashMap<String, Arc<SyncMutex<HistoryIndex>>>>> =
+    LazyLock::new(Default::default);
+static TRANSCRIPTS: LazyLock<SyncMutex<HashMap<String, (String, PathBuf, PathBuf)>>> =
+    LazyLock::new(Default::default);
+
+impl HistoryIndex {
+    fn new(agent: &str, root: &Path, path: &Path) -> Self {
+        Self {
+            path: path.into(),
+            chat: Chat {
+                id: file_id(agent, root, path),
+                agent: agent.into(),
+                ..Chat::default()
+            },
+            messages: Vec::new(),
+            offset: 0,
+            observed: None,
+            provisional: 0,
+            provisional_state: None,
+            page_cache: None,
+        }
+    }
+    fn update(&mut self) -> std::io::Result<()> {
+        let mut file = fs::File::open(&self.path)?;
+        let metadata = file.metadata()?;
+        let stamp = (metadata.len(), metadata.modified()?);
+        if self.observed == Some(stamp) {
+            return Ok(());
+        }
+        if self
+            .observed
+            .is_some_and(|old| stamp.0 < old.0 || (stamp.0 == old.0 && stamp.1 != old.1))
+        {
+            self.offset = 0;
+            self.messages.clear();
+            self.provisional = 0;
+            self.provisional_state = None;
+            self.chat = Chat {
+                id: self.chat.id.clone(),
+                agent: self.chat.agent.clone(),
+                ..Chat::default()
+            };
+        }
+        self.messages
+            .truncate(self.messages.len().saturating_sub(self.provisional));
+        self.provisional = 0;
+        if let Some(chat) = self.provisional_state.take() {
+            self.chat = chat;
+        }
+        file.seek(SeekFrom::Start(self.offset))?;
+        let mut reader = BufReader::new(file);
+        loop {
+            let start = self.offset;
+            let mut line = Vec::new();
+            let bytes = reader
+                .by_ref()
+                .take(LINE_BYTES + 1)
+                .read_until(b'\n', &mut line)?;
+            if bytes == 0 {
+                break;
+            }
+            if bytes as u64 > LINE_BYTES {
+                self.chat.incomplete("record_limit");
+                while line.last() != Some(&b'\n') {
+                    let buffer = reader.fill_buf()?;
+                    if buffer.is_empty() {
+                        break;
+                    }
+                    let newline = buffer.iter().position(|b| *b == b'\n');
+                    let count = newline.map_or(buffer.len(), |n| n + 1);
+                    reader.consume(count);
+                    if newline.is_some() {
+                        break;
+                    }
+                }
+                self.offset = reader.stream_position()?;
+                continue;
+            }
+            let complete = line.last() == Some(&b'\n');
+            if !complete {
+                self.provisional_state = Some(self.chat.clone());
+            }
+            match serde_json::from_slice::<Value>(&line) {
+                Ok(value) => {
+                    // Parse each record independently too, so offsets remain correct for
+                    // providers whose envelopes contain several or deduplicated messages.
+                    let mut record = Chat {
+                        agent: self.chat.agent.clone(),
+                        ..Chat::default()
+                    };
+                    record.record(&value, 0);
+                    self.chat.embedded_bytes = 0;
+                    self.chat.record(&value, 0);
+                    for message in self.chat.messages.drain(..) {
+                        if let Some(item) = record
+                            .messages
+                            .iter()
+                            .position(|candidate| *candidate == message)
+                        {
+                            self.messages.push(MessageOffset { start, bytes, item });
+                            if !complete {
+                                self.provisional += 1;
+                            }
+                        }
+                    }
+                },
+                Err(_) if complete => self.chat.incomplete("malformed_record"),
+                Err(_) => (), // Retry an unfinished live write from the same offset.
+            }
+            if !complete {
+                break;
+            }
+            self.offset = start + bytes as u64;
+        }
+        self.observed = Some(stamp);
+        Ok(())
+    }
+    fn page(&mut self, p: &Params) -> std::io::Result<Value> {
+        let previous = self.observed;
+        self.update()?;
+        if previous == self.observed {
+            if let Some((cursor, limit, tail, before, page)) = &self.page_cache {
+                if (*cursor, *limit, *tail, *before) == (p.cursor, p.limit(), p.tail, p.before) {
+                    return Ok(page.clone());
+                }
+            }
+        }
+        let end = p
+            .before
+            .unwrap_or(self.messages.len())
+            .min(self.messages.len());
+        let start = if p.tail || p.before.is_some() {
+            end.saturating_sub(p.limit())
+        } else {
+            p.cursor.min(end)
+        };
+        let mut chat = Chat {
+            id: self.chat.id.clone(),
+            agent: self.chat.agent.clone(),
+            title: self.chat.title.clone(),
+            session_id: self.chat.session_id.clone(),
+            project: self.chat.project.clone(),
+            partial: self.chat.partial,
+            partial_reasons: self.chat.partial_reasons.clone(),
+            ..Chat::default()
+        };
+        let mut file = fs::File::open(&self.path)?;
+        for entry in self.messages[start..end].iter().take(p.limit()) {
+            file.seek(SeekFrom::Start(entry.start))?;
+            let mut bytes = vec![0; entry.bytes];
+            file.read_exact(&mut bytes)?;
+            let value: Value = serde_json::from_slice(&bytes)?;
+            let mut record = Chat {
+                agent: chat.agent.clone(),
+                ..Chat::default()
+            };
+            record.record(&value, 0);
+            if let Some(message) = record.messages.get(entry.item) {
+                let mut message = message.clone();
+                for attachment in message["attachments"].as_array_mut().into_iter().flatten() {
+                    if let Some(url) = attachment["url"]
+                        .as_str()
+                        .filter(|url| url.starts_with("data:"))
+                    {
+                        chat.embedded_bytes += url.len();
+                        if chat.embedded_bytes > 2 * 1024 * 1024 {
+                            attachment.as_object_mut().unwrap().remove("url");
+                            attachment["unavailable"] =
+                                json!("Embedded attachment exceeds preview limits");
+                        }
+                    }
+                }
+                chat.messages.push(message);
+            }
+        }
+        let mut page = read_page(
+            &chat,
+            &Params {
+                limit: p.limit,
+                ..Params::default()
+            },
+        );
+        let next = start + chat.messages.len();
+        page["start_cursor"] = json!(start);
+        page["message_count"] = json!(self.messages.len());
+        page["previous_cursor"] = if start > 0 { json!(start) } else { Value::Null };
+        page["next_cursor"] = if next < end { json!(next) } else { Value::Null };
+        self.page_cache = Some((p.cursor, p.limit(), p.tail, p.before, page.clone()));
+        Ok(page)
+    }
+}
+
+fn indexed_page(agent: &str, root: &Path, path: &Path, p: &Params) -> Value {
+    let id = file_id(agent, root, path);
+    let index = {
+        let mut cache = HISTORY.lock().unwrap();
+        if cache.len() >= 16 && !cache.contains_key(&id) {
+            // Active readers keep their Arc; only idle indexes are evicted.
+            cache.retain(|_, index| Arc::strong_count(index) > 1);
+        }
+        cache
+            .entry(id)
+            .or_insert_with(|| Arc::new(SyncMutex::new(HistoryIndex::new(agent, root, path))))
+            .clone()
+    };
+    let result = index
+        .lock()
+        .unwrap()
+        .page(p)
+        .unwrap_or_else(|_| json!({"error":"unreadable"}));
+    result
+}
 
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -45,7 +277,7 @@ impl Params {
         self.limit.unwrap_or(10)
     }
 }
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Chat {
     id: String,
     session_id: String,
@@ -394,7 +626,13 @@ fn file_id(agent: &str, root: &Path, file: &Path) -> String {
 // The ID is computed without opening the transcript or spawning a provider process.
 pub(super) fn hook_chat_id(agent: &str, event: &Value) -> Option<String> {
     let (_, root) = roots().into_iter().find(|(a, _)| *a == agent)?;
-    transcript_id(agent, &root, Path::new(event["transcript_path"].as_str()?))
+    let path = Path::new(event["transcript_path"].as_str()?);
+    let id = transcript_id(agent, &root, path)?;
+    TRANSCRIPTS
+        .lock()
+        .unwrap()
+        .insert(id.clone(), (agent.into(), root, path.into()));
+    Some(id)
 }
 
 fn transcript_id(agent: &str, root: &Path, path: &Path) -> Option<String> {
@@ -565,6 +803,7 @@ fn read_page(chat: &Chat, p: &Params) -> Value {
     }).collect();
     let next = start.saturating_add(page.len());
     result["start_cursor"] = json!(start);
+    result["message_count"] = json!(chat.messages.len());
     result["previous_cursor"] = if start > 0 { json!(start) } else { Value::Null };
     result["messages"] = json!(page);
     result["next_cursor"] = if next < end { json!(next) } else { Value::Null };
@@ -572,6 +811,20 @@ fn read_page(chat: &Chat, p: &Params) -> Value {
 }
 
 fn local(roots: Vec<(&str, PathBuf)>, p: &Params, id: Option<&str>) -> Value {
+    if let Some((agent, root, path)) =
+        id.and_then(|id| TRANSCRIPTS.lock().unwrap().get(id).cloned())
+    {
+        // A hook-provided path must obey the same no-symlinks rule as discovery.
+        if p.agent.as_ref().is_none_or(|a| *a == agent)
+            && roots.iter().any(|(a, r)| *a == agent && *r == root)
+            && path
+                .ancestors()
+                .take_while(|path| *path != root)
+                .all(|path| fs::symlink_metadata(path).is_ok_and(|m| !m.file_type().is_symlink()))
+        {
+            return indexed_page(&agent, &root, &path, p);
+        }
+    }
     let mut sources = Vec::new();
     for (agent, root) in roots {
         if p.agent.as_ref().is_some_and(|a| a != agent)
@@ -603,10 +856,11 @@ fn local(roots: Vec<(&str, PathBuf)>, p: &Params, id: Option<&str>) -> Value {
         files.sort();
         if let Some(id) = id {
             if let Some(path) = files.iter().find(|path| file_id(agent, &root, path) == id) {
-                return match read_file(agent, &root, path) {
-                    Ok(chat) => read_page(&chat, p),
-                    Err(_) => json!({"error":"unreadable"}),
-                };
+                TRANSCRIPTS
+                    .lock()
+                    .unwrap()
+                    .insert(id.into(), (agent.into(), root.clone(), path.clone()));
+                return indexed_page(agent, &root, path, p);
             }
             return json!({"error":if partial{"discovery_incomplete"}else{"not_found"}});
         }
@@ -871,7 +1125,7 @@ pub(super) async fn read(
     if !p.valid() || !valid_id(&id) {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    let result = if let Some(host) = p.host.as_deref().filter(|h| *h != "local") {
+    let mut result = if let Some(host) = p.host.as_deref().filter(|h| *h != "local") {
         let Some(h) = state.mesh.as_ref().and_then(|m| m.host(host)) else {
             return StatusCode::NOT_FOUND.into_response();
         };
@@ -923,7 +1177,62 @@ pub(super) async fn read(
             &format!("History load {outcome}: {reason}; reasons={partial_reasons}"),
         );
     }
+    result["stream"] = json!(true);
     Json(result).into_response()
+}
+
+/// One browser connection follows the selected transcript. The owning computer's
+/// index makes idle checks metadata-only and reads only appended records on change.
+pub(super) async fn stream(
+    State(state): State<RelayState>,
+    RoutePath(id): RoutePath<String>,
+    Query(p): Query<Params>,
+) -> Response {
+    use axum::response::sse::{Event, KeepAlive, Sse};
+    if !p.valid() || !valid_id(&id) || p.before.is_some() {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let host = match p.host.as_deref().filter(|host| *host != "local") {
+        Some(host) => match state.mesh.as_ref().and_then(|mesh| mesh.host(host)) {
+            Some(host) => Some(host),
+            None => return StatusCode::NOT_FOUND.into_response(),
+        },
+        None => None,
+    };
+    let updates = futures_util::stream::unfold(
+        (p, id, host, None::<Value>, false),
+        |(mut p, id, host, previous, wait)| async move {
+            if wait {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            let page = match &host {
+                Some(host) => remote(host, &p, Some(&id)).await,
+                None => local_async(p.clone(), Some(id.clone())).await,
+            };
+            let event = if previous.as_ref() == Some(&page) {
+                Event::default().comment("following")
+            } else {
+                Event::default().event("page").json_data(&page).unwrap()
+            };
+            if let (Some(start), Some(messages)) =
+                (page["start_cursor"].as_u64(), page["messages"].as_array())
+            {
+                p.tail = false;
+                p.cursor = start as usize + messages.len().saturating_sub(1);
+            }
+            Some((
+                Ok::<_, std::convert::Infallible>(event),
+                (p, id, host, Some(page), true),
+            ))
+        },
+    );
+    let mut response = Sse::new(updates)
+        .keep_alive(KeepAlive::default())
+        .into_response();
+    response
+        .headers_mut()
+        .insert("x-accel-buffering", "no".parse().unwrap());
+    response
 }
 fn valid_id(id: &str) -> bool {
     id.len() <= 256
@@ -962,6 +1271,104 @@ pub(in crate::switchboard_relay) async fn gateway(request: Request) -> Response 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn switchboard_chats_index_reads_beyond_file_and_message_limits() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("long.jsonl");
+        let mut file = fs::File::create(&path).unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({"type":"session_meta","payload":{"id":"native-thread","cwd":"/repo"}})
+        )
+        .unwrap();
+        for i in 0..50_002 {
+            writeln!(file, "{}", json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":format!("Message {i}")}]}})).unwrap();
+        }
+        // A sparse, oversized tool record crosses the old 64 MiB cutoff without
+        // allocating that much RAM. Valid messages on both sides remain pageable.
+        file.set_len(FILE_BYTES + 128).unwrap();
+        file.seek(SeekFrom::End(0)).unwrap();
+        writeln!(file, "\n{}", json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Newest reply"}]}})).unwrap();
+        drop(file);
+        let mut index = HistoryIndex::new("codex", dir.path(), &path);
+        let tail = index
+            .page(&Params {
+                tail: true,
+                limit: Some(2),
+                ..Params::default()
+            })
+            .unwrap();
+        assert_eq!(tail["start_cursor"], 50_001);
+        assert_eq!(tail["messages"][1]["text"], "Newest reply");
+        assert_eq!(tail["session_id"], "native-thread");
+        assert_eq!(tail["partial_reasons"], json!(["record_limit"]));
+        let first = index
+            .page(&Params {
+                limit: Some(1),
+                ..Params::default()
+            })
+            .unwrap();
+        assert_eq!(first["messages"][0]["text"], "Message 0");
+        let older = index
+            .page(&Params {
+                before: Some(50_001),
+                limit: Some(1),
+                ..Params::default()
+            })
+            .unwrap();
+        assert_eq!(older["messages"][0]["text"], "Message 50000");
+        let offset = index.offset;
+        assert_eq!(
+            index
+                .page(&Params {
+                    cursor: 50_002,
+                    ..Params::default()
+                })
+                .unwrap()["messages"][0]["text"],
+            "Newest reply"
+        );
+        assert_eq!(index.offset, offset);
+    }
+
+    #[test]
+    fn switchboard_chats_index_retries_live_records_and_replaced_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("live.jsonl");
+        let record = |text: &str| json!({"type":"user","message":{"content":text}}).to_string();
+        fs::write(&path, format!("{}\n{{\"type\":", record("First"))).unwrap();
+        let mut index = HistoryIndex::new("claude", dir.path(), &path);
+        let params = Params {
+            tail: true,
+            limit: Some(50),
+            ..Params::default()
+        };
+        assert_eq!(
+            index.page(&params).unwrap()["messages"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        write!(file, "\"user\",\"message\":{{\"content\":\"Second\"}}}}").unwrap();
+        assert_eq!(
+            index.page(&params).unwrap()["messages"][1]["text"],
+            "Second"
+        );
+        writeln!(file, "\n{}", record("Third")).unwrap();
+        let page = index.page(&params).unwrap();
+        assert_eq!(page["messages"].as_array().unwrap().len(), 3);
+        assert_eq!(page["messages"][2]["text"], "Third");
+        assert_eq!(page["partial"], false);
+        drop(file);
+        fs::write(&path, format!("{}\n", record("Replacement"))).unwrap();
+        let page = index.page(&params).unwrap();
+        assert_eq!(page["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(page["messages"][0]["text"], "Replacement");
+    }
     fn chat(agent: &str, records: Vec<Value>) -> Chat {
         let mut c = Chat {
             agent: agent.into(),

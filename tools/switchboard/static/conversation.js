@@ -16,6 +16,29 @@
     let savedMode;try{savedMode=localStorage.getItem(modeKey);}catch{}
     let target=null,open=savedMode? savedMode==='conversation':mobile,generation=0,startCursor=0,tailCursor=0,nextCursor=null,messages=[],pending=null,loading=false,loaded=false,lastPaint=null;
     const outgoing=new Map(),consumedTranscript=new Map();
+    const conversations=new Map();
+    let stream=null,streamReady=false,streamSupported=false,streamPages=[],restorePosition=null;
+    let preparing=false,lastPrepare='',lastPrepareAt=0;
+    async function prepare(){
+      if(!open||document.hidden||!target||target.agent!=='codex'||!target.session||!Number.isInteger(target.tab)||preparing)return;
+      if(target.chatId&&['ready','working'].includes(target.state))return;
+      const key=identity(target);if(key===lastPrepare&&Date.now()-lastPrepareAt<5000)return;
+      lastPrepare=key;lastPrepareAt=Date.now();preparing=true;
+      try{await fetch('/api/hosts/'+encodeURIComponent(target.host)+'/conversation/prepare',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:target.session,tab_id:target.tab,pane_id:target.pane}),signal:AbortSignal.timeout(20000)});}catch{}finally{preparing=false;}
+    }
+    function stopStream(){stream?.close();stream=null;streamReady=false;streamPages=[];}
+    function streamPage(data){applyPage(data,'poll',nextCursor??tailCursor);status(partialNotice(data),!data.partial);}
+    function startStream(){
+      if(stream||!streamSupported||!open||document.hidden||!target||!chat||!loaded)return;
+      const version=generation,source=new EventSource('/api/chats/'+encodeURIComponent(chat.id)+'/stream?'+new URLSearchParams({host:target.chatHost||target.host,cursor:nextCursor??tailCursor,limit:50}));stream=source;
+      source.addEventListener('page',event=>{
+        if(version!==generation||source!==stream)return;
+        try{const data=JSON.parse(event.data);if(data.error||!Array.isArray(data.messages))throw Error();streamReady=true;if(loading)streamPages.push(data);else streamPage(data);}
+        catch{stopStream();load();}
+      });
+      source.onopen=()=>{if(source===stream)streamReady=true;};
+      source.onerror=()=>{if(source===stream){streamReady=false;load();}};
+    }
     const modes=el('div',undefined,'conversation-modes');modes.hidden=true;modes.setAttribute('role','group');modes.setAttribute('aria-label','View mode');
     const back=el('button','Terminal'),toggle=el('button','Conversation','conversation-toggle');back.type=toggle.type='button';back.setAttribute('aria-pressed',String(!open));toggle.setAttribute('aria-pressed',String(open));modes.append(back,toggle);root.append(modes);
     const panel=el('section',undefined,'conversation-panel');panel.hidden=true;panel.tabIndex=-1;panel.setAttribute('aria-label','Agent conversation');
@@ -34,7 +57,7 @@
     function status(text,quiet=false){notice.textContent=text;notice.hidden=quiet;}
     function busy(value){loading=value;older.disabled=refresh.disabled=value;}
     function focusSurface(){if(!panel.hidden)(form.hidden?panel:draft).focus({preventScroll:true});}
-    function show(value){if(!value){loadRequest?.abort();window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();}open=value;root.classList.toggle('conversation-open',open);modeChanged();try{localStorage.setItem(modeKey,value?'conversation':'terminal');}catch{}panel.hidden=!value;toggle.setAttribute('aria-pressed',String(value));back.setAttribute('aria-pressed',String(!value));if(value){document.getElementById('artifact-preview').hidden=true;update();if(binding()&&!messages.length)load('initial');focusSurface();}else if(target)terminal(target);viewport();}
+    function show(value){if(!value){stopStream();loadRequest?.abort();window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();}open=value;root.classList.toggle('conversation-open',open);modeChanged();try{localStorage.setItem(modeKey,value?'conversation':'terminal');}catch{}panel.hidden=!value;toggle.setAttribute('aria-pressed',String(value));back.setAttribute('aria-pressed',String(!value));if(value){document.getElementById('artifact-preview').hidden=true;update();if(loaded){paint(false,restorePosition===null&&lastPaint===null);if(restorePosition!==null){list.scrollTop=restorePosition.follow?list.scrollHeight:restorePosition.position;restorePosition=null;updateLatest();}}if(binding())load(loaded?'poll':'initial');startStream();focusSurface();}else if(target)terminal(target);viewport();}
 
     toggle.onclick=()=>show(true);back.onclick=()=>show(false);
     let loadRequest=null,lastFailure=null,lastDiagnostic='',lastDiagnosticAt=0,newOutput=false,scrollIdle;
@@ -55,7 +78,7 @@
     function partialNotice(data){
       if(!data.partial)return '';
       const reasons=data.partial_reasons||[];
-      if(reasons.includes('file_limit')||reasons.includes('message_limit'))return 'This conversation exceeds the history limit. Some messages are unavailable here; open Terminal for the latest output.';
+      if(reasons.includes('file_limit')||reasons.includes('message_limit'))return 'Update the conversation’s computer to read its complete history.';
       if(reasons.includes('record_limit'))return 'An oversized history record was skipped. Later messages can still load.';
       if(reasons.includes('malformed_record'))return 'An unreadable history record was skipped. Other messages are still available.';
       return 'Some history is unavailable. Showing the messages that could be read.';
@@ -118,19 +141,23 @@
       else if(follow)list.scrollTop=list.scrollHeight;
       updateLatest();
     }
+    function applyPage(data,kind,cursor){
+      const initial=kind==='initial',prepend=kind==='older',page=data.messages||[],start=data.start_cursor??(initial?0:prepend?Math.max(0,startCursor-page.length):cursor);
+      chat.project=data.project||chat.project;chat.thread=data.session_id||chat.thread;
+      if(initial){messages=page;startCursor=start;tailCursor=start+Math.max(0,page.length-1);nextCursor=data.next_cursor??null;}
+      else if(prepend){messages=page.concat(messages);startCursor=start;}
+      else{if(start<startCursor){messages=page;startCursor=start;}else messages=messages.slice(0,Math.max(0,start-startCursor)).concat(page);tailCursor=start+Math.max(0,page.length-1);nextCursor=data.next_cursor??null;}
+      loaded=true;refresh.hidden=true;if(open)paint(prepend,initial);
+    }
     async function load(kind='poll'){
-      if(!open||!target||!binding()||loading)return;if(!loaded)kind='initial';const version=generation,chat=binding(),started=performance.now(),request=new AbortController();loadRequest=request;let timedOut=false,catchUp=false;busy(true);const timeout=setTimeout(()=>{timedOut=true;request.abort();},15000);
+      if(!target||!binding()||loading||(!open&&kind!=='initial'))return;if(!loaded)kind='initial';const version=generation,chat=binding(),started=performance.now(),request=new AbortController();loadRequest=request;let timedOut=false,catchUp=false;busy(true);const timeout=setTimeout(()=>{timedOut=true;request.abort();},15000);
       const initial=kind==='initial',prepend=kind==='older',cursor=nextCursor??tailCursor;
       historyStatus.hidden=!prepend;historyStatus.textContent='Loading earlier messages…';
       const params={host:target.chatHost||target.host,limit:initial&&(mobile||navigator.connection?.saveData)?15:50};
       if(initial)params.tail=true;else if(prepend)params.before=startCursor;else params.cursor=cursor;
       try{const data=await get('/api/chats/'+encodeURIComponent(chat.id)+'?'+new URLSearchParams(params),request.signal);if(version!==generation)return;
-        chat.project=data.project||chat.project;chat.thread=data.session_id||chat.thread;const page=data.messages||[],start=data.start_cursor??(initial?0:prepend?Math.max(0,startCursor-page.length):cursor);
-        if(initial){messages=page;startCursor=start;tailCursor=start+Math.max(0,page.length-1);nextCursor=data.next_cursor??null;}
-        else if(prepend){messages=page.concat(messages);startCursor=start;}
-        else{messages=messages.slice(0,Math.max(0,start-startCursor)).concat(page);tailCursor=start+Math.max(0,page.length-1);nextCursor=data.next_cursor??null;}
-        loaded=true;refresh.hidden=true;paint(prepend,initial);const warning=partialNotice(data);status(warning,!warning);if(warning){reportLoad(kind,'partial',started);lastFailure='partial';}else if(lastFailure){reportLoad(kind,'recovered',started);lastFailure=null;}updateLatest();catchUp=nextCursor!==null&&!prepend;
-      }catch(error){if(version===generation&&!(!timedOut&&request.signal.aborted)){const outcome=timedOut?'timeout':error.code||'network';lastFailure=outcome;reportLoad(kind,outcome,started);const message=timedOut?'Loading took too long. Retrying…':error.code?error.message:'Connection interrupted. Retrying…';if(prepend){older.textContent='Retry earlier messages';older.hidden=false;}else{status(message);refresh.hidden=false;updateLatest();}}}finally{clearTimeout(timeout);if(loadRequest===request)loadRequest=null;if(version===generation){busy(false);historyStatus.hidden=true;if(catchUp)setTimeout(()=>{if(version===generation)load();},0);else if(loaded&&startCursor>0&&older.hidden&&list.scrollHeight<=list.clientHeight)setTimeout(()=>{if(version===generation)load('older');},0);}}
+        applyPage(data,kind,cursor);streamSupported=data.stream===true;startStream();const warning=partialNotice(data);status(warning,!warning);if(warning){reportLoad(kind,'partial',started);lastFailure='partial';}else if(lastFailure){reportLoad(kind,'recovered',started);lastFailure=null;}updateLatest();catchUp=nextCursor!==null&&!prepend;
+      }catch(error){if(version===generation&&!(!timedOut&&request.signal.aborted)){const outcome=timedOut?'timeout':error.code||'network';lastFailure=outcome;reportLoad(kind,outcome,started);const message=timedOut?'Loading took too long. Retrying…':error.code?error.message:'Connection interrupted. Retrying…';if(prepend){older.textContent='Retry earlier messages';older.hidden=false;}else{status(message);refresh.hidden=false;updateLatest();}}}finally{clearTimeout(timeout);if(loadRequest===request)loadRequest=null;if(version===generation){busy(false);historyStatus.hidden=true;for(const data of streamPages)streamPage(data);streamPages=[];if(catchUp)setTimeout(()=>{if(version===generation)load();},0);else if(open&&loaded&&startCursor>0&&older.hidden&&list.scrollHeight<=list.clientHeight)setTimeout(()=>{if(version===generation)load('older');},0);}}
     }
     older.onclick=()=>load('older');refresh.onclick=()=>load(messages.length?'poll':'initial');latest.onclick=()=>{list.scrollTop=list.scrollHeight;updateLatest();};
     let draftSizeKey;
@@ -243,19 +270,23 @@
       title.textContent=current?.title||'Conversation';
       activity.textContent=current?.state==='working'?'Working…':current?.state==='approval'?'Approval needed in Terminal':current?.state==='input'?'Input needed in Terminal':current?.agent||'';
       activity.classList.toggle('working',current?.state==='working');
-      if(identity(current)===identity(target)){target=current;return;}
+      if(identity(current)===identity(target)){target=current;prepare();return;}
       if(target)drafts.set(identity(target),draft.value);
+      if(target&&loaded){conversations.delete(identity(target));conversations.set(identity(target),{chat,messages,startCursor,tailCursor,nextCursor,streamSupported,position:restorePosition?.position??list.scrollTop,follow:restorePosition?.follow??nearBottom()});if(conversations.size>8)conversations.delete(conversations.keys().next().value);}
       window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();
-      target=current;loadRequest?.abort();lastFailure=null;lastDiagnostic='';newOutput=false;sendStatus('');generation++;loaded=false;lastPaint=null;busy(false);messages=[];startCursor=tailCursor=0;nextCursor=null;rendered.clear();list.replaceChildren(older);older.hidden=true;historyStatus.hidden=true;latest.hidden=refresh.hidden=true;
+      stopStream();streamSupported=false;restorePosition=null;target=current;loadRequest?.abort();lastFailure=null;lastDiagnostic='';newOutput=false;sendStatus('');generation++;loaded=false;lastPaint=null;busy(false);messages=[];startCursor=tailCursor=0;nextCursor=null;rendered.clear();renderedOutgoing.clear();list.replaceChildren(older);older.hidden=true;historyStatus.hidden=true;latest.hidden=refresh.hidden=true;
       chat=target?.chatId?{id:target.chatId,agent:target.agent,title:target.title}:null;
+      const cached=conversations.get(identity(target));if(cached){({chat,messages,startCursor,tailCursor,nextCursor,streamSupported}=cached);loaded=true;}
       form.hidden=!chat;actions.hidden=true;
       if(!target){panel.hidden=true;viewport();return;}draft.value=drafts.get(identity(target))||'';
       panel.hidden=!open;paintFiles();viewport();
-      status(chat?'Loading conversation…':'This terminal has not reported its conversation yet. Continue in Terminal; this view will connect automatically when the agent reports it.');
-      if(open){focusSurface();if(chat)load('initial');}
+      status(chat?'Loading conversation…':'This terminal has not reported its conversation yet. Continue in Terminal; this view will connect automatically when the agent reports it.',loaded);
+      if(cached){if(open){paint();list.scrollTop=cached.follow?list.scrollHeight:cached.position;updateLatest();}else restorePosition=cached;}if(open)focusSurface();if(chat){load(loaded?'poll':'initial');startStream();}prepare();
     }
     // Open at the latest messages; older history is fetched only on request.
-    setInterval(()=>{if(open&&!document.hidden)load();},2000);
+    setInterval(()=>{if(open&&!document.hidden){prepare();if(!streamReady)load();}},2000);
+    document.addEventListener('visibilitychange',()=>{if(document.hidden)stopStream();else if(open){load();startStream();}});
+    window.addEventListener('pagehide',()=>{stopStream();loadRequest?.abort();});
     window.SwitchboardConversation.hasUnsentWork=()=>!!pending||[...outgoing.values()].some(items=>items.length)||!!draft.value||[...drafts.values()].some(Boolean)||[...attachments.values()].some(files=>files.length);
     window.SwitchboardConversation.wantsConversation=()=>open;window.SwitchboardConversation.update=update;window.SwitchboardConversation.isOpen=()=>open&&!panel.hidden;window.SwitchboardConversation.focus=focusSurface;window.SwitchboardConversation.showTerminal=()=>show(false);update();
   }};
