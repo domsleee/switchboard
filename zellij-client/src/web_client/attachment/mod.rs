@@ -27,10 +27,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
-use tokio::sync::{mpsc, oneshot, Notify};
+use tokio::sync::{mpsc, oneshot, watch, Notify};
 use uuid::Uuid;
 use zellij_utils::{
     input::mouse::MouseEvent,
@@ -45,6 +48,7 @@ use zellij_utils::{
 pub(crate) use process::worker_status;
 pub(super) use process::{bootstrap, proxy, run_worker};
 const VIEWER_LIMIT: usize = 64;
+const RETIRED: &str = "Terminal viewer retired";
 const DETACHED_TTL: Duration = Duration::from_secs(600);
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct ResumeInfo {
@@ -70,6 +74,8 @@ struct Viewer {
     read_only: bool,
     touched: Mutex<Instant>,
     incoming: Mutex<Option<mpsc::Receiver<Delivery>>>,
+    retired: watch::Sender<bool>,
+    parser_pending: AtomicBool,
 }
 struct Delivery {
     generation: u64,
@@ -97,6 +103,7 @@ enum Request {
     Input { generation: u64, input: Input },
     Ack { generation: u64, applied: u64 },
     Close { generation: u64 },
+    Retire { generation: u64 },
 }
 
 async fn create(State(worker): State<Worker>, Json(attach): Json<Attach>) -> Response {
@@ -123,10 +130,17 @@ async fn create(State(worker): State<Worker>, Json(attach): Json<Attach>) -> Res
         read_only,
         touched: Mutex::new(Instant::now()),
         incoming: Mutex::new(Some(rx)),
+        retired: watch::channel(false).0,
+        parser_pending: AtomicBool::new(false),
     });
     {
         let mut views = worker.views.lock().unwrap();
-        if views.len() >= VIEWER_LIMIT {
+        if views
+            .values()
+            .filter(|viewer| !*viewer.retired.borrow())
+            .count()
+            >= VIEWER_LIMIT
+        {
             return (StatusCode::SERVICE_UNAVAILABLE, "Too many retained viewers").into_response();
         }
         views.insert(id.clone(), viewer.clone());
@@ -179,7 +193,7 @@ async fn resume(
         return ws.on_upgrade(move |mut socket| async move {
             let _ = socket
                 .send(Message::Text(
-                    json!({"type":"error","message":error}).to_string().into(),
+                    final_reply(&viewer, error).await.to_string().into(),
                 ))
                 .await;
         });
@@ -209,6 +223,19 @@ async fn resume(
     viewer.notify.notify_waiters();
     ws.max_message_size(512 * 1024)
         .on_upgrade(move |socket| transport(socket, viewer, generation, query.applied))
+}
+
+async fn final_reply(viewer: &Viewer, error: String) -> serde_json::Value {
+    if error == RETIRED {
+        let mut retired = viewer.retired.subscribe();
+        if matches!(
+            tokio::time::timeout(Duration::from_secs(10), retired.wait_for(|done| *done)).await,
+            Ok(Ok(_))
+        ) {
+            return json!({"type":"retired"});
+        }
+    }
+    json!({"type":"error","message":error})
 }
 
 async fn transport(socket: WebSocket, viewer: Arc<Viewer>, generation: u64, mut sent: u64) {
@@ -250,7 +277,7 @@ async fn transport(socket: WebSocket, viewer: Arc<Viewer>, generation: u64, mut 
         if let Some(error) = error {
             let _ = writer
                 .send(Message::Text(
-                    json!({"type":"error","message":error}).to_string().into(),
+                    final_reply(&viewer, error).await.to_string().into(),
                 ))
                 .await;
             break;
@@ -274,19 +301,31 @@ async fn transport(socket: WebSocket, viewer: Arc<Viewer>, generation: u64, mut 
                 let Some(Ok(frame))=frame else {break;};
                 *viewer.touched.lock().unwrap()=Instant::now();
                 let Message::Text(text)=frame else {if matches!(frame,Message::Close(_)){break;}continue;};
-                let result:Result<Option<u64>>=async {
+                let result:Result<Option<serde_json::Value>>=async {
                     match serde_json::from_str::<Request>(&text)? {
                         Request::Input{generation:g,input}=>{
                             ensure!(g==generation,"Stale transport");
                             let (done,reply)=oneshot::channel();
                             viewer.input.send(Delivery{generation,input,done}).await.map_err(|_|anyhow::anyhow!("Attachment ended"))?;
-                            Ok(Some(reply.await??))
+                            Ok(Some(json!({"type":"ack","input_ack":reply.await??})))
                         },
                         Request::Ack{generation:g,applied}=>{
                             let mut journal=viewer.journal.lock().unwrap();
                             ensure!(g==generation && g==journal.generation,"Stale transport");
                             journal.acknowledge(applied)?;Ok(None)
                         },
+                        Request::Retire{generation:g}=>{
+                            {
+                                let mut journal=viewer.journal.lock().unwrap();
+                                ensure!(g==generation && g==journal.generation,"Stale transport");
+                                if viewer.parser_pending.load(Ordering::Acquire) {
+                                    return Ok(Some(json!({"type":"retirement_rejected","message":"An incomplete terminal sequence is still buffered. Return to Terminal to finish it."})));
+                                }
+                                journal.failure=Some(RETIRED.into());
+                            }
+                            viewer.notify.notify_waiters();
+                            Ok(Some(final_reply(&viewer, RETIRED.into()).await))
+                        }
                         Request::Close{generation:g}=>{
                             let mut journal=viewer.journal.lock().unwrap();ensure!(g==generation && g==journal.generation,"Stale transport");
                             journal.failure=Some("Terminal viewer closed".into());viewer.notify.notify_waiters();Ok(None)
@@ -294,7 +333,7 @@ async fn transport(socket: WebSocket, viewer: Arc<Viewer>, generation: u64, mut 
                     }
                 }.await;
                 match result {
-                    Ok(Some(ack))=>{if writer.send(Message::Text(json!({"type":"ack","input_ack":ack}).to_string().into())).await.is_err(){break;}},
+                    Ok(Some(reply))=>{let retired=reply["type"]=="retired";if writer.send(Message::Text(reply.to_string().into())).await.is_err()||retired{break;}},
                     Ok(None)=>{},Err(error)=>{let _=writer.send(Message::Text(json!({"type":"error","message":error.to_string()}).to_string().into())).await;break;}
                 }
             }
@@ -390,8 +429,18 @@ async fn attachment(
                             held_since=Instant::now();focus=None;
                         } else {
                             let payload:WebClientToWebServerControlMessagePayload=serde_json::from_str(&delivery.input.data)?;
-                            if stdin.pending_finalize() { stdin.finalize(&*os,&mut mouse); }
-                            ensure!(!stdin.has_pending_bytes(),"Incomplete terminal sequence before a control command; attachment stopped to preserve its target pane");
+                            // Geometry does not change the input target. It may arrive
+                            // between paste chunks during a mode switch or resize.
+                            // Leave the parser untouched; routing/action controls must
+                            // still fail closed until the sequence is complete.
+                            if !matches!(payload,
+                                WebClientToWebServerControlMessagePayload::TerminalResize(_) |
+                                WebClientToWebServerControlMessagePayload::TerminalMetrics(_) |
+                                WebClientToWebServerControlMessagePayload::SetTabViewport { .. }
+                            ) {
+                                if stdin.pending_finalize() { stdin.finalize(&*os,&mut mouse); }
+                                ensure!(!stdin.has_pending_bytes(),"Incomplete terminal sequence before a control command; attachment stopped to preserve its target pane");
+                            }
                             focus=match &payload {WebClientToWebServerControlMessagePayload::FocusPane{pane_id,is_plugin}=>Some((*pane_id,*is_plugin)),_=>None};
                             if let Some(message)=control_payload_to_server_msg(payload,app.config.lock().unwrap().options.default_shell.clone()) {
                                 os.send_to_server(message.clone());
@@ -407,6 +456,7 @@ async fn attachment(
                             }
                             if focus.is_some() {if let Some(refresh)=app.connection_table.lock().unwrap().client_id_to_channels.get(&id).and_then(|c|c.recovery_metadata_refresh.clone()){refresh.request();}}
                         }
+                        viewer.parser_pending.store(stdin.has_pending_bytes(),Ordering::Release);
                         ensure!(os.send_failure().is_none(),"Terminal IPC failed; input delivery is uncertain");
                     }
                     if let Some(target)=focus {
@@ -433,6 +483,7 @@ async fn attachment(
             },
             _=timer.tick()=>{
                 if stdin.pending_finalize() && held_since.elapsed()>=Duration::from_millis(50){stdin.finalize(&*os,&mut mouse);}
+                viewer.parser_pending.store(stdin.has_pending_bytes(),Ordering::Release);
                 if let Some(error)=os.send_failure(){viewer.journal.lock().unwrap().failure=Some(format!("Terminal IPC failed: {error}"));}
                 if auth_checked.elapsed()>=Duration::from_secs(1){
                     auth_checked=Instant::now();
@@ -447,9 +498,22 @@ async fn attachment(
     viewer.notify.notify_waiters();
     os.send_to_server(ClientToServerMsg::ClientExited);
     app.connection_table.lock().unwrap().remove_client(&id);
-    // Keep the failure available briefly so an in-flight transport receives a
-    // definitive failure rather than creating a fresh attachment and replaying.
-    tokio::time::sleep(Duration::from_secs(10)).await;
+    {
+        let mut journal = viewer.journal.lock().unwrap();
+        // Only the authenticated failure/receipt is needed after native exit.
+        let failure = journal.failure.take();
+        *journal = Journal::default();
+        journal.failure = failure;
+    }
+    viewer.retired.send_replace(true);
+    // Retain a lightweight receipt beyond the browser retry deadline, including
+    // explicit recovery after a pause. Other failures need only brief delivery.
+    let retention = if viewer.journal.lock().unwrap().failure.as_deref() == Some(RETIRED) {
+        DETACHED_TTL
+    } else {
+        Duration::from_secs(10)
+    };
+    tokio::time::sleep(retention).await;
     worker.views.lock().unwrap().remove(&id);
 }
 

@@ -40,6 +40,13 @@ stay open: typing is buffered and resumes in order on the same attachment, and
 output is acknowledged only after the browser renderer applies it. A restart can
 briefly delay display; it does not move queued typing to a new session.
 
+Switching to Conversation drains queued typing and waits for the retained
+viewer to confirm native disconnection before unloading the terminal. Returning
+during that handoff keeps typing disabled until the viewer is safe to use. An
+unfinished paste keeps its original viewer; an unconfirmed disconnect offers an
+explicit retry instead of replacing it. Retirement receipts remain available for
+ten minutes and do not occupy live viewer capacity.
+
 An already-loaded legacy browser still holds the viewer lock. The first migration
 requires **Update now**, followed by a browser reload to enable resumable attachments.
 Legacy viewers continue to defer automatic activation; their input during that first

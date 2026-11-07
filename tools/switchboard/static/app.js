@@ -724,6 +724,7 @@ function render() {
   for(const error of attentionErrors)errors.push({host:hosts.has(error.host)?error.host:null,message:`${hosts.get(error.host)?.name||error.host}: attention status unavailable`});
   if(currentEntry?.disconnected)errors.push({message:`${hosts.get(currentEntry.host)?.name||currentEntry.host}: reconnecting…`});
   setStatus(errors.length?errors.map(error=>error.message).join(' · '):`${hosts.size} machines · ${tabs.length} tabs${current?' · '+hosts.get(current.entry.host)?.name:''}`,errors.length>0,errors);
+  showRetirementStatus();
   if(hostsLoaded&&attentionLoaded&&!terminalsSettling())globalThis.SwitchboardStartup?.save([...hosts.values()],allTabs(true).map(item=>({...item,title:tabTitle(item)})),groups);
   if ((selected !== previous || wasRestoring&&!restoringTab) && current) focus(current,true);
   if(selected!==previous) $('tabs').querySelector('.selected')?.scrollIntoView({block:'nearest',inline:'nearest'});
@@ -802,6 +803,7 @@ document.addEventListener('mousedown',event=>{
   event.preventDefault();
 },true);
 function focus(item,background=false) {
+  if(item.entry.suspending||item.entry.retirementUnresolved){item.entry.needsFocus=true;return;}
   const conversationOpen=globalThis.SwitchboardConversation?.isOpen?.()||false;
   if(conversationOpen&&!background)globalThis.SwitchboardConversation.focus();
   const activeElement=document.activeElement;
@@ -829,7 +831,7 @@ function focus(item,background=false) {
   item.entry.needsFocus=false;
   if(active?.pane_id!==pane.pane_id||active?.is_plugin!==pane.is_plugin)item.entry.frame.contentWindow.SwitchboardClipboard?.clearSelection();
   const focusId=item.entry.focusId=(item.entry.focusId||0)+1;
-  if(item.entry.requestedPane || active?.pane_id!==pane.pane_id||active?.is_plugin!==pane.is_plugin)item.entry.requestedPane={pane_id:pane.pane_id,is_plugin:pane.is_plugin,focus_id:focusId};
+  if(item.entry.frame.inert || item.entry.requestedPane || active?.pane_id!==pane.pane_id||active?.is_plugin!==pane.is_plugin)item.entry.requestedPane={pane_id:pane.pane_id,is_plugin:pane.is_plugin,focus_id:focusId};
   const preserveFocus=conversationOpen||(background&&!!item.entry.focusInitialized&&!fromTabButton);
   item.entry.focusInitialized=true;
   item.entry.frame.contentWindow.postMessage({type:'zellij-focus',pane_id:pane.pane_id,is_plugin:pane.is_plugin,focus_id:focusId,preserve_focus:preserveFocus},location.origin);
@@ -924,9 +926,73 @@ function syncTerminalConnection(entry) {
   const src=entry.cached||suspended?'about:blank':`/hosts/${encodeURIComponent(entry.host)}/${encodeURIComponent(entry.name)}`;
   if(suspended&&entry.state?.active_pane)entry.resumePane=entry.state.active_pane;
   entry.suspended=suspended;
+  if(!suspended)entry.suspendFailure=false;
+  if(entry.suspending||entry.retirementUnresolved)return;
   if(entry.frame.getAttribute('src')===src)return;
+  const retire=entry.frame.contentWindow?.__zjSuspendTerminal;
+  if(suspended&&retire){
+    if(entry.suspendFailure)return;
+    retireTerminal(entry,retire);
+    return;
+  }
   entry.state=null;entry.disconnected=false;entry.requestedPane=null;entry.focusPending=false;entry.needsFocus=true;
   entry.frame.src=src;
+}
+function terminalTransition(entry,busy) {
+  entry.frame.inert=busy;
+  entry.frame.style.opacity=busy?'0.45':'';
+  entry.frame.setAttribute('aria-busy',String(busy));
+  if(busy)entry.frame.blur();
+}
+function showRetirementStatus() {
+  const entries=[...sessions.values()];
+  const unresolved=entries.find(entry=>entry.retirementUnresolved);
+  $('status').classList.toggle('terminal-transition',entries.some(entry=>entry.retirementUnresolved||entry.suspending||!entry.suspended&&entry.frame.inert));
+  if(unresolved){
+    setStatus(unresolved.retirementError||'Terminal disconnect is unconfirmed. Recover this viewer before typing.',true);
+    if(unresolved.retirementRetryable===false)return;
+    const retry=document.createElement('button');retry.textContent='Retry terminal connection';
+    retry.onclick=()=>retireTerminal(unresolved,unresolved.frame.contentWindow.__zjSuspendTerminal);
+    $('status-message').append(' ',retry);
+  }else if([...sessions.values()].some(entry=>entry.suspending)){
+    setStatus('Finishing terminal input before disconnecting the hidden viewer…');
+  }else if([...sessions.values()].some(entry=>!entry.suspended&&entry.frame.inert)){
+    setStatus('Connecting terminal before enabling typing…');
+  }
+}
+function restoreRetainedTerminal(entry) {
+  // Cancellation may also own a partial paste. Restore its native selection
+  // without sending a focus control into that unfinished sequence.
+  if(entry.retirementState)entry.state=entry.retirementState.payload;
+  const tab=activeTab(entry),current=allTabs().find(item=>item.key===selected);
+  if(tab&&current?.entry===entry)selected=tabKey(entry,tab);
+  entry.needsFocus=false;entry.requestedPane=null;
+  entry.focusPending=!!entry.retirementState?.focus_pending;
+  entry.followActiveTab=false;
+  terminalTransition(entry,entry.focusPending);
+}
+function retireTerminal(entry,retire) {
+  if(!entry.retirementUnresolved)entry.retirementState=null;
+  entry.suspending=true;entry.retirementUnresolved=false;
+  terminalTransition(entry,true);
+  showRetirementStatus();
+  retire(()=>entry.suspended).then(retired=>{
+    entry.suspending=false;
+    if(retired){
+      entry.state=null;entry.disconnected=false;entry.requestedPane=null;entry.focusPending=false;entry.needsFocus=true;
+      entry.frame.src='about:blank';
+    }else restoreRetainedTerminal(entry);
+    if($('status-message').textContent==='Finishing terminal input before disconnecting the hidden viewer…')setStatus('');
+    syncTerminalConnection(entry);render();
+  }).catch(error=>{
+    entry.suspending=false;entry.suspendFailure=true;
+    entry.retirementUnresolved=!!error.unresolvedRetirement;
+    entry.retirementError=error.message;entry.retirementRetryable=error.retryableRetirement;
+    if(!entry.retirementUnresolved)restoreRetainedTerminal(entry);
+    else terminalTransition(entry,true);
+    render();setStatus(error.message,true);
+    showRetirementStatus();
+  });
 }
 function connectSession(host,name,starting=false,cached=false) {
   const key=sessionKey(host.id,name);
@@ -1016,7 +1082,12 @@ function recordTerminalDiagnostic(entry,type,diagnostic){
 window.addEventListener('message',event=>{
   if(event.origin!==location.origin)return;
   const entry=[...sessions.values()].find(e=>e.frame.contentWindow===event.source);
-  if(!entry||entry.suspended)return;
+  if(!entry)return;
+  if(entry.suspending||entry.retirementUnresolved){
+    if(event.data?.type==='zellij-state')entry.retirementState=event.data;
+    return;
+  }
+  if(entry.suspended)return;
   if(event.data?.type==='zellij-state') {
     entry.disconnected=false;
     const previousPosition=entry.state?.active_pane?.tab_position;
@@ -1057,6 +1128,7 @@ window.addEventListener('message',event=>{
     if(entry.needsFocus && entry.frame.classList.contains('active')){
       const current=allTabs().find(item=>item.key===selected);if(current)focus(current,true);
     }
+    if(entry.frame.inert&&!entry.needsFocus&&!entry.requestedPane&&!entry.focusPending)terminalTransition(entry,false);
   }else if(event.data?.type==='zellij-focus-failed'){
     if(entry.requestedPane?.focus_id!==event.data.focus_id)return;
     entry.requestedPane=null;
