@@ -2417,7 +2417,6 @@ impl Screen {
         self.recompute_tab_size(tab_id)
     }
 
-    /// A hidden viewer gives up its tab's size, so the screens people can see decide it.
     /// Repaints every cell the client sees. Renders otherwise send only changed
     /// lines, so a client that lost output never recovers from them alone.
     pub fn force_render_for_client(&mut self, client_id: ClientId) {
@@ -2433,6 +2432,7 @@ impl Screen {
         }
     }
 
+    /// A hidden viewer gives up its tab's size, so the screens people can see decide it.
     pub fn set_viewer_hidden(&mut self, client_id: ClientId, hidden: bool) -> Result<()> {
         if !self.connected_clients.borrow().contains_key(&client_id) {
             return Ok(());

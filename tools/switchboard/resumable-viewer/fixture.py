@@ -55,7 +55,18 @@ def output():
             os.write(sys.stdout.fileno(), (line+'\r\n').encode())
             f.write(line+'\n')
             time.sleep(.025)
+def flood():
+    # Coloured full-width rows make every engine frame large, so a viewer that
+    # stops acknowledging output overflows its replay buffer within seconds.
+    while not os.path.exists(os.path.join(root, 'flood')): time.sleep(.05)
+    for i in range(3000):
+        cells = ''.join('\x1b[48;5;%dm%d' % ((i + c) % 216 + 16, c % 10) for c in range(200))
+        os.write(sys.stdout.fileno(), (cells + '\x1b[0m\r\n').encode())
+        if i % 10 == 0: time.sleep(.01)
+    os.write(sys.stdout.fileno(), b'FLOOD:DONE\r\n')
+    open(os.path.join(root, 'flood-done'), 'w').close()
 threading.Thread(target=output, daemon=True).start()
+threading.Thread(target=flood, daemon=True).start()
 total = 0
 with open(os.path.join(root, 'input.bin'), 'ab', buffering=0) as f, open(os.path.join(root, 'input-times.jsonl'), 'w', buffering=1) as times:
     while True:
