@@ -109,14 +109,14 @@ test('SessionEnd hands retirement to a watcher holding the session lock',
   {skip:!binary&&'Set SWITCHBOARD_TEST_BINARY for the isolated executable check',timeout:30000},async()=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'switchboard-hook-end-'));
   const session=crypto.randomUUID(),participant={id:crypto.randomUUID(),cursor:1,machine_id:'fixture',machine_name:'Fixture',name:'agent',project:'fixture',terminal:null,active:true,created_at:1};
-  let hold=false,reading=false,release,retirements=0,watcher,mail=false;
+  let hold=false,reading=false,release,retirements=0,watcher,mail=false,statusDelay=0,registrationOffline=false,registrationFailures=0;
   const messages=Array.from({length:20},(_,index)=>({cursor:index+1,id:crypto.randomUUID(),sender:crypto.randomUUID(),sender_name:'peer',sender_machine_id:'other',sender_machine_name:'Other',project:'fixture',thread_id:crypto.randomUUID(),reply_to:null,body:'🦀'.repeat(1600),created_at:1,deliveries:[]}));
   const barrier=new Promise(resolve=>release=resolve);
   const server=http.createServer(async(req,res)=>{
     req.resume();
-    if(req.url==='/api/agent-hook'){res.writeHead(204).end();return;}
+    if(req.url==='/api/agent-hook'){if(statusDelay)await sleep(statusDelay);res.writeHead(204).end();return;}
     let value;
-    if(req.url==='/api/message-board/participants'){value=participant;}
+    if(req.url==='/api/message-board/participants'){if(registrationOffline){registrationFailures++;res.writeHead(503).end('{}');return;}value=participant;}
     else if(req.url.endsWith('/retire')){retirements++;value={...participant,active:false};}
     else {
       if(hold&&req.url.includes('/participants/')){reading=true;await barrier;}
@@ -143,7 +143,22 @@ test('SessionEnd hands retirement to a watcher holding the session lock',
     const state=JSON.parse(fs.readFileSync(path.join(root,'state',namespace,'claude-'+session+'.json'),'utf8'));
     assert.equal(state.participant.active,false);
     assert.equal((await hook('PostToolUse').done).stdout,'','late tools cannot reactivate an ended conversation');
-    const resumed=await hook('SessionStart').done;assert.ok(resumed.stdout.includes(participant.id),'explicit resume restores the same identity');
+    // The async hook can start before the synchronous resume reaches the board.
+    statusDelay=300;
+    const resuming=hook('SessionStart');watcher=hook('SessionStart',true);
+    const resumed=await resuming.done;assert.ok(resumed.stdout.includes(participant.id),'explicit resume restores the same identity');
+    await sleep(2200);
+    assert.equal(watcher.child.exitCode,null,'resumed idle conversation keeps its watcher');
+    assert.equal((await hook('SessionEnd').done).code,0);
+    assert.equal((await watcher.done).code,0,'a later end still stops the initialized watcher');watcher=null;
+    // Resume must recover without another user turn after registration fails.
+    statusDelay=0;registrationOffline=true;
+    await hook('SessionStart').done;watcher=hook('SessionStart',true);
+    await waitFor(()=>registrationFailures>=2,'initial watcher retries offline resume registration');
+    registrationOffline=false;
+    await waitFor(()=>JSON.parse(fs.readFileSync(path.join(root,'state',namespace,'claude-'+session+'.json'),'utf8')).participant.active,'watcher restores identity after the board recovers');
+    await hook('SessionEnd').done;assert.equal((await watcher.done).code,0);watcher=null;
+    await hook('SessionStart').done;
     // End during a blocked stderr write: already emitted context still needs
     // Claude's exit-2 wake signal even after completing retirement.
     // Exceed socket buffers as well as pipe buffers; body previews alone can

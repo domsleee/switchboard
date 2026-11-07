@@ -263,6 +263,7 @@ fn deliver(
     agent: &str,
     event: &Event,
     wait: bool,
+    initializing: &mut bool,
 ) -> anyhow::Result<Delivery> {
     let key = format!("{agent}-{}", event.session_id);
     let ended = dir.join(format!("{key}.ended"));
@@ -286,13 +287,20 @@ fn deliver(
     };
     let file = dir.join(format!("{key}.json"));
     let previous: Option<Session> = load(&file)?;
+    // SessionStart hooks run concurrently. The watcher must wait for the
+    // synchronous hook to clear the old end marker. It can then retry identity
+    // restoration if that hook failed while the board was unavailable.
+    // Only defer during initialization; a later SessionEnd still ends the watch.
+    if *initializing && ended.exists() {
+        return Ok(Delivery::Waiting);
+    }
     if ended.exists() {
         if let Some(mut state) = previous {
             return retire(client, &file, &mut state);
         }
         return Ok(Delivery::Ended);
     }
-    if wait && previous.as_ref().is_some_and(|s| !s.participant.active) {
+    if wait && !*initializing && previous.as_ref().is_some_and(|s| !s.participant.active) {
         return Ok(Delivery::Ended);
     }
     let fresh = previous.is_none();
@@ -311,6 +319,7 @@ fn deliver(
     if registering {
         save(&file, &state)?;
     }
+    *initializing = false;
     use sha2::{Digest, Sha256};
     let computer_key: String = Sha256::digest(state.participant.machine_id.as_bytes())
         .iter()
@@ -450,8 +459,9 @@ pub(crate) fn run(agent: &str, input: &[u8], wait: bool) {
     } else {
         None
     };
+    let mut initializing = wait && event.hook_event_name == "SessionStart";
     loop {
-        match deliver(&client, &dir, agent, &event, wait) {
+        match deliver(&client, &dir, agent, &event, wait, &mut initializing) {
             Ok(Delivery::Ended) => return,
             Ok(Delivery::Sent) if wait => {
                 if agent == "claude" {
@@ -473,7 +483,7 @@ pub(crate) fn run(agent: &str, input: &[u8], wait: bool) {
                         cwd: event.cwd.clone(),
                         hook_event_name: "SessionEnd".into(),
                     };
-                    let _ = deliver(&client, &dir, agent, &end, false);
+                    let _ = deliver(&client, &dir, agent, &end, false, &mut false);
                 }
                 return;
             },
