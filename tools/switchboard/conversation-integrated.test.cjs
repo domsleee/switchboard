@@ -116,9 +116,13 @@ test('integrated Conversation journeys use production markup and preserve delive
     try{
      const photo=page.locator('.conversation-message.user img');await photo.waitFor({state:'attached'});await photo.evaluate(node=>node.loading='eager');
      await page.waitForFunction(()=>!document.querySelector('[aria-label="Refresh"]').disabled);
-     await page.locator('.conversation-messages').evaluate((node,reading)=>node.scrollTop=reading?300:node.scrollHeight,reading);await page.waitForTimeout(30);
+     await page.locator('.conversation-messages').evaluate(async(node,reading)=>{node.scrollTop=reading?300:node.scrollHeight;await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));},reading);
      const anchor=page.locator('.conversation-message.assistant').first(),before=(await anchor.boundingBox()).y;
-     f.delayImages=false;f.releaseImages.splice(0).forEach(fn=>fn());await page.waitForFunction(()=>document.querySelector('.conversation-message.user img')?.naturalHeight===640);await page.waitForTimeout(40);
+     f.delayImages=false;f.releaseImages.splice(0).forEach(fn=>fn());await page.waitForFunction(()=>document.querySelector('.conversation-message.user img')?.naturalHeight===640);
+     // Image decoding and the ResizeObserver's next animation frame are separate.
+     // Observe the settled reading position rather than assuming two frames fit in 40 ms.
+     try{await page.waitForFunction(({reading,before})=>{const list=document.querySelector('.conversation-messages');return reading?Math.abs(document.querySelector('.conversation-message.assistant').getBoundingClientRect().y-before)<2:list.scrollHeight-list.scrollTop-list.clientHeight<2;},{reading,before});}
+     catch(error){error.message+='\nImage layout: '+JSON.stringify(await page.evaluate(({reading,before})=>{const list=document.querySelector('.conversation-messages'),image=list.querySelector('img');return{reading,before,after:list.querySelector('.conversation-message.assistant').getBoundingClientRect().y,scrollTop:list.scrollTop,scrollHeight:list.scrollHeight,clientHeight:list.clientHeight,imageHeight:image.getBoundingClientRect().height,naturalHeight:image.naturalHeight};},{reading,before}));throw error;}
      if(reading)assert.ok(Math.abs((await anchor.boundingBox()).y-before)<2,'Image loading above the reader must preserve their position');
      else assert.ok(await page.locator('.conversation-messages').evaluate(node=>node.scrollHeight-node.scrollTop-node.clientHeight)<2,'Following must stay at the bottom after image layout');
     }finally{await f.close();}
