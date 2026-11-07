@@ -40,6 +40,10 @@ test('phone terminal fits above the keyboard with a compact font and keeps manua
   await page.evaluate(()=>{viewScale=1;visualViewport.dispatchEvent(new Event('resize'));});await keyboard(844);
   await page.getByRole('button',{name:'Conversation',exact:true}).click();await page.waitForFunction(()=>!document.body.classList.contains('mobile-terminal-viewport'));
   await page.getByRole('button',{name:'Terminal',exact:true}).click();await page.waitForFunction(()=>document.body.classList.contains('mobile-terminal-viewport'));
+  // Conversation disconnects the viewer. A new Terminal connection starts with
+  // its configured font; manual zoom must still survive subsequent resizing.
+  await frame.waitForFunction(()=>window.term?.cols>40);
+  await frame.evaluate(()=>setFont(18));
   await page.setViewportSize({width:844,height:390});await keyboard(240);bounds=await iframe.boundingBox();assert.ok(bounds.y+bounds.height<=241);assert.equal(await frame.evaluate(()=>term.options.fontSize),18);
   await frame.evaluate(()=>explicitFont(20));assert.equal(await frame.evaluate(()=>term.options.fontSize),20);
   assert.deepEqual(errors,[]);

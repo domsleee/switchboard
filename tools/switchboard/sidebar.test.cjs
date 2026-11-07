@@ -448,12 +448,12 @@ test('early catalog data is applied immediately and one delayed host does not bl
   let releaseSlow;const delayed=new Promise(resolve=>releaseSlow=resolve),mounted=[];
   const catalog=[{host:'mac',session:'main',id:42,position:0,name:'A',panes:[]}];
   const context={loading:false,hosts:new Map(),startedHosts:new Set(),sessions:new Map(),tabCatalog:catalog,ready:{},hidden:{},tabOrder:[],selected:null,catalogUnavailable:()=>false,saveReady(){},localStorage:{setItem(){}},clearTimeout(){},
-    document:{createElement:()=>({remove(){}})},$:()=>({append:frame=>mounted.push(frame)}),renderMachines(){},render(){},setStatus(){},
+    document:{createElement:()=>({getAttribute(name){return this[name];},remove(){}})},$:()=>({append:frame=>mounted.push(frame)}),renderMachines(){},render(){},setStatus(){},
     fetch:async url=>{if(url==='/api/hosts?summary=1')return {ok:true,json:async()=>[{id:'mac',name:'Mac'},{id:'slow',name:'Slow'}]};
       if(url==='/api/hosts/slow')return delayed;
       return {ok:true,json:async()=>({id:'mac',name:'Mac',sessions:[{name:'main',web_clients_allowed:true}]})};}};
   vm.createContext(context);vm.runInContext(source.slice(source.indexOf('function sessionKey('),source.indexOf('function attentionKey(')),context);
-  vm.runInContext(source.slice(source.indexOf('function connectSession('),source.indexOf("window.addEventListener('message'")),context);
+  vm.runInContext(source.slice(source.indexOf('function syncTerminalConnection('),source.indexOf("window.addEventListener('message'")),context);
   const refresh=context.refresh();await new Promise(resolve=>setImmediate(resolve));
   const entry=context.sessions.get(JSON.stringify(['mac','main']));assert.equal(entry.catalog[0].id,42);assert.equal(mounted.length,1);assert.equal(context.loading,true);
   releaseSlow({ok:true,json:async()=>({id:'slow',name:'Slow',error:'Offline'})});await refresh;assert.equal(context.loading,false);
@@ -463,11 +463,11 @@ test('early catalog data is applied immediately and one delayed host does not bl
 test('a host the relay stops listing leaves the sidebar without a reload',async()=>{
   let summary=[{id:'windows',name:'Windows'},{id:'mesh-twin',name:'Windows'}];const removed=[];
   const context={loading:false,hosts:new Map(),startedHosts:new Set(),sessions:new Map(),tabCatalog:[],ready:{},hidden:{},tabOrder:[],selected:null,catalogUnavailable:()=>false,saveReady(){},localStorage:{setItem(){}},clearTimeout(){},setTimeout(){},
-    document:{createElement:()=>({remove(){removed.push(this.src);}})},$:()=>({append(){}}),renderMachines(){},render(){},setStatus(){},
+    document:{createElement:()=>({getAttribute(name){return this[name];},remove(){removed.push(this.src);}})},$:()=>({append(){}}),renderMachines(){},render(){},setStatus(){},
     fetch:async url=>url==='/api/hosts?summary=1'?{ok:true,json:async()=>summary}
       :{ok:true,json:async()=>({id:decodeURIComponent(url.split('/').pop()),name:'Windows',sessions:[{name:'main',web_clients_allowed:true}]})}};
   vm.createContext(context);vm.runInContext(source.slice(source.indexOf('function sessionKey('),source.indexOf('function attentionKey(')),context);
-  vm.runInContext(source.slice(source.indexOf('function connectSession('),source.indexOf("window.addEventListener('message'")),context);
+  vm.runInContext(source.slice(source.indexOf('function syncTerminalConnection('),source.indexOf("window.addEventListener('message'")),context);
   await context.refresh();
   assert.deepEqual([...context.hosts.keys()],['windows','mesh-twin']);assert.equal(context.sessions.size,2);
   summary=[{id:'windows',name:'Windows'}];await context.refresh();

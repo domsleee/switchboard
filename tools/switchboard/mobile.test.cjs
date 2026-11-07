@@ -50,7 +50,7 @@ test('phone sidebar, actions, Settings, Computers and Messages fit without horiz
       const newTab=await page.locator('#new-tab').boundingBox(),admin=await page.locator('#new-admin-tab').boundingBox(),toggle=await page.locator('#sidebar-toggle').boundingBox();
       assert.ok(newTab.x+newTab.width<=admin.x && admin.x+admin.width<=toggle.x,'top actions must not overlap');
       if (viewport.width<=1000) assert.equal(await page.locator('#tab-search').evaluate(el=>getComputedStyle(el).fontSize),'16px');
-      await page.waitForFunction(()=>[...sessions.values()].some(entry=>entry.state));
+      await page.waitForFunction(()=>[...sessions.values()].some(entry=>entry.state||entry.suspended&&entry.catalog?.length));
       await page.locator('#new-tab').click();
       await page.locator('#new-tab-dialog').waitFor({state:'visible'});
       if (viewport.width<1000) {

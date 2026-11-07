@@ -6,13 +6,14 @@ for(const empty of [false,true])test(`mobile conversation survives creation on $
     const page=await browser.newPage({viewport:{width:900,height:600},hasTouch:true,isMobile:true});
     page.setDefaultTimeout(5000);const errors=[];page.on('pageerror',e=>errors.push(e.message));
     await page.addInitScript(()=>{localStorage.setItem('switchboard-view-mode','terminal');window.setInterval=()=>0;});
-    let connected=!empty;
+    let connected=!empty,created=false,creations=0;
     await page.route('**/*',route=>{
       const path=new URL(route.request().url()).pathname;
       const json=data=>route.fulfill({json:data});
       if(path==='/api/hosts')return json([{id:'fixture',name:'Fixture'}]);
       if(path==='/api/hosts/fixture')return json({id:'fixture',name:'Fixture',sessions:connected?[{name:'main',web_clients_allowed:true}]:[]});
-      if(path==='/api/attention')return json({tabs:connected?[{host:'fixture',session:'main',id:1,position:0,name:'Original',panes:[{pane_id:1,is_plugin:false,tab_position:0}]}]:[],panes:[],errors:[]});
+      if(path==='/api/attention')return json({tabs:connected?[{host:'fixture',session:'main',id:1,position:0,name:'Original',panes:[{pane_id:1,is_plugin:false,tab_position:0}]},...(created?[{host:'fixture',session:'main',id:2,position:1,name:'New shell',panes:[{pane_id:2,is_plugin:false,tab_position:1}]}]:[])]:[],panes:[],errors:[]});
+      if(path==='/hosts/fixture/new-tab'){creations++;connected=created=true;return json({pane_id:2});}
       if(path==='/hosts/fixture/project-list')return json(['switchboard']);
       if(path.startsWith('/api/'))return json({});
       if(path.startsWith('/hosts/')){connected=true;return route.fulfill({contentType:'text/html',body:`<div id=terminal></div><script>
@@ -32,9 +33,10 @@ for(const empty of [false,true])test(`mobile conversation survives creation on $
     else await page.locator('.conversation-panel').waitFor();
     await page.evaluate(()=>openNewTabDialog(false));
     await page.locator('#new-tab-form button[type=submit]').click();
-    await page.waitForFunction(()=>document.querySelector('#terminals>iframe')?.contentWindow.created);
+    await page.waitForFunction(()=>document.querySelector('.conversation-heading strong').textContent==='New shell');
+    assert.equal(creations,1);
+    assert.equal(await page.locator('#terminals>iframe').getAttribute('src'),'about:blank');
     assert.equal(await page.locator('#terminals').evaluate(el=>el.classList.contains('conversation-open')),true);
-    await page.evaluate(()=>document.querySelector('#terminals>iframe').contentWindow.state(2));
     await page.waitForFunction(()=>document.querySelector('.conversation-heading strong').textContent==='New shell');
     assert.equal(await page.locator('.conversation-panel').isVisible(),true);
     assert.equal(await page.locator('#terminals>iframe').isVisible(),false);

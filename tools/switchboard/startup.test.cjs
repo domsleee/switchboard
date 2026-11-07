@@ -9,14 +9,14 @@ function workspace(initial){
   const mounted=[],timeouts=[],elements=new Map();
   const context={newTabElevated:false,loading:false,hosts:new Map(),sessions:new Map(),tabCatalog:[],ready:{},hidden:{},tabOrder:[],selected:null,filter:'all',
     catalogUnavailable:()=>false,saveReady(){},localStorage:{setItem(){}},renderMachines(){},render(){},setStatus(){},clearTimeout(){},setTimeout:fn=>timeouts.push(fn),
-    document:{createElement:()=>({remove(){this.removed=true;},focus(){}})},$:id=>elements.get(id),
+    document:{createElement:()=>({getAttribute(name){return this[name];},remove(){this.removed=true;},focus(){}})},$:id=>elements.get(id),
     fetch:async url=>({ok:true,json:async()=>url==='/api/hosts?summary=1'?[{id:'windows',name:'Windows'}]:catalog})};
   elements.set('new-tab-project',{value:'switchboard'});elements.set('new-tab-command',{value:'c'});
   elements.set('terminals',{append:frame=>mounted.push(frame)});
   elements.set('new-tab-form',{});elements.set('new-tab-target',{value:JSON.stringify(['windows','main'])});elements.set('new-tab-dialog',{close(){}});elements.set('tab-search',{value:''});
   vm.createContext(context);
   vm.runInContext(source.slice(source.indexOf('function sessionKey('),source.indexOf('function attentionKey(')),context);
-  vm.runInContext(source.slice(source.indexOf('function connectSession('),source.indexOf("window.addEventListener('message'")),context);
+  vm.runInContext(source.slice(source.indexOf('function syncTerminalConnection('),source.indexOf("window.addEventListener('message'")),context);
   const submit=source.indexOf("$('new-tab-form').onsubmit=");
   vm.runInContext(source.slice(submit,source.indexOf("$('ready').onclick=",submit)),context);
   return {context,mounted,timeouts,elements,catalog:value=>catalog=value};

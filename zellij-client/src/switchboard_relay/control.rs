@@ -45,7 +45,7 @@ pub(super) fn binary(host: &Host) -> anyhow::Result<PathBuf> {
 }
 
 /// This executable's path, for starting its own CLI.
-pub(super) fn own_executable() -> std::io::Result<PathBuf> {
+pub(crate) fn own_executable() -> std::io::Result<PathBuf> {
     Ok(without_deleted_suffix(std::env::current_exe()?))
 }
 

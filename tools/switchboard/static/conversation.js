@@ -9,7 +9,7 @@
       }
     });
   }
-  window.SwitchboardConversation={install({selection,terminal}){
+  window.SwitchboardConversation={install({selection,terminal,modeChanged=()=>{}}){
     const root=document.getElementById('terminals'),drafts=new Map(),attachments=new Map(),retryKeys=new Map();
     const mobile=matchMedia('(max-width:700px), (pointer:coarse) and (max-width:1000px)').matches;
     const modeKey=mobile?'switchboard-mobile-view-mode':'switchboard-view-mode';
@@ -33,7 +33,8 @@
     function status(text,quiet=false){notice.textContent=text;notice.hidden=quiet;}
     function busy(value){loading=value;older.disabled=refresh.disabled=value;}
     function focusSurface(){if(!panel.hidden&&!panel.contains(document.activeElement))panel.focus({preventScroll:true});}
-    function show(value){if(!value){window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();}open=value;root.classList.toggle('conversation-open',open);try{localStorage.setItem(modeKey,value?'conversation':'terminal');}catch{}panel.hidden=!value;toggle.setAttribute('aria-pressed',String(value));back.setAttribute('aria-pressed',String(!value));if(value){document.getElementById('artifact-preview').hidden=true;update();if(binding()&&!messages.length)load('initial');focusSurface();}else if(target)terminal(target);viewport();}
+    function show(value){if(!value){window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();}open=value;root.classList.toggle('conversation-open',open);modeChanged();try{localStorage.setItem(modeKey,value?'conversation':'terminal');}catch{}panel.hidden=!value;toggle.setAttribute('aria-pressed',String(value));back.setAttribute('aria-pressed',String(!value));if(value){document.getElementById('artifact-preview').hidden=true;update();if(binding()&&!messages.length)load('initial');focusSurface();}else if(target)terminal(target);viewport();}
+
     toggle.onclick=()=>show(true);back.onclick=()=>show(false);
     async function get(url){const response=await fetch(url);if(!response.ok)throw Error(`Request failed (${response.status})`);const data=await response.json();if(data.error)throw Error(data.error);return data;}
     const rendered=new Map();
@@ -153,7 +154,16 @@
           const result=await response.json();complete(sent,response.ok&&result.status==='queued',response.ok&&result.status==='queued'?'Queued':result.detail||'Could not confirm delivery. Retry to check its status.');
         }catch{complete(sent,false,'Could not confirm delivery. Retry to check its status.');}return;
       }
-      target.frame.contentWindow.postMessage({type:'zellij-conversation-paste',id,pane_id:target.pane,agent:current.agent,submit:true,text:payload},location.origin);
+      // Agents without a native reply API need the visible terminal connection.
+      // Attach only after leaving Conversation, then wait for the selected pane.
+      if(current.terminalReady===false){
+        show(false);
+        const deadline=Date.now()+10000;
+        while(pending===sent&&identity(selection())===key&&!selection()?.terminalReady&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,50));
+        if(pending!==sent)return;
+        if(identity(selection())!==key||!selection()?.terminalReady){complete(sent,false,'Terminal is not ready. Your draft is kept.');return;}
+      }
+      sent.frame.contentWindow.postMessage({type:'zellij-conversation-paste',id,pane_id:current.pane,agent:current.agent,submit:true,text:payload},location.origin);
       setTimeout(()=>complete(sent,false,'No confirmation from the terminal. Check it before trying again; your draft is kept.'),4000);
     };
     window.addEventListener('message',event=>{
@@ -179,6 +189,6 @@
     }
     // Open at the latest messages; older history is fetched only on request.
     setInterval(()=>{if(open&&!document.hidden)load();},2000);
-    window.SwitchboardConversation.update=update;window.SwitchboardConversation.isOpen=()=>open&&!panel.hidden;window.SwitchboardConversation.focus=focusSurface;window.SwitchboardConversation.showTerminal=()=>show(false);update();
+    window.SwitchboardConversation.wantsConversation=()=>open;window.SwitchboardConversation.update=update;window.SwitchboardConversation.isOpen=()=>open&&!panel.hidden;window.SwitchboardConversation.focus=focusSurface;window.SwitchboardConversation.showTerminal=()=>show(false);update();
   }};
 })();
