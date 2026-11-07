@@ -24,8 +24,8 @@ test('conversation recovers from stalled reads, logs safe diagnostics and preser
   mode='ok';release();const poll=async()=>{await Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/')),page.evaluate(()=>polls.forEach(fn=>fn()))]);await page.clock.runFor(30);};
   await poll();await page.locator('.conversation-message').first().waitFor();assert.equal(await page.locator('.conversation-message').count(),40);
   assert.equal(diagnostics.at(-1).outcome,'recovered');assert.equal(await page.locator('.conversation-notice').isVisible(),false);
-  await page.clock.runFor(750);assert.equal(await page.locator('.conversation-messages').evaluate(n=>getComputedStyle(n).scrollbarWidth),'none');
-  await page.locator('.conversation-messages').evaluate(n=>{n.scrollTop=150;});
+  await page.waitForFunction(()=>document.querySelector('.conversation-messages').classList.contains('scrolling'));await page.clock.runFor(750);assert.equal(await page.locator('.conversation-messages').evaluate(n=>getComputedStyle(n).scrollbarWidth),'none');
+  await page.locator('.conversation-messages').evaluate(n=>new Promise(resolve=>{n.addEventListener('scroll',()=>resolve(),{once:true});n.scrollTop=150;}));
   await page.clock.runFor(800);assert.equal(await page.locator('.conversation-messages').evaluate(n=>getComputedStyle(n).scrollbarWidth),'none');
   const position=await page.locator('.conversation-messages').evaluate(n=>n.scrollTop);history.push({role:'assistant',text:'A fresh answer'});await poll();
   assert.equal(await page.locator('.conversation-messages').evaluate(n=>n.scrollTop),position);
