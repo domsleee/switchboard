@@ -21,7 +21,8 @@ test('conversation recovers from stalled reads, logs safe diagnostics and preser
   await page.goto('http://loading.test/');await page.waitForFunction(()=>document.querySelector('.conversation-panel')&&!document.querySelector('.conversation-panel').hidden);
   await page.clock.runFor(15010);await page.getByText('Loading took too long. Retrying…',{exact:true}).waitFor();
   assert.equal(diagnostics[0].outcome,'timeout');assert.equal(diagnostics[0].phase,'initial');
-  mode='ok';release();const poll=async()=>{await Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/')),page.evaluate(()=>polls.forEach(fn=>fn()))]);await page.clock.runFor(30);};
+  mode='ok';release();const settled=()=>page.waitForFunction(()=>!document.querySelector('[aria-label="Refresh"]').disabled);
+  const poll=async()=>{await settled();await Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/')),page.evaluate(()=>polls.forEach(fn=>fn()))]);await settled();await page.clock.runFor(30);};
   await poll();await page.locator('.conversation-message').first().waitFor();assert.equal(await page.locator('.conversation-message').count(),40);
   assert.equal(diagnostics.at(-1).outcome,'recovered');assert.equal(await page.locator('.conversation-notice').isVisible(),false);
   const waitForScrollIdle=()=>page.waitForFunction(()=>getComputedStyle(document.querySelector('.conversation-messages')).scrollbarWidth==='none');await waitForScrollIdle();
