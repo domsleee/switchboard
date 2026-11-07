@@ -115,6 +115,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      - name: Check Codex plugin hook configuration and Windows stdin
+        run: node tools/switchboard/codex-plugin-hooks.test.cjs
       - name: Install isolated browser
         run: |
           npm install --prefix "$RUNNER_TEMP/resume-browser" playwright

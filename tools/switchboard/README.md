@@ -101,16 +101,20 @@ needs it, on any computer. Setup does only this:
   auto-update in the agent's `settings.json`. The plugin also adds a `message-board`
   skill, so the agent can read, reply to and send
   [message board](../../docs/MESSAGE_BOARD_USAGE.md) messages.
-- **Codex:** Setup installs the `switchboard@switchboard` skills plugin. Health
-  requires it to be enabled with all four skills present in the cache. Codex
-  plugins can't carry hooks, so setup also adds command hooks to
-  `~/.codex/hooks.json`, keeping any others. They run a small launcher in
+- **Codex:** Setup installs the `switchboard@switchboard` plugin with all four
+  skills and its own Codex status and message hooks in `hooks/codex.json`.
+  The shared Claude hook file is never loaded by Codex. The hooks run a launcher in
   `~/.local/share/switchboard/` that Switchboard keeps pointed at its current
-  executable. Setup then trusts those hooks through `codex app-server`, as Codex's
+  executable. Setup trusts the plugin hooks through `codex app-server`, as Codex's
   own **Trust all and continue** would, and leaves other hooks untrusted. If that
   fails, Codex asks at its next start. The relay also trusts them when it starts, so
-  computers set up earlier catch up after their next update. A computer whose hooks
-  are still untrusted shows **Trust hooks**. Updates don't change the hooks, so they stay trusted.
+  computers with the new plugin catch up after their next update. After Codex
+  confirms every plugin hook is trusted, setup removes Switchboard's old entries
+  from `~/.codex/hooks.json`, keeping other hooks and a backup. A failed trust check
+  leaves those entries intact. Health requests setup for an older plugin and
+  **Trust hooks** for an untrusted one. Changed plugin hook content needs trust again.
+  If the plugin updates before the relay, finish setup with the updated relay and
+  restart Codex before trusting its new hooks, so legacy and plugin hooks do not run together.
 
 Running sessions pick up the plugin or hooks after a restart. Copilot's hooks run
 `zellij` from `PATH`, so this fork's `zellij` must be on it.

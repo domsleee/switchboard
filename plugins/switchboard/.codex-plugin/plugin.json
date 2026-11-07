@@ -1,6 +1,6 @@
 {
   "name": "switchboard",
-  "description": "Switchboard skills for messages, interactive commands, sudo, and closing the current tab.",
+  "description": "Switchboard status, incoming messages, and skills for interactive commands, sudo, and closing the current tab.",
   "skills": "./skills/",
-  "hooks": { "hooks": {} }
+  "hooks": "./hooks/codex.json"
 }
