@@ -839,3 +839,90 @@ fn message_board_removed_computers_stop_new_deliveries_without_replacing_identit
         StatusCode::CONFLICT
     );
 }
+
+#[test]
+fn message_board_reports_when_a_recipient_last_checked_its_mail() {
+    let (dir, store) = fixture();
+    let sender = register(&store, "mac", "sender");
+    let receiver = register(&store, "windows", "receiver");
+    let path = dir.path().join("board.sqlite3");
+    let set_seen = |ms: Option<u64>| {
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute(
+                "UPDATE participants SET last_seen=?2 WHERE id=?1",
+                rusqlite::params![receiver.id, ms],
+            )
+            .unwrap();
+    };
+    let seen = |store: &Store, key: &str| {
+        let sent = store
+            .send(&machine("mac"), request(&sender, &receiver, key))
+            .unwrap();
+        sent.deliveries[0].recipient_last_seen.unwrap()
+    };
+    // An agent that stopped polling keeps its old time.
+    set_seen(Some(1_000));
+    assert_eq!(seen(&store, "quiet"), 1_000);
+    // Its next mail check records it as seen again.
+    store
+        .unread(&machine("windows"), &receiver.id, page())
+        .unwrap();
+    let fresh = seen(&store, "fresh");
+    assert!(
+        now() - fresh < 5_000,
+        "unread did not record the mail check"
+    );
+    // Polls within 30 seconds do not rewrite it.
+    set_seen(Some(now() - 10_000));
+    let throttled = now() - 10_000;
+    store
+        .unread(&machine("windows"), &receiver.id, page())
+        .unwrap();
+    assert!(
+        seen(&store, "throttled") <= throttled + 50,
+        "a recent check was rewritten"
+    );
+    // Agents from before this field fall back to when they registered.
+    set_seen(None);
+    let fallback = store.inboxes(&machine("mac"), page()).unwrap().to_string();
+    assert!(fallback.contains(&format!("\"last_seen\":{}", receiver.created_at)));
+    // Computer inboxes have no watcher to report.
+    let mut computer = request(&sender, &receiver, "computer");
+    computer.to = None;
+    computer.to_machine = Some("windows".into());
+    let sent = store.send(&machine("mac"), computer).unwrap();
+    assert!(sent
+        .deliveries
+        .iter()
+        .all(|d| d.recipient_last_seen.is_none()));
+}
+
+#[test]
+fn message_board_adds_last_seen_to_a_board_without_bumping_its_version() {
+    let (dir, store) = fixture();
+    let receiver = register(&store, "windows", "receiver");
+    drop(store);
+    let path = dir.path().join("board.sqlite3");
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch("ALTER TABLE participants DROP COLUMN last_seen;")
+        .unwrap();
+    drop(conn);
+    let store = Store::open(&path).unwrap();
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let version: u32 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 2, "an older build must still open this board");
+    store
+        .unread(&machine("windows"), &receiver.id, page())
+        .unwrap();
+    let seen: Option<u64> = conn
+        .query_row(
+            "SELECT last_seen FROM participants WHERE id=?1",
+            [&receiver.id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(seen.is_some());
+}

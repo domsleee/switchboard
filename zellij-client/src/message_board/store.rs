@@ -63,6 +63,13 @@ impl Store {
                 PRIMARY KEY(message_seq, recipient));
             CREATE INDEX IF NOT EXISTS machine_deliveries_unread ON machine_deliveries(recipient, acknowledged_at, message_seq);
             PRAGMA user_version=2;")?;
+        // Added without a version bump, so an older build can still open this board.
+        let has_last_seen = conn
+            .prepare("SELECT 1 FROM pragma_table_info('participants') WHERE name='last_seen'")?
+            .exists([])?;
+        if !has_last_seen {
+            conn.execute("ALTER TABLE participants ADD COLUMN last_seen INTEGER", [])?;
+        }
         Ok(store)
     }
 
@@ -100,7 +107,7 @@ impl Store {
         let mut result = vec![];
         for computer in machines {
             let count: u64 = conn.query_row("SELECT COUNT(*) FROM machine_deliveries d JOIN messages m ON m.seq=d.message_seq WHERE d.recipient=?1 AND d.acknowledged_at IS NULL AND (?2 IS NULL OR m.project=?2)", params![computer.id,page.project], |r|r.get(0))?;
-            let mut agents = conn.prepare("SELECT seq,id,machine_id,machine_name,name,project,terminal,active,created_at FROM participants WHERE machine_id=?1 AND (?2 IS NULL OR project=?2 OR EXISTS (SELECT 1 FROM deliveries d JOIN messages m ON m.seq=d.message_seq WHERE d.recipient=participants.id AND m.project=?2)) ORDER BY active DESC,seq")?;
+            let mut agents = conn.prepare("SELECT seq,id,machine_id,machine_name,name,project,terminal,active,created_at,COALESCE(last_seen,created_at) FROM participants WHERE machine_id=?1 AND (?2 IS NULL OR project=?2 OR EXISTS (SELECT 1 FROM deliveries d JOIN messages m ON m.seq=d.message_seq WHERE d.recipient=participants.id AND m.project=?2)) ORDER BY active DESC,seq")?;
             let participants = agents
                 .query_map(params![computer.id, page.project], participant_row)?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -190,9 +197,9 @@ impl Store {
             None => Uuid::new_v4().to_string(),
         };
         let terminal = request.terminal.map(|t| serde_json::to_string(&t).unwrap());
-        tx.execute("INSERT INTO participants (id,machine_id,machine_name,name,project,terminal,active,created_at)
-            VALUES (?1,?2,?3,?4,?5,?6,1,?7) ON CONFLICT(id) DO UPDATE SET
-            machine_name=excluded.machine_name,name=excluded.name,project=excluded.project,terminal=excluded.terminal,active=1",
+        tx.execute("INSERT INTO participants (id,machine_id,machine_name,name,project,terminal,active,created_at,last_seen)
+            VALUES (?1,?2,?3,?4,?5,?6,1,?7,?7) ON CONFLICT(id) DO UPDATE SET
+            machine_name=excluded.machine_name,name=excluded.name,project=excluded.project,terminal=excluded.terminal,active=1,last_seen=excluded.last_seen",
             params![id,machine.id,machine.name,request.name,request.project,terminal,now()])?;
         let participant = participant(&tx, &id)?;
         tx.commit()?;
@@ -212,7 +219,7 @@ impl Store {
     pub(super) fn participants(&self, page: ReadPage) -> Result<Page<Participant>> {
         validate_page(&page)?;
         let conn = self.connection()?;
-        let mut query = conn.prepare("SELECT seq,id,machine_id,machine_name,name,project,terminal,active,created_at
+        let mut query = conn.prepare("SELECT seq,id,machine_id,machine_name,name,project,terminal,active,created_at,COALESCE(last_seen,created_at)
             FROM participants WHERE active=1 AND seq>?1 AND (?2 IS NULL OR project=?2) ORDER BY seq LIMIT ?3")?;
         let rows = query.query_map(
             params![page.after, page.project, page.limit as u32 + 1],
@@ -356,6 +363,12 @@ impl Store {
         validate_page(&page)?;
         let conn = self.connection()?;
         owned(&conn, machine, id)?;
+        // Hook watchers poll this every two seconds, so it shows the agent is still
+        // receiving mail. Throttled to one write per 30 seconds per agent.
+        conn.execute(
+            "UPDATE participants SET last_seen=?2 WHERE id=?1 AND (last_seen IS NULL OR last_seen<?2-30000)",
+            params![id, super::now()],
+        )?;
         let mut query = conn.prepare(
             "SELECT message_seq FROM deliveries WHERE recipient=?1 AND acknowledged_at IS NULL
             AND message_seq>?2 ORDER BY message_seq LIMIT ?3",
@@ -429,10 +442,11 @@ fn participant_row(row: &rusqlite::Row) -> rusqlite::Result<Participant> {
         terminal,
         active: row.get(7)?,
         created_at: row.get(8)?,
+        last_seen: row.get(9)?,
     })
 }
 fn participant(conn: &Connection, id: &str) -> Result<Participant> {
-    conn.query_row("SELECT seq,id,machine_id,machine_name,name,project,terminal,active,created_at FROM participants WHERE id=?1",
+    conn.query_row("SELECT seq,id,machine_id,machine_name,name,project,terminal,active,created_at,COALESCE(last_seen,created_at) FROM participants WHERE id=?1",
         [id], participant_row).optional()?.ok_or_else(BoardError::missing)
 }
 fn owned(conn: &Connection, machine: &Machine, id: &str) -> Result<Participant> {
@@ -500,7 +514,7 @@ fn message(conn: &Connection, seq: u64) -> Result<Message> {
         FROM messages WHERE seq=?1", [seq], |r| Ok(Message { cursor:r.get(0)?,id:r.get(1)?,sender:r.get(2)?,sender_name:r.get(3)?,
             sender_machine_id:r.get(4)?,sender_machine_name:r.get(5)?,project:r.get(6)?,thread_id:r.get(7)?,reply_to:r.get(8)?,
             body:r.get(9)?,created_at:r.get(10)?,deliveries:vec![] })).optional()?.ok_or_else(BoardError::missing)?;
-    let mut query = conn.prepare("SELECT recipient,name,machine_id,machine_name,acknowledged_at,'agent' FROM deliveries WHERE message_seq=?1 UNION ALL SELECT recipient,name,machine_id,machine_name,acknowledged_at,'computer' FROM machine_deliveries WHERE message_seq=?1 ORDER BY recipient")?;
+    let mut query = conn.prepare("SELECT d.recipient,d.name,d.machine_id,d.machine_name,d.acknowledged_at,'agent',COALESCE(p.last_seen,p.created_at) FROM deliveries d JOIN participants p ON p.id=d.recipient WHERE d.message_seq=?1 UNION ALL SELECT recipient,name,machine_id,machine_name,acknowledged_at,'computer',NULL FROM machine_deliveries WHERE message_seq=?1 ORDER BY 1")?;
     result.deliveries = query
         .query_map([seq], |r| {
             Ok(Delivery {
@@ -510,6 +524,7 @@ fn message(conn: &Connection, seq: u64) -> Result<Message> {
                 machine_id: r.get(2)?,
                 machine_name: r.get(3)?,
                 acknowledged_at: r.get(4)?,
+                recipient_last_seen: r.get(6)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
