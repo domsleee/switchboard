@@ -97,7 +97,8 @@ test('Conversation never attaches a terminal, including initial mobile load and 
   native=false;await page.reload();await page.getByText('Ready for a reply',{exact:true}).waitFor();
   await page.getByLabel('Reply draft').fill('Fallback reply');await page.getByRole('button',{name:'Send via Terminal',exact:true}).click();
   await page.waitForFunction(()=>window.bridgePastes?.some(sent=>sent.text==='Fallback reply'));
-  await page.waitForFunction(()=>SwitchboardConversation.isOpen()&&[...sessions.values()].every(e=>e.suspended));
+  await page.waitForFunction(()=>SwitchboardConversation.isOpen());
+  assert.equal(await page.evaluate(()=>[...sessions.values()].every(e=>!e.suspended&&e.state)),true,'A desktop viewer stays connected after a Terminal fallback');
   assert.equal(await page.getByRole('button',{name:'Conversation',exact:true}).getAttribute('aria-pressed'),'true');
   assert.equal(await page.evaluate(()=>bridgePastes[0].pane_id),2);
   assert.equal(connections.length,3,'Fallback sending attaches only after switching to Terminal');
@@ -118,6 +119,52 @@ test('Conversation never attaches a terminal, including initial mobile load and 
    assert.equal(await page.getByRole('button',{name:'Conversation',exact:true}).getAttribute('aria-pressed'),'true');
   }
   assert.equal(creations.length,3);
+  assert.deepEqual(errors,[]);
+ }finally{await browser.close();}
+});
+
+test('Desktop keeps a connected terminal through Conversation so switching back is instant, and phone widths still disconnect it',
+ {skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
+ const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch();
+ try{
+  const page=await browser.newPage({viewport:{width:1200,height:900}});page.setDefaultTimeout(10000);
+  const errors=[],connections=[];page.on('pageerror',e=>errors.push(e.message));
+  const pane={pane_id:1,is_plugin:false,tab_id:1,tab_position:1,tab_name:'Agent',title:'Agent',is_focused:true};
+  const tabs=[{host:'local',session:'main',id:1,position:1,name:'Agent',panes:[pane]}];
+  await page.route('http://conversation.test/**',async route=>{
+   const p=new URL(route.request().url()).pathname,json=value=>route.fulfill({json:value});
+   if(p==='/api/mesh')return json({members:[]});
+   if(p==='/api/hosts')return json([{id:'local',name:'Ubuntu',local:true}]);
+   if(p==='/api/hosts/local')return json({id:'local',name:'Ubuntu',local:true,sessions:[{name:'main',web_clients_allowed:true}]});
+   if(p==='/api/attention')return json({tabs,panes:[{host:'local',session:'main',pane_id:1,agent:'codex',state:'ready',token:'r',seen:true,chat_id:'chat-1'}],errors:[]});
+   if(p.startsWith('/api/chats/'))return json({id:'chat-1',agent:'codex',session_id:null,messages:[{role:'assistant',text:'Ready for a reply'}],start_cursor:0,next_cursor:null});
+   if(p.startsWith('/hosts/')){
+    connections.push(p);
+    return route.fulfill({contentType:'text/html',body:`<script>
+      const state=()=>parent.postMessage({type:'zellij-state',payload:{session_name:'main',active_pane:${JSON.stringify(pane)},panes:${JSON.stringify([pane])}}},location.origin);
+      addEventListener('message',event=>{if(event.data.type==='zellij-focus')state();});state();
+     </script>`});
+   }
+   if(p.startsWith('/api/'))return json({});
+   const file=path.join(__dirname,'static',p==='/'?'index.html':p.slice(1));
+   if(!fs.existsSync(file))return route.fulfill({status:404,body:''});
+   return route.fulfill({path:file,contentType:p.endsWith('.js')?'text/javascript':p.endsWith('.css')?'text/css':'text/html'});
+  });
+  await page.goto('http://conversation.test/?host=local&session=main&tab=1');
+  await page.waitForFunction(()=>[...sessions.values()][0]?.state);
+  assert.equal(connections.length,1);
+  for(let i=0;i<3;i++){
+   await page.getByRole('button',{name:'Conversation',exact:true}).click();
+   await page.getByText('Ready for a reply',{exact:true}).waitFor();
+   assert.equal(await page.evaluate(()=>{const e=[...sessions.values()][0];return !e.suspended&&!!e.state&&e.frame.getAttribute('src')!=='about:blank';}),true,'Conversation keeps the desktop viewer');
+   await page.getByRole('button',{name:'Terminal',exact:true}).click();
+   assert.equal(await page.evaluate(()=>{const e=[...sessions.values()][0];return !!e.state&&!e.frame.inert;}),true,'Terminal is ready without reconnecting');
+  }
+  assert.equal(connections.length,1,'Switching modes never reloads a connected desktop viewer');
+  await page.getByRole('button',{name:'Conversation',exact:true}).click();
+  await page.setViewportSize({width:390,height:844});
+  await page.waitForFunction(()=>[...sessions.values()].every(e=>e.suspended&&e.frame.getAttribute('src')==='about:blank'));
+  assert.equal(connections.length,1,'A phone-width Conversation disconnects and never attaches');
   assert.deepEqual(errors,[]);
  }finally{await browser.close();}
 });
