@@ -1,10 +1,12 @@
 name: End to End tests
 
 on:
-  push:
-    branches: [main]
+  # PR checks run on the PR merged into main, so merges are not rerun. Main
+  # runs nightly to refresh the caches PRs restore; 16:00 UTC is 3 am in Sydney.
   pull_request:
     branches: [main]
+  schedule:
+    - cron: "0 16 * * *"
   workflow_dispatch:
 
 permissions:
@@ -12,8 +14,7 @@ permissions:
 
 concurrency:
   group: e2e-${{ github.ref }}
-  # A new push to a PR replaces its run. On main a newer merge replaces only the
-  # pending run: cancelling mid-run wasted runners and left main with no result.
+  # A new push to a PR replaces its run. Main runs finish so their caches save.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
