@@ -31,6 +31,14 @@ pub(super) struct Journal {
     pub failure: Option<String>,
 }
 impl Journal {
+    pub fn release_payloads(&mut self) {
+        self.output = VecDeque::new();
+        self.bytes = 0;
+        if let Some(input) = &mut self.input {
+            input.data = String::new();
+        }
+    }
+
     pub fn resume(&mut self, expected: u64, nonce: &str, applied: u64) -> Result<u64> {
         ensure!(
             !nonce.is_empty() && nonce.len() <= 64,
@@ -129,6 +137,28 @@ impl Journal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn switchboard_attachment_retired_payloads_preserve_final_delivery_identity() {
+        let mut journal = Journal::default();
+        journal.resume(0, "first", 0).unwrap();
+        journal.input = Some(Input {
+            seq: 1,
+            channel: "terminal".into(),
+            data: "private input".into(),
+        });
+        journal.emit("terminal", "private output".into());
+        journal.failure = Some("Permission revoked".into());
+        journal.release_payloads();
+        assert_eq!(
+            journal.generation, 1,
+            "The existing transport must receive its error, not be fenced"
+        );
+        assert_eq!(journal.input_ack(), 1);
+        assert_eq!(journal.failure.as_deref(), Some("Permission revoked"));
+        assert!(journal.output.is_empty());
+        assert_eq!(journal.bytes, 0);
+        assert!(journal.input.unwrap().data.is_empty());
+    }
     #[test]
     fn switchboard_attachment_resume_lost_replies_do_not_duplicate_input() {
         let mut j = Journal::default();
