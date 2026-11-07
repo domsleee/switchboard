@@ -20,7 +20,7 @@
   --rail:2px;--block:16px;--edge:max(24px,calc((100% - var(--chat-width))/2));
   --chat-border:var(--line-2);
   position:absolute;inset:0;z-index:5;background:var(--bg);color:var(--text);display:flex;flex-direction:column;color-scheme:dark;
-  font:400 15.5px/1.6 var(--sans);letter-spacing:-.008em;font-feature-settings:"cv11";-webkit-font-smoothing:antialiased}
+  font:400 14px/1.625 var(--sans);letter-spacing:-.008em;font-feature-settings:"cv11";-webkit-font-smoothing:antialiased}
 .conversation-panel,.conversation-panel *{box-sizing:border-box}
 /* Hide the panel without discarding its layout. display:none would make every
    return from Terminal lay out the whole loaded transcript again. */
@@ -31,7 +31,7 @@
 /* Header: title over one muted line of context and status, edge to edge like the mode switch. */
 .conversation-panel>header{position:relative;display:flex;align-items:center;gap:12px;flex-shrink:0;min-height:58px;padding:8px max(200px,calc(100% - var(--edge) - var(--chat-width))) 8px var(--edge);border-bottom:1px solid var(--line);background:var(--bg)}
 .conversation-heading{display:flex;flex-direction:column;justify-content:center;gap:1px;min-width:0;flex:0 1 auto}
-.conversation-heading strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:16px;font-weight:600;letter-spacing:-.012em;line-height:1.35;color:#f4f4f5}
+.conversation-heading strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:15px;font-weight:600;letter-spacing:-.012em;line-height:1.35;color:#f4f4f5}
 .conversation-subtitle{display:flex;align-items:center;gap:10px;min-width:0;font-size:12.5px;line-height:1.4;color:var(--muted)}
 .conversation-subtitle:empty,.conversation-subtitle:not(:has(:not(:empty))){display:none}
 .conversation-context{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
@@ -71,7 +71,7 @@
 
 /* Activity log: progress updates sit on a rail in the left gutter, so their
    text shares the answer's left edge. */
-.conversation-message.commentary{position:relative;margin:0;padding:0 0 10px 18px;font-size:14px;line-height:1.5;color:var(--step)}
+.conversation-message.commentary{position:relative;margin:0;padding:0 0 10px 18px;font-size:13px;line-height:1.55;color:var(--step)}
 .conversation-message.commentary::before{content:"";position:absolute;left:var(--rail);top:7.5px;width:6px;height:6px;border-radius:50%;background:#5d5e66;z-index:1}
 .conversation-message.commentary::after{content:"";position:absolute;left:calc(var(--rail) + 2.5px);top:8px;bottom:-8px;width:1px;background:#34353c;display:none}
 .conversation-message.commentary:has(+.commentary)::after,.conversation-message.commentary:has(+.conversation-working:not([hidden]))::after,.conversation-message.commentary:has(+.commentary.live+.conversation-working:not([hidden]))::after{display:block}
@@ -83,7 +83,7 @@
 .conversation-message.commentary.live{display:none}
 
 /* Live row: pulsing marker on the rail, the current step, and a quiet timer. */
-.conversation-working{position:relative;display:flex;align-items:baseline;gap:12px;margin:0 0 28px;padding:0 0 0 18px;font-size:14px;line-height:1.5}
+.conversation-working{position:relative;display:flex;align-items:baseline;gap:12px;margin:0 0 28px;padding:0 0 0 18px;font-size:13px;line-height:1.55}
 .conversation-working-dot{position:absolute;left:-2px;top:3px;width:14px;height:14px;border-radius:50%;border:1.5px solid #8fb4ff40;border-top-color:var(--accent);animation:conversation-spin .9s linear infinite}
 @keyframes conversation-spin{to{transform:rotate(360deg)}}
 .conversation-working-step{flex:1;min-width:0}
@@ -95,7 +95,7 @@
 @media(prefers-reduced-motion:reduce){.conversation-working-dot{animation-duration:3s}.conversation-working-step::before,.conversation-activity.working::before{animation:none}.conversation-working-step::before{color:#b4b4bd}}
 
 /* Folded progress: one disclosure row in place of a finished run. */
-.conversation-panel .conversation-steps{display:flex;align-items:center;gap:7px;width:fit-content;max-width:calc(100% + 16px);min-height:32px;margin:0 0 12px;padding:4px 12px 4px 9px;border-color:#ffffff12;background:#ffffff06;font-size:13.5px;font-weight:500;letter-spacing:0;color:#cfcfd6;border-radius:999px;text-align:left}
+.conversation-panel .conversation-steps{display:flex;align-items:center;gap:7px;width:fit-content;max-width:calc(100% + 16px);min-height:32px;margin:0 0 12px;padding:4px 12px 4px 9px;border-color:#ffffff12;background:#ffffff06;font-size:13px;font-weight:500;letter-spacing:0;color:#cfcfd6;border-radius:999px;text-align:left}
 .conversation-panel .conversation-steps::before{content:"";order:-1;width:13px;height:13px;flex-shrink:0;background:currentColor;transition:transform .15s;-webkit-mask:var(--chev) center/contain no-repeat;mask:var(--chev) center/contain no-repeat}
 .conversation-panel .conversation-steps[aria-expanded="true"]::before{transform:rotate(90deg)}
 .conversation-panel .conversation-steps:hover{color:#f4f4f5;background:#ffffff0f;border-color:#ffffff1f}
@@ -104,8 +104,8 @@
 .conversation-message p{margin:0 0 12px;white-space:pre-wrap}
 .conversation-message p:last-child{margin:0}
 .conversation-message>strong,.conversation-message strong{font-size:inherit;font-weight:600;color:#ececef}
-.conversation-message h1,.conversation-message h2,.conversation-message h3,.conversation-message h4{line-height:1.35;margin:22px 0 6px;font-size:16.5px;font-weight:600;letter-spacing:-.017em;color:#f4f4f5}
-.conversation-message h1{font-size:22px}.conversation-message h2{font-size:19px}
+.conversation-message h1,.conversation-message h2,.conversation-message h3,.conversation-message h4{line-height:1.35;margin:20px 0 6px;font-size:15px;font-weight:600;letter-spacing:-.017em;color:#f4f4f5}
+.conversation-message h1{font-size:18px}.conversation-message h2{font-size:16px}
 .conversation-message.assistant:not(.commentary)>.conversation-label+p{color:#ececef}
 .conversation-message.assistant>.conversation-label+h1,.conversation-message.assistant>.conversation-label+h2,.conversation-message.assistant>.conversation-label+h3{margin-top:0}
 .conversation-message blockquote{margin:var(--block) 0;padding-left:14px;border-left:2px solid var(--line-2);color:var(--text-2)}
@@ -118,7 +118,7 @@
 .conversation-message hr{border:0;border-top:1px solid var(--line);margin:20px 0}
 .conversation-message code{font:400 .9em/1.4 var(--mono);background:#ffffff0d;padding:.1em .32em;border-radius:4px;color:#dcdce1;-webkit-box-decoration-break:clone;box-decoration-break:clone;overflow-wrap:anywhere}
 .conversation-message code,.conversation-message pre{font-variant-ligatures:none}
-.conversation-message pre{overflow:auto;background:var(--code-bg);color:#d8d8de;border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:var(--block) 0;font:13.5px/1.6 var(--mono);white-space:pre;overflow-wrap:normal;tab-size:2;scrollbar-width:thin;scrollbar-color:#3a3b42 transparent}
+.conversation-message pre{overflow:auto;background:var(--code-bg);color:#d8d8de;border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:var(--block) 0;font:12.5px/1.6 var(--mono);white-space:pre;overflow-wrap:normal;tab-size:2;scrollbar-width:thin;scrollbar-color:#3a3b42 transparent}
 .conversation-message pre code{font:inherit;background:none;border:0;color:inherit;padding:0;overflow-wrap:normal}
 
 /* Code card: language and Copy above an inset surface. */
@@ -132,7 +132,7 @@
 
 /* Tables: a header fill and row rules, no outer frame. */
 .conversation-table{max-width:100%;overflow:auto;margin:var(--block) 0}
-.conversation-table table{width:auto;border-collapse:collapse;font-size:14px;line-height:1.45;font-variant-numeric:tabular-nums}
+.conversation-table table{width:auto;border-collapse:collapse;font-size:13px;line-height:1.45;font-variant-numeric:tabular-nums}
 .conversation-table td{padding:6px 32px 6px 0;border-bottom:1px solid var(--line);vertical-align:top}
 .conversation-table td:last-child{padding-right:0}
 .conversation-table td:not(:first-child){text-align:right}
@@ -149,7 +149,7 @@
 /* Composer: a card with the draft on top and a toolbar below. */
 .conversation-compose{position:relative;align-self:center;width:min(var(--chat-width),calc(100% - 48px));margin:0 0 max(20px,env(safe-area-inset-bottom));border:1px solid #ffffff1f;border-radius:14px;background:#17181b;padding:4px 8px 8px;display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;align-items:center;gap:0 4px;flex-shrink:0;box-shadow:0 16px 32px -16px #000;transition:border-color .15s}
 .conversation-compose:focus-within{border-color:#ffffff33}
-.conversation-compose textarea{grid-column:1/-1;grid-row:2;resize:none;max-height:160px;min-height:40px;width:100%;background:transparent;color:var(--text);border:0;outline:none;padding:8px 6px 4px;font:15px/1.5 var(--sans);field-sizing:fixed;overflow-y:hidden}
+.conversation-compose textarea{grid-column:1/-1;grid-row:2;resize:none;max-height:160px;min-height:40px;width:100%;background:transparent;color:var(--text);border:0;outline:none;padding:8px 6px 4px;font:14px/1.5 var(--sans);field-sizing:fixed;overflow-y:hidden}
 .conversation-compose textarea::placeholder{color:#8a8a94}
 .conversation-compose button{display:grid;place-items:center;padding:0;box-shadow:none}
 .conversation-compose>button[type=submit],.conversation-compose .conversation-stop{grid-column:4;grid-row:3;width:30px;height:30px;min-height:30px;border-radius:50%;font-size:0}
@@ -222,10 +222,10 @@
 /* Phones. The keyboard changes the visual viewport, not necessarily 100dvh. */
 @media(max-width:700px),(pointer:coarse) and (max-width:1000px){
   body.conversation-open{overflow:hidden;overscroll-behavior:none}
-  .conversation-panel{font-size:15px}
+  .conversation-panel{font-size:14px}
   /* One row: the sidebar toggle on the left, the mode switch on the right. */
   .conversation-panel>header{min-height:58px;padding:8px 92px 8px 58px;box-shadow:0 1px 0 var(--line)}
-  .conversation-heading strong{font-size:15.5px}
+  .conversation-heading strong{font-size:15px}
   .conversation-subtitle{font-size:12px;gap:8px}
   .conversation-panel .conversation-terminal-action{min-height:40px}
   body.conversation-open #sidebar-toggle{position:fixed;top:calc(var(--chat-top,0px) + 8px);border-color:transparent;background:transparent}
@@ -247,10 +247,10 @@
   .conversation-messages.scrolling::-webkit-scrollbar{width:3px}
   .conversation-messages.scrolling::-webkit-scrollbar-thumb{background:#2c2d33;border-radius:3px}
   .conversation-message{margin-bottom:20px}
-  .conversation-message.user{max-width:88%;font-size:15px}
-  .conversation-message.commentary,.conversation-working{font-size:13.5px}
-  .conversation-message h1{font-size:20px}.conversation-message h2{font-size:18px}.conversation-message h3,.conversation-message h4{font-size:16px}
-  .conversation-table table{font-size:13.5px;width:100%}.conversation-table thead td{font-size:12px}
+  .conversation-message.user{max-width:88%;font-size:14px}
+  .conversation-message.commentary,.conversation-working{font-size:13px}
+  .conversation-message h1{font-size:18px}.conversation-message h2{font-size:16px}.conversation-message h3,.conversation-message h4{font-size:15px}
+  .conversation-table table{font-size:13px;width:100%}.conversation-table thead td{font-size:12px}
   .conversation-message pre{font-size:12px}
   .conversation-code>pre{padding-left:12px;padding-right:12px}
   .conversation-notification>summary{min-height:44px;padding:10px 0}
