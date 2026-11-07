@@ -142,7 +142,9 @@
         const signature=JSON.stringify([sent.text,sent.files.map(file=>file.name),sent.state,sent.detail]);let entry=renderedOutgoing.get(sent.id);
         if(!entry||entry.signature!==signature){
           const article=el('article',undefined,'conversation-message user conversation-outgoing '+sent.state),label=el('div','You','conversation-label');article.append(label);textBlocks(article,sent.text||'');
-          for(const file of sent.files)article.append(el('div',file.name,'conversation-outgoing-file'));
+          const mediaFiles=sent.files.filter(file=>file.kind==='image'||file.kind==='video');
+          if(window.SwitchboardConversationMedia&&mediaFiles.length)window.SwitchboardConversationMedia.render(article,{attachments:mediaFiles.map(file=>({kind:file.kind,name:file.name,url:file.path}))},{host:sent.host});
+          for(const file of sent.files.filter(file=>!window.SwitchboardConversationMedia||!mediaFiles.includes(file)))article.append(el('div',file.name,'conversation-outgoing-file'));
           const footer=el('div',undefined,'conversation-outgoing-status');footer.append(el('span',sent.detail||outgoingLabel(sent.state)));
           if(sent.state==='failed'&&sent.native){
             const retry=el('button','Retry');retry.type='button';retry.onclick=()=>retrySend(sent);footer.append(retry);
@@ -214,7 +216,7 @@
       for(const file of selected){
         if(fileList(key).length>=8){if(identity(target)===key)sendStatus('Attach up to 8 files per message.');break;}
         if(!file.size||file.size>20*1024*1024){if(identity(target)===key)sendStatus('Choose a non-empty file up to 20 MB.');continue;}
-        const item={name:file.name,preview:file.type.startsWith('image/')?URL.createObjectURL(file):null};attachments.set(key,[...fileList(key),item]);if(identity(target)===key)paintFiles();
+        const item={name:file.name,kind:file.type.startsWith('image/')?'image':file.type.startsWith('video/')?'video':'file',preview:file.type.startsWith('image/')?URL.createObjectURL(file):null};attachments.set(key,[...fileList(key),item]);if(identity(target)===key)paintFiles();
         try{const response=await fetch('/api/hosts/'+encodeURIComponent(host)+'/attachments?'+new URLSearchParams({name:file.name}),{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:file});
           if(!response.ok)throw Error('Could not upload '+file.name+'. Remove it and try again.');const data=await response.json();if(typeof data.path!=='string'||!data.path||/[\x00-\x1f]/.test(data.path))throw Error('Invalid attachment response');item.path=data.path;
         }catch(error){item.error=true;if(identity(target)===key)sendStatus(error.message);}

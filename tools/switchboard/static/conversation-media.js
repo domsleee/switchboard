@@ -83,6 +83,10 @@
     }
     for(const attachment of message.attachments||[]){
       if(attachment.unavailable){const unavailable=node('p',`${attachment.name||'Attachment'} · ${attachment.unavailable}`);unavailable.className='conversation-media-unavailable';parent.append(unavailable);}
+      else if(attachment.kind==='file'){
+        const url=resolve(attachment.url,context),file=node(url?'a':'span',attachment.name||'Attachment');file.className='conversation-outgoing-file';
+        if(url){file.href=url;file.target='_blank';file.rel='noopener noreferrer';}parent.append(file);
+      }
       else parent.append(media(attachment.url,attachment.name||'Attachment',attachment.kind==='video'?'video':'image',context,gallery,true));
     }
   }
