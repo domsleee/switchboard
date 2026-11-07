@@ -241,6 +241,70 @@ impl Check {
     }
 }
 
+fn claude_command(hook: &Value, wait: bool) -> bool {
+    let Some(command) = hook["command"].as_str() else {
+        return false;
+    };
+    let arguments = if wait {
+        json!(["agent-hook", "--agent", "claude", "--wait"])
+    } else {
+        json!(["agent-hook", "--agent", "claude"])
+    };
+    if let Some(args) = hook.get("args") {
+        let executable = command.rsplit(['/', '\\']).next().unwrap_or(command);
+        (executable.eq_ignore_ascii_case("zellij") || executable.eq_ignore_ascii_case("zellij.exe"))
+            && *args == arguments
+    } else {
+        let suffix = if wait { " --wait" } else { "" };
+        command == format!("zellij agent-hook --agent claude{suffix}")
+    }
+}
+
+/// Check the reporting and message-delivery contract, not a plugin revision:
+/// plugin managers can install a newer compatible version before the relay updates.
+fn claude_hooks_complete(plugin: &Path) -> bool {
+    let config = read_json(&plugin.join("hooks/hooks.json")).unwrap_or(Value::Null);
+    let handlers = |event: &str| {
+        config["hooks"][event]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|group| {
+                group
+                    .get("matcher")
+                    .is_none_or(|matcher| matches!(matcher.as_str(), Some("" | "*")))
+            })
+            .flat_map(|group| group["hooks"].as_array().into_iter().flatten())
+            .filter(|hook| hook["type"] == "command" && hook["if"].is_null())
+            .collect::<Vec<_>>()
+    };
+    [
+        "SessionStart",
+        "UserPromptSubmit",
+        "PostToolUse",
+        "PostToolUseFailure",
+        "PermissionRequest",
+        "Notification",
+        "Stop",
+        "StopFailure",
+        "SessionEnd",
+    ]
+    .iter()
+    .all(|event| {
+        handlers(event).iter().any(|hook| {
+            claude_command(hook, false) && hook["async"] != true && hook["asyncRewake"] != true
+        })
+    }) && ["SessionStart", "Stop"].iter().all(|event| {
+        handlers(event).iter().any(|hook| {
+            claude_command(hook, true)
+                && hook["asyncRewake"] == true
+                && hook["timeout"]
+                    .as_u64()
+                    .is_some_and(|timeout| timeout >= crate::message_board::hooks::WATCH_TIMEOUT)
+        })
+    })
+}
+
 fn check_claude(dir: &Path) -> Check {
     let records = read_json(&dir.join("plugins/installed_plugins.json"))
         .and_then(|v| v["plugins"][PLUGIN].as_array().cloned())
@@ -260,6 +324,12 @@ fn check_claude(dir: &Path) -> Check {
         missing.push("Plugin turned off");
     }
     if let Some(record) = installed {
+        if !record["installPath"]
+            .as_str()
+            .is_some_and(|p| claude_hooks_complete(Path::new(p)))
+        {
+            missing.push("Reporting and message hooks missing or out of date");
+        }
         if !record["installPath"]
             .as_str()
             .is_some_and(|p| super::agent_skills::plugin_complete(Path::new(p)))
@@ -574,8 +644,18 @@ fn check_codex_plugin(dir: &Path) -> Result<(), &'static str> {
     }
     let cache = dir.join("plugins/cache/switchboard/switchboard/local");
     let manifest = read_json(&cache.join(".codex-plugin/plugin.json"));
-    if !manifest.is_some_and(|m| m["name"] == "switchboard" && m["skills"] == "./skills/") {
+    let Some(manifest) =
+        manifest.filter(|m| m["name"] == "switchboard" && m["skills"] == "./skills/")
+    else {
         return Err("Switchboard plugin cache missing or invalid");
+    };
+    // Codex otherwise discovers the shared Claude hooks, whose exec-form args it
+    // ignores, launching bare zellij. Its own hooks live in ~/.codex/hooks.json.
+    if !manifest["hooks"]["hooks"]
+        .as_object()
+        .is_some_and(|hooks| hooks.is_empty())
+    {
+        return Err("Switchboard plugin hooks are incompatible; refresh the plugin");
     }
     for skill in ["close-tab", "interactive", "message-board", "sudo"] {
         if !cache.join("skills").join(skill).join("SKILL.md").is_file() {
@@ -1343,6 +1423,10 @@ mod tests {
             );
         }
         write(
+            &dir.join("active-plugin/hooks/hooks.json"),
+            include_str!("../../../plugins/switchboard/hooks/hooks.json"),
+        );
+        write(
             &dir.join("settings.json"),
             r#"{"enabledPlugins":{"switchboard@switchboard":false}}"#,
         );
@@ -1366,6 +1450,110 @@ mod tests {
             r#"{"enabledPlugins":{"switchboard@switchboard":true},"extraKnownMarketplaces":{"switchboard":{"autoUpdate":false}}}"#,
         );
         assert!(check_claude(dir).detail.contains("Auto-update off"));
+    }
+
+    #[test]
+    fn switchboard_agent_setup_rejects_incomplete_claude_hooks() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        let plugin = dir.join("active-plugin");
+        write(
+            &dir.join("plugins/installed_plugins.json"),
+            &json!({"plugins":{PLUGIN:[{"scope":"user","installPath":plugin}]}}).to_string(),
+        );
+        turn_on_auto_update(&dir.join("settings.json"), json!({})).unwrap();
+        for (name, body) in super::super::agent_skills::SKILLS {
+            write(&plugin.join("skills").join(name).join("SKILL.md"), body);
+        }
+        let file = plugin.join("hooks/hooks.json");
+        let current: Value = serde_json::from_str(include_str!(
+            "../../../plugins/switchboard/hooks/hooks.json"
+        ))
+        .unwrap();
+        assert!(check_claude(dir)
+            .detail
+            .contains("hooks missing or out of date"));
+        let mut http_only = current.clone();
+        for groups in http_only["hooks"].as_object_mut().unwrap().values_mut() {
+            *groups =
+                json!([{"hooks":[{"type":"http","url":"http://127.0.0.1:8090/api/agent-hook"}]}]);
+        }
+        write_json(&file, &http_only).unwrap();
+        assert_eq!(
+            check_claude(dir).state,
+            "setup",
+            "legacy HTTP status reports cannot deliver messages"
+        );
+        for event in ["SessionStart", "PostToolUse", "Stop", "SessionEnd"] {
+            let mut missing = current.clone();
+            missing["hooks"].as_object_mut().unwrap().remove(event);
+            write_json(&file, &missing).unwrap();
+            assert_eq!(check_claude(dir).state, "setup", "missing {event}");
+        }
+        for event in ["SessionStart", "Stop"] {
+            let mut missing = current.clone();
+            missing["hooks"][event][0]["hooks"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|hook| hook["asyncRewake"] != true);
+            write_json(&file, &missing).unwrap();
+            assert_eq!(
+                check_claude(dir).state,
+                "setup",
+                "missing {event} wake hook"
+            );
+        }
+        let mut filtered = current.clone();
+        filtered["hooks"]["PostToolUse"][0]["matcher"] = json!("Bash");
+        write_json(&file, &filtered).unwrap();
+        assert_eq!(
+            check_claude(dir).state,
+            "setup",
+            "tool reporting must cover every tool"
+        );
+        for (pointer, value) in [
+            ("/hooks/PostToolUse/0/hooks/0/async", json!(true)),
+            ("/hooks/PostToolUse/0/hooks/0/if", json!("Bash(*)")),
+            ("/hooks/Stop/0/hooks/1/asyncRewake", json!(false)),
+            ("/hooks/Stop/0/hooks/1/timeout", json!(5)),
+        ] {
+            let mut broken = current.clone();
+            let (parent, field) = pointer.rsplit_once('/').unwrap();
+            broken.pointer_mut(parent).unwrap()[field] = value;
+            write_json(&file, &broken).unwrap();
+            assert_eq!(check_claude(dir).state, "setup", "invalid {pointer}");
+        }
+        let mut newer = current;
+        newer["hooks"]["NewEvent"] = json!([{"hooks":[{"type":"command","command":"echo newer"}]}]);
+        newer["hooks"]["PostToolUse"][0]["matcher"] = json!("*");
+        write_json(&file, &newer).unwrap();
+        assert_eq!(
+            check_claude(dir).state,
+            "ready",
+            "compatible newer hooks are accepted"
+        );
+        for groups in newer["hooks"].as_object_mut().unwrap().values_mut() {
+            for group in groups.as_array_mut().unwrap() {
+                for hook in group["hooks"].as_array_mut().unwrap() {
+                    if let Some(args) = hook.as_object_mut().unwrap().remove("args") {
+                        let args = args
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|arg| arg.as_str().unwrap())
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        hook["command"] = json!(format!("zellij {args}"));
+                    }
+                }
+            }
+        }
+        write_json(&file, &newer).unwrap();
+        assert_eq!(
+            check_claude(dir).state,
+            "ready",
+            "shell-form hooks are supported too"
+        );
     }
 
     #[test]
@@ -1418,6 +1606,10 @@ mod tests {
         for (name, body) in super::super::agent_skills::SKILLS {
             write(&plugin.join("skills").join(name).join("SKILL.md"), body);
         }
+        write(
+            &plugin.join("hooks/hooks.json"),
+            include_str!("../../../plugins/switchboard/hooks/hooks.json"),
+        );
         let skill = plugin.join("skills/message-board/SKILL.md");
         // A plugin update can change instructions before the relay is updated.
         write(&skill, "---\r\nname: message-board\r\ndescription: Updated messaging\r\n---\r\nNew instructions.\r\n");
@@ -1478,6 +1670,19 @@ mod tests {
             write(&cache.join("skills").join(skill).join("SKILL.md"), "skill");
         }
         assert_eq!(check_codex_plugin(dir), Ok(()));
+        let manifest_file = cache.join(".codex-plugin/plugin.json");
+        let mut manifest = read_json(&manifest_file).unwrap();
+        manifest.as_object_mut().unwrap().remove("hooks");
+        write_json(&manifest_file, &manifest).unwrap();
+        assert_eq!(
+            check_codex_plugin(dir),
+            Err("Switchboard plugin hooks are incompatible; refresh the plugin"),
+            "a skills-only manifest still auto-discovers the incompatible Claude hooks"
+        );
+        manifest["hooks"] =
+            json!({"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"zellij"}]}]}});
+        write_json(&manifest_file, &manifest).unwrap();
+        assert!(check_codex_plugin(dir).is_err());
         // A cached copy alone is insufficient after uninstall or disabling.
         write(&dir.join("config.toml"), "");
         assert_eq!(
