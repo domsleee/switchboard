@@ -43,7 +43,20 @@ commit. Updates preserve existing engines; verify engine changes in a fresh, pri
 session while leaving the user's terminals running.
 
 Another computer's agent knows its computer best. Ask it with `zellij message` before judging
-what runs there, and before deleting or stopping anything on it.
+what runs there, and before deleting or stopping anything on it. Reach other computers through
+the relay or their agent rather than assuming SSH works; read their files with
+`/api/hosts/<id>/file?path=<URL-encoded path>`.
+
+On Windows, an old `zellij.exe` in `~/.cargo/bin` can come first on `PATH` and lack newer
+subcommands such as `agent-hook`. Check which binary ran before blaming a hook or a test result.
+
+Sessions and tabs you create on the running system appear in the user's sidebar. Give test
+sessions unique names, close everything you create, and check `/api/hosts` (sessions) and
+`/api/attention` (tabs) for leftovers.
+
+When you fix agent setup by hand, add or extend a Settings → Health check with a repair action
+where possible, then check the other paired computers for the same problem. Health checks the
+capability an agent needs, not commit equality, and never reports success it could not verify.
 
 Test UI changes against local fixtures (see the browser-sizing rules in
 [architecture](docs/ARCHITECTURE.md)), never the live sidebar at `switchboard.localhost:8090`:
@@ -63,15 +76,24 @@ new endpoints. See the [internals](docs/SWITCHBOARD_INTERNALS.md) for transport 
   checkout often sits on an old branch with unrelated uncommitted work; compare it with
   `/api/health` before blaming the deployed build.
 - Unfinished work may live on another computer's branch or in a PR. Check
-  `gh pr list --repo domsleee/switchboard --state all` and `origin/*` before calling it missing.
+  `gh pr list --repo domsleee/switchboard --state all` and `origin/*` before starting a possibly
+  duplicate fix or calling work missing.
 - Every merge to `main` ships to every paired computer within about 10 minutes and restarts its
   services. Merge deliberately and keep running terminals safe across a restart.
 - "Merge" from the user is the go-ahead: wait for `gh pr checks --watch`, then
   `gh pr merge --squash --delete-branch`. Rerun a flaky check once, and fix the flake in its own PR.
+  A passing rerun does not prove a flake: report an undiagnosed failure as unresolved rather
+  than masking it with sleeps, retries or longer timeouts.
 - `gh` defaults to the upstream `zellij-org/zellij`. Pass `--repo domsleee/switchboard` to every
   `gh pr` command.
 - Relay tests: `cargo test -p zellij-client --features web_server_capability switchboard_ --lib`.
   Sidebar tests: `node tools/switchboard/<name>.test.cjs` (some need Playwright).
+  In sidebar fixtures, keep unchanged `/api/attention?after=<version>` watches pending while
+  answering initial snapshots and explicit refreshes; immediate unchanged answers cause repeated
+  redraws that race the test.
+- Test sidebar interaction changes in both Conversation and Terminal modes, including shortcuts,
+  focus and review state. When related PRs together implement one flow, test them combined
+  before calling the flow complete.
 - After editing `zellij-client/assets/`, run `cargo xtask assets`. CI rejects a stale bundle.
 - A browser viewer the user cannot see (behind Conversation or another sidebar tab) must never size
   the terminal on other screens; the bridge reports it hidden and the engine leaves it out of
