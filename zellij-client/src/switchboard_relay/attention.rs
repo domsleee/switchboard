@@ -1267,8 +1267,8 @@ fn hook_status(agent: &'static str, event: &Value) -> Option<Hooked> {
 
 /// Receives events through `zellij agent-hook` (and older Claude HTTP hooks).
 /// Command hooks name the agent in `X-Agent`; both name their session and pane in headers. Events
-/// from outside Zellij carry neither and are ignored. A Claude started by another
-/// Claude in the same pane inherits `CLAUDECODE=1` and is ignored too, so it can't
+/// from outside Zellij carry neither and are ignored. `zellij agent-hook` drops
+/// events from an agent that a Claude tool started in the same pane, so it can't
 /// overwrite the pane's own status.
 pub(super) async fn hook(
     State(state): State<RelayState>,
@@ -1369,7 +1369,7 @@ fn hook_request(
     use isahc::config::Configurable;
     use std::io::Read;
     // An agent started from a Claude Code tool shares the pane with that Claude.
-    if env("CLAUDECODE").is_some() {
+    if crate::message_board::hooks::nested(agent, &env) {
         return None;
     }
     let (session, pane) = (env("ZELLIJ_SESSION_NAME")?, env("ZELLIJ_PANE_ID")?);
@@ -2101,11 +2101,25 @@ esac
             hook_request("codex", &body[..], |_| None, "http://x").is_none(),
             "outside Zellij"
         );
-        let nested = |name: &str| zellij(name).or((name == "CLAUDECODE").then(|| "1".to_owned()));
+        let claude = |entrypoint: &'static str| {
+            move |name: &str| {
+                zellij(name).or(match name {
+                    "CLAUDECODE" => Some("1".to_owned()),
+                    "CLAUDE_CODE_ENTRYPOINT" => Some(entrypoint.to_owned()),
+                    _ => None,
+                })
+            }
+        };
         assert!(
-            hook_request("codex", &body[..], nested, "http://x").is_none(),
+            hook_request("codex", &body[..], claude("cli"), "http://x").is_none(),
             "started by Claude in the same pane"
         );
+        assert!(
+            hook_request("claude", &body[..], claude("sdk-cli"), "http://x").is_none(),
+            "claude -p started by a Claude tool"
+        );
+        // Claude Code sets CLAUDECODE=1 for its own hooks.
+        assert!(hook_request("claude", &body[..], claude("cli"), "http://x").is_some());
     }
     #[test]
     fn failed_hosts_keep_tab_identity_without_stale_attention_and_recover() {
