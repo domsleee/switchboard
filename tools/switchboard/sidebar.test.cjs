@@ -431,17 +431,17 @@ test('new tab requests one immediate catalog refresh after an in-flight scan',as
 });
 
 
-test('New tab cannot snapshot an unscanned or empty catalog',()=>{
+test('New tab cannot snapshot an unscanned or empty catalog',async()=>{
   const elements=new Map(),$=id=>elements.get(id);
   const entry={host:'mac',name:'main',state:{tabs:[{position:0}]},catalog:[]};let sent=0;
   entry.frame={contentWindow:{postMessage(){sent++;}}};
-  elements.set('new-tab-form',{});elements.set('new-tab-target',{value:'main'});elements.set('new-tab-project',{value:'switchboard'});elements.set('new-tab-command',{value:'c'});
+  elements.set('new-tab-form',{});elements.set('new-tab-target',{value:'main'});elements.set('new-tab-project',{value:'switchboard'});elements.set('new-tab-prompt',{value:'',addEventListener(){}});
   elements.set('new-tab-dialog',{close(){}});
   const context={$,newTabElevated:false,sessions:new Map([['main',entry]]),sessionTabs:entry=>[...(entry.catalog||[]),...(entry.provisionalTabs||[])],location:{origin:'https://switchboard.localhost'},hosts:new Map([['mac',{name:'Mac'}]]),setStatus(){},setTimeout(){}};
-  vm.createContext(context);const start=source.indexOf("$('new-tab-form').onsubmit=");
+  vm.createContext(context);const start=source.indexOf("async function createNewTab(");
   vm.runInContext(source.slice(start,source.indexOf("$('ready').onclick=",start)),context);
-  elements.get('new-tab-form').onsubmit({preventDefault(){}});assert.equal(sent,0);assert.equal(entry.pendingNewTab,undefined);
-  entry.catalog=null;elements.get('new-tab-form').onsubmit({preventDefault(){}});assert.equal(sent,0);
+  await context.createNewTab('main',{project:'switchboard',prompt:''});assert.equal(sent,0);assert.equal(entry.pendingNewTab,undefined);
+  entry.catalog=null;await context.createNewTab('main',{project:'switchboard',prompt:''});assert.equal(sent,0);
 });
 
 

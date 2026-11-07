@@ -11,7 +11,8 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
     const page=await context.newPage(),errors=[];
     page.on('pageerror',error=>errors.push(error.message));
     let created=0,catalog=0,failed=false,closes=0,frameBoots=0,connected=!emptyMachine,catalogReady=!emptyMachine;
-    const diagnostics=[];let projectError=false,delayProjects=false,releaseProjects;
+    const diagnostics=[],uploads=[];let projectError=false,delayProjects=false,releaseProjects,uploadError=false,delayUpload=false,releaseUpload;
+    const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=','base64');
     const nativeTabs=()=>Array.from({length:catalog+1},(_,i)=>({host:'windows',session:'main',id:i?89+i:42,position:i,name:i?'New shell '+i:'Original',panes:[{pane_id:i?8+i:7,is_plugin:false,tab_position:i}]}));
     await page.addInitScript(()=>{window.setInterval=()=>0;});
     await context.route('**/*',async route=>{
@@ -23,6 +24,12 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
       if(path==='/api/attention')return json({tabs:failed||!catalogReady?[]:nativeTabs(),panes:[],errors:failed?[{host:'windows',message:'Unavailable'}]:[]});
       if(path==='/api/diagnostics/new-tab'){diagnostics.push(route.request().postDataJSON());return route.fulfill({status:204});}
       if(path==='/api/hosts/windows/close-tab'){closes++;return json({ok:true});}
+      if(path.endsWith('/attachments')){
+        if(delayUpload)await new Promise(resolve=>releaseUpload=resolve);
+        if(uploadError)return route.fulfill({status:503,body:'unavailable'});
+        const name=new URL(route.request().url()).searchParams.get('name');uploads.push({path,name,body:route.request().postDataBuffer()});
+        return json({path:"C:/User files/attachments/it's "+name});
+      }
       if(path==='/hosts/windows/project-list'){if(delayProjects)await new Promise(resolve=>releaseProjects=resolve);return projectError?route.fulfill({status:503,body:'unavailable'}):json(['dotfiles','switchboard','switchboard-tools']);}
       if(path==='/hosts/other/project-list')return json(['other-project']);
       if(path.startsWith('/hosts/')){connected=true;frameBoots++;return route.fulfill({contentType:'text/html',body:`<div id="terminal"><input id="terminal-input"></div><script>
@@ -30,7 +37,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
         const input=document.querySelector('input');let count=${created},active=count;
         window.term={element:document.querySelector('#terminal'),options:{disableStdin:false},focus(){input.focus()},blur(){input.blur()},
           _core:{_renderService:{dimensions:{css:{cell:{width:8,height:16}}}}},buffer:{active:{viewportY:0,getLine:()=>({translateToString:()=>''})}},onRender(){},onResize(){}};
-        window.__zjSendControl=message=>{if(message.type==='NewTab'&&window.controlSocket.readyState===1){window.creationRequested=true;window.creationElevated=message.elevated;window.creationLaunch={project:message.project,command:message.command};}};
+        window.__zjSendControl=message=>{if(message.type==='NewTab'&&window.controlSocket.readyState===1){window.creationRequested=true;window.creationElevated=message.elevated;window.creationLaunch={project:message.project,prompt:message.prompt,images:message.images};}};
       </script><script src="/bridge.js"></script><script>
         const socket=window.controlSocket=new WebSocket('wss://switchboard.test/ws/control');
         function state(){const panes=Array.from({length:count+1},(_,i)=>({pane_id:i?8+i:7,is_plugin:false,tab_position:i,title:'~'}));socket.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'MobileState',payload:{session_name:'main',panes,active_pane:panes[active],tabs:panes.map((p,i)=>({position:i,name:i?'New shell '+i:'Original',active:i===active}))}})}));}
@@ -58,7 +65,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
       await page.locator('#new-tab-form button[type="submit"]').click();
       await page.waitForFunction(()=>document.querySelector('iframe.active')?.contentWindow.creationRequested);
       const input=page.frameLocator('iframe[title="Windows: main"]').locator('#terminal-input');
-      assert.deepEqual(await input.evaluate(()=>window.creationLaunch),{project:'switchboard',command:'c'});
+      assert.deepEqual(await input.evaluate(()=>window.creationLaunch),{project:'switchboard',prompt:'',images:[]});
       await input.evaluate(()=>window.confirmCreation());
       await page.waitForFunction(()=>document.querySelector('#tabs .selected .tab-name')?.textContent==='New shell 1');
       assert.equal(frameBoots,1);
@@ -85,48 +92,36 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
       }else await page.keyboard.press('Alt+KeyT');
       await page.waitForFunction(()=>document.querySelector('#new-tab-dialog').open);
       assert.equal(await page.locator('#new-tab-title').textContent(),number===2?'New administrator tab':'New tab');
-      assert.deepEqual(await page.locator('#new-tab-command').evaluate(input=>({focused:document.activeElement===input,selected:input.value.slice(input.selectionStart,input.selectionEnd)})),{focused:true,selected:'c'});
+      assert.equal(await page.locator('#new-tab-prompt').evaluate(input=>document.activeElement===input),true);
+      assert.equal(await page.locator('#new-tab-prompt').inputValue(),'');
+      assert.equal(await page.getByLabel('Prompt',{exact:true}).count(),1);
       assert.equal(await page.locator('#new-tab-target option').count(),1,'One option per computer even with multiple sessions');
       assert.equal(await page.locator('#new-tab-target option').first().textContent(),'Windows');
       if(number===1)await page.evaluate(()=>sessions.delete(sessionKey('windows','other')));
       assert.equal(await page.locator('#new-tab-project').inputValue(),'switchboard');
       assert.equal(await page.getByRole('button',{name:'Cancel',exact:true}).count(),0);
       if(number===1){
-        await page.locator('#new-tab-lookup').click();
-        assert.deepEqual(await page.locator('#new-tab-commands [role=option] span').allTextContents(),['c','castra','csol']);
-        await page.getByRole('option',{name:'csol Codex · Sol',exact:true}).click();
-        assert.equal(await page.locator('#new-tab-command').inputValue(),'csol');
-        await page.locator('#new-tab-lookup').click();await page.keyboard.press('Escape');
-        assert.equal(await page.locator('#new-tab-dialog').evaluate(el=>el.open),true);
-        assert.equal(await page.locator('#new-tab-command').getAttribute('aria-expanded'),'false');
-        await page.locator('#new-tab-command').fill('custom --flag');
-        assert.equal(await page.locator('#new-tab-command').getAttribute('aria-expanded'),'false');
-        await page.locator('#new-tab-command').fill('cs');
-        assert.equal(await page.locator('#new-tab-commands').getByRole('option',{selected:true}).textContent(),'csolCodex · Sol');
-        await page.keyboard.press('Shift+Tab');
-        assert.equal(await page.locator('#new-tab-command').inputValue(),'cs','Shift+Tab keeps the typed value');
-        assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-project');
-        await page.locator('#new-tab-command').fill('cs');await page.keyboard.press('Tab');
-        assert.equal(await page.locator('#new-tab-command').inputValue(),'csol');
-        assert.equal(await page.locator('#new-tab-dialog').evaluate(el=>el.open),true,'Tab completes without submitting');
-        await page.keyboard.press('Tab');
-        assert.equal(await page.evaluate(()=>document.activeElement.textContent),'Create tab ↵','Tab moves on after completion');
-        await page.locator('#new-tab-command').fill('c');await page.keyboard.press('Tab');
-        assert.equal(await page.locator('#new-tab-command').inputValue(),'c','An exact match wins over longer prefixes');
-        await page.locator('#new-tab-command').fill('cs');
+        await page.locator('#new-tab-prompt').fill('  Fix spaces, "quotes", $vars & symbols 🦀');
+        await page.keyboard.press('Shift+Enter');await page.keyboard.type('second line  ');
+        await page.locator('#new-tab-picker').setInputFiles({name:'screen shot.png',mimeType:'image/png',buffer:png});
+        await page.locator('#new-tab-prompt').evaluate(input=>{
+          const data=new DataTransfer();data.items.add(new File(['pasted image'],'pasted.png',{type:'image/png'}));
+          input.dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}));
+        });
+        await page.locator('#new-tab-form').evaluate(form=>{
+          const data=new DataTransfer();data.items.add(new File(['reference text'],'notes.txt',{type:'text/plain'}));
+          form.dispatchEvent(new DragEvent('drop',{dataTransfer:data,bubbles:true,cancelable:true}));
+        });
+        assert.equal(await page.locator('#new-tab-files .new-tab-file').count(),3);
       }
       if(number===2){
-        await page.locator('#new-tab-command').fill('cast');
-        assert.deepEqual(await page.locator('#new-tab-commands [role=option] span').allTextContents(),['castra']);
-        await page.keyboard.press('ArrowDown');await page.keyboard.press('Tab');
-        assert.equal(await page.locator('#new-tab-command').inputValue(),'castra');
-        assert.equal(await page.locator('#new-tab-dialog').evaluate(el=>el.open),true,'Picking a suggestion does not submit');
+        await page.locator('#new-tab-prompt').fill('Update this project');
         await page.locator('#new-tab-project').fill('dot');
         await page.getByRole('option',{name:'dotfiles',exact:true}).waitFor();
         await page.keyboard.press('Tab');
         assert.equal(await page.locator('#new-tab-project').inputValue(),'dotfiles');
         assert.equal(await page.locator('#new-tab-project-help').textContent(),'~/git/dotfiles');
-        await page.locator('#new-tab-command').focus();
+        await page.locator('#new-tab-prompt').focus();
       }
       await page.keyboard.press('Enter');
       await page.waitForFunction(()=>document.querySelector('#tabs .selected .tab-name')?.textContent==='Creating tab…');
@@ -140,7 +135,11 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
       await page.evaluate(()=>refreshAttention());
       assert.equal(await page.locator('#tabs .selected .tab-name').textContent(),'Creating tab…');
       assert.equal(await input.evaluate(()=>window.creationElevated),number===2);
-      assert.deepEqual(await input.evaluate(()=>window.creationLaunch),number===2?{project:'dotfiles',command:'castra'}:{project:'switchboard',command:'csol'});
+      assert.deepEqual(await input.evaluate(()=>window.creationLaunch),number===2?{project:'dotfiles',prompt:'Update this project',images:[]}:{project:'switchboard',prompt:'  Fix spaces, "quotes", $vars & symbols 🦀\nsecond line  \n\nAttached files:\nC:/User files/attachments/it\'s notes.txt',images:["C:/User files/attachments/it's screen shot.png","C:/User files/attachments/it's pasted.png"]});
+      if(number===1){
+        assert.deepEqual(uploads.slice(-3).map(({path,name})=>({path,name})),['screen shot.png','pasted.png','notes.txt'].map(name=>({path:'/api/hosts/windows/attachments',name})));
+        assert.deepEqual(uploads.at(-3).body,png);
+      }
       await input.evaluate(()=>window.confirmCreation());created=number;
       await page.waitForFunction(n=>document.querySelector('#tabs .selected .tab-name')?.textContent==='New shell '+n,number);
       assert.equal(new URL(page.url()).searchParams.get('pane'),String(8+number));
@@ -172,6 +171,24 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
     await page.keyboard.press('Escape');
     assert.equal(await page.locator('#new-tab-dialog').evaluate(el=>el.open),true);
     projectError=false;await page.keyboard.press('Escape');
+    await page.locator('#new-tab').click();
+    await page.locator('#new-tab-prompt').fill('Keep this draft');
+    await page.locator('#new-tab-picker').setInputFiles({name:'retry.png',mimeType:'image/png',buffer:png});
+    uploadError=true;await page.locator('#new-tab-form button[type=submit]').click();
+    await page.waitForFunction(()=>document.querySelector('#new-tab-error').textContent.includes('Could not upload'));
+    assert.equal(await page.locator('#new-tab-prompt').inputValue(),'Keep this draft');
+    assert.equal(await page.locator('#new-tab-files .new-tab-file').count(),1);
+    assert.equal(await page.locator('#new-tab-form button[type=submit]').isEnabled(),true);
+    uploadError=false;delayUpload=true;await page.locator('#new-tab-form button[type=submit]').click();
+    for(let i=0;!releaseUpload&&i<200;i++)await new Promise(resolve=>setTimeout(resolve,5));assert.ok(releaseUpload);
+    assert.equal(await page.locator('#new-tab-target').isDisabled(),true);
+    await page.keyboard.press('Escape');await page.locator('#new-tab').click();
+    releaseUpload();delayUpload=false;
+    await page.waitForResponse(response=>new URL(response.url()).pathname.endsWith('/attachments'));
+    assert.equal(await page.locator('#new-tab-prompt').inputValue(),'');
+    assert.equal(await page.locator('#new-tab-files .new-tab-file').count(),0);
+    assert.equal(await input.evaluate(()=>!!window.creationRequested),false,'A cancelled upload cannot create a tab after reopening');
+    await page.keyboard.press('Escape');
     await create(1);
     await page.locator('#tabs .selected').click({button:'right'});
     await page.locator('#ready').click();
@@ -200,12 +217,12 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'an empty machine st
     assert.equal(await input.evaluate(i=>document.activeElement===i),true);
     // A deliberate move to search while creation waits must still win.
     await page.locator('#new-tab').click();
-    await page.locator('#new-tab-command').fill('custom --flag');await page.keyboard.press('Tab');
-    assert.equal(await page.locator('#new-tab-command').inputValue(),'custom --flag');
-    assert.equal(await page.evaluate(()=>document.activeElement.textContent),'Create tab ↵','Unmatched commands keep normal Tab navigation');
-    await page.locator('#new-tab-command').focus();await page.keyboard.press('Enter');
+    await page.locator('#new-tab-prompt').fill('custom --flag');await page.keyboard.press('Tab');
+    assert.equal(await page.locator('#new-tab-prompt').inputValue(),'custom --flag');
+    assert.equal(await page.evaluate(()=>document.activeElement.textContent),'Attach files','Tab moves to attachments');
+    await page.locator('#new-tab-prompt').focus();await page.keyboard.press('Enter');
     await page.waitForFunction(()=>document.querySelector('iframe.active')?.contentWindow.creationRequested);
-    assert.deepEqual(await input.evaluate(()=>window.creationLaunch),{project:'switchboard',command:'custom --flag'});
+    assert.deepEqual(await input.evaluate(()=>window.creationLaunch),{project:'switchboard',prompt:'custom --flag',images:[]});
     await page.locator('#tab-search').click();
     await input.evaluate(()=>window.confirmCreation());
     await page.waitForFunction(()=>document.querySelector('#tabs .selected .tab-name')?.textContent==='New shell 3');

@@ -54,6 +54,8 @@ let recoveryPanes, reconnectTarget;
 (async()=>{
     try {
         fs.mkdirSync(path.join(dir,'git','switchboard'),{recursive:true});
+        // The New tab prompt always launches csol; keep this private fixture a plain shell.
+        fs.writeFileSync(path.join(dir,'.bashrc'),'csol() { exec /bin/bash --noprofile --norc; }\n');
         fs.writeFileSync(config,`web_sharing "${recoveryMode?'off':'on'}"\ndefault_shell "/bin/bash"\nshow_startup_tips false\nsession_serialization false\ndisable_session_metadata false\n`);
         fs.copyFileSync(oldBinary,installed);fs.chmodSync(installed,0o755);
         if(recoveryMode)console.log(JSON.stringify({engine_sha256:crypto.createHash('sha256').update(fs.readFileSync(installed)).digest('hex'),web_sha256:crypto.createHash('sha256').update(fs.readFileSync(newBinary)).digest('hex')}));
@@ -420,8 +422,6 @@ with open(sys.argv[1], 'a+') as lock:
             const previousTabIds=names().map(([id])=>id);
             await page.keyboard.press('Alt+KeyT');
             await page.waitForFunction(()=>document.querySelector('#new-tab-dialog').open);
-            // This private test has no dotfiles aliases; keep a plain shell for the input checks.
-            await page.locator('#new-tab-command').fill('exec /bin/bash --noprofile --norc');
             await page.keyboard.press('Enter');
             await page.waitForFunction(previous=>{
                 const button=document.querySelector('#tabs .tab-select.selected'),frame=document.querySelector('#terminals>iframe.active');

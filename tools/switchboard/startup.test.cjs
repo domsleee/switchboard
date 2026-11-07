@@ -11,18 +11,18 @@ function workspace(initial){
     catalogUnavailable:()=>false,saveReady(){},localStorage:{setItem(){}},renderMachines(){},render(){},setStatus(){},clearTimeout(){},setTimeout:fn=>timeouts.push(fn),
     document:{createElement:()=>({getAttribute(name){return this[name];},remove(){this.removed=true;},focus(){}})},$:id=>elements.get(id),
     fetch:async url=>({ok:true,json:async()=>url==='/api/hosts?summary=1'?[{id:'windows',name:'Windows'}]:catalog})};
-  elements.set('new-tab-project',{value:'switchboard'});elements.set('new-tab-command',{value:'c'});
+  elements.set('new-tab-project',{value:'switchboard'});elements.set('new-tab-prompt',{value:'c'});
   elements.set('terminals',{append:frame=>mounted.push(frame)});
   elements.set('new-tab-form',{});elements.set('new-tab-target',{value:JSON.stringify(['windows','main'])});elements.set('new-tab-dialog',{close(){}});elements.set('tab-search',{value:''});
   vm.createContext(context);
   vm.runInContext(source.slice(source.indexOf('function sessionKey('),source.indexOf('function attentionKey(')),context);
   vm.runInContext(source.slice(source.indexOf('function syncTerminalConnection('),source.indexOf("window.addEventListener('message'")),context);
-  const submit=source.indexOf("$('new-tab-form').onsubmit=");
+  const submit=source.indexOf("async function createNewTab(");
   vm.runInContext(source.slice(submit,source.indexOf("$('ready').onclick=",submit)),context);
   return {context,mounted,timeouts,elements,catalog:value=>catalog=value};
 }
 
-const create=w=>w.elements.get('new-tab-form').onsubmit({preventDefault(){}});
+const create=w=>w.context.createNewTab(w.elements.get('new-tab-target').value,{project:'switchboard',prompt:'',images:[],elevated:false});
 
 test('an empty machine starts nothing on its own; + starts one shell that survives delayed catalogs and stays closed after its last tab exits',async()=>{
   const host={id:'windows',name:'Windows',sessions:[]},w=workspace(host),c=w.context;
@@ -31,7 +31,7 @@ test('an empty machine starts nothing on its own; + starts one shell that surviv
   create(w);
   assert.equal(w.mounted.length,1);assert.equal(w.mounted[0].src,'/hosts/windows/main');
   const entry=c.sessions.get(JSON.stringify(['windows','main']));assert.equal(entry.starting,true);assert.equal(entry.selectOnStart,true);
-  assert.equal(entry.launchOnStart.project,'switchboard');assert.equal(entry.launchOnStart.command,'c');
+  assert.equal(entry.launchOnStart.project,'switchboard');assert.equal(entry.launchOnStart.prompt,'');
   await c.refresh();assert.equal(c.sessions.size,1);assert.equal(w.mounted.length,1);
   const pane={pane_id:7,is_plugin:false,tab_position:0};
   entry.state={session_name:'main',active_pane:pane,panes:[pane],tabs:[{position:0,name:'Shell'}]};

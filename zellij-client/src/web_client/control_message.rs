@@ -34,6 +34,10 @@ pub enum WebClientToWebServerControlMessagePayload {
         project: Option<String>,
         #[serde(default)]
         command: Option<String>,
+        #[serde(default)]
+        prompt: Option<String>,
+        #[serde(default)]
+        images: Vec<String>,
     },
     SetMobileRenderPreferences {
         single_pane: bool,

@@ -18,6 +18,7 @@ test('Conversation never attaches a terminal, including initial mobile load and 
    if(p==='/api/attention')return json({tabs,panes:tabs.flatMap(tab=>tab.panes).map(pane=>({host:'local',session:'main',pane_id:pane.pane_id,agent:'codex',state:'ready',chat_id:`chat-${pane.pane_id}`})),errors:[]});
    if(p.startsWith('/api/chats/'))return json({id:p.split('/').at(-1),agent:'codex',session_id:native?(p.endsWith('chat-3')?thread.slice(0,-1)+'3':thread):null,messages:[{role:'assistant',text:'Ready for a reply'}],start_cursor:0,next_cursor:null});
    if(p==='/api/hosts/local/codex/reply'){replies.push(route.request().postDataJSON());return json({status:'queued'});}
+   if(p==='/api/hosts/local/attachments')return json({path:'/tmp/my uploaded shot.png'});
    if(p==='/hosts/local/new-tab'){
     creations.push(route.request().postDataJSON());const id=10+creations.length,tab_id=5+creations.length;
     tabs.push({host:'local',session:'main',id:tab_id,position:tabs.length,name:'New agent',panes:[{...pane(id),tab_id,tab_position:tabs.length}]});
@@ -87,12 +88,15 @@ test('Conversation never attaches a terminal, including initial mobile load and 
   await page.getByRole('button',{name:'Conversation',exact:true}).click();
   await page.locator('#new-tab').click();await page.locator('#new-tab-dialog').waitFor({state:'visible'});
   await page.keyboard.press('Escape');assert.equal(creations.length,0);
-  for(const command of ['c','castra','csol']){
+  for(const command of ['Fix spaces and quotes: "hello"','Two lines\nsecond line','']){
    const count=creations.length+1;
-   await page.locator('#new-tab').click();await page.locator('#new-tab-command').fill(command);await page.locator('#new-tab-command').press('Tab');await page.locator('#new-tab-form button[type="submit"]').click();
+   await page.locator('#new-tab').click();await page.locator('#new-tab-prompt').fill(command);
+   await page.locator('#new-tab-picker').setInputFiles({name:'shot.png',mimeType:'image/png',buffer:Buffer.from('image')});
+   await page.locator('#new-tab-form button[type="submit"]').click();
    await page.waitForFunction(id=>allTabs().find(t=>t.key===selected)?.tab.id===id,5+count);
    assert.equal(await page.locator('#new-tab-dialog').evaluate(el=>el.open),false);
-   assert.equal(creations.at(-1).command,command);
+   assert.equal(creations.at(-1).prompt,command);
+   assert.deepEqual(creations.at(-1).images,['/tmp/my uploaded shot.png']);
    assert.equal(await page.evaluate(()=>allTabs().find(t=>t.key===selected).tab.panes[0].pane_id),10+creations.length);
    assert.equal(connections.length,3,'Creating a tab in Conversation must never attach a terminal');
    assert.equal(await page.getByRole('button',{name:'Conversation',exact:true}).getAttribute('aria-pressed'),'true');
