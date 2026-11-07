@@ -852,10 +852,6 @@ fn build_version(catalog: &Value) -> Value {
     if let Some(timestamp) = field("commit_timestamp") {
         build["commit_timestamp"] = json!(timestamp);
     }
-    // The sidebar attaches a viewer behind Conversation only where it starts hidden.
-    if catalog["build"]["hidden_attach"] == true {
-        build["hidden_attach"] = json!(true);
-    }
     build
 }
 
@@ -2855,12 +2851,6 @@ mod tests {
             ),
             json!({"commit": "abc1234", "commit_date": "2026-10-31",
                 "commit_timestamp": "2026-10-31T13:07:45+11:00"})
-        );
-        assert_eq!(
-            build_version(
-                &json!({"build": {"commit": "abc1234", "commit_date": "2026-10-31", "hidden_attach": true}})
-            ),
-            json!({"commit": "abc1234", "commit_date": "2026-10-31", "hidden_attach": true})
         );
     }
 

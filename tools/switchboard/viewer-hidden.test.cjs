@@ -63,3 +63,41 @@ test('hidden viewers leave terminal sizing, and Conversation disconnects only wh
     assert.deepEqual(errors,[]);
   }finally{await browser.close();}
 });
+
+test('a viewer that attached hidden rejoins sizing when Terminal is shown before its first state',
+  {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE to run the hidden viewer check'},async()=>{
+  const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
+  const browser=await chromium.launch({headless:true});
+  try{
+    const page=await browser.newPage({viewport:{width:1280,height:900}}),errors=[];
+    page.on('pageerror',error=>errors.push(error.message));
+    await page.route('**/*',async route=>{
+      const pathname=new URL(route.request().url()).pathname,json=value=>route.fulfill({contentType:'application/json',body:JSON.stringify(value)});
+      if(pathname==='/api/hosts')return json([{id:'mac',name:'Mac'}]);
+      if(pathname==='/api/hosts/mac')return json({id:'mac',name:'Mac',sessions:[{name:'main',web_clients_allowed:true,hidden_attach:true}]});
+      if(pathname==='/api/attention')return json({tabs:[{host:'mac',session:'main',id:1,position:0,name:'Mac',panes:[{pane_id:1,is_plugin:false,tab_position:0}]}],panes:[],errors:[]});
+      if(pathname.startsWith('/hosts/'))return route.fulfill({contentType:'text/html',body:`<div id="terminal"></div><script>
+          // The engine kept the hidden report this viewer sent before it attached.
+          let hidden=true;
+          window.WebSocket=class extends EventTarget {constructor(){super();this.readyState=1;}send(){}};
+          window.__zjSupportsTabViewport=true;
+          window.__zjSendControl=message=>{(parent.controls??=[]).push(message);if(message.type==='SetViewerHidden'){hidden=message.hidden;setTimeout(()=>sendState());}};
+          window.term={element:document.querySelector('#terminal'),options:{disableStdin:false},focus(){},blur(){},
+            _core:{_renderService:{dimensions:{css:{cell:{width:8,height:16}}}}},buffer:{active:{viewportY:0,getLine:()=>({translateToString:()=>''})}},onRender(){},onResize(){}};
+        </script><script src="/bridge.js"></script><script>
+          const socket=new WebSocket('wss://switchboard.test/ws/control');
+          const pane={pane_id:1,is_plugin:false,tab_position:0};
+          window.sendState=()=>socket.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'MobileState',payload:{session_name:'main',panes:[pane],active_pane:pane,tab_viewport:{owner_active:false,cols:100,rows:40,hidden}}})}));
+          sendState();
+        </script>`});
+      const file=pathname==='/'?'index.html':pathname.slice(1);
+      if(!fs.existsSync(__dirname+'/static/'+file))return route.fulfill({status:404,body:''});
+      return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
+    });
+    await page.goto('https://switchboard.test/?host=mac&session=main&tab=1');
+    await page.waitForFunction(()=>[...sessions.values()][0]?.state);
+    await page.waitForFunction(()=>(window.controls||[]).some(c=>c.type==='SetViewerHidden'));
+    assert.deepEqual(await page.evaluate(()=>controls.filter(c=>c.type==='SetViewerHidden').map(c=>c.hidden)),[false]);
+    assert.deepEqual(errors,[]);
+  }finally{await browser.close();}
+});

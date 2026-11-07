@@ -993,7 +993,7 @@ function syncTerminalConnection(entry) {
   const suspended=!!globalThis.SwitchboardConversation?.wantsConversation?.()&&
     !(!mobileSidebar.matches&&!entry.hideUnsupported&&!entry.cached&&!entry.suspending&&
       (!!entry.state&&entry.frame.getAttribute('src')===live||
-        entry.frame.classList.contains('active')&&!!hosts.get(entry.host)?.version?.hidden_attach));
+        entry.frame.classList.contains('active')&&!!hosts.get(entry.host)?.sessions?.find(session=>session.name===entry.name)?.hidden_attach));
   const src=entry.cached||suspended?'about:blank':live;
   if(suspended&&entry.state?.active_pane)entry.resumePane=entry.state.active_pane;
   entry.suspended=suspended;

@@ -63,6 +63,7 @@ impl SessionManager for RealSessionManager {
                 name: info.name,
                 web_clients_allowed: info.web_clients_allowed,
                 sharing_recovery: false,
+                hidden_attach: info.hidden_attach,
                 tab_count: info.tabs.len(),
                 pane_count: info.panes.panes.values().map(|panes| panes.len()).sum(),
                 connected_clients: info.connected_clients,
@@ -256,6 +257,9 @@ pub struct WebSessionInfo {
     pub web_clients_allowed: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub sharing_recovery: bool,
+    /// A viewer can attach hidden (`hidden=true`) without sizing this session's tab.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden_attach: bool,
     pub tab_count: usize,
     pub pane_count: usize,
     pub connected_clients: usize,
@@ -276,9 +280,6 @@ pub struct BuildInfo {
     pub commit_date: String,
     #[serde(default)]
     pub commit_timestamp: String,
-    /// Viewers can attach hidden (`hidden=true`) without sizing their tab.
-    #[serde(default)]
-    pub hidden_attach: bool,
 }
 
 #[derive(Deserialize)]

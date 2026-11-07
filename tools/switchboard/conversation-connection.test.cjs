@@ -245,7 +245,7 @@ test('Where viewers attach hidden, Conversation connects the selected terminal i
    const p=new URL(route.request().url()).pathname,json=value=>route.fulfill({json:value});
    if(p==='/api/mesh')return json({members:[]});
    if(p==='/api/hosts')return json([{id:'local',name:'Ubuntu',local:true}]);
-   if(p==='/api/hosts/local')return json({id:'local',name:'Ubuntu',local:true,version:{commit:'abc1234',commit_date:'2026-11-07',hidden_attach:true},sessions:['main','other'].map(name=>({name,web_clients_allowed:true}))});
+   if(p==='/api/hosts/local')return json({id:'local',name:'Ubuntu',local:true,sessions:['main','other'].map(name=>({name,web_clients_allowed:true,hidden_attach:true}))});
    if(p==='/api/attention')return json({tabs,panes:tabs.map(tab=>({host:'local',session:tab.session,pane_id:tab.panes[0].pane_id,agent:'codex',state:'ready',token:'r',seen:true,chat_id:'chat-'+tab.id})),errors:[]});
    if(p.startsWith('/api/chats/'))return json({id:p.split('/').at(-1),agent:'codex',session_id:null,messages:[{role:'assistant',text:'Reply in '+p.split('/').at(-1)}],start_cursor:0,next_cursor:null});
    if(p.startsWith('/hosts/')){

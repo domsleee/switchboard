@@ -6103,6 +6103,11 @@ impl SessionInfo {
             .and_then(|n| n.entries().iter().next())
             .and_then(|e| e.value().as_bool())
             .unwrap_or(false);
+        let hidden_attach = kdl_document
+            .get("hidden_attach")
+            .and_then(|n| n.entries().iter().next())
+            .and_then(|e| e.value().as_bool())
+            .unwrap_or(false);
         let is_current_session = name == current_session_name;
         let mut tab_history = BTreeMap::new();
         if let Some(kdl_tab_history) = kdl_document.get("tab_history").and_then(|p| p.children()) {
@@ -6186,6 +6191,7 @@ impl SessionInfo {
             available_layouts,
             web_client_count,
             web_clients_allowed,
+            hidden_attach,
             plugins: Default::default(), // we do not serialize plugin information
             tab_history,
             pane_history,
@@ -6219,6 +6225,9 @@ impl SessionInfo {
 
         let mut web_clients_allowed = KdlNode::new("web_clients_allowed");
         web_clients_allowed.push(self.web_clients_allowed);
+
+        let mut hidden_attach = KdlNode::new("hidden_attach");
+        hidden_attach.push(self.hidden_attach);
 
         let mut available_layouts = KdlNode::new("available_layouts");
         let mut available_layouts_children = KdlDocument::new();
@@ -6289,6 +6298,7 @@ impl SessionInfo {
         kdl_document.nodes_mut().push(connected_clients);
         kdl_document.nodes_mut().push(web_clients_allowed);
         kdl_document.nodes_mut().push(web_client_count);
+        kdl_document.nodes_mut().push(hidden_attach);
         kdl_document.nodes_mut().push(available_layouts);
         kdl_document.nodes_mut().push(tab_history);
         kdl_document.nodes_mut().push(pane_history);
@@ -6874,6 +6884,7 @@ fn serialize_and_deserialize_session_info_with_data() {
         plugins: Default::default(),
         web_client_count: 2,
         web_clients_allowed: true,
+        hidden_attach: true,
         tab_history: Default::default(),
         pane_history: Default::default(),
         creation_time: Duration::from_secs(300),

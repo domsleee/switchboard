@@ -77,7 +77,7 @@ let native,relay,browser,tokenName,created=false,failed=false;
     results.after_reload.push(await toTerminal());
   }
   const summary=Object.fromEntries(Object.entries(results).map(([scenario,runs])=>[scenario,{ms:stats(runs.map(r=>r.ms)),terminal_reloads:runs.filter(r=>r.reloaded).length}]));
-  console.log(JSON.stringify({platform:process.platform,latency_ms:latency,scrollback,host_version:(await (await fetch(url+'/api/hosts/fixture')).json()).version,...summary},null,2));
+  console.log(JSON.stringify({platform:process.platform,latency_ms:latency,scrollback,hidden_attach:(await (await fetch(url+'/api/hosts/fixture')).json()).sessions.find(s=>s.name===name)?.hidden_attach??false,...summary},null,2));
 }catch(error){failed=true;console.error('Private fixture logs:',dir);throw error;}
 finally{if(browser)await browser.close();if(created)try{cli('kill-session',name);}catch{}await stop(relay);await stop(native);if(tokenName)try{cli('web','--revoke-token',tokenName);}catch{}if(!failed)try{fs.rmSync(dir,{recursive:true,force:true,maxRetries:5,retryDelay:500});}catch{}}
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -5725,6 +5725,7 @@ impl Screen {
                 .iter()
                 .filter(|(_client_id, is_web_client)| **is_web_client)
                 .count(),
+            hidden_attach: true,
             plugins: Default::default(), // these are filled in by the wasm thread
             tab_history: self.tab_history.clone(),
             pane_history: self
@@ -11730,6 +11731,7 @@ pub(crate) fn screen_thread_main(
                         .iter()
                         .filter(|(_client_id, is_web_client)| **is_web_client)
                         .count(),
+                    hidden_attach: true,
                     plugins: Default::default(),
                     tab_history: screen.tab_history.clone(),
                     pane_history: screen
