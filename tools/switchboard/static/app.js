@@ -884,8 +884,9 @@ function sidebarKeydown(event){
   }
   if(document.querySelector('dialog[open]'))return;
   if(event.code==='KeyT'&&!event.ctrlKey&&!event.metaKey&&event.altKey&&!event.shiftKey&&!event.isComposing){event.preventDefault();event.stopImmediatePropagation();if(!event.repeat)$('new-tab').click();return;}
-  if(event.target.closest?.('input,textarea,select,[contenteditable="true"]'))return;
-  if(event.code==='KeyD'&&event.ctrlKey&&!event.metaKey&&!event.altKey&&!event.shiftKey&&!event.isComposing){
+  const closeShortcut=event.code==='KeyD'&&event.ctrlKey&&!event.metaKey&&!event.altKey&&!event.shiftKey&&!event.isComposing;
+  if(event.target.closest?.('input,textarea,select,[contenteditable="true"]')&&!(closeShortcut&&event.target.matches?.('.conversation-compose textarea')))return;
+  if(closeShortcut){
     event.preventDefault();event.stopImmediatePropagation();
     if(!event.repeat)closeSelectedTab();
     return;
