@@ -26,13 +26,16 @@ test('Conversation folds finished progress, keeps the live step, and gives code 
    if(p==='/')return route.fulfill({contentType:'text/html',body:`<meta charset="utf-8"><link rel="stylesheet" href="/conversation.css"><style>body{margin:0}#terminals{position:relative;height:100dvh}</style><main id="terminals"><iframe id="terminal"></iframe><section id="artifact-preview" hidden></section></main><script src="/conversation-media.js"></script><script src="/conversation.js"></script><script>window.current={key:'pane1',host:'fixture',session:'main',pane:1,title:'Fix',agent:'claude',state:'working',since:Math.floor(Date.now()/1000)-65,chatId:'chat-1',frame:document.getElementById('terminal')};SwitchboardConversation.install({selection:()=>current,terminal(){}});</script>`});
    return route.fulfill({path:path.join(__dirname,'static',path.basename(p)),contentType:p.endsWith('.css')?'text/css':'text/javascript'});
   });
-  await page.goto('http://layout.test/');await page.getByText('Checking Windows',{exact:true}).waitFor();
-  // The finished run folds behind one summary; the run still in progress stays open.
-  const summary=page.locator('.conversation-steps');
-  assert.equal(await summary.count(),1);assert.equal(await summary.textContent(),'Claude worked for 1m 12s · 2 steps');
+  await page.goto('http://layout.test/');await page.locator('.conversation-steps').nth(1).waitFor();
+  // The finished run folds behind one summary; the run in progress shows only its newest step.
+  const summaries=page.locator('.conversation-steps'),summary=summaries.first(),earlier=summaries.nth(1);
+  assert.equal(await summaries.count(),2);assert.equal(await summary.textContent(),'Claude worked for 1m 12s · 2 steps');
   assert.equal(await summary.getAttribute('aria-expanded'),'false');
   assert.equal(await page.getByText('Reading app.js',{exact:true}).isVisible(),false);
-  assert.equal(await page.getByText('Checking Windows',{exact:true}).isVisible(),true);
+  assert.equal(await earlier.textContent(),'1 earlier step');
+  assert.equal(await page.getByText('Checking Windows',{exact:true}).isVisible(),false);
+  await earlier.click();assert.equal(await page.getByText('Checking Windows',{exact:true}).isVisible(),true);
+  await earlier.click();assert.equal(await page.getByText('Checking Windows',{exact:true}).isVisible(),false);
   await summary.click();
   assert.equal(await page.getByText('Reading app.js',{exact:true}).isVisible(),true);
   assert.equal(await summary.getAttribute('aria-expanded'),'true');

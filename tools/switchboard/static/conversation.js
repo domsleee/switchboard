@@ -227,6 +227,8 @@
     const rendered=new Map(),renderedOutgoing=new Map(),summaries=new Map(),expandedRuns=new Set();
     const isCommentary=item=>item.role==='assistant'&&item.phase==='commentary';
     // A finished run of two or more progress updates folds behind one summary line.
+    // A run still in progress shows only its newest update; earlier ones fold the same
+    // way, under the same key, so expanding one keeps it open once the answer lands.
     function activityRuns(){
       const visible=[],runs=new Map();
       for(const [offset,item] of messages.entries())if(!setupMessage(item))visible.push({key:startCursor+offset,item});
@@ -239,6 +241,9 @@
           const elapsed=(Date.parse(after.item.timestamp)-Date.parse(before.timestamp))/1000;
           const run={start:visible[i].key,collapsed:!expandedRuns.has(identity(target)+':'+visible[i].key),label:(Number.isFinite(elapsed)&&elapsed>0?`${providerLabel()} worked for ${duration(elapsed)} · `:`${providerLabel()} · `)+`${count} steps`};
           for(let j=i;j<=end;j++)runs.set(visible[j].key,run);
+        }else if(!after&&count>=2){
+          const earlier=count-1,run={start:visible[i].key,collapsed:!expandedRuns.has(identity(target)+':'+visible[i].key),label:`${earlier} earlier step${earlier===1?'':'s'}`};
+          for(let j=i;j<end;j++)runs.set(visible[j].key,run);
         }
         i=end+1;
       }
@@ -465,13 +470,14 @@
     }
     form.onsubmit=async event=>{
       event.preventDefault();const current=selection();if(!target||identity(current)!==identity(target)||!binding()||(!draft.value.trim()&&!fileList().length)||pendingFor())return;
-      if(!['ready','working'].includes(current.state)){sendStatus('The agent needs attention in Terminal. Your draft is kept.');return;}
+      // Waiting: the turn ended while background work runs; the prompt still takes input.
+      if(!['ready','waiting','working'].includes(current.state)){sendStatus('The agent needs attention in Terminal. Your draft is kept.');return;}
       const selected=fileList();if(selected.some(item=>!item.path)){sendStatus(selected.some(item=>item.error)?'Remove failed attachments before sending.':'Wait for attachments to finish uploading.');return;}
       const text=draft.value,payload=text+(selected.length?'\n\nAttached files:\n'+selected.map(item=>item.path).join('\n'):'');
       if(/[\x00-\x08\x0b-\x1f\x7f]/.test(payload)){sendStatus('The draft contains terminal control characters. Remove them first.');return;}
       const command=/^\/[a-z][\w:.-]*(?:\s|$)/i.test(text),native=!command&&current.agent==='codex'&&/^[0-9a-f-]{36}$/.test(chat.thread||'');
       if(command&&selected.length){sendStatus('Send commands without attachments. Your draft is kept.');return;}
-      if(command&&current.state!=='ready'){sendStatus('Wait for the agent to finish before sending a command. Your draft is kept.');return;}
+      if(command&&!['ready','waiting'].includes(current.state)){sendStatus('Wait for the agent to finish before sending a command. Your draft is kept.');return;}
       if(current.state==='working'&&!native&&current.agent!=='claude'){sendStatus('Still connecting to this conversation. Try sending again in a moment.');return;}
       if(new TextEncoder().encode(payload).length>(native?8192:16000)){sendStatus('This message is too long. Shorten it before sending.');return;}
       const retry=native&&(outgoing.get(identity(target))||[]).find(item=>['failed','uncertain'].includes(item.state)&&item.native&&sameMessage(item.payload,payload));
