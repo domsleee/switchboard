@@ -112,3 +112,12 @@
   .conversation-compose .conversation-send-notice{padding:0 10px 4px}
   .conversation-actions{position:absolute;bottom:calc(var(--composer-height,64px) + 8px);width:auto;right:16px;padding:0}
 }
+
+.conversation-actions button:last-child{width:auto;border-radius:20px;padding:6px 12px;white-space:nowrap}
+@media(max-width:700px),(pointer:coarse) and (max-width:1000px){
+  .conversation-messages{scrollbar-width:none}
+  .conversation-messages::-webkit-scrollbar{width:0}
+  .conversation-messages.scrolling{scrollbar-width:thin}
+  .conversation-messages.scrolling::-webkit-scrollbar{width:3px}
+  .conversation-messages.scrolling::-webkit-scrollbar-thumb{background:#343e4f;border-radius:3px}
+}

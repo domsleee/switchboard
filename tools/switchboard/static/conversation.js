@@ -33,19 +33,42 @@
     function status(text,quiet=false){notice.textContent=text;notice.hidden=quiet;}
     function busy(value){loading=value;older.disabled=refresh.disabled=value;}
     function focusSurface(){if(!panel.hidden&&!panel.contains(document.activeElement))panel.focus({preventScroll:true});}
-    function show(value){if(!value){window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();}open=value;root.classList.toggle('conversation-open',open);modeChanged();try{localStorage.setItem(modeKey,value?'conversation':'terminal');}catch{}panel.hidden=!value;toggle.setAttribute('aria-pressed',String(value));back.setAttribute('aria-pressed',String(!value));if(value){document.getElementById('artifact-preview').hidden=true;update();if(binding()&&!messages.length)load('initial');focusSurface();}else if(target)terminal(target);viewport();}
+    function show(value){if(!value){loadRequest?.abort();window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();}open=value;root.classList.toggle('conversation-open',open);modeChanged();try{localStorage.setItem(modeKey,value?'conversation':'terminal');}catch{}panel.hidden=!value;toggle.setAttribute('aria-pressed',String(value));back.setAttribute('aria-pressed',String(!value));if(value){document.getElementById('artifact-preview').hidden=true;update();if(binding()&&!messages.length)load('initial');focusSurface();}else if(target)terminal(target);viewport();}
 
     toggle.onclick=()=>show(true);back.onclick=()=>show(false);
-    async function get(url){const response=await fetch(url);if(!response.ok)throw Error(`Request failed (${response.status})`);const data=await response.json();if(data.error)throw Error(data.error);return data;}
+    let loadRequest=null,lastFailure=null,lastDiagnostic='',lastDiagnosticAt=0,newOutput=false,scrollIdle;
+    function reportLoad(phase,outcome,started){
+      const now=Date.now(),key=phase+':'+outcome;
+      if(key===lastDiagnostic&&now-lastDiagnosticAt<60000)return;
+      lastDiagnostic=key;lastDiagnosticAt=now;
+      void fetch('/api/diagnostics/conversation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phase,outcome,elapsed_ms:Math.min(120000,Math.round(performance.now()-started))})}).catch(()=>{});
+    }
+    async function get(url,signal){
+      const response=await fetch(url,{signal});
+      if(!response.ok)throw Object.assign(Error('The conversation could not be loaded. Retrying…'),{code:'http'});
+      let data;try{data=await response.json();}catch{throw Object.assign(Error('The conversation response was incomplete. Retrying…'),{code:'invalid_response'});}
+      if(data.error)throw Object.assign(Error('The conversation is temporarily unavailable. Retrying…'),{code:'http'});
+      if(!Array.isArray(data.messages))throw Object.assign(Error('The conversation response was incomplete. Retrying…'),{code:'invalid_response'});
+      return data;
+    }
+    function partialNotice(data){
+      if(!data.partial)return '';
+      const reasons=data.partial_reasons||[];
+      if(reasons.includes('file_limit')||reasons.includes('message_limit'))return 'This conversation exceeds the history limit. Some messages are unavailable here; open Terminal for the latest output.';
+      if(reasons.includes('record_limit'))return 'An oversized history record was skipped. Later messages can still load.';
+      if(reasons.includes('malformed_record'))return 'An unreadable history record was skipped. Other messages are still available.';
+      return 'Some history is unavailable. Showing the messages that could be read.';
+    }
     const rendered=new Map();
     function setupMessage(item){return item.role==='user'&&/^(?:# AGENTS\.md instructions|<environment_context>|<permissions instructions>|<skills_instructions>)/.test((item.text||'').trimStart());}
     function nearBottom(){return list.scrollHeight-list.scrollTop-list.clientHeight<80;}
-    function updateLatest(){latest.hidden=nearBottom();actions.hidden=latest.hidden&&refresh.hidden;}
-    list.addEventListener('scroll',()=>{updateLatest();if(loaded&&startCursor>0&&list.scrollTop<80&&!loading&&older.hidden)load('older');},{passive:true});
+    function updateLatest(){latest.hidden=nearBottom();if(latest.hidden)newOutput=false;latest.textContent=newOutput?'↓ New messages':'↓ Latest';actions.hidden=latest.hidden&&refresh.hidden;}
+    list.addEventListener('scroll',()=>{list.classList.add('scrolling');clearTimeout(scrollIdle);scrollIdle=setTimeout(()=>list.classList.remove('scrolling'),700);updateLatest();if(loaded&&startCursor>0&&list.scrollTop<80&&!loading&&older.hidden)load('older');},{passive:true});
     function paint(prepend=false,initial=false){
       const snapshot=JSON.stringify(messages);if(snapshot===lastPaint)return;
       lastPaint=snapshot;
       const follow=initial||nearBottom(),height=list.scrollHeight,position=list.scrollTop,keys=new Set();
+      if(!follow&&!prepend&&!initial)newOutput=true;
       older.hidden=true;
       let previous=older,previousRole=null;
       for(const [offset,item] of messages.entries()){
@@ -68,18 +91,18 @@
       updateLatest();
     }
     async function load(kind='poll'){
-      if(!target||!binding()||loading)return;if(!loaded)kind='initial';const version=generation,chat=binding();let catchUp=false;busy(true);
+      if(!open||!target||!binding()||loading)return;if(!loaded)kind='initial';const version=generation,chat=binding(),started=performance.now(),request=new AbortController();loadRequest=request;let timedOut=false,catchUp=false;busy(true);const timeout=setTimeout(()=>{timedOut=true;request.abort();},15000);
       const initial=kind==='initial',prepend=kind==='older',cursor=nextCursor??tailCursor;
       historyStatus.hidden=!prepend;historyStatus.textContent='Loading earlier messages…';
       const params={host:target.chatHost||target.host,limit:50};
       if(initial)params.tail=true;else if(prepend)params.before=startCursor;else params.cursor=cursor;
-      try{const data=await get('/api/chats/'+encodeURIComponent(chat.id)+'?'+new URLSearchParams(params));if(version!==generation)return;
+      try{const data=await get('/api/chats/'+encodeURIComponent(chat.id)+'?'+new URLSearchParams(params),request.signal);if(version!==generation)return;
         chat.project=data.project||chat.project;chat.thread=data.session_id||chat.thread;const page=data.messages||[],start=data.start_cursor??(initial?0:prepend?Math.max(0,startCursor-page.length):cursor);
         if(initial){messages=page;startCursor=start;tailCursor=start;nextCursor=data.next_cursor??null;}
         else if(prepend){messages=page.concat(messages);startCursor=start;}
         else{messages=messages.slice(0,Math.max(0,start-startCursor)).concat(page);tailCursor=start;nextCursor=data.next_cursor??null;}
-        loaded=true;refresh.hidden=true;paint(prepend,initial);status('Some messages could not be loaded.',!data.partial);updateLatest();catchUp=nextCursor!==null&&!prepend;
-      }catch(error){if(version===generation){if(prepend){older.textContent='Retry earlier messages';older.hidden=false;}else{status(error.message);refresh.hidden=false;updateLatest();}}}finally{if(version===generation){busy(false);historyStatus.hidden=true;if(catchUp)setTimeout(()=>{if(version===generation)load();},0);else if(loaded&&startCursor>0&&older.hidden&&list.scrollHeight<=list.clientHeight)setTimeout(()=>{if(version===generation)load('older');},0);}}
+        loaded=true;refresh.hidden=true;paint(prepend,initial);const warning=partialNotice(data);status(warning,!warning);if(warning){reportLoad(kind,'partial',started);lastFailure='partial';}else if(lastFailure){reportLoad(kind,'recovered',started);lastFailure=null;}updateLatest();catchUp=nextCursor!==null&&!prepend;
+      }catch(error){if(version===generation&&!(!timedOut&&request.signal.aborted)){const outcome=timedOut?'timeout':error.code||'network';lastFailure=outcome;reportLoad(kind,outcome,started);const message=timedOut?'Loading took too long. Retrying…':error.code?error.message:'Connection interrupted. Retrying…';if(prepend){older.textContent='Retry earlier messages';older.hidden=false;}else{status(message);refresh.hidden=false;updateLatest();}}}finally{clearTimeout(timeout);if(loadRequest===request)loadRequest=null;if(version===generation){busy(false);historyStatus.hidden=true;if(catchUp)setTimeout(()=>{if(version===generation)load();},0);else if(loaded&&startCursor>0&&older.hidden&&list.scrollHeight<=list.clientHeight)setTimeout(()=>{if(version===generation)load('older');},0);}}
     }
     older.onclick=()=>load('older');refresh.onclick=()=>load(messages.length?'poll':'initial');latest.onclick=()=>{list.scrollTop=list.scrollHeight;updateLatest();};
     let draftSizeKey;
@@ -179,7 +202,7 @@
       if(identity(current)===identity(target)){target=current;return;}
       if(target)drafts.set(identity(target),draft.value);
       window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();
-      target=current;sendStatus('');generation++;loaded=false;lastPaint=null;busy(false);messages=[];startCursor=tailCursor=0;nextCursor=null;rendered.clear();list.replaceChildren(older);older.hidden=true;historyStatus.hidden=true;latest.hidden=refresh.hidden=true;
+      target=current;loadRequest?.abort();lastFailure=null;lastDiagnostic='';newOutput=false;sendStatus('');generation++;loaded=false;lastPaint=null;busy(false);messages=[];startCursor=tailCursor=0;nextCursor=null;rendered.clear();list.replaceChildren(older);older.hidden=true;historyStatus.hidden=true;latest.hidden=refresh.hidden=true;
       chat=target?.chatId?{id:target.chatId,agent:target.agent,title:target.title}:null;
       form.hidden=!chat;actions.hidden=true;
       if(!target){panel.hidden=true;viewport();return;}draft.value=drafts.get(identity(target))||'';

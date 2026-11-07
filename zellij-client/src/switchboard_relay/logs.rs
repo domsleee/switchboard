@@ -1801,3 +1801,69 @@ mod tests {
                 && e["message"] == "Remote control unavailable for api test"));
     }
 }
+
+// Browser diagnostics accept fixed codes only, never transcript text or paths.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ConversationDiagnostic {
+    phase: String,
+    outcome: String,
+    elapsed_ms: u32,
+}
+impl ConversationDiagnostic {
+    fn message(&self) -> Option<String> {
+        if !matches!(self.phase.as_str(), "initial" | "poll" | "older")
+            || !matches!(
+                self.outcome.as_str(),
+                "timeout" | "network" | "http" | "invalid_response" | "partial" | "recovered"
+            )
+            || self.elapsed_ms > 120_000
+        {
+            return None;
+        }
+        Some(format!(
+            "History {}: {}; elapsed_ms={}",
+            self.phase, self.outcome, self.elapsed_ms
+        ))
+    }
+}
+pub(super) async fn conversation(request: Request) -> StatusCode {
+    let diagnostic: ConversationDiagnostic = match diagnostic_body(request).await {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let Some(message) = diagnostic.message() else {
+        return StatusCode::BAD_REQUEST;
+    };
+    record("Conversation", &message);
+    StatusCode::NO_CONTENT
+}
+
+#[cfg(test)]
+mod conversation_diagnostic_tests {
+    use super::*;
+    #[tokio::test]
+    async fn switchboard_conversation_diagnostics_accept_only_content_free_codes() {
+        let request = |value: Value| {
+            Request::builder()
+                .method("POST")
+                .body(Body::from(value.to_string()))
+                .unwrap()
+        };
+        assert_eq!(
+            conversation(request(
+                json!({"phase":"initial","outcome":"timeout","elapsed_ms":15000})
+            ))
+            .await,
+            StatusCode::NO_CONTENT
+        );
+        for value in [
+            json!({"phase":"private prompt","outcome":"timeout","elapsed_ms":1}),
+            json!({"phase":"poll","outcome":"private error text","elapsed_ms":1}),
+            json!({"phase":"poll","outcome":"network","elapsed_ms":1,"message":"private prompt"}),
+            json!({"phase":"poll","outcome":"network","elapsed_ms":120001}),
+        ] {
+            assert_eq!(conversation(request(value)).await, StatusCode::BAD_REQUEST);
+        }
+    }
+}

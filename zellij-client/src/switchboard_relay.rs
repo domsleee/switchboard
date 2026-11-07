@@ -1365,6 +1365,7 @@ fn app(state: RelayState) -> Router {
             "/api/diagnostics/terminal-switch",
             post(logs::terminal_switch),
         )
+        .route("/api/diagnostics/conversation", post(logs::conversation))
         .route("/api/diagnostics/clipboard", post(logs::clipboard))
         .route("/api/diagnostics/new-tab", post(logs::new_tab))
         .route("/api/diagnostics/terminal-load", post(logs::terminal_load))
