@@ -213,6 +213,9 @@ let native, relay, browser, updateController, created=false;
     await large.evaluate(id=>{const pair=window.testPair;pair.control.send(JSON.stringify({web_client_id:pair.control.owner.viewer,payload:{type:'FocusPane',pane_id:id,is_plugin:false}}));},oldPane);
     await large.waitForFunction(()=>window.testPair.terminal.owner.pending.length===0);
     await page.setViewportSize({width:600,height:450});
+    // Establish ownership explicitly: OS focus can remain in the large browser,
+    // and changing CSS viewport size must not implicitly steal its native size.
+    await page.evaluate(()=>{const pair=document.querySelector('#terminals>iframe.active').contentWindow.testPair;pair.control.send(JSON.stringify({web_client_id:pair.control.owner.viewer,payload:{type:'SetTabViewport',size:{cols:70,rows:25},tab_position:0,ownership:true}}));});
     const columns=()=>JSON.parse(cli('-s',name,'action','list-panes','--json','--all')).find(p=>p.id===oldPane&&!p.is_plugin).pane_columns;
     await waitFor(()=>columns()<90,'Small viewer constrains terminal before suspension');
     const smallColumns=columns();
