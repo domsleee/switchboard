@@ -146,6 +146,9 @@ test('SessionEnd hands retirement to a watcher holding the session lock',
     const resumed=await hook('SessionStart').done;assert.ok(resumed.stdout.includes(participant.id),'explicit resume restores the same identity');
     // End during a blocked stderr write: already emitted context still needs
     // Claude's exit-2 wake signal even after completing retirement.
+    // Exceed socket buffers as well as pipe buffers; body previews alone can
+    // fit entirely in Linux's child-process socket buffer.
+    for(const message of messages)message.sender_name='peer'.repeat(65536);
     hold=false;mail=true;const before=retirements;
     watcher=hook('Stop',true,true);
     await waitFor(()=>watcher.child.stderr.readableLength>0,'watcher emitting context into the paused pipe');

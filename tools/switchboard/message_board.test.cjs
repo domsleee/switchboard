@@ -95,7 +95,7 @@ test('message board CLI exchanges multiline threads, preserves delivery across r
     const replacement=await ok('windows',['register','--name','reviewer','--project','switchboard']);
     assert.equal((await ok('windows',['--agent-session',replacement.id,'unread'])).items.length,0);
     await stop(server);
-    const offline=await invoke('mac',args);assert.equal(offline.code,1);assert.match(offline.stderr,/Configured board is unavailable/);
+    const offline=await invoke('mac',args);assert.equal(offline.code,1);assert.match(offline.stderr,/No response; keep the input and retry with the same destination and send key/);
     assert.equal(fs.readFileSync(bodyFile,'utf8'),text);
   }finally{await stop(server);fs.rmSync(dir,{recursive:true,force:true});}
 });
