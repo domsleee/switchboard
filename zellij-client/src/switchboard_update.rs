@@ -294,6 +294,10 @@ pub fn package(
 
 /// Handoffs of one build before it is skipped until a newer build appears.
 const ATTEMPTS: u32 = 3;
+/// Legacy viewers reconnect after a restart, so a new build waits this long for them
+/// to disconnect, then activates anyway. Merges land often enough that an open
+/// legacy viewer would otherwise keep a computer on an old build indefinitely.
+const LEGACY_VIEWER_WAIT: u64 = 10 * 60;
 
 /// `state.json`, shared with the retired Python updater. Unknown keys are kept.
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -452,6 +456,16 @@ fn live_session_names(output: &str) -> Result<Vec<String>> {
         }
     }
     Ok(names)
+}
+
+/// Whether a new build has waited long enough for legacy viewers to disconnect.
+/// A retry of a failed build never bypasses them.
+fn waited_for_viewers(state: &State, manifest: &Manifest) -> bool {
+    manifest.run_number > state.run_number.unwrap_or(0)
+        && state
+            .ready
+            .as_ref()
+            .is_some_and(|ready| epoch().saturating_sub(ready.since) >= LEGACY_VIEWER_WAIT)
 }
 
 /// Whether the updater should install published build `run_number`: it is newer than
@@ -873,6 +887,7 @@ impl Updater {
         // holds the lock across the actual handoff to close the admission race.
         if crate::switchboard_viewers::update(&self.viewer_lock)?.is_none()
             && !self.activating(&manifest.commit)
+            && !waited_for_viewers(state, &manifest)
         {
             return self.defer(state, &manifest);
         }
@@ -934,14 +949,17 @@ impl Updater {
             .as_ref()
             .is_some_and(|ready| ready.commit == manifest.commit)
         {
+            // A newer build replacing the waiting one keeps the original wait, so
+            // frequent merges cannot restart the viewer time limit.
             state.ready = Some(ReadyUpdate {
                 commit: manifest.commit.clone(),
-                since: epoch(),
+                since: state.ready.as_ref().map_or_else(epoch, |ready| ready.since),
             });
         }
         let notice = format!(
-            "Update {} ready; waiting for terminal viewers to disconnect",
-            manifest.commit
+            "Update {} ready; waiting for terminal viewers to disconnect (at most {} minutes)",
+            manifest.commit,
+            LEGACY_VIEWER_WAIT / 60
         );
         if state.notice.as_deref() != Some(&notice) {
             println!("{notice}");
@@ -975,8 +993,14 @@ impl Updater {
             })?);
         }
         let _viewers = crate::switchboard_viewers::update(&self.viewer_lock)?;
-        if _viewers.is_none() && !self.activating(&manifest.commit) {
-            return Ok(false);
+        if _viewers.is_none() {
+            if !self.activating(&manifest.commit) && !waited_for_viewers(state, manifest) {
+                return Ok(false);
+            }
+            println!(
+                "Activating {} with legacy terminal viewers connected; they reconnect",
+                manifest.commit
+            );
         }
         // Recheck under the activation lock: a viewer can bootstrap after the
         // download/preflight check but before we acquire exclusive admission.
