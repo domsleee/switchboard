@@ -320,7 +320,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
         if(menu){
           if(menu.detail.length){const detail=el('div',undefined,'conversation-question-detail');for(const line of menu.detail)detail.append(el('div',line));question.append(detail);}
           const choices=el('div',undefined,'conversation-question-choices');choices.setAttribute('role','group');
-          const heading=el('p',menu.question,'conversation-question-text');heading.id='conversation-question-text';choices.setAttribute('aria-labelledby',heading.id);
+          const heading=el('p',menu.question,'conversation-question-text');window.SwitchboardConversationMedia?.linkify(heading,{host:target.host});heading.id='conversation-question-text';choices.setAttribute('aria-labelledby',heading.id);
           menu.choices.forEach((choice,index)=>{
             if(choice.text){
               const other=el('form',undefined,'conversation-question-other'),input=el('input'),send=el('button','Send');
@@ -406,6 +406,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       const controls=[],groups=[],send=el('button','Send answers','conversation-question-choice submit'),status=el('small',undefined,'conversation-question-status'),retry=el('button','Retry','conversation-question-choice');
       for(const [index,question] of request.questions.entries()){
         const group=el('div',undefined,'conversation-async-question-group'),heading=el('p',question.title,'conversation-question-text'),choices=el('div',undefined,'conversation-question-choices');
+        window.SwitchboardConversationMedia?.linkify(heading,{host:target.host});
         choices.setAttribute('role','group');choices.setAttribute('aria-label',question.title);
         group.append(heading,choices);body.append(group);const options=[];
         for(const label of question.options){
