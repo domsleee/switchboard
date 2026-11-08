@@ -30,7 +30,8 @@ for(const [name,width,height] of [['desktop',1280,800],['phone',390,844]])test(`
   assert.ok(attach.x-composer.x<16,'Attach starts the toolbar');
   assert.ok(send.x+send.width<=composer.x+composer.width&&composer.x+composer.width-(send.x+send.width)<16,'Send ends the toolbar');
   const gap=send.x-(model.x+model.width);assert.ok(gap>=0&&gap<=8,`The model sits beside send (gap ${gap})`);
-  assert.equal(await page.locator(form+' .conversation-attach').textContent(),'','The icon is drawn, not typed');
+  // Text in these grid buttons becomes a second grid item and pushes the drawn icon off centre.
+  for(const button of [' .conversation-attach','>button[type=submit]'])assert.equal(await page.locator(form+button).textContent(),'','The icon is drawn, not typed');
   // The queued-switch cancel takes the cost's place left of the model, so send stays put.
   await page.evaluate(()=>{current.pendingSwitch={label:'Codex'};SwitchboardConversation.update();});
   const cancel=await box(form+' .conversation-model-cancel'),pending=await box(form+' button.conversation-model'),sendPending=await box(form+'>button[type=submit]');
