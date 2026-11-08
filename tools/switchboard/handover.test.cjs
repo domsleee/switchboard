@@ -123,7 +123,7 @@ test('the shipped handover dialog switches providers in place and preserves cont
 // One Claude tab on a fixture relay, with its agent state, restart support and history under test control.
 async function busySwitch(browser){
  const page=await browser.newPage({viewport:{width:1280,height:900}});page.setDefaultTimeout(7000);
- const f={page,state:'ready',restartable:true,switched:false,hold:null,errors:[],uploads:[],created:[],requests:[],history:[{role:'user',text:'Original task'},{role:'assistant',text:'First answer'}]};
+ const f={page,state:'ready',restartable:true,switched:false,hold:null,holdUpload:{},errors:[],uploads:[],created:[],requests:[],history:[{role:'user',text:'Original task'},{role:'assistant',text:'First answer'}]};
  await page.addInitScript(()=>{localStorage.setItem('switchboard-view-mode','conversation');window.setInterval=()=>0;});
  page.on('pageerror',error=>f.errors.push(error.message));
  await page.route('http://busy-switch.test/**',async route=>{
@@ -132,9 +132,13 @@ async function busySwitch(browser){
   if(p==='/api/hosts/fixture')return json({id:'fixture',name:'Desktop',local:true,sessions:[{name:'main',web_clients_allowed:true}]});
   // Like the relay: a restartable agent reports it only while ready or working.
   if(p==='/api/attention')return json({tabs:[{host:'fixture',session:'main',id:1,position:0,name:'Source work',panes:[{pane_id:f.switched?2:1,is_plugin:false,tab_position:0,cwd:'/home/fixture/git/project'}]},{host:'fixture',session:'main',id:3,position:1,name:'Other work',panes:[{pane_id:3,is_plugin:false,tab_position:1,cwd:'/home/fixture'}]}],panes:[{host:'fixture',session:'main',pane_id:f.switched?2:1,agent:f.switched?'codex':'claude',state:f.switched?'ready':f.state,chat_id:f.switched?'destination-chat':'source-chat',restart_available:f.switched||f.restartable&&['ready','working'].includes(f.state)}],errors:[]});
-  if(p==='/api/chats/source-chat'||p==='/api/chats/destination-chat')return json({project:'/home/fixture/git/project',model:'claude-opus-5-5',message_count:f.history.length,start_cursor:0,next_cursor:null,messages:f.history.map(m=>({...m,context_text:m.text,context_truncated:false}))});
+  // Pages like the relay: tail and before end a page, cursor starts one, next_cursor continues it.
+  if(p==='/api/chats/source-chat'||p==='/api/chats/destination-chat'){
+   const q=url.searchParams,limit=Number(q.get('limit')||10),end=q.has('before')?Math.min(Number(q.get('before')),f.history.length):f.history.length,start=q.get('tail')==='true'||q.has('before')?Math.max(0,end-limit):Math.min(Number(q.get('cursor')||0),end),page=f.history.slice(start,Math.min(end,start+limit));
+   return json({project:'/home/fixture/git/project',model:'claude-opus-5-5',message_count:f.history.length,start_cursor:start,next_cursor:start+page.length<end?start+page.length:null,messages:page.map(m=>({...m,context_text:m.text,context_truncated:false}))});
+  }
   if(p==='/api/hosts/fixture/attachments'){
-   const name=url.searchParams.get('name');if(name==='switchboard-context-handover.json')f.uploads.push(JSON.parse(route.request().postData()));
+   const name=url.searchParams.get('name');if(name==='switchboard-context-handover.json')f.uploads.push(JSON.parse(route.request().postData()));await f.holdUpload[name];
    return json({path:'/home/fixture/attachments/'+name});
   }
   if(p==='/api/hosts/fixture/restart-agent'){
@@ -214,9 +218,10 @@ test('the model switch stays available while the agent works and waits for its t
   await scenario('a queued switch on a tab not on screen runs once its reply reaches the transcript',async f=>{
    await f.send('Please continue');await f.attention('working');await f.open();await f.confirm();
    await f.visit('Other work');
-   f.history.push({role:'user',text:'Please continue'},{role:'assistant',text:'Finished this turn'});await f.attention('ready');
+   // The agent writes more than a page after taking the reply.
+   f.history.push({role:'user',text:'Please continue'},...Array.from({length:60},(_,i)=>({role:'assistant',text:'Step '+i})));await f.attention('ready');
    await f.page.waitForFunction(()=>!pendingSwitches.size);
-   assert.equal(f.created.length,1);assert.equal(f.created[0].handover.source_messages,4);
+   assert.equal(f.created.length,1);assert.equal(f.created[0].handover.source_messages,63);
   });
   await scenario('files added while the switch runs stay in the composer instead of vanishing',async f=>{
    await f.attention('working');await f.attach('notes.txt');await f.open();await f.confirm();
@@ -226,6 +231,17 @@ test('the model switch stays available while the agent works and waits for its t
    await f.page.waitForFunction(()=>!pendingSwitches.size);
    assert.ok(f.created[0].handover.prompt.endsWith('Attached files:\n/home/fixture/attachments/notes.txt'));
    await f.page.locator('.conversation-attachment',{hasText:'later.txt'}).waitFor();assert.equal(await f.page.locator('.conversation-attachment').count(),1);
+  });
+  await scenario('a selection still uploading when the switch completes moves to the new agent whole',async f=>{
+   await f.attention('working');await f.open();await f.confirm();
+   let release,releaseUpload;f.hold=new Promise(resolve=>release=resolve);f.holdUpload['first.txt']=new Promise(resolve=>releaseUpload=resolve);await f.attention('ready');
+   await f.model.filter({hasText:'switching…'}).waitFor();
+   const [chooser]=await Promise.all([f.page.waitForEvent('filechooser'),f.page.getByRole('button',{name:'Attach files'}).click()]);
+   await chooser.setFiles(['first.txt','second.txt'].map(name=>({name,mimeType:'text/plain',buffer:Buffer.from(name)})));
+   await f.page.locator('.conversation-attachment',{hasText:'first.txt'}).waitFor();release();
+   await f.page.waitForFunction(()=>!pendingSwitches.size);await f.page.locator('.conversation-attachment',{hasText:'first.txt'}).waitFor();releaseUpload();
+   for(const name of ['first.txt','second.txt'])await f.page.locator('.conversation-attachment',{hasText:name}).getByText('Ready',{exact:true}).waitFor();
+   assert.equal(await f.page.locator('.conversation-attachment').count(),2);
   });
   await scenario('a dialog opened while busy switches with the turn that finished meanwhile',async f=>{
    await f.attention('working');await f.open();

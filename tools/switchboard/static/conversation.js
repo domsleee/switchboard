@@ -570,15 +570,19 @@
     let pickerTarget=null;
     attach.onclick=()=>{pickerTarget=target;picker.click();};
     async function addFiles(selected,destination=target){
-      if(!destination||pendingFor(identity(destination)))return;const key=identity(destination),host=destination.host;
+      if(!destination||pendingFor(identity(destination)))return;const key=identity(destination),host=destination.host,added=[];
+      // The whole selection joins the composer before any upload, so a model switch meanwhile moves all of it.
       for(const file of selected){
         if(fileList(key).length>=8){if(identity(target)===key)sendStatus('Attach up to 8 files per message.');break;}
         if(!file.size||file.size>20*1024*1024){if(identity(target)===key)sendStatus('Choose a non-empty file up to 20 MB.');continue;}
-        const item={name:file.name,kind:file.type.startsWith('image/')?'image':file.type.startsWith('video/')?'video':'file',preview:file.type.startsWith('image/')?URL.createObjectURL(file):null};attachments.set(key,[...fileList(key),item]);if(identity(target)===key)paintFiles();
+        const item={name:file.name,kind:file.type.startsWith('image/')?'image':file.type.startsWith('video/')?'video':'file',preview:file.type.startsWith('image/')?URL.createObjectURL(file):null};attachments.set(key,[...fileList(key),item]);added.push([file,item]);
+      }
+      if(identity(target)===key)paintFiles();
+      for(const [file,item] of added){
         try{const response=await fetch('/api/hosts/'+encodeURIComponent(host)+'/attachments?'+new URLSearchParams({name:file.name}),{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:file});
           if(!response.ok)throw Error('Could not upload '+file.name+'. Remove it and try again.');const data=await response.json();if(typeof data.path!=='string'||!data.path||/[\x00-\x1f]/.test(data.path))throw Error('Invalid attachment response');item.path=data.path;
-        }catch(error){item.error=true;if(identity(target)===key)sendStatus(error.message);}
-        if(identity(target)===key)paintFiles();
+        }catch(error){item.error=true;if(fileList().includes(item))sendStatus(error.message);}
+        if(fileList().includes(item))paintFiles();
       }
     }
     picker.onchange=()=>{const selected=[...picker.files],destination=pickerTarget;picker.value='';pickerTarget=null;void addFiles(selected,destination);};
@@ -718,8 +722,11 @@
     window.SwitchboardConversation.canHandover=source=>{const key=handoverKey(source);return !pendingFor(key)&&!(outgoing.get(key)||[]).some(item=>!['failed','uncertain'].includes(item.state))&&!fileList(key).some(item=>!item.path&&!item.error);};
     // A queued switch on a tab not on screen learns from its chat's latest page that its sends landed.
     window.SwitchboardConversation.acknowledgeSends=async source=>{
-      const key=handoverKey(source);if(!(outgoing.get(key)||[]).length)return;
-      try{const response=await fetch('/api/chats/'+encodeURIComponent(source.chatId)+'?'+new URLSearchParams({host:source.chatHost,limit:50,tail:true}),{signal:AbortSignal.timeout(15000)});if(!response.ok)return;const data=await response.json();if(Array.isArray(data.messages))acknowledge(key,data.messages,data.start_cursor??0);}catch{}
+      // Pages forward from just before the oldest unconfirmed send; the agent may have written much since.
+      const key=handoverKey(source);let cursor=Math.max(0,Math.min(...(outgoing.get(key)||[]).map(sent=>sent.baseline))-49);
+      for(let pages=0;(outgoing.get(key)||[]).length&&Number.isFinite(cursor)&&pages<100;pages++){
+        try{const response=await fetch('/api/chats/'+encodeURIComponent(source.chatId)+'?'+new URLSearchParams({host:source.chatHost,limit:50,cursor}),{signal:AbortSignal.timeout(15000)});if(!response.ok)break;const data=await response.json();if(!Array.isArray(data.messages))break;acknowledge(key,data.messages,data.start_cursor??cursor);cursor=data.next_cursor??NaN;}catch{break;}
+      }
       if(identity(target)===key&&loaded)paint();
     };
     window.SwitchboardConversation.handoverFiles=source=>fileList(handoverKey(source)).filter(item=>item.path).map(item=>item.path);
