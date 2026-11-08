@@ -241,14 +241,15 @@
       else{working.setAttribute('aria-hidden','true');working.removeAttribute('aria-expanded');working.removeAttribute('aria-label');}
     }
     function updateActivity(){
-      const state=target?.state,asyncInput=state==='input'&&pendingAsyncQuestion(),label=state==='working'?'Working…':state==='approval'?'Approval needed':asyncInput?'Question for you':state==='input'?'Input needed':state==='waiting'?'Waiting on an agent':state==='ready'?'Ready':'';
+      const state=target?.state,questions=state==='input'&&target.agent==='codex'?messages.filter(item=>item.async_question).map(asyncState).filter(question=>question.status!=='answered'):[];
+      const asyncInput=questions.length>0,needsAnswer=questions.some(question=>['draft','failed','uncertain'].includes(question.status)),sendingAnswer=questions.some(question=>question.status==='sending');
+      const asyncWorking=asyncInput&&target.turnState==='working',label=state==='working'?'Working…':state==='approval'?'Approval needed':needsAnswer?'Question for you':sendingAnswer?'Sending answer…':asyncInput?(asyncWorking?'Working…':'Answer submitted'):state==='input'?'Input needed':state==='waiting'?'Waiting on an agent':state==='ready'?'Ready':'';
       paintModel();
       // The model stays a control whenever there is an agent chat; a busy agent switches after its turn.
       if(switchModel){model.disabled=!target?.switchAvailable||!chat;cancelModel.hidden=!target?.pendingSwitch||!!target.pendingSwitch.running;}
       if(activity.textContent!==label)activity.textContent=label;
-      activity.classList.toggle('working',state==='working');
-      activity.classList.toggle('question',asyncInput);
-      const asyncWorking=state==='input'&&target.turnState==='working'&&pendingAsyncQuestion();
+      activity.classList.toggle('working',state==='working'||asyncWorking&&!needsAnswer&&!sendingAnswer);
+      activity.classList.toggle('question',needsAnswer);
       const follow=nearBottom();paintLaunch();working.hidden=['approval','ready'].includes(state)||state==='input'&&!asyncWorking||!launchShown()&&(!chat||!(state==='working'||asyncWorking||state==='waiting'&&!backgroundAgents().length));tickWorking();
       if(follow)list.scrollTop=list.scrollHeight;
       const startup=startupState(),stalled=!!startup&&(!!startup.error||Date.now()-startup.started>=30000);
@@ -409,14 +410,14 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
         if(new TextEncoder().encode(state.payload).length>8192){state.error='This answer is too long. Shorten it before sending.';syncAsyncQuestions();return;}
         state.sendKey='question-'+Array.from(crypto.getRandomValues(new Uint32Array(4)),n=>n.toString(16)).join('-');
       }
-      state.status='sending';state.error='';syncAsyncQuestions();
+      state.status='sending';state.error='';syncAsyncQuestions();if(identity(target)===state.destination.chatKey)updateActivity();
       try{
         const response=await fetch('/api/hosts/'+encodeURIComponent(state.destination.host)+'/codex/reply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({thread:state.destination.thread,message:state.payload,send_key:state.sendKey}),signal:AbortSignal.timeout(30000)});
         const result=await response.json();
         if(state.status!=='answered')state.status=response.ok&&result.status==='queued'?'queued':result.status==='failed'?'failed':'uncertain';
         if(!['queued','answered'].includes(state.status))state.error=result.detail||'Delivery is not confirmed. Retry to check its status.';
       }catch{if(state.status!=='answered'){state.status='uncertain';state.error='Delivery is not confirmed. Retry to check its status.';}}
-      finally{syncAsyncQuestions();if(identity(target)===state.destination.chatKey)void load();idle();}
+      finally{syncAsyncQuestions();if(identity(target)===state.destination.chatKey){updateActivity();void load();}idle();}
     }
     let asyncCardId=0;
     function renderAsyncQuestion(article,item){
@@ -454,7 +455,8 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
         const focusInBody=body.contains(document.activeElement);body.hidden=state.collapsed;
         toggle.setAttribute('aria-expanded',String(!state.collapsed));toggle.setAttribute('aria-label',state.collapsed?'Show question and answer':'Hide question and answer');
         card.classList.toggle('collapsed',state.collapsed);card.classList.toggle('settled',['sending','queued','answered'].includes(state.status));
-        label.textContent=({sending:'Sending answer…',queued:'Answer on its way…',answered:'Answered'}[state.status]||'Question for you');
+        label.textContent=({sending:'Sending answer…',queued:'Answer submitted',answered:'Answered'}[state.status]||'Question for you');
+        label.title=state.status==='queued'?'Codex accepted your answer. Waiting for its conversation receipt.':'';
         const summary=['sending','queued','answered'].includes(state.status);preview.textContent=summary?state.answers.join(' · '):'Reply when you’re ready';preview.title=summary?preview.textContent:'';
         mark.textContent=state.status==='answered'?'✓':summary?'↗':'?';
         if(state.collapsed&&focusInBody&&!panel.hidden)toggle.focus({preventScroll:true});
@@ -467,7 +469,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
         }
         send.disabled=locked||!state.answers.every(answer=>answer.trim());
         retry.hidden=!['failed','uncertain'].includes(state.status);
-        card.classList.toggle('answering',['sending','queued'].includes(state.status));
+        card.classList.toggle('answering',state.status==='sending');
         status.textContent=state.error||'';status.hidden=!status.textContent;saveAsyncDraft(state);
       };
       card.sync();article.append(card);
