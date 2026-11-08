@@ -317,6 +317,22 @@ function tabTitle(item){
   const panes=item.tab.panes.map(p=>({...p,...live.find(current=>current.pane_id===p.pane_id&&current.is_plugin===p.is_plugin),tab_position:item.tab.position}));
   return SwitchboardTitles.tabTitle({panes,active_pane:item.entry.state?.active_pane},item.tab);
 }
+// A tab started from New tab with a prompt shows that prompt as its name, and a spinner until
+// its agent reports in, instead of a blank "New tab"; Conversation shows the prompt as sent.
+const launches=new Map();
+function launchFor(item){
+  const pane=item.tab.panes.find(p=>!p.is_plugin),key=pane&&JSON.stringify([item.entry.host,item.entry.name,pane.pane_id]);
+  const launch=item.tab.launch||key&&launches.get(key);
+  if(launch&&Date.now()-launch.at>600000){if(key)launches.delete(key);return null;}
+  return launch||null;
+}
+function launchingTab(item){const launch=launchFor(item);return launch&&!tabAgent(item)?launch:null;}
+function displayTitle(item){
+  const title=tabTitle(item),launch=launchFor(item);
+  if(!launch||!/^(?:New tab|Creating tab…|Tab #\d+|Claude(?: Code)?|Codex)$/i.test(title))return title;
+  const line=launch.text.trim().split('\n')[0].trim();
+  return line?line.length>60?line.slice(0,59)+'…':line:title;
+}
 function activeTab(entry){
   const active=entry.state?.active_pane;
   return sessionTabs(entry).find(tab=>tab.position===active?.tab_position&&tab.panes.some(p=>p.pane_id===active.pane_id&&p.is_plugin===active.is_plugin));
@@ -473,7 +489,7 @@ function isReady(item){return !systemTab(item.tab)&&!!(ready[item.key] || item.t
 function systemTab(tab){return tab.name.replace(/^\*\s*/,'')==='System';}
 function matchesSearch(item){
   const query=$('tab-search').value.trim().toLowerCase();
-  return !query || `${tabTitle(item)} ${hosts.get(item.entry.host)?.name || item.entry.host} ${groups[item.entry.host]||''} ${item.entry.name} ${autoLabel(item)}`.toLowerCase().includes(query);
+  return !query || `${displayTitle(item)} ${hosts.get(item.entry.host)?.name || item.entry.host} ${groups[item.entry.host]||''} ${item.entry.name} ${autoLabel(item)}`.toLowerCase().includes(query);
 }
 // This computer as its mesh peers know it, so every computer sorts machines alike
 // instead of listing itself first or by whichever catalog answered first.
@@ -660,7 +676,7 @@ function render() {
   const snoozedTabs=tabs.filter(item=>item.snoozed),snoozedShown=shown.filter(item=>item.snoozed);
   const showSnoozedGroup=snoozedTabs.length>0&&(!searching||snoozedShown.length>0);
   const showHiddenGroup=hiddenTabs.length>0&&(!searching||hiddenShown.length>0);
-  const titles=new Map(tabs.map(item=>[item.key,tabTitle(item)])),titleCounts=new Map();
+  const titles=new Map(tabs.map(item=>[item.key,displayTitle(item)])),titleCounts=new Map();
   for(const item of tabs){const key=JSON.stringify([item.entry.host,titles.get(item.key)]);titleCounts.set(key,(titleCounts.get(key)||0)+1);}
   for (const item of listed) {
     if((item.snoozed||item.hidden)&&showSnoozedGroup&&!nodes.includes(snoozedHeader))nodes.push(snoozedHeader);
@@ -707,20 +723,21 @@ function render() {
     const starred=isReady(item);
     // The web server names tabs opened with Run as administrator.
     const elevated=item.tab.name.replace(/^\*\s*/,'')==='Administrator';
-    const status=unavailable?'Status unavailable':stateLabel==='Ready'?'':stateLabel;
+    const starting=!unavailable&&!!launchingTab(item);
+    const status=unavailable?'Status unavailable':starting?'Starting':stateLabel==='Ready'?'':stateLabel;
     const duplicate=titleCounts.get(JSON.stringify([item.entry.host,title]))>1;
     const project=tabProject(item);
     const subtitle=`${project?project+' · ':''}${machine}${duplicate?' · '+item.entry.name:''}${isPinned(item.key)?' · Pinned':''}`;
     button.className='tab-select'+(item.key===selected?' selected':'')+(starred?' needs-attention':'')+(elevated?' elevated':'')+(systemTab(item.tab)?' system':'');
     button.setAttribute('aria-pressed',String(item.key===selected));
     button.setAttribute('aria-label',`${title}${elevated&&title!=='Administrator'?', Administrator':''}${systemTab(item.tab)?', System tab opened by an agent':''}, ${project?project+', ':''}${machine}, ${item.entry.name}${status?', '+status:''}${flagged?', Flagged for review':''}${isPinned(item.key)?', Pinned':''}`);
-    button._star.className='star '+(unavailable?'unavailable':starred?'attention':stateLabel==='Working'?'working':stateLabel.startsWith('Waiting')?'waiting':'quiet');
+    button._star.className='star '+(unavailable?'unavailable':starting?'starting':starred?'attention':stateLabel==='Working'?'working':stateLabel.startsWith('Waiting')?'waiting':'quiet');
     const working=stateLabel==='Working'?tabAge(item,'working'):'';
-    const short=unavailable?'Unavailable':working&&working!=='now'?`Working ${working}`:statusWords[stateLabel]||(flagged?'Review':tabAge(item));
-    button._status.dataset.tone=unavailable?'':stateLabel==='Ready to review'?'done':starred?'attention':stateLabel==='Working'?'working':'';
+    const short=unavailable?'Unavailable':starting?'Starting':working&&working!=='now'?`Working ${working}`:statusWords[stateLabel]||(flagged?'Review':tabAge(item));
+    button._status.dataset.tone=unavailable?'':starting?'working':stateLabel==='Ready to review'?'done':starred?'attention':stateLabel==='Working'?'working':'';
     if(button._status.lastChild.textContent!==short)button._status.lastChild.textContent=short;
     if(button._name.textContent!==title)button._name.textContent=title;
-    button.dataset.agentState=unavailable?'Status unavailable':stateLabel;
+    button.dataset.agentState=unavailable?'Status unavailable':starting?'Starting':stateLabel;
     if(button._where.textContent!==subtitle)button._where.textContent=subtitle;
     const agentName=tabAgent(item);
     if(button._agent.dataset.agent!==agentName){button._agent.dataset.agent=agentName;button._agent.innerHTML=agentIcons[agentName]||'';}
@@ -1720,13 +1737,15 @@ for(const dialog of document.querySelectorAll('dialog')){
 }
 // Native creation uses a short CLI request, never a terminal viewer. This keeps
 // Conversation open without letting a phone constrain an existing tab's size.
-async function createConversationTab(key,launch){
+async function createConversationTab(key,launch,typed=launch.prompt){
   const [hostId,name]=JSON.parse(key),host=hosts.get(hostId);if(!host||host.error)return;
   const entry=sessions.get(key)||connectSession(host,name,true);
   if(entry.pendingNewTab){setStatus('A tab is already being created on this computer.',true);return;}
   const pending=entry.pendingNewTab=new Set(sessionTabs(entry).map(tab=>tabKey(entry,tab)));
   pending.requestId=entry.newTabRequestId=(entry.newTabRequestId||0)+1;pending.api=true;
-  entry.creatingTab={id:'creating',pending:true,name:'Creating tab…',position:Infinity,panes:[]};
+  const text=typeof typed==='string'?typed:'',images=launch.images?.length||0;
+  const started=text.trim()||images?{text:text.trim()?text:images===1?'Image attached':`${images} images attached`,agent:newTabModelProvider(launch.command),at:Date.now()}:null;
+  entry.creatingTab={id:'creating',pending:true,name:'Creating tab…',position:Infinity,panes:[],launch:started};
   const placeholder=selected=tabKey(entry,entry.creatingTab);restoringTab=false;entry.followActiveTab=false;
   if(filter!=='all'&&groups[hostId]!==filter)setFilter('all');$('tab-search').value='';
   sidebarOpen=false;updateSidebar();$('new-tab-dialog').close();render();globalThis.SwitchboardConversation.focus();
@@ -1736,7 +1755,8 @@ async function createConversationTab(key,launch){
     const result=await response.json();if(!Number.isInteger(result.pane_id)||result.pane_id<0)throw Error('The new tab did not return its identity. Check the tab list before retrying.');
     if(entry.pendingNewTab!==pending)return;
     entry.apiCreationPane=result.pane_id;
-    const tab={id:result.pane_id,pending:true,name:'New tab',position:Infinity,panes:[{pane_id:result.pane_id,is_plugin:false,tab_position:Infinity}]};
+    if(started)launches.set(JSON.stringify([hostId,name,result.pane_id]),started);
+    const tab={id:result.pane_id,pending:true,name:'New tab',position:Infinity,panes:[{pane_id:result.pane_id,is_plugin:false,tab_position:Infinity}],launch:started};
     entry.provisionalTabs??=[];entry.provisionalTabs.push(tab);entry.creatingTab=null;entry.pendingNewTab=null;
     if(selected===placeholder)selected=tabKey(entry,tab);
     render();refreshAttention(true);refresh();
@@ -1882,13 +1902,13 @@ $('new-tab-form').onsubmit=async event=>{
       globalThis.SwitchboardConversation?.handoverSent?.(source,text,result.pane_id);
       if(isCurrent())$('new-tab-dialog').close();
       await refreshAttention(true);setStatus('Continuing with '+(newTabModelProvider(command)==='claude'?'Claude':'Codex')+' in the same tab.');
-    }else await createNewTab(key,{project,command,prompt,images,elevated},isCurrent);
+    }else await createNewTab(key,{project,command,prompt,images,elevated},isCurrent,text);
   }catch(error){if(isCurrent()){uploads.abort();newTabRetrying=true;newTabProblem(error.message);}}
   finally{if(form.pendingSubmission===request){form.pendingSubmission=null;newTabUploadStatus('');for(const item of files)if(item.state==='uploading')delete item.state;paintNewTabFiles();newTabBusy(false);newTabSubmitText();}}
 };
-async function createNewTab(key,launch,isCurrent=()=>true){
+async function createNewTab(key,launch,isCurrent=()=>true,typed){
   if(!launch.project||(!launch.command&&typeof launch.prompt!=='string'))return;
-  if(globalThis.SwitchboardConversation?.wantsConversation?.())return createConversationTab(key,launch);
+  if(globalThis.SwitchboardConversation?.wantsConversation?.())return createConversationTab(key,launch,typed??launch.prompt);
   let entry=sessions.get(key);
   // A recently resumed Terminal may still be connecting. Keep the dialog
   // usable without mistaking that session for an empty host.
@@ -2465,10 +2485,10 @@ window.SwitchboardConversation?.install({
     const item=allTabs().find(item=>item.key===selected);if(!item)return null;
     const active=item.entry.state?.active_pane,panes=(!item.entry.state?item.tab.panes:tabPanes(item.entry,item.tab)).filter(p=>!p.is_plugin);
     const preferred=item.entry.resumePane||active;
-    const pane=panes.find(p=>p.pane_id===preferred?.pane_id)||panes.find(p=>p.is_focused)||panes[0];if(!pane)return {key:item.key,host:item.entry.host,frame:item.entry.frame,title:tabTitle(item),starting:!!item.tab.pending};
+    const pane=panes.find(p=>p.pane_id===preferred?.pane_id)||panes.find(p=>p.is_focused)||panes[0];if(!pane)return {key:item.key,host:item.entry.host,frame:item.entry.frame,title:displayTitle(item),starting:!!item.tab.pending,launch:launchFor(item)};
 
     const state=paneAttention.get(attentionKey(item.entry.host,item.entry.name,pane.pane_id));
-    return {key:JSON.stringify([item.entry.host,item.entry.name,pane.pane_id]),host:item.entry.host,chatHost:hosts.get(item.entry.host)?.local?'local':item.entry.host,session:item.entry.name,tab:item.tab.id,pane:pane.pane_id,frame:item.entry.frame,terminalReady:!item.entry.suspended&&!item.entry.disconnected&&!item.entry.needsFocus&&!item.entry.focusPending&&active?.pane_id===pane.pane_id,title:tabTitle(item),agent:state?.agent,state:state?.state,chatId:state?.chat_id,since:state?.since,computer:hosts.get(item.entry.host)?.name,switchAvailable:!!state?.restart_available&&state.state==='ready',starting:!!item.tab.pending};
+    return {key:JSON.stringify([item.entry.host,item.entry.name,pane.pane_id]),host:item.entry.host,chatHost:hosts.get(item.entry.host)?.local?'local':item.entry.host,session:item.entry.name,tab:item.tab.id,pane:pane.pane_id,frame:item.entry.frame,terminalReady:!item.entry.suspended&&!item.entry.disconnected&&!item.entry.needsFocus&&!item.entry.focusPending&&active?.pane_id===pane.pane_id,title:displayTitle(item),agent:state?.agent,state:state?.state,chatId:state?.chat_id,since:state?.since,computer:hosts.get(item.entry.host)?.name,switchAvailable:!!state?.restart_available&&state.state==='ready',starting:!!item.tab.pending,launch:launchFor(item)};
   },
   terminal(target){const item=allTabs().find(item=>item.key===selected);if(item&&item.entry.frame===target.frame){item.entry.frame.focus();focus(item);}}
 });
