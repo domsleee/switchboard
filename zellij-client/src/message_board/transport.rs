@@ -136,6 +136,10 @@ pub(super) fn router(config: &HostConfig) -> anyhow::Result<Router> {
 fn routes(state: BoardState) -> Router {
     Router::new()
         .route("/api/message-board/inboxes", get(inboxes))
+        .route(
+            "/api/message-board/participants/{id}/activity",
+            get(activity),
+        )
         .route("/api/message-board/machines/{id}/inbox", get(machine_inbox))
         .route(
             "/api/message-board/participants/{id}/inbox",
@@ -307,6 +311,12 @@ async fn inboxes(
     Query(page): Query<ReadPage>,
 ) -> Result<Json<serde_json::Value>> {
     operation(move || state.store.inboxes(&machine, page)).await
+}
+async fn activity(
+    State(state): State<BoardState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    operation(move || state.store.activity(&id)).await
 }
 async fn machine_inbox(
     State(state): State<BoardState>,

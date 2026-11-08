@@ -2672,6 +2672,11 @@ window.SwitchboardConversation?.install({
     const state=paneAttention.get(attentionKey(item.entry.host,item.entry.name,pane.pane_id)),queued=pendingSwitches.get(item.key);
     return {key:JSON.stringify([item.entry.host,item.entry.name,pane.pane_id]),host:item.entry.host,showCost:chatCostShown(item.entry.host),chatHost:hosts.get(item.entry.host)?.local?'local':item.entry.host,session:item.entry.name,tab:item.tab.id,pane:pane.pane_id,frame:item.entry.frame,terminalReady:!item.entry.suspended&&!item.entry.disconnected&&!item.entry.needsFocus&&!item.entry.focusPending&&active?.pane_id===pane.pane_id,title:displayTitle(item),agent:state?.agent,state:launch?'working':state?.state,chatId:state?.chat_id,since:launch?launch.at/1000:state?.since,turnState:state?.turn_state,computer:hosts.get(item.entry.host)?.name,switchAvailable:switchPossible(state),pendingSwitch:queued?.source.target.pane_id===pane.pane_id?queued:null,starting:!!item.tab.pending,launch:launchFor(item)};
   },
+  openConversation(peer){
+    const matches=allTabs(true).filter(item=>statesForTab(item).some(state=>state.chat_id===peer.chat_id));
+    const item=matches.find(item=>item.entry.host===peer.host)||(matches.length===1?matches[0]:null);
+    if(!item)return false;activate(item);return true;
+  },
   terminal(target){const item=allTabs().find(item=>item.key===selected);if(item&&item.entry.frame===target.frame){item.entry.frame.focus();focus(item);}}
 });
 if(globalThis.SwitchboardConversation?.wantsConversation?.())conversationSince=performance.now();

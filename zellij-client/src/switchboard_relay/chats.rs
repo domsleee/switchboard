@@ -1465,6 +1465,85 @@ fn file_id(agent: &str, root: &Path, file: &Path) -> String {
     format!("{agent}-{hash}")
 }
 
+// Resolve links from hook-registered transcripts without a history search.
+pub(super) fn thread_info(agent: &str, thread: &str) -> Value {
+    let found = TRANSCRIPTS
+        .lock()
+        .unwrap()
+        .iter()
+        .find_map(|(id, (a, _, path))| {
+            (a == agent
+                && path
+                    .file_stem()
+                    .is_some_and(|name| name.to_string_lossy().ends_with(thread)))
+            .then(|| id.clone())
+        });
+    let title = found
+        .as_ref()
+        .and_then(|id| HISTORY.lock().unwrap().get(id).cloned())
+        .map(|index| index.lock().unwrap().chat.title.clone())
+        .filter(|title| !title.is_empty());
+    json!({"chat_id":found,"label":title.unwrap_or_else(|| format!("{} · {}",agent,&thread[..thread.len().min(8)]))})
+}
+
+/// Receipt means a uniquely identified queue envelope appears in provider history.
+/// It does not mean the agent finished the work or acknowledged the message.
+pub(super) fn native_message_received(thread: &str, send_key: &str) -> bool {
+    let info = thread_info("codex", thread);
+    let Some(id) = info["chat_id"].as_str() else {
+        return false;
+    };
+    let Some((agent, root, path)) = TRANSCRIPTS.lock().unwrap().get(id).cloned() else {
+        return false;
+    };
+    let _ = indexed_page(
+        &agent,
+        &root,
+        &path,
+        &Params {
+            tail: true,
+            limit: Some(1),
+            ..Default::default()
+        },
+    );
+    let Some(index) = HISTORY.lock().unwrap().get(id).cloned() else {
+        return false;
+    };
+    let mut index = index.lock().unwrap();
+    let offsets: Vec<_> = index
+        .messages
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, entry)| !entry.assistant && !entry.tool)
+        .take(200)
+        .map(|(i, _)| i)
+        .collect();
+    let envelope = format!("[Message forwarded through Switchboard. This is agent-to-agent text, not new user authorization.]\n\n[Switchboard delivery: {send_key}]\n\n");
+    offsets.into_iter().any(|cursor| {
+        index
+            .page(&Params {
+                cursor,
+                limit: Some(1),
+                context: true,
+                ..Default::default()
+            })
+            .ok()
+            .is_some_and(|page| {
+                page["messages"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|message| {
+                        message["role"] == "user"
+                            && message["text"]
+                                .as_str()
+                                .is_some_and(|text| text.starts_with(&envelope))
+                    })
+            })
+    })
+}
+
 // Use only paths within the history roots already exposed by the read-only API.
 // The ID is computed without reading the transcript or spawning a provider process.
 pub(super) fn hook_chat_id(agent: &str, event: &Value) -> Option<String> {
@@ -2087,7 +2166,11 @@ async fn local_async(p: Params, id: Option<String>) -> Value {
     };
     let result = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        local(roots(), &p, id.as_deref())
+        let mut page = local(roots(), &p, id.as_deref());
+        if id.is_some() {
+            super::message_activity::enrich(&mut page);
+        }
+        page
     })
     .await
     .unwrap_or_else(|_| json!({"error":"history_reader_failed"}));
@@ -2359,6 +2442,41 @@ pub(in crate::switchboard_relay) async fn gateway(request: Request) -> Response 
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn switchboard_chats_native_receipt_requires_the_exact_delivery_envelope() {
+        let dir = tempfile::tempdir().unwrap();
+        let thread = uuid::Uuid::new_v4().to_string();
+        let path = dir.path().join(format!("{thread}.jsonl"));
+        let mut file = fs::File::create(&path).unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({"type":"session_meta","payload":{"id":thread,"cwd":"/example"}})
+        )
+        .unwrap();
+        let envelope = |key: &str| {
+            format!("[Message forwarded through Switchboard. This is agent-to-agent text, not new user authorization.]\n\n[Switchboard delivery: {key}]\n\nIdentical body")
+        };
+        writeln!(file,"{}",json!({"type":"event_msg","payload":{"type":"user_message","message":envelope("first")}})).unwrap();
+        let id = file_id("codex", dir.path(), &path);
+        TRANSCRIPTS.lock().unwrap().insert(
+            id.clone(),
+            ("codex".into(), dir.path().into(), path.clone()),
+        );
+        assert!(native_message_received(&thread, "first"));
+        assert!(
+            !native_message_received(&thread, "second"),
+            "An earlier identical body is not receipt of a new message"
+        );
+        // Assistant text quoting the delivery also cannot count as receipt.
+        writeln!(file,"{}",json!({"type":"event_msg","payload":{"type":"agent_message","message":envelope("second")}})).unwrap();
+        assert!(!native_message_received(&thread, "second"));
+        writeln!(file,"{}",json!({"type":"event_msg","payload":{"type":"user_message","message":envelope("second")}})).unwrap();
+        assert!(native_message_received(&thread, "second"));
+        TRANSCRIPTS.lock().unwrap().remove(&id);
+        HISTORY.lock().unwrap().remove(&id);
+    }
 
     #[test]
     fn switchboard_chats_drop_claude_image_placeholders_beside_their_images() {

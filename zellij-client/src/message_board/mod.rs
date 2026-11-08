@@ -189,3 +189,58 @@ fn now() -> u64 {
 fn agent_kind() -> String {
     "agent".into()
 }
+
+/// Human-readable conversation activity uses existing authenticated board transport.
+/// Reading this view never stamps delivered_at or acknowledged_at.
+pub(crate) fn conversation_activity(
+    agent: &str,
+    thread: &str,
+) -> anyhow::Result<serde_json::Value> {
+    let client = cli::Client::for_hook()?;
+    let Some(id) = hooks::conversation_participant(&client, agent, thread) else {
+        return Ok(json!({"items":[]}));
+    };
+    let page = client.request("GET", &format!("participants/{id}/activity"), None)?;
+    let mut events = Vec::new();
+    for item in page["items"].as_array().into_iter().flatten() {
+        let message: Message = serde_json::from_value(item.clone())?;
+        let sent = message.sender == id;
+        let deliveries: Vec<_> = if sent {
+            message.deliveries.iter().collect()
+        } else {
+            message
+                .deliveries
+                .iter()
+                .filter(|d| d.recipient == id)
+                .collect()
+        };
+        if let Some(delivery) = deliveries.first() {
+            let status = if deliveries.iter().all(|d| d.acknowledged_at.is_some()) {
+                "acknowledged"
+            } else if deliveries.iter().all(|d| d.delivered_at.is_some()) {
+                "delivered"
+            } else {
+                "sent"
+            };
+            let label = if !sent {
+                message.sender_name.clone()
+            } else if deliveries.len() == 1 {
+                delivery.name.clone()
+            } else {
+                format!("{} recipients", deliveries.len())
+            };
+            let computer = if !sent {
+                message.sender_machine_name.clone()
+            } else if deliveries.len() == 1 {
+                delivery.machine_name.clone()
+            } else {
+                String::new()
+            };
+            events.push(json!({"id":format!("board:{}:{}",message.id,id),
+                "direction":if sent {"sent"} else {"received"},"status":status,
+                "timestamp":message.created_at,"text":message.body,
+                "peer":{"label":label,"computer":computer}}));
+        }
+    }
+    Ok(json!({"items":events,"truncated":page["truncated"]}))
+}

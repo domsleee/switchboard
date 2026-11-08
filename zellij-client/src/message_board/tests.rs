@@ -50,6 +50,43 @@ fn page() -> ReadPage {
 }
 
 #[test]
+fn message_board_activity_shows_both_directions_without_marking_mail_read() {
+    let (_dir, store) = fixture();
+    let sender = register(&store, "mac", "sender");
+    let receiver = register(&store, "windows", "receiver");
+    let stranger = register(&store, "mac", "stranger");
+    let sent = store
+        .send(&machine("mac"), request(&sender, &receiver, "activity-1"))
+        .unwrap();
+    for participant in [&sender, &receiver] {
+        let activity = store.activity(&participant.id).unwrap();
+        assert_eq!(activity["items"].as_array().unwrap().len(), 1);
+        assert_eq!(activity["items"][0]["id"], sent.id);
+        assert!(activity["items"][0]["deliveries"][0]["acknowledged_at"].is_null());
+        assert!(activity["items"][0]["deliveries"][0]["delivered_at"].is_null());
+    }
+    assert!(store.activity(&stranger.id).unwrap()["items"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    store
+        .delivered(&machine("windows"), &receiver.id, &sent.id)
+        .unwrap();
+    assert!(
+        store.activity(&sender.id).unwrap()["items"][0]["deliveries"][0]["delivered_at"]
+            .is_number()
+    );
+    store
+        .ack(&machine("windows"), &receiver.id, &sent.id)
+        .unwrap();
+    assert!(
+        store.activity(&sender.id).unwrap()["items"][0]["deliveries"][0]["acknowledged_at"]
+            .is_number()
+    );
+    assert!(store.activity("missing").is_err());
+}
+
+#[test]
 fn message_board_identity_duplicate_names_resume_retire_and_replacement_are_explicit() {
     let (_dir, store) = fixture();
     let a = register(&store, "mac", "backend");

@@ -54,6 +54,37 @@ delivery but cannot make Codex queueing and receipt storage one atomic operation
 Claude-to-Claude sessions should use Claude's `ListAgents` and `SendMessage`
 when available. This bridge currently targets Codex only.
 
+### Conversation indicators
+
+Conversation shows agent exchanges as expandable rows with the other agent,
+computer, message preview and receipt status. They remain visible when tool steps
+are folded. Expand a row to read the body and timestamp; **Open tab** follows a
+native exchange when its counterpart has an open tab.
+
+Native queue commands associate the sender using `CODEX_THREAD_ID`, or the hook
+identity passed with `--agent-session` for other agents. Queued means accepted by
+Codex, and Received means the message is present in the recipient's transcript.
+Native queue acceptance does not prove acknowledgment. Board exchanges show
+In inbox, Delivered and Acknowledged using the board's separate receipts. Viewing
+either conversation never acknowledges a message.
+
+The sender follows native queue receipts with read-only GET requests.
+Received is recorded only after the destination transcript contains that delivery's
+unique envelope, even if nobody has opened the receiving tab. These checks never
+resubmit a message. Unconfirmed sends are not retried automatically.
+
+The native delivery database still stores only hashes and results. Conversation
+activity additionally retains message bodies and counterpart metadata in the
+account's private `~/.config/switchboard/message-activity.sqlite3`, so indicators
+survive reloads and relay restarts. Both computers need an updated relay for
+sender attribution; the shared board host needs the conversation activity endpoint
+for board indicators. Older native sends without attribution have no sender row;
+their fixed forwarding envelope still identifies them in the receiving transcript.
+The conversation view includes the latest 200 native exchanges and 100 board
+messages, and reports when older exchanges are omitted. Board polling uses the
+existing authenticated relay connection, runs in the background and is cached for
+two seconds per conversation, so an unavailable board cannot stall history.
+
 ## Paired computers
 
 Open **Messages** from the terminal sidebar. Inboxes are grouped by computer,
