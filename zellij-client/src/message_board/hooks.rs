@@ -329,6 +329,7 @@ fn deliver(
     event: &Event,
     wait: bool,
     initializing: &mut bool,
+    output: &mut dyn Write,
 ) -> anyhow::Result<Delivery> {
     let key = format!("{agent}-{}", event.session_id);
     let ended = dir.join(format!("{key}.ended"));
@@ -437,13 +438,12 @@ fn deliver(
             writeln!(stderr, "{text}")?;
             stderr.flush()?;
         } else {
-            let mut stdout = std::io::stdout().lock();
             serde_json::to_writer(
-                &mut stdout,
-                &output(&event.hook_event_name, &text, has_messages),
+                &mut *output,
+                &self::output(&event.hook_event_name, &text, has_messages),
             )?;
-            writeln!(stdout)?;
-            stdout.flush()?;
+            writeln!(output)?;
+            output.flush()?;
         }
         mark_delivered(client, &state, &messages);
     }
@@ -538,6 +538,40 @@ pub(crate) fn nested(agent: &str, env: impl Fn(&str) -> Option<String>) -> bool 
         && !(agent == "claude" && env("CLAUDE_CODE_ENTRYPOINT").as_deref() == Some("cli"))
 }
 
+/// Native HTTP hooks share the CLI/watcher's delivery cursor and identity, but
+/// return context in the response instead of starting a process to print it.
+pub(crate) fn http(input: &[u8], relay: &str) -> Option<serde_json::Value> {
+    let root = std::env::var_os("SWITCHBOARD_MESSAGE_STATE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| zellij_utils::consts::ZELLIJ_CACHE_DIR.join("message-hooks"));
+    http_at(input, relay, &root)
+}
+
+fn http_at(input: &[u8], relay: &str, root: &Path) -> Option<serde_json::Value> {
+    let mut event = serde_json::from_slice::<Event>(input).ok()?;
+    event.session_id = Uuid::parse_str(&event.session_id).ok()?.to_string();
+    if !event.cwd.is_absolute()
+        || !matches!(
+            event.hook_event_name.as_str(),
+            "UserPromptSubmit" | "PostToolUse" | "PostToolUseFailure" | "Stop" | "SessionEnd"
+        )
+    {
+        return None;
+    }
+    let client = Client::hook_relay(relay).ok()?;
+    let mut output = Vec::new();
+    let _ = deliver(
+        &client,
+        &root.join(client.hook_namespace()),
+        "claude",
+        &event,
+        false,
+        &mut false,
+        &mut output,
+    );
+    serde_json::from_slice(&output).ok()
+}
+
 pub(crate) fn run(agent: &str, input: &[u8], wait: bool) {
     // A nested agent shares its parent's pane. Ignore its events; unsupported
     // agents keep their existing status hooks.
@@ -594,7 +628,15 @@ pub(crate) fn run(agent: &str, input: &[u8], wait: bool) {
     let owners = if wait { ancestors() } else { vec![] };
     let mut polls = 0u32;
     loop {
-        match deliver(&client, &dir, agent, &event, wait, &mut initializing) {
+        match deliver(
+            &client,
+            &dir,
+            agent,
+            &event,
+            wait,
+            &mut initializing,
+            &mut std::io::stdout(),
+        ) {
             Ok(Delivery::Ended) => return,
             Ok(Delivery::Sent) if wait => {
                 if agent == "claude" {
@@ -616,7 +658,15 @@ pub(crate) fn run(agent: &str, input: &[u8], wait: bool) {
                         cwd: event.cwd.clone(),
                         hook_event_name: "SessionEnd".into(),
                     };
-                    let _ = deliver(&client, &dir, agent, &end, false, &mut false);
+                    let _ = deliver(
+                        &client,
+                        &dir,
+                        agent,
+                        &end,
+                        false,
+                        &mut false,
+                        &mut std::io::stdout(),
+                    );
                 }
                 return;
             },
@@ -630,7 +680,15 @@ pub(crate) fn run(agent: &str, input: &[u8], wait: bool) {
                 cwd: event.cwd.clone(),
                 hook_event_name: "SessionEnd".into(),
             };
-            let _ = deliver(&client, &dir, agent, &end, false, &mut false);
+            let _ = deliver(
+                &client,
+                &dir,
+                agent,
+                &end,
+                false,
+                &mut false,
+                &mut std::io::stdout(),
+            );
             return;
         }
         std::thread::sleep(POLL);
@@ -640,6 +698,122 @@ pub(crate) fn run(agent: &str, input: &[u8], wait: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn switchboard_http_hooks_share_message_delivery_with_commands() {
+        use axum::{
+            extract::Request,
+            middleware::{self, Next},
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let token = temp.path().join("token");
+        let secret = "a".repeat(32);
+        std::fs::write(&token, &secret).unwrap();
+        let config = super::super::transport::HostConfig {
+            listen: "127.0.0.1:0".parse().unwrap(),
+            database: Some(temp.path().join("board.db")),
+            machines: vec![super::super::transport::MachineCredential {
+                id: "fixture".into(),
+                name: "Fixture".into(),
+                token_file: token,
+            }],
+            tls_cert: None,
+            tls_key: None,
+        };
+        let app = super::super::transport::router(&config)
+            .unwrap()
+            .layer(middleware::from_fn(
+                move |mut request: Request, next: Next| {
+                    let secret = secret.clone();
+                    async move {
+                        request
+                            .headers_mut()
+                            .insert("authorization", format!("Bearer {secret}").parse().unwrap());
+                        next.run(request).await
+                    }
+                },
+            ));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let root = temp.path().to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            let client = Client::hook_relay(&origin).unwrap();
+            let id = Uuid::new_v4().to_string();
+            let start = Event {
+                session_id: id.clone(),
+                cwd: root.clone(),
+                hook_event_name: "SessionStart".into(),
+            };
+            let dir = root.join(client.hook_namespace());
+            let mut command_context = Vec::new();
+            deliver(
+                &client,
+                &dir,
+                "claude",
+                &start,
+                false,
+                &mut false,
+                &mut command_context,
+            )
+            .unwrap();
+            let session: Session = load(&dir.join(format!("claude-{id}.json")))
+                .unwrap()
+                .unwrap();
+            let peer = client
+                .request(
+                    "POST",
+                    "participants",
+                    Some(json!({"name":"sender","project":session.participant.project})),
+                )
+                .unwrap();
+            let send = |body: &str| {
+                client
+                    .request(
+                        "POST",
+                        "messages",
+                        Some(json!({
+                            "sender":peer["id"], "to":session.participant.id,
+                            "body":body, "send_key":Uuid::new_v4().to_string()
+                        })),
+                    )
+                    .unwrap()
+            };
+            let event = |name: &str| {
+                serde_json::to_vec(&json!({"session_id":id,"cwd":root,"hook_event_name":name}))
+                    .unwrap()
+            };
+            let message = send("Check the logs 🦀");
+            let context = http_at(&event("PostToolUse"), &origin, &root).unwrap();
+            assert!(context["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .unwrap()
+                .contains(message["id"].as_str().unwrap()));
+            assert!(http_at(&event("PostToolUse"), &origin, &root).is_none());
+            let unread = client
+                .request(
+                    "GET",
+                    &format!("participants/{}/unread", session.participant.id),
+                    None,
+                )
+                .unwrap();
+            assert!(!unread["items"][0]["deliveries"][0]["delivered_at"].is_null());
+            assert!(unread["items"][0]["deliveries"][0]["acknowledged_at"].is_null());
+            send("Continue working");
+            assert_eq!(
+                http_at(&event("Stop"), &origin, &root).unwrap()["decision"],
+                "block"
+            );
+            assert!(http_at(&event("SessionEnd"), &origin, &root).is_none());
+            let ended: Session = load(&dir.join(format!("claude-{id}.json")))
+                .unwrap()
+                .unwrap();
+            assert!(!ended.participant.active);
+        })
+        .await
+        .unwrap();
+        server.abort();
+    }
 
     #[test]
     fn message_board_hook_watcher_notices_its_agent_exit() {

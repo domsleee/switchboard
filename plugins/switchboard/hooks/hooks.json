@@ -37,13 +37,20 @@
       {
         "hooks": [
           {
-            "type": "command",
-            "command": "zellij",
+            "type": "http",
+            "url": "http://127.0.0.1:8090/api/agent-hook/claude",
             "timeout": 5,
-            "args": [
-              "agent-hook",
-              "--agent",
-              "claude"
+            "headers": {
+              "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
+              "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
+              "X-Claudecode": "$CLAUDECODE",
+              "X-Claude-Entrypoint": "$CLAUDE_CODE_ENTRYPOINT"
+            },
+            "allowedEnvVars": [
+              "ZELLIJ_SESSION_NAME",
+              "ZELLIJ_PANE_ID",
+              "CLAUDECODE",
+              "CLAUDE_CODE_ENTRYPOINT"
             ]
           }
         ]
@@ -53,13 +60,20 @@
       {
         "hooks": [
           {
-            "type": "command",
-            "command": "zellij",
+            "type": "http",
+            "url": "http://127.0.0.1:8090/api/agent-hook/claude",
             "timeout": 5,
-            "args": [
-              "agent-hook",
-              "--agent",
-              "claude"
+            "headers": {
+              "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
+              "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
+              "X-Claudecode": "$CLAUDECODE",
+              "X-Claude-Entrypoint": "$CLAUDE_CODE_ENTRYPOINT"
+            },
+            "allowedEnvVars": [
+              "ZELLIJ_SESSION_NAME",
+              "ZELLIJ_PANE_ID",
+              "CLAUDECODE",
+              "CLAUDE_CODE_ENTRYPOINT"
             ]
           }
         ]
@@ -69,13 +83,20 @@
       {
         "hooks": [
           {
-            "type": "command",
-            "command": "zellij",
+            "type": "http",
+            "url": "http://127.0.0.1:8090/api/agent-hook/claude",
             "timeout": 5,
-            "args": [
-              "agent-hook",
-              "--agent",
-              "claude"
+            "headers": {
+              "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
+              "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
+              "X-Claudecode": "$CLAUDECODE",
+              "X-Claude-Entrypoint": "$CLAUDE_CODE_ENTRYPOINT"
+            },
+            "allowedEnvVars": [
+              "ZELLIJ_SESSION_NAME",
+              "ZELLIJ_PANE_ID",
+              "CLAUDECODE",
+              "CLAUDE_CODE_ENTRYPOINT"
             ]
           }
         ]
@@ -85,13 +106,20 @@
       {
         "hooks": [
           {
-            "type": "command",
-            "command": "zellij",
+            "type": "http",
+            "url": "http://127.0.0.1:8090/api/agent-hook/claude",
             "timeout": 5,
-            "args": [
-              "agent-hook",
-              "--agent",
-              "claude"
+            "headers": {
+              "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
+              "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
+              "X-Claudecode": "$CLAUDECODE",
+              "X-Claude-Entrypoint": "$CLAUDE_CODE_ENTRYPOINT"
+            },
+            "allowedEnvVars": [
+              "ZELLIJ_SESSION_NAME",
+              "ZELLIJ_PANE_ID",
+              "CLAUDECODE",
+              "CLAUDE_CODE_ENTRYPOINT"
             ]
           }
         ]
@@ -101,13 +129,20 @@
       {
         "hooks": [
           {
-            "type": "command",
-            "command": "zellij",
+            "type": "http",
+            "url": "http://127.0.0.1:8090/api/agent-hook/claude",
             "timeout": 5,
-            "args": [
-              "agent-hook",
-              "--agent",
-              "claude"
+            "headers": {
+              "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
+              "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
+              "X-Claudecode": "$CLAUDECODE",
+              "X-Claude-Entrypoint": "$CLAUDE_CODE_ENTRYPOINT"
+            },
+            "allowedEnvVars": [
+              "ZELLIJ_SESSION_NAME",
+              "ZELLIJ_PANE_ID",
+              "CLAUDECODE",
+              "CLAUDE_CODE_ENTRYPOINT"
             ]
           }
         ]
@@ -117,13 +152,20 @@
       {
         "hooks": [
           {
-            "type": "command",
-            "command": "zellij",
+            "type": "http",
+            "url": "http://127.0.0.1:8090/api/agent-hook/claude",
             "timeout": 5,
-            "args": [
-              "agent-hook",
-              "--agent",
-              "claude"
+            "headers": {
+              "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
+              "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
+              "X-Claudecode": "$CLAUDECODE",
+              "X-Claude-Entrypoint": "$CLAUDE_CODE_ENTRYPOINT"
+            },
+            "allowedEnvVars": [
+              "ZELLIJ_SESSION_NAME",
+              "ZELLIJ_PANE_ID",
+              "CLAUDECODE",
+              "CLAUDE_CODE_ENTRYPOINT"
             ]
           },
           {
@@ -145,13 +187,20 @@
       {
         "hooks": [
           {
-            "type": "command",
-            "command": "zellij",
+            "type": "http",
+            "url": "http://127.0.0.1:8090/api/agent-hook/claude",
             "timeout": 5,
-            "args": [
-              "agent-hook",
-              "--agent",
-              "claude"
+            "headers": {
+              "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
+              "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
+              "X-Claudecode": "$CLAUDECODE",
+              "X-Claude-Entrypoint": "$CLAUDE_CODE_ENTRYPOINT"
+            },
+            "allowedEnvVars": [
+              "ZELLIJ_SESSION_NAME",
+              "ZELLIJ_PANE_ID",
+              "CLAUDECODE",
+              "CLAUDE_CODE_ENTRYPOINT"
             ]
           }
         ]
@@ -161,13 +210,20 @@
       {
         "hooks": [
           {
-            "type": "command",
-            "command": "zellij",
+            "type": "http",
+            "url": "http://127.0.0.1:8090/api/agent-hook/claude",
             "timeout": 5,
-            "args": [
-              "agent-hook",
-              "--agent",
-              "claude"
+            "headers": {
+              "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
+              "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
+              "X-Claudecode": "$CLAUDECODE",
+              "X-Claude-Entrypoint": "$CLAUDE_CODE_ENTRYPOINT"
+            },
+            "allowedEnvVars": [
+              "ZELLIJ_SESSION_NAME",
+              "ZELLIJ_PANE_ID",
+              "CLAUDECODE",
+              "CLAUDE_CODE_ENTRYPOINT"
             ]
           }
         ]

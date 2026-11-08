@@ -179,7 +179,11 @@ Custom `CODEX_HOME`, `CLAUDE_CONFIG_DIR` and `COPILOT_HOME` directories are resp
 Restart an already open agent if it does not reload its hook settings.
 
 The hooks record the exact chat ID, folder and launch options for each terminal
-pane. Starting a chat or submitting a prompt also saves the terminal layout.
+pane and save the terminal layout. Claude records at session start, including
+clear, resume and compact; reinstalling removes its redundant per-prompt recovery
+command. Settings → Health also detects and repairs that older command. Claude's
+regular activity hooks call the relay over HTTP, avoiding a Windows process launch
+on each prompt or tool call.
 After the terminal session is restored, these chats reopen automatically with
 `codex resume ID`, `claude --resume ID` or `copilot --resume ID`. Original prompts
 are not submitted again. Models and permission flags from the launch command
