@@ -34,3 +34,21 @@ test('the sidebar preview serves the working copy, forwards the rest to the rela
   assert.deepEqual(await event,{css:['app.css']});
  }finally{await new Promise(r=>preview.close(r));relay.close();fs.rmSync(dir,{recursive:true,force:true});}
 });
+
+test('a script or page change offers a Reload button instead of reloading the open conversation',async()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'preview-'));
+ fs.writeFileSync(path.join(dir,'index.html'),'<!doctype html><html><head></head><body>page</body></html>');
+ const preview=await start({port:0,relayPort:1,staticDir:dir,allow:[]},()=>{});
+ try{
+  const body=(await get(preview.address().port,'/')).body,script=/<script>([\s\S]*)<\/script>/.exec(body)[1];
+  let source=null,reloads=0;const appended=[];
+  const context={EventSource:class{constructor(){source=this;}},location:{reload(){reloads++;}},URL,Date,JSON,
+   document:{querySelectorAll:()=>[],createElement:()=>({style:{}}),body:{append:node=>appended.push(node)}}};
+  require('node:vm').runInNewContext(script,context);
+  source.onmessage({data:'{"css":null}'});source.onmessage({data:'{"css":null}'});
+  assert.equal(reloads,0,'The page keeps its state until the viewer reloads');
+  assert.equal(appended.length,1,'One button however many changes arrive');
+  assert.match(appended[0].textContent,/Reload/);
+  appended[0].onclick();assert.equal(reloads,1);
+ }finally{await new Promise(r=>preview.close(r));fs.rmSync(dir,{recursive:true,force:true});}
+});
