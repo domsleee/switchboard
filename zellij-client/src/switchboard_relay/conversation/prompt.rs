@@ -327,7 +327,7 @@ pub(in crate::switchboard_relay) async fn answer_local(
     }) {
         return Err((StatusCode::BAD_REQUEST, "Invalid answer"));
     }
-    let _guard = ACTING.lock().await;
+    let _guard = acting_on(&answer.session, answer.pane_id).await;
     let target = Target {
         session: answer.session.clone(),
         pane_id: answer.pane_id,
