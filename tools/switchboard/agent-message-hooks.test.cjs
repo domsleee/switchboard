@@ -203,7 +203,9 @@ test('a watcher whose agent exits without SessionEnd retires the identity and st
     assert.equal((await run(['agent-hook','--agent','codex'],env,event('SessionStart')).done).code,0);
     // A stand-in agent starts the async watcher, then dies without a SessionEnd hook.
     const pidFile=path.join(root,'watcher.pid');
-    const script=`const c=require('node:child_process').spawn(${JSON.stringify(path.resolve(binary))},['agent-hook','--agent','codex','--wait'],{stdio:['pipe','ignore','ignore']});c.stdin.end(${JSON.stringify(event('SessionStart'))});require('node:fs').writeFileSync(${JSON.stringify(pidFile)},String(c.pid));setInterval(()=>{},1000);`;
+    // Windows otherwise kills the child in the stand-in agent's job on exit,
+    // so the watcher never becomes orphaned and cannot exercise retirement.
+    const script=`const c=require('node:child_process').spawn(${JSON.stringify(path.resolve(binary))},['agent-hook','--agent','codex','--wait'],{detached:process.platform==='win32',windowsHide:true,stdio:['pipe','ignore','ignore']});c.stdin.end(${JSON.stringify(event('SessionStart'))});require('node:fs').writeFileSync(${JSON.stringify(pidFile)},String(c.pid));setInterval(()=>{},1000);`;
     agent=spawn(process.execPath,['-e',script],{env,stdio:'ignore'});children.add(agent);
     await waitFor(()=>fs.existsSync(pidFile),'stand-in agent starts its watcher');
     const watcherPid=Number(fs.readFileSync(pidFile,'utf8'));
