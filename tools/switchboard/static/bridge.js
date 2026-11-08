@@ -13,6 +13,16 @@
   let pendingFocus, desiredFocus, focusInputState, focusId, focusTimeout, focusAttempts=0;
   const focusMaxAttempts=3, focusTimeoutMs=5000;
   let pendingNewTab;
+  window.addEventListener('zellij-terminal-failed',event=>{
+    const pane=desiredFocus||latest?.active_pane||disconnectedPane;
+    const failure={...event.detail};
+    if(failure.operation==='browser'){
+      failure.session=latest?.session_name||decodeURIComponent(location.pathname.split('/').slice(3).join('/'));
+      failure.pane_id=pane?.pane_id??null;failure.is_plugin=!!pane?.is_plugin;
+      failure.pending_records??=terminalSocket?.owner?.pending?.length??null;
+    }
+    parent.postMessage({type:'zellij-terminal-failed',failure},location.origin);
+  });
   let focusOrigin, preserveFocus = false;
   function focusTerminalInput() {
     const capture=window.__zjSoftKbdEnabled&&window.__zjSoftKbdCapture?.element;

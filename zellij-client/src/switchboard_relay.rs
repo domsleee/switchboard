@@ -1391,6 +1391,10 @@ fn app(state: RelayState) -> Router {
         .route("/api/chats/{id}", get(chats::read))
         .route("/api/chats/{id}/stream", get(chats::stream))
         .route("/api/logs", get(logs::handler))
+        .route(
+            "/api/diagnostics/terminal-failure",
+            post(logs::terminal_failure),
+        )
         .route("/api/tasks", get(tasks::handler))
         .route("/api/tasks/action", post(tasks::action))
         .route("/api/tasks/log", get(tasks::log))

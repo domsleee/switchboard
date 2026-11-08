@@ -115,6 +115,22 @@ async function handleDisconnected(reason = "You have been disconnected by the ho
     isDisconnected = true;
     isReconnecting = false;
     clearConnectionStatus();
+    const failure = window.__zjTerminalFailure || {
+        reference:crypto.randomUUID().replaceAll('-','').slice(0,12),
+        code:reason.startsWith('Engine did not confirm terminal pane selection')?'focus_unconfirmed':
+          reason.startsWith('Terminal pane selection was not confirmed')?'focus_timeout':
+          reason.startsWith('Requested terminal pane could not be selected')?'pane_unavailable':
+          reason.startsWith('Terminal attachment could not resume')?'resume_timeout':
+          reason.startsWith('Pending terminal input reached')?'input_limit':
+          reason.startsWith('Terminal renderer unavailable')?'renderer_unavailable':
+          /^(Invalid terminal|Unknown terminal|Terminal output sequence)/.test(reason)?'invalid_delivery':'browser_failure',session:'',
+        pane_id:null,is_plugin:false,operation:'browser',elapsed_ms:Math.min(86400000,Math.round(performance.now())),
+        focus_confirmed:false,query_received:false,worker_build:null,engine_build:null,pending_records:window.__zjPendingTerminalRecords??null,
+    };
+    if (!window.__zjTerminalFailure) reason += `\nReference: ${failure.reference}`;
+    // The source computer exposes its durable report through paired Logs.
+    // Browser reporting is a fallback, so remote viewers do not create a second copy.
+    if (!window.__zjTerminalFailureSaved) window.dispatchEvent(new CustomEvent('zellij-terminal-failed',{detail:failure}));
     await showErrorModal("Disconnected", reason);
 }
 
@@ -3352,7 +3368,7 @@ class ResumableConnection {
                     if (!this.retirement) throw new Error('Terminal attachment was retired');
                     const {resolve} = this.retirement; this.clearRetirement();
                     this.connected = false; this.close(); resolve(true);
-                } else if (message.type === 'error') this.fail(message.message);
+                } else if (message.type === 'error') this.fail(message.message, message.failure, message.failure_saved);
                 else if (message.type === 'output') {
                     this.outputWork = this.outputWork.then(() => this.apply(message.record)).catch(error => this.fail(error.message));
                 } else throw new Error('Unknown terminal delivery response');
@@ -3432,7 +3448,7 @@ class ResumableConnection {
         this.checkRetirement();
         return promise;
     }
-    fail(message) {
+    fail(message, failure, saved = false) {
         if (this.stopped) return;
         if (this.retirement) {
             const {reject} = this.retirement; this.clearRetirement();
@@ -3442,6 +3458,9 @@ class ResumableConnection {
         // attach it to a different viewer, pane or newly-created session.
         window.__zjPendingTerminalInput = this.pending.map(({ channel, data }) => ({ channel, data }));
         window.__zjResumeFailure = String(message);
+        window.__zjTerminalFailure = failure;
+        window.__zjTerminalFailureSaved = saved === true;
+        window.__zjPendingTerminalRecords = this.pending.length;
         this.close();
         showConnectionStatus();
         window.dispatchEvent(new CustomEvent('zellij-resume-failed', { detail: String(message) }));
