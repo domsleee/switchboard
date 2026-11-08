@@ -7,6 +7,140 @@ use std::net::{TcpListener, TcpStream};
 
 const OLD: &str = "aaaaaaa";
 
+fn download_server(
+    responses: Vec<(&'static str, u16, &'static str, &'static str)>,
+) -> (String, std::thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        for (path, status, accept, body) in responses {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                let mut buffer = [0; 1024];
+                let count = stream.read(&mut buffer).unwrap();
+                assert_ne!(count, 0);
+                request.extend_from_slice(&buffer[..count]);
+            }
+            let request = String::from_utf8(request).unwrap();
+            assert_eq!(request.split_whitespace().nth(1), Some(path));
+            assert!(request
+                .to_lowercase()
+                .contains(&format!("accept: {accept}\r\n")));
+            write!(
+                stream,
+                "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        }
+    });
+    (base, server)
+}
+
+#[test]
+fn release_download_uses_api_when_the_release_edge_returns_504() {
+    let (base, server) = download_server(vec![
+        (
+            "/download/manifest",
+            504,
+            "application/octet-stream",
+            "gateway timeout",
+        ),
+        (
+            "/tags/latest-main",
+            200,
+            "application/vnd.github+json",
+            r#"{"assets":[{"name":"manifest","id":12},{"name":"binary","id":13}]}"#,
+        ),
+        (
+            "/assets/12",
+            200,
+            "application/octet-stream",
+            "verified later",
+        ),
+        (
+            "/download/binary",
+            504,
+            "application/octet-stream",
+            "gateway timeout",
+        ),
+        (
+            "/assets/13",
+            200,
+            "application/octet-stream",
+            "binary bytes",
+        ),
+    ]);
+    let downloads = ReleaseDownloads::default();
+    assert_eq!(
+        downloads
+            .fetch(
+                &format!("{base}/download/manifest"),
+                "manifest",
+                Some(&base)
+            )
+            .unwrap(),
+        b"verified later"
+    );
+    assert_eq!(
+        downloads
+            .fetch(&format!("{base}/download/binary"), "binary", Some(&base))
+            .unwrap(),
+        b"binary bytes"
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn release_download_success_does_not_need_api() {
+    let (base, server) =
+        download_server(vec![("/asset", 200, "application/octet-stream", "bytes")]);
+    assert_eq!(
+        ReleaseDownloads::default()
+            .fetch(&format!("{base}/asset"), "asset", Some(&base))
+            .unwrap(),
+        b"bytes"
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn release_download_custom_source_failure_does_not_use_api() {
+    let (base, server) =
+        download_server(vec![("/asset", 504, "application/octet-stream", "timeout")]);
+    let error = ReleaseDownloads::default()
+        .fetch(&format!("{base}/asset"), "asset", None)
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("504"));
+    server.join().unwrap();
+}
+
+#[test]
+fn release_download_reports_both_failures_without_accepting_api_error_bytes() {
+    let (base, server) = download_server(vec![
+        ("/asset", 504, "application/octet-stream", "timeout"),
+        (
+            "/tags/latest-main",
+            403,
+            "application/vnd.github+json",
+            "rate limited",
+        ),
+    ]);
+    let error = ReleaseDownloads::default()
+        .fetch(&format!("{base}/asset"), "asset", Some(&base))
+        .unwrap_err();
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("504") && message.contains("403"),
+        "{message}"
+    );
+    server.join().unwrap();
+}
+
 fn full(c: char) -> String {
     c.to_string().repeat(40)
 }
@@ -178,6 +312,7 @@ impl Harness {
                 viewer_lock: root.join("state/viewers.lock"),
                 helpers: root.join("helpers"),
                 source: root.join("release").display().to_string(),
+                downloads: ReleaseDownloads::default(),
                 menu_app: root.join("no-app/Switchboard"),
                 ready_timeout: Duration::from_secs(1),
                 peer_watch: Duration::ZERO,

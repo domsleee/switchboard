@@ -39,6 +39,12 @@ jobs:
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: false
       - uses: mozilla-actions/sccache-action@v0.0.11
+        id: sccache
+        continue-on-error: true
+      - name: Compile without sccache when its download fails
+        if: steps.sccache.outcome == 'failure'
+        shell: bash
+        run: echo 'RUSTC_WRAPPER=' >> "$GITHUB_ENV"
       - uses: ilammy/setup-nasm@v1.5.2
       - name: Check Windows session discovery and colours
         run: |
@@ -73,6 +79,12 @@ jobs:
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: false
       - uses: mozilla-actions/sccache-action@v0.0.11
+        id: sccache
+        continue-on-error: true
+      - name: Compile without sccache when its download fails
+        if: steps.sccache.outcome == 'failure'
+        shell: bash
+        run: echo 'RUSTC_WRAPPER=' >> "$GITHUB_ENV"
       - uses: ilammy/setup-nasm@v1.5.2
       - name: Build native server and relay
         run: cargo build --release --features web_server_capability
@@ -117,6 +129,12 @@ jobs:
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: false
       - uses: mozilla-actions/sccache-action@v0.0.11
+        id: sccache
+        continue-on-error: true
+      - name: Compile without sccache when its download fails
+        if: steps.sccache.outcome == 'failure'
+        shell: bash
+        run: echo 'RUSTC_WRAPPER=' >> "$GITHUB_ENV"
       # Both legs run on ARM hosts. Keep the host-only installer test on the
       # faster Intel cross-build leg; publishing still waits for both legs.
       - name: Check installer
@@ -165,6 +183,12 @@ jobs:
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: false
       - uses: mozilla-actions/sccache-action@v0.0.11
+        id: sccache
+        continue-on-error: true
+      - name: Compile without sccache when its download fails
+        if: steps.sccache.outcome == 'failure'
+        shell: bash
+        run: echo 'RUSTC_WRAPPER=' >> "$GITHUB_ENV"
       - name: Build native server and relay
         run: cargo build --release --features web_server_capability
       - name: Verify and package update bundle
@@ -192,6 +216,12 @@ jobs:
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: false
       - uses: mozilla-actions/sccache-action@v0.0.11
+        id: sccache
+        continue-on-error: true
+      - name: Compile without sccache when its download fails
+        if: steps.sccache.outcome == 'failure'
+        shell: bash
+        run: echo 'RUSTC_WRAPPER=' >> "$GITHUB_ENV"
       - name: Check installer and updater
         run: cargo test -p zellij-client --features web_server_capability switchboard_update --lib
 
