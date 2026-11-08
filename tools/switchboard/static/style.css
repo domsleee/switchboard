@@ -100,10 +100,7 @@ body.sidebar-collapsed #sidebar-toggle{left:8px}
 :is(#hidden-toggle,#snoozed-toggle) .star{width:6px;height:6px;border-radius:50%}
 #tabs :is(#hidden-toggle,#snoozed-toggle) .star.attention{display:block;background:#f0bc63}
 :is(#hidden-toggle,#snoozed-toggle) .count{margin-left:auto;font-variant-numeric:tabular-nums}
-#snoozed-toggle{gap:8px;padding:7px 10px;border:1px solid #2a3444;border-radius:8px;background:#1b222e;color:#bac8dc;font-weight:500}
-#snoozed-toggle::before{content:'';flex-shrink:0;width:7px;height:7px;border:1.5px solid #8cabe9;border-radius:50%}
-#snoozed-toggle .count{min-width:20px;padding:0 5px;border-radius:5px;background:#2a374b;color:#b8cbea;font-size:11px;line-height:18px;text-align:center}
-#snoozed-toggle .chevron{order:2;margin:0 2px 0 3px;color:#8f9fb5}
+:is(#hidden-toggle,#snoozed-toggle):focus-visible{outline-offset:-2px}
 #tabs .tab-row.hidden-tab .tab-select:not(.selected):not(:hover){opacity:.7}
 @media (prefers-reduced-motion:reduce){:is(#hidden-toggle,#snoozed-toggle) .chevron{transition:none}}
 #tab-empty{display:grid;grid-template-columns:8px minmax(0,1fr);column-gap:7px;row-gap:8px;align-items:center;padding:16px 16px 4px 4px;font-size:12px;line-height:1.4;color:#9ba7bd;overflow-wrap:anywhere}
@@ -589,7 +586,12 @@ body.sidebar-collapsed #artifact-preview header{padding-left:42px}
 .new-tab-where>*{flex-shrink:0}
 .new-tab-where>.new-tab-keys{flex-shrink:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
 
-@media(pointer:coarse){button,select,.sidebar-actions a{min-height:44px}}
+@media(pointer:coarse){
+  button,select,.sidebar-actions a{min-height:44px}
+  #tabs:has(:is(#hidden-toggle,#snoozed-toggle)){scroll-padding-bottom:52px}
+  #tabs:has(#hidden-toggle):has(#snoozed-toggle){scroll-padding-bottom:99px}
+  #tabs:has(#hidden-toggle) #snoozed-toggle{bottom:41px}
+}
 
 @media(max-width:700px), (pointer:coarse){
   /* A phone gets a bottom sheet: send sits under the thumb. */
