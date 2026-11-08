@@ -203,7 +203,7 @@
     function promptTarget(){const t=target;return open&&!panel.hidden&&!document.hidden&&t?.agent==='claude'&&['approval','input'].includes(t.state)&&!!t.session&&Number.isInteger(t.pane)&&Number.isInteger(t.tab)&&!promptHosts.has(t.host)?t:null;}
     const fits=(value,limit)=>typeof value==='string'&&value.length<=limit;
     function validPrompt(value){
-      if(!value||!fits(value.question,4000)||!fits(value.token,64)||!Array.isArray(value.detail)||value.detail.length>12||!value.detail.every(line=>fits(line,2000))||!Array.isArray(value.choices)||value.choices.length<2||value.choices.length>20)return null;
+      if(!value||!fits(value.question,4000)||!fits(value.token,64)||!Array.isArray(value.detail)||value.detail.length>80||!value.detail.every(line=>fits(line,2000))||!Array.isArray(value.choices)||value.choices.length<2||value.choices.length>20)return null;
       return value.choices.every(c=>fits(c.label,4000)&&(c.description===undefined||fits(c.description,8000))&&(c.number===null||Number.isInteger(c.number))&&(c.checked===null||typeof c.checked==='boolean')&&typeof c.text==='boolean')?value:null;
     }
     async function loadPrompt(force=false){

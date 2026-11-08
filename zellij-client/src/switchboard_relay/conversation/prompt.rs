@@ -156,24 +156,28 @@ fn menu_from(rows: &[Row], start: usize) -> Option<Menu> {
     let cursor = cursor?;
     // The question sits directly above the options; what Claude shows above it
     // (the tool and its command, or answers to review) runs up to a solid rule.
-    let (mut question, mut detail) = (None, Vec::new());
+    // The whole dialog must be on screen and shown, since the answer approves it.
+    let (mut question, mut detail, mut whole) = (None, Vec::new(), false);
     for row in rows[..start].iter().rev() {
         match row {
             Row::Blank | Row::Rule { solid: false } => {},
-            Row::Rule { solid: true } => break,
+            Row::Rule { solid: true } => {
+                whole = true;
+                break;
+            },
             Row::Text(text) => {
                 let text = text.trim();
                 if question.is_none() {
                     question = Some(text.to_string());
                 } else if !text.starts_with("Tip:") && !text.starts_with(['☐', '☒', '✔', '←'])
                 {
-                    detail.push(text.chars().take(2000).collect::<String>());
-                    if detail.len() == 12 {
-                        break;
-                    }
+                    detail.push(text.to_string());
                 }
             },
         }
+    }
+    if !whole || detail.len() > DETAIL_ROWS || detail.iter().any(|row| row.len() > ROW_LIMIT) {
+        return None;
     }
     detail.reverse();
     let question = question.filter(|q| !q.starts_with(['☐', '☒', '✔', '←']))?;
@@ -190,6 +194,10 @@ fn menu_from(rows: &[Row], start: usize) -> Option<Menu> {
         token,
     })
 }
+
+/// A taller dialog, or a wider row, is left to Terminal.
+const DETAIL_ROWS: usize = 80;
+const ROW_LIMIT: usize = 2000;
 
 pub(super) fn claude_menu(screen: &str) -> Option<Menu> {
     let rows = rows(screen);
@@ -408,6 +416,30 @@ mod tests {
             keys(&menu, 3, None),
             Some(vec![Key::Bytes(vec!["52".into()])])
         );
+
+        // A long command is shown whole, and every line of it is part of the token.
+        let script = |first: &str| {
+            let lines = (0..40)
+                .map(|i| format!("echo {i}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            permission().replace("echo hello > out.txt\n", &format!("{first}\n{lines}\n"))
+        };
+        let long = claude_menu(&script("rm -rf build")).unwrap();
+        assert_eq!(long.detail.len(), 43);
+        assert_eq!(long.detail[2], "rm -rf build");
+        assert_ne!(
+            long.token,
+            claude_menu(&script("rm -rf src")).unwrap().token
+        );
+        // A dialog taller than the limit, or cut off above, is left to Terminal.
+        let lines = (0..DETAIL_ROWS)
+            .map(|i| format!("echo {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(claude_menu(&script(&lines)), None);
+        let cut = permission();
+        assert_eq!(claude_menu(&cut[cut.find("Write hello").unwrap()..]), None);
     }
 
     #[test]

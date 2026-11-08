@@ -781,7 +781,7 @@ esac
         );
         std::fs::write(
             &screen,
-            "Which pet?\n\n❯ 1. Cat\n  2. Dog\n  3. Type something.\n\nEnter to select · Esc to cancel\n",
+            format!("{RULE}\nWhich pet?\n\n❯ 1. Cat\n  2. Dog\n  3. Type something.\n\nEnter to select · Esc to cancel\n"),
         )
         .unwrap();
         let token = prompt::local(&host, target()).await.unwrap().0["prompt"]["token"].clone();
