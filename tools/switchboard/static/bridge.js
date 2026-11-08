@@ -547,6 +547,24 @@
     if(controlSocket!==socket||!conversationOpen())return false;
     try{return JSON.parse(data)?.payload?.type==='TerminalResize';}catch{return false;}
   }
+  // Tells the sidebar the moment typed text is submitted, so the tab can show Working
+  // before the agent reports its turn. Commands (/, !) may not start a turn at all.
+  let typedDraft='',typedPane=null;
+  function noteTerminalInput(socket,data){
+    if(terminalSocket!==socket||socket.readyState!==1||typeof data!=='string')return;
+    const pane=latest?.active_pane;
+    if(!pane||pane.is_plugin){typedDraft='';return;}
+    if(pane.pane_id!==typedPane){typedPane=pane.pane_id;typedDraft='';}
+    if(data==='\r'){
+      const prompt=typedDraft.trimStart();typedDraft='';
+      if(prompt&&prompt[0]!=='!'&&!/^\/[a-z][\w:.-]*(?:\s|$)/i.test(prompt))parent.postMessage({type:'zellij-prompt-submit',pane_id:pane.pane_id},location.origin);
+      return;
+    }
+    if(data==='\x7f'){typedDraft=typedDraft.slice(0,-1);return;}
+    if(data==='\x03'||data==='\x15'){typedDraft='';return;}
+    const text=data.replace(/\x1b\[20[01]~/g,'');
+    if(!/[\x00-\x08\x0b-\x1f\x7f]/.test(text))typedDraft+=text;
+  }
   window.addEventListener("zellij-resumable-sockets",event=>{
     for (const socket of [event.detail.terminal,event.detail.control]) {
       const send=socket.send;
@@ -554,6 +572,7 @@
         if(suppressConversationResize(this,data))return;
         if(controlSocket===this)diagnostics?.sent(data);
         if(terminalSocket===this&&this.readyState===1)predict?.sent(data);
+        noteTerminalInput(this,data);
         return send.call(this,data);
       };
     }
@@ -570,6 +589,7 @@
       if(suppressConversationResize(this,data))return;
       if(controlSocket===this)diagnostics?.sent(data);
       if(terminalSocket===this&&this.readyState===1)predict?.sent(data);
+      noteTerminalInput(this,data);
       return super.send(data);
     }
   };

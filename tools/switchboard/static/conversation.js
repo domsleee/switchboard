@@ -65,7 +65,7 @@
       requestAnimationFrame(()=>pre.classList.toggle('fits',pre.scrollWidth<=pre.clientWidth+1));
     }
   }
-  window.SwitchboardConversation={agentIcons,install({selection,terminal,openConversation=()=>false,modeChanged=()=>{},viewed=()=>{},sending=()=>{},switchModel=null,cancelSwitch=()=>{},idle=()=>{}}){
+  window.SwitchboardConversation={agentIcons,install({selection,terminal,openConversation=()=>false,modeChanged=()=>{},viewed=()=>{},sending=()=>{},notSent=()=>{},switchModel=null,cancelSwitch=()=>{},idle=()=>{}}){
     const root=document.getElementById('terminals'),drafts=new Map(),attachments=new Map(),retryKeys=new Map();
     const mobile=matchMedia('(max-width:700px), (pointer:coarse) and (max-width:1000px)').matches;
     const modeKey=mobile?'switchboard-mobile-view-mode':'switchboard-view-mode';
@@ -826,7 +826,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       pendingSends.delete(sent.key);if(!ok){restoreDraft(sent);if(sent.detachedFiles)attachments.set(sent.key,[...sent.files,...fileList(sent.key).filter(item=>!sent.files.includes(item))]);}
       sendQueued(sent.key,ok);
       if(ok){clearSentDraft(sent);if(sent.command){outgoing.set(sent.key,(outgoing.get(sent.key)||[]).filter(item=>item!==sent));if(identity(target)===sent.key)paint();}else sendItem(sent,sent.native||sent.relay?'queued':'sent');}
-      else sendItem(sent,uncertain?'uncertain':'failed',message);
+      else{notSent(sent.pane);sendItem(sent,uncertain?'uncertain':'failed',message);}
       returnToConversation(sent);
       if(identity(target)===sent.key){sendStatus(message,sent);if(ok)load();}paintFiles();if(ok)flushStartup();
     }
@@ -845,6 +845,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       const destination=selection();if(identity(destination)!==sent.key)return;
       if(claimDraft){sent.draftRevision=draftVersions.get(sent.key)||0;sent.text=draft.value;sent.draftCleared=false;}
       pendingSends.set(sent.key,sent);insert.disabled=true;sent.state='sending';sent.detail='';paintFiles();sendStatus('');paint();
+      sending(destination,sent.command);
       await sendNative(sent);
     }
     form.onsubmit=async event=>{
@@ -888,7 +889,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
     }
     async function deliver(sent,current){
       const {native,key,id,payload,command}=sent;
-      sending(current);
+      sending(current,command);
       if(native){
         const prior=retryKeys.get(key),sendKey=prior?.payload===payload?prior.id:id;sent.sendKey=sendKey;retryKeys.set(key,{payload,id:sendKey});
         await sendNative(sent);return;
