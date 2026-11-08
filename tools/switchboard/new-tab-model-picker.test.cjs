@@ -99,7 +99,7 @@ test('New Tab shares the model and effort picker and launches and remembers the 
    assert.deepEqual(await page.locator('.model-picker-name').allTextContents(),['GPT-6 Astra']);
    if(phone)await page.getByRole('button',{name:'Remove GPT-6 Astra from favourites',exact:true}).click();
    else{
-    await search.press('Tab');await page.keyboard.press('Tab');await page.keyboard.press('Tab');
+    await search.press('ArrowLeft');await page.keyboard.press('Tab');await page.keyboard.press('Tab');
     assert.equal(await page.getByRole('button',{name:'Remove GPT-6 Astra from favourites',exact:true}).evaluate(n=>document.activeElement===n),true,'Stars are reachable with the keyboard');
     await page.keyboard.press('Enter');
    }
