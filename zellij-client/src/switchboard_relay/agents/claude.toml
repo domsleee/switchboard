@@ -9,14 +9,14 @@
 #
 # Lists match when any pattern matches. A list of lists matches when every
 # pattern in one inner list matches.
-version = "2026-10-29"
+version = "2026-11-08"
 
 # Which panes are Claude: the running command, or its prompt footer on screen.
 command = ['\bclaude(?:\.exe)?\b']
-screen = [['(?:bypass permissions|accept edits) on|shift\+tab to cycle']]
+screen = [['(?:bypass permissions|accept edits|auto mode|plan mode) on|shift\+tab to cycle']]
 
 # Under the idle prompt box (❯). Without it the screen is a dialog or unknown.
-footer = ['(?:bypass permissions|accept edits) on|shift\+tab to cycle', 'for shortcuts']
+footer = ['(?:bypass permissions|accept edits|auto mode|plan mode) on|shift\+tab to cycle', 'for shortcuts']
 
 # A finished turn, e.g. "✻ Baked for 4m 5s" or "✻ Sautéed for 26s".
 completion = ['(?:worked for|[✻✽✶✳] \S+ for)\s+(?:\d+\s*[hms]\s*)+(?:[•·]\s*(?:done\s+)?\d{1,2}:\d{2}\s*(?:am|pm)?)?']

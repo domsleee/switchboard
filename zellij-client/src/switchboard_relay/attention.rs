@@ -2441,6 +2441,30 @@ esac
     }
 
     #[test]
+    fn claude_auto_and_plan_mode_footers_identify_claude_without_a_command() {
+        // Claude Code 2.1.319 in auto mode, captured with dump-screen. The engine can
+        // miss a pane's command under load, so the footer must identify Claude.
+        let pane = json!({"title":"✳ improve-conversation-mode"});
+        let working = "  ⎿  (timeout 3m 20s)  ⎿  Allowed by auto mode\n\n\
+            ✽ Contemplating… (20m 34s · ↓ 57.0k tokens)\n\n\
+            ──────────────────────── improve-conversation-mode ─\n❯\u{a0}\n\
+            ────────────────────────────────────────────────────\n\
+              ⏵⏵ auto mode on · 2 shells · esc to interrupt · ← 1 agent · ↓ to manage";
+        assert_eq!(
+            classify(&pane, working),
+            json!({"state":"working","agent":"claude"})
+        );
+        let idle = working.replace(
+            "✽ Contemplating… (20m 34s · ↓ 57.0k tokens)",
+            "✻ Baked for 20m 34s",
+        );
+        assert_eq!(classify(&pane, &idle)["state"], "ready");
+        let plan = idle.replace("⏵⏵ auto mode on", "⏸ plan mode on");
+        assert_eq!(classify(&pane, &plan)["agent"], "claude");
+        assert_eq!(classify(&pane, &plan)["state"], "ready");
+    }
+
+    #[test]
     fn claude_background_shell_counts_do_not_override_real_agent_state() {
         let pane = json!({"pane_command":"claude.exe --dangerously-skip-permissions","title":"✳ background build"});
         // Claude Code 2.1.301: a background shell may be a long-lived dev server.
