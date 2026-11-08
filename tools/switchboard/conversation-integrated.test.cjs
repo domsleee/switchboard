@@ -687,6 +687,16 @@ test('integrated Conversation journeys use production markup and preserve delive
     assert.equal(await page.getByRole('button',{name:'Terminal',exact:true}).getAttribute('aria-pressed'),'true','Acknowledgement must not undo a deliberate Terminal choice');
    }finally{await f.close();}
   });
+  await t.test('hovering a sidebar tab warms its history only while Conversation is open',async()=>{
+   const f=await fixture({viewport:{width:1280,height:844},desktop:true}),{page}=f;try{
+    await f.poll();const reads=[];page.on('request',request=>{if(request.url().includes('/api/chats/chat-2'))reads.push(request.url());});
+    const other=page.locator('#tabs .tab-row').filter({hasNotText:'Conversation 1'}).first();
+    await Promise.all([page.waitForRequest(request=>request.url().includes('/api/chats/chat-2')),other.hover()]);
+    const q=new URL(reads[0]).searchParams;assert.deepEqual([q.get('tail'),q.get('limit'),q.get('context')],['true','15','true']);
+    await page.mouse.move(700,400);await page.getByRole('button',{name:'Terminal',exact:true}).click();await page.waitForTimeout(150);reads.length=0;
+    await other.hover();await page.waitForTimeout(250);assert.deepEqual(reads,[],'Terminal mode reads no history on hover');
+   }finally{await f.close();}
+  });
  }finally{await browser.close();}
 });
 

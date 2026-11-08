@@ -121,6 +121,11 @@ the browser does not invent zero timings. No transcript text, paths, titles or c
 IDs are included in these browser diagnostics. Cached selections render immediately
 and their background refresh is excluded from the visible-load stages.
 
+A first page that cannot fill the list stays hidden, for at most 800 ms, while the older
+messages it fetches next arrive, so it appears once at the newest message. In Conversation,
+hovering a tab reads the page its click will request, which warms the owning relay's
+transcript index and page cache.
+
 ## Mobile replies and attachments
 
 The composer’s **+** button opens the phone’s photo/file picker. Up to eight files,

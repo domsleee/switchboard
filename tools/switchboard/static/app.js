@@ -833,6 +833,7 @@ function render() {
         if(dragging||Date.now()<suppressTabClickUntil||document.querySelector('dialog[open]'))return;
         contextItem=button._item;$('close-tab').click();
       };
+      let warm;row.onpointerenter=event=>{if(event.pointerType==='mouse')warm=setTimeout(()=>globalThis.SwitchboardConversation?.warm?.(row._item),100);};row.onpointerleave=()=>clearTimeout(warm);
       row.append(button);button._row=row;holdTabForMenu(button);
       const actions=document.createElement('div');actions.className='tab-hover-actions';
       const snooze=parkAction('Snooze thread','clock'),settle=parkAction('Settle thread','check');
@@ -2868,8 +2869,8 @@ window.SwitchboardConversation?.install({
     const current=allTabs().find(item=>item.key===selected);
     if(!globalThis.SwitchboardConversation.wantsConversation()&&current?.entry.state&&document.hasFocus())current.entry.frame.contentWindow?.postMessage({type:'zellij-window-focus'},location.origin);
   },
-  selection(){
-    const item=allTabs().find(item=>item.key===selected);if(!item)return null;
+  selection(item=allTabs().find(item=>item.key===selected)){
+    if(!item)return null;
     const active=item.entry.state?.active_pane,panes=(!item.entry.state?item.tab.panes:tabPanes(item.entry,item.tab)).filter(p=>!p.is_plugin);
     const preferred=item.entry.resumePane||active,launch=launchingTab(item);
     const pane=panes.find(p=>p.pane_id===preferred?.pane_id)||panes.find(p=>p.is_focused)||panes[0];if(!pane)return {key:item.key,host:item.entry.host,frame:item.entry.frame,title:displayTitle(item),state:launch?'working':undefined,since:launch?.at/1000,starting:!!item.tab.pending,launch:launchFor(item)};
