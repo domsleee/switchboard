@@ -1103,6 +1103,15 @@ impl Chat {
                 {
                     self.background.clear();
                 }
+                // A prompt Claude takes in mid-turn is recorded only as this attachment,
+                // with no user record. The same type also carries task notifications
+                // and messages from other agents, which carry a different origin.
+                if attachment["type"] == "queued_command"
+                    && attachment["commandMode"] == "prompt"
+                    && attachment["origin"]["kind"] == "human"
+                {
+                    self.push_parts("user", &attachment["prompt"], v["timestamp"].clone());
+                }
             },
             Some("queue-operation") if v["operation"] == "enqueue" => {
                 finished(
@@ -3517,6 +3526,11 @@ mod tests {
             (json!({"type":"user","isVisibleInTranscriptOnly":true,"message":{"content":"transcript only"}}), None),
             (json!({"type":"user","origin":{"kind":"coordinator"},"message":{"content":"from the coordinator"}}), None),
             (json!({"type":"user","origin":{"kind":"channel"},"message":{"content":"from a channel"}}), None),
+            // Prompts Claude absorbs mid-turn have only a queued_command attachment.
+            (json!({"type":"attachment","attachment":{"type":"queued_command","prompt":"typed while working","commandMode":"prompt","origin":{"kind":"human"},"humanTurn":true}}), Some("typed while working")),
+            (json!({"type":"attachment","attachment":{"type":"queued_command","prompt":[{"type":"text","text":"with an image"}],"commandMode":"prompt","origin":{"kind":"human"},"humanTurn":true}}), Some("with an image")),
+            (json!({"type":"attachment","attachment":{"type":"queued_command","prompt":"<cross-session-message>hi</cross-session-message>","commandMode":"prompt","origin":{"kind":"peer"}}}), None),
+            (json!({"type":"attachment","attachment":{"type":"queued_command","prompt":"<task-notification>done</task-notification>","commandMode":"task-notification","origin":{"kind":"task-notification"}}}), None),
             (json!({"type":"user","commandMode":"task-notification","message":{"content":"<task-notification>old</task-notification>"}}), None),
             (json!({"type":"user","origin":{"kind":"human"},"promptSource":"typed","message":{"content":"<task-notification>pasted</task-notification>"}}), Some("<task-notification>pasted</task-notification>")),
         ];
