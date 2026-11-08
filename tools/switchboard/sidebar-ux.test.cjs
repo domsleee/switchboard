@@ -138,7 +138,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
       if(path==='/api/hosts')return json([{id:'mac',name:'Mac'},{id:'windows',name:'Windows'}]);
       if(path.startsWith('/api/hosts/'))return json({id:path.split('/').at(-1),name:path.endsWith('/mac')?'Mac':'Windows',
         ...(hostUnavailable&&path.endsWith('/windows')?{error:'Host unavailable'}:{sessions:[{name:'main',web_clients_allowed:true}]})});
-      if(path==='/api/attention')return json({tabs,panes:working?[{host:'mac',session:'main',pane_id:1,state:'working'},{host:'mac',session:'main',pane_id:2,state:'waiting'}]:[],errors:unavailable?[{host:'windows',session:'main'}]:[]});
+      if(path==='/api/attention')return json({tabs,panes:working?[{host:'mac',session:'main',pane_id:1,state:'working'}]:[],errors:unavailable?[{host:'windows',session:'main'}]:[]});
       if(path.startsWith('/hosts/')){
         // The top machine's terminal answers last; the first tab must still be selected.
         if(path.split('/')[2]==='mac')await new Promise(resolve=>setTimeout(resolve,300));
@@ -231,7 +231,19 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     await snoozed.click();
     assert.deepEqual(await order(),[...names.slice(1),names[0]]);
     assert.equal(await page.locator('#tabs .tab-status').last().textContent(),'Working');
-    assert.equal(await page.locator('#tabs .star').first().getAttribute('class'),'star waiting');
+    // A tab waiting on a background agent folds in with working tabs and keeps its own dot.
+    const waitingKey=await page.evaluate(()=>{
+      const key=attentionKey('mac','main',2);
+      paneAttention.set(key,{...paneAttention.get(attentionKey('mac','main',1)),pane_id:2,key,state:'waiting'});render();
+      return allTabs().find(item=>item.tab.name==='Online shopping').key;
+    });
+    assert.equal(await snoozed.locator('.count').textContent(),'2');
+    const waitingTab=page.locator('#tabs .tab-select').filter({has:page.locator('.tab-name',{hasText:'Online shopping'})});
+    assert.equal(await waitingTab.locator('.star').getAttribute('class'),'star waiting');
+    assert.equal(await waitingTab.locator('.tab-status').textContent(),'Waiting');
+    if(process.env.SWITCHBOARD_UX_SCREENSHOTS)await page.locator('#sidebar').screenshot({path:process.env.SWITCHBOARD_UX_SCREENSHOTS+'/waiting-folded.png'});
+    await page.evaluate(key=>{paneAttention.delete(attentionKey('mac','main',2));snoozedPlacement.delete(key);render();},waitingKey);
+    assert.deepEqual(await order(),[...names.slice(1),names[0]]);
     // Collapsing the section never stops or switches the selected terminal.
     await page.locator('#tabs .tab-select').last().click();
     const selectedBefore=await page.evaluate(()=>selected);

@@ -4,7 +4,7 @@ function fixture(){
   let now=0,timer;
   const tab={key:'a',tab:{},entry:{host:'mac',name:'main'},working:true,attention:false};
   const context={Date:{now:()=>now},allTabs:()=>[tab],settingValue:()=> 'true',isReady:item=>item.attention,
-    isPinned:key=>!!tab.pinned,autoLabel:item=>item.working?'Working':'',attentionErrors:[],setTimeout:fn=>(timer=fn),clearTimeout:()=>{timer=null;},
+    isPinned:key=>!!tab.pinned,autoLabel:item=>item.label??(item.working?'Working':''),attentionErrors:[],statusUnavailable:(host,session)=>context.attentionErrors.some(e=>e.host===host&&e.session===session),setTimeout:fn=>(timer=fn),clearTimeout:()=>{timer=null;},
     render:()=>context.sidebarTabs(),selected:'a',hiddenOpen:false,snoozedOpen:false,$:()=>({value:''}),matchesSearch:()=>true};
   vm.createContext(context);
   vm.runInContext(source.slice(source.indexOf('// Hold shelf placement'),source.indexOf('function moveTab(')),context);
@@ -21,6 +21,11 @@ test('completion waits two seconds, and resumed work cancels the old deadline',(
   tab.working=true;assert.equal(snoozed(),true);advance(1);
   tab.working=false;assert.equal(snoozed(),true);advance(1999);assert.equal(snoozed(),true);
   advance(1);assert.equal(snoozed(),false);
+});
+test('a tab waiting on a background agent stays folded with working tabs',()=>{
+  const {tab,snoozed,advance}=fixture();tab.working=false;tab.label='Waiting on an agent';
+  assert.equal(snoozed(),true);advance(5000);assert.equal(snoozed(),true);
+  tab.label='Ready to review';tab.attention=true;assert.equal(snoozed(),false);
 });
 test('attention, errors, hiding and disabling snooze bypass the grace',()=>{
   for(const change of [
