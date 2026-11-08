@@ -104,7 +104,7 @@ pub(super) async fn run_local(
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// The frequent reads, as the engine action the CLI would send. Each CLI call is a new
+/// Reads and input, as the engine action the CLI would send. Each CLI call is a new
 /// process, which Defender can make slow on Windows.
 fn socket_action(args: &[&str]) -> Option<Action> {
     let list = |show_all| Action::ListPanes {
@@ -128,6 +128,26 @@ fn socket_action(args: &[&str]) -> Option<Action> {
         ["list-panes", "--json", "--all"] => Some(list(true)),
         ["dump-screen", "-p", pane] => dump(pane, false),
         ["dump-screen", "--ansi", "-p", pane] => dump(pane, true),
+        ["write", "-p" | "--pane-id", pane, bytes @ ..] if !bytes.is_empty() => {
+            Some(Action::WriteToPaneId {
+                bytes: bytes
+                    .iter()
+                    .map(|byte| byte.parse::<u8>().ok())
+                    .collect::<Option<Vec<u8>>>()?,
+                pane_id: pane.parse::<PaneId>().ok()?,
+            })
+        },
+        ["paste", "-p", pane, "--", text] => Some(Action::Paste {
+            chars: (*text).to_owned(),
+            pane_id: Some(pane.parse::<PaneId>().ok()?),
+        }),
+        ["close-tab", "--tab-id", tab] => Some(Action::CloseTabById {
+            id: tab.parse::<u64>().ok()?,
+        }),
+        ["rename-pane", "--pane-id", pane, name] => Some(Action::RenamePaneByPaneId {
+            pane_id: Some(pane.parse::<PaneId>().ok()?),
+            name: name.as_bytes().to_vec(),
+        }),
         _ => None,
     }
 }
@@ -183,6 +203,11 @@ fn ask_engine_blocking(
     let os = crate::os_input_output::get_cli_client_os_input()?;
     os.try_connect_to_server(path)
         .map_err(|error| anyhow::anyhow!("cannot connect to the engine: {error}"))?;
+    // The caller has given up by now, so input sent after this would arrive unexpected.
+    anyhow::ensure!(
+        std::time::Instant::now() < deadline,
+        "connecting to the engine took too long"
+    );
     os.send_to_server(ClientToServerMsg::Action {
         action,
         terminal_id: None,
@@ -964,7 +989,35 @@ mod tests {
             })
         ));
         assert!(socket_action(&["dump-screen", "-p", "not a pane"]).is_none());
-        assert!(socket_action(&["write", "-p", "87", "13"]).is_none());
+        assert!(socket_action(&["new-pane", "--", "cmd"]).is_none());
+    }
+
+    #[test]
+    fn switchboard_socket_sends_input_as_the_cli_would() {
+        assert!(matches!(
+            socket_action(&["write", "-p", "87", "27", "13"]),
+            Some(Action::WriteToPaneId { bytes, pane_id: PaneId::Terminal(87) }) if bytes == [27, 13]
+        ));
+        assert!(matches!(
+            socket_action(&["write", "--pane-id", "87", "13"]),
+            Some(Action::WriteToPaneId { bytes, pane_id: PaneId::Terminal(87) }) if bytes == [13]
+        ));
+        assert!(matches!(
+            socket_action(&["paste", "-p", "87", "--", "-starts with a dash"]),
+            Some(Action::Paste { chars, pane_id: Some(PaneId::Terminal(87)) }) if chars == "-starts with a dash"
+        ));
+        assert!(matches!(
+            socket_action(&["close-tab", "--tab-id", "5"]),
+            Some(Action::CloseTabById { id: 5 })
+        ));
+        assert!(matches!(
+            socket_action(&["rename-pane", "--pane-id", "87", "Worker"]),
+            Some(Action::RenamePaneByPaneId { pane_id: Some(PaneId::Terminal(87)), name }) if name == b"Worker"
+        ));
+        // Input the CLI would have refused is left for the CLI to refuse.
+        assert!(socket_action(&["write", "-p", "87", "300"]).is_none());
+        assert!(socket_action(&["write", "-p", "87"]).is_none());
+        assert!(socket_action(&["write", "-p", "not a pane", "13"]).is_none());
     }
 
     #[test]
@@ -1102,6 +1155,121 @@ mod tests {
                 assert!(!answer.is_empty(), "{route} {name} returned nothing");
             }
         }
+    }
+
+    /// Opt-in: a Conversation reply is a paste then Enter, now milliseconds apart.
+    /// SB_INPUT_SESSION=name SB_INPUT_PANE=id, on a private session only.
+    #[tokio::test]
+    #[ignore]
+    async fn switchboard_socket_paste_then_enter_stays_in_order() {
+        let session = std::env::var("SB_INPUT_SESSION").unwrap();
+        let pane = std::env::var("SB_INPUT_PANE").unwrap();
+        let host = Host::new(super::super::tests::config("http://127.0.0.1:9")).unwrap();
+        let wait = Duration::from_secs(20);
+        let (mut ran, mut slowest) = (0, Duration::ZERO);
+        const ROUNDS: usize = 40;
+        for round in 0..ROUNDS {
+            let marker = format!("sborder{round}x{}", std::process::id());
+            let padding = "y".repeat(if round % 2 == 0 { 20 } else { 1500 });
+            let text = format!("echo {marker} {padding}");
+            run_local(&host, &session, &["paste", "-p", &pane, "--", &text], wait)
+                .await
+                .unwrap();
+            run_local(&host, &session, &["write", "-p", &pane, "13"], wait)
+                .await
+                .unwrap();
+            let start = std::time::Instant::now();
+            let mut screen = String::new();
+            let mut done = false;
+            while start.elapsed() < Duration::from_secs(8) {
+                screen = run_local(&host, &session, &["dump-screen", "-p", &pane], wait)
+                    .await
+                    .unwrap();
+                if screen
+                    .lines()
+                    .any(|line| line.contains(&marker) && !line.contains("echo "))
+                {
+                    done = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            if done {
+                ran += 1;
+                slowest = slowest.max(start.elapsed());
+            } else {
+                println!("order round {round} did not run; last screen:\n{screen}");
+            }
+        }
+        println!("order: {ran} of {ROUNDS} ran; slowest output {slowest:?}");
+        assert_eq!(ran, ROUNDS);
+    }
+
+    /// Opt-in input check against a real private session: never point this at a session in use.
+    /// SB_INPUT_SESSION=name SB_INPUT_PANE=id SB_INPUT_CLOSE_TAB=id SB_TIMING_CLI=path.
+    #[tokio::test]
+    #[ignore]
+    async fn switchboard_socket_input_against_a_real_engine() {
+        let session = std::env::var("SB_INPUT_SESSION").unwrap();
+        let pane = std::env::var("SB_INPUT_PANE").unwrap();
+        let socket = super::super::tests::config("http://127.0.0.1:9");
+        let mut cli = socket.clone();
+        cli.zellij_binary = Some(std::env::var("SB_TIMING_CLI").unwrap());
+        let wait = Duration::from_secs(20);
+        for (route, config) in [("socket", socket.clone()), ("cli", cli)] {
+            let host = Host::new(config).unwrap();
+            let marker = format!("sbmark{route}{}", std::process::id());
+            let text = format!("echo {marker} caf\u{e9}");
+            run_local(&host, &session, &["paste", "-p", &pane, "--", &text], wait)
+                .await
+                .unwrap();
+            let mut times = Vec::new();
+            for _ in 0..30 {
+                let start = std::time::Instant::now();
+                run_local(&host, &session, &["write", "-p", &pane, "32"], wait)
+                    .await
+                    .unwrap();
+                times.push(start.elapsed().as_secs_f64() * 1000.0);
+            }
+            times.sort_by(f64::total_cmp);
+            run_local(&host, &session, &["write", "-p", &pane, "13"], wait)
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            let screen = run_local(&host, &session, &["dump-screen", "-p", &pane], wait)
+                .await
+                .unwrap();
+            // A brand-new shell may not draw the typed line, so check the command's output.
+            let ran = screen
+                .lines()
+                .any(|line| line.contains(&marker) && !line.contains("echo "));
+            let accented = screen
+                .lines()
+                .any(|line| line.contains(&marker) && line.contains("caf\u{e9}"));
+            println!("{route} write: p50 {:.1}ms p95 {:.1}ms max {:.1}ms; command ran {ran}; accented text intact {accented}", times[15], times[28], times[29]);
+            assert!(ran, "{route}: the command did not run:\n{screen}");
+            assert!(accented, "{route}: text changed in transit");
+        }
+        let host = Host::new(socket).unwrap();
+        run_local(
+            &host,
+            &session,
+            &["rename-pane", "--pane-id", &pane, "Renamed over socket"],
+            wait,
+        )
+        .await
+        .unwrap();
+        let panes = list_panes(&host, &session, true, wait).await.unwrap();
+        let renamed = panes.iter().any(|p| p["title"] == "Renamed over socket");
+        let tab = std::env::var("SB_INPUT_CLOSE_TAB").unwrap();
+        run_local(&host, &session, &["close-tab", "--tab-id", &tab], wait)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        let panes = list_panes(&host, &session, true, wait).await.unwrap();
+        let closed = !panes.iter().any(|p| p["tab_id"].to_string() == tab);
+        println!("socket rename applied {renamed}; tab closed {closed}");
+        assert!(renamed && closed);
     }
 
     #[cfg(unix)]
