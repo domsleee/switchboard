@@ -158,9 +158,13 @@ impl Client {
     }
 
     pub(crate) fn activity_relay() -> anyhow::Result<Self> {
-        let mut client = Self::relay(&local_relay_url(
+        Self::hook_relay(&local_relay_url(
             std::env::var("SWITCHBOARD_RELAY_URL").ok().as_deref(),
-        ))?;
+        ))
+    }
+
+    pub(super) fn hook_relay(origin: &str) -> anyhow::Result<Self> {
+        let mut client = Self::relay(origin)?;
         client.timeout = Duration::from_secs(2);
         Ok(client)
     }

@@ -1386,6 +1386,10 @@ fn app(state: RelayState) -> Router {
             "/api/agent-hook",
             post(attention::hook).layer(axum::extract::DefaultBodyLimit::max(16 << 20)),
         )
+        .route(
+            "/api/agent-hook/claude",
+            post(attention::claude_http_hook).layer(axum::extract::DefaultBodyLimit::max(16 << 20)),
+        )
         .route("/api/askpass", post(askpass::ask))
         .route("/api/askpass/answer", post(askpass::answer))
         .route("/api/interactive", post(interactive::wait))

@@ -5,6 +5,25 @@ use uuid::Uuid;
 
 use crate::input::command::RunCommand;
 
+/// Recognize the recovery command, including the old Windows PowerShell wrapper.
+pub fn recovery_hook(command: &str, agent: AgentKind) -> bool {
+    let marker = format!(" agent-resume record --agent {}", agent.name());
+    if command.contains(&marker) {
+        return true;
+    }
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    command
+        .split_once(" -EncodedCommand ")
+        .and_then(|(_, encoded)| STANDARD.decode(encoded.trim()).ok())
+        .is_some_and(|bytes| {
+            let words: Vec<u16> = bytes
+                .chunks_exact(2)
+                .map(|word| u16::from_le_bytes([word[0], word[1]]))
+                .collect();
+            String::from_utf16_lossy(&words).contains(&marker)
+        })
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentKind {

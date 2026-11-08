@@ -291,11 +291,13 @@ fn merge_hook(path: &Path, event: &str, hook: Value, grouped: bool) -> Result<()
     } else {
         entries.retain(|entry| !is_our_hook(entry));
     }
-    entries.push(if grouped {
-        json!({"hooks":[hook]})
-    } else {
-        hook
-    });
+    if !hook.is_null() {
+        entries.push(if grouped {
+            json!({"hooks":[hook]})
+        } else {
+            hook
+        });
+    }
     if let Some(original) = original {
         let backup = path.with_extension("json.switchboard-resume.bak");
         if !backup.exists() {
@@ -310,23 +312,9 @@ fn is_our_hook(hook: &Value) -> bool {
     let Some(command) = hook["command"].as_str() else {
         return false;
     };
-    if command.contains(" agent-resume record --agent ") {
-        return true;
-    }
-    #[cfg(windows)]
-    {
-        use base64::{engine::general_purpose::STANDARD, Engine};
-        if let Some((_, encoded)) = command.split_once(" -EncodedCommand ") {
-            if let Ok(bytes) = STANDARD.decode(encoded.trim()) {
-                let words: Vec<u16> = bytes
-                    .chunks_exact(2)
-                    .map(|word| u16::from_le_bytes([word[0], word[1]]))
-                    .collect();
-                return String::from_utf16_lossy(&words).contains(" agent-resume record --agent ");
-            }
-        }
-    }
-    false
+    [AgentKind::Claude, AgentKind::Codex, AgentKind::Copilot]
+        .into_iter()
+        .any(|agent| zellij_utils::agent_resumption::recovery_hook(command, agent))
 }
 
 fn hook_command(binary: &Path, agent: AgentKind) -> String {
@@ -396,11 +384,17 @@ pub fn install_hooks(binary: &Path) -> Result<()> {
             merge_hook(
                 &path,
                 event,
-                json!({
-                    "type": "command",
-                    "command": hook_command(&binary, agent),
-                    "timeout": 10
-                }),
+                if agent == AgentKind::Claude && event == "UserPromptSubmit" {
+                    // SessionStart also fires on clear, resume and compact. The
+                    // same recovery record need not be rewritten on every prompt.
+                    Value::Null
+                } else {
+                    json!({
+                        "type": "command",
+                        "command": hook_command(&binary, agent),
+                        "timeout": 10
+                    })
+                },
                 grouped,
             )?;
         }
@@ -454,6 +448,24 @@ mod tests {
             fs::read(path.with_extension("json.switchboard-resume.bak")).unwrap(),
             original
         );
+    }
+
+    #[test]
+    fn claude_prompt_recovery_is_removed_without_changing_session_start() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let recovery = json!({"type":"command","command":hook_command(Path::new("zellij"), AgentKind::Claude)});
+        merge_hook(&path, "SessionStart", recovery.clone(), true).unwrap();
+        merge_hook(&path, "UserPromptSubmit", recovery.clone(), true).unwrap();
+        for _ in 0..2 {
+            merge_hook(&path, "UserPromptSubmit", Value::Null, true).unwrap();
+        }
+        let config: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert!(config["hooks"]["UserPromptSubmit"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert_eq!(config["hooks"]["SessionStart"][0]["hooks"][0], recovery);
     }
 
     #[test]

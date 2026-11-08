@@ -1461,6 +1461,48 @@ pub(super) async fn hook(
     StatusCode::NO_CONTENT
 }
 
+/// Separate route keeps older command hooks from receiving duplicate mail.
+pub(super) async fn claude_http_hook(
+    State(state): State<RelayState>,
+    headers: HeaderMap,
+    Json(event): Json<Value>,
+) -> Response {
+    let header = |name| headers.get(name).and_then(|v| v.to_str().ok());
+    if header("x-zellij-session").is_none_or(str::is_empty)
+        || header("x-zellij-pane")
+            .and_then(|p| p.parse::<u32>().ok())
+            .is_none()
+        || crate::message_board::hooks::nested("claude", |name| {
+            match name {
+                "CLAUDECODE" => header("x-claudecode"),
+                "CLAUDE_CODE_ENTRYPOINT" => header("x-claude-entrypoint"),
+                _ => None,
+            }
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+        })
+    {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    let mut status_headers = headers;
+    status_headers.insert("x-agent", "claude".parse().unwrap());
+    let status = hook(State(state.clone()), status_headers, Json(event.clone())).await;
+    if status != StatusCode::NO_CONTENT {
+        return status.into_response();
+    }
+    let relay = format!("http://127.0.0.1:{}", state.port);
+    let context = tokio::task::spawn_blocking(move || {
+        crate::message_board::hooks::http(&serde_json::to_vec(&event).unwrap(), &relay)
+    })
+    .await
+    .ok()
+    .flatten();
+    match context {
+        Some(context) => Json(context).into_response(),
+        None => StatusCode::NO_CONTENT.into_response(),
+    }
+}
+
 /// `zellij agent-hook`: forwards status to the relay and delivers mail through
 /// lifecycle context. Background --wait hooks only watch for incoming mail.
 pub fn forward_hook(agent: &str, wait: bool, input: impl std::io::Read) {
@@ -2196,12 +2238,78 @@ esac
         let hooks = config["hooks"]["SessionStart"][0]["hooks"]
             .as_array()
             .unwrap();
-        assert!(
-            hooks
-                .iter()
-                .any(|hook| hook == &config["hooks"]["UserPromptSubmit"][0]["hooks"][0]),
-            "startup must report using the same pane headers as turn hooks"
-        );
+        assert!(hooks.iter().any(|hook| hook["command"] == "zellij"
+            && hook["args"] == json!(["agent-hook", "--agent", "claude"])));
+        let turn = &config["hooks"]["UserPromptSubmit"][0]["hooks"][0];
+        let request = hook_request(
+            "claude",
+            &b"{}"[..],
+            |name| match name {
+                "ZELLIJ_SESSION_NAME" => Some("main".into()),
+                "ZELLIJ_PANE_ID" => Some("80".into()),
+                _ => None,
+            },
+            "http://127.0.0.1:8090",
+        )
+        .unwrap();
+        for (header, variable, expected) in [
+            ("X-Zellij-Session", "ZELLIJ_SESSION_NAME", "main"),
+            ("X-Zellij-Pane", "ZELLIJ_PANE_ID", "80"),
+        ] {
+            assert_eq!(turn["headers"][header], format!("${variable}"));
+            assert_eq!(request.headers()[header], expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn switchboard_claude_http_ignores_nested_agents_and_missing_panes() {
+        let state = RelayState {
+            hosts: Default::default(),
+            order: Default::default(),
+            port: 0,
+            attention: Default::default(),
+            poll: Default::default(),
+            mesh: None,
+            candidates: Default::default(),
+            artifact: None,
+            askpass: Default::default(),
+            html_previews: Default::default(),
+            artifact_proxies: Default::default(),
+            push: None,
+            browser_origin: None,
+        };
+        for (pane, nested, entrypoint, accepted) in [
+            ("", "", "", false),
+            ("bad", "", "", false),
+            ("3", "1", "sdk-cli", false),
+            ("3", "1", "", false),
+            ("3", "1", "cli", true),
+            ("4", "", "", true),
+        ] {
+            let mut headers = HeaderMap::new();
+            for (key, value) in [
+                ("x-zellij-session", "main"),
+                ("x-zellij-pane", pane),
+                ("x-claudecode", nested),
+                ("x-claude-entrypoint", entrypoint),
+            ] {
+                headers.insert(key, value.parse().unwrap());
+            }
+            let response = claude_http_hook(
+                State(state.clone()),
+                headers,
+                Json(json!({"hook_event_name":"UserPromptSubmit"})),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::NO_CONTENT);
+            let mut poll = state.poll.lock().await;
+            assert_eq!(
+                !poll.hooks.is_empty(),
+                accepted,
+                "{pane}/{nested}/{entrypoint}"
+            );
+            poll.hooks.clear();
+        }
     }
 
     #[test]

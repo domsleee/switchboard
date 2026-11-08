@@ -260,6 +260,60 @@ fn claude_command(hook: &Value, wait: bool) -> bool {
     }
 }
 
+fn claude_http(hook: &Value) -> bool {
+    hook["type"] == "http"
+        && hook["url"] == "http://127.0.0.1:8090/api/agent-hook/claude"
+        && [
+            ("X-Zellij-Session", "ZELLIJ_SESSION_NAME"),
+            ("X-Zellij-Pane", "ZELLIJ_PANE_ID"),
+            ("X-Claudecode", "CLAUDECODE"),
+            ("X-Claude-Entrypoint", "CLAUDE_CODE_ENTRYPOINT"),
+        ]
+        .iter()
+        .all(|(header, var)| {
+            hook["headers"][*header] == format!("${var}")
+                && hook["allowedEnvVars"]
+                    .as_array()
+                    .is_some_and(|vars| vars.iter().any(|v| v == var))
+        })
+}
+
+fn prompt_recovery_hook(hook: &Value) -> bool {
+    hook["command"].as_str().is_some_and(|command| {
+        zellij_utils::agent_resumption::recovery_hook(
+            command,
+            zellij_utils::agent_resumption::AgentKind::Claude,
+        )
+    })
+}
+
+fn has_prompt_recovery(settings: &Value) -> bool {
+    settings["hooks"]["UserPromptSubmit"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|group| group["hooks"].as_array().into_iter().flatten())
+        .any(prompt_recovery_hook)
+}
+
+fn remove_prompt_recovery(file: &Path) -> Result<(), String> {
+    let mut settings = read_json(file).ok_or("Cannot read Claude settings")?;
+    if !has_prompt_recovery(&settings) {
+        return Ok(());
+    }
+    let groups = settings["hooks"]["UserPromptSubmit"]
+        .as_array_mut()
+        .unwrap();
+    for group in groups.iter_mut() {
+        if let Some(hooks) = group["hooks"].as_array_mut() {
+            hooks.retain(|hook| !prompt_recovery_hook(hook));
+        }
+    }
+    groups.retain(|group| !group["hooks"].as_array().is_some_and(Vec::is_empty));
+    back_up(file);
+    write_json(file, &settings).map_err(|e| e.to_string())
+}
+
 /// Check the reporting and message-delivery contract, not a plugin revision:
 /// plugin managers can install a newer compatible version before the relay updates.
 fn claude_hooks_complete(plugin: &Path) -> bool {
@@ -275,7 +329,7 @@ fn claude_hooks_complete(plugin: &Path) -> bool {
                     .is_none_or(|matcher| matches!(matcher.as_str(), Some("" | "*")))
             })
             .flat_map(|group| group["hooks"].as_array().into_iter().flatten())
-            .filter(|hook| hook["type"] == "command" && hook["if"].is_null())
+            .filter(|hook| hook["if"].is_null())
             .collect::<Vec<_>>()
     };
     [
@@ -292,7 +346,9 @@ fn claude_hooks_complete(plugin: &Path) -> bool {
     .iter()
     .all(|event| {
         handlers(event).iter().any(|hook| {
-            claude_command(hook, false) && hook["async"] != true && hook["asyncRewake"] != true
+            (claude_command(hook, false) || (*event != "SessionStart" && claude_http(hook)))
+                && hook["async"] != true
+                && hook["asyncRewake"] != true
         })
     }) && ["SessionStart", "Stop"].iter().all(|event| {
         handlers(event).iter().any(|hook| {
@@ -339,6 +395,9 @@ fn check_claude(dir: &Path) -> Check {
     }
     if !automatic {
         missing.push("Auto-update off");
+    }
+    if has_prompt_recovery(&settings) {
+        missing.push("Slow recovery command runs on every prompt");
     }
     Check::from_missing(missing)
 }
@@ -1103,6 +1162,13 @@ async fn set_up(agent: Agent) -> Result<(), String> {
                 &dir.join("settings.json"),
                 json!({"source": "github", "repo": REPO, "sparsePaths": [".claude-plugin", "plugins"]}),
             )?;
+            let check = check_claude(&dir);
+            if check.state != "ready"
+                && check.detail != "Slow recovery command runs on every prompt"
+            {
+                return verify_plugin_setup(check);
+            }
+            remove_prompt_recovery(&dir.join("settings.json"))?;
             verify_plugin_setup(check_claude(&dir))
         },
         Agent::Copilot => {
@@ -1681,6 +1747,12 @@ mod tests {
             "tool reporting must cover every tool"
         );
         for (pointer, value) in [
+            ("/hooks/PostToolUse/0/hooks/0/allowedEnvVars", json!([])),
+            ("/hooks/PostToolUse/0/hooks/0/headers", json!({})),
+            (
+                "/hooks/PostToolUse/0/hooks/0/url",
+                json!("http://127.0.0.1:8090/api/agent-hook"),
+            ),
             ("/hooks/PostToolUse/0/hooks/0/async", json!(true)),
             ("/hooks/PostToolUse/0/hooks/0/if", json!("Bash(*)")),
             ("/hooks/Stop/0/hooks/1/asyncRewake", json!(false)),
@@ -1722,6 +1794,40 @@ mod tests {
             check_claude(dir).state,
             "ready",
             "shell-form hooks are supported too"
+        );
+    }
+
+    #[test]
+    fn switchboard_claude_repair_removes_only_prompt_recovery_commands() {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("settings.json");
+        let script = "$payload | & 'C:\\Tools\\zellij.exe' agent-resume record --agent claude";
+        let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let recovery = json!({"type":"command","command":format!("powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand {}", STANDARD.encode(bytes)),"timeout":10});
+        let original = json!({"model":"example","hooks":{
+            "SessionStart":[{"hooks":[recovery.clone()]}],
+            "UserPromptSubmit":[{"matcher":"*","hooks":[recovery,{"type":"command","command":"custom-hook"}]}]
+        }});
+        write_json(&file, &original).unwrap();
+        assert!(has_prompt_recovery(&original));
+        for _ in 0..2 {
+            remove_prompt_recovery(&file).unwrap();
+        }
+        let fixed = read_json(&file).unwrap();
+        assert!(!has_prompt_recovery(&fixed));
+        assert_eq!(fixed["model"], original["model"]);
+        assert_eq!(
+            fixed["hooks"]["SessionStart"],
+            original["hooks"]["SessionStart"]
+        );
+        assert_eq!(
+            fixed["hooks"]["UserPromptSubmit"][0],
+            json!({"matcher":"*","hooks":[{"type":"command","command":"custom-hook"}]})
+        );
+        assert_eq!(
+            read_json(&file.with_extension("json.switchboard.bak")).unwrap(),
+            original
         );
     }
 
