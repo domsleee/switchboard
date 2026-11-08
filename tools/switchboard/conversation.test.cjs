@@ -35,8 +35,8 @@ test('current conversation opens directly, stays pane-local, and follows a new c
  await page.evaluate(()=>intervals.forEach(fn=>fn()));await page.getByText('Updated answer',{exact:true}).waitFor();
  assert.equal(await page.evaluate(()=>originalMessage===document.querySelector('.conversation-message')),true);assert.equal(await page.getByLabel('Reply draft').inputValue(),'keep typing');
  await page.getByLabel('Reply draft').fill('draft one');await page.getByLabel('Reply draft').press('Shift+Enter');assert.equal(await page.evaluate(()=>sent.length),0);await page.getByLabel('Reply draft').fill('draft one');await page.getByLabel('Reply draft').press('Enter');assert.equal(await page.evaluate(()=>sent[0].pane_id),1);assert.equal(await page.evaluate(()=>sent[0].submit),true);
- await page.evaluate(()=>{const m=sent[0];window.dispatchEvent(new MessageEvent('message',{origin:location.origin,source:null,data:{type:'zellij-conversation-paste-result',id:m.id,ok:true}}));});assert.equal(await page.getByLabel('Reply draft').inputValue(),'draft one');
- // Only an acknowledgement from this terminal clears the sent draft.
+ await page.evaluate(()=>{const m=sent[0];window.dispatchEvent(new MessageEvent('message',{origin:location.origin,source:null,data:{type:'zellij-conversation-paste-result',id:m.id,ok:true}}));});assert.equal(await page.getByLabel('Reply draft').inputValue(),'','Enter empties the draft at once');await page.locator('.conversation-outgoing').getByText('Sending…',{exact:true}).waitFor();
+ // Only an acknowledgement from this terminal marks the reply sent.
  await page.evaluate(()=>{window.dispatchEvent(new MessageEvent('message',{origin:location.origin,source:current.frame.contentWindow,data:{type:'zellij-conversation-paste-result',id:sent[0].id,ok:true}}));});
  assert.equal(await page.getByLabel('Reply draft').inputValue(),'');assert.equal(await page.locator('.conversation-outgoing').count(),1);assert.equal(await page.getByText('draft one',{exact:true}).count(),2);
  if(process.env.MODE_SCREENSHOTS)await page.screenshot({path:process.env.MODE_SCREENSHOTS+'/conversation-send.png'});
