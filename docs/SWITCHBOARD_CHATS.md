@@ -194,8 +194,9 @@ and decodes just the requested page. Records over 8 MiB are skipped while later
 messages remain available. Up to sixteen indexes are retained in memory, evicting the least recently used idle
 index when full while preserving active readers;
 embedded previews share a 2 MiB budget per returned page. OpenCode caps text parts at
-1 Mi characters and uses a 128 MiB source budget. At most two local disk scans
-run at once; peer requests have a 15-second timeout and fan out four at a time.
+1 Mi characters and uses a 128 MiB source budget. At most two local searches
+run at once, and reading a chat has eight separate slots, so a long search never delays
+Conversation. Peer requests have a 15-second timeout and fan out four at a time.
 
 ## History locations
 

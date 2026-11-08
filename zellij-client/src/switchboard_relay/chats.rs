@@ -2243,11 +2243,19 @@ fn opencode(path: &Path, p: &Params, id: Option<&str>) -> Value {
 async fn local_async(p: Params, id: Option<String>) -> Value {
     local_timed_async(p, id).await.0
 }
+// A search reads whole transcripts for seconds at a time, so opening a chat has its own slots:
+// a paging history search must not delay Conversation or time out a paired computer's read.
+static SEARCH_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+static READ_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(8);
 async fn local_timed_async(p: Params, id: Option<String>) -> (Value, ReadTiming) {
-    // Limit concurrent disk scans without blocking Tokio's runtime threads.
-    static SCANS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+    // Limit concurrent disk work without blocking Tokio's runtime threads.
+    let slots = if id.is_some() {
+        &READ_SLOTS
+    } else {
+        &SEARCH_SLOTS
+    };
     let queued = std::time::Instant::now();
-    let Ok(permit) = SCANS.acquire().await else {
+    let Ok(permit) = slots.acquire().await else {
         return (json!({"error":"unavailable"}), ReadTiming::default());
     };
     let result = tokio::task::spawn_blocking(move || {
@@ -4329,6 +4337,18 @@ mod tests {
             app.oneshot(request).await.unwrap().status(),
             StatusCode::BAD_REQUEST
         );
+    }
+    #[tokio::test]
+    async fn switchboard_chats_read_does_not_wait_for_searches() {
+        let _searches = SEARCH_SLOTS.acquire_many(2).await.unwrap();
+        // No agent owns this id, so the read touches no history on the test machine.
+        let (result, _) = tokio::time::timeout(
+            Duration::from_secs(5),
+            local_timed_async(Params::default(), Some("unknown-chat".into())),
+        )
+        .await
+        .expect("a chat read waited behind running searches");
+        assert_eq!(result["error"], "not_found");
     }
     #[tokio::test]
     async fn switchboard_chats_gateway_is_local_read_only() {
