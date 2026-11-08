@@ -29,6 +29,8 @@ struct Agent {
     prompt: Vec<regex::Regex>,
     #[serde(deserialize_with = "patterns")]
     footer: Vec<regex::Regex>,
+    #[serde(default, deserialize_with = "patterns")]
+    background: Vec<regex::Regex>,
     #[serde(deserialize_with = "patterns")]
     completion: Vec<regex::Regex>,
     working: Working,
@@ -165,7 +167,11 @@ pub(crate) fn classify(pane: &Value, screen: &str) -> Value {
                 .collect()
         },
     );
-    json!({"state":"ready","agent":agent,"token":token})
+    let mut ready = json!({"state":"ready","agent":agent,"token":token});
+    if any(&rules.background, after) {
+        ready["footer_tasks"] = json!(true);
+    }
+    ready
 }
 
 fn unix_seconds() -> u64 {
@@ -778,6 +784,7 @@ impl PollState {
                 }
                 waiting_on_run = self.waiting_on_run(row);
             }
+            row.as_object_mut().unwrap().remove("footer_tasks");
             if row.as_object_mut().unwrap().remove("deferred") == Some(json!(true))
                 && self
                     .scanned
@@ -948,12 +955,38 @@ impl PollState {
             self.dirty |= self.hooks.remove(&key).is_some();
         }
     }
+    /// A shell stopped from Claude's task list ends with no hook and no new turn, so
+    /// nothing else would end its wait. Claude's idle footer then stops counting it.
+    /// A shell that exits by itself clears the count just before Claude wakes, so the
+    /// wait ends only once the count has stayed gone for `SHELL_WAIT_GRACE`.
+    fn release_ended_shell_wait(&mut self, key: &(String, u64), row: &Value) {
+        let Some(hooked) = self.hooks.get_mut(key) else {
+            return;
+        };
+        if hooked.state != "waiting" || !hooked.shell_hold || row["deferred"] == json!(true) {
+            return;
+        }
+        if row["agent"] != hooked.agent || row["state"] != "ready" || row["footer_tasks"] == true {
+            hooked.idle_since = None;
+            return;
+        }
+        let since = *hooked
+            .idle_since
+            .get_or_insert_with(tokio::time::Instant::now);
+        if since.elapsed() >= SHELL_WAIT_GRACE {
+            hooked.state = "unknown";
+            hooked.shell_hold = false;
+            hooked.idle_since = None;
+            self.dirty = true;
+        }
+    }
     /// Replaces a local pane's screen reading with its agent's hook status.
     fn apply_hook(&mut self, row: &mut Value, command: &Value) {
         let (Some(session), Some(pane)) = (row["session"].as_str(), row["pane_id"].as_u64()) else {
             return;
         };
         let key = (session.to_owned(), pane);
+        self.release_ended_shell_wait(&key, row);
         let Some(hooked) = self.hooks.get(&key) else {
             return;
         };
@@ -1082,8 +1115,19 @@ impl PollState {
         let hooks: Vec<_> = self
             .hooks
             .iter()
-            .map(|((session, pane), h)| {
-                json!([session, pane, h.agent, h.state, h.token, h.chat_id, h.restart, h.at])
+            .map(|(key @ (session, pane), h)| {
+                json!([
+                    session,
+                    pane,
+                    h.agent,
+                    h.state,
+                    h.token,
+                    h.chat_id,
+                    h.restart,
+                    h.at,
+                    h.shell_hold,
+                    self.stop_shells.get(key),
+                ])
             })
             .collect();
         saved.insert("hooks".into(), json!(hooks));
@@ -1116,8 +1160,13 @@ impl PollState {
                 state = "unknown";
             }
             let token = row[4].as_str().map(str::to_owned);
+            let key = (session.to_owned(), pane);
+            // Without this list, every shell still running looks new at the next Stop.
+            if let Ok(shells) = serde_json::from_value(row[9].clone()) {
+                self.stop_shells.insert(key.clone(), shells);
+            }
             self.hooks.insert(
-                (session.to_owned(), pane),
+                key,
                 Hooked {
                     agent,
                     state,
@@ -1125,6 +1174,8 @@ impl PollState {
                     chat_id: row[5].as_str().map(str::to_owned),
                     restart: serde_json::from_value(row[6].clone()).ok(),
                     at: row[7].as_u64().unwrap_or(0),
+                    shell_hold: row[8] == true,
+                    idle_since: None,
                 },
             );
         }
@@ -1357,7 +1408,14 @@ struct Hooked {
     restart: Option<super::restart::Identity>,
     // When this agent first reported for the pane, in Unix seconds.
     at: u64,
+    // Waiting only because of a background shell started this turn.
+    shell_hold: bool,
+    // When the idle screen first stopped counting running tasks during that wait.
+    idle_since: Option<tokio::time::Instant>,
 }
+
+/// How long Claude's footer must show no running task before a shell wait ends.
+const SHELL_WAIT_GRACE: Duration = Duration::from_secs(30);
 
 /// IDs of the background shells a Stop event lists as still running.
 fn running_shells(event: &Value) -> Vec<String> {
@@ -1420,6 +1478,8 @@ fn hook_status(agent: &'static str, event: &Value) -> Option<Hooked> {
         chat_id: super::chats::hook_chat_id(agent, event),
         restart: None,
         at: unix_seconds(),
+        shell_hold: false,
+        idle_since: None,
     })
 }
 
@@ -1473,9 +1533,11 @@ pub(super) async fn hook(
                 .stop_shells
                 .insert(key.clone(), running.clone())
                 .unwrap_or_default();
+            poll.dirty |= before != running;
             if hook.state == "ready" && running.iter().any(|id| !before.contains(id)) {
                 hook.state = "waiting";
                 hook.token = None;
+                hook.shell_hold = true;
             }
         }
     }
@@ -2132,6 +2194,96 @@ esac
             "ready"
         );
         assert_eq!(stop(json!([])).await, "ready");
+    }
+
+    fn shell_wait() -> Hooked {
+        Hooked {
+            agent: "claude",
+            state: "waiting",
+            token: None,
+            chat_id: Some("chat".into()),
+            restart: None,
+            at: 0,
+            shell_hold: true,
+            idle_since: None,
+        }
+    }
+
+    #[test]
+    fn claude_idle_footer_counts_running_tasks_but_not_the_agent_hint() {
+        let pane = json!({"pane_command":"claude.exe --dangerously-skip-permissions","title":"✳ Claude Code"});
+        // Claude Code 2.1.319, idle with a background shell running.
+        let running = "● WAITING\n\n✻ Crunched for 5s · done 23:59 · 1 shell still running\n\n\
+            ────\n❯\u{a0}\n────\n  ⏵⏵ bypass permissions on · 1 shell · ← 1 agent · ↓ to manage\n";
+        let classified = classify(&pane, running);
+        assert_eq!(classified["state"], "ready");
+        assert_eq!(classified["footer_tasks"], true);
+        // The same session after /tasks stopped the shell: no new turn, and no prompt row.
+        let stopped = "❯ Run sleep 900 with the Bash tool and run_in_background true, then reply only STARTED2.\n\n\
+            ● Task \"Sleep for 900 seconds in background\" was stopped by the user\n\n\
+            ● Bash(sleep 900)\n  ⎿  Running in the background (↓ to manage)\n\n● STARTED2\n\n\
+            ✻ Worked for 3s · done 0:00\n\n────\n────\n\
+              ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 1 agent\n";
+        let classified = classify(&pane, stopped);
+        assert_eq!(classified["state"], "ready");
+        assert!(classified.get("footer_tasks").is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn claude_shell_wait_ends_once_the_footer_stays_clear() {
+        let key = ("main".to_owned(), 3);
+        let mut poll = PollState::default();
+        poll.hooks.insert(key.clone(), shell_wait());
+        // Seconds since the last scan, whether the footer counts a task, the state shown.
+        // The count coming back restarts the wait for a clear footer.
+        for (wait, tasks, expected) in [
+            (0, false, "waiting"),
+            (29, false, "waiting"),
+            (0, true, "waiting"),
+            (0, false, "waiting"),
+            (29, false, "waiting"),
+            (2, false, "ready"),
+        ] {
+            tokio::time::advance(Duration::from_secs(wait)).await;
+            let mut row = json!({"session":"main","pane_id":3,"state":"ready","agent":"claude","token":"idle"});
+            if tasks {
+                row["footer_tasks"] = json!(true);
+            }
+            poll.apply_hook(&mut row, &json!("claude.exe"));
+            assert_eq!(row["state"], expected);
+        }
+        assert_eq!(poll.hooks[&key].state, "unknown");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn claude_agent_wait_ignores_a_clear_footer() {
+        let key = ("main".to_owned(), 3);
+        let mut poll = PollState::default();
+        poll.hooks.insert(
+            key.clone(),
+            Hooked {
+                shell_hold: false,
+                ..shell_wait()
+            },
+        );
+        for _ in 0..2 {
+            let mut row = json!({"session":"main","pane_id":3,"state":"ready","agent":"claude","token":"idle"});
+            poll.apply_hook(&mut row, &json!("claude.exe"));
+            assert_eq!(row["state"], "waiting");
+            tokio::time::advance(Duration::from_secs(60)).await;
+        }
+    }
+
+    #[test]
+    fn relay_restart_keeps_shell_waits_and_the_shells_already_seen() {
+        let key = ("main".to_owned(), 3);
+        let mut poll = PollState::default();
+        poll.hooks.insert(key.clone(), shell_wait());
+        poll.stop_shells.insert(key.clone(), vec!["server".into()]);
+        let mut restarted = PollState::default();
+        restarted.restore_hooks(&poll.persisted()["hooks"]);
+        assert_eq!(restarted.stop_shells[&key], ["server"]);
+        assert!(restarted.hooks[&key].shell_hold);
     }
 
     #[tokio::test]
@@ -3209,6 +3361,8 @@ esac
             chat_id: None,
             restart: None,
             at: 0,
+            shell_hold: false,
+            idle_since: None,
         };
         let mut poll = PollState::default();
         poll.hooks
