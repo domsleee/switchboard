@@ -272,7 +272,7 @@ test('middle-click closes the clicked sidebar tab without selecting it, preservi
     await page.waitForFunction(()=>document.querySelector('#tabs .selected .tab-name')?.textContent==='Second');
     assert.deepEqual(calls[2],{host:'mac',session:'main',tab_id:41});
     const third=page.locator('#tabs .tab-row').filter({hasText:'Third'});
-    await third.hover();await middle(third.locator('.tab-actions'));
+    await middle(third.locator('.tab-select'));
     await page.waitForFunction(()=>document.querySelectorAll('#tabs .tab-select').length===1);
     assert.deepEqual(calls[3],{host:'mac',session:'main',tab_id:43});assert.equal(await selected(),'Second');
 

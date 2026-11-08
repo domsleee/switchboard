@@ -283,7 +283,7 @@ test('headless browser keeps iframe, selection, URL and input focus through fail
     await fallback.click();
     await page.waitForFunction(()=>document.activeElement===document.querySelector('iframe[title="Windows: main"]'));
     assert.equal(new URL(page.url()).searchParams.get('pane'),'42');
-    await fallback.evaluate(e=>e.nextSibling.click());assert.equal(await page.locator('#close-tab').isDisabled(),false);
+    await fallback.click({button:'right'});assert.equal(await page.locator('#close-tab').isDisabled(),false);
     await page.keyboard.press('Escape');
     attentionError=false;await page.evaluate(()=>refreshAttention());
     assert.equal(page.url(),requested);assert.equal(await page.locator('#tabs .tab-select').count(),2);
@@ -603,7 +603,7 @@ for(const hasTouch of [false,true])test(`conversation composer keeps focus throu
     await page.evaluate(()=>{setHidden(allTabs().find(item=>item.tab.id===42),true);render();});
     await page.locator('#hidden-toggle').focus();await page.keyboard.press('Space');
     assert.equal(await page.evaluate(()=>document.activeElement.id),'hidden-toggle','Keyboard navigation keeps its focus');
-    await page.locator('#tabs .tab-actions').first().click();assert.equal(await page.evaluate(()=>document.activeElement.closest('#tab-menu')?.id),'tab-menu');
+    await page.locator('#tabs .tab-select').first().click({button:'right'});assert.equal(await page.evaluate(()=>document.activeElement.closest('#tab-menu')?.id),'tab-menu');
     await page.keyboard.press('Escape');
     await page.locator('#new-tab').click();assert.equal(await page.evaluate(()=>document.activeElement.closest('dialog')?.id),'new-tab-dialog');
     await page.keyboard.press('Escape');
@@ -670,7 +670,7 @@ test('passive mouse clicks keep terminal typing and selection without switching 
     assert.equal(await page.evaluate(()=>document.activeElement.id),'panel-tab-settings');
     await page.locator('#close-panel').click();
     await page.evaluate(()=>{paneAttention.clear();render();});
-    await page.locator('#tabs .tab-actions').first().click();
+    await page.locator('#tabs .tab-select').first().click({button:'right'});
     assert.equal(await page.evaluate(()=>document.activeElement.closest('#tab-menu')?.id),'tab-menu');
     await page.keyboard.press('Escape');
     await input.focus();await page.locator('#new-tab').click();
