@@ -1400,7 +1400,99 @@ window.SwitchboardOpenFile=(host,path)=>{
 $('filter-more').onchange=event=>setFilter(event.target.value);
 renderFilter();
 let newTabElevated=false,newTabHandover=null;
-function clearNewTabHandover(){newTabHandover?.request?.abort();newTabHandover=null;$('handover-preview').hidden=true;$('new-tab-dialog').classList.remove('handover-mode');$('new-tab-form').querySelector('[type=submit]').textContent='Create tab ↵';for(const option of $('new-tab-model').options)option.textContent=option.value;}
+function clearNewTabHandover(){newTabHandover?.request?.abort();newTabHandover=null;$('handover-preview').hidden=true;$('new-tab-prompt-label').textContent='Prompt';$('new-tab-prompt').placeholder='What would you like to work on?';$('new-tab-dialog').classList.remove('handover-mode');newTabSubmitText();}
+// The submit button names what it will do, and what it is doing while busy.
+let newTabRetrying=false;
+function newTabSubmitText(text,announce=true){
+  const button=$('new-tab-submit'),unknown=!newTabTargetBlocked&&$('new-tab-project-field').dataset.state==='unknown'&&$('new-tab-project').getAttribute('aria-expanded')==='false';
+  const label=text||(newTabHandover?'Switch model':newTabRetrying?'Retry':unknown?(newTabElevated?'Create administrator tab anyway':'Create anyway'):newTabElevated?'Create administrator tab':'Create tab');
+  button.classList.toggle('busy',!!text);button.setAttribute('aria-label',label);button.title=text?label:label+' · Enter';
+  $('new-tab-status').textContent=text||(newTabRetrying?'Enter to retry':unknown?'Enter creates anyway':'');
+  if(announce)$('new-tab-progress').textContent=text||'';
+}
+const NEW_TAB_MODELS=[['csol','Codex · Sol'],['castra','Codex · Astra'],['c','Claude Code']];let newTabModelValue='csol';
+function newTabModel(){return newTabModelValue;}
+function setNewTabModel(value){
+  const [alias,name]=NEW_TAB_MODELS.find(([v])=>v===value)||NEW_TAB_MODELS[0];newTabModelValue=alias;
+  $('new-tab-model-alias').textContent=alias;$('new-tab-model-name').textContent=name;$('new-tab-model').setAttribute('aria-label',`Model: ${alias}, ${name}`);
+}
+function paintNewTabMachine(){
+  const name=$('new-tab-target').selectedOptions[0]?.textContent||'';
+  $('new-tab-machine-name').textContent=name;$('new-tab-machine').setAttribute('aria-label','Computer: '+(name||'none'));
+}
+// A focused chip shows its choices. Arrows or a digit change the value at once;
+// Enter, Escape or a click on a choice return to the prompt. Options are [value, label, detail, disabled].
+function newTabChipMenu(chip,menu,options,current,set){
+  function paint(){
+    menu.replaceChildren();
+    options().forEach(([value,label,detail,disabled],index)=>{
+      const option=document.createElement('div');option.id=menu.id+'-'+index;option.setAttribute('role','option');option.setAttribute('aria-selected',String(value===current()));
+      if(disabled)option.setAttribute('aria-disabled','true');
+      const key=document.createElement('kbd'),text=document.createElement('span');key.textContent=index+1;key.setAttribute('aria-hidden','true');text.textContent=label;option.append(key,text);
+      if(detail){const small=document.createElement('small');small.textContent=detail;option.append(small);}
+      option.onmousedown=event=>event.preventDefault();
+      option.onclick=()=>{if(disabled)return;set(value);paint();$('new-tab-prompt').focus();};
+      menu.append(option);
+    });
+    const selected=menu.querySelector('[aria-selected=true]');if(selected)chip.setAttribute('aria-activedescendant',selected.id);
+  }
+  function open(){if(chip.disabled)return;paint();menu.hidden=false;chip.setAttribute('aria-expanded','true');}
+  function close(){menu.hidden=true;chip.setAttribute('aria-expanded','false');chip.removeAttribute('aria-activedescendant');}
+  function pick(value){set(value);paint();}
+  function step(delta){const usable=options().filter(option=>!option[3]),index=usable.findIndex(option=>option[0]===current()),next=usable[(index+delta+usable.length)%usable.length];if(next)pick(next[0]);}
+  chip.addEventListener('focus',open);chip.addEventListener('blur',close);
+  // Safari does not focus a clicked button, so a click focuses it to show the list.
+  chip.addEventListener('click',()=>{if(document.activeElement!==chip)chip.focus();else if(menu.hidden)open();});
+  chip.addEventListener('keydown',event=>{
+    if(event.altKey||event.ctrlKey||event.metaKey)return;
+    if(event.key==='ArrowDown'||event.key==='ArrowRight'){event.preventDefault();step(1);}
+    else if(event.key==='ArrowUp'||event.key==='ArrowLeft'){event.preventDefault();step(-1);}
+    else if(/^[1-9]$/.test(event.key)){const option=options()[+event.key-1];if(option&&!option[3]){event.preventDefault();pick(option[0]);}}
+    else if(event.key==='Enter'||event.key===' '||event.key==='Escape'){event.preventDefault();event.stopPropagation();$('new-tab-prompt').focus();}
+  });
+  return {close};
+}
+const newTabModelMenu=newTabChipMenu($('new-tab-model'),$('new-tab-model-menu'),()=>NEW_TAB_MODELS.map(([alias,name])=>[alias,alias,name,false]),()=>newTabModelValue,value=>{setNewTabModel(value);$('new-tab-progress').textContent='Model: '+value;});
+const newTabMachineMenu=newTabChipMenu($('new-tab-machine'),$('new-tab-machine-menu'),()=>[...$('new-tab-target').options].map(option=>[option.value,option.textContent.replace(/ · no session$/,''),option.disabled?'no session':'',option.disabled]),()=>$('new-tab-target').value,value=>{$('new-tab-target').value=value;$('new-tab-target').dispatchEvent(new Event('change'));$('new-tab-progress').textContent='Computer: '+$('new-tab-target').selectedOptions[0].textContent;});
+// Project: a chip that opens the folder search.
+function openNewTabProjectPicker(){
+  if($('new-tab-project-chip').disabled)return;
+  $('new-tab-project-popover').hidden=false;$('new-tab-project-chip').setAttribute('aria-expanded','true');
+  const input=$('new-tab-project');input.focus();input.select();newTabProjectLookup.open(true);
+}
+function closeNewTabProjectPicker(focusPrompt){
+  if($('new-tab-project-popover').hidden)return;
+  newTabProjectLookup.close();$('new-tab-project-popover').hidden=true;$('new-tab-project-chip').setAttribute('aria-expanded','false');
+  if(focusPrompt)$('new-tab-prompt').focus();
+}
+$('new-tab-project-chip').onclick=()=>$('new-tab-project-popover').hidden?openNewTabProjectPicker():closeNewTabProjectPicker(true);
+$('new-tab-project-popover').addEventListener('focusout',event=>{if(!$('new-tab-project-popover').contains(event.relatedTarget)&&event.relatedTarget!==$('new-tab-project-chip'))closeNewTabProjectPicker(false);});
+function paintNewTabProjectChip(){
+  const project=$('new-tab-project').value.trim();
+  $('new-tab-project-chip-prefix').hidden=!project||/^(?:[A-Za-z]:[\\/]|\/)/.test(project);$('new-tab-project-chip-name').textContent=project||'choose a folder';
+}
+// Each browser remembers the last project per computer; switchboard is the default.
+function newTabSavedProject(host){try{return JSON.parse(localStorage.getItem('switchboard-new-tab-projects')||'{}')[host]||'switchboard';}catch(_){return 'switchboard';}}
+function saveNewTabProject(host,project){try{const saved=JSON.parse(localStorage.getItem('switchboard-new-tab-projects')||'{}');saved[host]=project;localStorage.setItem('switchboard-new-tab-projects',JSON.stringify(saved));}catch(_){}}
+let newTabProjectEdited=false;
+$('new-tab-close').onclick=()=>$('new-tab-dialog').close();
+// Focus order: Shift+Tab from the prompt walks back through model, project and computer;
+// Tab from any of them returns to the prompt. Tab from the prompt reaches attach, send and close.
+$('new-tab-dialog').addEventListener('keydown',event=>{
+  if(event.key!=='Tab'||event.altKey||event.ctrlKey||event.metaKey)return;
+  const picker=$('new-tab-project-popover'),inPicker=picker.contains(document.activeElement);
+  // In the project search, Tab is the lookup's own (fill, then back to the prompt).
+  if(inPicker&&!event.shiftKey)return;
+  const chips=['new-tab-machine','new-tab-project-chip','new-tab-model'];
+  const ring=[...chips,'new-tab-prompt','new-tab-attach','new-tab-submit','new-tab-close'].map($).filter(element=>!element.disabled&&element.getClientRects().length);
+  const from=inPicker?$('new-tab-project-chip'):document.activeElement,index=ring.indexOf(from);if(index<0)return;
+  const next=!event.shiftKey&&chips.includes(from.id)?$('new-tab-prompt'):ring[(index+(event.shiftKey?-1:1)+ring.length)%ring.length];
+  event.preventDefault();
+  if(next===$('new-tab-project-chip'))openNewTabProjectPicker();else{closeNewTabProjectPicker(false);next.focus();}
+},true);
+// The prompt grows with its text, up to a limit where it scrolls.
+function fitNewTabPrompt(){const input=$('new-tab-prompt');input.style.height='';input.style.height=Math.min(input.scrollHeight+2,Math.max(innerHeight*.4,160))+'px';}
+$('new-tab-prompt').addEventListener('input',fitNewTabPrompt);
 $('new-tab').onclick=()=>openNewTabDialog(false);
 $('new-admin-tab').onclick=()=>openNewTabDialog(true);
 function openNewTabDialog(elevated){
@@ -1410,11 +1502,11 @@ function openNewTabDialog(elevated){
   // A fresh dialog cancels any submission still uploading for the previous one.
   $('new-tab-form').pendingSubmission=null;newTabBusy(false);
   $('new-tab-prompt').value='';clearNewTabFiles();newTabProjectLookup.close();
-  $('new-tab-project').value='switchboard';updateNewTabProject();
   // Each browser remembers its last model; Sol is the default.
   let model='csol';try{model=localStorage.getItem('switchboard-new-tab-model')||model;}catch(_){}
-  const models=$('new-tab-model');models.value=model;if(models.selectedIndex<0)models.value='csol';
-  $('new-tab-note').textContent=elevated?'Opens an administrator shell on the selected machine. Someone there approves it: a UAC prompt on Windows, a sudo password elsewhere.':'';
+  setNewTabModel(model);newTabSubmitText();
+  $('new-tab-dialog').classList.toggle('elevated',elevated);
+  $('new-tab-note').textContent=elevated?'Runs as administrator. Someone at that computer must approve it (UAC on Windows, sudo elsewhere).':'';
   const select=$('new-tab-target');select.replaceChildren();
   const current=allTabs().find(t=>t.key===selected)?.entry;
   for(const [key,entry] of [...sessions].sort((a,b)=>Number(b[1]===current)-Number(a[1]===current)||Number(b[1].name==='main')-Number(a[1].name==='main'))){
@@ -1429,54 +1521,89 @@ function openNewTabDialog(elevated){
     const option=document.createElement('option');option.value=sessionKey(host.id,name);option.textContent=host.name;select.append(option);
   }
   if(!select.options.length){setStatus(elevated&&hosts.size?'Open a regular tab on the machine first, then an administrator tab.':'No machines are connected. Check your machines in Settings.',true);return;}
+  // A computer without a terminal session is shown but cannot be chosen.
+  for(const option of select.options){const problem=newTabTargetProblem(option.value);if(problem?.[1]==='target'){option.disabled=true;option.textContent+=' · no session';}}
+  if(select.selectedOptions[0]?.disabled){const usable=[...select.options].find(option=>!option.disabled);if(usable)select.value=usable.value;}
+  newTabRetrying=false;newTabSubmitText();paintNewTabMachine();closeNewTabProjectPicker(false);
+  newTabProjectEdited=false;clearNewTabFieldProblem();$('new-tab-project').value=newTabSavedProject(JSON.parse(select.value)[0]);updateNewTabProject();
   loadNewTabProjects();
-  $('new-tab-dialog').showModal();
+  $('new-tab-dialog').showModal();fitNewTabPrompt();fitNewTabDialog();
   $('new-tab-prompt').focus();
 }
-function newTabLookup(inputId,listId,buttonId,items,emptyText,onChange=()=>{}){
-  const input=$(inputId),list=$(listId),button=$(buttonId);let index=-1,showAll=false;
-  function close(){list.hidden=true;index=-1;input.setAttribute('aria-expanded','false');button.setAttribute('aria-expanded','false');input.removeAttribute('aria-activedescendant');}
-  function highlight(next){index=next;[...list.querySelectorAll('[role=option]')].forEach((option,i)=>option.setAttribute('aria-selected',String(i===index)));const option=list.querySelectorAll('[role=option]')[index];if(option)input.setAttribute('aria-activedescendant',option.id);}
-  function choose(value){input.value=value;onChange();close();input.focus();input.select();}
+function newTabLookup(inputId,listId,buttonId,items,emptyText,onChange=()=>{},next=null){
+  const input=$(inputId),list=$(listId),button=$(buttonId),popup=list.parentElement;let index=-1,showAll=false;
+  const status=popup.querySelector('.new-tab-options-status'),hint=popup.querySelector('.new-tab-options-hint');
+  function showHint(){const name=list.querySelectorAll('[role=option] span')[index]?.textContent;hint.replaceChildren();if(!name){hint.textContent='Choose a folder, or type a full path';return;}const enter=document.createElement('kbd'),tab=document.createElement('kbd');enter.textContent='↵';tab.textContent='Tab';hint.append(enter,' Open tab in '+name+'  ·  ',tab,' Fill');}
+  function close(){popup.hidden=true;index=-1;input.setAttribute('aria-expanded','false');button.setAttribute('aria-expanded','false');input.removeAttribute('aria-activedescendant');input.dispatchEvent(new Event('lookuptoggle'));}
+  function highlight(next){index=next;showHint();[...list.querySelectorAll('[role=option]')].forEach((option,i)=>option.setAttribute('aria-selected',String(i===index)));const option=list.querySelectorAll('[role=option]')[index];if(option)input.setAttribute('aria-activedescendant',option.id);}
+  // A tapped or clicked suggestion moves on to the next field; the keyboard keeps its place.
+  function choose(value,pointer=false){input.value=value;onChange();close();if(pointer&&next)$(next).focus();else{input.focus();input.select();}}
   function open(all=false){
     showAll=all;const query=all?'':input.value.toLowerCase();list.replaceChildren();index=-1;input.removeAttribute('aria-activedescendant');
     const matches=items().filter(([name,detail])=>(name+' '+detail).toLowerCase().includes(query));
-    matches.sort((a,b)=>Number(b[0].toLowerCase().startsWith(query))-Number(a[0].toLowerCase().startsWith(query)));
+    const rank=([name])=>name.toLowerCase()===query?2:name.toLowerCase().startsWith(query)?1:0;
+    matches.sort((a,b)=>rank(b)-rank(a));
     for(const [name,detail] of matches){
       const option=document.createElement('div');option.id=listId+'-'+list.children.length;option.setAttribute('role','option');option.setAttribute('aria-selected','false');
-      const text=document.createElement('span'),description=document.createElement('small');text.textContent=name;description.textContent=detail;option.append(text,description);
-      option.onmousedown=event=>event.preventDefault();option.onclick=()=>choose(name);list.append(option);
+      const text=document.createElement('span'),description=document.createElement('small');const at=query?name.toLowerCase().indexOf(query):-1;
+      if(at<0)text.textContent=name;else{const match=document.createElement('b');match.textContent=name.slice(at,at+query.length);text.append(name.slice(0,at),match,name.slice(at+query.length));}
+      description.textContent=detail;option.append(text,description);
+      option.onmousedown=event=>event.preventDefault();option.onclick=()=>choose(name,true);list.append(option);
     }
-    if(!matches.length&&emptyText){const message=document.createElement('p');message.textContent=emptyText();message.setAttribute('role','status');list.append(message);}
-    list.hidden=!list.children.length;input.setAttribute('aria-expanded',String(!list.hidden));button.setAttribute('aria-expanded',String(!list.hidden));
+    status.textContent=!matches.length&&emptyText?emptyText():'';
+    hint.hidden=!matches.length||matchMedia('(pointer:coarse)').matches;showHint();
+    popup.hidden=!matches.length&&!status.textContent;input.setAttribute('aria-expanded',String(!popup.hidden));button.setAttribute('aria-expanded',String(!popup.hidden));input.dispatchEvent(new Event('lookuptoggle'));
     if(matches.length&&query)highlight(0);
   }
-  input.oninput=()=>{onChange();open();};input.onblur=close;button.onmousedown=event=>event.preventDefault();
-  button.onclick=()=>{const shown=!list.hidden;input.focus();if(shown)close();else open(true);};
+  input.oninput=()=>{onChange();open();};input.onblur=close;input.onclick=()=>{if(popup.hidden)open(true);};button.onmousedown=event=>event.preventDefault();
+  button.onclick=()=>{const shown=!popup.hidden;input.focus();if(shown)close();else open(true);};
   input.onkeydown=event=>{
     if(event.isComposing)return;
     if(event.key==='ArrowDown'||event.key==='ArrowUp'){
-      event.preventDefault();if(list.hidden)open(true);const count=list.querySelectorAll('[role=option]').length;
+      event.preventDefault();if(popup.hidden)open(true);const count=list.querySelectorAll('[role=option]').length;
       if(count)highlight(index<0?(event.key==='ArrowDown'?0:count-1):(index+(event.key==='ArrowDown'?1:count-1))%count);
       list.querySelectorAll('[role=option]')[index]?.scrollIntoView({block:'nearest'});
-    }else if(event.key==='Escape'&&!list.hidden){event.preventDefault();event.stopPropagation();close();
-    }else if((event.key==='Enter'||(event.key==='Tab'&&!event.shiftKey))&&!list.hidden&&index>=0){
-      // Tab fills the suggestion; Enter fills it before the form submits.
-      if(event.key==='Tab')event.preventDefault();
+    }else if(event.key==='Escape'&&!popup.hidden){event.preventDefault();event.stopPropagation();close();
+    }else if((event.key==='Enter'||(event.key==='Tab'&&!event.shiftKey))&&!popup.hidden&&index>=0){
+      // Tab fills the suggestion and moves on; Enter fills it before the form submits.
       choose(list.querySelectorAll('[role=option]')[index].firstChild.textContent);
     }
   };
-  return {close,refresh(){if(!list.hidden)open(showAll);}};
+  return {close,open,refresh(){if(!popup.hidden)open(showAll);}};
 }
 function updateNewTabProject(){
   const project=$('new-tab-project').value.trim(),folder=/^(?:[A-Za-z]:[\\/]|\/)/.test(project)?project:'~/git/'+project;
-  $('new-tab-project-help').textContent=folder;$('new-tab-project').title=folder;
+  $('new-tab-project-help').textContent=project?folder:'';$('new-tab-project').title=project?folder:'';paintNewTabProjectChip();
+  // The folder is shown only for names the computer did not list, as a check before launching.
+  const state=$('new-tab-project-help').dataset.state=!project||/^(?:[A-Za-z]:[\\/]|\/)/.test(project)?'path':newTabProjects.includes(project)?'known':newTabProjects.length?'unknown':'pending';
+  $('new-tab-project-field').dataset.state=state;if(!$('new-tab-form').pendingSubmission)newTabSubmitText();
+  const guess=state==='unknown'?closestNewTabProject(project):'';
+  const computer=$('new-tab-target').selectedOptions[0]?.textContent||'this computer';
+  $('new-tab-project-warning-text').textContent=state==='unknown'?folder+' isn’t on '+computer+'. The tab would open in the session’s starting folder instead.':'';
+  $('new-tab-project-guess-row').hidden=!guess;$('new-tab-project-guess').textContent=guess;$('new-tab-project-guess').dataset.name=guess;
 }
 let newTabProjects=[],newTabProjectMessage='',newTabProjectRequest;
-const newTabProjectLookup=newTabLookup('new-tab-project','new-tab-projects','new-tab-project-lookup',()=>newTabProjects.map(name=>[name,'']),()=>newTabProjectMessage||'No matching folders in ~/git.',updateNewTabProject);
+const newTabProjectLookup=newTabLookup('new-tab-project','new-tab-projects','new-tab-project-lookup',()=>newTabProjects.map(name=>[name,'']),()=>newTabProjectMessage||'No matching folders in ~/git. Type a name or a full path.',()=>{newTabProjectEdited=true;updateNewTabProject();},'new-tab-prompt');
+// Registered after the lookup's own keys: Tab fills the name, then returns to the prompt.
+$('new-tab-project').addEventListener('keydown',event=>{if(event.key==='Tab'&&!event.shiftKey){event.preventDefault();closeNewTabProjectPicker(true);}});
+// The closest listed name, by containment or a small edit distance.
+function closestNewTabProject(project){
+  const query=project.toLowerCase();let best='',bestScore=Infinity;
+  for(const name of newTabProjects){
+    const lower=name.toLowerCase();let score;
+    if(lower.includes(query)||query.includes(lower))score=Math.abs(lower.length-query.length)/10;
+    else{let row=Array.from({length:lower.length+1},(_,i)=>i);for(let i=1;i<=query.length;i++){let previous=row[0];row[0]=i;for(let j=1;j<=lower.length;j++){const current=row[j];row[j]=Math.min(row[j]+1,row[j-1]+1,previous+(query[i-1]===lower[j-1]?0:1));previous=current;}}score=row[lower.length];}
+    if(score<bestScore){best=name;bestScore=score;}
+  }
+  return bestScore<=Math.max(2,query.length/3)?best:'';
+}
+$('new-tab-project-guess').onclick=()=>{$('new-tab-project').value=$('new-tab-project-guess').dataset.name;newTabProjectEdited=true;updateNewTabProject();$('new-tab-prompt').focus();};
+$('new-tab-project').addEventListener('lookuptoggle',()=>{if(!$('new-tab-form').pendingSubmission)newTabSubmitText();});
+function newTabProjectStatus(state){$('new-tab-project-field').dataset.list=state;}
+$('new-tab-project-retry').onclick=()=>{loadNewTabProjects();$('new-tab-project').focus();};
 async function loadNewTabProjects(){
   newTabProjectRequest?.abort();const request=newTabProjectRequest=new AbortController();
-  newTabProjects=[];newTabProjectMessage='Loading projects…';newTabProjectLookup.refresh();
+  newTabProjects=[];newTabProjectMessage='Loading projects…';newTabProjectStatus('loading');newTabProjectLookup.refresh();
   const host=JSON.parse($('new-tab-target').value)[0];
   const timeout=setTimeout(()=>request.abort(),10000);
   try{
@@ -1484,12 +1611,17 @@ async function loadNewTabProjects(){
     if(!response.ok)throw new Error('Projects unavailable');
     const names=await response.json();if(!Array.isArray(names)||!names.every(name=>typeof name==='string'))throw new Error('Invalid projects');
     if(request!==newTabProjectRequest)return;
-    newTabProjects=names;newTabProjectMessage='';
-  }catch(_){if(request!==newTabProjectRequest)return;newTabProjectMessage='Projects unavailable. Type a project name.';}
+    newTabProjects=names;newTabProjectMessage='';newTabProjectStatus('');updateNewTabProject();
+  }catch(_){if(request!==newTabProjectRequest)return;newTabProjectMessage='Projects unavailable. Type a project name.';newTabProjectStatus('failed');}
   finally{clearTimeout(timeout);}
   newTabProjectLookup.refresh();
 }
-$('new-tab-target').onchange=()=>{newTabProjectLookup.close();loadNewTabProjects();};
+$('new-tab-target').onchange=()=>{
+  closeNewTabProjectPicker(false);newTabProjectLookup.close();clearNewTabFieldProblem();paintNewTabMachine();
+  for(const item of newTabFiles){delete item.uploaded;delete item.state;}paintNewTabFiles();
+  if(!newTabProjectEdited&&!newTabHandover){$('new-tab-project').value=newTabSavedProject(JSON.parse($('new-tab-target').value)[0]);updateNewTabProject();}
+  loadNewTabProjects();
+};
 function setHandoverProject(){
   const source=newTabHandover?.context?.source;if(!source?.project)return;
   $('new-tab-project').value=source.project;updateNewTabProject();
@@ -1503,7 +1635,7 @@ async function loadNewTabHandover(){
     if(newTabHandover!==handover||handover.request!==request||!$('new-tab-dialog').open)return;
     handover.context=context;setHandoverProject();
     const coverage=context.coverage;
-    $('handover-summary').textContent=`From ${handover.source.title} · ${coverage.included_messages} messages included`+(coverage.omitted_messages?` · ${coverage.omitted_messages} history entries omitted`:'')+(coverage.partial_history?' · Some source history is unavailable.':'.');
+    $('handover-summary').textContent=`From ${handover.source.title} on ${handover.source.computer}`+(handover.source.project?` in ${handover.source.project}`:'')+` · ${coverage.included_messages} messages included`+(coverage.omitted_messages?` · ${coverage.omitted_messages} history entries omitted`:'')+(coverage.partial_history?' · Some source history is unavailable.':'.');
     $('handover-retry').textContent='Reload context';$('handover-retry').hidden=false;
     newTabBusy(false);
   }catch(error){if(newTabHandover!==handover||handover.request!==request)return;$('handover-summary').textContent=error.name==='TimeoutError'?'Loading context timed out. Retry when the source computer is connected.':error.message;$('handover-retry').textContent='Retry loading context';$('handover-retry').hidden=false;}
@@ -1550,63 +1682,121 @@ function clearNewTabFiles(){
   newTabFiles=[];paintNewTabFiles();$('new-tab-error').textContent='';
 }
 function newTabBusy(busy){
-  for(const control of $('new-tab-form').querySelectorAll('input,textarea,select,button'))control.disabled=busy;
+  $('new-tab-close').title=busy?'Stop and close · Esc':'Close · Esc';$('new-tab-close').setAttribute('aria-label',busy?'Stop upload and close':'Close');$('new-tab-form').classList.toggle('busy',busy);
+  for(const control of $('new-tab-form').querySelectorAll('input,textarea,select,button'))control.disabled=busy&&control.id!=='new-tab-close';
   if(newTabHandover){$('new-tab-target').disabled=true;$('new-tab-project').disabled=true;}
-  $('new-tab-form').querySelector('[type=submit]').disabled=busy||!!newTabHandover&&!newTabHandover.context;
+  $('new-tab-submit').disabled=busy||newTabTargetBlocked||!!newTabHandover&&!newTabHandover.context;
 }
 function paintNewTabFiles(){
   const files=$('new-tab-files');files.replaceChildren();
   for(const item of newTabFiles){
-    const chip=document.createElement('div');chip.className='new-tab-file';
+    const chip=document.createElement('div');chip.className='new-tab-file';chip.title=item.file.name;chip.setAttribute('role','listitem');
     if(item.preview){const img=document.createElement('img');img.src=item.preview;img.alt='';chip.append(img);}
-    const name=document.createElement('span');name.textContent=item.file.name;chip.append(name);
-    const remove=document.createElement('button');remove.type='button';remove.textContent='×';remove.setAttribute('aria-label','Remove '+item.file.name);
-    remove.onclick=()=>{newTabFiles=newTabFiles.filter(file=>file!==item);if(item.preview)URL.revokeObjectURL(item.preview);paintNewTabFiles();};chip.append(remove);files.append(chip);
+    else{const icon=document.createElement('i');icon.setAttribute('aria-hidden','true');icon.textContent=(item.file.name.match(/\.([a-z0-9]{1,4})$/i)?.[1]||'file').toLowerCase();chip.append(icon);}
+    const name=document.createElement('span'),full=item.file.name;name.textContent=full.length>24?full.slice(0,13)+'…'+full.slice(-8):full;
+    const size=document.createElement('small');size.textContent=formatNewTabSize(item.file.size);chip.append(name,size);
+    if(item.state){
+      chip.classList.add(item.state);
+      const state=document.createElement('b');state.className='new-tab-file-state '+item.state;state.setAttribute('role','img');state.setAttribute('aria-label',{done:'Uploaded',failed:'Upload failed',uploading:'Uploading'}[item.state]);chip.append(state);
+      if(item.state==='uploading'){files.append(chip);continue;}
+    }
+    const remove=document.createElement('button');remove.type='button';remove.disabled=!!$('new-tab-form').pendingSubmission;remove.textContent='×';remove.setAttribute('aria-label','Remove '+item.file.name);
+    remove.onclick=()=>{
+      const index=newTabFiles.indexOf(item);newTabFiles=newTabFiles.filter(file=>file!==item);if(item.preview)URL.revokeObjectURL(item.preview);paintNewTabFiles();
+      $('new-tab-progress').textContent='Removed '+item.file.name;
+      ($('new-tab-files').querySelectorAll('button')[Math.min(index,newTabFiles.length-1)]||$('new-tab-attach')).focus();
+    };chip.append(remove);files.append(chip);
   }
 }
+function newTabUploadStatus(text){$('new-tab-close').title=text||'Close · Esc';}
+function uploadNewTabFile(host,item,signal,onProgress){
+  return new Promise((resolve,reject)=>{
+    const xhr=new XMLHttpRequest();
+    xhr.open('POST','/api/hosts/'+encodeURIComponent(host)+'/attachments?'+new URLSearchParams({name:item.file.name}));
+    xhr.setRequestHeader('Content-Type','application/octet-stream');
+    xhr.upload.onprogress=event=>{if(event.lengthComputable)onProgress(event.loaded);};
+    xhr.onload=()=>resolve({ok:xhr.status>=200&&xhr.status<300,text:xhr.responseText});
+    xhr.onerror=()=>reject(Error('Could not upload '+item.file.name+'. Check the connection, then retry; uploaded files are kept.'));
+    xhr.onabort=()=>reject(new DOMException('Upload cancelled','AbortError'));
+    if(signal.aborted)return reject(new DOMException('Upload cancelled','AbortError'));
+    signal.addEventListener('abort',()=>xhr.abort(),{once:true});xhr.send(item.file);
+  });
+}
+function formatNewTabSize(bytes){return bytes<1024?bytes+' B':bytes<1048576?Math.round(bytes/1024)+' KB':(bytes/1048576).toFixed(1)+' MB';}
 function addNewTabFiles(files){
   $('new-tab-error').textContent='';
   if(newTabHandover){$('new-tab-error').textContent='Switch models first, then attach files in the conversation.';return;}
+  const added=[];
   for(const file of files){
-    if(newTabFiles.length>=8){$('new-tab-error').textContent='Attach up to 8 files.';break;}
-    if(!file.size||file.size>20*1024*1024){$('new-tab-error').textContent='Choose a non-empty file up to 20 MB.';continue;}
-    newTabFiles.push({file,preview:file.type.startsWith('image/')?URL.createObjectURL(file):null});
+    if(newTabFiles.length>=8){$('new-tab-error').textContent=`Attach up to 8 files. ${file.name} was not attached.`;break;}
+    if(!file.size||file.size>20*1024*1024){$('new-tab-error').textContent=`${file.name} is ${file.size?'over 20 MB':'empty'}, so it was not attached.`;continue;}
+    newTabFiles.push({file,preview:file.type.startsWith('image/')?URL.createObjectURL(file):null});added.push(file.name);
   }
-  paintNewTabFiles();
+  paintNewTabFiles();if(added.length)$('new-tab-progress').textContent='Attached '+added.join(', ');
 }
 $('new-tab-attach').onclick=()=>$('new-tab-picker').click();
 $('new-tab-picker').onchange=()=>{addNewTabFiles([...$('new-tab-picker').files]);$('new-tab-picker').value='';};
 $('new-tab-prompt').addEventListener('paste',event=>{
   const files=[...(event.clipboardData?.files||[])];if(files.length){event.preventDefault();addNewTabFiles(files);const text=event.clipboardData.getData('text/plain');if(text){const input=$('new-tab-prompt');input.setRangeText(text,input.selectionStart,input.selectionEnd,'end');}}
 });
+// Dragging files over the dialog highlights the prompt, where they land.
+let newTabDragDepth=0;
+function newTabDragging(on){$('new-tab-form').querySelector('.new-tab-composer').classList.toggle('dragging',on&&!newTabHandover);}
+$('new-tab-form').addEventListener('dragenter',event=>{if(event.dataTransfer?.types.includes('Files')){newTabDragDepth++;newTabDragging(true);}});
+$('new-tab-form').addEventListener('dragleave',()=>{if(newTabDragDepth&&!--newTabDragDepth)newTabDragging(false);});
 $('new-tab-form').addEventListener('dragover',event=>{if(event.dataTransfer?.types.includes('Files'))event.preventDefault();});
-$('new-tab-form').addEventListener('drop',event=>{if(event.dataTransfer?.files.length){event.preventDefault();addNewTabFiles([...event.dataTransfer.files]);}});
-$('new-tab-prompt').onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing&&!matchMedia('(pointer:coarse)').matches){event.preventDefault();$('new-tab-form').requestSubmit();}};
+$('new-tab-form').addEventListener('drop',event=>{newTabDragDepth=0;newTabDragging(false);if(event.dataTransfer?.files.length){event.preventDefault();addNewTabFiles([...event.dataTransfer.files]);}});
+$('new-tab-prompt').onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing&&!(matchMedia('(pointer:coarse)').matches&&!matchMedia('(any-pointer:fine)').matches)){event.preventDefault();$('new-tab-form').requestSubmit();}};
+// On a phone the sheet rests on the on-screen keyboard, so Create stays in reach.
+function fitNewTabDialog(){
+  const dialog=$('new-tab-dialog'),view=globalThis.visualViewport,fit=dialog.open&&view&&matchMedia('(max-width:700px), (pointer:coarse)').matches;
+  dialog.style.marginBottom=fit?Math.max(0,innerHeight-view.offsetTop-view.height)+'px':'';dialog.style.maxHeight=fit?view.height-12+'px':'';
+}
+globalThis.visualViewport?.addEventListener('resize',fitNewTabDialog);globalThis.visualViewport?.addEventListener('scroll',fitNewTabDialog);
 // The close event is queued; a reopen before it arrives owns the dialog, so leave its draft alone.
-$('new-tab-dialog').addEventListener('close',()=>{if($('new-tab-dialog').open)return;$('new-tab-form').pendingSubmission=null;clearNewTabHandover();newTabBusy(false);clearNewTabFiles();});
+$('new-tab-dialog').addEventListener('close',()=>{if($('new-tab-dialog').open)return;$('new-tab-form').pendingSubmission?.uploads?.abort();$('new-tab-form').pendingSubmission=null;clearNewTabHandover();newTabBusy(false);clearNewTabFiles();});
 $('new-tab-form').onsubmit=async event=>{
   event.preventDefault();const form=$('new-tab-form');if(form.pendingSubmission)return;
-  const key=$('new-tab-target').value,project=$('new-tab-project').value.trim(),command=$('new-tab-model').value,text=$('new-tab-prompt').value,files=[...newTabFiles],elevated=newTabElevated;
+  const key=$('new-tab-target').value,project=$('new-tab-project').value.trim(),command=newTabModel(),text=$('new-tab-prompt').value,files=[...newTabFiles],elevated=newTabElevated;
   const handover=newTabHandover?.context;if(newTabHandover&&!handover)return;
   if(/[\x00-\x08\x0b-\x1f\x7f]/.test(text)||new TextEncoder().encode(text).length>16000){$('new-tab-error').textContent='Use a prompt up to 16 KB without control characters.';return;}
+  // Check the computer before spending time on uploads.
+  $('new-tab-error').textContent='';clearNewTabFieldProblem();
+  if(!handover){const problem=newTabTargetProblem(key);if(problem){newTabProblem(...problem);return;}}
   const request={};form.pendingSubmission=request;newTabBusy(true);
   const isCurrent=()=>form.pendingSubmission===request&&$('new-tab-dialog').open;
-  $('new-tab-error').textContent=files.length?'Uploading attachments…':'';
+  const host=JSON.parse(key)[0],pending=files.filter(item=>item.uploaded?.host!==host);let uploadedCount=0;
+  for(const item of pending)item.state='uploading';paintNewTabFiles();
+  newTabRetrying=false;
+  const uploadLabel=pending.length===1?'Uploading file':`Uploading ${pending.length} files`,total=pending.reduce((sum,item)=>sum+item.file.size,0),sent=new Map();
+  const showProgress=()=>newTabSubmitText(`Uploading ${Math.floor([...sent.values()].reduce((sum,bytes)=>sum+bytes,0)*100/(total||1))}%…`,false);
+  if(pending.length){showProgress();$('new-tab-progress').textContent=uploadLabel+'…';newTabUploadStatus(matchMedia('(pointer:coarse)').matches?'Closing cancels and discards the upload':'Esc closes the dialog and discards the upload');}
+  else newTabSubmitText(handover?'Switching…':'Creating…');
+  const uploads=request.uploads=new AbortController();
   try{
-    const images=[],others=[],host=JSON.parse(key)[0];
+    const images=[],others=[];
     // Upload together: each one is a round trip to the destination computer.
+    // A file the computer already confirmed is not sent again on retry.
     const uploaded=await Promise.all(files.map(async item=>{
-      const response=await fetch('/api/hosts/'+encodeURIComponent(host)+'/attachments?'+new URLSearchParams({name:item.file.name}),{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:item.file});
+      if(item.uploaded?.host===host)return item.uploaded.path;
+      const fail=message=>{item.state='failed';paintNewTabFiles();return Error(message);};
+      let response;
+      try{response=await uploadNewTabFile(host,item,uploads.signal,bytes=>{sent.set(item,bytes);showProgress();});}
+      catch(error){throw error.name==='AbortError'?error:fail(error.message);}
       if(!isCurrent())return null;
-      if(!response.ok)throw Error('Could not upload '+item.file.name+'. Try again.');
-      const data=await response.json();if(typeof data.path!=='string'||!data.path||/[\x00-\x1f]/.test(data.path))throw Error('Invalid attachment response. Try again.');
+      if(!response.ok)throw fail('Could not upload '+item.file.name+'. Retry sends it again; uploaded files are kept.');
+      let data={};try{data=JSON.parse(response.text);}catch(_){}
+      if(typeof data.path!=='string'||!data.path||/[\x00-\x1f]/.test(data.path))throw fail('Invalid response for '+item.file.name+'. Retry sends it again.');
+      item.uploaded={host,path:data.path};item.state='done';paintNewTabFiles();
+      uploadedCount++;if(uploadedCount<pending.length)$('new-tab-progress').textContent=`Uploaded ${uploadedCount} of ${pending.length} files…`;
       return data.path;
     }));
     if(!isCurrent())return;
+    newTabUploadStatus('');if(pending.length)newTabSubmitText(handover?'Switching…':'Creating…');
     files.forEach((item,index)=>(item.file.type.startsWith('image/')?images:others).push(uploaded[index]));
     let prompt=text;
     if(handover){
-      $('new-tab-error').textContent='Preparing handover…';
+      newTabSubmitText('Preparing handover…');
       const response=await fetch('/api/hosts/'+encodeURIComponent(host)+'/attachments?'+new URLSearchParams({name:'switchboard-context-handover.json'}),{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:JSON.stringify(handover)});
       if(!isCurrent())return;
       if(!response.ok)throw Error('Could not transfer context to the destination computer. Try again.');
@@ -1615,8 +1805,8 @@ $('new-tab-form').onsubmit=async event=>{
     }
     prompt+=(others.length?'\n\nAttached files:\n'+others.join('\n'):'');
     if(new TextEncoder().encode(prompt).length>16000)throw Error('The prompt and file paths must fit within 16 KB.');
-    $('new-tab-error').textContent='';
     try{localStorage.setItem('switchboard-new-tab-model',command);}catch(_){}
+    if(!handover)saveNewTabProject(host,project);
     if(handover){
       const source=newTabHandover.source;
       const response=await fetch('/api/hosts/'+encodeURIComponent(source.host)+'/restart-agent',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...source.target,handover:{model:command,prompt,source_messages:handover.coverage.total_messages}}),signal:AbortSignal.timeout(120000)});
@@ -1627,8 +1817,8 @@ $('new-tab-form').onsubmit=async event=>{
       if(isCurrent())$('new-tab-dialog').close();
       await refreshAttention(true);setStatus('Continuing with '+(command==='c'?'Claude':'Codex')+' in the same tab.');
     }else await createNewTab(key,{project,command,prompt,images,elevated},isCurrent);
-  }catch(error){if(isCurrent())$('new-tab-error').textContent=error.message;}
-  finally{if(form.pendingSubmission===request){form.pendingSubmission=null;newTabBusy(false);}}
+  }catch(error){if(isCurrent()){uploads.abort();newTabRetrying=true;newTabProblem(error.message);}}
+  finally{if(form.pendingSubmission===request){form.pendingSubmission=null;newTabUploadStatus('');for(const item of files)if(item.state==='uploading')delete item.state;paintNewTabFiles();newTabBusy(false);newTabSubmitText();}}
 };
 async function createNewTab(key,launch,isCurrent=()=>true){
   if(!launch.project||(!launch.command&&typeof launch.prompt!=='string'))return;
@@ -1640,19 +1830,19 @@ async function createNewTab(key,launch,isCurrent=()=>true){
     const deadline=Date.now()+10000;
     while(isCurrent()&&sessions.get(key)===entry&&!entry.state&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,50));
     if(!isCurrent())return;
-    if(sessions.get(key)!==entry||!entry.state){setStatus('Terminal is not connected yet. Try creating the tab again.',true);return;}
+    if(sessions.get(key)!==entry||!entry.state){newTabProblem('That computer’s terminal is still connecting. Retry in a moment.');return;}
   }
   if(!entry?.state){
     const [id,name]=JSON.parse(key),host=hosts.get(id);
-    if(firstSessionName(host)!==name)return;
+    if(firstSessionName(host)!==name){newTabProblem(noSessionMessage(id),'target');return;}
     if(entry&&!entry.starting){entry.frame.remove();sessions.delete(key);}
     const created=connectSession(host,name,true);created.selectOnStart=true;created.launchOnStart=launch;
     if(filter!=='all'&&groups[id]!==filter)setFilter('all');$('tab-search').value='';
     // Closing the dialog returns focus to +; restore the current viewing surface.
     $('new-tab-dialog').close();render();if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.focus();else created.frame.focus();return;
   }
-  if(!sessionTabs(entry).length)return;
-  if(entry.pendingNewTab||entry.requestedPane||entry.focusPending){setStatus('Wait for the terminal to receive focus before creating a tab.',true);return;}
+  if(!sessionTabs(entry).length){newTabProblem(noSessionMessage(entry.host),'target');return;}
+  if(entry.pendingNewTab||entry.requestedPane||entry.focusPending){newTabProblem('Another tab is still opening on '+(hosts.get(entry.host)?.name||'that computer')+'. Retry in a moment.');return;}
   const pending=entry.pendingNewTab=new Set(sessionTabs(entry).map(tab=>tabKey(entry,tab)));
   pending.requestId=entry.newTabRequestId=(entry.newTabRequestId||0)+1;
   pending.startedAt=performance.timeOrigin+performance.now();
@@ -1671,6 +1861,29 @@ async function createNewTab(key,launch,isCurrent=()=>true){
   setStatus(`Creating a tab on ${hosts.get(entry.host)?.name}…`);
   setTimeout(()=>failNewTab(entry,pending.requestId,'No new tab received. Check the connection and try again.'),30000);
 };
+// A problem while the dialog is open shows in the dialog; the status bar sits under its backdrop.
+// The checks createNewTab makes, run before uploads; [message, field] or null.
+function newTabTargetProblem(key){
+  const entry=sessions.get(key),[id,name]=JSON.parse(key);
+  if(entry&&!entry.state&&sessionTabs(entry).length)return null;
+  if(!entry?.state)return firstSessionName(hosts.get(id))===name?null:[noSessionMessage(id),'target'];
+  if(!sessionTabs(entry).length)return [noSessionMessage(id),'target'];
+  if(entry.pendingNewTab||entry.requestedPane||entry.focusPending)return ['Another tab is still opening on '+(hosts.get(id)?.name||'that computer')+'. Retry in a moment.'];
+  return null;
+}
+function newTabProblem(message,field='prompt'){
+  if(!$('new-tab-dialog').open){setStatus(message,true);return;}
+  if(field!=='target'&&!$('new-tab-form').pendingSubmission){newTabRetrying=true;newTabSubmitText();}
+  if(field==='target'){$('new-tab-target-error').textContent=message;$('new-tab-target').setAttribute('aria-invalid','true');newTabTargetBlocked=true;$('new-tab-submit').disabled=true;newTabSubmitText();}
+  else $('new-tab-error').textContent=message;
+  setTimeout(()=>(field==='target'?$('new-tab-machine'):$('new-tab-prompt')).focus());
+}
+let newTabTargetBlocked=false;
+function clearNewTabFieldProblem(){
+  $('new-tab-target-error').textContent='';$('new-tab-target').removeAttribute('aria-invalid');
+  if(newTabTargetBlocked){newTabTargetBlocked=false;if(!$('new-tab-form').pendingSubmission){newTabBusy(false);newTabSubmitText();}}
+}
+function noSessionMessage(id){return (hosts.get(id)?.name||'That computer')+' has no terminal session to open a tab in. Choose another computer.';}
 $('ready').onclick=()=>{
   const item=contextItem;if(!item)return;
   ready[item.key]=Date.now();saveReady();
@@ -1940,13 +2153,13 @@ function openAgentHandover(item,paneId){
   closeTabMenu();openNewTabDialog(false);if(!$('new-tab-dialog').open)return;
   const option=[...$('new-tab-target').options].find(option=>JSON.parse(option.value)[0]===host);
   if(!option){$('new-tab-dialog').close();setStatus('The source computer is unavailable.',true);return;}
-  $('new-tab-target').value=option.value;loadNewTabProjects();
-  $('new-tab-title').textContent='Switch model with context';$('new-tab-note').textContent='Continue in this tab with the selected model. Previous messages carry across; attachments and tool state stay in the original history.';
-  $('new-tab-model').value=source.agent==='claude'?'csol':'c';
-  for(const option of $('new-tab-model').options)option.textContent={c:'Claude',csol:'Codex · Sol',castra:'Codex · Astra'}[option.value]||option.value;
-  $('new-tab-prompt').value=globalThis.SwitchboardConversation?.handoverDraft?.(source)||'';
-  $('new-tab-form').querySelector('[type=submit]').textContent='Switch model ↵';$('new-tab-dialog').classList.add('handover-mode');
-  newTabHandover={source};$('handover-preview').hidden=false;loadNewTabHandover();
+  $('new-tab-target').value=option.value;paintNewTabMachine();loadNewTabProjects();
+  $('new-tab-title').textContent='Switch model with context';$('new-tab-note').textContent='Continue in this tab with the selected model. Recent messages carry across, as counted below; attachments and tool state stay in the original history.';
+  setNewTabModel(source.agent==='claude'?'csol':'c');
+  $('new-tab-prompt').value=globalThis.SwitchboardConversation?.handoverDraft?.(source)||'';fitNewTabPrompt();
+  $('new-tab-dialog').classList.add('handover-mode');
+  $('new-tab-prompt-label').textContent='Additional instructions';$('new-tab-prompt').placeholder='Leave blank to carry on where the conversation left off';
+  newTabHandover={source};newTabSubmitText();$('handover-preview').hidden=false;loadNewTabHandover();
 }
 $('handover-context').onclick=()=>openAgentHandover(contextItem);
 $('restart-agent').onclick=async()=>{

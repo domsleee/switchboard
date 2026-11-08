@@ -314,58 +314,198 @@ body.sidebar-collapsed #artifact-preview header{padding-left:42px}
 /* Phones use a 44px button, so the selected row keeps the wider mobile padding. */
 @media(hover:none) and (max-width:700px){#tabs .tab-row.active .tab-select{padding-right:54px}}
 
-#new-tab-dialog{width:500px;max-width:calc(100vw - 32px);padding:16px;overflow:visible}
-/* A landscape phone is shorter than the form; scroll it so Create stays reachable. */
-@media(max-height:500px){#new-tab-dialog{overflow:auto}}
-#new-tab-form{display:grid;grid-template-columns:62px minmax(0,1fr);gap:6px 8px}
-#new-tab-form h2{grid-column:1/-1;margin:0 0 2px;font-size:14px}
-#new-tab-form label{color:#b8c1cf;font-size:12px;margin:6px 0 0;align-self:start}
-#new-tab-form input,#new-tab-form select{width:100%;height:28px;padding:4px 7px;background:#111318;border:1px solid #363e4d;border-radius:5px;color:inherit;font-size:12px}
-#new-tab-form input,#new-tab-model{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
-#new-tab-form input:focus{outline:2px solid #9dc2fa;outline-offset:1px}
-#new-tab-form input::selection{background:#426ba4;color:white}
-.new-tab-prompt-field{min-width:0}
-#new-tab-prompt{display:block;width:100%;min-height:130px;resize:vertical;padding:9px;background:#111318;border:1px solid #363e4d;border-radius:5px;color:inherit;font:13px/1.5 system-ui,sans-serif}
-#new-tab-prompt:focus{outline:2px solid #9dc2fa;outline-offset:1px}
-.new-tab-prompt-tools{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px}
-.new-tab-prompt-tools small{font-size:10px;color:#9ba7bd}
-#new-tab-attach{font-size:11px;padding:4px 8px}
-.new-tab-file{display:flex;align-items:center;gap:6px;margin-top:6px;padding:4px 6px;border:1px solid #363e4d;border-radius:5px;font-size:12px}
-.new-tab-file img{width:32px;height:32px;object-fit:cover;border-radius:3px}
-.new-tab-file span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.new-tab-file button{padding:2px 6px}
-#new-tab-error{margin:6px 0 0;color:#eab47c;font-size:12px}
-#new-tab-error:empty{display:none}
-@media(pointer:coarse){#new-tab-prompt{font-size:16px}#new-tab-attach,.new-tab-file button{min-height:44px}.new-tab-prompt-tools small{display:none}}
-#new-tab-project-help{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
-.new-tab-combobox{position:relative;min-width:0}
-#new-tab-form .new-tab-combobox input{padding-right:30px}
-#new-tab-form .new-tab-combobox>button{position:absolute;right:1px;top:1px;height:26px;width:26px;padding:0;border:0;background:transparent;color:#9ba7bd;font-size:17px}
-#new-tab-form .new-tab-combobox>button:hover{color:#e5e7eb;background:#222732}
-.new-tab-options{position:absolute;top:calc(100% + 3px);left:0;right:0;z-index:5;margin:0;padding:3px;max-height:144px;box-shadow:0 5px 16px #0008;overflow:auto;background:#222732;border:1px solid #454f61;border-radius:5px}
-.new-tab-options [role=option]{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 6px;border-radius:3px;cursor:pointer;font:12px ui-monospace,SFMono-Regular,Consolas,monospace}
-.new-tab-options span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.new-tab-options small{font:10px system-ui,sans-serif;color:#a3aec0;white-space:nowrap}
-.new-tab-options [role=option]:hover,.new-tab-options [aria-selected=true]{background:#30466b}
-.new-tab-options p{margin:6px;font-size:11px}
-#new-tab-note{grid-column:1/-1;font-size:10px;margin:0}
+/* New tab: a composer. The prompt box holds attach, the model and send; the bar under it holds the computer and project. */
+#new-tab-dialog{--nt-bg:#141519;--nt-box:#0e0f12;--nt-line:#26282e;--nt-line-hover:#33363d;--nt-text:#e8e9ec;--nt-muted:#8b8f98;--nt-faint:#5f636c;--nt-chip:#1d1f24;--nt-chip-hover:#26282e}
+/* A short screen scrolls the dialog. The top edge stays put, so it grows downward as text and files are added. */
+#new-tab-dialog{width:640px;max-width:calc(100vw - 32px);margin:min(14vh,128px) auto auto;max-height:calc(100dvh - min(14vh,128px) - 16px);padding:0;overflow:visible;border:1px solid #24262b;border-radius:16px;background:var(--nt-bg);box-shadow:0 24px 64px #0009}
+#new-tab-form{display:flex;flex-direction:column;gap:10px;padding:12px 12px 12px}
+.new-tab-head{display:flex;align-items:center;gap:8px;padding:2px 2px 2px 6px}
+#new-tab-form h2{flex:1;margin:0;color:var(--nt-muted);font-size:13px;font-weight:500}
+.new-tab-shield{display:none;flex-shrink:0;width:15px;height:15px;color:#d99a45}
+.elevated .new-tab-shield{display:block}
+.elevated #new-tab-form h2{color:#e2b06e}
+#new-tab-close{display:grid;place-items:center;width:26px;height:26px;padding:0;border:0;border-radius:7px;background:transparent;color:var(--nt-faint)}
+@media(hover:hover){#new-tab-close:hover{background:var(--nt-chip);color:var(--nt-text)}}
+#new-tab-close svg{width:14px;height:14px}
+#new-tab-note{margin:0 2px;padding:9px 12px;border-radius:10px;background:#1b1e25;color:#bfc4cd;font-size:12.5px;line-height:1.5}
 #new-tab-note:empty{display:none}
-#handover-preview{grid-column:1/-1;padding:8px 10px;border:1px solid #363e4d;border-radius:6px;background:#171e2a;font-size:12px;overflow-wrap:anywhere}
+.elevated #new-tab-note{background:#251f15;color:#e9cfa6}
+#handover-preview{margin:0 2px;padding:9px 12px;border-radius:10px;background:#1b1e25;color:#bfc4cd;font-size:12.5px;overflow-wrap:anywhere}
 #handover-preview[hidden]{display:none}
 #handover-summary{margin:0}
 #handover-retry{margin-top:6px}
-.handover-mode label[for=new-tab-target],.handover-mode #new-tab-target,.handover-mode label[for=new-tab-project],.handover-mode .new-tab-project-field,.handover-mode .new-tab-prompt-tools,.handover-mode #new-tab-files{display:none}
-#new-tab-form .dialog-actions{grid-column:1/-1;margin-top:2px;gap:5px}
-#new-tab-form .dialog-actions button{font-size:11px;height:26px;padding:3px 8px}
-#new-tab-form button[type=submit]{background:#30466b;border-color:#507bb3}
+
+/* The prompt box */
+.new-tab-composer{display:flex;flex-direction:column;border:1px solid var(--nt-line);border-radius:14px;background:var(--nt-box);transition:border-color .15s}
+.new-tab-composer:focus-within{border-color:#3a3d45}
+.new-tab-composer.dragging{border-style:dashed;border-color:#6b8fd6;background:#10131a}
+#new-tab-prompt{display:block;width:100%;min-height:92px;resize:none;padding:16px 18px 6px;border:0;outline:0;background:transparent;color:var(--nt-text);font:15px/1.55 system-ui,sans-serif}
+#new-tab-prompt::placeholder{color:#62666f}
+#new-tab-prompt::selection{background:#3a5ea8;color:white}
+#new-tab-files{display:flex;flex-wrap:wrap;gap:6px;padding:4px 14px 2px}
+#new-tab-files:empty{display:none}
+.new-tab-file{display:flex;flex-shrink:0;align-items:center;gap:7px;max-width:100%;height:30px;padding:0 3px 0 4px;border-radius:8px;background:var(--nt-chip);color:#d3d6dc;font-size:12.5px}
+.new-tab-file img,.new-tab-file i{flex-shrink:0;width:22px;height:22px;border-radius:5px;object-fit:cover}
+.new-tab-file i{display:grid;place-items:center;background:#2a2c33;color:#a3a7b0;font:600 9px/1 ui-monospace,SFMono-Regular,Consolas,monospace;font-style:normal;text-transform:uppercase;overflow:hidden}
+.new-tab-file span{min-width:0;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.new-tab-file small{color:var(--nt-faint);font-size:12px;white-space:nowrap}
+.new-tab-file button{display:grid;place-items:center;width:22px;height:22px;min-height:0;padding:0;border:0;border-radius:6px;background:transparent;color:var(--nt-faint);font-size:15px;line-height:1}
+@media(hover:hover){.new-tab-file button:hover{background:#2a2c33;color:var(--nt-text)}}
+.new-tab-file.failed{box-shadow:inset 0 0 0 1px #8f3d35}
+.new-tab-composer-bar{display:flex;align-items:center;gap:6px;padding:6px 8px 8px 8px}
+.new-tab-icon-button{display:grid;place-items:center;width:34px;height:34px;padding:0;border:0;border-radius:10px;background:transparent;color:var(--nt-muted)}
+@media(hover:hover){.new-tab-icon-button:hover{background:var(--nt-chip);color:var(--nt-text)}}
+.new-tab-icon-button svg{width:18px;height:18px}
+#new-tab-status{flex:1;min-width:0;overflow:hidden;color:var(--nt-muted);font-size:12.5px;font-variant-numeric:tabular-nums;text-align:right;text-overflow:ellipsis;white-space:nowrap}
+/* Chips: text buttons with no box until hovered */
+.new-tab-chip{display:inline-flex;align-items:center;gap:7px;min-width:0;height:32px;padding:0 10px;border:0;border-radius:9px;background:transparent;color:var(--nt-text);font:500 13.5px system-ui,sans-serif;cursor:pointer;white-space:nowrap}
+@media(hover:hover){.new-tab-chip:not(:disabled):hover{background:var(--nt-chip)}}
+.new-tab-chip svg{flex-shrink:0;width:15px;height:15px;color:var(--nt-muted)}
+.new-tab-chip:disabled{opacity:.5;cursor:default}
+#new-tab-model b{font:600 13px ui-monospace,SFMono-Regular,Consolas,monospace}
+#new-tab-model span{color:var(--nt-muted)}
+#new-tab-model svg:first-child{display:none}
+#new-tab-submit{display:grid;flex-shrink:0;place-items:center;width:34px;height:34px;padding:0;border:0;border-radius:50%;background:#e8e9ec;color:#111214;transition:background .15s,transform .1s}
+#new-tab-submit svg{width:16px;height:16px}
+#new-tab-submit:focus:not(:focus-visible){outline:0}
+@media(hover:hover){#new-tab-submit:not(:disabled):hover{background:#fff}}
+#new-tab-submit:active:not(:disabled){transform:scale(.94)}
+#new-tab-submit:disabled{opacity:1;background:#2a2c31;color:#62666f}
+#new-tab-submit.busy:disabled{background:#2a2c31;color:transparent}
+#new-tab-submit.busy svg{display:none}
+#new-tab-submit.busy::before{content:'';width:14px;height:14px;border:2px solid #ffffff33;border-top-color:#e8e9ec;border-radius:50%;animation:new-tab-spin .8s linear infinite}
+.elevated #new-tab-submit:not(:disabled){background:#e2a75a;color:#1d1408}
+@media(hover:hover){.elevated #new-tab-submit:not(:disabled):hover{background:#ebb56b}}
+#new-tab-error{margin:0 6px;color:#f3907f;font-size:12.5px;line-height:1.45}
+#new-tab-error:empty{display:none}
+/* Errors carry a mark, so severity does not rest on colour alone. */
+#new-tab-error:not(:empty)::before,#new-tab-target-error:not(:empty)::before{content:'!';display:inline-grid;place-items:center;width:14px;height:14px;margin-right:6px;border-radius:50%;background:#d9534a;color:#fff;font:700 10px/1 system-ui,sans-serif;vertical-align:-2px}
+
+/* The bar under the box: computer and project */
+.new-tab-where{display:flex;align-items:center;gap:2px;min-width:0;padding:0 2px}
+.new-tab-where .new-tab-chip{height:30px;padding:0 8px;color:#b4b8c0;font-size:13px;font-weight:400}
+#new-tab-machine.single{cursor:default}
+@media(hover:hover){#new-tab-machine.single:hover{background:transparent}}
+#new-tab-project-chip-prefix{color:var(--nt-faint)}
+#new-tab-project-chip-prefix[hidden]{display:none}
+#new-tab-project-chip>span{min-width:0;overflow:hidden;text-overflow:ellipsis}
+#new-tab-project-chip>svg:last-child{width:13px;height:13px;margin-left:-2px}
+.new-tab-where:has(#new-tab-target[aria-invalid=true]) #new-tab-machine{color:#f3907f}
+.new-tab-where:has(#new-tab-target[aria-invalid=true]) #new-tab-machine svg{color:#f3907f}
+.new-tab-project-field[data-state=unknown]:has(#new-tab-project-popover[hidden]) #new-tab-project-chip{color:#e2b06e}
+.new-tab-where .new-tab-keys{margin-left:auto;padding-right:6px;color:var(--nt-faint);font-size:12px;white-space:nowrap}
+#new-tab-target-error{margin:-4px 10px 0;color:#f3907f;font-size:12.5px;line-height:1.45}
+#new-tab-target-error:empty{display:none}
+
+/* Project picker: a small panel under its chip */
+.new-tab-project-field{position:relative;min-width:0}
+#new-tab-project-popover{position:absolute;top:calc(100% + 6px);left:0;z-index:6;width:340px;padding:10px;border:1px solid #2a2c32;border-radius:12px;background:#1a1b20;box-shadow:0 16px 40px #000a}
+#new-tab-project-popover[hidden]{display:none}
+#new-tab-project-popover .new-tab-label-row{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin:0 2px 8px}
+#new-tab-project-popover label{margin:0;color:var(--nt-muted);font-size:12px;font-weight:500}
+.new-tab-project-status{min-width:0;overflow:hidden;color:var(--nt-faint);font-size:12px;text-overflow:ellipsis;white-space:nowrap}
+.new-tab-project-loading,.new-tab-project-failed{display:none}
+[data-list=loading] .new-tab-project-loading,[data-list=failed] .new-tab-project-failed{display:inline}
+#new-tab-project-retry{min-height:0;padding:0;border:0;background:none;color:#8fb2f5;font-size:12px;text-decoration:underline;text-underline-offset:2px}
+.new-tab-combobox{position:relative;min-width:0}
+.new-tab-project-box{position:relative;display:flex;align-items:center;height:34px;border:1px solid var(--nt-line);border-radius:9px;background:var(--nt-box)}
+.new-tab-project-box:focus-within{border-color:#3e424b}
+.new-tab-folder{flex-shrink:0;width:15px;height:15px;margin:0 7px 0 10px;color:var(--nt-faint)}
+#new-tab-project-prefix{flex-shrink:0;color:var(--nt-faint);font-size:13px;white-space:nowrap}
+.new-tab-project-field[data-state=path] #new-tab-project-prefix{display:none}
+#new-tab-form .new-tab-project-box input{flex:1;min-width:0;height:100%;padding:0 34px 0 1px;border:0;outline:0;background:transparent;color:var(--nt-text);font:13px system-ui,sans-serif}
+#new-tab-form .new-tab-project-box>button{position:absolute;right:3px;top:50%;display:grid;place-items:center;width:28px;height:28px;min-height:0;padding:0;border:0;border-radius:7px;background:transparent;color:var(--nt-faint);transform:translateY(-50%)}
+#new-tab-form .new-tab-project-box>button svg{width:14px;height:14px}
+/* The list sits inside the panel. */
+.new-tab-options{margin:6px -4px -4px;padding:0}
+.new-tab-options[hidden]{display:none}
+.new-tab-options [role=option]{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 10px;border-radius:7px;cursor:pointer;font-size:13px}
+.new-tab-options span{overflow:hidden;color:#b4b8c0;text-overflow:ellipsis;white-space:nowrap}
+.new-tab-options [role=option] b{color:#fff;font-weight:600}
+.new-tab-options small{color:var(--nt-faint);font-size:12px;white-space:nowrap}
+@media(hover:hover){.new-tab-options [role=option]:hover{background:#23252b}}
+.new-tab-options [aria-selected=true]{background:#2a2c33}
+.new-tab-options [aria-selected=true] span{color:#fff}
+#new-tab-projects{max-height:220px;overflow:auto}
+.new-tab-options p{margin:6px 10px;color:var(--nt-muted);font-size:12px}
+.new-tab-options p:empty,.new-tab-options [hidden]{display:none}
+.new-tab-options .new-tab-options-hint{margin:6px 0 0;padding:8px 10px 2px;overflow:hidden;border-top:1px solid #26282e;color:var(--nt-faint);font-size:11.5px;text-overflow:ellipsis;white-space:nowrap}
+.new-tab-options-hint kbd{padding:0 4px;border-radius:4px;background:#26282e;color:#b4b8c0;font:10.5px ui-monospace,SFMono-Regular,Consolas,monospace}
+
+/* An unlisted project: a note under the bar, with the likely name. */
+#new-tab-project-note{display:none;margin:-4px 10px 0;color:#e2b06e;font-size:12.5px;line-height:1.5}
+#new-tab-form:has(.new-tab-project-field[data-state=unknown] input[aria-expanded=false]):not(:has(#new-tab-target[aria-invalid=true])):not(:has(#new-tab-project-popover:not([hidden]))) #new-tab-project-note{display:block}
+#new-tab-project-warning{position:relative;display:flex;flex-direction:column;gap:6px;padding-left:20px}
+#new-tab-project-warning::before{content:'!';position:absolute;left:0;top:2px;display:grid;place-items:center;width:14px;height:14px;border-radius:50%;background:#c48d4a;color:#141519;font:700 10px/1 system-ui,sans-serif}
+#new-tab-project-guess-row{color:#b4b8c0}
+#new-tab-project-guess-row[hidden]{display:none}
+#new-tab-project-guess{position:relative;min-height:0;margin:0 1px;padding:2px 9px;border:0;border-radius:7px;background:#2a2419;color:#f0cf9c;font:600 12.5px system-ui,sans-serif}
+#new-tab-project-guess::after{content:'';position:absolute;inset:-6px -4px}
+@media(hover:hover){#new-tab-project-guess:hover{background:#3a3020}}
+
+/* Busy and upload state */
+#new-tab-form.busy :is(#new-tab-prompt,.new-tab-where){opacity:.55}
+.new-tab-file-state{display:grid;place-items:center;width:22px;height:22px}
+.new-tab-file-state.uploading::before{content:'';width:10px;height:10px;border:2px solid #ffffff22;border-top-color:#c9ccd2;border-radius:50%;animation:new-tab-spin .8s linear infinite}
+.new-tab-file-state.done::before{content:'✓';color:#6cc48e;font-size:13px}
+.new-tab-file-state.failed::before{content:'!';display:grid;place-items:center;width:14px;height:14px;border-radius:50%;background:#d9534a;color:#fff;font:700 10px/1 system-ui,sans-serif}
+.new-tab-file:not(.uploading) .new-tab-file-state{width:16px;margin-left:-2px}
+@keyframes new-tab-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#new-tab-submit.busy::before,.new-tab-file-state.uploading::before{animation:none}}
+.handover-mode .new-tab-where,.handover-mode #new-tab-attach,.handover-mode #new-tab-files{display:none}
+/* Keyboard focus: a quiet inset ring, never the app's light halo. */
+#new-tab-dialog :is(button,select):focus-visible{outline:0;box-shadow:inset 0 0 0 1.5px #6b7080}
+#new-tab-dialog .new-tab-chip:focus-visible,#new-tab-dialog .new-tab-icon-button:focus-visible{background:var(--nt-chip)}
+#new-tab-dialog #new-tab-submit:focus-visible{box-shadow:0 0 0 2px var(--nt-bg),0 0 0 3.5px #8a8f9a}
+/* Chip menus: the model list opens above its chip, the computer list below. */
+.new-tab-chip-field{position:relative;display:inline-flex;min-width:0}
+.new-tab-chip>svg:last-child{width:13px;height:13px;margin-left:-3px;color:var(--nt-faint)}
+.new-tab-chip[aria-expanded=true]{background:var(--nt-chip)}
+.new-tab-menu{position:absolute;z-index:7;min-width:230px;padding:4px;border:1px solid #2a2c32;border-radius:12px;background:#1a1b20;box-shadow:0 16px 40px #000a}
+.new-tab-menu[hidden]{display:none}
+#new-tab-model-menu{right:0;bottom:calc(100% + 8px)}
+#new-tab-machine-menu{left:0;top:calc(100% + 6px)}
+.new-tab-menu [role=option]{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;color:#b4b8c0;font-size:13px;cursor:pointer;white-space:nowrap}
+.new-tab-menu [role=option] kbd{display:grid;place-items:center;width:18px;height:18px;border-radius:5px;background:#26282e;color:var(--nt-muted);font:11px ui-monospace,SFMono-Regular,Consolas,monospace}
+#new-tab-model-menu [role=option] span{font:600 13px ui-monospace,SFMono-Regular,Consolas,monospace}
+.new-tab-menu [role=option] small{margin-left:auto;padding-left:16px;color:var(--nt-faint);font-size:12px}
+@media(hover:hover){.new-tab-menu [role=option]:hover{background:#23252b}}
+.new-tab-menu [aria-selected=true]{background:#2a2c33;color:#fff}
+.new-tab-menu [aria-selected=true] kbd{background:#3a3d45;color:#fff}
+.new-tab-menu [aria-disabled=true]{opacity:.45;cursor:default}
+.new-tab-where>*{flex-shrink:0}
+.new-tab-where>.new-tab-keys{flex-shrink:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
 
 @media(pointer:coarse){button,select,.sidebar-actions a{min-height:44px}}
 
 @media(max-width:700px), (pointer:coarse){
-  #new-tab-form input,#new-tab-form select{height:46px;font-size:16px}
-  #new-tab-form .new-tab-combobox input{padding-right:50px}
-  #new-tab-form .new-tab-combobox>button{width:44px;height:44px}
-  #new-tab-form .dialog-actions button{height:44px;font-size:13px}
+  /* A phone gets a bottom sheet: send sits under the thumb. */
+  #new-tab-dialog{width:100vw;max-width:100vw;margin:auto auto 0;max-height:calc(100dvh - 12px);border-width:1px 0 0;border-radius:18px 18px 0 0}
+  #new-tab-form{padding:10px 10px calc(10px + env(safe-area-inset-bottom,0px))}
+  #new-tab-close{width:44px;height:44px;margin:-8px -6px -8px 0}
+  #new-tab-prompt{min-height:72px;padding:14px 14px 4px;font-size:16px}
+  .new-tab-icon-button,#new-tab-submit{width:44px;height:44px}
+  #new-tab-submit svg{width:18px;height:18px}
+  .new-tab-chip{height:44px;font-size:15px}
+  .new-tab-where .new-tab-chip{height:44px;font-size:14px}
+  #new-tab-model span{display:none}
+  .new-tab-keys{display:none}
+  .new-tab-file{height:36px;font-size:14px}
+  .new-tab-file img,.new-tab-file i{width:26px;height:26px}
+  .new-tab-file button{position:relative;width:30px;height:30px;min-height:30px}
+  .new-tab-file button::after{content:'';position:absolute;inset:-7px}
+  /* The project panel opens upward over the prompt box. */
+  .new-tab-where{position:relative}
+  .new-tab-project-field{position:static}
+  #new-tab-project-popover{top:auto;right:0;bottom:calc(100% + 6px);left:0;width:auto}
+  #new-tab-form .new-tab-project-box{height:46px}
+  #new-tab-form .new-tab-project-box input{font-size:16px}
+  #new-tab-project-prefix{font-size:16px}
+  #new-tab-form .new-tab-project-box>button{width:44px;height:44px;right:0}
+  .new-tab-options [role=option]{min-height:44px;font-size:15px}
+  #new-tab-project-guess{padding:5px 12px;font-size:14px}
+  #new-tab-machine-menu{top:auto;bottom:calc(100% + 6px)}
+  .new-tab-menu [role=option]{min-height:44px;font-size:15px}
 }
 /* Health keeps the fleet scannable; schedules and diagnostics live inside each computer. */
 .health-heading{margin:16px 0 6px;flex-wrap:wrap}

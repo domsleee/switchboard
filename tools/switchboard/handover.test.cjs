@@ -95,13 +95,13 @@ test('the shipped handover dialog switches providers in place and preserves cont
    }
    await page.getByLabel('Reply draft').fill('Unsent source draft');
    const open=async()=>{await page.getByRole('button',{name:'Switch model with context',exact:true}).click();};
-   historyFailure=true;await open();await page.getByRole('button',{name:'Retry loading context'}).waitFor();assert.equal(await page.getByRole('button',{name:'Switch model ↵'}).isEnabled(),false);
+   historyFailure=true;await open();await page.getByRole('button',{name:'Retry loading context'}).waitFor();assert.equal(await page.getByRole('button',{name:'Switch model',exact:true}).isEnabled(),false);
    historyFailure=false;await page.getByRole('button',{name:'Retry loading context'}).click();await page.getByText(/2 messages included/).waitFor();
-   assert.equal(await page.locator('#new-tab-project').inputValue(),'/home/fixture/git/project-worktree');assert.equal(await page.locator('#new-tab-project').isVisible(),false);assert.equal(await page.getByLabel('Prompt',{exact:true}).inputValue(),'Unsent source draft');
+   assert.equal(await page.locator('#new-tab-project').inputValue(),'/home/fixture/git/project-worktree');assert.equal(await page.locator('#new-tab-project').isVisible(),false);assert.equal(await page.getByLabel('Additional instructions',{exact:true}).inputValue(),'Unsent source draft');
    if(process.env.HANDOVER_SCREENSHOTS&&agent==='codex')await page.locator('#new-tab-dialog').screenshot({path:path.join(process.env.HANDOVER_SCREENSHOTS,'handover-dialog.png')});
-   await page.getByLabel('Model',{exact:true}).selectOption(agent==='codex'?'c':'csol');await page.getByLabel('Prompt',{exact:true}).fill('Finish the tests\nKeep this exact instruction');
-   await page.getByRole('button',{name:'Switch model ↵'}).click();await page.getByText('Could not transfer context to the destination computer. Try again.').waitFor();assert.equal(created.length,0);
-   uploadFailure=false;await page.getByRole('button',{name:'Switch model ↵'}).click();await page.waitForFunction(()=>!document.querySelector('#new-tab-dialog').open);
+   await page.evaluate(model=>setNewTabModel(model),agent==='codex'?'c':'csol');await page.getByLabel('Additional instructions',{exact:true}).fill('Finish the tests\nKeep this exact instruction');
+   await page.getByRole('button',{name:'Switch model',exact:true}).click();await page.getByText('Could not transfer context to the destination computer. Try again.').waitFor();assert.equal(created.length,0);
+   uploadFailure=false;await page.getByRole('button',{name:'Switch model',exact:true}).click();await page.waitForFunction(()=>!document.querySelector('#new-tab-dialog').open);
    assert.equal(created.length,1);assert.equal(created[0].handover.model,agent==='codex'?'c':'csol');assert.equal(created[0].pane_id,1);assert.equal(created[0].tab_id,1);assert.equal(created[0].chat_id,'source-chat');assert.equal(created[0].handover.source_messages,2);
    assert.ok(created[0].handover.prompt.endsWith('Finish the tests\nKeep this exact instruction'));assert.ok(created[0].handover.prompt.includes('context handover.json'));
    assert.equal(uploads.at(-1).messages[1].text,sourceText);assert.deepEqual(uploads.at(-1).messages.map(m=>m.role),['user','assistant']);
@@ -111,7 +111,7 @@ test('the shipped handover dialog switches providers in place and preserves cont
    holdHistory=true;await open();await page.waitForFunction(()=>document.querySelector('#handover-summary').textContent.includes('Loading context'));
    while(!releaseHistory)await new Promise(resolve=>setTimeout(resolve,10));
    await page.keyboard.press('Escape');await page.getByRole('button',{name:'New tab',exact:true}).click();holdHistory=false;releaseHistory();
-   assert.equal(await page.locator('#handover-preview').isVisible(),false);assert.equal(await page.locator('#new-tab-title').textContent(),'New tab');assert.equal(await page.getByRole('button',{name:'Create tab ↵'}).isEnabled(),true);assert.equal(await page.getByLabel('Prompt',{exact:true}).inputValue(),'');
+   assert.equal(await page.locator('#handover-preview').isVisible(),false);assert.equal(await page.locator('#new-tab-title').textContent(),'New tab');assert.equal(await page.getByRole('button',{name:'Create tab',exact:true}).isEnabled(),true);assert.equal(await page.getByLabel('Prompt',{exact:true}).inputValue(),'');
    await page.setViewportSize({width:390,height:844});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
    assert.deepEqual(errors,[]);
   }catch(error){error.message+='\nPage errors: '+JSON.stringify(errors)+'\nRequests: '+JSON.stringify(requests)+'\nPage: '+(await page.locator('body').innerText()).slice(-5000);throw error;}

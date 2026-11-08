@@ -105,8 +105,23 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
       assert.equal(await page.locator('#new-tab-prompt').evaluate(input=>document.activeElement===input),true);
       assert.equal(await page.locator('#new-tab-prompt').inputValue(),'');
       assert.equal(await page.getByLabel('Prompt',{exact:true}).count(),1);
-      assert.deepEqual(await page.locator('#new-tab-form label').allTextContents(),['Computer','Project','Model','Prompt']);
-      assert.equal(await page.getByLabel('Model',{exact:true}).inputValue(),'csol','Sol is the default model');
+      assert.match(await page.locator('#new-tab-model').getAttribute('aria-label'),/^Model: csol, Codex · Sol$/);
+      // Shift+Tab from the prompt reaches the model chip, which shows its choices; arrows change it, Enter returns.
+      await page.keyboard.press('Shift+Tab');assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-model');
+      assert.equal(await page.locator('#new-tab-model-menu').isVisible(),true);
+      assert.deepEqual(await page.locator('#new-tab-model-menu [role=option] span').allTextContents(),['csol','castra','c']);
+      await page.keyboard.press('ArrowDown');assert.equal(await page.evaluate(()=>newTabModel()),'castra');
+      await page.keyboard.press('1');assert.equal(await page.evaluate(()=>newTabModel()),'csol');
+      await page.keyboard.press('Enter');assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-prompt');
+      assert.equal(await page.locator('#new-tab-model-menu').isVisible(),false);
+      // Shift+Tab twice more walks to project, then computer; Tab returns to the prompt.
+      await page.keyboard.press('Shift+Tab');await page.keyboard.press('Shift+Tab');
+      assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-project');
+      await page.keyboard.press('Shift+Tab');assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-machine');
+      assert.equal(await page.locator('#new-tab-project-popover').isVisible(),false);
+      await page.keyboard.press('Tab');assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-prompt');
+      assert.equal(await page.evaluate(()=>newTabModel()),'csol','Sol is the default model');
+      assert.equal(await page.locator('#new-tab-machine-name').textContent(),'Windows');
       assert.equal(await page.locator('#new-tab-target option').count(),1,'One option per computer even with multiple sessions');
       assert.equal(await page.locator('#new-tab-target option').first().textContent(),'Windows');
       if(number===1)await page.evaluate(()=>sessions.delete(sessionKey('windows','other')));
@@ -128,13 +143,17 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
       }
       if(number===2){
         await page.locator('#new-tab-prompt').fill('Update this project');
-        await page.getByLabel('Model',{exact:true}).selectOption({label:'c'});
+        await page.locator('#new-tab-model').click();await page.locator('#new-tab-model-menu').getByRole('option',{name:/Claude Code/}).click();
+        assert.equal(await page.evaluate(()=>newTabModel()),'c','Clicking the model chip lists the models');
+        assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-prompt');
+        await page.locator('#new-tab-project-chip').click();
         await page.locator('#new-tab-project').fill('dot');
         await page.getByRole('option',{name:'dotfiles',exact:true}).waitFor();
         await page.keyboard.press('Tab');
         assert.equal(await page.locator('#new-tab-project').inputValue(),'dotfiles');
         assert.equal(await page.locator('#new-tab-project-help').textContent(),'~/git/dotfiles');
-        await page.locator('#new-tab-prompt').focus();
+        assert.equal(await page.locator('#new-tab-project-chip-name').textContent(),'dotfiles');
+        assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-prompt','Tab returns to the prompt');
       }
       await page.keyboard.press('Enter');
       await page.waitForFunction(()=>document.querySelector('#tabs .selected .tab-name')?.textContent==='Creating tab…');
@@ -186,15 +205,23 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
     await page.evaluate(()=>{loadNewTabProjects();});
     for(let i=0;!releaseProjects&&i<200;i++)await new Promise(resolve=>setTimeout(resolve,5));
     assert.ok(releaseProjects);
-    await page.locator('#new-tab-target').selectOption(JSON.stringify(['other','main']));
-    await page.locator('#new-tab-project-lookup').click();
+    // Shift+Tab three times reaches the computer, whose list shows every computer; an arrow picks the next.
+    await page.locator('#new-tab-prompt').focus();for(let i=0;i<3;i++)await page.keyboard.press('Shift+Tab');
+    assert.deepEqual(await page.locator('#new-tab-machine-menu [role=option] span').allTextContents(),['Windows','Other']);
+    await page.keyboard.press('ArrowDown');await page.keyboard.press('Enter');
+    assert.equal(await page.locator('#new-tab-target').inputValue(),JSON.stringify(['other','main']));
+    assert.equal(await page.locator('#new-tab-machine-name').textContent(),'Other');
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-prompt');
+    await page.locator('#new-tab-project-chip').click();
     await page.getByRole('option',{name:'other-project',exact:true}).waitFor();
     releaseProjects();delayProjects=false;
     await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,50)));
     assert.deepEqual(await page.locator('#new-tab-projects [role=option] span').allTextContents(),['other-project']);
     projectError=true;
-    await page.locator('#new-tab-target').selectOption(JSON.stringify(['windows','main']));
-    await page.locator('#new-tab-project-lookup').click();
+    // Shift+Tab from the project search reaches the computer; ArrowUp picks the previous one.
+    await page.keyboard.press('Shift+Tab');await page.keyboard.press('ArrowUp');
+    assert.equal(await page.locator('#new-tab-target').inputValue(),JSON.stringify(['windows','main']));
+    await page.locator('#new-tab-project-chip').click();
     await page.getByRole('status').filter({hasText:'Projects unavailable. Type a project name.'}).waitFor();
     await page.locator('#new-tab-project').fill('manual-project');
     assert.equal(await page.locator('#new-tab-project-help').textContent(),'~/git/manual-project');
@@ -212,9 +239,14 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
     uploadError=false;delayUpload=true;await page.locator('#new-tab-form button[type=submit]').click();
     for(let i=0;!releaseUpload&&i<200;i++)await new Promise(resolve=>setTimeout(resolve,5));assert.ok(releaseUpload);
     assert.equal(await page.locator('#new-tab-target').isDisabled(),true);
-    await page.keyboard.press('Escape');await page.locator('#new-tab').click();
+    assert.match(await page.locator('#new-tab-submit').getAttribute('aria-label'),/^Uploading 0%…/);
+    assert.match(await page.locator('#new-tab-status').textContent(),/^Uploading 0%…/);
+    assert.equal(await page.getByRole('button',{name:'Stop upload and close',exact:true}).isEnabled(),true,'Close stays available while files upload');
+    // Closing cancels the upload rather than leaving it running.
+    const cancelled=page.waitForEvent('requestfailed',request=>new URL(request.url()).pathname.endsWith('/attachments'));
+    await page.keyboard.press('Escape');await cancelled;await page.locator('#new-tab').click();
     releaseUpload();delayUpload=false;
-    await page.waitForResponse(response=>new URL(response.url()).pathname.endsWith('/attachments'));
+    await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,50)));
     assert.equal(await page.locator('#new-tab-prompt').inputValue(),'');
     assert.equal(await page.locator('#new-tab-files .new-tab-file').count(),0);
     assert.equal(await input.evaluate(()=>!!window.creationRequested),false,'A cancelled upload cannot create a tab after reopening');
@@ -247,13 +279,13 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
     assert.equal(await input.evaluate(i=>document.activeElement===i),true);
     // A deliberate move to search while creation waits must still win.
     await page.locator('#new-tab').click();
-    assert.equal(await page.getByLabel('Model',{exact:true}).inputValue(),'c','The dialog remembers the last model');
+    assert.equal(await page.evaluate(()=>newTabModel()),'c','The dialog remembers the last model');
     await page.locator('#new-tab-prompt').fill('custom --flag');await page.keyboard.press('Tab');
     assert.equal(await page.locator('#new-tab-prompt').inputValue(),'custom --flag');
-    assert.equal(await page.evaluate(()=>document.activeElement.textContent),'Attach files','Tab moves to attachments');
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-attach','Tab moves to attachments');
     await page.locator('#new-tab-prompt').focus();await page.keyboard.press('Enter');
     await page.waitForFunction(()=>document.querySelector('iframe.active')?.contentWindow.creationRequested);
-    assert.deepEqual(await input.evaluate(()=>window.creationLaunch),{project:'switchboard',command:'c',prompt:'custom --flag',images:[]});
+    assert.deepEqual(await input.evaluate(()=>window.creationLaunch),{project:'dotfiles',command:'c',prompt:'custom --flag',images:[]},'The dialog remembers the last project on this computer');
     await page.locator('#tab-search').click();
     await input.evaluate(()=>window.confirmCreation());
     await page.waitForFunction(()=>document.querySelector('#tabs .selected .tab-name')?.textContent==='New shell 3');
