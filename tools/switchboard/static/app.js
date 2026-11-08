@@ -754,12 +754,29 @@ window.addEventListener('resize',()=>closeSnoozeMenu());
 $('tabs').addEventListener('scroll',()=>closeSnoozeMenu());
 // A row's top-right corner: what the tab is doing, or how long ago its state changed.
 const statusWords={'Password needed':'Password','Approval needed':'Approve','Input needed':'Answer','Working':'Working','Waiting on an agent':'Waiting','Ready to review':'Done'};
+function tabPaneWithCwd(item){return item.tab.panes.find(p=>!p.is_plugin&&typeof p.cwd==='string'&&p.cwd);}
 function tabProject(item){
-  const dir=item.tab.panes.find(p=>!p.is_plugin&&typeof p.cwd==='string'&&p.cwd)?.cwd;
+  const dir=tabPaneWithCwd(item)?.cwd;
   if(!dir)return '';
   const path=dir.replace(/[\\/]+$/,'');
   if(/^(?:\/Users\/[^/]+|\/home\/[^/]+|\/root|[A-Za-z]:\\Users\\[^\\]+)$/i.test(path))return '~';
   return path.split(/[\\/]/).pop()||path;
+}
+// Amber, green and red are left out: they already mean attention, done and failure in the row.
+const projectTileColors=['#a3e635','#2dd4bf','#22d3ee','#38bdf8','#60a5fa','#818cf8','#a78bfa','#e879f9','#f472b6','#fb7185','#fb923c'];
+// Two letters and a colour derived from the repository, so its worktrees match on every computer.
+// A relay without repository names falls back to the folder name.
+function projectTile(item){
+  const project=tabProject(item);
+  if(!project||project==='~')return null;
+  const name=(tabPaneWithCwd(item).repo||project).normalize('NFKC');
+  const words=name.match(/[\p{L}\p{N}]+/gu);
+  if(!words)return null;
+  const glyphs=[...words[0]];
+  const second=glyphs.slice(1).find(glyph=>/\p{N}/u.test(glyph))??(words.length>1?[...words.at(-1)][0]:glyphs.at(-1));
+  let index=0;
+  for(const glyph of name.toLowerCase())index=(index*31+glyph.codePointAt(0))%projectTileColors.length;
+  return {text:[...`${glyphs[0]}${second}`.toUpperCase()].slice(0,2).join(''),color:projectTileColors[index]};
 }
 function tabAge(item,only){
   const since=Math.max(0,...statesForTab(item).filter(state=>!only||state.state===only).map(state=>Number.isFinite(state.since)?state.since:0));
@@ -830,8 +847,9 @@ function render() {
       status.append(star,document.createElement('span'));
       const name=document.createElement('span');name.className='tab-name';
       const agent=document.createElement('span');agent.className='tab-agent';agent.setAttribute('aria-hidden','true');
-      button.append(where,status,name,agent);
-      Object.assign(button,{_where:where,_status:status,_star:star,_name:name,_agent:agent});
+      const tile=document.createElement('span');tile.className='project-tile';tile.setAttribute('aria-hidden','true');
+      button.append(tile,where,status,name,agent);
+      Object.assign(button,{_tile:tile,_where:where,_status:status,_star:star,_name:name,_agent:agent});
       button.ondragstart=event=>{
         dragging=true;
         dragState={key:button._item.key,clientY:event.clientY,target:null};
@@ -862,7 +880,8 @@ function render() {
     const duplicate=titleCounts.get(JSON.stringify([item.entry.host,title]))>1;
     const project=tabProject(item);
     const subtitle=`${project?project+' · ':''}${machine}${duplicate?' · '+item.entry.name:''}${isPinned(item.key)?' · Pinned':''}`;
-    button.className='tab-select'+(item.key===selected?' selected':'')+(starred?' needs-attention':'')+(elevated?' elevated':'')+(systemTab(item.tab)?' system':'');
+    const tile=projectTile(item);
+    button.className='tab-select'+(item.key===selected?' selected':'')+(starred?' needs-attention':'')+(elevated?' elevated':'')+(systemTab(item.tab)?' system':'')+(tile?' has-tile':'');
     button.setAttribute('aria-pressed',String(item.key===selected));
     button.setAttribute('aria-label',`${title}${elevated&&title!=='Administrator'?', Administrator':''}${systemTab(item.tab)?', System tab opened by an agent':''}, ${project?project+', ':''}${machine}, ${item.entry.name}${status?', '+status:''}${flagged?', Flagged for review':''}${isPinned(item.key)?', Pinned':''}`);
     button._star.className='star '+(unavailable?'unavailable':starred?'attention':stateLabel==='Working'?'working':stateLabel.startsWith('Waiting')?'waiting':'quiet');
@@ -873,6 +892,8 @@ function render() {
     if(button._name.textContent!==title)button._name.textContent=title;
     button.dataset.agentState=unavailable?'Status unavailable':stateLabel;
     if(button._where.textContent!==subtitle)button._where.textContent=subtitle;
+    if(tile&&button._tile.textContent!==tile.text)button._tile.textContent=tile.text;
+    if(tile&&button._tile.dataset.color!==tile.color){button._tile.dataset.color=tile.color;button._tile.style.color=tile.color;}
     const agentName=tabAgent(item);
     if(button._agent.dataset.agent!==agentName){button._agent.dataset.agent=agentName;button._agent.innerHTML=agentIcons[agentName]||'';}
     const row=button._row;row._item=item;
