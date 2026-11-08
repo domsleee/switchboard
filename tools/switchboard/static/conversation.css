@@ -47,7 +47,7 @@
   .conversation-heading:has(.conversation-context:not(:empty)) strong::before{content:"/";margin-right:8px;color:var(--faint)}
   .conversation-activity{order:2;margin-left:4px}
 }
-.conversation-compose .conversation-cost{grid-column:3;grid-row:3;justify-self:start;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-variant-numeric:tabular-nums;color:var(--muted)}
+.conversation-compose .conversation-cost{grid-column:2;grid-row:3;justify-self:end;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-variant-numeric:tabular-nums;color:var(--muted)}
 .conversation-compose .conversation-cost:empty{display:none}
 .conversation-compose button.conversation-cost{min-height:24px;padding:2px 4px;font-weight:400;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px}
 .conversation-cost-details{width:min(360px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow:auto;padding:20px;background:var(--surface);color:var(--text);border:1px solid var(--line-2);border-radius:12px;box-shadow:0 12px 48px #0008}
@@ -262,15 +262,16 @@
 .conversation-pending-question::before{content:"";display:inline-block;width:5px;height:5px;margin:0 7px 2px 0;border-radius:50%;background:currentColor}
 .conversation-pending-question::after{content:"↑";margin-left:16px}
 
-/* Composer: a card with the draft on top and a toolbar below. */
-.conversation-compose{position:relative;align-self:center;width:min(var(--chat-width),calc(100% - 48px));margin:0 0 max(20px,env(safe-area-inset-bottom));border:1px solid #ffffff1f;border-radius:14px;background:#17181b;padding:4px 8px 8px;display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;align-items:center;gap:0 4px;flex-shrink:0;box-shadow:0 16px 32px -16px #000;transition:border-color .15s}
+/* Composer: a card with the draft on top and a toolbar below, laid out like the new-tab composer:
+   attach on the left, then the model and send on the right. */
+.conversation-compose{position:relative;align-self:center;width:min(var(--chat-width),calc(100% - 48px));margin:0 0 max(20px,env(safe-area-inset-bottom));border:1px solid #ffffff1f;border-radius:14px;background:#17181b;padding:4px 8px 8px;display:grid;grid-template-columns:auto minmax(0,1fr) minmax(0,auto) auto;align-items:center;gap:0 6px;flex-shrink:0;box-shadow:0 16px 32px -16px #000;transition:border-color .15s}
 .conversation-compose:focus-within{border-color:#ffffff33}
 .conversation-compose textarea{grid-column:1/-1;grid-row:2;resize:none;max-height:160px;min-height:40px;width:100%;background:transparent;color:var(--text);border:0;outline:none;padding:8px 6px 4px;font:14px/1.5 var(--sans);field-sizing:fixed;overflow-y:hidden}
 .conversation-compose textarea::placeholder{color:#8a8a94}
 .conversation-compose button{display:grid;place-items:center;padding:0;box-shadow:none}
-.conversation-compose>button[type=submit],.conversation-compose .conversation-stop{grid-column:4;grid-row:3;width:30px;height:30px;min-height:30px;border-radius:50%;font-size:0}
+.conversation-compose>button[type=submit],.conversation-compose .conversation-stop{grid-column:4;grid-row:3;width:34px;height:34px;min-height:34px;border-radius:50%;font-size:0}
 .conversation-compose>button[type=submit]{background:#ececef;color:#0f1012}
-.conversation-compose>button[type=submit]::before{content:"";width:15px;height:15px;background:currentColor;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 13V3M3.5 7.5 8 3l4.5 4.5'/%3E%3C/svg%3E") center/contain no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 13V3M3.5 7.5 8 3l4.5 4.5'/%3E%3C/svg%3E") center/contain no-repeat}
+.conversation-compose>button[type=submit]::before{content:"";width:16px;height:16px;background:currentColor;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 13V3.5M4 7.5l4-4 4 4'/%3E%3C/svg%3E") center/contain no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 13V3.5M4 7.5l4-4 4 4'/%3E%3C/svg%3E") center/contain no-repeat}
 .conversation-compose>button[type=submit]:hover{background:#fff;color:#000}
 .conversation-compose:has(textarea:placeholder-shown):not(:has(.conversation-attachment))>button[type=submit]{background:#2a2b30;color:#8b8b96}
 .conversation-compose .conversation-stop{display:none;background:#ececef;color:#0f1012}
@@ -278,22 +279,22 @@
 .conversation-compose .conversation-stop:hover{background:#fff;color:#000}
 .conversation-compose.can-stop:has(textarea:placeholder-shown):not(:has(.conversation-attachment))>button[type=submit]{display:none}
 .conversation-compose.can-stop:has(textarea:placeholder-shown):not(:has(.conversation-attachment)) .conversation-stop{display:grid}
-.conversation-compose .conversation-attach{grid-column:1;grid-row:3;width:30px;height:30px;min-height:30px;border-radius:8px;color:var(--muted);font-size:0}
-.conversation-compose .conversation-attach::before{content:"";width:16px;height:16px;background:currentColor;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round'%3E%3Cpath d='M8 3v10M3 8h10'/%3E%3C/svg%3E") center/contain no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round'%3E%3Cpath d='M8 3v10M3 8h10'/%3E%3C/svg%3E") center/contain no-repeat}
+.conversation-compose .conversation-attach{grid-column:1;grid-row:3;width:34px;height:34px;min-height:34px;border-radius:10px;color:var(--muted);font-size:0}
+.conversation-compose .conversation-attach::before{content:"";width:18px;height:18px;background:currentColor;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10.5 4.5l-5 5a1.4 1.4 0 0 0 2 2l5.2-5.2a2.8 2.8 0 0 0-4-4L3.5 7.5a4.2 4.2 0 0 0 6 6l4-4'/%3E%3C/svg%3E") center/contain no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10.5 4.5l-5 5a1.4 1.4 0 0 0 2 2l5.2-5.2a2.8 2.8 0 0 0-4-4L3.5 7.5a4.2 4.2 0 0 0 6 6l4-4'/%3E%3C/svg%3E") center/contain no-repeat}
 .conversation-compose .conversation-attach:hover{background:#ffffff0d;color:var(--text)}
-.conversation-compose .conversation-model{grid-column:2;grid-row:3;justify-self:start;max-width:16em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 8px;margin-right:4px;font-size:12.5px}
-.conversation-compose button.conversation-model{display:inline-flex;align-items:center;gap:5px;width:auto;height:30px;min-height:30px;padding:0 9px 0 10px;border-radius:8px;border:0;color:var(--text-2);font-weight:500}
-.conversation-compose button.conversation-model:enabled::after{content:"";flex-shrink:0;width:10px;height:10px;background:currentColor;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m2.5 4 2.5 2.5L7.5 4'/%3E%3C/svg%3E") center/contain no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m2.5 4 2.5 2.5L7.5 4'/%3E%3C/svg%3E") center/contain no-repeat}
+.conversation-compose .conversation-model{grid-column:3;grid-row:3;justify-self:end;max-width:16em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 8px;font-size:13.5px}
+.conversation-compose button.conversation-model{display:inline-flex;align-items:center;gap:6px;width:auto;height:32px;min-height:32px;padding:0 9px 0 10px;border-radius:9px;border:0;color:var(--text);font-weight:500}
+.conversation-compose button.conversation-model:enabled::after{content:"";flex-shrink:0;width:15px;height:15px;background:var(--muted);-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4.5 6.5L8 10l3.5-3.5'/%3E%3C/svg%3E") center/contain no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4.5 6.5L8 10l3.5-3.5'/%3E%3C/svg%3E") center/contain no-repeat}
 .conversation-compose button.conversation-model:enabled:hover{background:#ffffff0d;color:var(--text)}
 .conversation-model-icon{display:inline-flex;flex-shrink:0;width:14px;height:14px;margin-right:6px;vertical-align:-2px}
-.conversation-compose button.conversation-model .conversation-model-icon{margin-right:1px}
+.conversation-compose button.conversation-model .conversation-model-icon{margin-right:0}
 .conversation-model-icon svg{width:14px;height:14px}
 .conversation-effort{opacity:.6;font-weight:400}
 .conversation-compose button.conversation-model:enabled:hover .conversation-effort{opacity:1}
 /* A switch waiting for the turn to end names both models, with a quiet cancel beside it. */
 .conversation-compose button.conversation-model.pending{max-width:min(26em,calc(100vw - 170px));color:var(--text)}
 .conversation-compose .conversation-model-label{min-width:0;overflow:hidden;text-overflow:ellipsis}
-.conversation-compose .conversation-model-cancel{grid-column:3;grid-row:3;justify-self:start;width:26px;height:26px;min-height:26px;border-radius:50%;border:0;background:transparent;color:var(--muted);font-size:16px;line-height:1}
+.conversation-compose .conversation-model-cancel{grid-column:2;grid-row:3;justify-self:end;width:26px;height:26px;min-height:26px;border-radius:50%;border:0;background:transparent;color:var(--muted);font-size:16px;line-height:1}
 .conversation-compose .conversation-model-cancel:hover{background:#ffffff0d;color:var(--text)}
 .conversation-compose .conversation-model-cancel[hidden]{display:none}
 .conversation-compose .conversation-send-notice{grid-column:1/-1;grid-row:4;color:var(--text-2);font-size:12px;line-height:1.5;padding:4px 6px 0}
