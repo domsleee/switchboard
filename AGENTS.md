@@ -92,6 +92,10 @@ new endpoints. See the [internals](docs/SWITCHBOARD_INTERNALS.md) for transport 
   focus and review state. When related PRs together implement one flow, test them combined
   before calling the flow complete.
 - After editing `zellij-client/assets/`, run `cargo xtask assets`. CI rejects a stale bundle.
+- The user tries sidebar changes on the preview (port 8199), which follows `main` within a
+  minute; `tools/switchboard/preview_service_windows.ps1` sets it up. To let them try an
+  unmerged sidebar change, write its worktree path to `~/.config/switchboard/preview/target`
+  and tell them to tap Reload. The preview returns to `main` once that branch's PR merges.
 - A browser viewer the user cannot see (behind Conversation or another sidebar tab) must never size
   the terminal on other screens; the bridge reports it hidden and the engine leaves it out of
   sizing. Conversation still disconnects viewers on phones, which can force-resize the shared
