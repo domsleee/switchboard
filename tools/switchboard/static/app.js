@@ -2037,7 +2037,7 @@ async function loadLogs(){
       const group=element('section','log-computer','');group.append(element('h4','',computer.name));
       const entries=computer.error?[]:computer.entries||[];
       // Timing samples outnumber failures; list failures and fold the samples away.
-      const timing=entry=>/^(Terminal (transport|switch(?! slow)|viewport|control|scrolling|new tab ready|load ready)|Browser Shift\+Enter|Browser tab resumed) /.test(entry.message);
+      const timing=entry=>/^(Terminal (transport|switch(?! slow)|viewport|control|scrolling|new tab ready|load ready)|Browser Shift\+Enter|Browser tab resumed|Conversation shown ready) /.test(entry.message);
       const errors=entries.filter(entry=>!timing(entry)),samples=entries.filter(timing);
       if(computer.error)group.append(element('p','log-note',computer.error));
       else if(!errors.length)group.append(element('p','log-note','No recent errors'));

@@ -175,6 +175,10 @@ test('Desktop keeps a connected terminal through Conversation so switching back 
   assert.ok(swaps().every(t=>t.outcome==='superseded'&&t.terminal_probe===true&&Number.isInteger(t.elapsed_ms)&&Number.isInteger(t.hidden_ms)),'A kept viewer is probed for its first frame');
   assert.ok(swaps()[3].hidden_ms>=300,'The timing says how long Conversation was open');
   assert.deepEqual(timings.filter(t=>t.type==='terminal-load').map(t=>t.after),[undefined],'The first load did not follow Conversation');
+  const shown=()=>timings.filter(t=>t.type==='conversation-shown');
+  await until(()=>shown().length>=5,'Each switch to Conversation is timed');
+  assert.deepEqual(shown().slice(0,4).map(t=>t.end),['cached','cached','cached','cached'],'Terminal preloads the selected conversation, so switches show it from memory');
+  assert.ok(shown().every(t=>Number.isInteger(t.elapsed_ms)&&(t.paint_ms===null||t.paint_ms<=t.elapsed_ms)),'Each timing has its wait and first paint');
   await page.getByRole('button',{name:'Conversation',exact:true}).click();
   await page.evaluate(()=>{const w=[...sessions.values()][0].frame.contentWindow;w.eval("parent.postMessage({type:'zellij-disconnected'},location.origin)");});
   await page.waitForFunction(()=>{const e=[...sessions.values()][0];return e.suspended&&e.frame.getAttribute('src')==='about:blank';});
