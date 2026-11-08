@@ -71,7 +71,7 @@ body.sidebar-collapsed #sidebar-toggle{left:8px}
 #tabs .tab-row.active .tab-hover-actions{background:#171717}
 @media(hover:hover){#tabs .tab-row:hover .tab-hover-actions{visibility:visible}#tabs .tab-row:hover .tab-status{visibility:hidden}#tabs .tab-row:hover .tab-select{background:#171717}}
 #tabs.reordering .tab-hover-actions{display:none}
-.parked-header{display:flex;align-items:center;gap:7px;flex-shrink:0;margin-top:8px;padding:8px 12px;border:0;background:#0a0a0a;color:#a1a1a1;font-size:12px;font-weight:400;line-height:18px;text-align:left}
+.parked-header{display:flex;align-items:center;gap:7px;flex-shrink:0;margin-top:auto;padding:8px 12px;border:0;background:#0a0a0a;color:#a1a1a1;font-size:12px;font-weight:400;line-height:18px;text-align:left}
 .parked-header .chevron{order:1;flex-shrink:0;width:5px;height:5px;margin:0 2px 0 6px;border-right:1px solid currentColor;border-bottom:1px solid currentColor;font-size:0;transform:rotate(-45deg);transition:transform .15s}
 .parked-header[aria-expanded=true] .chevron{transform:rotate(45deg)}
 .parked-header .count{margin-left:auto;font-variant-numeric:tabular-nums}
@@ -96,7 +96,7 @@ body.sidebar-collapsed #sidebar-toggle{left:8px}
 /* Auto margin pushes the first group down; both headers stay together at the bottom. */
 :is(#hidden-toggle,#snoozed-toggle){position:sticky;bottom:-6px;z-index:1;flex-shrink:0;display:flex;align-items:center;gap:7px;height:34px;margin-top:auto;padding:8px 12px;border:0;border-radius:0;background:#0a0a0a;color:#a1a1a1;font-size:12px;font-weight:400;line-height:18px;text-align:left}
 #tabs:has(#hidden-toggle) #snoozed-toggle{bottom:31px}
-#snoozed-toggle~#hidden-toggle{margin-top:0}
+:is(#snoozed-toggle,.parked-header)~:is(.parked-header,#hidden-toggle){margin-top:0}
 #hidden-toggle:hover{background:#171717;color:#ededed}
 :is(#hidden-toggle,#snoozed-toggle) .chevron{order:1;flex-shrink:0;width:5px;height:5px;margin:0 2px 0 6px;border-right:1px solid currentColor;border-bottom:1px solid currentColor;font-size:0;transform:rotate(-45deg);transition:transform .15s}
 :is(#hidden-toggle,#snoozed-toggle)[aria-expanded=true] .chevron{transform:rotate(45deg)}
