@@ -8,11 +8,6 @@ test('conversation recovers from stalled reads, logs safe diagnostics and preser
   const errors=[];page.on('pageerror',e=>errors.push(e.message));await page.clock.install();
   await page.addInitScript(()=>{
    window.polls=[];window.setInterval=fn=>polls.push(fn);
-   const Observer=ResizeObserver;
-   window.ResizeObserver=class extends Observer{constructor(callback){super((...args)=>{
-    const frame=requestAnimationFrame;window.requestAnimationFrame=fn=>{window.pendingResizeFrame=fn;return frame(fn);};
-    try{callback(...args);}finally{window.requestAnimationFrame=frame;}
-   });}};
   });
   await page.route('http://loading.test/**',async route=>{
    const url=new URL(route.request().url());
@@ -33,15 +28,18 @@ test('conversation recovers from stalled reads, logs safe diagnostics and preser
   await poll();await page.locator('.conversation-message').first().waitFor();assert.equal(await page.locator('.conversation-message').count(),40);
   assert.equal(diagnostics.at(-1).outcome,'recovered');assert.equal(await page.locator('.conversation-notice').isVisible(),false);
   const waitForScrollIdle=()=>page.waitForFunction(()=>getComputedStyle(document.querySelector('.conversation-messages')).scrollbarWidth==='none');await waitForScrollIdle();
-  await page.locator('.conversation-messages').evaluate(n=>new Promise(resolve=>{n.addEventListener('scroll',()=>resolve(),{once:true});n.scrollTop=150;}));
+  // Scrolling the page does itself keeps the scrollbar hidden; the reader's own scrolling shows it.
+  await page.locator('.conversation-messages').evaluate(n=>new Promise(resolve=>{n.addEventListener('scroll',()=>resolve(),{once:true});n.scrollTop=100;}));
+  assert.equal(await page.locator('.conversation-messages').evaluate(n=>getComputedStyle(n).scrollbarWidth),'none');
+  await page.locator('.conversation-messages').evaluate(n=>new Promise(resolve=>{n.addEventListener('scroll',()=>resolve(),{once:true});n.dispatchEvent(new Event('touchmove'));n.scrollTop=150;}));
   assert.equal(await page.locator('.conversation-messages').evaluate(n=>getComputedStyle(n).scrollbarWidth),'thin');await waitForScrollIdle();
   const position=await page.locator('.conversation-messages').evaluate(n=>n.scrollTop);history.push({role:'assistant',text:'A fresh answer'});await poll();
   assert.equal(await page.locator('.conversation-messages').evaluate(n=>n.scrollTop),position);
   await page.getByRole('button',{name:'Scroll to bottom',exact:true}).waitFor();assert.equal(await page.getByRole('button',{name:'Scroll to bottom',exact:true}).textContent(),'↓ New messages');
   if(process.env.CONVERSATION_SCROLL_SCREENSHOT)await page.screenshot({path:process.env.CONVERSATION_SCROLL_SCREENSHOT});
-  // A resize queued before the click must not restore the old reading position
+  // A resize right after the click must not restore the old reading position
   // before the browser delivers the programmatic scroll event.
-  await page.evaluate(()=>{document.querySelector('[aria-label="Scroll to bottom"]').click();pendingResizeFrame();});
+  await page.evaluate(()=>{document.querySelector('[aria-label="Scroll to bottom"]').click();document.querySelector('.conversation-message').append(Object.assign(document.createElement('div'),{style:'height:40px'}));});
   await page.clock.runFor(30);
   if(process.env.CONVERSATION_LATEST_SCREENSHOT)await page.screenshot({path:process.env.CONVERSATION_LATEST_SCREENSHOT,clip:{x:0,y:350,width:390,height:494}});
   assert.equal(await page.getByRole('button',{name:'Scroll to bottom',exact:true}).isVisible(),false);
