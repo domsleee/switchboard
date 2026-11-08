@@ -9,6 +9,7 @@ test('the sidebar preview serves the working copy, forwards the rest to the rela
  fs.writeFileSync(path.join(dir,'app.css'),'body{}');
  const seen=[];
  const relay=http.createServer((req,res)=>{seen.push({url:req.url,host:req.headers.host,origin:req.headers.origin});
+  if(req.url==='/api/chats/c/stream'){res.writeHead(200,{'content-type':'text/event-stream'});res.write('data: 1\n\n');return setTimeout(()=>res.socket.destroy(),50);}
   res.setHeader('content-type','application/json');res.end(req.url==='/api/health'?'{"commit":"abc1234"}':'{"relay":true}');});
  await new Promise(r=>relay.listen(0,'127.0.0.1',r));
  const preview=await start({port:0,relayPort:relay.address().port,staticDir:dir,allow:[]},()=>{});
@@ -23,6 +24,10 @@ test('the sidebar preview serves the working copy, forwards the rest to the rela
   assert.equal(api,'{"relay":true}');
   const forwarded=seen.find(r=>r.url==='/api/attention');
   assert.equal(forwarded.host,`127.0.0.1:${relay.address().port}`);assert.equal(forwarded.origin,`http://127.0.0.1:${relay.address().port}`);
+  // A relay restart cutting a stream ends the browser's copy, so it can reconnect.
+  const ended=await new Promise((resolve,reject)=>{const timer=setTimeout(()=>resolve(false),3000);
+   http.get({host:'127.0.0.1',port,path:'/api/chats/c/stream'},res=>{res.resume();res.on('close',()=>{clearTimeout(timer);resolve(true);});}).on('error',()=>{clearTimeout(timer);resolve(true);});});
+  assert.equal(ended,true);
   // A saved stylesheet reaches open pages as a style-only update.
   const event=new Promise((resolve,reject)=>http.get({host:'127.0.0.1',port,path:'/__live'},res=>{res.setEncoding('utf8');res.on('data',chunk=>{const m=/data: (.*)\n/.exec(chunk);if(m){res.destroy();resolve(JSON.parse(m[1]));}});}).on('error',reject));
   await new Promise(r=>setTimeout(r,100));fs.writeFileSync(path.join(dir,'app.css'),'body{color:red}');

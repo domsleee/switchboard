@@ -39,7 +39,9 @@ function start({port,relayPort,staticDir,allow},log=console.log){
   for(const h of Object.keys(headers))if(h==='referer'||h.startsWith('sec-fetch-'))delete headers[h];
   if(headers.origin)headers.origin=`http://${relay.host}:${relay.port}`;return headers;};
  const forward=(req,res)=>{
-  const out=http.request({...relay,method:req.method,path:req.url,headers:relayHeaders(req)},up=>{res.writeHead(up.statusCode,up.headers);up.pipe(res);});
+  // A relay restart cuts streams mid-response; end the browser's copy so it reconnects.
+  const out=http.request({...relay,method:req.method,path:req.url,headers:relayHeaders(req)},up=>{res.writeHead(up.statusCode,up.headers);up.pipe(res);
+   up.on('aborted',()=>res.destroy());up.on('error',()=>res.destroy());});
   out.on('error',e=>{if(!res.headersSent)res.writeHead(502);res.end('Relay unavailable: '+e.message);});res.on('close',()=>out.destroy());req.pipe(out);};
  // The page reloads itself when its build stamp differs from the relay's, so stamp it with the relay's.
  const relayCommit=()=>new Promise(resolve=>http.get({...relay,path:'/api/health',headers:{host:`${relay.host}:${relay.port}`}},up=>{let s='';
@@ -51,8 +53,7 @@ function start({port,relayPort,staticDir,allow},log=console.log){
   if(url.pathname==='/__live'){res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-store'});res.write(':\n\n');clients.add(res);req.on('close',()=>clients.delete(res));return;}
   if((req.method==='GET'||req.method==='HEAD')&&!url.pathname.startsWith('/api/')&&!url.pathname.startsWith('/hosts/')){
    const name=url.pathname==='/'?'index.html':path.basename(url.pathname),file=path.join(staticDir,name);
-   // The service worker would cache the working copy's files past the next save.
-   if(name!=='sw.js'&&fs.existsSync(file)&&fs.statSync(file).isFile()){
+   if(fs.existsSync(file)&&fs.statSync(file).isFile()){
     res.setHeader('cache-control','no-store');res.setHeader('content-type',types[path.extname(name)]||'application/octet-stream');
     if(!name.endsWith('.html'))return res.end(fs.readFileSync(file));
     const commit=await relayCommit();let html=fs.readFileSync(file,'utf8');
