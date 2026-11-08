@@ -72,6 +72,7 @@
     let target=null,open=savedMode? savedMode==='conversation':mobile,generation=0,startCursor=0,tailCursor=0,nextCursor=null,messages=[],loading=false,loaded=false,lastPaint=null,modeRevision=0,navigationRevision=0;
     const outgoing=new Map(),consumedTranscript=new Map(),pendingSends=new Map(),bridgeSends=new Map(),startups=new Map(),draftVersions=new Map(),firstSends=new Set();
     const conversations=new Map(),handoverDrafts=new Map(),handoverAttachments=new Map(),launchKeys=new WeakMap();
+    const asyncQuestions=new Map();
     let stream=null,streamReady=false,streamSupported=false,streamPages=[],restorePosition=null;
     async function prepare(){
       if(!open||document.hidden||!target||target.agent!=='codex'||!target.session||!Number.isInteger(target.tab))return;
@@ -244,14 +245,15 @@
       if(switchModel){model.disabled=!target?.switchAvailable||!chat;cancelModel.hidden=!target?.pendingSwitch||!!target.pendingSwitch.running;}
       if(activity.textContent!==label)activity.textContent=label;
       activity.classList.toggle('working',state==='working');
-      const follow=nearBottom();paintLaunch();working.hidden=['approval','input','ready'].includes(state)||!launchShown()&&(!chat||!(state==='working'||state==='waiting'&&!backgroundAgents().length));tickWorking();
+      const asyncWorking=state==='input'&&target.turnState==='working'&&pendingAsyncQuestion();
+      const follow=nearBottom();paintLaunch();working.hidden=['approval','ready'].includes(state)||state==='input'&&!asyncWorking||!launchShown()&&(!chat||!(state==='working'||asyncWorking||state==='waiting'&&!backgroundAgents().length));tickWorking();
       if(follow)list.scrollTop=list.scrollHeight;
       const startup=startupState(),stalled=!!startup&&(!!startup.error||Date.now()-startup.started>=30000);
-      terminalAction.hidden=!['approval','input'].includes(state)&&!stalled;recovery.hidden=!stalled||!!chat;
+      terminalAction.hidden=(!['approval','input'].includes(state)||state==='input'&&pendingAsyncQuestion())&&!stalled;recovery.hidden=!stalled||!!chat;
       const noComposer=!chat&&!firstMessage()&&!target?.launch&&!firstSends.has(target?.key);if(form.hidden!==noComposer){form.hidden=noComposer;sizeDraft();}
       insert.disabled=!!pendingFor();
       // While the agent works, an empty composer offers Stop in the send button's place.
-      form.classList.toggle('can-stop',state==='working'&&!!chat&&!!target?.session&&Number.isInteger(target?.pane));
+      form.classList.toggle('can-stop',(state==='working'||state==='input'&&target.turnState==='working'&&pendingAsyncQuestion())&&!!chat&&!!target?.session&&Number.isInteger(target?.pane));
       const project=String(chat?.project||'').replace(/[\\/]+$/,'').split(/[\\/]/).pop();
       const where=[project,target?.computer].filter(Boolean).join(' · ');if(context.textContent!==where)context.textContent=where;
       paintCost();
@@ -339,6 +341,74 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       const note=promptError||(answering?'Answering…':'');if(questionStatus.textContent!==note)questionStatus.textContent=note;questionStatus.hidden=!note;
       if(!panel.hidden&&!form.hidden)sizeDraft();if(follow){list.scrollTop=list.scrollHeight;updateLatest();}
     }
+    function asyncState(item){
+      const key=identity(target)+':'+item.async_question.id;
+      if(!asyncQuestions.has(key))asyncQuestions.set(key,{key,status:'draft',questions:item.async_question.questions,answers:item.async_question.questions.map(()=>''),destination:{host:target.host,thread:chat?.thread,chatKey:identity(target)}});
+      return asyncQuestions.get(key);
+    }
+    function pendingAsyncQuestion(){return target?.agent==='codex'&&messages.some(item=>item.async_question&&asyncState(item).status!=='answered');}
+    function syncAsyncQuestions(){
+      for(const item of messages)if(item.async_question)asyncState(item);
+      for(const item of messages)for(const id of new Set((item.question_replies||[]).map(reply=>reply.id))){
+        const state=asyncQuestions.get(identity(target)+':'+id),replies=item.question_replies.filter(reply=>reply.id===id);
+        if(state&&replies.length===state.questions.length&&replies.every((reply,index)=>reply.question===state.questions[index].title)){
+          state.status='answered';state.error='';state.answers=replies.map(reply=>reply.answer);
+        }
+      }
+      for(const card of list.querySelectorAll('.conversation-async-question'))card.sync?.();
+    }
+    async function sendAsyncAnswer(item,state,retry=false){
+      if(state.status==='sending'||state.status==='queued'||state.status==='answered')return;
+      if(!retry){
+        if(!state.answers.every(answer=>answer.trim()&&!/[\x00-\x1f\x7f]/.test(answer)))return;
+        const answers=item.async_question.questions.map((question,index)=>({questionItemId:item.async_question.id,question:question.title,answer:state.answers[index].trim()}));
+        state.payload='<send_user_message_question_reply>\n'+JSON.stringify(answers)+'\n</send_user_message_question_reply>';
+        if(new TextEncoder().encode(state.payload).length>8192){state.error='This answer is too long. Shorten it before sending.';syncAsyncQuestions();return;}
+        state.sendKey='question-'+Array.from(crypto.getRandomValues(new Uint32Array(4)),n=>n.toString(16)).join('-');
+      }
+      state.status='sending';state.error='';syncAsyncQuestions();
+      try{
+        const response=await fetch('/api/hosts/'+encodeURIComponent(state.destination.host)+'/codex/reply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({thread:state.destination.thread,message:state.payload,send_key:state.sendKey}),signal:AbortSignal.timeout(30000)});
+        const result=await response.json();
+        if(state.status!=='answered')state.status=response.ok&&result.status==='queued'?'queued':result.status==='failed'?'failed':'uncertain';
+        if(!['queued','answered'].includes(state.status))state.error=result.detail||'Delivery is not confirmed. Retry to check its status.';
+      }catch{if(state.status!=='answered'){state.status='uncertain';state.error='Delivery is not confirmed. Retry to check its status.';}}
+      finally{syncAsyncQuestions();if(identity(target)===state.destination.chatKey)void load();idle();}
+    }
+    function renderAsyncQuestion(article,item){
+      const request=item.async_question,state=asyncState(item),card=el('section',undefined,'conversation-question conversation-async-question');
+      card.setAttribute('aria-label','Codex question');
+      const controls=[],groups=[],send=el('button','Send answers','conversation-question-choice submit'),status=el('small',undefined,'conversation-question-status'),retry=el('button','Retry','conversation-question-choice');
+      for(const [index,question] of request.questions.entries()){
+        const group=el('div',undefined,'conversation-async-question-group'),heading=el('p',question.title,'conversation-question-text'),choices=el('div',undefined,'conversation-question-choices');
+        group.append(heading,choices);card.append(group);const options=[];
+        for(const [number,label] of question.options.entries()){
+          const button=el('button',undefined,'conversation-question-choice');button.type='button';
+          button.append(el('span',String(number+1),'conversation-question-number'),el('span',label,'conversation-question-label'));
+          button.setAttribute('aria-pressed',String(state.answers[index]===label));
+          button.onclick=()=>{state.answers[index]=label;if(request.questions.length===1)void sendAsyncAnswer(item,state);else syncAsyncQuestions();};
+          choices.append(button);controls.push(button);options.push({button,label});
+        }
+        const other=el('form',undefined,'conversation-question-other'),input=el('input'),submit=el('button','Send');input.type='text';input.maxLength=4000;input.placeholder=question.options.length?'Other…':'Your answer…';input.setAttribute('aria-label',request.questions.length===1?'Type your own answer':'Answer: '+question.title);
+        input.value=question.options.includes(state.answers[index])?'':state.answers[index];
+        input.oninput=()=>{state.answers[index]=input.value;syncAsyncQuestions();};
+        submit.type='submit';other.append(input);if(request.questions.length===1)other.append(submit);
+        other.onsubmit=event=>{event.preventDefault();state.answers[index]=input.value;if(request.questions.length===1)void sendAsyncAnswer(item,state);};
+        choices.append(other);controls.push(input,submit);groups.push({index,options});
+      }
+      send.type='button';send.onclick=()=>void sendAsyncAnswer(item,state);if(request.questions.length>1)card.append(send);
+      retry.type='button';retry.onclick=()=>void sendAsyncAnswer(item,state,state.status!=='failed');status.setAttribute('role','status');card.append(status,retry);
+      card.sync=()=>{
+        const locked=!['draft','failed'].includes(state.status);
+        for(const control of controls)control.disabled=locked;
+        for(const {index,options} of groups)for(const {button,label} of options)button.setAttribute('aria-pressed',String(state.answers[index]===label));
+        send.disabled=locked||!state.answers.every(answer=>answer.trim());
+        retry.hidden=!['failed','uncertain'].includes(state.status);
+        card.classList.toggle('answering',['sending','queued'].includes(state.status));
+        status.textContent=state.error||({sending:'Sending answer…',queued:'Answer on its way…',answered:'Answered'}[state.status]||'');status.hidden=!status.textContent;
+      };
+      card.sync();article.append(card);
+    }
     // A new Claude at its empty prompt has no transcript until its first message, which
     // the relay types into the prompt. Its connection timer starts after that message.
     // A launched prompt is already the first message; follow-ups wait for its transcript.
@@ -393,7 +463,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       return 'Some history is unavailable. Showing the messages that could be read.';
     }
     const rendered=new Map(),renderedOutgoing=new Map(),summaries=new Map(),expandedRuns=new Set();
-    const isCommentary=item=>item.role==='assistant'&&item.phase==='commentary';
+    const isCommentary=item=>item.role==='assistant'&&item.phase==='commentary'&&!item.async_question;
     // A finished run of two or more progress updates folds behind one summary line.
     // A run still in progress shows only its newest update; earlier ones fold the same
     // way, under the same key, so expanding one keeps it open once the answer lands.
@@ -475,6 +545,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       return sentItems;
     }
     function paint(prepend=false,initial=false){
+      syncAsyncQuestions();
       const key=identity(target),sentItems=acknowledge(key,messages,startCursor);
       const visibleOutgoing=sentItems.filter(item=>item.transcriptCursor===undefined);
       const snapshot={start:startCursor,messages:messages.map(signatureOf),outgoing:JSON.stringify(visibleOutgoing.map(({id,text,files,state,detail})=>({id,text,files:files.map(file=>file.name),state,detail})))};
@@ -506,6 +577,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
           }else{
             article.append(el('div',speaker,'conversation-label'));
             if(item.kind==='tool')toolStep(article,item);
+            else if(item.async_question&&target?.agent==='codex'&&/^[0-9a-f-]{36}$/.test(chat?.thread||''))renderAsyncQuestion(article,item);
             else{if(window.SwitchboardConversationMedia&&(item.markdown||item.attachments))window.SwitchboardConversationMedia.render(article,item,{host:target.host,project:binding()?.project});else textBlocks(article,item.text||'');
               decorateCode(article);}
           }
@@ -539,7 +611,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       if(list.lastChild!==background||background.previousSibling!==working)list.append(working,background);
       if(prepend)list.scrollTop=position+list.scrollHeight-height;
       else if(follow)list.scrollTop=list.scrollHeight;
-      syncLiveStep();updateLatest();rememberReading();paintFiles();
+      syncAsyncQuestions();syncLiveStep();updateLatest();rememberReading();paintFiles();
     }
     function applyPage(data,kind,cursor){
       const initial=kind==='initial',prepend=kind==='older',page=data.messages||[],start=data.start_cursor??(initial?0:prepend?Math.max(0,startCursor-page.length):cursor);
@@ -550,11 +622,10 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       if('reasoning_effort' in data)chat.reasoning_effort=data.reasoning_effort;
       if('usage' in data)chat.usage=data.usage;
       if(Array.isArray(data.background_agents))chat.background=data.background_agents;
-      updateActivity();
       if(initial){messages=page;startCursor=start;tailCursor=start+Math.max(0,page.length-1);nextCursor=data.next_cursor??null;}
       else if(prepend){messages=page.concat(messages);startCursor=start;}
       else{if(start<startCursor){messages=page;startCursor=start;}else messages=messages.slice(0,Math.max(0,start-startCursor)).concat(page);tailCursor=start+Math.max(0,page.length-1);nextCursor=data.next_cursor??null;}
-      loaded=true;refresh.hidden=true;if(open)paint(prepend,initial);flushStartup();
+      loaded=true;refresh.hidden=true;syncAsyncQuestions();updateActivity();if(open)paint(prepend,initial);flushStartup();
       // Conversation has no terminal focus acknowledgement. Review only output
       // that has loaded and is visible at the end of the selected transcript.
       if(open&&!panel.hidden&&!document.hidden&&document.hasFocus()&&nextCursor===null&&nearBottom())viewed(target);
@@ -688,7 +759,8 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       if(!target||identity(current)!==identity(target)||!binding()&&!firstMessage()&&!waiting||(!draft.value.trim()&&!fileList().length))return;
       if(pendingFor()){if(draft.value.trim())queuedSubmit=identity(target);return;}
       // Waiting: the turn ended while background work runs; the prompt still takes input.
-      if(!waiting&&!['ready','waiting','working'].includes(current.state)){sendStatus(question.hidden?'The agent needs attention in Terminal. Your draft is kept.':'Answer the agent’s question first. Your draft is kept.');return;}
+      const asyncReply=current.agent==='codex'&&current.state==='input'&&/^[0-9a-f-]{36}$/.test(chat?.thread||'');
+      if(!waiting&&!['ready','waiting','working'].includes(current.state)&&!asyncReply){sendStatus(question.hidden?'The agent needs attention in Terminal. Your draft is kept.':'Answer the agent’s question first. Your draft is kept.');return;}
       const selected=fileList();if(selected.some(item=>!item.path)){sendStatus(selected.some(item=>item.error)?'Remove failed attachments before sending.':'Wait for attachments to finish uploading.');return;}
       const text=draft.value,payload=text+(selected.length?'\n\nAttached files:\n'+selected.map(item=>item.path).join('\n'):'');
       if(/[\x00-\x08\x0b-\x1f\x7f]/.test(payload)){sendStatus('The draft contains terminal control characters. Remove them first.');return;}
@@ -793,7 +865,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
     document.addEventListener('visibilitychange',()=>{if(document.hidden)stopStream();else if(open){load();startStream();}});
     window.addEventListener('focus',()=>{if(open&&!document.hidden)load();});
     window.addEventListener('pagehide',()=>{stopStream();loadRequest?.abort();});
-    window.SwitchboardConversation.hasUnsentWork=()=>!!pendingSends.size||[...outgoing.values()].some(items=>items.length)||!!draft.value||[...drafts.values()].some(Boolean)||[...attachments.values()].some(files=>files.length);
+    window.SwitchboardConversation.hasUnsentWork=()=>!!pendingSends.size||[...outgoing.values()].some(items=>items.length)||!!draft.value||[...drafts.values()].some(Boolean)||[...attachments.values()].some(files=>files.length)||[...asyncQuestions.values()].some(state=>['sending','queued','uncertain'].includes(state.status)||state.status==='draft'&&state.answers.some(Boolean));
     const handoverKey=source=>JSON.stringify([JSON.stringify([source.host,source.target.session,source.target.pane_id]),source.chatId]);
     // A switch waits for sends still on their way and for uploads; failed ones do not hold it.
     window.SwitchboardConversation.canHandover=source=>{const key=handoverKey(source);return !pendingFor(key)&&!(outgoing.get(key)||[]).some(item=>!['failed','uncertain'].includes(item.state))&&!fileList(key).some(item=>!item.path&&!item.error);};

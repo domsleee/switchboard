@@ -173,6 +173,10 @@
 .conversation-actions button:last-child{width:auto;padding:4px 12px;white-space:nowrap}
 
 /* A question or permission prompt from the agent, answered here instead of in Terminal. */
+.conversation-message .conversation-async-question{width:100%;max-height:none;box-sizing:border-box;margin:8px 0}
+.conversation-async-question-group+.conversation-async-question-group{margin-top:16px}
+.conversation-async-question .conversation-question-choice[aria-pressed="true"]{border-color:#e0b25c80;background:#e0b25c1f}
+.conversation-async-question.answering .conversation-question-choices{opacity:.6}
 .conversation-question{align-self:center;width:min(var(--chat-width),calc(100% - 48px));max-height:min(60%,32rem);overflow:auto;margin:0 0 8px;padding:12px;border:1px solid #e0b25c4d;border-radius:14px;background:#1a1916;flex-shrink:0;overscroll-behavior:contain}
 .conversation-question-detail{margin:0 0 10px;padding:8px 10px;border-radius:8px;background:var(--code-bg);color:var(--text-2);font:12.5px/1.55 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
 .conversation-question-text{margin:0 2px 10px;color:#f1cf8c;font-weight:600}

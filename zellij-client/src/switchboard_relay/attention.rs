@@ -21,6 +21,8 @@ struct Agent {
     command: Vec<regex::Regex>,
     #[serde(default, deserialize_with = "patterns")]
     title: Vec<regex::Regex>,
+    #[serde(default, deserialize_with = "patterns")]
+    input_title: Vec<regex::Regex>,
     #[serde(deserialize_with = "groups")]
     screen: Vec<Vec<regex::Regex>>,
     #[serde(default, deserialize_with = "patterns")]
@@ -115,7 +117,7 @@ pub(crate) fn classify(pane: &Value, screen: &str) -> Value {
     // ponytail: agent UI markers, replace with public status events if the CLIs expose them.
     let Some(rules) = AGENTS
         .iter()
-        .find(|a| any(&a.command, &command) || any(&a.title, &title))
+        .find(|a| any(&a.command, &command) || any(&a.title, &title) || any(&a.input_title, &title))
         .or_else(|| AGENTS.iter().find(|a| all_of_one(&a.screen, text)))
     else {
         return json!({"state":"unknown"});
@@ -137,6 +139,10 @@ pub(crate) fn classify(pane: &Value, screen: &str) -> Value {
         if all_of_one(&rules.input, chooser) {
             return json!({"state":"input","agent":agent,"token":"question"});
         }
+    }
+    // Async questions can remain pending while the user returns to the main prompt.
+    if any(&rules.input_title, &title) {
+        return json!({"state":"input","agent":agent,"token":"question"});
     }
     let busy = newest(&rules.working.above_prompt, before);
     if any(&rules.working.title, &title)
@@ -909,6 +915,15 @@ impl PollState {
                 json!(hooked.restart.is_some() && matches!(hooked.state, "ready" | "working"));
         }
         if hooked.state == "unknown" {
+            return;
+        }
+        // Codex's async questions can stay open while it works and after Stop.
+        // Hooks describe the turn, so a live dialog takes priority until answered.
+        if hooked.agent == "codex"
+            && row["agent"] == "codex"
+            && matches!(row["state"].as_str(), Some("approval" | "input"))
+        {
+            row["turn_state"] = json!(hooked.state);
             return;
         }
         // Claude's next PostToolUse arrives when the approved tool finishes. Its
@@ -2331,6 +2346,113 @@ esac
         // A peer never reached is unavailable at once.
         poll.peer_unavailable("new-peer", &anyhow::anyhow!("Connection refused"));
         assert!(poll.cache["new-peer"]["errors"][0]["pending"].is_null());
+    }
+
+    #[test]
+    fn switchboard_codex_question_takes_priority_over_working() {
+        let pane = json!({"id":66,"tab_id":66,"pane_command":"codex","title":"[ ! ] Action Required | Match tabs to T3 styling | switchboard"});
+        // Captured with `zellij -s main action dump-screen -p 66` on 2026-11-08.
+        // An async question stays open while Codex works; its old working line
+        // and Yes/No choices must not turn it into working or an approval.
+        let question = "Working (3m 02s • esc to interrupt)\n\
+            \n\
+            • Queued follow-up inputs\n\
+            \n\
+              I’m treating the screenshot as the style for the collapsible tab groups. Should I also rename “Hidden” to “Settled”?\n\
+            \n\
+                1. Yes, use Settled\n\
+                2. Keep the Hidden label\n\
+              › 3. Other\n\
+            \n\
+              enter submit   ctrl+] skip   shift+→ main prompt\n";
+        let expected = json!({"state":"input","agent":"codex","token":"question"});
+        assert_eq!(classify(&pane, question), expected);
+        assert_eq!(classify(&pane, &question.replace('\n', "\r\n")), expected);
+        let moved = question
+            .replace("1. Yes", "› 1. Yes")
+            .replace("› 3. Other", "  3. Other");
+        assert_eq!(classify(&pane, &moved), expected);
+        let wrapped = question.replace("skip   shift+→", "skip\nshift+→");
+        assert_eq!(classify(&pane, &wrapped), expected);
+        let titled =
+            json!({"pane_command":"codex","title":"⠦ Match tabs to T3 styling | switchboard"});
+        assert_eq!(classify(&titled, question), expected);
+        let normal_pane =
+            json!({"pane_command":"codex","title":"Match tabs to T3 styling | switchboard"});
+        // An old dialog above ongoing output is not a live question either.
+        let answered = format!("{question}\nWorking (4m 02s • esc to interrupt)");
+        assert_eq!(classify(&normal_pane, &answered)["state"], "working");
+
+        let running =
+            "Working (3m 02s • esc to interrupt)\n› draft\nGPT-6.1-Sol high · tab to queue message";
+        let ready = "Worked for 3m 51s • 8:06 PM\n› Ask Codex to do anything\nGPT-6.1-Sol high\n? for shortcuts";
+        // The title still reports an unanswered request after switching back
+        // to the main prompt, including when the command is unavailable.
+        assert_eq!(classify(&pane, running), expected);
+        assert_eq!(classify(&json!({"title":pane["title"]}), ready), expected);
+        // An answered question in scrollback is no longer asking for input.
+        for (screen, state) in [(running, "working"), (ready, "ready")] {
+            assert_eq!(
+                classify(&normal_pane, &format!("{question}\n{screen}"))["state"],
+                state
+            );
+        }
+        let approval = "Would you like to run this command?\n› 1. Yes, proceed\n2. No\nPress enter to confirm or esc to cancel\n";
+        assert_eq!(classify(&pane, approval)["state"], "approval");
+        assert_eq!(
+            classify(&normal_pane, "The logs mention Action Required.")["state"],
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn switchboard_codex_live_dialog_overrides_turn_hooks_until_answered() {
+        let pane = json!({"id":7,"tab_id":8,"pane_command":"codex"});
+        let running =
+            "Working (3s • esc to interrupt)\n› draft\nGPT-6.1-Sol high · tab to queue message";
+        let question = "Which colour?\n  1. Red\n  2. Blue\n› 3. Other\nenter submit   ctrl+] skip   shift+→ main prompt\n";
+        let approval = "Would you like to run this command?\n› 1. Yes, proceed\n2. No\nPress enter to confirm or esc to cancel\n";
+        let scan = |screen: &str| {
+            snapshot(
+                "main",
+                std::slice::from_ref(&pane),
+                &HashMap::from([(7, screen.to_owned())]),
+                false,
+            )
+        };
+        for event in ["UserPromptSubmit", "PostToolUse", "Stop"] {
+            let mut poll = PollState::default();
+            poll.hooks.insert(
+                ("main".into(), 7),
+                hook_status("codex", &json!({"hook_event_name":event,"turn_id":"t1"})).unwrap(),
+            );
+            let mut working = scan(running);
+            poll.update("windows", &mut working);
+            assert_eq!(working["panes"][0]["state"], "working");
+            for (screen, state, token) in [
+                (question, "input", "question"),
+                (approval, "approval", "approval"),
+            ] {
+                let mut dialog = scan(screen);
+                poll.update("windows", &mut dialog);
+                assert_eq!(dialog["panes"][0]["state"], state, "{event}");
+                assert_eq!(dialog["panes"][0]["token"], token);
+                assert_eq!(
+                    dialog["panes"][0]["turn_state"],
+                    if event == "Stop" { "ready" } else { "working" }
+                );
+                poll.acknowledge("windows", "main", 7, token);
+                let mut still_open = scan(screen);
+                poll.update("windows", &mut still_open);
+                assert_eq!(still_open["panes"][0]["state"], state);
+                assert!(still_open["panes"][0].get("seen").is_none());
+            }
+            // Answering removes the dialog; normal turn tracking resumes.
+            let mut resumed = scan(running);
+            poll.update("windows", &mut resumed);
+            assert_eq!(resumed["panes"][0]["state"], "working");
+            assert!(resumed["panes"][0].get("token").is_none());
+        }
     }
 
     #[test]
