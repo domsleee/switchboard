@@ -57,6 +57,7 @@ struct HistoryIndex {
     page_cache: Option<(usize, usize, bool, Option<usize>, bool, Value)>,
     /// Claude's API usage, including its subagents' transcripts and how far each was read.
     usage: super::chat_cost::Usage,
+    codex_usage: super::codex_cost::Usage,
     subagents: HashMap<PathBuf, u64>,
     subagents_checked: Option<std::time::Instant>,
 }
@@ -114,6 +115,7 @@ impl HistoryIndex {
             provisional_state: None,
             page_cache: None,
             usage: Default::default(),
+            codex_usage: Default::default(),
             subagents: HashMap::new(),
             subagents_checked: None,
         }
@@ -197,6 +199,7 @@ impl HistoryIndex {
             self.provisional = 0;
             self.provisional_state = None;
             self.usage.clear();
+            self.codex_usage = Default::default();
             self.subagents.clear();
             self.subagents_checked = None;
             self.chat = Chat {
@@ -248,6 +251,9 @@ impl HistoryIndex {
                 Ok(value) => {
                     if self.chat.agent == "claude" {
                         self.usage.record(&value);
+                    }
+                    if complete && self.chat.agent == "codex" {
+                        self.codex_usage.record(&value);
                     }
                     // Parse each record independently too, so offsets remain correct for
                     // providers whose envelopes contain several or deduplicated messages.
@@ -398,6 +404,8 @@ impl HistoryIndex {
         page["message_count"] = json!(self.messages.len());
         if self.chat.agent == "claude" {
             page["usage"] = self.usage.summary();
+        } else if self.chat.agent == "codex" {
+            page["usage"] = self.codex_usage.summary();
         }
         page["previous_cursor"] = if start > 0 { json!(start) } else { Value::Null };
         page["next_cursor"] = if next < end { json!(next) } else { Value::Null };
@@ -2666,6 +2674,48 @@ mod tests {
         assert_eq!(page["messages"][0]["attachments"][0]["name"], "photo.png");
         assert!(page["messages"][1].get("receipt_text").is_none());
         assert!(page["messages"][2].get("receipt_text").is_none());
+    }
+
+    #[test]
+    fn switchboard_chats_report_codex_cost_across_pages_appends_and_rewrites() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl");
+        let context = json!({"type":"turn_context","payload":{"model":"gpt-6.1-sol"}});
+        let response = json!({"type":"response_item","payload":{"type":"message","role":"assistant",
+            "content":[{"type":"output_text","text":"Done"}]}});
+        let count = |input: u64| {
+            json!({"timestamp":input.to_string(),"type":"event_msg","payload":{"type":"token_count",
+            "info":{"last_token_usage":{"input_tokens":1000,"cached_input_tokens":0,"output_tokens":100},
+                "total_token_usage":{"input_tokens":input,"cached_input_tokens":0,"output_tokens":input / 10}}}})
+        };
+        let record = count(1000);
+        // The final complete JSON value has no newline yet: don't count it until committed.
+        fs::write(&path, format!("{context}\n{response}\n{record}")).unwrap();
+        let mut index = HistoryIndex::new("codex", dir.path(), &path);
+        assert!(index.page(&Params::default()).unwrap()["usage"].is_null());
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file).unwrap();
+        let first = index.page(&Params::default()).unwrap();
+        assert_eq!(first["usage"]["cost_usd"], 0.003);
+        assert_eq!(
+            index.page(&Params::default()).unwrap()["usage"],
+            first["usage"]
+        );
+        writeln!(file, "{}", count(2000)).unwrap();
+        let page = index
+            .page(&Params {
+                tail: true,
+                limit: Some(1),
+                ..Params::default()
+            })
+            .unwrap();
+        assert_eq!(page["usage"]["responses"], 2);
+        assert_eq!(page["usage"]["cost_usd"], 0.006);
+        fs::write(&path, format!("{context}\n{record}\n")).unwrap();
+        assert_eq!(
+            index.page(&Params::default()).unwrap()["usage"]["cost_usd"],
+            0.003
+        );
     }
 
     #[test]
