@@ -936,7 +936,9 @@ function sidebarKeydown(event){
   if(document.querySelector('dialog[open]'))return;
   if(event.code==='KeyT'&&!event.ctrlKey&&!event.metaKey&&event.altKey&&!event.shiftKey&&!event.isComposing){event.preventDefault();event.stopImmediatePropagation();if(!event.repeat)$('new-tab').click();return;}
   const closeShortcut=event.code==='KeyD'&&event.ctrlKey&&!event.metaKey&&!event.altKey&&!event.shiftKey&&!event.isComposing;
-  if(event.target.closest?.('input,textarea,select,[contenteditable="true"]')&&!(closeShortcut&&event.target.matches?.('.conversation-compose textarea')))return;
+  // The Conversation draft keeps the tab shortcuts the terminal has: Ctrl+D and Alt+H/L.
+  const tabShortcut=closeShortcut||event.altKey&&!event.ctrlKey&&!event.metaKey&&!event.isComposing&&['KeyH','KeyL'].includes(event.code);
+  if(event.target.closest?.('input,textarea,select,[contenteditable="true"]')&&!(tabShortcut&&event.target.matches?.('.conversation-compose textarea')))return;
   if(closeShortcut){
     event.preventDefault();event.stopImmediatePropagation();
     if(!event.repeat)closeSelectedTab();
