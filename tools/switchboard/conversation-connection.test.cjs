@@ -130,6 +130,8 @@ test('Desktop keeps a connected terminal through Conversation so switching back 
  try{
   const page=await browser.newPage({viewport:{width:1200,height:900}});page.setDefaultTimeout(10000);
   const errors=[],connections=[],timings=[];page.on('pageerror',e=>errors.push(e.message));
+  // Hold the first transcript so the first switch to Conversation waits for it.
+  let releaseChat;const chatGate=new Promise(resolve=>releaseChat=resolve);
   const pane={pane_id:1,is_plugin:false,tab_id:1,tab_position:1,tab_name:'Agent',title:'Agent',is_focused:true};
   const tabs=[{host:'local',session:'main',id:1,position:1,name:'Agent',panes:[pane]}];
   await page.route('http://conversation.test/**',async route=>{
@@ -138,6 +140,7 @@ test('Desktop keeps a connected terminal through Conversation so switching back 
    if(p==='/api/hosts')return json([{id:'local',name:'Ubuntu',local:true}]);
    if(p==='/api/hosts/local')return json({id:'local',name:'Ubuntu',local:true,sessions:[{name:'main',web_clients_allowed:true}]});
    if(p==='/api/attention')return json({tabs,panes:[{host:'local',session:'main',pane_id:1,agent:'codex',state:'ready',token:'r',seen:true,chat_id:'chat-1'}],errors:[]});
+   if(p.startsWith('/api/chats/')){await chatGate;}
    if(p.startsWith('/api/chats/'))return json({id:'chat-1',agent:'codex',session_id:null,messages:[{role:'assistant',text:'Ready for a reply'}],start_cursor:0,next_cursor:null});
    if(p.startsWith('/hosts/')){
     connections.push(p);
@@ -158,6 +161,7 @@ test('Desktop keeps a connected terminal through Conversation so switching back 
   assert.equal(connections.length,1);
   for(let i=0;i<3;i++){
    await page.getByRole('button',{name:'Conversation',exact:true}).click();
+   if(i===0){await page.waitForTimeout(200);releaseChat();}
    await page.getByText('Ready for a reply',{exact:true}).waitFor();
    assert.equal(await page.evaluate(()=>{const e=[...sessions.values()][0];return !e.suspended&&!!e.state&&e.frame.getAttribute('src')!=='about:blank';}),true,'Conversation keeps the desktop viewer');
    await page.getByRole('button',{name:'Terminal',exact:true}).click();
@@ -177,7 +181,8 @@ test('Desktop keeps a connected terminal through Conversation so switching back 
   assert.deepEqual(timings.filter(t=>t.type==='terminal-load').map(t=>t.after),[undefined],'The first load did not follow Conversation');
   const shown=()=>timings.filter(t=>t.type==='conversation-shown');
   await until(()=>shown().length>=5,'Each switch to Conversation is timed');
-  assert.deepEqual(shown().slice(0,4).map(t=>t.end),['cached','cached','cached','cached'],'Terminal preloads the selected conversation, so switches show it from memory');
+  assert.deepEqual(shown().slice(0,4).map(t=>t.end),['history','cached','cached','cached'],'The first switch waits for its transcript; later ones show it from memory');
+  assert.ok(shown()[0].elapsed_ms>=200&&shown()[0].paint_ms<shown()[0].elapsed_ms,'A fetched transcript is timed until it paints, not until the empty panel paints');
   assert.ok(shown().every(t=>Number.isInteger(t.elapsed_ms)&&(t.paint_ms===null||t.paint_ms<=t.elapsed_ms)),'Each timing has its wait and first paint');
   await page.getByRole('button',{name:'Conversation',exact:true}).click();
   await page.evaluate(()=>{const w=[...sessions.values()][0].frame.contentWindow;w.eval("parent.postMessage({type:'zellij-disconnected'},location.origin)");});
