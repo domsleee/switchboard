@@ -1402,6 +1402,8 @@ window.addEventListener('message',event=>{
     recordTerminalDiagnostic(entry,'new-tab',event.data.diagnostic);
   }else if(event.data?.type==='zellij-switch-diagnostic'){
     recordTerminalDiagnostic(entry,'terminal-switch',event.data.diagnostic);
+  }else if(event.data?.type==='zellij-prompt-submit'){
+    submittedTurn(entry.host,entry.name,event.data.pane_id);
   }else if(event.data?.type==='zellij-key-diagnostic'){
     recordTerminalDiagnostic(entry,'modified-enter',event.data.diagnostic);
   }else if(event.data?.type==='zellij-browser-resume-diagnostic'||event.data?.type==='zellij-browser-resume-received'){
@@ -2762,6 +2764,7 @@ async function refreshAttention(immediate=false,watch=false){
     attentionErrors=data.errors||[];
     const previous=paneAttention;
     paneAttention=keyedAttention(data.panes||[]);
+    showSubmittedTurns();
     for(const [key,state] of previous)if(!paneAttention.has(key)&&attentionError(state.host,state.session,true))paneAttention.set(key,state);
     // The relay also preserves catalogs during failed scans. Use those on a
     // fresh page, and retain browser entries the failed scan could not supply.
@@ -2794,6 +2797,25 @@ async function refreshAttention(immediate=false,watch=false){
 function keyedAttention(states){
   return new Map(states.map(state=>{const key=attentionKey(state.host,state.session,state.pane_id);return [key,{...state,key}];}));
 }
+// An agent reports a new turn only after starting a hook process, so show Working from
+// the moment of submission. Anything newer from the relay replaces it; so does the
+// timeout, when the submission did not start a turn.
+const SUBMITTED_TURN_MS=5000,submittedTurns=new Map();
+function showSubmittedTurns(){
+  for(const [key,turn] of submittedTurns){
+    const state=paneAttention.get(key);
+    if(!state||Date.now()>=turn.at+SUBMITTED_TURN_MS||state.state!==turn.state||state.token!==turn.token){submittedTurns.delete(key);continue;}
+    paneAttention.set(key,{...state,state:'working',since:turn.at/1000});
+  }
+}
+function submittedTurn(host,session,pane){
+  const key=attentionKey(host,session,pane),state=paneAttention.get(key);
+  if(!state?.agent||!['ready','waiting'].includes(state.state))return;
+  const at=Date.now();
+  submittedTurns.set(key,{state:state.state,token:state.token,at});
+  paneAttention.set(key,{...state,state:'working',since:at/1000});render();
+  setTimeout(()=>refreshAttention(),SUBMITTED_TURN_MS+50);
+}
 // An upgrade restarts the relay for about a second. Retry every 250 ms for 10 s
 // instead of waiting for the next poll, and reload hosts once it answers.
 let relayLostAt=0;
@@ -2822,7 +2844,9 @@ const browserDiagnostics=window.SwitchboardBrowserDiagnostics?.(diagnostic=>{
 let conversationSince=null;
 window.SwitchboardConversation?.install({
   viewed:acknowledgeConversation,
-  sending(view){
+  notSent(key){if(submittedTurns.delete(key))refreshAttention();},
+  sending(view,command){
+    if(!command)submittedTurn(view.host,view.session,view.pane);
     const item=allTabs(true).find(item=>item.entry.host===view.host&&item.entry.name===view.session&&item.tab.panes.some(p=>!p.is_plugin&&p.pane_id===view.pane));
     if(item&&parkedTab(item)){delete parkedTabs[canonKey(item.key)];saveParkedTabs();render();}
   },
