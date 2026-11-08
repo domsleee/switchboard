@@ -285,7 +285,7 @@ test('Where viewers attach hidden, Conversation connects the selected terminal i
  }finally{await browser.close();}
 });
 
-test('On a touch screen Conversation opens for reading and never focuses the draft until it is tapped',
+test('On a touch screen Conversation opens for reading, never focuses the draft until it is tapped, and the drawer closes the keyboard',
  {skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
  const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch();
  try{
@@ -302,7 +302,7 @@ test('On a touch screen Conversation opens for reading and never focuses the dra
    if(p.startsWith('/api/chats/'))return json({id:p.split('/').at(-1),agent:'codex',session_id:null,messages:[{role:'assistant',text:'Reply in '+p.split('/').at(-1)}],start_cursor:0,next_cursor:null});
    if(p.startsWith('/hosts/')){
     const session=p.split('/').at(-1),own=pane(session==='main'?1:2,session);
-    return route.fulfill({contentType:'text/html',body:`<script>
+    return route.fulfill({contentType:'text/html',body:`<textarea aria-label="Terminal input"></textarea><script>
       const state=id=>parent.postMessage({type:'zellij-state',focus_id:id,payload:{session_name:${JSON.stringify(session)},active_pane:${JSON.stringify(own)},panes:${JSON.stringify([own])}}},location.origin);
       addEventListener('message',event=>{if(event.data.type==='zellij-focus')state(event.data.focus_id);});state(null);
      </script>`});
@@ -330,6 +330,17 @@ test('On a touch screen Conversation opens for reading and never focuses the dra
   await page.evaluate(()=>activate(allTabs().find(item=>item.tab.id===1)));
   await page.getByText('Reply in chat-1',{exact:true}).waitFor();
   assert.equal(await draftFocused(),false,'Changing conversation while the draft is focused moves focus off the draft');
+  const nothingFocused=()=>page.evaluate(()=>!['TEXTAREA','INPUT','IFRAME'].includes(document.activeElement.tagName));
+  await page.getByLabel('Reply draft').tap();
+  await page.locator('#sidebar-toggle').tap();
+  assert.equal(await nothingFocused(),true,'Opening the drawer takes focus off the draft, closing the keyboard');
+  await page.locator('#sidebar-backdrop').click({position:{x:380,y:400}});
+  await page.getByRole('button',{name:'Terminal',exact:true}).click();
+  const terminalInput=page.frameLocator('iframe.active').getByLabel('Terminal input');
+  await terminalInput.tap();
+  assert.equal(await terminalInput.evaluate(input=>document.activeElement===input&&parent.document.activeElement.tagName==='IFRAME'),true);
+  await page.locator('#sidebar-toggle').tap();
+  assert.equal(await nothingFocused(),true,'Opening the drawer takes focus out of the terminal, closing the keyboard');
   assert.deepEqual(errors,[]);
  }finally{await browser.close();}
 });

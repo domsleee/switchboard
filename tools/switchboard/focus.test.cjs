@@ -557,7 +557,10 @@ for(const hasTouch of [false,true])test(`conversation composer keeps focus throu
     });
     await page.getByRole('button',{name:'Conversation',exact:true}).click();
     const draft=page.getByLabel('Reply draft');
-    assert.equal(await draft.evaluate(node=>node===document.activeElement),true,'Opening Conversation focuses the composer');
+    // Touch screens focus the conversation instead, so navigation never raises the on-screen keyboard.
+    const surface=hasTouch?'.conversation-panel':'.conversation-compose textarea';
+    const surfaceFocused=()=>page.evaluate(selector=>document.activeElement===document.querySelector(selector),surface);
+    assert.equal(await surfaceFocused(),true,'Opening Conversation focuses the composer');
     await draft.fill('keep typing');
     await page.keyboard.press('Alt+KeyT');
     assert.equal(await page.locator('#new-tab-dialog').evaluate(dialog=>dialog.open),true,'Alt+T opens New tab from the conversation composer');
@@ -586,20 +589,21 @@ for(const hasTouch of [false,true])test(`conversation composer keeps focus throu
     await page.keyboard.type('continue');assert.equal(await draft.inputValue(),'continue typing');
     await page.evaluate(()=>{setHidden(allTabs().find(item=>item.tab.id===42),false);render();});
     if(hasTouch)await button(42).tap();else await button(42).click();
-    assert.equal(await draft.evaluate(node=>node===document.activeElement),true,'Switching tabs focuses the new composer');
+    assert.equal(await surfaceFocused(),true,'Switching tabs focuses the new composer');
+    if(hasTouch)await draft.tap();
     await page.keyboard.type('second draft');assert.equal(await draft.inputValue(),'second draft');
     // The first tab is still working; reveal it instead of relying on a fixture
     // poll to overwrite it as ready and pull it out of the Snoozed group.
     if(hasTouch)await page.locator('#snoozed-toggle').tap();else await page.locator('#snoozed-toggle').click();
     if(hasTouch)await button(41).tap();else await button(41).click();
-    assert.equal(await draft.evaluate(node=>node===document.activeElement),true,'Switching back focuses the restored composer');
+    assert.equal(await surfaceFocused(),true,'Switching back focuses the restored composer');
     assert.equal(await draft.inputValue(),'continue typing','Switching back restores the draft');
     await page.locator('#tab-search').click();await page.keyboard.type('Terminal');
     assert.equal(await page.evaluate(()=>document.activeElement.id),'tab-search');
-    await page.keyboard.press('Enter');assert.equal(await draft.evaluate(node=>node===document.activeElement),true);
+    await page.keyboard.press('Enter');assert.equal(await surfaceFocused(),true);
     await page.locator('#settings').click();assert.equal(await page.evaluate(()=>document.activeElement.closest('dialog')?.id),'panel');
     await page.locator('#close-panel').click();
-    await page.waitForFunction(()=>document.activeElement===document.querySelector('.conversation-compose textarea'));
+    await page.waitForFunction(selector=>document.activeElement===document.querySelector(selector),surface);
     await page.evaluate(()=>{setHidden(allTabs().find(item=>item.tab.id===42),true);render();});
     await page.locator('#hidden-toggle').focus();await page.keyboard.press('Space');
     assert.equal(await page.evaluate(()=>document.activeElement.id),'hidden-toggle','Keyboard navigation keeps its focus');
