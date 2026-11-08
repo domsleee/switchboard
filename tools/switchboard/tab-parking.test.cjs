@@ -97,6 +97,11 @@ test('hover snooze and settle preserve the selected view, review state and keybo
         await page.waitForFunction(()=>Object.keys(parkedTabs).length===0);
         assert.equal(await page.locator('#manual-snoozed-toggle').count(),0,'sending wakes a snoozed conversation');
       }
+      const third=page.locator('.tab-row').filter({has:page.locator('.tab-name',{hasText:'Plan the next release'})});
+      await third.hover();await third.getByRole('button',{name:'Settle thread',exact:true}).click();
+      await page.evaluate(()=>{const state=paneAttention.get(attentionKey('desktop','main',3));Object.assign(state,{state:'approval',token:'approval',since:state.since+1});render();});
+      await third.waitFor();assert.equal(await third.locator('.tab-select').evaluate(el=>el.classList.contains('needs-attention')),true,'a settled tab with a new approval returns with its badge');
+      assert.equal(await page.evaluate(()=>allTabs().filter(item=>item.tab.id===3).some(item=>!!parkedTab(item))),false);
       await page.setViewportSize({width:390,height:740});await page.locator('#sidebar-toggle').click();
       await first.locator('.tab-select').click({button:'right'});await page.locator('#snooze-tab').click();
       const bounds=await page.locator('#snooze-menu').boundingBox();

@@ -70,6 +70,19 @@ test('snoozing an existing question holds it, and a new question wakes it',()=>{
   assert.equal(context.sidebarTabs()[0].shelf,undefined);
 });
 
+test('both shelves wake for successive prompts with constant or missing relay tokens',()=>{
+  for(const shelf of ['snoozed','settled'])for(const [state,token] of [['approval','approval'],['input','question'],['approval',undefined]]){
+    const {context,tab}=fixture(),prompt={key:'pane-1',state,token,since:100};
+    context.statesForTab=()=>[prompt];
+    vm.runInContext(source.slice(source.indexOf('function urgentTokens('),source.indexOf('function parkTab(')),context);
+    context.parkedTabs.a={state:shelf,until:60000,urgent:context.urgentTokens(tab)};
+    assert.equal(context.sidebarTabs()[0].shelf,shelf,'an existing prompt can stay parked');
+    prompt.state='working';prompt.since=101;assert.equal(context.sidebarTabs()[0].shelf,shelf);
+    prompt.state=state;prompt.since=102;
+    assert.equal(context.sidebarTabs()[0].shelf,undefined,`${shelf}: a new ${state} with the same token must return`);
+  }
+});
+
 test('manual shelves obey collapse, search and selection without changing tab order',()=>{
   const {context,tab}=fixture();tab.working=false;
   context.parkedTabs.a={state:'settled'};

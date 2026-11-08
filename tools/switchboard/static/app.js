@@ -92,7 +92,7 @@ const seenAttention = load('switchboard-attention-seen');
 let parkedTabs=load('switchboard-parked-tabs');
 function parkedTab(item){return parkedTabs[canonKey(item.key)];}
 function saveParkedTabs(){localStorage.setItem('switchboard-parked-tabs',JSON.stringify(parkedTabs));}
-function urgentTokens(item){return statesForTab(item).filter(s=>['approval','input'].includes(s.state)).map(s=>JSON.stringify([s.key,s.state,s.token]));}
+function urgentTokens(item){return statesForTab(item).filter(s=>['approval','input'].includes(s.state)).map(s=>JSON.stringify([s.key,s.state,s.token,s.since]));}
 function parkTab(item,state,until){
   if(state)parkedTabs[canonKey(item.key)]={state,until,urgent:urgentTokens(item)};
   else delete parkedTabs[canonKey(item.key)];
@@ -581,12 +581,12 @@ function sidebarTabs(){
   clearTimeout(snoozedExitTimer);
   let next=Infinity;
   for(const item of allTabs(true)){
-    const parked=parkedTab(item);if(parked?.state!=='snoozed')continue;
+    const parked=parkedTab(item);if(!parked)continue;
     // Completion and background work do not cancel an explicit snooze. A new
     // question does; an existing question can be snoozed until later.
-    if(parked.until<=now||urgentTokens(item).some(token=>!parked.urgent?.includes(token))||askpassForTab(item)){
+    if(parked.state==='snoozed'&&parked.until<=now||urgentTokens(item).some(token=>!parked.urgent?.includes(token))||askpassForTab(item)){
       delete parkedTabs[canonKey(item.key)];saveParkedTabs();
-    }else next=Math.min(next,parked.until);
+    }else if(parked.state==='snoozed')next=Math.min(next,parked.until);
   }
   for(const key of snoozedPlacement.keys())if(!present.has(key))snoozedPlacement.delete(key);
   const result=tabs.map(item=>{

@@ -372,7 +372,7 @@ test('existing pane-key preferences migrate once to native tab IDs',()=>{
 test('Alt+T opens the New tab dialog once from editable fields but respects open dialogs',()=>{
   let handler,clicks=0,modal=false;
   const context={window:{addEventListener:(_,fn)=>handler=fn},navigator:{platform:'MacIntel'},document:{querySelector:()=>modal?{}:null},$:()=>({click(){clicks++;}})};
-  vm.createContext(context);const start=source.indexOf("window.addEventListener('keydown'");
+  vm.createContext(context);const start=source.indexOf("window.addEventListener('keydown',sidebarKeydown,true);");
   vm.runInContext(source.slice(start,source.indexOf('function renderMachines()',start)),context);
   const key=extra=>{const event={code:'KeyT',ctrlKey:false,altKey:true,metaKey:false,shiftKey:false,target:{closest:()=>null},preventDefault(){this.prevented=true;},stopImmediatePropagation(){},...extra};handler(event);return event;};
   assert.equal(key().prevented,true);assert.equal(clicks,1);key({repeat:true});assert.equal(clicks,1);
