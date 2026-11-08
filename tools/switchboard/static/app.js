@@ -1850,7 +1850,7 @@ $('new-tab-prompt').addEventListener('input',()=>{fitNewTabPrompt();newTabComple
 const newTabCommand=text=>/^\/[a-z][\w:.-]*(?:[ \t][^\n]*)?$/i.test(text.trim());
 function newTabAgent(model=newTabModel()){return newTabModelProvider(model)||(model==='c'?'claude':'codex');}
 let newTabCompletions=null;
-function attachNewTabCompletions(){newTabCompletions??=globalThis.SwitchboardConversation?.attachCompletions?.({draft:$('new-tab-prompt'),parent:$('new-tab-form').querySelector('.new-tab-composer'),id:'new-tab-completions',changed:fitNewTabPrompt,surface(){const host=newTabModelHost();return host&&!newTabHandover&&$('new-tab-dialog').open?{agent:newTabAgent(),host,cwd:$('new-tab-project').value.trim(),owner:host}:null;}})||null;}
+function attachNewTabCompletions(){newTabCompletions??=globalThis.SwitchboardConversation?.attachCompletions?.({draft:$('new-tab-prompt'),parent:$('new-tab-form').querySelector('.new-tab-composer'),id:'new-tab-completions',changed:fitNewTabPrompt,previewSkills:true,surface(){const host=newTabModelHost();return host&&!newTabHandover&&$('new-tab-dialog').open?{agent:newTabAgent(),host,cwd:$('new-tab-project').value.trim(),owner:host}:null;}})||null;}
 $('new-tab').onclick=()=>openNewTabDialog(false);
 $('new-admin-tab').onclick=()=>openNewTabDialog(true);
 function openNewTabDialog(elevated){
@@ -1949,6 +1949,7 @@ function updateNewTabProject(){
   const computer=$('new-tab-target').selectedOptions[0]?.textContent||'this computer';
   $('new-tab-project-warning-text').textContent=state==='unknown'?folder+' isn’t on '+computer+'. The tab would open in the session’s starting folder instead.':'';
   $('new-tab-project-guess-row').hidden=!guess;$('new-tab-project-guess').textContent=guess;$('new-tab-project-guess').dataset.name=guess;
+  newTabCompletions?.paint();
 }
 let newTabProjects=[],newTabProjectMessage='',newTabProjectRequest;
 const newTabProjectLookup=newTabLookup('new-tab-project','new-tab-projects','new-tab-project-lookup',()=>newTabProjects.map(name=>{const path=name.replaceAll('\\','/');return [name,path.includes('/')?path.slice(0,path.lastIndexOf('/')):'',newTabProjectLabel(name)];}),()=>newTabProjectMessage||'No matching folders. Type a name in ~/git or a full path.',()=>{newTabProjectEdited=true;updateNewTabProject();},'new-tab-prompt');

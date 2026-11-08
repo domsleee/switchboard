@@ -20,6 +20,7 @@ for(const [name,width,height] of [['desktop',1280,800],['phone',390,844]])test(`
   await page.route('http://composer.test/**',route=>{
    const p=new URL(route.request().url()).pathname;
    if(p.endsWith('/stream')||p.startsWith('/api/diagnostics/'))return route.fulfill({status:404,body:''});
+   if(p.endsWith('/conversation/skills'))return route.fulfill({json:{skills:[]}});
    if(p.startsWith('/api/chats/'))return route.fulfill({json:{model:'claude-opus-5-5',project:'/work/switchboard',usage:{cost_usd:1.23,input_tokens:1,cache_write_tokens:1,cache_read_tokens:1,output_tokens:1,responses:1,unpriced_tokens:0},messages:[{role:'assistant',text:'Done'}],start_cursor:0,next_cursor:null}});
    if(p==='/')return route.fulfill({contentType:'text/html',body:`<meta charset="utf-8"><link rel="stylesheet" href="/conversation.css"><style>body{margin:0}#terminals{position:relative;height:100vh}</style><main id="terminals"><iframe id="terminal"></iframe><section id="artifact-preview" hidden></section></main><script src="/conversation.js"></script><script>window.current={key:'pane1',host:'fixture',pane:1,title:'Switchboard',agent:'claude',state:'ready',chatId:'chat-1',showCost:true,switchAvailable:true,frame:document.getElementById('terminal')};SwitchboardConversation.install({selection:()=>current,terminal(){},switchModel(){}});</script>`});
    return route.fulfill({path:path.join(static_,path.basename(p)),contentType:p.endsWith('.css')?'text/css':'text/javascript'});

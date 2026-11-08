@@ -27,13 +27,13 @@ test('New tab completes commands and skills for the chosen agent and launches th
     }
     if(p.startsWith('/hosts/'))return route.fulfill({contentType:'text/html',body:`<div id="terminal"><input></div><script>
      window.WebSocket=class extends EventTarget {constructor(){super();this.readyState=1;}send(){}};
-     const input=document.querySelector('input');let count=${created};
+     const input=document.querySelector('input');let count=${created},active=count;
      window.term={element:document.querySelector('#terminal'),options:{disableStdin:false},focus(){input.focus()},blur(){input.blur()},_core:{_renderService:{dimensions:{css:{cell:{width:8,height:16}}}}},buffer:{active:{viewportY:0,getLine:()=>({translateToString:()=>''})}},onRender(){},onResize(){}};
-     window.__zjSendControl=()=>{};
+     window.__zjSendControl=message=>{if(message.type==='FocusPane'){active=message.pane_id===7?0:message.pane_id-8;state();}};
      </script><script src="/bridge.js"></script><script>
      const socket=window.controlSocket=new WebSocket('wss://switchboard.test/ws/control');
-     function state(){const panes=Array.from({length:count+1},(_,i)=>({pane_id:i?8+i:7,is_plugin:false,tab_position:i,title:'~'}));socket.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'MobileState',payload:{session_name:'main',panes,active_pane:panes[count],tabs:panes.map((pane,i)=>({position:i,name:i?'New '+i:'Original',active:i===count}))}})}));}
-     window.confirmCreation=()=>{count++;state();};state();
+     function state(){const panes=Array.from({length:count+1},(_,i)=>({pane_id:i?8+i:7,is_plugin:false,tab_position:i,title:'~'}));socket.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'MobileState',payload:{session_name:'main',panes,active_pane:panes[active],tabs:panes.map((pane,i)=>({position:i,name:i?'New '+i:'Original',active:i===active}))}})}));}
+     window.confirmCreation=()=>{count++;active=count;state();};state();
      </script>`});
     const file=p==='/'?'index.html':p.slice(1),local=path.join(__dirname,'static',path.basename(file));
     if(!fs.existsSync(local))return route.fulfill({status:404,body:''});
@@ -50,6 +50,14 @@ test('New tab completes commands and skills for the chosen agent and launches th
    // Codex: its own commands after /, and its skills after $, spelled as typed.
    await prompt.fill('/rev');await option('/review Review changes').waitFor();await prompt.press('Enter');assert.equal(await prompt.inputValue(),'/review ');assert.equal(launches.length,0);assert.equal(await menu.isVisible(),false);
    await prompt.fill('$br');await option('$bro Codex review').waitFor();assert.deepEqual(skills.at(-1),{cwd:'switchboard'});await prompt.press('Tab');assert.equal(await prompt.inputValue(),'$bro ');assert.equal(await prompt.evaluate(node=>document.activeElement===node),true);
+   const badges=dialog.locator('.conversation-draft-skills .conversation-skill');
+   await badges.waitFor();assert.equal(await badges.getAttribute('data-label'),'bro');
+   await prompt.fill('$bro confirm $bro `$build` $unknown');await prompt.press('Escape');
+   assert.equal(await badges.count(),1,'Selected badges are deduplicated, ignore code and leave unknown names alone');
+   await badges.click();await dialog.locator('.conversation-skill-details:popover-open').waitFor();
+   assert.match(await dialog.locator('.conversation-skill-details').textContent(),/Codex review/);
+   await page.keyboard.press('Escape');assert.equal(await isOpen(),true,'Escape dismisses skill details before the New tab dialog');
+   await prompt.fill('ordinary prompt');assert.equal(await badges.count(),0,'Removing an invocation removes its badge');
    // Escape closes the menu first and the dialog only after that.
    await prompt.fill('/');await menu.waitFor();await prompt.press('Escape');assert.equal(await menu.isVisible(),false);assert.equal(await isOpen(),true);assert.equal(await prompt.inputValue(),'/');
    if(!mobile&&process.env.COMMAND_SCREENSHOTS){await prompt.fill('/rev');await menu.waitFor();await page.screenshot({path:path.join(process.env.COMMAND_SCREENSHOTS,'new-tab-commands.png')});}
@@ -65,6 +73,13 @@ test('New tab completes commands and skills for the chosen agent and launches th
    await prompt.evaluate(node=>node.blur());await prompt.focus();for(let tries=0;!skills.some(item=>item.agent==='claude')&&tries<100;tries++)await page.waitForTimeout(20);assert.deepEqual(skills.at(-1),{cwd:'switchboard',agent:'claude'},'Focus loads the list, so a pasted $skill can be rewritten');
    await prompt.fill('/');await option('/tools:review From a plugin').waitFor();assert.equal(await option('/help Show commands').count(),1);assert.deepEqual(skills.at(-1),{cwd:'switchboard',agent:'claude'});
    await prompt.fill('$rev');await option('$tools:review From a plugin').waitFor();await prompt.press('Enter');assert.equal(await prompt.inputValue(),'/tools:review ');
+   await prompt.fill('/tools:review confirm');
+   if(process.env.SKILL_SCREENSHOTS)await dialog.screenshot({path:path.join(process.env.SKILL_SCREENSHOTS,`new-tab-${mobile?'phone':'desktop'}.png`)});
+   await badges.waitFor();assert.equal(await badges.getAttribute('data-label'),'review');
+   assert.equal(await badges.textContent(),'/tools:review');
+   await badges.click();const details=dialog.locator('.conversation-skill-details:popover-open');await details.waitFor();
+   const box=await details.boundingBox();assert.ok(box.x>=0&&box.x+box.width<=page.viewportSize().width&&box.y>=0&&box.y+box.height<=page.viewportSize().height);
+   assert.match(await details.textContent(),/From a plugin/);await page.keyboard.press('Escape');assert.equal(await isOpen(),true);
    await prompt.fill('use $bro then $missing and $review');await prompt.press('Escape');
    await page.evaluate(()=>document.querySelector('#new-tab-form').requestSubmit());
    await launched(2);assert.equal(launches.at(-1).prompt,'use /bro then $missing and /tools:review');

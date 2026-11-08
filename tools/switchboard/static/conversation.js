@@ -15,6 +15,36 @@
       }
     });
   }
+  // Match whole skill tokens against this host and project's catalog. Keep the original
+  // spelling as the button text (and when copied); CSS supplies its shorter visual label.
+  function skillTextNodes(article){
+    const walker=document.createTreeWalker(article,NodeFilter.SHOW_TEXT),nodes=[];
+    while(walker.nextNode())if(!walker.currentNode.parentElement.closest('pre,code,a,button,.conversation-label,.conversation-outgoing-status'))nodes.push(walker.currentNode);
+    return nodes;
+  }
+  function decorateSkills(article,skills,agent){
+    const names=new Map(skills.map(skill=>[skill.name,skill]));
+    for(const node of skillTextNodes(article)){
+      const text=node.textContent,out=document.createDocumentFragment();let cursor=0;
+      for(const match of text.matchAll(/(^|\s)([$/])([a-zA-Z0-9][\w:.-]*)(?=\s|$)/g)){
+        if(match[2]==='/'&&agent!=='claude')continue;
+        const skill=names.get(match[3]);if(!skill)continue;
+        const start=match.index+match[1].length,raw=match[2]+match[3],label=skill.displayName?.trim()||skill.name.split(':').pop();
+        const chip=el('button',raw,'conversation-skill');chip.type='button';chip.dataset.label=label;chip.title=raw;chip.setAttribute('aria-label','Skill '+label+'. Show details');
+        chip.onclick=()=>{
+          const popup=el('div',undefined,'conversation-skill-details');popup.setAttribute('popover','auto');
+          popup.append(el('strong',label),el('code',raw),el('p',skill.description||'No description is available for this skill.'));
+          popup.addEventListener('toggle',()=>{if(!popup.matches(':popover-open'))popup.remove();});
+          chip.closest('.conversation-panel,dialog').append(popup);popup.showPopover();
+          const rect=chip.getBoundingClientRect(),box=popup.getBoundingClientRect();
+          popup.style.left=Math.max(8,Math.min(rect.left,innerWidth-box.width-8))+'px';
+          popup.style.top=Math.max(8,rect.top>=box.height+8?rect.top-box.height-6:Math.min(rect.bottom+6,innerHeight-box.height-8))+'px';
+        };
+        out.append(text.slice(cursor,start),chip);cursor=start+raw.length;
+      }
+      if(cursor){out.append(text.slice(cursor));node.replaceWith(out);}
+    }
+  }
   // Light highlighting for common languages. Builds text nodes only; transcript text is untrusted.
   const keywords=/^(?:as|async|await|break|case|catch|class|const|continue|def|default|defer|do|elif|else|enum|export|extends|false|fn|for|from|func|function|go|if|impl|import|in|interface|let|loop|match|mod|mut|new|nil|None|null|package|pub|raise|return|self|static|struct|super|switch|this|throw|trait|true|True|False|try|type|typeof|undefined|use|var|where|while|with|yield)$/;
   const hashComments=/^(?:sh|bash|zsh|shell|console|py|python|rb|ruby|toml|yaml|yml|ps1|powershell|dockerfile|make|makefile)$/i;
@@ -68,10 +98,12 @@
   // The / and $ menu shared by the Conversation draft and the New tab prompt. surface() names what
   // the draft talks to: {agent, host, cwd, owner}, or null while it should stay closed.
   const agentCommands={codex:[['rename','Rename this conversation'],['compact','Compact conversation context'],['model','Choose a model'],['permissions','Change permissions'],['status','Show session status'],['skills','Browse skills'],['diff','Show changes'],['review','Review changes'],['resume','Resume a conversation'],['fork','Fork this conversation'],['new','Start a new conversation']],claude:[['rename','Rename this conversation'],['compact','Compact conversation context'],['model','Choose a model'],['permissions','Change permissions'],['status','Show session status'],['help','Show commands'],['clear','Clear conversation context'],['resume','Resume a conversation']]};
-  function attachCompletions({draft,parent,id,surface,changed}){
+  function attachCompletions({draft,parent,id,surface,changed,previewSkills=false}){
     const completions=el('div',undefined,'conversation-completions');completions.id=id;completions.hidden=true;completions.setAttribute('role','listbox');completions.setAttribute('aria-label','Commands and skills');parent.prepend(completions);
     draft.setAttribute('aria-autocomplete','list');draft.setAttribute('aria-controls',id);draft.setAttribute('aria-expanded','false');
-    const skillLists=new Map();let completionItems=[],completionIndex=0,completionToken=null;
+    const skillLists=new Map(),skillArticles=new Map();let completionItems=[],completionIndex=0,completionToken=null;
+    const preview=previewSkills?el('div',undefined,'conversation-draft-skills'):null;
+    if(preview){preview.hidden=true;preview.setAttribute('aria-label','Selected skills');draft.before(preview);}
     const skillKey=current=>JSON.stringify([current.host,current.cwd,current.agent==='claude']);
     function completionContext(){
       const current=surface();if(!current||document.activeElement!==draft||draft.selectionStart!==draft.selectionEnd)return null;
@@ -82,9 +114,10 @@
     function selectCompletion(index){
       const item=completionItems[index],context=completionContext();if(!item||!context)return;
       // Claude Code spells every skill with a slash; $ is only how it was typed here.
-      draft.setRangeText((context.current.agent==='claude'?'/':context.prefix)+item.name+' ',context.start,context.end,'end');closeCompletions();changed();draft.focus({preventScroll:true});
+      draft.setRangeText((context.current.agent==='claude'?'/':context.prefix)+item.name+' ',context.start,context.end,'end');closeCompletions();changed();paintSkillPreview();draft.focus({preventScroll:true});
     }
     function paintCompletions(reset=true){
+      paintSkillPreview();
       const context=completionContext();if(!context){closeCompletions();return;}
       const {current,prefix,query}=context,token=JSON.stringify([current.owner,prefix,query,context.start,context.end]);if(reset&&token!==completionToken)completionIndex=0;completionToken=token;
       const key=skillKey(current),skills=skillLists.get(key),usesSkills=prefix==='$'||current.agent==='claude';
@@ -93,7 +126,9 @@
       // A plugin skill is also found by the part after "plugin:".
       completionItems=source.filter(item=>{const name=item.name.toLowerCase();return name.startsWith(typed)||name.slice(name.indexOf(':')+1).startsWith(typed);}).slice(0,30);
       completions.replaceChildren();completionIndex=Math.min(completionIndex,Math.max(0,completionItems.length-1));
-      completionItems.forEach((item,index)=>{const option=el('button',undefined,'conversation-completion');option.type='button';option.id=id+'-'+index;option.setAttribute('role','option');option.setAttribute('aria-selected',String(index===completionIndex));option.append(el('strong',prefix+item.name),el('span',item.description));option.onpointerdown=event=>event.preventDefault();option.onclick=()=>selectCompletion(index);completions.append(option);});
+      completionItems.forEach((item,index)=>{const option=el('button',undefined,'conversation-completion');option.type='button';option.id=id+'-'+index;option.setAttribute('role','option');option.setAttribute('aria-selected',String(index===completionIndex));
+        const label=el('strong',prefix+item.name);if(item.name.includes(':')){label.className='conversation-completion-skill';label.dataset.label=item.displayName?.trim()||item.name.split(':').pop();label.title=prefix+item.name;option.setAttribute('aria-label',prefix+item.name+' '+item.description);}
+        option.append(label,el('span',item.description));option.onpointerdown=event=>event.preventDefault();option.onclick=()=>selectCompletion(index);completions.append(option);});
       if(prefix==='$'&&!completionItems.length)completions.append(el('small',skills?.error||(!skills||skills.pending?'Loading skills…':'No matching skills')));
       completions.hidden=!completionItems.length&&prefix!=='$';draft.setAttribute('aria-expanded',String(!completions.hidden));
       if(completionItems.length){draft.setAttribute('aria-activedescendant',id+'-'+completionIndex);completions.children[completionIndex].scrollIntoView({block:'nearest'});}else draft.removeAttribute('aria-activedescendant');
@@ -104,7 +139,28 @@
       const entry={pending:true,at:Date.now(),items:skillLists.get(key)?.items};skillLists.set(key,entry);
       try{const response=await fetch('/api/hosts/'+encodeURIComponent(host)+'/conversation/skills',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(agent==='claude'?{cwd,agent}:{cwd}),signal:AbortSignal.timeout(15000)});if(!response.ok)throw Error();const result=await response.json();if(!Array.isArray(result.skills))throw Error();entry.items=result.skills.filter(item=>typeof item.name==='string'&&typeof item.description==='string');}
       catch{entry.error='Skills unavailable. You can still type a skill name.';}
-      finally{entry.pending=false;const current=surface();if(current&&key===skillKey(current))paintCompletions();}
+      finally{entry.pending=false;const current=surface();if(current&&key===skillKey(current))paintCompletions();for(const article of skillArticles.get(key)||[])if(article.isConnected)decorateSkills(article,entry.items||[],agent);skillArticles.delete(key);}
+    }
+    function decorate(article){
+      const current=surface();if(!current||!['codex','claude'].includes(current.agent))return;
+      const pattern=current.agent==='claude'?/(?:^|\s)[$/][a-zA-Z0-9][\w:.-]*(?=\s|$)/:/(?:^|\s)\$[a-zA-Z0-9][\w:.-]*(?=\s|$)/;
+      if(!skillTextNodes(article).some(node=>pattern.test(node.textContent)))return;
+      const key=skillKey(current),items=skillLists.get(key)?.items;
+      if(items)decorateSkills(article,items,current.agent);
+      else{if(!skillArticles.has(key))skillArticles.set(key,new Set());skillArticles.get(key).add(article);ensureSkills(current);}
+    }
+    // Keep the textarea's native caret, selection, undo and IME behavior. Recognized
+    // skills have the same inspectable badges here as in the sent message.
+    function paintSkillPreview(){
+      if(!preview)return;preview.replaceChildren();preview.hidden=true;
+      const current=surface();if(!current||!['codex','claude'].includes(current.agent))return;
+      const content=el('div');textBlocks(content,draft.value);
+      const pattern=current.agent==='claude'?/(?:^|\s)[$/][\w:.-]+(?=\s|$)/:/(?:^|\s)\$[\w:.-]+(?=\s|$)/;
+      if(!skillTextNodes(content).some(node=>pattern.test(node.textContent)))return;
+      const items=skillLists.get(skillKey(current))?.items;if(!items){ensureSkills(current);return;}
+      decorateSkills(content,items,current.agent);const seen=new Set();
+      for(const chip of content.querySelectorAll('.conversation-skill'))if(!seen.has(chip.textContent)){seen.add(chip.textContent);preview.append(chip);}
+      preview.hidden=!preview.childElementCount;
     }
     // Enter, Tab and the arrows belong to an open menu. True means the key was used.
     function completionKey(event){
@@ -128,7 +184,7 @@
     // Claude's list is needed even without the menu: a pasted $skill is still rewritten on send.
     function refreshSkills(){const current=surface();if(current?.agent==='claude'&&document.activeElement===draft)ensureSkills(current);}
     draft.addEventListener('focus',()=>{refreshSkills();paintCompletions();});draft.addEventListener('click',()=>paintCompletions());draft.addEventListener('blur',closeCompletions);
-    return {paint:paintCompletions,close:closeCompletions,key:completionKey,expand:expandSkills,isSkill,refresh:refreshSkills};
+    return {paint:paintCompletions,close:closeCompletions,key:completionKey,expand:expandSkills,isSkill,refresh:refreshSkills,decorate};
   }
   window.SwitchboardConversation={agentIcons,attachCompletions,install({selection,terminal,openConversation=()=>false,modeChanged=()=>{},viewed=()=>{},sending=()=>{},notSent=()=>{},switchModel=null,cancelSwitch=()=>{},idle=()=>{}}){
     const root=document.getElementById('terminals'),drafts=new Map(),attachments=new Map(),retryKeys=new Map();
@@ -218,7 +274,7 @@
       if(!launchShown()){launchNode.remove();return;}
       const {text,attachments}=target.launch,signature=JSON.stringify([target.host,text,attachments]);
       if(launchNode.dataset.signature!==signature){
-        launchNode.dataset.signature=signature;launchNode.replaceChildren(el('div','You','conversation-label'));textBlocks(launchNode,text);
+        launchNode.dataset.signature=signature;launchNode.replaceChildren(el('div','You','conversation-label'));textBlocks(launchNode,text);completions.decorate(launchNode);
         if(attachments?.length&&window.SwitchboardConversationMedia)window.SwitchboardConversationMedia.render(launchNode,{attachments},{host:target.host});
       }
       if(older.nextSibling!==launchNode)older.after(launchNode);
@@ -765,7 +821,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
             if(item.kind==='tool')toolStep(article,item);
             else if(item.async_question&&target?.agent==='codex'&&/^[0-9a-f-]{36}$/.test(chat?.thread||''))renderAsyncQuestion(article,item);
             else{if(window.SwitchboardConversationMedia&&(item.markdown||item.attachments))window.SwitchboardConversationMedia.render(article,item,{host:target.host,project:binding()?.project});else textBlocks(article,item.text||'');
-              decorateCode(article);}
+              decorateCode(article);if(item.role==='user')completions.decorate(article);}
           }
           if(item.truncated)article.append(el('small','Message truncated by history API. Open the terminal for full context.'));
           if(entry){contentResize?.unobserve(entry.node);entry.node.remove();}entry={signature,node:article};rendered.set(key,entry);
@@ -779,7 +835,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       for(const sent of visibleOutgoing){
         const signature=JSON.stringify([sent.text,sent.files.map(file=>file.name),sent.state,sent.detail]);let entry=renderedOutgoing.get(sent.id);
         if(!entry||entry.signature!==signature){
-          const article=el('article',undefined,'conversation-message user conversation-outgoing '+sent.state),label=el('div','You','conversation-label');article.append(label);textBlocks(article,sent.text||'');
+          const article=el('article',undefined,'conversation-message user conversation-outgoing '+sent.state),label=el('div','You','conversation-label');article.append(label);textBlocks(article,sent.text||'');completions.decorate(article);
           article.dataset.conversationEntry='outgoing-'+sent.id;contentResize?.observe(article);
           const mediaFiles=sent.files.filter(file=>file.kind==='image'||file.kind==='video');
           if(window.SwitchboardConversationMedia&&mediaFiles.length)window.SwitchboardConversationMedia.render(article,{attachments:mediaFiles.map(file=>({kind:file.kind,name:file.name,url:file.path}))},{host:sent.host});
