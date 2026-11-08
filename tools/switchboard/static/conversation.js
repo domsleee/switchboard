@@ -166,13 +166,18 @@
     const binding=()=>chat;
     const pendingFor=(key=identity(target))=>pendingSends.get(key);
     function status(text,quiet=false){if(notice.textContent!==text)notice.textContent=text;notice.hidden=quiet;}
-    function modelLabel(value){
+    function modelName(value){
       const raw=String(value?.model||'');
-      const name=/^gpt-\d+(?:\.\d+)?-(?:sol|astra|luna|terra)(?:-codex)?$/i.test(raw)?raw.replace(/^gpt-/i,'').replace(/-/g,' ').replace(/\b[a-z]/g,char=>char.toUpperCase()):/^claude-(opus|sonnet|haiku)-\d+(?:-\d+)?(?:-\d{8})?$/i.test(raw)?raw.replace(/^claude-/i,'').replace(/-\d{8}$/,'').replace(/^(opus|sonnet|haiku)-(\d+)-(\d+)$/i,'$1 $2.$3').replace(/-/g,' ').replace(/^\w/,char=>char.toUpperCase()):raw;
-      return name?[name,value.reasoning_effort].filter(Boolean).join(' · '):'';
+      return /^gpt-\d+(?:\.\d+)?-(?:sol|astra|luna|terra)(?:-codex)?$/i.test(raw)?raw.replace(/^gpt-/i,'').replace(/-/g,' ').replace(/\b[a-z]/g,char=>char.toUpperCase()):/^claude-(opus|sonnet|haiku|fable)-\d+(?:-\d+)?(?:-\d{8})?$/i.test(raw)?raw.replace(/^claude-/i,'').replace(/-\d{8}$/,'').replace(/^(opus|sonnet|haiku|fable)-(\d+)-(\d+)$/i,'$1 $2.$3').replace(/-/g,' ').replace(/^\w/,char=>char.toUpperCase()):raw;
     }
+    function effortName(value){const raw=String(value||'').trim();return /^xhigh$/i.test(raw)?'Extra High':raw.replace(/^\w/,char=>char.toUpperCase());}
     function providerLabel(){const agent=target?.agent||chat?.agent;return agent?agent[0].toUpperCase()+agent.slice(1):'Assistant';}
-    function agentLabel(){return modelLabel(chat)||providerLabel();}
+    // The model, then its effort as a dimmer word, the way T3 Code labels its model button.
+    function paintModel(){
+      const name=modelName(chat),label=name||(chat||target?.agent?providerLabel():''),effort=name?effortName(chat.reasoning_effort):'';
+      if(model.textContent===(effort?`${label} ${effort}`:label))return;
+      if(effort)model.replaceChildren(`${label} `,el('span',effort,'conversation-effort'));else model.textContent=label;
+    }
     // The in-transcript indicator counts up from when the agent started this turn.
     let workingTimer=null;
     function backgroundAgents(){return target?.state==='waiting'&&Array.isArray(chat?.background)?chat.background:[];}
@@ -214,8 +219,7 @@
     }
     function updateActivity(){
       const state=target?.state,label=state==='working'?'Working…':state==='approval'?'Approval needed':state==='input'?'Input needed':state==='waiting'?'Waiting on an agent':state==='ready'?'Ready':'';
-      const name=chat||target?.agent?agentLabel():'';if(model.textContent!==name)model.textContent=name;
-      const short=name.split(' · ')[0];if(short&&short!==name)model.dataset.short=short;else delete model.dataset.short;
+      paintModel();
       if(switchModel)model.disabled=!target?.switchAvailable||!chat||!!pendingFor()||!!(outgoing.get(identity(target))||[]).length||!!(attachments.get(identity(target))||[]).length;
       if(activity.textContent!==label)activity.textContent=label;
       activity.classList.toggle('working',state==='working');

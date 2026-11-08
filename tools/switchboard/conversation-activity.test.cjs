@@ -17,7 +17,7 @@ test('Conversation shows the model, animates real work and keeps delivery receip
   });
   await page.goto('http://activity.test/');await page.getByText('Earlier answer',{exact:true}).waitFor();
   const activity=page.locator('.conversation-activity'),working=page.locator('.conversation-working');
-  assert.equal(await activity.textContent(),'Ready');assert.equal(await page.locator('.conversation-model').textContent(),'6.1 Sol · medium');
+  assert.equal(await activity.textContent(),'Ready');assert.equal(await page.locator('.conversation-model').textContent(),'6.1 Sol Medium');assert.equal(await page.locator('.conversation-model .conversation-effort').textContent(),'Medium','The effort is a separate, dimmer word');
   const labels=page.locator('.conversation-message.assistant .conversation-label');
   assert.equal(await labels.first().textContent(),'Codex');
   assert.equal(await labels.last().textContent(),'Codex');assert.equal(await page.locator('.conversation-compose .conversation-model').count(),1,'The model shows once, in the composer');
@@ -28,7 +28,7 @@ test('Conversation shows the model, animates real work and keeps delivery receip
   await page.locator('.conversation-outgoing').getByText('Queued',{exact:true}).waitFor();
   assert.equal(await working.isVisible(),false,'Queue acknowledgement must not pretend the agent is working');
   await page.evaluate(()=>{current.state='working';SwitchboardConversation.update();});
-  assert.equal(await activity.textContent(),'Working…');assert.equal(await page.locator('.conversation-model').textContent(),'6.1 Sol · medium');
+  assert.equal(await activity.textContent(),'Working…');assert.equal(await page.locator('.conversation-model').textContent(),'6.1 Sol Medium');
   assert.equal(await working.isVisible(),true);
   assert.equal(await working.evaluate(node=>getComputedStyle(node.firstElementChild).animationName),'conversation-spin');
   assert.equal(await activity.evaluate(node=>getComputedStyle(node,'::before').animationName),'conversation-pulse');
@@ -40,7 +40,7 @@ test('Conversation shows the model, animates real work and keeps delivery receip
   await page.emulateMedia({reducedMotion:'no-preference'});
   model='gpt-6-astra';effort='high';
   await Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/')),page.evaluate(()=>intervals.forEach(fn=>fn()))]);
-  await page.waitForFunction(()=>document.querySelector('.conversation-model').textContent==='6 Astra · high');assert.equal(await activity.textContent(),'Working…');
+  await page.waitForFunction(()=>document.querySelector('.conversation-model').textContent==='6 Astra High');assert.equal(await activity.textContent(),'Working…');
   assert.equal(await labels.first().textContent(),'Codex');
   for(const state of ['ready','approval','input']){
    await page.evaluate(state=>{current.state=state;SwitchboardConversation.update();},state);
