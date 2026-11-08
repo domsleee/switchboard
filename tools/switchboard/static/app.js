@@ -1840,14 +1840,16 @@ function fitNewTabDialog(){
 }
 globalThis.visualViewport?.addEventListener('resize',fitNewTabDialog);globalThis.visualViewport?.addEventListener('scroll',fitNewTabDialog);
 // The close event is queued; a reopen before it arrives owns the dialog, so leave its draft alone.
-$('new-tab-dialog').addEventListener('close',()=>{if($('new-tab-dialog').open)return;$('new-tab-form').pendingSubmission?.uploads?.abort();$('new-tab-form').pendingSubmission=null;clearNewTabHandover();newTabBusy(false);clearNewTabFiles();});
+$('new-tab-dialog').addEventListener('close',()=>{if($('new-tab-dialog').open)return;$('new-tab-form').pendingSubmission?.uploads?.abort();$('new-tab-form').pendingSubmission=null;clearNewTabHandover();newTabBusy(false);clearNewTabFiles();runPendingSwitches();});
 $('new-tab-form').onsubmit=async event=>{
   event.preventDefault();const form=$('new-tab-form');if(form.pendingSubmission)return;
   const key=$('new-tab-target').value,project=$('new-tab-project').value.trim(),command=newTabModel(),text=$('new-tab-prompt').value,files=[...newTabFiles],elevated=newTabElevated;
-  const handover=newTabHandover?.context;if(newTabHandover&&!handover)return;
+  const handover=newTabHandover?.context,source=newTabHandover?.source;if(newTabHandover&&!handover)return;
   if(/[\x00-\x08\x0b-\x1f\x7f]/.test(text)||new TextEncoder().encode(text).length>16000){$('new-tab-error').textContent='Use a prompt up to 16 KB without control characters.';return;}
   // Check the computer before spending time on uploads.
   $('new-tab-error').textContent='';clearNewTabFieldProblem();
+  // A busy agent is never interrupted; the switch waits for its turn to end.
+  if(handover&&!switchNow(source)){queueSwitch(source,command,text);return;}
   if(!handover){const problem=newTabTargetProblem(key);if(problem){newTabProblem(...problem);return;}}
   const request={};form.pendingSubmission=request;newTabBusy(true);
   const isCurrent=()=>form.pendingSubmission===request&&$('new-tab-dialog').open;
@@ -1880,29 +1882,19 @@ $('new-tab-form').onsubmit=async event=>{
     if(!isCurrent())return;
     newTabUploadStatus('');if(pending.length)newTabSubmitText(handover?'Switching…':'Creating…');
     files.forEach((item,index)=>(item.file.type.startsWith('image/')?images:others).push(uploaded[index]));
-    let prompt=text;
     if(handover){
       newTabSubmitText('Preparing handover…');
-      const response=await fetch('/api/hosts/'+encodeURIComponent(host)+'/attachments?'+new URLSearchParams({name:'switchboard-context-handover.json'}),{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:JSON.stringify(handover)});
-      if(!isCurrent())return;
-      if(!response.ok)throw Error('Could not transfer context to the destination computer. Try again.');
-      const data=await response.json();if(typeof data.path!=='string'||!data.path||/[\x00-\x1f]/.test(data.path))throw Error('Invalid handover file response. Try again.');
-      prompt=SwitchboardHandover.prompt(data.path,text);
+      if(!await switchAgentModel(source,command,text,handover,isCurrent))return;
+      pendingSwitches.delete(source.tab);
+      try{localStorage.setItem('switchboard-new-tab-model',command);}catch(_){}
+      if(isCurrent())$('new-tab-dialog').close();
+      await refreshAttention(true);setStatus('Continuing with '+(newTabModelProvider(command)==='claude'?'Claude':'Codex')+' in the same tab.');return;
     }
-    prompt+=(others.length?'\n\nAttached files:\n'+others.join('\n'):'');
+    const prompt=text+(others.length?'\n\nAttached files:\n'+others.join('\n'):'');
     if(new TextEncoder().encode(prompt).length>16000)throw Error('The prompt and file paths must fit within 16 KB.');
     try{localStorage.setItem('switchboard-new-tab-model',command);}catch(_){}
-    if(!handover)saveNewTabProject(host,project);
-    if(handover){
-      const source=newTabHandover.source;
-      const response=await fetch('/api/hosts/'+encodeURIComponent(source.host)+'/restart-agent',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...source.target,handover:{model:command,prompt,source_messages:handover.coverage.total_messages}}),signal:AbortSignal.timeout(120000)});
-      if(!response.ok)throw Error(await response.text()||'Could not switch models.');
-      const result=await response.json();
-      if(!Number.isInteger(result.pane_id)||result.tab_id!==source.target.tab_id)throw Error('The switch was not confirmed. Check the terminal before trying again.');
-      globalThis.SwitchboardConversation?.handoverSent?.(source,text,result.pane_id);
-      if(isCurrent())$('new-tab-dialog').close();
-      await refreshAttention(true);setStatus('Continuing with '+(newTabModelProvider(command)==='claude'?'Claude':'Codex')+' in the same tab.');
-    }else await createNewTab(key,{project,command,prompt,images,elevated},isCurrent,text);
+    saveNewTabProject(host,project);
+    await createNewTab(key,{project,command,prompt,images,elevated},isCurrent,text);
   }catch(error){if(isCurrent()){uploads.abort();newTabRetrying=true;newTabProblem(error.message);}}
   finally{if(form.pendingSubmission===request){form.pendingSubmission=null;newTabUploadStatus('');for(const item of files)if(item.state==='uploading')delete item.state;paintNewTabFiles();newTabBusy(false);newTabSubmitText();}}
 };
@@ -2230,22 +2222,75 @@ function restartAgentTarget(item){
   if(!state.restart_available||!['ready','working'].includes(state.state))return null;
   return {session:item.entry.name,pane_id:pane.pane_id,tab_id:item.tab.id,chat_id:state.chat_id,working:state.state==='working'};
 }
+// A model switch is offered in every agent state. One chosen while the agent is busy waits
+// for its turn to end (see runPendingSwitches); an idle agent that cannot restart has none.
+const pendingSwitches=new Map();
+function switchPossible(state){return !!state?.chat_id&&(!!state.restart_available||!['ready','working'].includes(state.state));}
+function newTabModelLabel(value){return NEW_TAB_MODELS.find(([alias])=>alias===value)?.[1]||NEW_TAB_CLAUDE_MODELS.find(([id])=>'claude:'+id===value)?.[1]||[...newTabCodexModels.values()].flatMap(list=>Array.isArray(list)?list:[]).find(({id})=>'codex:'+id===value)?.name||newTabModelParts(value)?.model||value;}
 function openAgentHandover(item,paneId){
-  const target=agentChatTarget(item,paneId);if(!target?.state.restart_available||target.state.state!=='ready'||!globalThis.SwitchboardHandover)return;
+  const target=agentChatTarget(item,paneId);if(!target||!switchPossible(target.state)||!globalThis.SwitchboardHandover)return;
+  const queued=pendingSwitches.get(item.key);if(queued?.running){closeTabMenu();setStatus('The model switch is already running.');return;}
   const host=item.entry.host,chatHost=hosts.get(host)?.local?'local':host;
   const historyUrl=new URL('/api/chats/'+encodeURIComponent(target.state.chat_id),location.origin);historyUrl.search=new URLSearchParams({host:chatHost,context:'true',limit:50});
-  const source={host,chatHost,chatId:target.state.chat_id,agent:target.state.agent,title:tabTitle(item),computer:hosts.get(host)?.name||host,project:target.pane.cwd,historyUrl:historyUrl.href,target:{session:item.entry.name,pane_id:target.pane.pane_id,tab_id:item.tab.id,chat_id:target.state.chat_id}};
-  if(globalThis.SwitchboardConversation?.canHandover?.(source)===false){closeTabMenu();setStatus('Send or remove attached files and wait for pending messages before switching models.',true);return;}
+  const source={host,chatHost,chatId:target.state.chat_id,agent:target.state.agent,title:tabTitle(item),computer:hosts.get(host)?.name||host,project:target.pane.cwd,historyUrl:historyUrl.href,target:{session:item.entry.name,pane_id:target.pane.pane_id,tab_id:item.tab.id,chat_id:target.state.chat_id},tab:item.key};
   closeTabMenu();openNewTabDialog(false);if(!$('new-tab-dialog').open)return;
   const option=[...$('new-tab-target').options].find(option=>JSON.parse(option.value)[0]===host);
   if(!option){$('new-tab-dialog').close();setStatus('The source computer is unavailable.',true);return;}
   $('new-tab-target').value=option.value;paintNewTabMachine();loadNewTabProjects();loadNewTabCodexModels();
-  $('new-tab-title').textContent='Switch model with context';$('new-tab-note').textContent='Continue in this tab with the selected model. Recent messages carry across, as counted below; attachments and tool state stay in the original history.';
-  setNewTabModel(source.agent==='claude'?'csol':'c');
-  $('new-tab-prompt').value=globalThis.SwitchboardConversation?.handoverDraft?.(source)||'';fitNewTabPrompt();
+  const files=globalThis.SwitchboardConversation?.handoverFiles?.(source).length||0;
+  $('new-tab-title').textContent='Switch model with context';$('new-tab-note').textContent='Continue in this tab with the selected model. Recent messages carry across, as counted below; attachments and tool state stay in the original history.'+(files?` ${files===1?'The file attached in the composer goes':'The '+files+' files attached in the composer go'} with your instructions.`:'')+(target.state.state==='ready'?'':' The agent is busy, so the switch waits for its turn to end.');
+  setNewTabModel(queued?.model||(source.agent==='claude'?'csol':'c'));
+  $('new-tab-prompt').value=queued?queued.text:globalThis.SwitchboardConversation?.handoverDraft?.(source)||'';fitNewTabPrompt();
   $('new-tab-dialog').classList.add('handover-mode');
   $('new-tab-prompt-label').textContent='Additional instructions';$('new-tab-prompt').placeholder='Leave blank to carry on where the conversation left off';
   newTabHandover={source};newTabSubmitText();$('handover-preview').hidden=false;loadNewTabHandover();
+}
+// Restarts the agent in its tab with the model, carrying recent history, the
+// instructions and the files uploaded in its composer. Context loads now unless given.
+async function switchAgentModel(source,model,text,context,isCurrent=()=>true){
+  context||=await SwitchboardHandover.load(source,{signal:AbortSignal.timeout(60000)});
+  const response=await fetch('/api/hosts/'+encodeURIComponent(source.host)+'/attachments?'+new URLSearchParams({name:'switchboard-context-handover.json'}),{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:JSON.stringify(context)});
+  if(!isCurrent())return null;
+  if(!response.ok)throw Error('Could not transfer context to the destination computer. Try again.');
+  const data=await response.json();if(typeof data.path!=='string'||!data.path||/[\x00-\x1f]/.test(data.path))throw Error('Invalid handover file response. Try again.');
+  const files=globalThis.SwitchboardConversation?.handoverFiles?.(source)||[],prompt=SwitchboardHandover.prompt(data.path,text)+(files.length?'\n\nAttached files:\n'+files.join('\n'):'');
+  if(new TextEncoder().encode(prompt).length>16000)throw Error('The prompt and file paths must fit within 16 KB.');
+  const restart=await fetch('/api/hosts/'+encodeURIComponent(source.host)+'/restart-agent',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...source.target,handover:{model,prompt,source_messages:context.coverage.total_messages}}),signal:AbortSignal.timeout(120000)});
+  if(!restart.ok)throw Error(await restart.text()||'Could not switch models.');
+  const result=await restart.json();
+  if(!Number.isInteger(result.pane_id)||result.tab_id!==source.target.tab_id)throw Error('The switch was not confirmed. Check the terminal before trying again.');
+  globalThis.SwitchboardConversation?.handoverSent?.(source,text,result.pane_id);
+  return result;
+}
+// Switch at once only when the agent is idle and Conversation has nothing in flight for it.
+function switchNow(source){
+  const state=paneAttention.get(attentionKey(source.host,source.target.session,source.target.pane_id));
+  return state?.state==='ready'&&!!state.restart_available&&state.chat_id===source.chatId&&globalThis.SwitchboardConversation?.canHandover?.(source)!==false;
+}
+function queueSwitch(source,model,text){
+  const label=newTabModelLabel(model);pendingSwitches.set(source.tab,{source,model,text,label});
+  globalThis.SwitchboardConversation?.handoverQueued?.(source,text);
+  $('new-tab-dialog').close();render();setStatus(`Switching to ${label} when this turn ends.`);
+}
+function cancelSwitch(key,message){
+  const pending=pendingSwitches.get(key);if(!pending||pending.running)return;pendingSwitches.delete(key);
+  if(!message)globalThis.SwitchboardConversation?.handoverCancelled?.(pending.source,pending.text);
+  render();setStatus(message||'Model switch cancelled.',!!message);
+}
+// A queued switch runs once its agent is ready and no send is in flight. Approval
+// and input prompts are left to the person. It ends with its tab or its agent.
+async function runPendingSwitches(){
+  for(const [key,pending] of pendingSwitches){
+    if(pending.running||$('new-tab-dialog').open&&newTabHandover?.source.tab===key)continue;
+    const {source}=pending,item=allTabs().find(item=>item.key===key),state=paneAttention.get(attentionKey(source.host,source.target.session,source.target.pane_id));
+    if(!item||!(item.entry.state?tabPanes(item.entry,item.tab):item.tab.panes).some(p=>p.pane_id===source.target.pane_id)||state&&state.chat_id!==source.chatId){cancelSwitch(key,'The model switch was cancelled because its tab or agent changed.');continue;}
+    if(state?.state==='ready'&&!state.restart_available){cancelSwitch(key,'This agent can no longer switch models.');continue;}
+    if(!switchNow(source))continue;
+    pending.running=true;render();
+    try{if(await switchAgentModel(source,pending.model,pending.text)){await refreshAttention(true);setStatus('Continuing with '+(newTabModelProvider(pending.model)==='claude'?'Claude':'Codex')+' in the same tab.');}}
+    catch(error){globalThis.SwitchboardConversation?.handoverCancelled?.(source,pending.text);setStatus('Could not switch models: '+(error.name==='TimeoutError'?'the source computer did not answer in time.':error.message),true);}
+    finally{if(pendingSwitches.get(key)===pending)pendingSwitches.delete(key);render();}
+  }
 }
 $('handover-context').onclick=()=>openAgentHandover(contextItem);
 $('restart-agent').onclick=async()=>{
@@ -2287,8 +2332,8 @@ function updateTabMenu(){
   hide.title=item.hidden?'Move back among your tabs':'Move to Hidden; keep processes running';
   $('restart-agent').disabled=!restartAgentTarget(item)||restartingAgents.has(item.key);
   const switchTarget=agentChatTarget(item);
-  $('handover-context').disabled=!switchTarget?.state.restart_available||switchTarget.state.state!=='ready'||!globalThis.SwitchboardHandover;
-  $('handover-context').title=$('handover-context').disabled?'Available when Claude or Codex is ready and has reported its conversation.':'Switch between Claude and Codex in this tab with conversation context';
+  $('handover-context').disabled=!switchPossible(switchTarget?.state)||!globalThis.SwitchboardHandover;
+  $('handover-context').title=$('handover-context').disabled?'Available when Claude or Codex has reported its conversation and can restart.':'Switch between Claude and Codex in this tab with conversation context';
   $('restart-agent').title=$('restart-agent').disabled?'Available after Codex or Claude reports its conversation. Select the tab to choose among multiple panes.':'Restart only this agent and resume the same conversation';
   $('close-tab').disabled=!closeTabTarget(item);
   $('close-tab').title=$('close-tab').disabled?'Waiting for the terminal to finish connecting':'Close this tab and stop its processes · Ctrl+D';
@@ -2474,6 +2519,8 @@ const browserDiagnostics=window.SwitchboardBrowserDiagnostics?.(diagnostic=>{
 window.SwitchboardConversation?.install({
   viewed:acknowledgeConversation,
   switchModel(view){openAgentHandover(allTabs().find(item=>item.key===selected),view?.pane);},
+  cancelSwitch(){cancelSwitch(selected);},
+  idle(){if(pendingSwitches.size)queueMicrotask(runPendingSwitches);},
   modeChanged(){
     for(const entry of sessions.values())syncTerminalConnection(entry);render();
     // A viewer kept connected through Conversation reclaims its tab size, which
@@ -2487,8 +2534,8 @@ window.SwitchboardConversation?.install({
     const preferred=item.entry.resumePane||active;
     const pane=panes.find(p=>p.pane_id===preferred?.pane_id)||panes.find(p=>p.is_focused)||panes[0];if(!pane)return {key:item.key,host:item.entry.host,frame:item.entry.frame,title:displayTitle(item),starting:!!item.tab.pending,launch:launchFor(item)};
 
-    const state=paneAttention.get(attentionKey(item.entry.host,item.entry.name,pane.pane_id));
-    return {key:JSON.stringify([item.entry.host,item.entry.name,pane.pane_id]),host:item.entry.host,chatHost:hosts.get(item.entry.host)?.local?'local':item.entry.host,session:item.entry.name,tab:item.tab.id,pane:pane.pane_id,frame:item.entry.frame,terminalReady:!item.entry.suspended&&!item.entry.disconnected&&!item.entry.needsFocus&&!item.entry.focusPending&&active?.pane_id===pane.pane_id,title:displayTitle(item),agent:state?.agent,state:state?.state,chatId:state?.chat_id,since:state?.since,computer:hosts.get(item.entry.host)?.name,switchAvailable:!!state?.restart_available&&state.state==='ready',starting:!!item.tab.pending,launch:launchFor(item)};
+    const state=paneAttention.get(attentionKey(item.entry.host,item.entry.name,pane.pane_id)),queued=pendingSwitches.get(item.key);
+    return {key:JSON.stringify([item.entry.host,item.entry.name,pane.pane_id]),host:item.entry.host,chatHost:hosts.get(item.entry.host)?.local?'local':item.entry.host,session:item.entry.name,tab:item.tab.id,pane:pane.pane_id,frame:item.entry.frame,terminalReady:!item.entry.suspended&&!item.entry.disconnected&&!item.entry.needsFocus&&!item.entry.focusPending&&active?.pane_id===pane.pane_id,title:displayTitle(item),agent:state?.agent,state:state?.state,chatId:state?.chat_id,since:state?.since,computer:hosts.get(item.entry.host)?.name,switchAvailable:switchPossible(state),pendingSwitch:queued?.source.target.pane_id===pane.pane_id?queued:null,starting:!!item.tab.pending,launch:launchFor(item)};
   },
   terminal(target){const item=allTabs().find(item=>item.key===selected);if(item&&item.entry.frame===target.frame){item.entry.frame.focus();focus(item);}}
 });

@@ -64,7 +64,7 @@
       requestAnimationFrame(()=>pre.classList.toggle('fits',pre.scrollWidth<=pre.clientWidth+1));
     }
   }
-  window.SwitchboardConversation={agentIcons,install({selection,terminal,modeChanged=()=>{},viewed=()=>{},switchModel=null}){
+  window.SwitchboardConversation={agentIcons,install({selection,terminal,modeChanged=()=>{},viewed=()=>{},switchModel=null,cancelSwitch=()=>{},idle=()=>{}}){
     const root=document.getElementById('terminals'),drafts=new Map(),attachments=new Map(),retryKeys=new Map();
     const mobile=matchMedia('(max-width:700px), (pointer:coarse) and (max-width:1000px)').matches;
     const modeKey=mobile?'switchboard-mobile-view-mode':'switchboard-view-mode';
@@ -101,7 +101,7 @@
     const panel=el('section',undefined,'conversation-panel');
     // CSS keeps a hidden panel laid out (see conversation.css), so hide it from assistive technology here.
     const setPanelHidden=value=>{panel.hidden=value;panel.setAttribute('aria-hidden',String(value));};setPanelHidden(true);panel.tabIndex=-1;panel.setAttribute('aria-label','Agent conversation');
-    const header=el('header'),heading=el('div',undefined,'conversation-heading'),title=el('strong'),model=el(switchModel?'button':'span',undefined,'conversation-model'),activity=el('span',undefined,'conversation-activity'),terminalAction=el('button','Open Terminal','conversation-terminal-action');model.title=switchModel?'Switch between Claude and Codex with context':'Last reported model';if(switchModel){model.type='button';model.setAttribute('aria-label','Switch model with context');model.onclick=()=>switchModel(target);}activity.setAttribute('role','status');terminalAction.type='button';terminalAction.hidden=true;terminalAction.onclick=()=>show(false);const context=el('span',undefined,'conversation-context'),subtitle=el('div',undefined,'conversation-subtitle');subtitle.append(context,activity);heading.append(title,subtitle);header.append(heading,terminalAction);
+    const header=el('header'),heading=el('div',undefined,'conversation-heading'),title=el('strong'),model=el(switchModel?'button':'span',undefined,'conversation-model'),activity=el('span',undefined,'conversation-activity'),terminalAction=el('button','Open Terminal','conversation-terminal-action');model.title=switchModel?'Switch between Claude and Codex with context':'Last reported model';if(switchModel){model.type='button';model.setAttribute('aria-label','Switch model with context');model.onclick=()=>switchModel(target);}const cancelModel=el('button','×','conversation-model-cancel');cancelModel.type='button';cancelModel.hidden=true;cancelModel.setAttribute('aria-label','Cancel model switch');cancelModel.title='Cancel model switch';cancelModel.onclick=()=>cancelSwitch(target);activity.setAttribute('role','status');terminalAction.type='button';terminalAction.hidden=true;terminalAction.onclick=()=>show(false);const context=el('span',undefined,'conversation-context'),subtitle=el('div',undefined,'conversation-subtitle');subtitle.append(context,activity);heading.append(title,subtitle);header.append(heading,terminalAction);
     const notice=el('p','Loading this terminal’s conversation…','conversation-notice');notice.setAttribute('role','status');
     const list=el('div',undefined,'conversation-messages'),older=el('button','Load older messages'),refresh=el('button','↻'),latest=el('button','↓');refresh.setAttribute('aria-label','Refresh');refresh.title='Refresh conversation';latest.setAttribute('aria-label','Scroll to bottom');latest.title='Scroll to bottom';older.hidden=true;
     // One live row: a pulsing marker, the step in progress (or "Working"), and the elapsed time.
@@ -123,7 +123,7 @@
       catch{if(identity(target)===identity(destination))sendStatus('Could not interrupt the agent. Open Terminal and press Esc.');}
       finally{stop.disabled=false;}
     };
-    form.append(files,attach,draft,model,insert,stop,picker);
+    form.append(files,attach,draft,model,cancelModel,insert,stop,picker);
     const sendNotice=el('small',undefined,'conversation-send-notice');sendNotice.hidden=true;sendNotice.setAttribute('role','status');form.append(sendNotice);
     const transportNotice=el('small','Replies use Terminal briefly, then return here.','conversation-transport-notice');transportNotice.hidden=true;form.append(transportNotice);
     const completions=el('div',undefined,'conversation-completions');completions.id='conversation-completions';completions.hidden=true;completions.setAttribute('role','listbox');completions.setAttribute('aria-label','Commands and skills');form.prepend(completions);
@@ -189,11 +189,13 @@
     function effortName(value){const raw=String(value||'').trim();return /^xhigh$/i.test(raw)?'Extra High':raw.replace(/^\w/,char=>char.toUpperCase());}
     function providerLabel(){const agent=target?.agent||chat?.agent;return agent?agent[0].toUpperCase()+agent.slice(1):'Assistant';}
     // The model, then its effort as a dimmer word, the way T3 Code labels its model button.
+    // A switch waiting for the turn to end shows where it goes instead of the effort.
     function paintModel(){
-      const name=modelName(chat),label=name||(chat||target?.agent?providerLabel():''),effort=name?effortName(chat.reasoning_effort):'',agent=label?target?.agent||chat?.agent||'':'',signature=JSON.stringify([agent,label,effort]);
+      const name=modelName(chat),pending=target?.pendingSwitch,base=name||(chat||target?.agent?providerLabel():''),label=base+(pending?` → ${pending.label} · ${pending.running?'switching…':'after this turn'}`:''),effort=name&&!pending?effortName(chat.reasoning_effort):'',agent=base?target?.agent||chat?.agent||'':'',signature=JSON.stringify([agent,label,effort,!!pending]);
+      model.classList.toggle('pending',!!pending);model.title=pending?label+(pending.text?'\nInstructions: '+pending.text:''):switchModel?'Switch between Claude and Codex with context':'Last reported model';
       if(model.dataset.painted===signature)return;model.dataset.painted=signature;
       const icon=agentIcons[agent]?el('span',undefined,'conversation-model-icon'):null;if(icon){icon.innerHTML=agentIcons[agent];icon.setAttribute('aria-hidden','true');}
-      model.replaceChildren(...(icon?[icon]:[]),effort?`${label} `:label,...(effort?[el('span',effort,'conversation-effort')]:[]));
+      model.replaceChildren(...(icon?[icon]:[]),...(pending?[el('span',label,'conversation-model-label')]:[effort?`${label} `:label,...(effort?[el('span',effort,'conversation-effort')]:[])]));
     }
     // The in-transcript indicator counts up from when the agent started this turn.
     let workingTimer=null;
@@ -237,7 +239,8 @@
     function updateActivity(){
       const state=target?.state,label=state==='working'?'Working…':state==='approval'?'Approval needed':state==='input'?'Input needed':state==='waiting'?'Waiting on an agent':state==='ready'?'Ready':'';
       paintModel();
-      if(switchModel)model.disabled=!target?.switchAvailable||!chat||!!pendingFor()||!!(outgoing.get(identity(target))||[]).length||!!(attachments.get(identity(target))||[]).length;
+      // The model stays a control whenever there is an agent chat; a busy agent switches after its turn.
+      if(switchModel){model.disabled=!target?.switchAvailable||!chat;cancelModel.hidden=!target?.pendingSwitch||!!target.pendingSwitch.running;}
       if(activity.textContent!==label)activity.textContent=label;
       activity.classList.toggle('working',state==='working');
       const follow=nearBottom();paintLaunch();working.hidden=!launchShown()&&(!chat||!(state==='working'||state==='waiting'&&!backgroundAgents().length));tickWorking();
@@ -253,7 +256,7 @@
       const placeholder=target?.agent?`Ask ${providerLabel()} a follow-up…`:'Message…';if(draft.placeholder!==placeholder)draft.placeholder=placeholder;
       transportNotice.hidden=!chat||!(target?.terminalReady===false&&target?.agent!=='claude'&&!(target?.agent==='codex'&&/^[0-9a-f-]{36}$/.test(chat.thread||'')));
       insert.setAttribute('aria-label',transportNotice.hidden?'Send':'Send via Terminal');insert.title=transportNotice.hidden?'Send message':'Send via Terminal and return to Conversation';
-      paintPrompt();void loadPrompt();
+      paintPrompt();void loadPrompt();idle();
     }
     function promptTarget(){const t=target;return open&&!panel.hidden&&!document.hidden&&t?.agent==='claude'&&['approval','input'].includes(t.state)&&!!t.session&&Number.isInteger(t.pane)&&Number.isInteger(t.tab)&&!promptHosts.has(t.host)?t:null;}
     const fits=(value,limit)=>typeof value==='string'&&value.length<=limit;
@@ -705,10 +708,17 @@
     window.addEventListener('pagehide',()=>{stopStream();loadRequest?.abort();});
     window.SwitchboardConversation.hasUnsentWork=()=>!!pendingSends.size||[...outgoing.values()].some(items=>items.length)||!!draft.value||[...drafts.values()].some(Boolean)||[...attachments.values()].some(files=>files.length);
     const handoverKey=source=>JSON.stringify([JSON.stringify([source.host,source.target.session,source.target.pane_id]),source.chatId]);
-    window.SwitchboardConversation.canHandover=source=>{const key=handoverKey(source);return !pendingFor(key)&&!(outgoing.get(key)||[]).length&&!(attachments.get(key)||[]).length;};
+    // A switch waits for sends still on their way and for uploads; failed ones do not hold it.
+    window.SwitchboardConversation.canHandover=source=>{const key=handoverKey(source);return !pendingFor(key)&&!(outgoing.get(key)||[]).some(item=>!['failed','uncertain'].includes(item.state))&&!fileList(key).some(item=>!item.path&&!item.error);};
+    window.SwitchboardConversation.handoverFiles=source=>fileList(handoverKey(source)).filter(item=>item.path).map(item=>item.path);
+    // A queued switch takes the draft it was given; cancelling or failing puts it back.
+    window.SwitchboardConversation.handoverQueued=(source,text)=>{const key=handoverKey(source);if((identity(target)===key?draft.value:drafts.get(key)||'')!==text)return;if(identity(target)===key){draft.value='';sizeDraft();}drafts.delete(key);};
+    window.SwitchboardConversation.handoverCancelled=(source,text)=>{const key=handoverKey(source),current=identity(target)===key?draft.value:drafts.get(key)||'';if(!text||current.includes(text))return;const value=current?current+'\n\n'+text:text;drafts.set(key,value);if(identity(target)===key){draft.value=value;sizeDraft();}};
     window.SwitchboardConversation.handoverDraft=source=>identity(target)===handoverKey(source)?draft.value:drafts.get(handoverKey(source))||'';
     window.SwitchboardConversation.handoverSent=(source,text,pane)=>{
       const key=handoverKey(source),original=identity(target)===key?draft.value:drafts.get(key)||'',next=JSON.stringify([source.host,source.target.session,pane]);
+      // Files that went with the instructions leave the composer; failed uploads are dropped.
+      for(const item of fileList(key))if(item.preview)URL.revokeObjectURL(item.preview);attachments.delete(key);if(identity(target)===key)paintFiles();
       if(identity(target)===key)draft.value='';drafts.delete(key);
       if(original&&original!==text){if(target?.key===next&&!draft.value){draft.value=original;drafts.set(identity(target),original);}else handoverDrafts.set(next,original);}
     };

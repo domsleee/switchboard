@@ -119,3 +119,72 @@ test('the shipped handover dialog switches providers in place and preserves cont
   finally{releaseHistory?.();await page.close();}
  });}finally{await browser.close();}
 });
+
+test('the model switch stays available while the agent works and waits for its turn to end',
+ {skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
+ const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch();
+ const page=await browser.newPage({viewport:{width:1280,height:900}}),errors=[],uploads=[],created=[],requests=[];page.setDefaultTimeout(7000);
+ let state='ready',switched=false;
+ const history=[{role:'user',text:'Original task'},{role:'assistant',text:'First answer'}];
+ await page.addInitScript(()=>{localStorage.setItem('switchboard-view-mode','conversation');window.setInterval=()=>0;});
+ page.on('pageerror',error=>errors.push(error.message));
+ await page.route('http://busy-switch.test/**',async route=>{
+  const url=new URL(route.request().url()),p=url.pathname,json=value=>route.fulfill({json:value}).catch(()=>{});requests.push(p);
+  if(p==='/api/hosts')return json([{id:'fixture',name:'Desktop',local:true}]);
+  if(p==='/api/hosts/fixture')return json({id:'fixture',name:'Desktop',local:true,sessions:[{name:'main',web_clients_allowed:true}]});
+  // Like the relay: a restartable agent reports it only while ready or working.
+  if(p==='/api/attention')return json({tabs:[{host:'fixture',session:'main',id:1,position:0,name:'Source work',panes:[{pane_id:switched?2:1,is_plugin:false,tab_position:0,cwd:'/home/fixture/git/project'}]},{host:'fixture',session:'main',id:3,position:1,name:'Other work',panes:[{pane_id:3,is_plugin:false,tab_position:1,cwd:'/home/fixture'}]}],panes:[{host:'fixture',session:'main',pane_id:switched?2:1,agent:switched?'codex':'claude',state:switched?'ready':state,chat_id:switched?'destination-chat':'source-chat',restart_available:switched||['ready','working'].includes(state)}],errors:[]});
+  if(p==='/api/chats/source-chat'||p==='/api/chats/destination-chat')return json({project:'/home/fixture/git/project',model:'claude-opus-5-5',message_count:history.length,start_cursor:0,next_cursor:null,messages:history.map(m=>({...m,context_text:m.text,context_truncated:false}))});
+  if(p==='/api/hosts/fixture/attachments'){
+   const name=url.searchParams.get('name');if(name==='switchboard-context-handover.json')uploads.push(JSON.parse(route.request().postData()));
+   return json({path:'/home/fixture/attachments/'+name});
+  }
+  if(p==='/api/hosts/fixture/restart-agent'){created.push(route.request().postDataJSON());switched=true;return json({pane_id:2,tab_id:1});}
+  if(p.startsWith('/api/'))return json({});
+  if(p.startsWith('/hosts/'))return route.fulfill({status:500,body:'A model switch must not attach a terminal viewer'});
+  const file=path.join(__dirname,'static',p==='/'?'index.html':p.slice(1));
+  return fs.existsSync(file)?route.fulfill({path:file,contentType:p.endsWith('.js')?'text/javascript':p.endsWith('.css')?'text/css':'text/html'}):route.fulfill({status:404,body:''});
+ });
+ const chip=page.getByRole('button',{name:'Switch model with context',exact:true}),cancel=page.getByRole('button',{name:'Cancel model switch'}),draft=page.getByLabel('Reply draft');
+ const attention=async next=>{state=next;await page.evaluate(()=>refreshAttention(true));};
+ try{
+  await page.goto('http://busy-switch.test/?host=fixture&session=main&tab=1');await page.getByText('First answer').waitFor();
+  // A reply the agent has not yet shown in its transcript stays queued, and the chip stays a control.
+  await draft.fill('Please continue');await page.getByRole('button',{name:'Send',exact:true}).click();
+  await page.locator('.conversation-outgoing').getByText('Queued',{exact:true}).waitFor();assert.equal(await chip.isEnabled(),true);
+  await attention('working');assert.equal(await page.locator('.conversation-activity').textContent(),'Working…');assert.equal(await chip.isEnabled(),true);
+  // An attachment waiting in the composer does not block the switch either; it goes with the instructions.
+  const [chooser]=await Promise.all([page.waitForEvent('filechooser'),page.getByRole('button',{name:'Attach files'}).click()]);await chooser.setFiles({name:'notes.txt',mimeType:'text/plain',buffer:Buffer.from('notes')});
+  await page.locator('.conversation-attachment').getByText('Ready',{exact:true}).waitFor();assert.equal(await chip.isEnabled(),true);
+  await draft.fill('Then tidy up');
+  const choose=async()=>{
+   await chip.click();await page.getByText(/2 messages included/).waitFor();
+   assert.match(await page.locator('#new-tab-note').textContent(),/The file attached in the composer goes with your instructions\. The agent is busy, so the switch waits for its turn to end\./);
+   assert.equal(await page.getByLabel('Additional instructions',{exact:true}).inputValue(),'Then tidy up');
+   await page.evaluate(()=>setNewTabModel('claude:claude-sonnet-5-5'));await page.getByRole('button',{name:'Switch model',exact:true}).click();
+   await page.waitForFunction(()=>!document.querySelector('#new-tab-dialog').open);
+  };
+  await choose();
+  assert.equal(await page.locator('.conversation-model').textContent(),'Opus 5.5 → Sonnet 5.5 · after this turn');assert.equal(await chip.isEnabled(),true);assert.equal(await cancel.isVisible(),true);
+  assert.equal(await draft.inputValue(),'','The instructions moved into the queued switch');assert.equal(created.length,0,'A busy agent is not interrupted');
+  // Cancelling restores the instructions to the composer.
+  await cancel.click();assert.equal(await page.locator('.conversation-model').textContent(),'Opus 5.5');assert.equal(await cancel.isVisible(),false);assert.equal(await draft.inputValue(),'Then tidy up');
+  await choose();await page.locator('.conversation-model',{hasText:'→ Sonnet 5.5'}).waitFor();
+  // The queued switch belongs to its tab and survives visiting another one.
+  const visit=name=>page.evaluate(name=>activate(allTabs().find(item=>item.tab.name===name)),name);
+  await visit('Other work');await page.waitForFunction(()=>!document.querySelector('.conversation-model').textContent.includes('→'));
+  await visit('Source work');await page.locator('.conversation-model',{hasText:'Opus 5.5 → Sonnet 5.5 · after this turn'}).waitFor();
+  // Approval stays with the person; a ready agent still waits for the queued reply to reach its transcript.
+  await attention('approval');await attention('ready');assert.equal(created.length,0);assert.match(await page.locator('.conversation-model').textContent(),/after this turn/);
+  history.push({role:'user',text:'Please continue'},{role:'assistant',text:'Finished this turn'});
+  await page.evaluate(()=>dispatchEvent(new Event('focus')));
+  await page.waitForFunction(()=>!document.querySelector('.conversation-model')?.classList.contains('pending'));
+  assert.equal(created.length,1);assert.equal(created[0].pane_id,1);assert.equal(created[0].chat_id,'source-chat');assert.equal(created[0].handover.model,'claude:claude-sonnet-5-5');
+  assert.ok(created[0].handover.prompt.endsWith('Then tidy up\n\nAttached files:\n/home/fixture/attachments/notes.txt'));
+  assert.equal(uploads.length,1,'Context loads when the switch runs');assert.equal(uploads.at(-1).messages.at(-1).text,'Finished this turn');
+  assert.equal(await page.locator('.conversation-attachment').count(),0,'Carried files leave the composer');
+  assert.equal(requests.some(p=>p.endsWith('/escape')||p.endsWith('/conversation/answer')),false);
+  assert.deepEqual(errors,[]);
+ }catch(error){error.message+='\nPage errors: '+JSON.stringify(errors)+'\nRequests: '+JSON.stringify(requests)+'\nPage: '+(await page.locator('body').innerText()).slice(-3000);throw error;}
+ finally{await browser.close();}
+});
