@@ -635,6 +635,31 @@ fn subscribe(
 
 const PEER_RESTART_GRACE: Duration = Duration::from_secs(30);
 
+/// An engine that is slow to scan processes reports some panes without a folder. Keep each
+/// pane's last known folder until a new one is read, so its project does not blink in and out.
+fn keep_known_folders(previous: &Value, snapshot: &mut Value) {
+    let mut known = HashMap::new();
+    for tab in previous["tabs"].as_array().into_iter().flatten() {
+        for pane in tab["panes"].as_array().into_iter().flatten() {
+            if pane["cwd"].is_string() {
+                known.insert((tab["session"].to_string(), pane["pane_id"].as_u64()), pane);
+            }
+        }
+    }
+    for tab in snapshot["tabs"].as_array_mut().unwrap() {
+        let session = tab["session"].to_string();
+        for pane in tab["panes"].as_array_mut().into_iter().flatten() {
+            if !pane["cwd"].is_null() {
+                continue;
+            }
+            if let Some(last) = known.get(&(session.clone(), pane["pane_id"].as_u64())) {
+                pane["cwd"] = last["cwd"].clone();
+                pane["repo"] = last["repo"].clone();
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct PollState {
     cache: HashMap<String, Value>,
@@ -730,6 +755,7 @@ impl PollState {
                     snapshot[field].as_array_mut().unwrap().extend(reused);
                 }
             }
+            keep_known_folders(previous, snapshot);
         }
         let mut changed = false;
         for row in snapshot["panes"].as_array_mut().unwrap() {
@@ -3528,6 +3554,50 @@ esac
         codex("working", None);
         assert_eq!(codex("ready", Some("worked")), "worked:1");
     }
+    #[test]
+    fn switchboard_a_missed_folder_keeps_the_panes_last_known_project() {
+        let report = |session: &str, cwd: Value, repo: Value| {
+            json!({"panes":[],"errors":[],"tabs":[{"session":session,"id":4,"panes":[
+                {"pane_id":1,"cwd":cwd,"repo":repo}
+            ]}]})
+        };
+        let pane = |snapshot: &Value| snapshot["tabs"][0]["panes"][0].clone();
+        let mut poll = PollState::default();
+        poll.update("peer", &mut report("main", json!("/git/app"), json!("app")));
+        let version = *poll.changes.borrow();
+
+        let mut missed = report("main", Value::Null, Value::Null);
+        poll.update("peer", &mut missed);
+        assert_eq!(pane(&missed)["cwd"], "/git/app");
+        assert_eq!(pane(&missed)["repo"], "app");
+        assert_eq!(
+            *poll.changes.borrow(),
+            version,
+            "a missed folder must not wake sidebars"
+        );
+
+        let mut other = report("other", Value::Null, Value::Null);
+        poll.update("second-peer", &mut other);
+        assert!(
+            pane(&other)["cwd"].is_null(),
+            "folders stay with their computer"
+        );
+
+        let mut moved = report("main", json!("/git/lib"), json!("lib"));
+        poll.update("peer", &mut moved);
+        assert_eq!(
+            pane(&moved)["repo"],
+            "lib",
+            "a new folder replaces the old one"
+        );
+        let mut plain = report("main", json!("/tmp"), Value::Null);
+        poll.update("peer", &mut plain);
+        assert!(
+            pane(&plain)["repo"].is_null(),
+            "a folder outside a repository has no project"
+        );
+    }
+
     #[test]
     fn stable_tabs_and_notification_generations() {
         let panes = vec![
