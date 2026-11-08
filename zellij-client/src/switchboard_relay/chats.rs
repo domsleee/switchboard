@@ -211,6 +211,7 @@ impl HistoryIndex {
             reasoning_effort: self.chat.reasoning_effort.clone(),
             partial: self.chat.partial,
             partial_reasons: self.chat.partial_reasons.clone(),
+            background: self.chat.background.clone(),
             ..Chat::default()
         };
         let mut opened = None;
@@ -347,6 +348,20 @@ struct Chat {
     embedded_bytes: usize,
     /// The last Claude record called a tool, so the text before it was a progress note.
     used_tool: bool,
+    /// Claude background agents launched and not yet reported finished, oldest first.
+    background: Vec<BackgroundAgent>,
+}
+#[derive(Clone)]
+struct BackgroundAgent {
+    tool_use_id: String,
+    agent_id: String,
+    description: String,
+    started: Value,
+}
+/// The text of the first `<name>…</name>` element in `text`.
+fn tag_text<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+    let (_, rest) = text.split_once(&format!("<{name}>"))?;
+    Some(rest.split_once(&format!("</{name}>"))?.0.trim())
 }
 fn clip(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
@@ -860,6 +875,77 @@ impl Chat {
             self.messages.last_mut().unwrap()["attachments"] = json!(attachments);
         }
     }
+    /// Follows Claude's background agents (2.1.319): an Agent result with status
+    /// `async_launched` starts one; a task notification for its tool call or agent id,
+    /// queued or delivered, or a TaskStop of that id ends it. A new Claude process
+    /// (SessionStart on startup or resume) leaves none running.
+    fn track_background(&mut self, v: &Value) {
+        let finished = |agents: &mut Vec<BackgroundAgent>, text: &str| {
+            if !text.contains("<task-notification>") {
+                return;
+            }
+            let call = tag_text(text, "tool-use-id");
+            let task = tag_text(text, "task-id");
+            agents.retain(|agent| {
+                call != Some(agent.tool_use_id.as_str()) && task != Some(agent.agent_id.as_str())
+            });
+        };
+        match v["type"].as_str() {
+            Some("attachment") => {
+                let attachment = &v["attachment"];
+                if attachment["hookEvent"] == "SessionStart"
+                    && matches!(
+                        attachment["hookName"].as_str(),
+                        Some("SessionStart:startup" | "SessionStart:resume")
+                    )
+                {
+                    self.background.clear();
+                }
+            },
+            Some("queue-operation") if v["operation"] == "enqueue" => {
+                finished(
+                    &mut self.background,
+                    v["content"].as_str().unwrap_or_default(),
+                );
+            },
+            Some("user") => {
+                let result = &v["toolUseResult"];
+                if result["status"] == "async_launched" {
+                    let call = v["message"]["content"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .find_map(|part| part["tool_use_id"].as_str());
+                    if let (Some(call), Some(agent_id)) = (call, result["agentId"].as_str()) {
+                        if !self.background.iter().any(|a| a.tool_use_id == call)
+                            && self.background.len() < 32
+                        {
+                            self.background.push(BackgroundAgent {
+                                tool_use_id: clip(call, 128),
+                                agent_id: clip(agent_id, 128),
+                                description: clip(
+                                    one_line(result["description"].as_str().unwrap_or_default())
+                                        .as_str(),
+                                    120,
+                                ),
+                                started: v["timestamp"].clone(),
+                            });
+                        }
+                    }
+                }
+                finished(&mut self.background, &content(&v["message"]["content"]));
+            },
+            Some("assistant") => {
+                for part in v["message"]["content"].as_array().into_iter().flatten() {
+                    if part["type"] == "tool_use" && part["name"] == "TaskStop" {
+                        let id = part["input"]["task_id"].as_str().unwrap_or_default();
+                        self.background.retain(|agent| agent.agent_id != id);
+                    }
+                }
+            },
+            _ => (),
+        }
+    }
     fn record(&mut self, v: &Value, depth: usize) {
         if depth > 2 {
             self.partial = true;
@@ -922,6 +1008,7 @@ impl Chat {
         }
         match self.agent.as_str() {
             "claude" => {
+                self.track_background(v);
                 if v["type"] == "assistant" {
                     if let Some(model) = v["message"]["model"]
                         .as_str()
@@ -1127,7 +1214,8 @@ impl Chat {
     fn summary(&self) -> Value {
         json!({"id":self.id,"session_id":clip(&self.session_id,256),"agent":self.agent,"title":self.title,
             "project":clip(&self.project,4096),"model":self.model,"reasoning_effort":self.reasoning_effort,
-            "timestamp":self.messages.last().map(|m| &m["timestamp"]),"partial":self.partial,"partial_reasons":self.partial_reasons})
+            "timestamp":self.messages.last().map(|m| &m["timestamp"]),"partial":self.partial,"partial_reasons":self.partial_reasons,
+            "background_agents":self.background.iter().map(|a| json!({"description":a.description,"started":a.started})).collect::<Vec<_>>()})
     }
 }
 fn roots() -> Vec<(&'static str, PathBuf)> {
@@ -2706,6 +2794,66 @@ mod tests {
         // A command that is not the call's first field falls back to the tool name.
         let late = "await tools.exec_command({workdir:\"/repo\",cmd:\"cargo test\"});";
         assert_eq!(code_mode(late), ("tool", "exec_command".into()));
+    }
+
+    #[test]
+    fn switchboard_chats_name_claude_background_agents_until_they_finish() {
+        // Claude Code 2.1.319 records, trimmed.
+        let launch = |call: &str, agent: &str, description: &str| {
+            json!({"type":"user","timestamp":"2026-11-07T22:16:38.546Z",
+                "toolUseResult":{"isAsync":true,"status":"async_launched","agentId":agent,"description":description},
+                "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":call,"content":"Async agent launched successfully."}]}})
+        };
+        let notice = |call: &str, agent: &str| {
+            format!("<task-notification>\n<task-id>{agent}</task-id>\n<tool-use-id>{call}</tool-use-id>\n<status>completed</status>\n<summary>Agent finished</summary>\n<result>Uses <b>tags</b></result>\n</task-notification>")
+        };
+        let queued = |call: &str, agent: &str| json!({"type":"queue-operation","operation":"enqueue","content":notice(call, agent)});
+        let delivered = |call: &str, agent: &str| {
+            json!({"type":"user","origin":{"kind":"task-notification","producer":"session-task"},
+                "message":{"role":"user","content":notice(call, agent)}})
+        };
+        let stop = |agent: &str| json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"t","name":"TaskStop","input":{"task_id":agent}}]}});
+        let start = |how: &str| json!({"type":"attachment","attachment":{"type":"hook_success","hookName":format!("SessionStart:{how}"),"hookEvent":"SessionStart"}});
+        let names = |records: Vec<Value>| -> Vec<String> {
+            chat("claude", records).summary()["background_agents"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| a["description"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        let (one, two) = (
+            launch("toolu_1", "a1", "Review the diff"),
+            launch("toolu_2", "a2", "Run the e2e suite"),
+        );
+        assert_eq!(
+            names(vec![one.clone(), one.clone(), two.clone()]),
+            ["Review the diff", "Run the e2e suite"],
+            "A repeated launch record is one agent"
+        );
+        assert_eq!(
+            names(vec![one.clone(), two.clone(), queued("toolu_1", "a1")]),
+            ["Run the e2e suite"]
+        );
+        assert_eq!(
+            names(vec![one.clone(), two.clone(), delivered("toolu_2", "a2")]),
+            ["Review the diff"]
+        );
+        assert_eq!(
+            names(vec![one.clone(), two.clone(), stop("a1")]),
+            ["Run the e2e suite"]
+        );
+        assert_eq!(
+            names(vec![one.clone(), start("compact")]),
+            ["Review the diff"],
+            "Compaction keeps background agents running"
+        );
+        assert!(names(vec![one.clone(), two.clone(), start("resume")]).is_empty());
+        // A background shell's notification names no agent.
+        assert_eq!(
+            names(vec![one, queued("toolu_9", "b9")]),
+            ["Review the diff"]
+        );
     }
 
     #[test]

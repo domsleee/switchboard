@@ -3,7 +3,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),path=requir
 test('Conversation shows the model, animates real work and keeps delivery receipts separate',
  {skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
  const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch();
- let model='gpt-6.1-sol',effort='medium';
+ let model='gpt-6.1-sol',effort='medium',background=[];
  try{
   const page=await browser.newPage({viewport:{width:390,height:844},isMobile:true,hasTouch:true});page.setDefaultTimeout(5000);
   const errors=[];page.on('pageerror',error=>errors.push(error.message));
@@ -11,7 +11,7 @@ test('Conversation shows the model, animates real work and keeps delivery receip
   await page.route('http://activity.test/**',route=>{
    const p=new URL(route.request().url()).pathname;
    if(p.endsWith('/codex/reply'))return route.fulfill({json:{status:'queued'}});
-   if(p.startsWith('/api/chats/'))return route.fulfill({json:{model,reasoning_effort:effort,session_id:'00000000-0000-4000-8000-000000000001',messages:[{role:'assistant',text:'Earlier answer',model:'gpt-6.1-sol',reasoning_effort:'low'},{role:'assistant',text:'Newer answer',model:'gpt-6.1-sol',reasoning_effort:'medium'}],start_cursor:0,next_cursor:null}});
+   if(p.startsWith('/api/chats/'))return route.fulfill({json:{model,reasoning_effort:effort,background_agents:background,session_id:'00000000-0000-4000-8000-000000000001',messages:[{role:'assistant',text:'Earlier answer',model:'gpt-6.1-sol',reasoning_effort:'low'},{role:'assistant',text:'Newer answer',model:'gpt-6.1-sol',reasoning_effort:'medium'}],start_cursor:0,next_cursor:null}});
    if(p==='/')return route.fulfill({contentType:'text/html',body:`<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/conversation.css"><style>body{margin:0}#terminals{position:relative;height:100dvh}</style><main id="terminals"><iframe id="terminal"></iframe><section id="artifact-preview" hidden></section></main><script src="/conversation.js"></script><script>window.current={key:'pane1',host:'fixture',pane:1,title:'Switchboard',agent:'codex',state:'ready',chatId:'chat-1',frame:document.getElementById('terminal')};SwitchboardConversation.install({selection:()=>current,terminal(){}});</script>`});
    return route.fulfill({path:path.join(__dirname,'static',path.basename(p)),contentType:p.endsWith('.css')?'text/css':'text/javascript'});
   });
@@ -52,9 +52,18 @@ test('Conversation shows the model, animates real work and keeps delivery receip
   assert.equal(await working.isVisible(),true,'A running background agent shows in the transcript');
   assert.equal(await page.locator('.conversation-working-step').getAttribute('data-step'),'Waiting on a background agent');
   assert.equal(await activity.evaluate(node=>getComputedStyle(node,'::before').animationName),'none');
+  const step=()=>page.locator('.conversation-working-step').getAttribute('data-step'),refreshPage=()=>Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/')),page.evaluate(()=>intervals.forEach(fn=>fn()))]);
+  background=[{description:'Review the diff',started:new Date(Date.now()-125000).toISOString()}];await refreshPage();
+  await page.waitForFunction(()=>document.querySelector('.conversation-working-step').dataset.step==='Background agent: Review the diff');
+  assert.match(await page.locator('.conversation-working-time').textContent(),/^2m \d+s$/,'The timer counts from the agent’s launch');
+  background.push({description:'Run the e2e suite',started:new Date().toISOString()});await refreshPage();
+  await page.waitForFunction(()=>document.querySelector('.conversation-working-step').dataset.step==='2 background agents: Review the diff, Run the e2e suite');
+  if(process.env.MODE_SCREENSHOTS)await page.screenshot({path:process.env.MODE_SCREENSHOTS+'/conversation-background-agents.png'});
   await page.evaluate(()=>{current.state='ready';SwitchboardConversation.update();});
   assert.equal(await working.isVisible(),false,'The row leaves once the agent finishes');
+  background=[];await refreshPage();
   await page.evaluate(()=>{current.state='waiting';SwitchboardConversation.update();});
+  assert.equal(await step(),'Waiting on a background agent','Without a launch record the row stays generic');
   model=null;effort=null;
   await Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/')),page.evaluate(()=>intervals.forEach(fn=>fn()))]);
   await page.waitForFunction(()=>document.querySelector('.conversation-model').textContent==='Codex');assert.equal(await activity.textContent(),'Waiting on an agent');

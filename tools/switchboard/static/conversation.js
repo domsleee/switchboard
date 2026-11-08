@@ -172,9 +172,11 @@
     function agentLabel(){return modelLabel(chat)||providerLabel();}
     // The in-transcript indicator counts up from when the agent started this turn.
     let workingTimer=null;
+    // While only background agents run, it counts from when the oldest one started.
+    function backgroundAgents(){return target?.state==='waiting'&&Array.isArray(chat?.background)?chat.background:[];}
     function tickWorking(){
       clearTimeout(workingTimer);syncLiveStep();if(working.hidden||panel.hidden)return;
-      const since=Number(target?.since),time=since>0?duration(Math.max(0,Date.now()/1000-since)):'';
+      const started=Date.parse(backgroundAgents()[0]?.started)/1000,since=started>0?started:Number(target?.since),time=since>0?duration(Math.max(0,Date.now()/1000-since)):'';
       if(workingTime.textContent!==time)workingTime.textContent=time;workingTimer=setTimeout(tickWorking,1000);
     }
     // The newest progress update moves into the live row, so the step in progress
@@ -188,7 +190,7 @@
         if(step){step.classList.add('live');workingStep.dataset.step=step.dataset.live||[...step.childNodes].filter(node=>!node.classList?.contains('conversation-label')).map(node=>node.textContent).join(' ').replace(/\s+/g,' ').trim();}
         working.classList.toggle('has-step',!!step);
       }
-      if(!step)workingStep.dataset.step=waiting?'Waiting on a background agent':'Working';
+      if(!step){const agents=backgroundAgents().map(agent=>agent.description||'Unnamed agent');workingStep.dataset.step=!waiting?'Working':agents.length===1?`Background agent: ${agents[0]}`:agents.length?`${agents.length} background agents: ${agents.join(', ')}`:'Waiting on a background agent';}
       const run=step&&liveRun,expanded=!!run&&!run.collapsed,count=run?`· ${run.count} steps`:'';
       working.classList.toggle('has-run',!!run);working.disabled=!run;if(workingCount.textContent!==count)workingCount.textContent=count;
       if(run){working.removeAttribute('aria-hidden');working.setAttribute('aria-expanded',String(expanded));working.setAttribute('aria-label',`${expanded?'Hide':'Show'} ${run.count-1} earlier step${run.count===2?'':'s'}`);}
@@ -467,6 +469,7 @@
       chat.project=data.project||chat.project;chat.thread=data.session_id||chat.thread;
       if('model' in data)chat.model=data.model;
       if('reasoning_effort' in data)chat.reasoning_effort=data.reasoning_effort;
+      if(Array.isArray(data.background_agents))chat.background=data.background_agents;
       updateActivity();
       if(initial){messages=page;startCursor=start;tailCursor=start+Math.max(0,page.length-1);nextCursor=data.next_cursor??null;}
       else if(prepend){messages=page.concat(messages);startCursor=start;}
