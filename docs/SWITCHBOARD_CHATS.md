@@ -138,6 +138,9 @@ queue, without opening Terminal or interrupting the turn. The ordinary composer
 stays available while a question or its answer is pending. Recorded `question_replies`
 settle the matching card on every browser, including after a reload; an uncertain
 delivery retries the same message and send key.
+Questions can fold without losing a custom answer. A shortcut above the composer
+returns to an offscreen or folded question, and a submitted answer becomes a
+compact receipt that reopens for review.
 
 Codex replies use `/api/hosts/HOST/codex/reply` and its native queue, whether idle
 or working. The transcript supplies the native session ID. A retry keeps the same
