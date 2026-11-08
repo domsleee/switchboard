@@ -11,6 +11,15 @@ test('Markdown media uses the owning host, expands galleries, and blocks active 
  SwitchboardConversationMedia.render(document.getElementById('message'),{markdown:events,attachments:[{name:'Missing attachment',unavailable:'Not retained'}]},{host:'ubuntu',project:'/repo'});
  });
  await page.locator('img').first().waitFor();await page.waitForFunction(()=>document.querySelector('img').naturalWidth===320);
+ const first=page.locator('.conversation-media').first();
+ await page.waitForFunction(()=>document.querySelector('[aria-label="Preview out/missing.png"]').textContent==='Image unavailable');
+ for(const width of [390,1280]){
+  await page.setViewportSize({width,height:844});
+  assert.equal(await first.locator('.conversation-media-caption').isVisible(),false,'Loaded images have no filename beneath them');
+  assert.equal(await first.getByRole('link',{name:'Open original',exact:true}).isVisible(),false,'Loaded images have no original-file link beneath them');
+  assert.equal(await page.getByRole('button',{name:'Preview out/missing.png',exact:true}).locator('..').getByRole('link',{name:'Open original',exact:true}).isVisible(),true,'Failed images retain their recovery link');
+ }
+ await page.setViewportSize({width:390,height:844});
  assert.ok(requests.some(url=>url.includes('/api/hosts/ubuntu/file?path=%2Frepo%2Fout%2Ffirst.png')));
  assert.ok(requests.some(url=>url.includes('path=C%3A%2Frepo%2Fsecond.png')));
  assert.equal(await page.locator('video').getAttribute('controls'),'');assert.equal(await page.locator('video').getAttribute('playsinline'),'');
