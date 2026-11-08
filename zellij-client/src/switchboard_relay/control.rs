@@ -2,6 +2,12 @@ use super::*;
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::process::Stdio;
+use zellij_utils::{
+    data::PaneId,
+    errors::ErrorContext,
+    input::actions::Action,
+    ipc::{ClientToServerMsg, ExitReason, IpcReceiveError, ServerToClientMsg},
+};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -77,6 +83,12 @@ pub(super) async fn run_local(
     args: &[&str],
     timeout: Duration,
 ) -> anyhow::Result<String> {
+    // Installed configs name the real executable, so only a unit test's fake CLI opts out.
+    if !cfg!(test) || host.config.zellij_binary.is_none() {
+        if let Some(action) = socket_action(args) {
+            return ask_engine(session, action, args[0], timeout).await;
+        }
+    }
     let mut command = tokio::process::Command::new(binary(host)?);
     command
         .args(["-s", session, "action"])
@@ -90,6 +102,132 @@ pub(super) async fn run_local(
         String::from_utf8_lossy(&output.stderr).trim()
     );
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// The frequent reads, as the engine action the CLI would send. Each CLI call is a new
+/// process, which Defender can make slow on Windows.
+fn socket_action(args: &[&str]) -> Option<Action> {
+    let list = |show_all| Action::ListPanes {
+        show_tab: false,
+        show_command: false,
+        show_state: false,
+        show_geometry: false,
+        show_all,
+        output_json: true,
+    };
+    let dump = |pane: &str, ansi| {
+        Some(Action::DumpScreen {
+            file_path: None,
+            include_scrollback: false,
+            pane_id: Some(pane.parse::<PaneId>().ok()?),
+            ansi,
+        })
+    };
+    match args {
+        ["list-panes", "--json"] => Some(list(false)),
+        ["list-panes", "--json", "--all"] => Some(list(true)),
+        ["dump-screen", "-p", pane] => dump(pane, false),
+        ["dump-screen", "--ansi", "-p", pane] => dump(pane, true),
+        _ => None,
+    }
+}
+
+/// A reply blocked on a stuck engine cannot be cancelled the way a process can be killed, so
+/// each waiting request holds a thread until the engine answers or exits. This bounds them.
+const MAX_WAITING_PER_SESSION: usize = 8;
+
+fn waiting_permit(session: &str) -> anyhow::Result<tokio::sync::OwnedSemaphorePermit> {
+    static WAITING: std::sync::LazyLock<
+        std::sync::Mutex<HashMap<String, Arc<tokio::sync::Semaphore>>>,
+    > = std::sync::LazyLock::new(Default::default);
+    WAITING
+        .lock()
+        .unwrap()
+        .entry(session.to_owned())
+        .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(MAX_WAITING_PER_SESSION)))
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "the engine has not answered {MAX_WAITING_PER_SESSION} earlier requests"
+            )
+        })
+}
+
+async fn ask_engine(
+    session: &str,
+    action: Action,
+    name: &str,
+    timeout: Duration,
+) -> anyhow::Result<String> {
+    validate_session(session).map_err(|(_, message)| anyhow::anyhow!(message))?;
+    let permit = waiting_permit(session)?;
+    let path = zellij_utils::consts::ZELLIJ_SOCK_DIR.join(session);
+    let deadline = std::time::Instant::now() + timeout;
+    let task = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        ask_engine_blocking(&path, action, deadline)
+    });
+    tokio::time::timeout(timeout, task)
+        .await
+        .map_err(|_| anyhow::anyhow!("the engine did not answer {name} within {timeout:?}"))?
+        .map_err(|error| anyhow::anyhow!("{name} stopped: {error}"))?
+}
+
+fn ask_engine_blocking(
+    path: &std::path::Path,
+    action: Action,
+    deadline: std::time::Instant,
+) -> anyhow::Result<String> {
+    use crate::os_input_output::ClientOsApi;
+    let os = crate::os_input_output::get_cli_client_os_input()?;
+    os.try_connect_to_server(path)
+        .map_err(|error| anyhow::anyhow!("cannot connect to the engine: {error}"))?;
+    os.send_to_server(ClientToServerMsg::Action {
+        action,
+        terminal_id: None,
+        client_id: None,
+        is_cli_client: true,
+    });
+    if let Some(failure) = os.send_failure() {
+        anyhow::bail!("cannot send to the engine: {failure}");
+    }
+    let reply = engine_reply(|| os.try_recv_from_server(), deadline);
+    os.send_to_server(ClientToServerMsg::ClientExited);
+    reply
+}
+
+/// Reads one action's reply, ending on the same messages as `zellij action`.
+fn engine_reply(
+    mut next: impl FnMut() -> Result<(ServerToClientMsg, ErrorContext), IpcReceiveError>,
+    deadline: std::time::Instant,
+) -> anyhow::Result<String> {
+    loop {
+        match next() {
+            Ok((ServerToClientMsg::UnblockInputThread, _)) => return Ok(String::new()),
+            Ok((ServerToClientMsg::Log { lines }, _)) => {
+                return Ok(lines.iter().map(|line| format!("{line}\n")).collect())
+            },
+            Ok((ServerToClientMsg::LogError { lines }, _)) => {
+                anyhow::bail!("the engine reported: {}", lines.join("; "))
+            },
+            Ok((ServerToClientMsg::Exit { exit_reason }, _)) => match exit_reason {
+                ExitReason::Error(error) => anyhow::bail!("the engine exited: {error}"),
+                ExitReason::CustomExitStatus(status) if status != 0 => {
+                    anyhow::bail!("the engine exited with status {status}")
+                },
+                _ => return Ok(String::new()),
+            },
+            Err(IpcReceiveError::Disconnected) => {
+                anyhow::bail!("the session closed the connection")
+            },
+            _ => {},
+        }
+        anyhow::ensure!(
+            std::time::Instant::now() < deadline,
+            "the engine did not answer in time"
+        );
+    }
 }
 
 /// A session's panes. Closing a pane or tab tells every client of the session to unblock, so a
@@ -788,6 +926,182 @@ mod tests {
             .unwrap_err()
             .is::<serde_json::Error>());
         assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 3);
+    }
+
+    #[test]
+    fn switchboard_socket_handles_only_the_frequent_reads() {
+        assert!(matches!(
+            socket_action(&["list-panes", "--json", "--all"]),
+            Some(Action::ListPanes {
+                show_all: true,
+                output_json: true,
+                ..
+            })
+        ));
+        assert!(matches!(
+            socket_action(&["list-panes", "--json"]),
+            Some(Action::ListPanes {
+                show_all: false,
+                output_json: true,
+                ..
+            })
+        ));
+        assert!(matches!(
+            socket_action(&["dump-screen", "--ansi", "-p", "87"]),
+            Some(Action::DumpScreen {
+                file_path: None,
+                include_scrollback: false,
+                ansi: true,
+                pane_id: Some(PaneId::Terminal(87))
+            })
+        ));
+        assert!(matches!(
+            socket_action(&["dump-screen", "-p", "87"]),
+            Some(Action::DumpScreen {
+                ansi: false,
+                pane_id: Some(PaneId::Terminal(87)),
+                ..
+            })
+        ));
+        assert!(socket_action(&["dump-screen", "-p", "not a pane"]).is_none());
+        assert!(socket_action(&["write", "-p", "87", "13"]).is_none());
+    }
+
+    #[test]
+    fn switchboard_engine_reply_matches_the_cli() {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let reply = |message: Result<ServerToClientMsg, IpcReceiveError>| {
+            let mut message = Some(message);
+            engine_reply(
+                || {
+                    message
+                        .take()
+                        .unwrap()
+                        .map(|m| (m, ErrorContext::default()))
+                },
+                deadline,
+            )
+        };
+        let log = ServerToClientMsg::Log {
+            lines: vec!["one".into(), "two".into()],
+        };
+        assert_eq!(reply(Ok(log)).unwrap(), "one\ntwo\n");
+        // A close elsewhere unblocks every client, so the caller sees an empty answer.
+        assert_eq!(
+            reply(Ok(ServerToClientMsg::UnblockInputThread)).unwrap(),
+            ""
+        );
+        let error = ServerToClientMsg::LogError {
+            lines: vec!["No pane".into()],
+        };
+        assert!(reply(Ok(error))
+            .unwrap_err()
+            .to_string()
+            .contains("No pane"));
+        let exit = ServerToClientMsg::Exit {
+            exit_reason: ExitReason::Error("boom".into()),
+        };
+        assert!(reply(Ok(exit)).unwrap_err().to_string().contains("boom"));
+        assert!(reply(Err(IpcReceiveError::Disconnected))
+            .unwrap_err()
+            .to_string()
+            .contains("closed"));
+    }
+
+    #[test]
+    fn switchboard_engine_reply_gives_up_at_its_deadline() {
+        let deadline = std::time::Instant::now();
+        let error = engine_reply(|| Err(IpcReceiveError::Undecodable), deadline).unwrap_err();
+        assert!(error.to_string().contains("in time"));
+    }
+
+    #[tokio::test]
+    async fn switchboard_socket_refuses_a_session_name_that_leaves_the_socket_folder() {
+        let host = Host::new(super::super::tests::config("http://127.0.0.1:9")).unwrap();
+        for session in ["..", "a/b", "a\\b"] {
+            let error = run_local(
+                &host,
+                session,
+                &["list-panes", "--json"],
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("Invalid session"),
+                "{session}: {error}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn switchboard_socket_reports_a_session_with_no_engine() {
+        let host = Host::new(super::super::tests::config("http://127.0.0.1:9")).unwrap();
+        let error = run_local(
+            &host,
+            "no-such-engine-here",
+            &["list-panes", "--json"],
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("cannot connect"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn switchboard_socket_limits_requests_waiting_on_one_session() {
+        let held: Vec<_> = (0..MAX_WAITING_PER_SESSION)
+            .map(|_| waiting_permit("stuck-engine").unwrap())
+            .collect();
+        assert!(waiting_permit("stuck-engine")
+            .unwrap_err()
+            .to_string()
+            .contains("not answered"));
+        assert!(
+            waiting_permit("healthy-engine").is_ok(),
+            "one stuck session must not block others"
+        );
+        drop(held);
+        assert!(waiting_permit("stuck-engine").is_ok());
+    }
+
+    /// Opt-in timing against a real private session:
+    /// SB_TIMING_SESSION=name SB_TIMING_PANE=id SB_TIMING_CLI=path, with ZELLIJ_SOCKET_DIR set.
+    #[tokio::test]
+    #[ignore]
+    async fn switchboard_socket_timing_against_a_real_engine() {
+        let session = std::env::var("SB_TIMING_SESSION").unwrap();
+        let pane = std::env::var("SB_TIMING_PANE").unwrap();
+        let mut socket = super::super::tests::config("http://127.0.0.1:9");
+        socket.zellij_binary = None;
+        let mut cli = socket.clone();
+        cli.zellij_binary = Some(std::env::var("SB_TIMING_CLI").unwrap());
+        let list = ["list-panes", "--json", "--all"];
+        let dump = ["dump-screen", "--ansi", "-p", pane.as_str()];
+        let commands: [(&str, &[&str]); 2] = [("list-panes", &list), ("dump-screen", &dump)];
+        for (route, config) in [("socket", socket), ("cli", cli)] {
+            let host = Host::new(config).unwrap();
+            for (name, args) in commands {
+                let mut times = Vec::new();
+                let mut answer = String::new();
+                for _ in 0..30 {
+                    let start = std::time::Instant::now();
+                    answer = run_local(&host, &session, args, Duration::from_secs(20))
+                        .await
+                        .unwrap();
+                    times.push(start.elapsed().as_secs_f64() * 1000.0);
+                }
+                times.sort_by(f64::total_cmp);
+                println!(
+                    "{route} {name}: p50 {:.1}ms p95 {:.1}ms max {:.1}ms, answer {} bytes",
+                    times[15],
+                    times[28],
+                    times[29],
+                    answer.len()
+                );
+                assert!(!answer.is_empty(), "{route} {name} returned nothing");
+            }
+        }
     }
 
     #[cfg(unix)]
