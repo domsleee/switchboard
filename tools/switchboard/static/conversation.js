@@ -296,7 +296,7 @@
       insert.disabled=!!pendingFor();
       // While the agent works, an empty composer offers Stop in the send button's place.
       form.classList.toggle('can-stop',(state==='working'||state==='input'&&target.turnState==='working'&&pendingAsyncQuestion())&&!!chat&&!!target?.session&&Number.isInteger(target?.pane));
-      const project=String(chat?.project||'').replace(/[\\/]+$/,'').split(/[\\/]/).pop();
+      const project=String(chat?.project||target?.project||'').replace(/[\\/]+$/,'').split(/[\\/]/).pop();
       const where=[project,target?.computer].filter(Boolean).join(' · ');if(context.textContent!==where)context.textContent=where;
       paintCost();
       const placeholder=target?.agent?`Ask ${providerLabel()} a follow-up…`:'Message…';if(draft.placeholder!==placeholder)draft.placeholder=placeholder;

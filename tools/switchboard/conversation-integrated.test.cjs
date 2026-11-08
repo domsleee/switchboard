@@ -11,7 +11,7 @@ test('integrated Conversation journeys use production markup and preserve delive
   if(options.clock)await page.clock.install();
   const f={page,errors:[],connections:[],requests:[],preparations:[],claudeReplies:[],claudeReplyStatus:404,history:new Map([[1,options.messages||[{role:'assistant',text:'Review response',model:'gpt-6.1-sol',reasoning_effort:'medium'}]],[2,[{role:'assistant',text:'Second conversation'}]]]),agent:options.agent||'codex',state:'ready',bound:options.bound!==false,model:'gpt-6.1-sol',effort:'medium',replyMode:'queue',autoHistory:false,prepareStatus:200,tabs:[1,2],newTabs:[],releaseReplies:[],releaseImages:[],delayImages:!!options.delayImages};
   await page.addInitScript(()=>{localStorage.setItem('switchboard-mobile-view-mode','conversation');localStorage.setItem('switchboard-view-mode','conversation');window.reviewIntervals=[];window.setInterval=fn=>reviewIntervals.push(fn);window.reviewOffset=0;const now=Date.now.bind(Date);Date.now=()=>now()+reviewOffset;window.reviewPastes=[];window.reviewHoldBridge=false;});
-  const pane=id=>({pane_id:id,is_plugin:false,tab_id:id,tab_position:id-1,title:'Conversation '+id,is_focused:true});
+  const pane=id=>({pane_id:id,is_plugin:false,tab_id:id,tab_position:id-1,title:'Conversation '+id,is_focused:true,...(f.paneCwd?{cwd:f.paneCwd}:{})});
   const thread=id=>'00000000-0000-4000-8000-'+String(id).padStart(12,'0');
   f.receipt=payload=>({role:'user',text:payload.slice(0,4000),...(payload.length>4000?{truncated:true,receipt_text:payload}:{}),...(payload.includes('\n\nAttached files:\n')?{markdown:[{type:'start',tag:'p'},{type:'text',text:payload.split('\n\nAttached files:\n')[0].slice(0,4000)},{type:'end'}],attachments:payload.split('\n\nAttached files:\n')[1].split('\n').map(url=>({kind:'image',name:url.split('/').at(-1),url}))}:{})});
   await page.route('http://conversation-review.test/**',async route=>{
@@ -21,7 +21,7 @@ test('integrated Conversation journeys use production markup and preserve delive
    if(p==='/api/hosts')return json([{id:'fixture',name:'Fixture desktop',local:true}]);
    if(p==='/api/hosts/fixture')return json({id:'fixture',name:'Fixture desktop',local:true,sessions:[{name:'main',web_clients_allowed:true}]});
    if(p==='/api/attention'){if(url.searchParams.has('after'))return new Promise(()=>{});return json({tabs:f.tabs.map(id=>({host:'fixture',session:'main',id,position:id-1,name:'Conversation '+id,panes:[pane(id)]})),panes:f.tabs.map(id=>({host:'fixture',session:'main',pane_id:id,...(f.agent?{agent:f.agent}:{}),state:f.state,turn_state:options.turnState,...(f.bound?{chat_id:(f.chatPrefix||'chat-')+id}:{})})),errors:[]});}
-   if(p.startsWith('/api/chats/')){const id=Number(p.split('-').at(-1));return json({id:'chat-'+id,model:f.model,reasoning_effort:f.effort,session_id:f.agent==='codex'?thread(id):null,messages:f.history.get(id)||[],message_activity:f.activities?.get(id)||[],start_cursor:0,next_cursor:null});}
+   if(p.startsWith('/api/chats/')){const id=Number(p.split('-').at(-1));return json({id:'chat-'+id,...(f.project?{project:f.project}:{}),model:f.model,reasoning_effort:f.effort,session_id:f.agent==='codex'?thread(id):null,messages:f.history.get(id)||[],message_activity:f.activities?.get(id)||[],start_cursor:0,next_cursor:null});}
    if(p.endsWith('/conversation/reply')){f.claudeReplies.push(route.request().postDataJSON());return route.fulfill({status:f.claudeReplyStatus,json:{ok:true}});}
    if(p.endsWith('/conversation/prepare')){f.preparations.push(route.request().postDataJSON());return route.fulfill({status:f.prepareStatus,json:{trusted:false}});}
    if(p.endsWith('/codex/reply')){
@@ -621,6 +621,57 @@ test('integrated Conversation journeys use production markup and preserve delive
      assert.equal(await page.locator('.conversation-launch').count(),0,'History replaces the immediate preview without duplication');
     }finally{await f.close();}
    }
+  });
+  await t.test('the header names a new tab\'s project and computer from the moment it is requested',async()=>{
+   const f=await fixture({agent:'claude',desktop:true,viewport:{width:1280,height:844}}),{page}=f;try{
+    await page.getByText('Review response',{exact:true}).waitFor();
+    const header=()=>page.locator('.conversation-context').textContent();
+    f.holdCreation=true;
+    // Read in the same task as the request: nothing may wait on the relay or the agent.
+    const immediate=await page.evaluate(()=>{createNewTab(sessionKey('fixture','main'),{project:'C:\\git\\alpha\\',command:'claude:claude-haiku-5-5',prompt:'Fix it'},()=>true,'Fix it');return document.querySelector('.conversation-context').textContent;});
+    assert.equal(immediate,'alpha · Fixture desktop','The placeholder knows where it is opening');
+    while(!f.releaseCreation)await page.waitForTimeout(10);f.releaseCreation();
+    await page.waitForFunction(()=>allTabs().find(item=>item.key===selected)?.tab.id===3);
+    assert.equal(await header(),'alpha · Fixture desktop','The provisional tab keeps it');
+    f.tabs=[1,2,3];f.agent=null;f.state='unknown';f.bound=false;await f.refresh();
+    assert.equal(await header(),'alpha · Fixture desktop','The real tab keeps it before any agent reports');
+    f.agent='claude';f.bound=true;f.state='ready';f.project='/srv/beta';f.history.set(3,[{role:'user',text:'Fix it'},{role:'assistant',text:'Fixed'}]);await f.refresh();
+    await page.getByText('Fixed',{exact:true}).waitFor();
+    assert.equal(await header(),'beta · Fixture desktop','The chat\'s own project wins once it is known');
+   }finally{await f.close();}
+  });
+  await t.test('a tab opened without a prompt keeps its project until the pane reports where it is',async()=>{
+   const f=await fixture({agent:'claude',desktop:true,viewport:{width:1280,height:844}}),{page}=f;try{
+    await page.getByText('Review response',{exact:true}).waitFor();
+    const header=()=>page.locator('.conversation-context').textContent();
+    await page.evaluate(()=>createNewTab(sessionKey('fixture','main'),{project:'/srv/epsilon',command:'claude:claude-haiku-5-5',prompt:''},()=>true,''));
+    await page.waitForFunction(()=>allTabs().find(item=>item.key===selected)?.tab.id===3);
+    f.tabs=[1,2,3];f.agent=null;f.state='unknown';f.bound=false;await f.refresh();
+    assert.equal(await page.evaluate(()=>allTabs().find(item=>item.key===selected)?.tab.pending),undefined,'The real tab replaced the provisional one');
+    assert.equal(await header(),'epsilon · Fixture desktop');
+    // The catalog can list the tab before the connected viewer reports its pane.
+    await page.evaluate(()=>{allTabs().find(item=>item.key===selected).entry.state={panes:[]};render();});
+    assert.equal(await page.evaluate(()=>tabPanes(allTabs().find(item=>item.key===selected).entry,allTabs().find(item=>item.key===selected).tab).length),0,'The viewer has not reported the pane');
+    assert.equal(await header(),'epsilon · Fixture desktop','The catalog pane still finds the request');
+    f.paneCwd='/srv/zeta';await f.refresh();
+    assert.equal(await header(),'zeta · Fixture desktop','The pane\'s reported directory replaces the request');
+   }finally{await f.close();}
+  });
+  await t.test('a tab created from Terminal mode has the same header waiting in Conversation',async()=>{
+   const f=await fixture({agent:'claude',desktop:true,viewport:{width:1280,height:844}}),{page}=f;try{
+    await page.getByText('Review response',{exact:true}).waitFor();
+    await page.getByRole('button',{name:'Terminal',exact:true}).click();
+    await page.waitForFunction(()=>!SwitchboardConversation.wantsConversation()&&[...sessions.values()][0].state);
+    const immediate=await page.evaluate(()=>{createNewTab(sessionKey('fixture','main'),{project:'/srv/delta',command:'claude:claude-haiku-5-5',prompt:'Fix it'},()=>true,'Fix it');return document.querySelector('.conversation-context').textContent;});
+    assert.equal(immediate,'delta · Fixture desktop');
+   }finally{await f.close();}
+  });
+  await t.test('the header uses the pane directory before a chat\'s first page loads',async()=>{
+   const f=await fixture({agent:'claude',desktop:true,viewport:{width:1280,height:844}}),{page}=f;try{
+    f.paneCwd='/srv/gamma';await f.refresh();
+    await page.getByText('Review response',{exact:true}).waitFor();
+    assert.equal(await page.locator('.conversation-context').textContent(),'gamma · Fixture desktop');
+   }finally{await f.close();}
   });
   await t.test('a submitted prompt starts Working immediately and yields to reported activity and attention',async()=>{
    const f=await fixture({agent:'claude'}),{page}=f;try{
