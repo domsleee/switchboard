@@ -264,7 +264,10 @@
     function mailboxCount(item){return item.role==='user'?(mailboxNotice.exec((item.receipt_text??item.text??'').trimStart())?.[1].split(', ').length||0):0;}
     function setupMessage(item){return item.role==='user'&&/^(?:# AGENTS\.md instructions|<environment_context>|<permissions instructions>|<skills_instructions>)/.test((item.text||'').trimStart());}
     function normalizeMessage(value){return String(value||'').replace(/\r\n/g,'\n');}
-    function sameMessage(a,b){return normalizeMessage(a)===normalizeMessage(b);}
+    // Claude swaps an attached image's path for an image block, so its transcript
+    // lacks the "Attached files:" suffix the composer sent; compare what remains.
+    const withoutFiles=value=>normalizeMessage(value).replace(/\[Image #\d+\]/g,'').replace(/\n*Attached (?:files|images):(?:\n[^\n]*)*\n*$/,'').trim();
+    function sameMessage(a,b){return normalizeMessage(a)===normalizeMessage(b)||!!withoutFiles(a)&&withoutFiles(a)===withoutFiles(b);}
     function outgoingLabel(state){return state==='sending'?'Sending…':state==='queued'?'Queued':state==='sent'?'Sent':'Could not confirm sending';}
     function sendItem(sent,state,detail){sent.state=state;sent.detail=detail||'';if(identity(target)===sent.key)paint();}
     function nearBottom(){return list.scrollHeight-list.scrollTop-list.clientHeight<80;}

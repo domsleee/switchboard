@@ -2,6 +2,7 @@
 (() => {
   const node=(tag,text)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;return n;};
   const imageExt=/\.(?:png|jpe?g|gif|webp|avif|svg)(?:[?#].*)?$/i,videoExt=/\.(?:mp4|webm|mov|m4v)(?:[?#].*)?$/i;
+  const mediaPath=/^\s*(?:[A-Za-z]:[\\/]|\/|~[\\/])[^\n]*[^\s]\s*$/;
   function resolve(reference,{host,project},embedded=false){
     const originalReference=reference;
     if(typeof reference!=='string'||!reference||/[\x00-\x1f\x7f]/.test(reference))return null;
@@ -86,6 +87,8 @@
       else if(event.type==='code')current().append(node('code',event.text||''));
       else if(event.type==='break')current().append(node('br'));
       else if(event.type==='rule')current().append(node('hr'));
+      // A line that is only an absolute image or video path shows the media, as the terminal does.
+      else if(event.type==='text'&&mediaPath.test(event.text||'')&&(imageExt.test(event.text)||videoExt.test(event.text))){const path=event.text.trim();current().append(media(path,path.split(/[\\/]/).pop(),videoExt.test(path)?'video':'image',context,gallery));}
       else if(event.type==='text')current().append(document.createTextNode(event.text||''));
     }
     for(const attachment of message.attachments||[]){
