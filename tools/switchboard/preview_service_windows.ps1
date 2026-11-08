@@ -78,8 +78,17 @@ function Start-LocalInstall([string]$Commit) {
     $dist = Join-Path $bundle 'dist'; $source = Join-Path $bundle 'source'
     [IO.Directory]::CreateDirectory($source) | Out-Null
     $updates = Join-Path $HOME '.local/share/switchboard/automatic-updates/state.json'
-    $run = 1
-    try { $run = [int64](Get-Content -LiteralPath $updates -Raw | ConvertFrom-Json).run_number + 1 } catch {}
+    # One run number per commit, so retries do not run ahead of later published builds.
+    # Take a new one only when another build has claimed it: a later run, or the same run
+    # recorded for a different commit without failed attempts of ours.
+    $updater = $null
+    try { $updater = Get-Content -LiteralPath $updates -Raw | ConvertFrom-Json } catch {}
+    $last = [int64]$updater.run_number
+    $run = $script:localRuns[$Commit]
+    if (-not $run -or $last -gt $run -or ($last -eq $run -and -not $updater.attempts -and $updater.commit -ne $Commit)) {
+        $run = $last + 1
+        $script:localRuns[$Commit] = $run
+    }
     $exe = Join-Path $Worktree 'target/release/zellij.exe'
     & $exe switchboard package --platform windows --commit $Commit --run-number $run --helpers (Join-Path $Worktree 'tools/switchboard') --output $dist 2>&1 |
         ForEach-Object { Log "package: $_" }
@@ -141,7 +150,7 @@ $self = $PSCommandPath
 $selfHash = (Get-FileHash -LiteralPath $self).Hash
 $server = $null; $serving = ''; $failures = 0; $lastMergeCheck = [datetime]::MinValue
 $build = $null; $building = ''; $built = ''; $install = $null; $installing = ''
-$failedInstalls = @{}; $nextInstall = [datetime]::MinValue
+$failedInstalls = @{}; $localRuns = @{}; $nextInstall = [datetime]::MinValue
 $noLocalBuilds = Join-Path $state 'no-local-builds'
 Log "service started from $self"
 
@@ -156,6 +165,13 @@ while ($true) {
                 Invoke-Git $Worktree checkout -q -f --detach origin/main; Invoke-Git $Worktree clean -q -fd
                 Log "main is now $(Invoke-Git $Worktree log -1 --format='%h %s')"
             }
+        }
+        # A new version of this script takes over from this one, before it starts any build.
+        if ((Get-FileHash -LiteralPath $self).Hash -ne $selfHash) {
+            Log 'service script changed; restarting it'
+            if ($server -and -not $server.HasExited) { Stop-Process -Id $server.Id -Force }
+            Start-Process -FilePath (Get-Process -Id $PID).Path -WindowStyle Hidden -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',"`"$self`"",'-Worktree',"`"$Worktree`"",'-Port',$Port)
+            $mutex.ReleaseMutex(); return
         }
         # Build each new main here and install it, retrying the install until this
         # computer runs it or main moves on.
@@ -191,13 +207,6 @@ while ($true) {
                     catch { Log "local install: $($_.Exception.Message)"; $built = "failed:$head" }
                 }
             }
-        }
-        # A new version of this script takes over from this one.
-        if ((Get-FileHash -LiteralPath $self).Hash -ne $selfHash) {
-            Log 'service script changed; restarting it'
-            if ($server -and -not $server.HasExited) { Stop-Process -Id $server.Id -Force }
-            Start-Process -FilePath (Get-Process -Id $PID).Path -WindowStyle Hidden -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',"`"$self`"",'-Worktree',"`"$Worktree`"",'-Port',$Port)
-            $mutex.ReleaseMutex(); return
         }
         # Serve an unmerged change when asked, until its PR is merged.
         $root = $Worktree
