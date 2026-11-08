@@ -616,7 +616,8 @@ mod tests {
     #[test]
     fn switchboard_conversation_reads_only_typed_text_as_a_claude_draft() {
         // Claude Code 2.1.319 captured with `dump-screen --ansi`; see the fixture's headers.
-        let captures = include_str!("conversation/claude_prompt.ansi");
+        // Checkouts may turn the fixture's line endings into CRLF.
+        let captures = include_str!("conversation/claude_prompt.ansi").replace('\r', "");
         let capture = |name: &str| {
             let start = captures.find(&format!("## {name}\n")).unwrap() + name.len() + 4;
             let end = captures[start..]
