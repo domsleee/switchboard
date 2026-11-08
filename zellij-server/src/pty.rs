@@ -17,8 +17,8 @@ use std::{collections::HashMap, path::PathBuf};
 use tokio::task::JoinHandle;
 use zellij_utils::{
     data::{
-        CommandOrPlugin, Event, FloatingPaneCoordinates, GetPaneCwdResponse, GetPanePidResponse,
-        GetPaneRunningCommandResponse, NewPanePlacement, OriginatingPlugin, SessionInfo,
+        CommandOrPlugin, Event, FloatingPaneCoordinates, GetPanePidResponse, NewPanePlacement,
+        OriginatingPlugin, SessionInfo,
     },
     errors::prelude::*,
     errors::{ContextType, PtyContext},
@@ -34,6 +34,12 @@ use zellij_utils::{
 };
 
 pub type VteBytes = Vec<u8>;
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PaneProcessInfo {
+    pub command: Option<Vec<String>>,
+    pub cwd: Option<PathBuf>,
+}
 pub type TabIndex = u32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -147,13 +153,9 @@ pub enum PtyInstruction {
         pane_id: PaneId,
         response_channel: crossbeam_channel::Sender<GetPanePidResponse>,
     },
-    GetPaneRunningCommand {
-        pane_id: PaneId,
-        response_channel: crossbeam_channel::Sender<GetPaneRunningCommandResponse>,
-    },
-    GetPaneCwd {
-        pane_id: PaneId,
-        response_channel: crossbeam_channel::Sender<GetPaneCwdResponse>,
+    GetPanesProcessInfo {
+        terminal_ids: Vec<u32>,
+        response_channel: crossbeam_channel::Sender<HashMap<u32, PaneProcessInfo>>,
     },
     UpdateAndReportCwds,
     NotifyCwdFromOsc7(u32, PathBuf),
@@ -186,8 +188,7 @@ impl From<&PtyInstruction> for PtyContext {
             PtyInstruction::SendSigintToPaneId(..) => PtyContext::SendSigintToPaneId,
             PtyInstruction::SendSigkillToPaneId(..) => PtyContext::SendSigkillToPaneId,
             PtyInstruction::GetPanePid { .. } => PtyContext::GetPanePid,
-            PtyInstruction::GetPaneRunningCommand { .. } => PtyContext::GetPaneRunningCommand,
-            PtyInstruction::GetPaneCwd { .. } => PtyContext::GetPaneCwd,
+            PtyInstruction::GetPanesProcessInfo { .. } => PtyContext::GetPaneRunningCommand,
             PtyInstruction::UpdateAndReportCwds => PtyContext::UpdateAndReportCwds,
             PtyInstruction::NotifyCwdFromOsc7(..) => PtyContext::NotifyCwdFromOsc7,
             PtyInstruction::Exit => PtyContext::Exit,
@@ -889,18 +890,11 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 let response = pty.get_pane_pid(pane_id);
                 let _ = response_channel.send(response);
             },
-            PtyInstruction::GetPaneRunningCommand {
-                pane_id,
+            PtyInstruction::GetPanesProcessInfo {
+                terminal_ids,
                 response_channel,
             } => {
-                let response = pty.get_pane_running_command(pane_id);
-                let _ = response_channel.send(response);
-            },
-            PtyInstruction::GetPaneCwd {
-                pane_id,
-                response_channel,
-            } => {
-                let response = pty.get_pane_cwd(pane_id);
+                let response = pty.panes_process_info(&terminal_ids);
                 let _ = response_channel.send(response);
             },
             PtyInstruction::UpdateAndReportCwds => {
@@ -2328,78 +2322,35 @@ impl Pty {
             },
         }
     }
-    pub fn get_pane_running_command(&self, pane_id: PaneId) -> GetPaneRunningCommandResponse {
-        match pane_id {
-            PaneId::Terminal(terminal_id) => {
-                if let Some(&child_pid) = self.id_to_child_pid.get(&terminal_id) {
-                    // Query OS for current running command
-                    if let Some(os_input) = self.bus.os_input.as_ref() {
-                        // First, try to get the foreground command (e.g., nvim running in bash)
-                        let foreground_cmds = os_input.get_foreground_cmds(
-                            &[(terminal_id, child_pid)],
-                            &self.post_command_discovery_hook,
-                        );
-                        let cmd_foreground = foreground_cmds.get(&terminal_id);
-
-                        // If no foreground command, fall back to the shell itself
-                        let (_cwds, cmds) = os_input.get_cwds(vec![child_pid]);
-                        let cmd_sysinfo = cmds.get(&child_pid);
-
-                        if let Some(command_args) = cmd_foreground {
-                            GetPaneRunningCommandResponse::Ok(command_args.clone())
-                        } else if let Some(command_args) = cmd_sysinfo {
-                            GetPaneRunningCommandResponse::Ok(command_args.clone())
-                        } else {
-                            GetPaneRunningCommandResponse::Err(format!(
-                                "Could not retrieve running command for terminal pane {}",
-                                terminal_id
-                            ))
-                        }
-                    } else {
-                        GetPaneRunningCommandResponse::Err("OS input not available".to_string())
-                    }
-                } else {
-                    GetPaneRunningCommandResponse::Err(format!(
-                        "Terminal pane {} not found or not running",
-                        terminal_id
-                    ))
-                }
-            },
-            PaneId::Plugin(plugin_id) => GetPaneRunningCommandResponse::Err(format!(
-                "Cannot get running command for plugin pane {}",
-                plugin_id
-            )),
+    /// Every pane's command and working directory from one look at the system's processes.
+    /// On Windows that look scans every process, so it must not repeat per pane.
+    pub fn panes_process_info(&self, terminal_ids: &[u32]) -> HashMap<u32, PaneProcessInfo> {
+        let Some(os_input) = self.bus.os_input.as_ref() else {
+            return HashMap::new();
+        };
+        let panes: Vec<(u32, u32)> = terminal_ids
+            .iter()
+            .filter_map(|id| self.id_to_child_pid.get(id).map(|pid| (*id, *pid)))
+            .collect();
+        if panes.is_empty() {
+            return HashMap::new();
         }
-    }
-    pub fn get_pane_cwd(&self, pane_id: PaneId) -> GetPaneCwdResponse {
-        match pane_id {
-            PaneId::Terminal(terminal_id) => {
-                if let Some(&child_pid) = self.id_to_child_pid.get(&terminal_id) {
-                    // Query OS for current working directory
-                    if let Some(os_input) = self.bus.os_input.as_ref() {
-                        let (cwds, _cmds) = os_input.get_cwds(vec![child_pid]);
-                        if let Some(cwd) = cwds.get(&child_pid) {
-                            GetPaneCwdResponse::Ok(cwd.clone())
-                        } else {
-                            GetPaneCwdResponse::Err(format!(
-                                "Could not retrieve CWD for terminal pane {}",
-                                terminal_id
-                            ))
-                        }
-                    } else {
-                        GetPaneCwdResponse::Err("OS input not available".to_string())
-                    }
-                } else {
-                    GetPaneCwdResponse::Err(format!(
-                        "Terminal pane {} not found or not running",
-                        terminal_id
-                    ))
-                }
-            },
-            PaneId::Plugin(plugin_id) => {
-                GetPaneCwdResponse::Err(format!("Cannot get CWD for plugin pane {}", plugin_id))
-            },
-        }
+        let foreground = os_input.get_foreground_cmds(&panes, &self.post_command_discovery_hook);
+        let (cwds, shells) = os_input.get_cwds(panes.iter().map(|(_, pid)| *pid).collect());
+        panes
+            .into_iter()
+            .map(|(terminal_id, pid)| {
+                let info = PaneProcessInfo {
+                    // A foreground program (nvim in bash) wins over the shell itself.
+                    command: foreground
+                        .get(&terminal_id)
+                        .or_else(|| shells.get(&pid))
+                        .cloned(),
+                    cwd: cwds.get(&pid).cloned(),
+                };
+                (terminal_id, info)
+            })
+            .collect()
     }
 }
 
