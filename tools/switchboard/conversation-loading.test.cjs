@@ -12,6 +12,7 @@ test('conversation recovers from stalled reads, logs safe diagnostics and preser
   await page.route('http://loading.test/**',async route=>{
    const url=new URL(route.request().url());
    if(url.pathname==='/api/diagnostics/conversation'){diagnostics.push(route.request().postDataJSON());return route.fulfill({status:204});}
+   if(url.pathname.startsWith('/api/diagnostics/'))return route.fulfill({status:204});
    if(url.pathname.startsWith('/api/chats/')){
     reads++;if(mode==='hang'){await new Promise(resolve=>release=resolve);return route.fulfill({json:{messages:[]}}).catch(()=>{});}
     if(mode==='invalid')return route.fulfill({json:{unexpected:'data'}});

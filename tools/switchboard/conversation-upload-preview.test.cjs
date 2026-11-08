@@ -12,6 +12,7 @@ test('uploaded images remain expandable previews while sending, after acknowledg
   await page.addInitScript(()=>{window.intervals=[];window.setInterval=fn=>intervals.push(fn);window.revoked=[];const revoke=URL.revokeObjectURL.bind(URL);URL.revokeObjectURL=url=>{revoked.push(url);revoke(url);};});
   await page.route('http://preview.test/**',async route=>{
    const url=new URL(route.request().url()),p=url.pathname;
+   if(p.startsWith('/api/diagnostics/'))return route.fulfill({status:204});
    if(p.endsWith('/codex/reply')){requests.push(route.request().postDataJSON());if(hold)await new Promise(resolve=>held=resolve);return route.fulfill({json:{status:'queued'}});}
    if(p.endsWith('/attachments'))return route.fulfill({json:{path:root+url.searchParams.get('name')}});
    if(p.endsWith('/file')){files.push({host:p,path:url.searchParams.get('path')});return route.fulfill({contentType:'image/svg+xml',body:url.searchParams.get('path').endsWith('portrait.svg')?portrait:svg});}

@@ -18,6 +18,7 @@ test('Conversation answers Claude permission prompts and questions without Termi
    await page.addInitScript(()=>{window.intervals=[];window.setInterval=fn=>intervals.push(fn);const now=Date.now;window.skew=0;Date.now=()=>now()+skew;});
    await page.route('http://prompt.test/**',route=>{
     const p=new URL(route.request().url()).pathname;
+   if(p.startsWith('/api/diagnostics/'))return route.fulfill({status:204});
     if(p.endsWith('/conversation/prompt')){f.reads++;return f.promptStatus===200?route.fulfill({json:{prompt:f.prompt}}):route.fulfill({status:f.promptStatus,body:''});}
     if(p.endsWith('/conversation/answer')){f.answers.push(route.request().postDataJSON());return f.answerStatus===200?route.fulfill({json:{ok:true}}):route.fulfill({status:f.answerStatus,body:'The question changed. Check it and choose again.'});}
     if(p.startsWith('/api/chats/'))return route.fulfill({json:{session_id:'s1',messages:[{role:'assistant',text:'I need to run a command.'}],start_cursor:0,next_cursor:null}});

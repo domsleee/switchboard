@@ -30,7 +30,7 @@ for(const mobile of [false,true])test(`older history survives a busy refresh and
   holdPoll=true;const started=new Promise(resolve=>pollStarted=resolve);
   await page.evaluate(()=>intervals.forEach(fn=>fn()));await started;await top();
   assert.equal(olderReads,0);holdPoll=false;releasePoll();
-  await page.getByText(new RegExp(`^Message ${180-(mobile?15:50)-50}\\.`)).waitFor();await settled();
+  await page.getByText(new RegExp(`^Message ${180-15-50}\\.`)).waitFor();await settled();
   assert.equal(olderReads,1,'The refresh must service the reader waiting at the top');
   assert.equal(await page.getByLabel('Reply draft').inputValue(),'Keep this draft');
   // A failed older read exposes a retry which incoming output must not remove.
@@ -39,7 +39,7 @@ for(const mobile of [false,true])test(`older history survives a busy refresh and
   await page.evaluate(()=>intervals.forEach(fn=>fn()));await page.getByText('A new answer while reading history',{exact:true}).waitFor({state:'attached'});await settled();
   assert.equal(await retry.isVisible(),true,'Live updates keep the failed history request recoverable');
   assert.equal(olderReads,2,'A failed request waits for an explicit retry');
-  failOlder=false;await retry.click();await page.getByText(new RegExp(`^Message ${180-(mobile?15:50)-100}\\.`)).waitFor();await settled();
+  failOlder=false;await retry.click();await page.getByText(new RegExp(`^Message ${180-15-100}\\.`)).waitFor();await settled();
   assert.equal(await retry.isVisible(),false);assert.equal(olderReads,3);
   // Terminal mode stops history work and returning keeps the transcript and draft.
   await page.getByRole('button',{name:'Terminal',exact:true}).click();

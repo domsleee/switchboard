@@ -15,6 +15,24 @@ const SCAN_BYTES: u64 = 128 * 1024 * 1024;
 const LINE_BYTES: u64 = 8 * 1024 * 1024;
 const PAGE_FILES: usize = 100;
 
+#[derive(Default)]
+struct ReadTiming {
+    queue_ms: u128,
+    read_ms: u128,
+    index_ms: u128,
+    page_ms: u128,
+}
+impl ReadTiming {
+    fn header(&self) -> header::HeaderValue {
+        format!(
+            "queue;dur={},read;dur={},index;dur={},page;dur={}",
+            self.queue_ms, self.read_ms, self.index_ms, self.page_ms
+        )
+        .parse()
+        .unwrap()
+    }
+}
+
 // Only selected transcripts are indexed. Offsets keep memory independent of tool output
 // and message size; subsequent reads scan just the bytes appended by the agent.
 #[derive(Clone)]
@@ -42,8 +60,41 @@ struct HistoryIndex {
     subagents: HashMap<PathBuf, u64>,
     subagents_checked: Option<std::time::Instant>,
 }
-static HISTORY: LazyLock<SyncMutex<HashMap<String, Arc<SyncMutex<HistoryIndex>>>>> =
-    LazyLock::new(Default::default);
+#[derive(Default)]
+struct HistoryCache {
+    indexes: HashMap<String, (std::time::Instant, Arc<SyncMutex<HistoryIndex>>)>,
+}
+impl HistoryCache {
+    fn existing(&self, id: &str) -> Option<Arc<SyncMutex<HistoryIndex>>> {
+        self.indexes.get(id).map(|(_, index)| index.clone())
+    }
+    fn get(&mut self, agent: &str, root: &Path, path: &Path) -> Arc<SyncMutex<HistoryIndex>> {
+        let id = file_id(agent, root, path);
+        if !self.indexes.contains_key(&id) {
+            while self.indexes.len() >= 16 {
+                // Evict only the least recently used idle index. Clearing all idle
+                // indexes makes the next visit to every chat rebuild its transcript.
+                let oldest = self
+                    .indexes
+                    .iter()
+                    .filter(|(_, (_, index))| Arc::strong_count(index) == 1)
+                    .min_by_key(|(_, (used, _))| *used)
+                    .map(|(id, _)| id.clone());
+                let Some(oldest) = oldest else { break };
+                self.indexes.remove(&oldest);
+            }
+        }
+        let entry = self.indexes.entry(id).or_insert_with(|| {
+            (
+                std::time::Instant::now(),
+                Arc::new(SyncMutex::new(HistoryIndex::new(agent, root, path))),
+            )
+        });
+        entry.0 = std::time::Instant::now();
+        entry.1.clone()
+    }
+}
+static HISTORY: LazyLock<SyncMutex<HistoryCache>> = LazyLock::new(Default::default);
 static TRANSCRIPTS: LazyLock<SyncMutex<HashMap<String, (String, PathBuf, PathBuf)>>> =
     LazyLock::new(Default::default);
 
@@ -251,17 +302,25 @@ impl HistoryIndex {
         Ok(())
     }
     fn page(&mut self, p: &Params) -> std::io::Result<Value> {
+        self.page_timed(p, &mut ReadTiming::default())
+    }
+    fn page_timed(&mut self, p: &Params, timing: &mut ReadTiming) -> std::io::Result<Value> {
+        let started = std::time::Instant::now();
         let previous = self.observed;
         self.update()?;
         if self.update_subagents() {
             self.page_cache = None;
         }
+        timing.index_ms = started.elapsed().as_millis();
+        let page_started = std::time::Instant::now();
         if previous == self.observed {
             if let Some((cursor, limit, tail, before, context, page)) = &self.page_cache {
                 if (*cursor, *limit, *tail, *before, *context)
                     == (p.cursor, p.limit(), p.tail, p.before, p.context)
                 {
-                    return Ok(page.clone());
+                    let page = page.clone();
+                    timing.page_ms = page_started.elapsed().as_millis();
+                    return Ok(page);
                 }
             }
         }
@@ -350,27 +409,23 @@ impl HistoryIndex {
             p.context,
             page.clone(),
         ));
+        timing.page_ms = page_started.elapsed().as_millis();
         Ok(page)
     }
 }
 
-fn indexed_page(agent: &str, root: &Path, path: &Path, p: &Params) -> Value {
-    let id = file_id(agent, root, path);
-    let index = {
-        let mut cache = HISTORY.lock().unwrap();
-        if cache.len() >= 16 && !cache.contains_key(&id) {
-            // Active readers keep their Arc; only idle indexes are evicted.
-            cache.retain(|_, index| Arc::strong_count(index) > 1);
-        }
-        cache
-            .entry(id)
-            .or_insert_with(|| Arc::new(SyncMutex::new(HistoryIndex::new(agent, root, path))))
-            .clone()
-    };
+fn indexed_page(
+    agent: &str,
+    root: &Path,
+    path: &Path,
+    p: &Params,
+    timing: &mut ReadTiming,
+) -> Value {
+    let index = HISTORY.lock().unwrap().get(agent, root, path);
     let result = index
         .lock()
         .unwrap()
-        .page(p)
+        .page_timed(p, timing)
         .unwrap_or_else(|_| json!({"error":"unreadable"}));
     result
 }
@@ -1480,7 +1535,7 @@ pub(super) fn thread_info(agent: &str, thread: &str) -> Value {
         });
     let title = found
         .as_ref()
-        .and_then(|id| HISTORY.lock().unwrap().get(id).cloned())
+        .and_then(|id| HISTORY.lock().unwrap().existing(id))
         .map(|index| index.lock().unwrap().chat.title.clone())
         .filter(|title| !title.is_empty());
     json!({"chat_id":found,"label":title.unwrap_or_else(|| format!("{} · {}",agent,&thread[..thread.len().min(8)]))})
@@ -1505,8 +1560,9 @@ pub(super) fn native_message_received(thread: &str, send_key: &str) -> bool {
             limit: Some(1),
             ..Default::default()
         },
+        &mut ReadTiming::default(),
     );
-    let Some(index) = HISTORY.lock().unwrap().get(id).cloned() else {
+    let Some(index) = HISTORY.lock().unwrap().existing(id) else {
         return false;
     };
     let mut index = index.lock().unwrap();
@@ -1945,7 +2001,16 @@ fn read_page(chat: &Chat, p: &Params) -> Value {
     result
 }
 
+#[cfg(test)]
 fn local(roots: Vec<(&str, PathBuf)>, p: &Params, id: Option<&str>) -> Value {
+    local_timed(roots, p, id, &mut ReadTiming::default())
+}
+fn local_timed(
+    roots: Vec<(&str, PathBuf)>,
+    p: &Params,
+    id: Option<&str>,
+    timing: &mut ReadTiming,
+) -> Value {
     if let Some((agent, root, path)) =
         id.and_then(|id| TRANSCRIPTS.lock().unwrap().get(id).cloned())
     {
@@ -1963,7 +2028,7 @@ fn local(roots: Vec<(&str, PathBuf)>, p: &Params, id: Option<&str>) -> Value {
                     )
                 })
         {
-            return indexed_page(&agent, &root, &path, p);
+            return indexed_page(&agent, &root, &path, p, timing);
         }
     }
     let mut sources = Vec::new();
@@ -2001,7 +2066,7 @@ fn local(roots: Vec<(&str, PathBuf)>, p: &Params, id: Option<&str>) -> Value {
                     .lock()
                     .unwrap()
                     .insert(id.into(), (agent.into(), root.clone(), path.clone()));
-                return indexed_page(agent, &root, path, p);
+                return indexed_page(agent, &root, path, p, timing);
             }
             return json!({"error":if partial{"discovery_incomplete"}else{"not_found"}});
         }
@@ -2159,24 +2224,46 @@ fn opencode(path: &Path, p: &Params, id: Option<&str>) -> Value {
 }
 
 async fn local_async(p: Params, id: Option<String>) -> Value {
+    local_timed_async(p, id).await.0
+}
+async fn local_timed_async(p: Params, id: Option<String>) -> (Value, ReadTiming) {
     // Limit concurrent disk scans without blocking Tokio's runtime threads.
     static SCANS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+    let queued = std::time::Instant::now();
     let Ok(permit) = SCANS.acquire().await else {
-        return json!({"error":"unavailable"});
+        return (json!({"error":"unavailable"}), ReadTiming::default());
     };
     let result = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        let mut page = local(roots(), &p, id.as_deref());
+        let mut timing = ReadTiming {
+            queue_ms: queued.elapsed().as_millis(),
+            ..ReadTiming::default()
+        };
+        let started = std::time::Instant::now();
+        let mut result = local_timed(roots(), &p, id.as_deref(), &mut timing);
         if id.is_some() {
-            super::message_activity::enrich(&mut page);
+            super::message_activity::enrich(&mut result);
         }
-        page
+        timing.read_ms = started.elapsed().as_millis();
+        (result, timing)
     })
     .await
-    .unwrap_or_else(|_| json!({"error":"history_reader_failed"}));
+    .unwrap_or_else(|_| {
+        (
+            json!({"error":"history_reader_failed"}),
+            ReadTiming::default(),
+        )
+    });
     result
 }
 async fn remote(host: &Host, p: &Params, id: Option<&str>) -> Value {
+    remote_timed(host, p, id).await.0
+}
+async fn remote_timed(
+    host: &Host,
+    p: &Params,
+    id: Option<&str>,
+) -> (Value, Option<header::HeaderValue>) {
     let mut p = p.clone();
     p.host = None;
     let query = {
@@ -2205,14 +2292,18 @@ async fn remote(host: &Host, p: &Params, id: Option<&str>) -> Value {
         query.finish()
     };
     let path = format!("/switchboard/chats/{}?{}", id.unwrap_or("search"), query);
-    match tokio::time::timeout(
+    let mut timing = None;
+    let result = match tokio::time::timeout(
         Duration::from_secs(15),
         host.request(Method::GET, &path, Bytes::new(), "application/json"),
     )
     .await
     {
-        Ok(Ok(r)) if r.status == StatusCode::OK => serde_json::from_slice(&r.body)
-            .unwrap_or_else(|_| json!({"error":"invalid_peer_response"})),
+        Ok(Ok(r)) if r.status == StatusCode::OK => {
+            timing = r.headers.get("server-timing").cloned();
+            serde_json::from_slice(&r.body)
+                .unwrap_or_else(|_| json!({"error":"invalid_peer_response"}))
+        },
         Ok(Ok(r)) if r.status == StatusCode::BAD_REQUEST && (p.tail || p.before.is_some()) => {
             json!({"error":"This computer needs an update to show recent messages first."})
         },
@@ -2220,7 +2311,8 @@ async fn remote(host: &Host, p: &Params, id: Option<&str>) -> Value {
             json!({"error":"unsupported_peer_version"})
         },
         _ => json!({"error":"computer_unavailable"}),
-    }
+    };
+    (result, timing)
 }
 pub(super) async fn search(State(state): State<RelayState>, Query(p): Query<Params>) -> Response {
     if !p.valid() {
@@ -2273,13 +2365,14 @@ pub(super) async fn read(
     if !p.valid() || !valid_id(&id) {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    let mut result = if let Some(host) = p.host.as_deref().filter(|h| *h != "local") {
+    let (mut result, timing) = if let Some(host) = p.host.as_deref().filter(|h| *h != "local") {
         let Some(h) = state.mesh.as_ref().and_then(|m| m.host(host)) else {
             return StatusCode::NOT_FOUND.into_response();
         };
-        remote(&h, &p, Some(&id)).await
+        remote_timed(&h, &p, Some(&id)).await
     } else {
-        local_async(p, Some(id)).await
+        let (result, timing) = local_timed_async(p, Some(id)).await;
+        (result, Some(timing.header()))
     };
     if result.get("error").is_some() || result["partial"] == true {
         let outcome = if result.get("error").is_some() {
@@ -2326,7 +2419,11 @@ pub(super) async fn read(
         );
     }
     result["stream"] = json!(true);
-    Json(result).into_response()
+    let mut response = Json(result).into_response();
+    if let Some(timing) = timing {
+        response.headers_mut().insert("server-timing", timing);
+    }
+    response
 }
 
 pub(super) async fn context_count(id: &str) -> Result<usize, Error> {
@@ -2424,18 +2521,20 @@ pub(in crate::switchboard_relay) async fn gateway(request: Request) -> Response 
     if !p.valid() || !valid_id(id) {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    Json(
-        local_async(
-            p,
-            if id == "search" {
-                None
-            } else {
-                Some(id.into())
-            },
-        )
-        .await,
+    let (result, timing) = local_timed_async(
+        p,
+        if id == "search" {
+            None
+        } else {
+            Some(id.into())
+        },
     )
-    .into_response()
+    .await;
+    let mut response = Json(result).into_response();
+    response
+        .headers_mut()
+        .insert("server-timing", timing.header());
+    response
 }
 
 #[cfg(test)]
@@ -2475,7 +2574,44 @@ mod tests {
         writeln!(file,"{}",json!({"type":"event_msg","payload":{"type":"user_message","message":envelope("second")}})).unwrap();
         assert!(native_message_received(&thread, "second"));
         TRANSCRIPTS.lock().unwrap().remove(&id);
-        HISTORY.lock().unwrap().remove(&id);
+        HISTORY.lock().unwrap().indexes.remove(&id);
+    }
+
+    #[test]
+    fn switchboard_chats_cache_keeps_recent_and_active_indexes_when_full() {
+        let root = Path::new("fixture-history");
+        let mut cache = HistoryCache::default();
+        // A live reader must survive even though it is the oldest entry.
+        let active = cache.get("codex", root, &root.join("active.jsonl"));
+        cache
+            .indexes
+            .get_mut(&file_id("codex", root, &root.join("active.jsonl")))
+            .unwrap()
+            .0 = std::time::Instant::now() - Duration::from_secs(60);
+        for i in 0..15 {
+            let path = root.join(format!("chat-{i}.jsonl"));
+            drop(cache.get("codex", root, &path));
+            cache
+                .indexes
+                .get_mut(&file_id("codex", root, &path))
+                .unwrap()
+                .0 = std::time::Instant::now() - Duration::from_secs(30 - i);
+        }
+        let recent_path = root.join("chat-14.jsonl");
+        let recent = Arc::downgrade(&cache.get("codex", root, &recent_path));
+        drop(cache.get("codex", root, &root.join("new.jsonl")));
+        assert_eq!(cache.indexes.len(), 16);
+        assert!(!cache
+            .indexes
+            .contains_key(&file_id("codex", root, &root.join("chat-0.jsonl"))));
+        assert!(Arc::ptr_eq(
+            &active,
+            &cache.get("codex", root, &root.join("active.jsonl"))
+        ));
+        assert!(Arc::ptr_eq(
+            &recent.upgrade().unwrap(),
+            &cache.get("codex", root, &recent_path)
+        ));
     }
 
     #[test]
@@ -4143,5 +4279,43 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         assert_eq!(gateway(r).await.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn switchboard_chats_remote_timing_stays_out_of_transcript_and_stream_data() {
+        // The gateway carries timing in headers, keeping JSON equality stable for SSE.
+        let expected = "queue;dur=25,read;dur=450,index;dur=400,page;dur=25";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = axum::Router::new().fallback(|request: Request| async move {
+            let mut response =
+                Json(json!({"messages":[],"start_cursor":0,"next_cursor":null})).into_response();
+            if !request.uri().path().ends_with("codex-legacy") {
+                response.headers_mut().insert(
+                    "server-timing",
+                    "queue;dur=25,read;dur=450,index;dur=400,page;dur=25"
+                        .parse()
+                        .unwrap(),
+                );
+            }
+            response
+        });
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let host = Host::new(super::super::tests::config(&format!("http://{address}"))).unwrap();
+        *host.cookie.lock().await = Some("session_token=fixture".into());
+        let (page, timing) = remote_timed(&host, &Params::default(), Some("codex-test")).await;
+        assert_eq!(timing.unwrap(), expected);
+        assert_eq!(
+            page,
+            remote(&host, &Params::default(), Some("codex-test")).await
+        );
+        assert!(page.get("timing").is_none());
+        let (legacy, timing) = remote_timed(&host, &Params::default(), Some("codex-legacy")).await;
+        assert_eq!(legacy, page);
+        assert!(
+            timing.is_none(),
+            "Older gateways must not acquire fabricated zero timings"
+        );
+        server.abort();
     }
 }

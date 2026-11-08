@@ -93,6 +93,7 @@ test('phone chat opens the latest page, hides setup, and preserves messages and 
   await page.addInitScript(()=>{window.intervals=[];window.setInterval=fn=>intervals.push(fn);});
   await page.route('http://chat.test/**',route=>{
    const url=new URL(route.request().url());
+   if(url.pathname.startsWith('/api/diagnostics/'))return route.fulfill({status:204});
    if(url.pathname.startsWith('/api/chats/')){
     requests.push(Object.fromEntries(url.searchParams));
     const limit=Number(url.searchParams.get('limit'));
@@ -105,7 +106,8 @@ test('phone chat opens the latest page, hides setup, and preserves messages and 
    if(url.pathname==='/')return route.fulfill({contentType:'text/html',body:`<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/conversation.css"><style>body{margin:0}#terminals{position:relative;height:100dvh}</style><main id="terminals"><iframe id="terminal" class="active"></iframe><section id="artifact-preview" hidden></section></main><script src="/conversation.js"></script><script>window.current={key:'pane1',host:'local',pane:1,agent:'codex',state:'working',chatId:'codex-long',frame:document.getElementById('terminal')};SwitchboardConversation.install({selection:()=>current,terminal:()=>{}});</script>`});
    return route.fulfill({contentType:url.pathname.endsWith('.css')?'text/css':'application/javascript',path:path.join(__dirname,'static',path.basename(url.pathname))});
   });
-  await page.goto('http://chat.test/');
+  const firstShown=page.waitForResponse(response=>response.url().endsWith('/api/diagnostics/conversation-shown'));
+  await page.goto('http://chat.test/');await firstShown;
   // The newest step of a working agent is shown in the live row.
   await page.locator('.conversation-working-step[data-step="Checking the final result…"]').waitFor();
   assert.equal(requests.length,1);assert.equal(requests[0].tail,'true');
@@ -160,6 +162,7 @@ test('Android keyboard layout, file picker, and working Codex replies preserve d
   await page.addInitScript(()=>{window.keyboardHeight=844;Object.defineProperty(visualViewport,'height',{get:()=>keyboardHeight});});
   await page.route('http://chat.test/**',async route=>{
    const url=new URL(route.request().url());
+   if(url.pathname.startsWith('/api/diagnostics/'))return route.fulfill({status:204});
    if(url.pathname.endsWith('/attachments')){uploads.push({host:url.pathname,name:url.searchParams.get('name'),bytes:route.request().postDataBuffer().toString()});return route.fulfill({json:{path:'/uploads/'+url.searchParams.get('name')}});}
    if(url.pathname.endsWith('/codex/reply')){requests.push({host:url.pathname,...route.request().postDataJSON()});return confirmed?route.fulfill({json:{status:'queued'}}):route.abort();}
    if(url.pathname.startsWith('/api/chats/'))return route.fulfill({json:{session_id:'00000000-0000-4000-8000-000000000001',messages:[...Array.from({length:25},(_,i)=>({role:'assistant',text:'Reply '+i+'\n'+('Detailed explanation. '.repeat(10))})),...(confirmed&&requests.length?[{role:'user',text:requests.at(-1).message}]:[])],start_cursor:0,next_cursor:null}});

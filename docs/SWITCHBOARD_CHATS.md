@@ -72,8 +72,8 @@ of the agent's current compacted context or active rewind branch.
 ## Current terminal conversation
 
 The sidebar's **Conversation** button opens the selected pane's transcript directly;
-**Terminal** returns to the same pane. Phones and browsers with data saving enabled
-initially fetch only the latest 15 messages. A server-sent event stream follows the last
+**Terminal** returns to the same pane. Every screen initially fetches only the latest
+15 messages, with earlier pages loaded as you scroll up. A server-sent event stream follows the last
 loaded message, including changes to that message. Updates appear as soon as the
 agent writes them to its transcript; providers that only save completed messages
 cannot expose individual tokens through this reader. The selected chat preloads
@@ -98,6 +98,28 @@ API response once and including the session's `subagents/` transcripts. Tokens f
 without a known price are reported as `unpriced_tokens` and left out of the cost.
 Conversation shows the cost only for computers turned on under Settings → API cost, because
 subscription plans are not billed per token.
+
+## Conversation load timing
+
+Settings → Logs (`/api/logs`) records `Conversation shown` for each visible chat
+selection, including the initial page, and each switch from Terminal to Conversation.
+`reason` distinguishes `selection` from `mode`; `end` says whether messages came from
+memory (`cached`), a read (`history`), or an unavailable binding (`unbound`). Times
+above 500 ms and failed or timed-out loads are marked `slow`. These are bounded
+recent samples, not a persistent latency dashboard.
+
+`t` measures the visible wait through the browser's next paint. `paint` is the first
+panel paint, which may still show the loading notice. Fetched chats also report
+`request` (fetch, response download and JSON decoding) and `render` (applying the page
+and updating its DOM). The owning relay supplies numeric `Server-Timing` stages:
+`queue` waits for a disk-read slot and blocking worker; `read` covers the local read,
+including discovery and locks; `index` updates the transcript index and usage; `page`
+decodes and formats the requested messages. `index` and `page` are parts of `read`,
+not additional delays. Paired gateways forward these stages, so a high `request`
+with a low `read` points outside the transcript reader. Older peers omit the stages;
+the browser does not invent zero timings. No transcript text, paths, titles or chat
+IDs are included in these browser diagnostics. Cached selections render immediately
+and their background refresh is excluded from the visible-load stages.
 
 ## Mobile replies and attachments
 
@@ -161,7 +183,8 @@ recover the portion beyond those search bounds. Direct JSONL reads, including
 Conversation, index the complete transcript without file-size or message-count
 cutoffs. The index retains record offsets, reads only appended bytes on updates,
 and decodes just the requested page. Records over 8 MiB are skipped while later
-messages remain available. Up to sixteen idle indexes are retained in memory;
+messages remain available. Up to sixteen indexes are retained in memory, evicting the least recently used idle
+index when full while preserving active readers;
 embedded previews share a 2 MiB budget per returned page. OpenCode caps text parts at
 1 Mi characters and uses a 128 MiB source budget. At most two local disk scans
 run at once; peer requests have a 15-second timeout and fan out four at a time.

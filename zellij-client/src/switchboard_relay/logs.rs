@@ -1994,6 +1994,18 @@ pub(super) struct ShownDiagnostic {
     end: String,
     elapsed_ms: u32,
     paint_ms: Option<u32>,
+    #[serde(default = "shown_mode")]
+    reason: String,
+    remote: Option<bool>,
+    request_ms: Option<u32>,
+    render_ms: Option<u32>,
+    queue_ms: Option<u32>,
+    read_ms: Option<u32>,
+    index_ms: Option<u32>,
+    page_ms: Option<u32>,
+}
+fn shown_mode() -> String {
+    "mode".into()
 }
 impl ShownDiagnostic {
     fn message(&self) -> Option<String> {
@@ -2009,17 +2021,52 @@ impl ShownDiagnostic {
                 | "timeout"
         ) || self.elapsed_ms > 120_000
             || self.paint_ms.is_some_and(|t| t > self.elapsed_ms)
+            || !matches!(self.reason.as_str(), "mode" | "selection")
+            || [
+                self.request_ms,
+                self.render_ms,
+                self.queue_ms,
+                self.read_ms,
+                self.index_ms,
+                self.page_ms,
+            ]
+            .into_iter()
+            .flatten()
+            .any(|t| t > 120_000)
         {
             return None;
         }
         let slow = self.elapsed_ms > 500 || matches!(self.end.as_str(), "failed" | "timeout");
-        Some(format!(
+        let mut message = format!(
             "Conversation shown {} t={}ms paint={}ms end={}",
             if slow { "slow" } else { "ready" },
             self.elapsed_ms,
             self.paint_ms.map_or_else(|| "-".into(), |t| t.to_string()),
             self.end,
-        ))
+        );
+        // Keep the original form for older browsers while retaining numeric stages from new ones.
+        if self.remote.is_some() {
+            use std::fmt::Write;
+            let _ = write!(
+                message,
+                " reason={} remote={}",
+                self.reason,
+                self.remote.unwrap()
+            );
+            for (name, value) in [
+                ("request", self.request_ms),
+                ("render", self.render_ms),
+                ("queue", self.queue_ms),
+                ("read", self.read_ms),
+                ("index", self.index_ms),
+                ("page", self.page_ms),
+            ] {
+                if let Some(value) = value {
+                    let _ = write!(message, " {name}={value}ms");
+                }
+            }
+        }
+        Some(message)
     }
 }
 pub(super) async fn conversation_shown(request: Request) -> StatusCode {
@@ -2082,6 +2129,26 @@ mod conversation_diagnostic_tests {
             json!({"end":"cached","elapsed_ms":1,"paint_ms":1,"text":"x"})
         )
         .is_err());
+        let sample = json!({"end":"history","elapsed_ms":900,"paint_ms":10,
+            "reason":"selection","remote":true,"request_ms":850,"render_ms":20,
+            "queue_ms":50,"read_ms":700,"index_ms":600,"page_ms":80});
+        assert_eq!(shown(sample.clone()).unwrap(),
+            "Conversation shown slow t=900ms paint=10ms end=history reason=selection remote=true request=850ms render=20ms queue=50ms read=700ms index=600ms page=80ms");
+        for field in [
+            "request_ms",
+            "render_ms",
+            "queue_ms",
+            "read_ms",
+            "index_ms",
+            "page_ms",
+        ] {
+            let mut invalid = sample.clone();
+            invalid[field] = json!(120_001);
+            assert!(shown(invalid).is_none());
+        }
+        let mut invalid = sample;
+        invalid["reason"] = json!("private chat title");
+        assert!(shown(invalid).is_none());
     }
     #[tokio::test]
     async fn switchboard_conversation_diagnostics_accept_only_content_free_codes() {
