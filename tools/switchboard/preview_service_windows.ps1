@@ -149,7 +149,8 @@ try { if (-not $mutex.WaitOne([TimeSpan]::FromSeconds(90))) { return } } catch [
 $self = $PSCommandPath
 $selfHash = (Get-FileHash -LiteralPath $self).Hash
 $server = $null; $serving = ''; $failures = 0; $lastMergeCheck = [datetime]::MinValue
-$build = $null; $building = ''; $built = ''; $install = $null; $installing = ''
+# $Install is the -Install switch (names ignore case), so the updater process has its own name.
+$build = $null; $building = ''; $built = ''; $updateProcess = $null; $installing = ''
 $failedInstalls = @{}; $localRuns = @{}; $nextInstall = [datetime]::MinValue
 $noLocalBuilds = Join-Path $state 'no-local-builds'
 Log "service started from $self"
@@ -187,8 +188,8 @@ while ($true) {
                 if ($running -and $head.StartsWith($running)) { $built = $head }
                 else { $building = $head; $build = Start-LocalBuild $head; $null = $build.Handle }
             }
-            if ($install -and $install.HasExited) {
-                Log "local update of $($installing.Substring(0, 8)) exited $($install.ExitCode): $((Get-Content -LiteralPath (Join-Path $state 'local-update.log') -Tail 1 -ErrorAction SilentlyContinue))"
+            if ($updateProcess -and $updateProcess.HasExited) {
+                Log "local update of $($installing.Substring(0, 8)) exited $($updateProcess.ExitCode): $((Get-Content -LiteralPath (Join-Path $state 'local-update.log') -Tail 1 -ErrorAction SilentlyContinue))"
                 # The updater records a failed handoff as an attempt; one that only waited
                 # or found another update running records none. Three failures wait for
                 # the next main.
@@ -198,12 +199,12 @@ while ($true) {
                     $failedInstalls[$installing] = 1 + [int]$failedInstalls[$installing]
                     if ($failedInstalls[$installing] -ge 3) { Log "giving up on installing $($installing.Substring(0, 8))"; $built = "failed:$installing" }
                 }
-                $install = $null; $nextInstall = (Get-Date).AddMinutes(1)
+                $updateProcess = $null; $nextInstall = (Get-Date).AddMinutes(1)
             }
-            if (-not $build -and -not $install -and $built -eq $head -and (Get-Date) -ge $nextInstall) {
+            if (-not $build -and -not $updateProcess -and $built -eq $head -and (Get-Date) -ge $nextInstall) {
                 $running = Get-RunningCommit
                 if ($running -and -not $head.StartsWith($running)) {
-                    try { $installing = $head; $install = Start-LocalInstall $head; $null = $install.Handle }
+                    try { $installing = $head; $updateProcess = Start-LocalInstall $head; $null = $updateProcess.Handle }
                     catch { Log "local install: $($_.Exception.Message)"; $built = "failed:$head" }
                 }
             }
