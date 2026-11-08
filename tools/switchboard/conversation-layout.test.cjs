@@ -5,14 +5,16 @@ test('Conversation folds finished progress, keeps the live step, and gives code 
  const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch();
  const at=seconds=>new Date(Date.UTC(2026,10,8,10,0,seconds)).toISOString();
  const step=(text,seconds)=>({role:'assistant',phase:'commentary',text,timestamp:at(seconds)});
+ // Tool calls arrive as commentary with a kind, so older browsers show them as quiet notes.
+ const tool=(kind,detail,text,seconds)=>({role:'assistant',phase:'commentary',kind:'tool',tool:kind,detail,text,timestamp:at(seconds),markdown:[{type:'start',tag:'p'},{type:'text',text:text.slice(0,-detail.length)},{type:'code',text:detail},{type:'end'}]});
  const messages=[
   {role:'user',text:'Fix the flicker',timestamp:at(0)},
-  step('Reading app.js',5),step('Reproduced it',30),
+  step('Reading app.js',5),tool('read','tools/switchboard/static/app.js','Read tools/switchboard/static/app.js',20),step('Reproduced it',30),
   {role:'assistant',text:'Fixed.\n\n```js\nconst a = "<b>";\n```',timestamp:at(72),markdown:[
    {type:'start',tag:'p'},{type:'text',text:'Fixed. Run '},{type:'code',text:'node tools/switchboard/focus.test.cjs'},{type:'end'},
    {type:'start',tag:'pre',lang:'js'},{type:'text',text:'const a = "<b>";\n'},{type:'end'}]},
   {role:'user',text:'And Windows?',timestamp:at(80)},
-  step('Checking Windows',85),step('Still checking',90),
+  step('Checking Windows',85),tool('run','cargo test -p zellij-client','Ran cargo test -p zellij-client',90),
  ],escapes=[];
  try{
   const page=await browser.newPage({viewport:{width:1280,height:900}});page.setDefaultTimeout(5000);
@@ -26,27 +28,44 @@ test('Conversation folds finished progress, keeps the live step, and gives code 
    if(p==='/')return route.fulfill({contentType:'text/html',body:`<meta charset="utf-8"><link rel="stylesheet" href="/conversation.css"><style>body{margin:0}#terminals{position:relative;height:100dvh}</style><main id="terminals"><iframe id="terminal"></iframe><section id="artifact-preview" hidden></section></main><script src="/conversation-media.js"></script><script src="/conversation.js"></script><script>window.current={key:'pane1',host:'fixture',session:'main',pane:1,title:'Fix',agent:'claude',state:'working',since:Math.floor(Date.now()/1000)-65,chatId:'chat-1',frame:document.getElementById('terminal')};SwitchboardConversation.install({selection:()=>current,terminal(){}});</script>`});
    return route.fulfill({path:path.join(__dirname,'static',path.basename(p)),contentType:p.endsWith('.css')?'text/css':'text/javascript'});
   });
-  await page.goto('http://layout.test/');await page.locator('.conversation-steps').nth(1).waitFor();
-  // The finished run folds behind one summary; the run in progress shows only its newest step.
-  const summaries=page.locator('.conversation-steps'),summary=summaries.first(),earlier=summaries.nth(1);
-  assert.equal(await summaries.count(),2);assert.equal(await summary.textContent(),'Claude worked for 1m 12s · 2 steps');
+  await page.goto('http://layout.test/');await page.locator('.conversation-steps').first().waitFor();
+  // The finished run folds behind one summary that counts tool steps too.
+  const summaries=page.locator('.conversation-steps'),summary=summaries.first();
+  assert.equal(await summaries.filter({visible:true}).count(),1);assert.equal(await summary.textContent(),'Claude worked for 1m 12s · 3 steps');
   assert.equal(await summary.getAttribute('aria-expanded'),'false');
   assert.equal(await page.getByText('Reading app.js',{exact:true}).isVisible(),false);
-  assert.equal(await earlier.textContent(),'1 earlier step');
-  assert.equal(await page.getByText('Checking Windows',{exact:true}).isVisible(),false);
-  await earlier.click();assert.equal(await page.getByText('Checking Windows',{exact:true}).isVisible(),true);
-  await earlier.click();assert.equal(await page.getByText('Checking Windows',{exact:true}).isVisible(),false);
   await summary.click();
   assert.equal(await page.getByText('Reading app.js',{exact:true}).isVisible(),true);
   assert.equal(await summary.getAttribute('aria-expanded'),'true');
+  // A tool step sits on the rail as one quiet line: a verb and its path in monospace.
+  const read=page.locator('.conversation-message.commentary.tool[data-tool="read"]');
+  assert.equal(await read.isVisible(),true);
+  assert.equal(await read.locator('.conversation-tool-verb').textContent(),'Read');
+  assert.equal(await read.locator('code.conversation-tool-detail').textContent(),'tools/switchboard/static/app.js');
+  assert.match(await read.locator('code').evaluate(node=>getComputedStyle(node).fontFamily),/mono|Menlo|Consolas/i);
   // Polling again keeps the reader's choice.
   await page.evaluate(()=>intervals.forEach(fn=>fn()));await page.waitForTimeout(100);
   assert.equal(await page.getByText('Reading app.js',{exact:true}).isVisible(),true);
-  // The newest step moves into the live row, which counts from when the turn started.
+  // The newest step, here a command, moves into the live row, which counts from when the turn started.
   const live=page.locator('.conversation-working');
-  assert.equal(await live.locator('.conversation-working-step').getAttribute('data-step'),'Still checking');
+  assert.equal(await live.locator('.conversation-working-step').getAttribute('data-step'),'Running cargo test -p zellij-client…');
   assert.match(await live.locator('.conversation-working-time').textContent(),/^1m [56]s$/);
   assert.equal(await page.locator('.conversation-message.commentary.live').isVisible(),false);
+  // The live row is the run's only disclosure: it shows this turn's earlier steps in place.
+  const row=page.getByRole('button',{name:'Show 1 earlier step'});
+  assert.equal(await row.getAttribute('aria-expanded'),'false');
+  assert.equal(await live.locator('.conversation-working-count').textContent(),'· 2 steps');
+  assert.equal(await page.getByText('Checking Windows',{exact:true}).isVisible(),false);
+  await row.click();
+  assert.equal(await page.getByText('Checking Windows',{exact:true}).isVisible(),true);
+  assert.equal(await live.getAttribute('aria-expanded'),'true');assert.equal(await live.getAttribute('aria-label'),'Hide 1 earlier step');
+  await page.evaluate(()=>intervals.forEach(fn=>fn()));await page.waitForTimeout(100);
+  assert.equal(await page.getByText('Checking Windows',{exact:true}).isVisible(),true);
+  // It works from the keyboard, too.
+  await live.focus();await page.keyboard.press('Enter');
+  assert.equal(await page.getByText('Checking Windows',{exact:true}).isVisible(),false);
+  await page.keyboard.press('Space');
+  assert.equal(await page.getByText('Checking Windows',{exact:true}).isVisible(),true);
   // Code gets a card with its language, highlighting built from text nodes, and a copy button.
   const card=page.locator('.conversation-code');
   assert.equal(await card.locator('.conversation-code-bar span').textContent(),'js');
@@ -69,6 +88,13 @@ test('Conversation folds finished progress, keeps the live step, and gives code 
   await page.getByLabel('Reply draft').fill('');
   await page.evaluate(()=>{current.state='ready';SwitchboardConversation.update();});
   assert.equal(await stop.isVisible(),false);assert.equal(await send.isVisible(),true);
+  // When the answer lands, the run folds into its summary and stays open as the reader left it.
+  messages.push({role:'assistant',text:'Windows passes too.',timestamp:at(100)});
+  await page.evaluate(()=>intervals.forEach(fn=>fn()));
+  const finished=summaries.filter({hasText:'Claude worked for 20s · 2 steps'});await finished.waitFor();
+  assert.equal(await finished.getAttribute('aria-expanded'),'true');
+  assert.equal(await page.getByText('Checking Windows',{exact:true}).isVisible(),true);
+  assert.equal(await page.locator('.conversation-message.commentary.tool[data-tool="run"] code').textContent(),'cargo test -p zellij-client');
   assert.deepEqual(errors,[]);
  }finally{await browser.close();}
 });

@@ -81,9 +81,25 @@
 .conversation-message.commentary a{color:var(--text-2)}
 /* The newest step is shown in the live row below instead. */
 .conversation-message.commentary.live{display:none}
+/* Tool calls: quieter than progress notes, one line each, a short verb and monospace detail. */
+.conversation-message.commentary.tool{font-size:13px;line-height:21px}
+.conversation-message.commentary.tool::before{box-sizing:border-box;background:none;border:1px solid #5d5e66}
+.conversation-tool{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.conversation-tool-verb{color:var(--faint)}
+.conversation-message.commentary.tool code{font:400 12.5px/1 var(--mono);padding:0;background:none;color:var(--step);overflow-wrap:normal}
 
 /* Live row: pulsing marker on the rail, the current step, and a quiet timer. */
-.conversation-working{position:relative;display:flex;align-items:baseline;gap:12px;margin:0 0 28px;padding:0 0 0 18px;font-size:13px;line-height:1.55}
+.conversation-panel .conversation-working{position:relative;display:flex;align-items:baseline;gap:12px;width:100%;min-height:0;margin:0 0 28px;padding:0 0 0 18px;border:0;border-radius:0;background:none;color:inherit;font:inherit;font-size:13px;line-height:1.55;text-align:left;cursor:default;transition:none}
+.conversation-panel .conversation-working:hover{background:none;color:inherit}
+.conversation-panel .conversation-working:disabled{opacity:1}
+.conversation-panel .conversation-working.has-run{cursor:pointer}
+.conversation-working-count{display:flex;align-items:center;gap:4px;flex-shrink:0;font-size:12.5px;color:var(--muted)}
+.conversation-working-count:empty{display:none}
+.conversation-working-count::after{content:"";width:12px;height:12px;background:currentColor;transition:transform .15s;-webkit-mask:var(--chev) center/contain no-repeat;mask:var(--chev) center/contain no-repeat}
+.conversation-working[aria-expanded="true"] .conversation-working-count::after{transform:rotate(90deg)}
+.conversation-working.has-run:hover .conversation-working-count{color:var(--text)}
+/* The live row is the disclosure for a run in progress. */
+.conversation-messages:has(>.conversation-working.has-run:not([hidden])) .conversation-steps.in-progress{display:none}
 .conversation-working-dot{position:absolute;left:-2px;top:3px;width:14px;height:14px;border-radius:50%;border:1.5px solid #8fb4ff40;border-top-color:var(--accent);animation:conversation-spin .9s linear infinite}
 @keyframes conversation-spin{to{transform:rotate(360deg)}}
 .conversation-working-step{flex:1;min-width:0}
@@ -248,9 +264,10 @@
   .conversation-messages.scrolling::-webkit-scrollbar-thumb{background:#2c2d33;border-radius:3px}
   .conversation-message{margin-bottom:20px}
   .conversation-message.user{max-width:88%;font-size:14px}
-  .conversation-message.commentary,.conversation-working{font-size:13px}
+  .conversation-message.commentary,.conversation-panel .conversation-working{font-size:13px}
   .conversation-message h1{font-size:18px}.conversation-message h2{font-size:16px}.conversation-message h3,.conversation-message h4{font-size:15px}
   .conversation-table table{font-size:13px;width:100%}.conversation-table thead td{font-size:12px}
+  .conversation-message pre{font-size:12px}
   .conversation-code>pre{padding-left:12px;padding-right:12px}
   .conversation-notification>summary{min-height:44px;padding:10px 0}
   /* Wide code: a stronger edge fade and a visible scrollbar say it scrolls. */
