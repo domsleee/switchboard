@@ -1,0 +1,42 @@
+name: Install Protoc
+description: Install protoc from GitHub releases, falling back to NuGet or Homebrew when that download fails.
+
+inputs:
+  repo-token:
+    description: Token setup-protoc uses to list protoc releases.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - id: github-release
+      uses: arduino/setup-protoc@v3
+      continue-on-error: true
+      with:
+        repo-token: ${{ inputs.repo-token }}
+
+    - name: Install Protoc without GitHub releases
+      if: steps.github-release.outcome == 'failure'
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Google's NuGet package has no Apple Silicon binary.
+        if [ "$RUNNER_OS" = macOS ]; then
+          brew install protobuf
+          protoc --version
+          exit 0
+        fi
+        case "$RUNNER_OS" in
+          Linux) platform=linux_x64 binary=protoc ;;
+          Windows) platform=windows_x64 binary=protoc.exe ;;
+          *) echo "No protoc fallback for $RUNNER_OS" >&2; exit 1 ;;
+        esac
+        cd "$RUNNER_TEMP"
+        # 3.23.4 is the protoc 23.4 that setup-protoc installs.
+        curl -fsSL --retry 3 -o protoc-nuget.zip \
+          https://www.nuget.org/api/v2/package/Google.Protobuf.Tools/3.23.4
+        unzip -q -o protoc-nuget.zip "tools/$platform/$binary" -d protoc-nuget
+        directory="$RUNNER_TEMP/protoc-nuget/tools/$platform"
+        chmod +x "$directory/$binary"
+        "$directory/$binary" --version
+        echo "$directory" >> "$GITHUB_PATH"
