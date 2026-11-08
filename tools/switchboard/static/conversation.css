@@ -251,7 +251,6 @@
   .conversation-message.commentary,.conversation-working{font-size:13px}
   .conversation-message h1{font-size:18px}.conversation-message h2{font-size:16px}.conversation-message h3,.conversation-message h4{font-size:15px}
   .conversation-table table{font-size:13px;width:100%}.conversation-table thead td{font-size:12px}
-  .conversation-message pre{font-size:12px}
   .conversation-code>pre{padding-left:12px;padding-right:12px}
   .conversation-notification>summary{min-height:44px;padding:10px 0}
   /* Wide code: a stronger edge fade and a visible scrollbar say it scrolls. */
