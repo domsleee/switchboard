@@ -610,7 +610,8 @@
       if(/[\x00-\x08\x0b-\x1f\x7f]/.test(payload)){sendStatus('The draft contains terminal control characters. Remove them first.');return;}
       const command=/^\/[a-z][\w:.-]*(?:\s|$)/i.test(text),native=!command&&current.agent==='codex'&&/^[0-9a-f-]{36}$/.test(chat?.thread||'');
       if(command&&selected.length){sendStatus('Send commands without attachments. Your draft is kept.');return;}
-      if(command&&!['ready','waiting'].includes(current.state)){sendStatus('Wait for the agent to finish before sending a command. Your draft is kept.');return;}
+      // Claude queues a command typed while it works; Codex refuses most of them.
+      if(command&&current.agent!=='claude'&&!['ready','waiting'].includes(current.state)){sendStatus('Wait for the agent to finish before sending a command. Your draft is kept.');return;}
       if(current.state==='working'&&!native&&current.agent!=='claude'){sendStatus('Still connecting to this conversation. Try sending again in a moment.');return;}
       if(new TextEncoder().encode(payload).length>(native?8192:16000)){sendStatus('This message is too long. Shorten it before sending.');return;}
       const retry=native&&(outgoing.get(identity(target))||[]).find(item=>['failed','uncertain'].includes(item.state)&&item.native&&sameMessage(item.payload,payload));
