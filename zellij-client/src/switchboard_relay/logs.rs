@@ -20,7 +20,7 @@ struct Log(std::sync::Mutex<VecDeque<Value>>, AtomicBool);
 
 /// Browser and terminal timing reports are samples rather than failures.
 fn diagnostic(message: &str) -> bool {
-    message.starts_with("Terminal ")
+    message.starts_with("Terminal ") && !message.starts_with("Terminal failure ")
         || message.starts_with("Browser tab ")
         || message.starts_with("Conversation shown ")
 }
@@ -159,7 +159,23 @@ pub(super) async fn save(file: &Path) {
 
 /// Gateway reply for paired peers reviewing this computer's failures.
 pub(super) fn local() -> Value {
-    json!({"entries": LOG.newest_first()})
+    let mut entries = LOG.newest_first();
+    entries.extend(crate::terminal_failures::entries());
+    json!({"entries": recent_entries(entries)})
+}
+
+fn recent_entries(mut entries: Vec<Value>) -> Vec<Value> {
+    // Keep the peer reply bounded without allowing newer performance samples to
+    // displace durable fatal reports from the independently bounded worker store.
+    entries.sort_by_key(|e| {
+        (
+            std::cmp::Reverse(rank(e["message"].as_str().unwrap_or(""))),
+            std::cmp::Reverse(e["time"].as_u64().unwrap_or(0)),
+        )
+    });
+    entries.truncate(CAPACITY);
+    entries.sort_by_key(|e| std::cmp::Reverse(e["time"].as_u64().unwrap_or(0)));
+    entries
 }
 
 async fn peer(host: &Host) -> Value {
@@ -202,7 +218,7 @@ pub(super) async fn handler(State(state): State<RelayState>) -> Json<Value> {
         }
         peers = mesh.hosts();
     }
-    let mut computers = vec![json!({"name":name,"local":true,"entries":LOG.newest_first()})];
+    let mut computers = vec![json!({"name":name,"local":true,"entries":local()["entries"]})];
     computers.extend(futures_util::future::join_all(peers.iter().map(|h| peer(h))).await);
     Json(json!({ "computers": computers }))
 }
@@ -854,6 +870,42 @@ async fn diagnostic_body<T: serde::de::DeserializeOwned>(
     serde_json::from_slice(&body).map_err(|_| StatusCode::BAD_REQUEST)
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TerminalFailureDiagnostic {
+    host: String,
+    failure: crate::terminal_failures::Failure,
+}
+
+pub(super) async fn terminal_failure(
+    State(state): State<RelayState>,
+    request: Request,
+) -> StatusCode {
+    let report: TerminalFailureDiagnostic = match diagnostic_body(request).await {
+        Ok(report) => report,
+        Err(status) => return status,
+    };
+    let Some(host) = state.host(&report.host) else {
+        return StatusCode::NOT_FOUND;
+    };
+    if !report.failure.valid() {
+        return StatusCode::BAD_REQUEST;
+    }
+    let source = host.config.name.clone();
+    match tokio::task::spawn_blocking(move || {
+        crate::terminal_failures::record_at(
+            &crate::terminal_failures::path()?,
+            &source,
+            &report.failure,
+        )
+    })
+    .await
+    {
+        Ok(Ok(())) => StatusCode::NO_CONTENT,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
 pub(super) async fn terminal_switch(
     State(state): State<RelayState>,
     request: Request,
@@ -941,6 +993,78 @@ pub(super) async fn modified_enter(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn switchboard_terminal_failure_survives_newer_timing_samples_in_bounded_peer_logs() {
+        let mut entries: Vec<_> = (1..=200)
+            .map(|time| json!({"time":time,"message":"Terminal transport sample"}))
+            .collect();
+        entries.push(
+            json!({"time":0,"message":"Terminal failure focus_unconfirmed ref=0123456789ab"}),
+        );
+        let entries = recent_entries(entries);
+        assert_eq!(entries.len(), CAPACITY);
+        assert!(entries
+            .iter()
+            .any(|e| e["message"].as_str().unwrap().contains("ref=0123456789ab")));
+        assert_eq!(entries[0]["time"], 200);
+    }
+    #[tokio::test]
+    async fn switchboard_terminal_failure_requires_known_host_origin_and_content_free_metadata() {
+        use tower::ServiceExt;
+        let app = router(
+            RelayConfig {
+                browser_origin: None,
+                hosts: vec![super::super::tests::config("http://127.0.0.1:8082")],
+                artifact_proxy: None,
+            },
+            8090,
+        )
+        .await
+        .unwrap();
+        let report = json!({"host":"mac","failure":{"reference":"0123456789ab","code":"focus_unconfirmed","session":"fixture",
+            "pane_id":7,"is_plugin":false,"operation":"focus","elapsed_ms":20,"focus_confirmed":false,"query_received":true,
+            "worker_build":"abcdef01","engine_build":null,"pending_records":null}});
+        let request = |body: Value, origin: &str| {
+            hyper::Request::post("/api/diagnostics/terminal-failure")
+                .header(header::HOST, "127.0.0.1:8090")
+                .header(header::ORIGIN, origin)
+                .body(Body::from(body.to_string()))
+                .unwrap()
+        };
+        assert_eq!(
+            app.clone()
+                .oneshot(request(report.clone(), "https://attacker.example"))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        let mut unknown = report.clone();
+        unknown["host"] = json!("unpaired");
+        assert_eq!(
+            app.clone()
+                .oneshot(request(unknown, "http://127.0.0.1:8090"))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        for field in ["message", "typed_text", "terminal_contents"] {
+            let mut private = report.clone();
+            private["failure"][field] = json!("private prompt");
+            assert_eq!(
+                app.clone()
+                    .oneshot(request(private, "http://127.0.0.1:8090"))
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::BAD_REQUEST
+            );
+        }
+        assert!(!diagnostic(
+            "Terminal failure focus_unconfirmed ref=0123456789ab"
+        ));
+    }
 
     #[tokio::test]
     async fn switchboard_private_writes_do_not_reuse_preexisting_temporary_files() {

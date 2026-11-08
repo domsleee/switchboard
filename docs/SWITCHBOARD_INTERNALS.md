@@ -207,7 +207,12 @@ folder, for layouts like `C:\git\GitHub\{org}\{repo}`. A leading `~` is the home
 { "folders": ["C:\\git\\GitHub\\*"] }
 ```
 
-These projects appear as full paths, ranked by their last folder. An unreadable or
+The picker shows the folder name above its parent path, adding enough parent folders
+to distinguish names such as `Glow/DotNet` and `Glow2/DotNet`. Selections still use
+the full path. Overlapping roots and directory aliases list each folder once.
+Linked Git worktrees, including their subfolders, are omitted from suggestions using
+Git's common-directory metadata; separate clones and submodules remain available.
+A worktree can still be opened by typing its full path. An unreadable or
 invalid file is logged and ignored, and the picker still lists `~/git`. Changes apply
 the next time the picker loads.
 
@@ -332,6 +337,18 @@ The sidebar and browser title show the total number of marked tabs across all
 machines, including tabs outside the selected group.
 
 ## Native tab bar and connections
+
+Fatal terminal failures appear in **Settings → Logs**, with the reference shown in
+the disconnect dialog. Retained workers save a content-free report before replying;
+the browser reports failures that were not saved at source, including those from
+older workers. Reports live
+in `~/.config/switchboard/terminal-failures.json`, independently of relay restarts.
+The store keeps 200 failure groups, counts repeats, and retains the latest eight
+references per group. **Failure details** includes the session, target pane, operation,
+worker build and focus/query confirmation flags. An engine build that was not
+reported stays unknown. Reports exclude error text, terminal contents and typed input.
+Existing retained workers pick up source reporting when they exit naturally and a
+new worker starts; updated browser clients provide reporting in the meantime.
 
 The native tab row is hidden in the desktop combined view; **Settings → Native tab bar** shows
 it again. This is client-side viewport clipping of an identified Zellij header,

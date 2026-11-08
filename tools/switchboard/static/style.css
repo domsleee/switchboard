@@ -28,8 +28,8 @@ body.sidebar-collapsed #sidebar-toggle{left:8px}
 #tabs{position:relative;display:flex;flex-direction:column;gap:3px;padding:6px;overflow-y:auto;overflow-x:hidden;flex:1;min-height:0;scrollbar-width:none;overscroll-behavior:contain}
 #tabs::-webkit-scrollbar{display:none}
 /* Keep scrolled tabs clear of the pinned group headers. */
-#tabs:has(:is(#hidden-toggle,#snoozed-toggle)){scroll-padding-bottom:40px}
-#tabs:has(#hidden-toggle):has(#snoozed-toggle){scroll-padding-bottom:75px}
+#tabs:has(:is(#hidden-toggle,#snoozed-toggle)){scroll-padding-bottom:42px}
+#tabs:has(#hidden-toggle):has(#snoozed-toggle){scroll-padding-bottom:79px}
 /* Two lines: project · computer and status or age, then title and agent. The title runs under
    the status and stops only at the agent icon, so a wide status does not narrow it. */
 #tabs .tab-select{flex-shrink:0;display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;column-gap:0;row-gap:3px;white-space:normal;text-align:left;padding:9px 12px;min-height:52px;width:100%;border-color:transparent;border-radius:8px;background:transparent;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
@@ -62,15 +62,15 @@ body.sidebar-collapsed #sidebar-toggle{left:8px}
 #tabs.drop-target::after{content:'';position:absolute;top:var(--drop-top);left:6px;right:6px;height:2px;background:#9dc2fa;border-radius:2px;pointer-events:none;z-index:1;box-shadow:0 0 4px #9dc2fa}
 #tabs [hidden]{display:none}
 /* Auto margin pushes the first group down; both headers stay together at the bottom. */
-:is(#hidden-toggle,#snoozed-toggle){position:sticky;bottom:-6px;z-index:1;flex-shrink:0;display:flex;align-items:center;gap:7px;height:32px;margin-top:auto;padding:8px 9px;border:0;border-top:1px solid #2b303b;border-radius:0;background:#151820;color:#a3aec0;font-size:11px;text-align:left}
-#tabs:has(#hidden-toggle) #snoozed-toggle{bottom:29px}
+:is(#hidden-toggle,#snoozed-toggle){position:sticky;bottom:-6px;z-index:1;flex-shrink:0;display:flex;align-items:center;gap:7px;height:34px;margin-top:auto;padding:8px 12px;border:0;border-radius:0;background:#151820;color:#a1a1a1;font-size:12px;font-weight:400;line-height:18px;text-align:left}
+#tabs:has(#hidden-toggle) #snoozed-toggle{bottom:31px}
 #snoozed-toggle~#hidden-toggle{margin-top:0}
-:is(#hidden-toggle,#snoozed-toggle):hover{background:#222732;color:#e5e7eb}
-:is(#hidden-toggle,#snoozed-toggle) .chevron{display:inline-block;width:8px;font-size:13px;line-height:1;transition:transform .15s}
-:is(#hidden-toggle,#snoozed-toggle)[aria-expanded=true] .chevron{transform:rotate(90deg)}
+:is(#hidden-toggle,#snoozed-toggle):hover{background:#1b1f27;color:#e5e7eb}
+:is(#hidden-toggle,#snoozed-toggle) .chevron{order:1;flex-shrink:0;width:5px;height:5px;margin:0 2px 0 6px;border-right:1px solid currentColor;border-bottom:1px solid currentColor;font-size:0;transform:rotate(-45deg);transition:transform .15s}
+:is(#hidden-toggle,#snoozed-toggle)[aria-expanded=true] .chevron{transform:rotate(45deg)}
 :is(#hidden-toggle,#snoozed-toggle) .star{width:6px;height:6px;border-radius:50%}
 #tabs :is(#hidden-toggle,#snoozed-toggle) .star.attention{display:block;background:#f0bc63}
-:is(#hidden-toggle,#snoozed-toggle) .count{margin-left:auto;color:#9ba7bd;font-variant-numeric:tabular-nums}
+:is(#hidden-toggle,#snoozed-toggle) .count{margin-left:auto;font-variant-numeric:tabular-nums}
 #tabs .tab-row.hidden-tab .tab-select:not(.selected):not(:hover){opacity:.7}
 @media (prefers-reduced-motion:reduce){:is(#hidden-toggle,#snoozed-toggle) .chevron{transition:none}}
 #tab-empty{display:grid;grid-template-columns:8px minmax(0,1fr);column-gap:7px;row-gap:8px;align-items:center;padding:16px 16px 4px 4px;font-size:12px;line-height:1.4;color:#9ba7bd;overflow-wrap:anywhere}
@@ -176,6 +176,8 @@ dialog p{font-size:12px;color:#9ba7bd}
 .log-entry{display:grid;gap:2px;padding:6px 14px 7px;font-size:12px;line-height:1.4;overflow-wrap:anywhere}
 .log-entry+.log-entry{border-top:1px solid #1d222b}
 .log-entry small{font-size:11px;color:#8590a3}
+.log-failure summary{cursor:pointer;color:#8590a3}
+.log-failure pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:4px 0}
 #panel .log-note{margin:0;padding:0 14px 10px;font-size:12px}
 .task-group{border-top:1px solid #1d222b}
 .task-group>summary{display:grid;grid-template-columns:12px 8px minmax(0,1fr) auto;column-gap:8px;row-gap:3px;align-items:center;padding:9px 14px;font-size:12px;cursor:pointer;list-style:none}
@@ -416,6 +418,8 @@ body.sidebar-collapsed #artifact-preview header{padding-left:42px}
 .new-tab-options [aria-selected=true]{background:#2a2c33}
 .new-tab-options [aria-selected=true] span{color:#fff}
 #new-tab-projects{max-height:220px;overflow:auto}
+#new-tab-projects [role=option]{display:grid;grid-template-columns:minmax(0,1fr);gap:2px}
+#new-tab-projects small{overflow:hidden;text-overflow:ellipsis}
 .new-tab-options p{margin:6px 10px;color:var(--nt-muted);font-size:12px}
 .new-tab-options p:empty,.new-tab-options [hidden]{display:none}
 .new-tab-options .new-tab-options-hint{margin:6px 0 0;padding:8px 10px 2px;overflow:hidden;border-top:1px solid #26282e;color:var(--nt-faint);font-size:11.5px;text-overflow:ellipsis;white-space:nowrap}

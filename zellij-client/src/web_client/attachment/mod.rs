@@ -76,6 +76,28 @@ struct Viewer {
     incoming: Mutex<Option<mpsc::Receiver<Delivery>>>,
     retired: watch::Sender<bool>,
     parser_pending: AtomicBool,
+    session: String,
+    failure_context: Mutex<FailureContext>,
+    failure_report: tokio::sync::OnceCell<crate::terminal_failures::Failure>,
+    failure_saved: AtomicBool,
+}
+struct FailureContext {
+    operation: &'static str,
+    started: Instant,
+    target: Option<(u32, bool)>,
+    focus_confirmed: bool,
+    query_received: bool,
+}
+impl FailureContext {
+    fn new(operation: &'static str) -> Self {
+        Self {
+            operation,
+            started: Instant::now(),
+            target: None,
+            focus_confirmed: false,
+            query_received: false,
+        }
+    }
 }
 struct Delivery {
     generation: u64,
@@ -134,6 +156,10 @@ async fn create(State(worker): State<Worker>, Json(attach): Json<Attach>) -> Res
         incoming: Mutex::new(Some(rx)),
         retired: watch::channel(false).0,
         parser_pending: AtomicBool::new(false),
+        session: worker.session.clone(),
+        failure_context: Mutex::new(FailureContext::new("attach")),
+        failure_report: tokio::sync::OnceCell::new(),
+        failure_saved: AtomicBool::new(false),
     });
     {
         let mut views = worker.views.lock().unwrap();
@@ -229,6 +255,9 @@ async fn resume(
 }
 
 async fn final_reply(viewer: &Viewer, error: String) -> serde_json::Value {
+    if error == "Terminal viewer closed" {
+        return json!({"type":"retired"});
+    }
     if error == RETIRED {
         let mut retired = viewer.retired.subscribe();
         if matches!(
@@ -238,7 +267,70 @@ async fn final_reply(viewer: &Viewer, error: String) -> serde_json::Value {
             return json!({"type":"retired"});
         }
     }
-    json!({"type":"error","message":error})
+    let failure = report_failure(viewer, &error).await;
+    json!({"type":"error","message":format!("{error}\nReference: {}",failure.reference),"failure":failure,"failure_saved":viewer.failure_saved.load(Ordering::Acquire)})
+}
+
+/// Persist before publishing a fatal error. The report contains fixed codes and
+/// numeric protocol observations, never the error's potentially private contents.
+async fn report_failure<'a>(
+    viewer: &'a Viewer,
+    error: &str,
+) -> &'a crate::terminal_failures::Failure {
+    viewer
+        .failure_report
+        .get_or_init(|| async {
+            let failure = {
+                let context = viewer.failure_context.lock().unwrap();
+                let code = if error.starts_with("Engine did not confirm") {
+                    "focus_unconfirmed"
+                } else if error.starts_with("Terminal pane selection was not confirmed") {
+                    "focus_timeout"
+                } else if error.starts_with("Requested terminal pane could not be selected") {
+                    "pane_unavailable"
+                } else if error.starts_with("Terminal IPC failed") {
+                    "ipc_failure"
+                } else if error.starts_with("Terminal permission was revoked") {
+                    "permission_revoked"
+                } else if error.starts_with("Terminal attachment expired") {
+                    "attachment_expired"
+                } else if error.contains("sequence") || error.contains("input retry") {
+                    "input_sequence"
+                } else {
+                    "attachment_ended"
+                };
+                crate::terminal_failures::Failure {
+                    reference: Uuid::new_v4().simple().to_string()[..12].into(),
+                    code: code.into(),
+                    session: viewer.session.clone(),
+                    pane_id: context.target.map(|p| p.0),
+                    is_plugin: context.target.is_some_and(|p| p.1),
+                    operation: context.operation.into(),
+                    elapsed_ms: context.started.elapsed().as_millis().min(86_400_000) as u64,
+                    focus_confirmed: context.focus_confirmed,
+                    query_received: context.query_received,
+                    worker_build: Some(env!("SWITCHBOARD_COMMIT").into()),
+                    engine_build: None,
+                    pending_records: None,
+                }
+            };
+            let saved = failure.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                crate::terminal_failures::record_at(
+                    &crate::terminal_failures::path()?,
+                    "Terminal worker",
+                    &saved,
+                )
+            })
+            .await;
+            let saved = matches!(result, Ok(Ok(())));
+            viewer.failure_saved.store(saved, Ordering::Release);
+            if !saved {
+                log::warn!("Could not persist terminal failure {}", failure.reference);
+            }
+            failure
+        })
+        .await
 }
 
 async fn transport(socket: WebSocket, viewer: Arc<Viewer>, generation: u64, mut sent: u64) {
@@ -337,7 +429,7 @@ async fn transport(socket: WebSocket, viewer: Arc<Viewer>, generation: u64, mut 
                 }.await;
                 match result {
                     Ok(Some(reply))=>{let retired=reply["type"]=="retired";if writer.send(Message::Text(reply.to_string().into())).await.is_err()||retired{break;}},
-                    Ok(None)=>{},Err(error)=>{let _=writer.send(Message::Text(json!({"type":"error","message":error.to_string()}).to_string().into())).await;break;}
+                    Ok(None)=>{},Err(error)=>{let _=writer.send(Message::Text(final_reply(&viewer,error.to_string()).await.to_string().into())).await;break;}
                 }
             }
         }
@@ -355,10 +447,15 @@ async fn attachment(
     hidden: bool,
 ) {
     let app = &worker.app;
-    let os = match app.client_os_api_factory.create_client_os_api() {
+    let os = match app
+        .client_os_api_factory
+        .create_client_os_api()
+        .map_err(|e| e.to_string())
+    {
         Ok(os) => os,
         Err(error) => {
             viewer.journal.lock().unwrap().failure = Some(error.to_string());
+            report_failure(&viewer, &error.to_string()).await;
             viewer.notify.notify_waiters();
             return;
         },
@@ -436,6 +533,9 @@ async fn attachment(
                         if !journal.accepts(delivery.generation,&delivery.input)? { return Ok(journal.input_ack()); }
                         accepted=true;
                         if delivery.input.channel=="terminal" {
+                            let mut context=viewer.failure_context.lock().unwrap();
+                            let target=context.target;
+                            *context=FailureContext::new("input");context.target=target;drop(context);
                             if !viewer.read_only { parse_stdin(delivery.input.data.as_bytes(),os.clone(),&mut mouse,&mut stdin); }
                             held_since=Instant::now();focus=None;
                         } else {
@@ -454,16 +554,14 @@ async fn attachment(
                                 ensure!(!stdin.has_pending_bytes(),"Incomplete terminal sequence before a control command; attachment stopped to preserve its target pane");
                             }
                             focus=match &payload {WebClientToWebServerControlMessagePayload::FocusPane{pane_id,is_plugin}=>Some((*pane_id,*is_plugin)),_=>None};
+                            let mut context=FailureContext::new(if focus.is_some(){"focus"}else{"control"});
+                            context.target=focus.or(viewer.failure_context.lock().unwrap().target);
+                            *viewer.failure_context.lock().unwrap()=context;
                             if let Some(message)=control_payload_to_server_msg(payload,app.config.lock().unwrap().options.default_shell.clone()) {
-                                os.send_to_server(message.clone());
-                                if focus.is_some() {
-                                    // An idempotent second focus gives explicit native
-                                    // confirmation even when MobileState is unchanged.
+                                if let Some(target)=focus {
+                                    send_focus_probe(&*os,target);
+                                } else {
                                     os.send_to_server(message);
-                                    os.send_to_server(ClientToServerMsg::Action {
-                                        action:zellij_utils::input::actions::Action::CurrentTabInfo{output_json:false},
-                                        terminal_id:None,client_id:None,is_cli_client:false,
-                                    });
                                 }
                             }
                             if focus.is_some() {if let Some(refresh)=app.connection_table.lock().unwrap().client_id_to_channels.get(&id).and_then(|c|c.recovery_metadata_refresh.clone()){refresh.request();}}
@@ -472,7 +570,7 @@ async fn attachment(
                         ensure!(os.send_failure().is_none(),"Terminal IPC failed; input delivery is uncertain");
                     }
                     if let Some(target)=focus {
-                        confirm_focus(&viewer,target,&mut output,&mut controls).await?;
+                        confirm_focus(&viewer,target,&mut output,&mut controls,|| send_focus_probe(&*os,target)).await?;
                     }
                     // The action was dispatched before a newer generation could
                     // fence it. Commit before processing its queued retry.
@@ -507,6 +605,10 @@ async fn attachment(
             }
         }
     }
+    let failure = viewer.journal.lock().unwrap().failure.clone();
+    if let Some(error) = failure.filter(|e| e != RETIRED && e != "Terminal viewer closed") {
+        report_failure(&viewer, &error).await;
+    }
     viewer.notify.notify_waiters();
     os.send_to_server(ClientToServerMsg::ClientExited);
     app.connection_table.lock().unwrap().remove_client(&id);
@@ -524,6 +626,25 @@ async fn attachment(
     worker.views.lock().unwrap().remove(&id);
 }
 
+fn send_focus_probe(os: &dyn crate::os_input_output::ClientOsApi, target: (u32, bool)) {
+    let message = control_payload_to_server_msg(
+        WebClientToWebServerControlMessagePayload::FocusPane {
+            pane_id: target.0,
+            is_plugin: target.1,
+        },
+        None,
+    )
+    .expect("FocusPane always maps to an engine action");
+    os.send_to_server(message.clone());
+    os.send_to_server(message);
+    os.send_to_server(ClientToServerMsg::Action {
+        action: zellij_utils::input::actions::Action::CurrentTabInfo { output_json: false },
+        terminal_id: None,
+        client_id: None,
+        is_cli_client: false,
+    });
+}
+
 /// Every focus transaction issues two identical focus actions, followed by this
 /// connection's reserved plain CurrentTabInfo query. The second action reports
 /// "already focused" only after the engine actually selects that pane. Drain to
@@ -534,6 +655,7 @@ async fn confirm_focus(
     target: (u32, bool),
     output: &mut mpsc::UnboundedReceiver<String>,
     controls: &mut mpsc::UnboundedReceiver<Message>,
+    mut retry: impl FnMut(),
 ) -> Result<()> {
     let deadline = tokio::time::sleep(Duration::from_secs(10));
     tokio::pin!(deadline);
@@ -551,8 +673,15 @@ async fn confirm_focus(
             message=controls.recv()=>{
                 let Some(Message::Text(text))=message else {anyhow::bail!("Terminal ended while selecting pane");};
                 let value:serde_json::Value=serde_json::from_str(&text)?;
-                match confirmation.consume(&value)? {
+                let reply = confirmation.consume(&value);
+                {
+                    let mut context=viewer.failure_context.lock().unwrap();
+                    context.focus_confirmed=confirmation.confirmed;
+                    context.query_received |= value["type"]=="Log" && focus_marker(&value["lines"]);
+                }
+                match reply? {
                     FocusReply::Private=>continue,
+                    FocusReply::Retry=>{retry();continue;},
                     FocusReply::Complete=>{
                         viewer.journal.lock().unwrap().emit("control",json!({"type":"FocusConfirmed","payload":{"pane_id":target.0,"is_plugin":target.1}}).to_string());
                         viewer.notify.notify_waiters();return Ok(());
@@ -567,6 +696,7 @@ async fn confirm_focus(
 
 #[derive(Debug, PartialEq)]
 enum FocusReply {
+    Retry,
     Forward,
     Private,
     Complete,
@@ -575,6 +705,7 @@ struct FocusConfirmation {
     pane: String,
     positive: String,
     confirmed: bool,
+    attempts: usize,
 }
 impl FocusConfirmation {
     fn new(target: (u32, bool)) -> Self {
@@ -587,6 +718,7 @@ impl FocusConfirmation {
             positive: format!("Pane {pane} is already focused"),
             pane,
             confirmed: false,
+            attempts: 1,
         }
     }
     fn consume(&mut self, value: &serde_json::Value) -> Result<FocusReply> {
@@ -616,13 +748,23 @@ impl FocusConfirmation {
             }
         }
         if value["type"] == "Log" && focus_marker(&value["lines"]) {
+            if self.confirmed {
+                return Ok(FocusReply::Complete);
+            }
+            // The engine drops an action's completion receiver after one second.
+            // A busy screen can apply both focus actions after their receivers
+            // expire, then answer this barrier without delivering either reply.
+            // Re-probe only after draining the barrier, preserving queued typing
+            // and the original deadline until a fresh native reply confirms it.
             ensure!(
-                self.confirmed,
+                self.attempts < 3,
                 "Engine did not confirm terminal pane selection; queued typing was not sent"
             );
-            return Ok(FocusReply::Complete);
+            self.attempts += 1;
+            Ok(FocusReply::Retry)
+        } else {
+            Ok(FocusReply::Forward)
         }
-        Ok(FocusReply::Forward)
     }
 }
 
@@ -645,6 +787,55 @@ fn focus_marker(lines: &serde_json::Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn switchboard_attachment_intentional_close_and_retirement_do_not_report_failure() {
+        let (input, incoming) = mpsc::channel(1);
+        let viewer = Viewer {
+            journal: Mutex::new(Journal::default()),
+            notify: Notify::new(),
+            input,
+            owner: String::new(),
+            read_only: false,
+            touched: Mutex::new(Instant::now()),
+            incoming: Mutex::new(Some(incoming)),
+            retired: watch::channel(true).0,
+            parser_pending: AtomicBool::new(false),
+            session: "fixture".into(),
+            failure_context: Mutex::new(FailureContext::new("attach")),
+            failure_report: tokio::sync::OnceCell::new(),
+            failure_saved: AtomicBool::new(false),
+        };
+        assert_eq!(
+            final_reply(&viewer, "Terminal viewer closed".into()).await["type"],
+            "retired"
+        );
+        assert_eq!(
+            final_reply(&viewer, RETIRED.into()).await["type"],
+            "retired"
+        );
+        assert!(viewer.failure_report.get().is_none());
+    }
+    #[test]
+    fn switchboard_attachment_focus_recovers_lost_completion_without_trusting_metadata() {
+        let marker = json!({"type":"Log","lines":["name: tab","id: 0","position: 0"]});
+        let snapshot =
+            json!({"type":"MobileState","payload":{"active_pane":{"pane_id":7,"is_plugin":false}}});
+        let yes = json!({"type":"LogError","lines":["Pane Terminal(7) is already focused"]});
+        let mut focus = FocusConfirmation::new((7, false));
+        // Both native completion receivers expired while the screen was busy.
+        // Even a matching snapshot cannot release the queued input.
+        for _ in 0..2 {
+            assert_eq!(focus.consume(&snapshot).unwrap(), FocusReply::Forward);
+            assert_eq!(focus.consume(&marker).unwrap(), FocusReply::Retry);
+        }
+        // A fresh probe finally receives native proof. Its barrier must also
+        // arrive before the caller can acknowledge focus and drain input.
+        assert_eq!(focus.consume(&yes).unwrap(), FocusReply::Private);
+        assert_eq!(focus.consume(&marker).unwrap(), FocusReply::Complete);
+        let mut next = FocusConfirmation::new((7, false));
+        assert_eq!(next.consume(&marker).unwrap(), FocusReply::Retry);
+    }
+
     #[test]
     fn switchboard_attachment_focus_ignores_stale_state_and_drains_duplicate_confirmations() {
         let marker = json!({"type":"Log","lines":["name: tab","id: 0","position: 0"]});
@@ -653,8 +844,8 @@ mod tests {
         let mut focus = FocusConfirmation::new((7, false));
         assert_eq!(focus.consume(&stale).unwrap(), FocusReply::Forward);
         assert!(
-            focus.consume(&marker).is_err(),
-            "Cached metadata cannot prove focus"
+            focus.consume(&marker).unwrap() == FocusReply::Retry,
+            "Cached metadata cannot prove focus or release typing"
         );
         let yes = json!({"type":"LogError","lines":["Pane Terminal(7) is already focused"]});
         assert_eq!(focus.consume(&yes).unwrap(), FocusReply::Private);
@@ -667,6 +858,8 @@ mod tests {
             .is_err());
         let mut wrong = FocusConfirmation::new((8, false));
         wrong.consume(&yes).unwrap();
+        assert_eq!(wrong.consume(&marker).unwrap(), FocusReply::Retry);
+        assert_eq!(wrong.consume(&marker).unwrap(), FocusReply::Retry);
         assert!(wrong.consume(&marker).is_err());
     }
 }
