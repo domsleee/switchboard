@@ -1884,7 +1884,8 @@ $('new-tab-form').onsubmit=async event=>{
     files.forEach((item,index)=>(item.file.type.startsWith('image/')?images:others).push(uploaded[index]));
     if(handover){
       newTabSubmitText('Preparing handover…');
-      if(!await switchAgentModel(source,command,text,handover,isCurrent))return;
+      // Context reloads so a turn that ended while the dialog was open is included.
+      if(!await switchAgentModel(source,command,text,null,isCurrent))return;
       pendingSwitches.delete(source.tab);
       try{localStorage.setItem('switchboard-new-tab-model',command);}catch(_){}
       if(isCurrent())$('new-tab-dialog').close();
@@ -2259,7 +2260,7 @@ async function switchAgentModel(source,model,text,context,isCurrent=()=>true){
   if(!restart.ok)throw Error(await restart.text()||'Could not switch models.');
   const result=await restart.json();
   if(!Number.isInteger(result.pane_id)||result.tab_id!==source.target.tab_id)throw Error('The switch was not confirmed. Check the terminal before trying again.');
-  globalThis.SwitchboardConversation?.handoverSent?.(source,text,result.pane_id);
+  globalThis.SwitchboardConversation?.handoverSent?.(source,text,result.pane_id,files);
   return result;
 }
 // Switch at once only when the agent is idle and Conversation has nothing in flight for it.
@@ -2272,9 +2273,10 @@ function queueSwitch(source,model,text){
   globalThis.SwitchboardConversation?.handoverQueued?.(source,text);
   $('new-tab-dialog').close();render();setStatus(`Switching to ${label} when this turn ends.`);
 }
-function cancelSwitch(key,message){
+// The queued instructions go back to the composer, the new agent's when it changed; a closed tab takes them along.
+function cancelSwitch(key,message,into){
   const pending=pendingSwitches.get(key);if(!pending||pending.running)return;pendingSwitches.delete(key);
-  if(!message)globalThis.SwitchboardConversation?.handoverCancelled?.(pending.source,pending.text);
+  if(into!==null)globalThis.SwitchboardConversation?.handoverCancelled?.(into||pending.source,pending.text);
   render();setStatus(message||'Model switch cancelled.',!!message);
 }
 // A queued switch runs once its agent is ready and no send is in flight. Approval
@@ -2283,9 +2285,14 @@ async function runPendingSwitches(){
   for(const [key,pending] of pendingSwitches){
     if(pending.running||$('new-tab-dialog').open&&newTabHandover?.source.tab===key)continue;
     const {source}=pending,item=allTabs().find(item=>item.key===key),state=paneAttention.get(attentionKey(source.host,source.target.session,source.target.pane_id));
-    if(!item||!(item.entry.state?tabPanes(item.entry,item.tab):item.tab.panes).some(p=>p.pane_id===source.target.pane_id)||state&&state.chat_id!==source.chatId){cancelSwitch(key,'The model switch was cancelled because its tab or agent changed.');continue;}
+    const gone=!item||!(item.entry.state?tabPanes(item.entry,item.tab):item.tab.panes).some(p=>p.pane_id===source.target.pane_id);
+    if(gone||state&&state.chat_id!==source.chatId){cancelSwitch(key,'The model switch was cancelled because its tab or agent changed.',gone?null:{...source,chatId:state.chat_id});continue;}
     if(state?.state==='ready'&&!state.restart_available){cancelSwitch(key,'This agent can no longer switch models.');continue;}
-    if(!switchNow(source))continue;
+    if(!switchNow(source)){
+      // Sends from a tab not on screen are confirmed by nothing; read its transcript once the agent is ready.
+      if(state?.state==='ready'&&!pending.checking&&Date.now()-(pending.checked||0)>=2000){pending.checking=true;Promise.resolve(globalThis.SwitchboardConversation?.acknowledgeSends?.(source)).finally(()=>{pending.checking=false;pending.checked=Date.now();runPendingSwitches();setTimeout(runPendingSwitches,2000);});}
+      continue;
+    }
     pending.running=true;render();
     try{if(await switchAgentModel(source,pending.model,pending.text)){await refreshAttention(true);setStatus('Continuing with '+(newTabModelProvider(pending.model)==='claude'?'Claude':'Codex')+' in the same tab.');}}
     catch(error){globalThis.SwitchboardConversation?.handoverCancelled?.(source,pending.text);setStatus('Could not switch models: '+(error.name==='TimeoutError'?'the source computer did not answer in time.':error.message),true);}

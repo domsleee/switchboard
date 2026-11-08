@@ -71,7 +71,7 @@
     let savedMode;try{savedMode=localStorage.getItem(modeKey);}catch{}
     let target=null,open=savedMode? savedMode==='conversation':mobile,generation=0,startCursor=0,tailCursor=0,nextCursor=null,messages=[],loading=false,loaded=false,lastPaint=null,modeRevision=0,navigationRevision=0;
     const outgoing=new Map(),consumedTranscript=new Map(),pendingSends=new Map(),bridgeSends=new Map(),startups=new Map(),draftVersions=new Map(),firstSends=new Set();
-    const conversations=new Map(),handoverDrafts=new Map();
+    const conversations=new Map(),handoverDrafts=new Map(),handoverAttachments=new Map();
     let stream=null,streamReady=false,streamSupported=false,streamPages=[],restorePosition=null;
     async function prepare(){
       if(!open||document.hidden||!target||target.agent!=='codex'||!target.session||!Number.isInteger(target.tab))return;
@@ -429,8 +429,9 @@
     // growing or a resize moves the list.
     let scrollInput=0;for(const type of ['wheel','touchmove','pointerdown','keydown'])list.addEventListener(type,()=>{scrollInput=Date.now();},{passive:true});
     list.addEventListener('scroll',()=>{rememberReading();if(Date.now()-scrollInput<1000){list.classList.add('scrolling');clearTimeout(scrollIdle);scrollIdle=setTimeout(()=>list.classList.remove('scrolling'),700);}updateLatest();if(loaded&&startCursor>0&&list.scrollTop<80&&!loading&&older.hidden)load('older');},{passive:true});
-    function paint(prepend=false,initial=false){
-      const key=identity(target),sentItems=outgoing.get(key)||[],used=consumedTranscript.get(key)||new Set();
+    // Sends the transcript now shows leave the outgoing list; returns the list as it was.
+    function acknowledge(key,messages,startCursor){
+      const sentItems=outgoing.get(key)||[],used=consumedTranscript.get(key)||new Set();
       for(const sent of sentItems){
         if(sent.transcriptCursor!==undefined)continue;
         // Cursors can shift down when the relay hides records that settle (interrupts, local
@@ -441,6 +442,10 @@
       }
       consumedTranscript.set(key,used);
       outgoing.set(key,sentItems.filter(item=>item.transcriptCursor===undefined));
+      return sentItems;
+    }
+    function paint(prepend=false,initial=false){
+      const key=identity(target),sentItems=acknowledge(key,messages,startCursor);
       const visibleOutgoing=sentItems.filter(item=>item.transcriptCursor===undefined);
       const snapshot={start:startCursor,messages:messages.map(signatureOf),outgoing:JSON.stringify(visibleOutgoing.map(({id,text,files,state,detail})=>({id,text,files:files.map(file=>file.name),state,detail})))};
       if(lastPaint&&lastPaint.start===snapshot.start&&lastPaint.outgoing===snapshot.outgoing&&lastPaint.messages.length===snapshot.messages.length&&snapshot.messages.every((signature,i)=>signature===lastPaint.messages[i]))return;
@@ -694,6 +699,7 @@
         for(const map of [outgoing,pendingSends,drafts,draftVersions,consumedTranscript,attachments])if(map.has(unbound)&&!map.has(bound)){map.set(bound,map.get(unbound));map.delete(unbound);}
         for(const item of outgoing.get(bound)||[])item.key=bound;}
       if(target&&chat&&handoverDrafts.has(target.key)){drafts.set(identity(target),handoverDrafts.get(target.key));handoverDrafts.delete(target.key);}
+      if(target&&chat&&handoverAttachments.has(target.key)){attachments.set(identity(target),[...fileList(),...handoverAttachments.get(target.key)]);handoverAttachments.delete(target.key);}
       const cached=conversations.get(identity(target));if(cached){({chat,messages,startCursor,tailCursor,nextCursor,streamSupported}=cached);loaded=true;}
       updateActivity();actions.hidden=true;
       if(!target){setPanelHidden(true);viewport();return;}draft.value=drafts.get(identity(target))||'';
@@ -710,15 +716,22 @@
     const handoverKey=source=>JSON.stringify([JSON.stringify([source.host,source.target.session,source.target.pane_id]),source.chatId]);
     // A switch waits for sends still on their way and for uploads; failed ones do not hold it.
     window.SwitchboardConversation.canHandover=source=>{const key=handoverKey(source);return !pendingFor(key)&&!(outgoing.get(key)||[]).some(item=>!['failed','uncertain'].includes(item.state))&&!fileList(key).some(item=>!item.path&&!item.error);};
+    // A queued switch on a tab not on screen learns from its chat's latest page that its sends landed.
+    window.SwitchboardConversation.acknowledgeSends=async source=>{
+      const key=handoverKey(source);if(!(outgoing.get(key)||[]).length)return;
+      try{const response=await fetch('/api/chats/'+encodeURIComponent(source.chatId)+'?'+new URLSearchParams({host:source.chatHost,limit:50,tail:true}),{signal:AbortSignal.timeout(15000)});if(!response.ok)return;const data=await response.json();if(Array.isArray(data.messages))acknowledge(key,data.messages,data.start_cursor??0);}catch{}
+      if(identity(target)===key&&loaded)paint();
+    };
     window.SwitchboardConversation.handoverFiles=source=>fileList(handoverKey(source)).filter(item=>item.path).map(item=>item.path);
     // A queued switch takes the draft it was given; cancelling or failing puts it back.
     window.SwitchboardConversation.handoverQueued=(source,text)=>{const key=handoverKey(source);if((identity(target)===key?draft.value:drafts.get(key)||'')!==text)return;if(identity(target)===key){draft.value='';sizeDraft();}drafts.delete(key);};
     window.SwitchboardConversation.handoverCancelled=(source,text)=>{const key=handoverKey(source),current=identity(target)===key?draft.value:drafts.get(key)||'';if(!text||current.includes(text))return;const value=current?current+'\n\n'+text:text;drafts.set(key,value);if(identity(target)===key){draft.value=value;sizeDraft();}};
     window.SwitchboardConversation.handoverDraft=source=>identity(target)===handoverKey(source)?draft.value:drafts.get(handoverKey(source))||'';
-    window.SwitchboardConversation.handoverSent=(source,text,pane)=>{
+    window.SwitchboardConversation.handoverSent=(source,text,pane,carried=[])=>{
       const key=handoverKey(source),original=identity(target)===key?draft.value:drafts.get(key)||'',next=JSON.stringify([source.host,source.target.session,pane]);
-      // Files that went with the instructions leave the composer; failed uploads are dropped.
-      for(const item of fileList(key))if(item.preview)URL.revokeObjectURL(item.preview);attachments.delete(key);if(identity(target)===key)paintFiles();
+      // Files that went with the instructions leave the composer; any others follow it to the new agent.
+      const rest=fileList(key).filter(item=>!carried.includes(item.path));for(const item of fileList(key))if(!rest.includes(item)&&item.preview)URL.revokeObjectURL(item.preview);
+      attachments.delete(key);if(rest.length)handoverAttachments.set(next,rest);if(identity(target)===key)paintFiles();
       if(identity(target)===key)draft.value='';drafts.delete(key);
       if(original&&original!==text){if(target?.key===next&&!draft.value){draft.value=original;drafts.set(identity(target),original);}else handoverDrafts.set(next,original);}
     };
