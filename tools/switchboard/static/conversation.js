@@ -182,7 +182,11 @@
     function launchShown(){return !!target?.launch&&!messages.some(item=>item.role==='user'&&!setupMessage(item));}
     function paintLaunch(){
       if(!launchShown()){launchNode.remove();return;}
-      const text=target.launch.text;if(launchNode.dataset.text!==text){launchNode.dataset.text=text;launchNode.replaceChildren(el('div','You','conversation-label'));textBlocks(launchNode,text);}
+      const {text,attachments}=target.launch,signature=JSON.stringify([target.host,text,attachments]);
+      if(launchNode.dataset.signature!==signature){
+        launchNode.dataset.signature=signature;launchNode.replaceChildren(el('div','You','conversation-label'));textBlocks(launchNode,text);
+        if(attachments?.length&&window.SwitchboardConversationMedia)window.SwitchboardConversationMedia.render(launchNode,{attachments},{host:target.host});
+      }
       if(older.nextSibling!==launchNode)older.after(launchNode);
     }
 
