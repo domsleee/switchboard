@@ -101,7 +101,7 @@
     }
     function ensureSkills(current){const key=skillKey(current),skills=skillLists.get(key);if((!skills||Date.now()-skills.at>60000)&&!skills?.pending)void loadSkills(key,current);}
     async function loadSkills(key,{host,cwd,agent}){
-      const entry={pending:true,at:Date.now()};skillLists.set(key,entry);
+      const entry={pending:true,at:Date.now(),items:skillLists.get(key)?.items};skillLists.set(key,entry);
       try{const response=await fetch('/api/hosts/'+encodeURIComponent(host)+'/conversation/skills',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(agent==='claude'?{cwd,agent}:{cwd}),signal:AbortSignal.timeout(15000)});if(!response.ok)throw Error();const result=await response.json();if(!Array.isArray(result.skills))throw Error();entry.items=result.skills.filter(item=>typeof item.name==='string'&&typeof item.description==='string');}
       catch{entry.error='Skills unavailable. You can still type a skill name.';}
       finally{entry.pending=false;const current=surface();if(current&&key===skillKey(current))paintCompletions();}
@@ -120,10 +120,15 @@
       const current=surface(),items=current?.agent==='claude'?skillLists.get(skillKey(current))?.items:null;if(!items?.length)return text;
       return text.replace(/(^|\s)\$([\w:.-]+)(?=\s|$)/g,(match,space,name)=>{const short=items.filter(item=>item.name.split(':').pop()===name),item=items.find(item=>item.name===name)||(short.length===1?short[0]:null);return item?space+'/'+item.name:match;});
     }
+    // A skill starts an ordinary turn; a built-in command may open a picker in Terminal.
+    function isSkill(text){
+      const current=surface(),name=/^\/([\w:.-]+)/.exec(text)?.[1];if(current?.agent!=='claude'||!name||agentCommands.claude.some(([builtIn])=>builtIn===name))return false;
+      return !!skillLists.get(skillKey(current))?.items?.some(item=>item.name===name);
+    }
     // Claude's list is needed even without the menu: a pasted $skill is still rewritten on send.
     function refreshSkills(){const current=surface();if(current?.agent==='claude'&&document.activeElement===draft)ensureSkills(current);}
     draft.addEventListener('focus',()=>{refreshSkills();paintCompletions();});draft.addEventListener('click',()=>paintCompletions());draft.addEventListener('blur',closeCompletions);
-    return {paint:paintCompletions,close:closeCompletions,key:completionKey,expand:expandSkills,refresh:refreshSkills};
+    return {paint:paintCompletions,close:closeCompletions,key:completionKey,expand:expandSkills,isSkill,refresh:refreshSkills};
   }
   window.SwitchboardConversation={agentIcons,attachCompletions,install({selection,terminal,openConversation=()=>false,modeChanged=()=>{},viewed=()=>{},sending=()=>{},notSent=()=>{},switchModel=null,cancelSwitch=()=>{},idle=()=>{}}){
     const root=document.getElementById('terminals'),drafts=new Map(),attachments=new Map(),retryKeys=new Map();
@@ -917,7 +922,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       if(pendingFor(sent.key)!==sent){if(ok&&message&&!pendingFor(sent.key)&&identity(target)===sent.key)sendStatus(message,sent);return;}
       pendingSends.delete(sent.key);if(!ok){restoreDraft(sent);if(sent.detachedFiles)attachments.set(sent.key,[...sent.files,...fileList(sent.key).filter(item=>!sent.files.includes(item))]);}
       sendQueued(sent.key,ok);
-      if(ok){clearSentDraft(sent);if(sent.command){outgoing.set(sent.key,(outgoing.get(sent.key)||[]).filter(item=>item!==sent));if(identity(target)===sent.key)paint();}else sendItem(sent,sent.native||sent.relay?'queued':'sent');}
+      if(ok){clearSentDraft(sent);if(sent.command&&!sent.skill){outgoing.set(sent.key,(outgoing.get(sent.key)||[]).filter(item=>item!==sent));if(identity(target)===sent.key)paint();}else sendItem(sent,sent.native||sent.relay?'queued':'sent');}
       else{notSent(sent.pane);sendItem(sent,uncertain?'uncertain':'failed',message);}
       returnToConversation(sent);
       if(identity(target)===sent.key){sendStatus(message,sent);if(ok)load();}paintFiles();if(ok)flushStartup();
@@ -961,7 +966,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       if(retry){retrySend(retry,true);return;}
       const key=identity(target),id='conversation-'+Array.from(crypto.getRandomValues(new Uint32Array(4)),n=>n.toString(16)).join('-');
       const items=outgoing.get(key)||[],failedBridge=!native&&items.find(item=>item.state==='failed'&&!item.native&&sameMessage(item.payload,payload));
-      const sent={id,key,pane:target.key,unbound:!chat,frame:target.frame,text,payload,files:[...selected],native,command,host:target.host,thread:chat?.thread,draftRevision:draftVersions.get(key)||0,baseline:failedBridge?failedBridge.baseline:startCursor+messages.length-1,at:failedBridge?failedBridge.at:Date.now(),earlier:failedBridge?failedBridge.earlier:new Set(messages.filter(item=>item.role==='user'&&item.timestamp).map(item=>item.timestamp)),sendKey:id,state:'sending'};
+      const sent={id,key,pane:target.key,unbound:!chat,frame:target.frame,text,payload,files:[...selected],native,command,skill:command&&completions.isSkill(text),host:target.host,thread:chat?.thread,draftRevision:draftVersions.get(key)||0,baseline:failedBridge?failedBridge.baseline:startCursor+messages.length-1,at:failedBridge?failedBridge.at:Date.now(),earlier:failedBridge?failedBridge.earlier:new Set(messages.filter(item=>item.role==='user'&&item.timestamp).map(item=>item.timestamp)),sendKey:id,state:'sending'};
       if(failedBridge)items[items.indexOf(failedBridge)]=sent;else items.push(sent);
       if(waiting){
         sent.waitingForAgent=true;sent.detachedFiles=true;sent.state='queued';outgoing.set(key,items);takeDraft(sent);
@@ -981,7 +986,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       pendingSends.set(sent.key,sent);paintFiles();paint();void deliver(sent,target);
     }
     async function deliver(sent,current){
-      const {native,key,id,payload,command}=sent;
+      const {native,key,id,payload,skill}=sent,command=sent.command&&!skill;
       sending(current,command);
       if(native){
         const prior=retryKeys.get(key),sendKey=prior?.payload===payload?prior.id:id;sent.sendKey=sendKey;retryKeys.set(key,{payload,id:sendKey});

@@ -1,18 +1,19 @@
 const test=require('node:test'),assert=require('node:assert/strict'),path=require('node:path');
 
-test('Conversation completes commands and host skills, and sends commands through Terminal',
+test('Conversation completes commands and host skills, sends commands through Terminal and keeps skills in Conversation',
  {skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
  const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch();
  try{
   for(const mobile of [false,true]){
    const page=await browser.newPage({viewport:mobile?{width:390,height:844}:{width:1280,height:900},isMobile:mobile,hasTouch:mobile});page.setDefaultTimeout(5000);
-   const queues=[],skills=[],errors=[];let failSkills=false,baseline=false;
+   const queues=[],skills=[],errors=[],replies=[];let failSkills=false,baseline=false;
    page.on('pageerror',error=>errors.push(error.message));
    await page.addInitScript(()=>{localStorage.setItem('switchboard-view-mode','conversation');window.setInterval=()=>0;});
    await page.route('http://commands.test/**',async route=>{
     const p=new URL(route.request().url()).pathname;
     if(baseline&&p==='/conversation.js')return route.fulfill({contentType:'text/javascript',body:require('node:child_process').execFileSync('git',['show','origin/main:tools/switchboard/static/conversation.js'],{cwd:path.join(__dirname,'../..'),encoding:'utf8'})});
     if(p.endsWith('/conversation/skills')){skills.push({path:p,...route.request().postDataJSON()});return failSkills?route.fulfill({status:503,body:'Unavailable'}):route.fulfill({json:{skills:[{name:'bro',description:'Review with a colleague'},{name:'build',description:'Build the project'}]}});}
+    if(p.endsWith('/conversation/reply')){replies.push(route.request().postDataJSON());return route.fulfill({json:{ok:true}});}
     if(p.endsWith('/codex/reply')){queues.push(route.request().postDataJSON());return route.fulfill({json:{status:'queued'}});}
     if(p.startsWith('/api/chats/'))return route.fulfill({json:{session_id:'00000000-0000-4000-8000-000000000001',project:'/projects/example',messages:[{role:'assistant',text:'Ready for a reply'}],start_cursor:0,next_cursor:null}});
     if(p.startsWith('/api/diagnostics/'))return route.fulfill({status:204});
@@ -47,7 +48,10 @@ test('Conversation completes commands and host skills, and sends commands throug
    failSkills=false;await page.evaluate(()=>{current={...current,agent:'claude',state:'ready'};SwitchboardConversation.update();});
    await draft.fill('$br');await page.getByRole('option',{name:'$bro Review with a colleague'}).waitFor();assert.deepEqual(skills.at(-1),{path:'/api/hosts/other/conversation/skills',cwd:'/projects/example',agent:'claude'});await draft.press('Enter');assert.equal(await draft.inputValue(),'/bro ');
    await draft.fill('/bu');await page.getByRole('option',{name:'/build Build the project'}).waitFor();await draft.press('Escape');
-   const claudePastes=await page.evaluate(()=>pastes.length);await draft.fill('$bro look closely');await draft.press('Escape');await send.click();await page.waitForFunction(count=>pastes.length===count+1,claudePastes);assert.equal(await page.evaluate(()=>pastes.at(-1).text),'/bro look closely');
+   const claudePastes=await page.evaluate(()=>pastes.length);await draft.fill('$bro look closely');await draft.press('Escape');await send.click();await page.waitForFunction(()=>document.querySelector('[aria-label="Reply draft"]').value==='');assert.equal(replies.at(-1).text,'/bro look closely');await page.locator('.conversation-outgoing',{hasText:'/bro look closely'}).waitFor();assert.equal(await page.evaluate(()=>pastes.length),claudePastes,'A skill is not typed through Terminal');
+   assert.equal(await page.getByRole('button',{name:'Conversation',exact:true}).getAttribute('aria-pressed'),'true','A skill stays in Conversation');
+   await draft.fill('/build');await draft.press('Escape');await send.click();await page.waitForFunction(()=>document.querySelector('[aria-label="Reply draft"]').value==='');assert.equal(replies.at(-1).text,'/build');assert.equal(await page.getByRole('button',{name:'Conversation',exact:true}).getAttribute('aria-pressed'),'true');
+   await draft.fill('/model');await draft.press('Escape');await send.click();await page.waitForFunction(count=>pastes.length===count+1,claudePastes);assert.equal(await page.getByRole('button',{name:'Terminal',exact:true}).getAttribute('aria-pressed'),'true','A built-in command still opens Terminal');
    await page.getByRole('button',{name:'Conversation',exact:true}).click();assert.equal(await draft.inputValue(),'','A sent $skill leaves no draft behind');
    // Phones leave the draft unfocused here, and tapping it loads the list.
    if(!mobile){await draft.focus();await page.evaluate(()=>{current={...current,key:'pane3',host:'third',chatId:'chat-3',state:'ready'};SwitchboardConversation.update();});
