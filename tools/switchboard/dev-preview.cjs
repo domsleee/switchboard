@@ -4,7 +4,8 @@
 // Serves index.html, CSS and JS from a working copy, and forwards everything else
 // (API calls, terminal pages and their WebSockets) to this computer's running relay,
 // so the page shows the real tabs and chats. Saving a CSS file swaps the styles in
-// place; saving anything else reloads the page.
+// place; saving anything else offers a Reload button, so an open conversation, its
+// draft and its scroll position stay until you choose to reload.
 //
 //   node tools/switchboard/dev-preview.cjs [--port 8199] [--relay 8090] [--static DIR] [--allow IP,IP]
 //
@@ -22,9 +23,14 @@ function options(argv){
 
 const types={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'application/javascript; charset=utf-8',
  '.png':'image/png','.svg':'image/svg+xml','.woff2':'font/woff2','.webmanifest':'application/manifest+json','.txt':'text/plain; charset=utf-8'};
-// Reloads the page on a change, or swaps only the changed stylesheets.
-const client=`<script>(()=>{const es=new EventSource('/__live');es.onmessage=e=>{const m=JSON.parse(e.data);
- if(!m.css)return location.reload();for(const link of document.querySelectorAll('link[rel=stylesheet]')){const u=new URL(link.href);
+// Swaps only the changed stylesheets. Any other change shows a Reload button instead of
+// reloading, because a reload drops the open conversation, its draft and scroll position.
+const client=`<script>(()=>{const es=new EventSource('/__live');let prompt=null;es.onmessage=e=>{const m=JSON.parse(e.data);
+ if(!m.css){if(prompt)return;prompt=document.createElement('button');prompt.id='preview-reload';prompt.type='button';
+  prompt.textContent='Preview updated · Reload';prompt.title='Sidebar code changed. Reload to run it.';
+  prompt.style.cssText='position:fixed;left:50%;top:8px;transform:translateX(-50%);z-index:2147483647;padding:6px 12px;border:1px solid #5689cc;border-radius:6px;background:#182c47;color:#fff;font:13px system-ui,sans-serif;cursor:pointer';
+  prompt.onclick=()=>location.reload();document.body.append(prompt);return;}
+ for(const link of document.querySelectorAll('link[rel=stylesheet]')){const u=new URL(link.href);
  if(m.css.includes(u.pathname.slice(1))){u.searchParams.set('v',Date.now());const next=link.cloneNode();next.href=u.href;next.onload=()=>link.remove();link.after(next);}}};})();</script>`;
 
 function start({port,relayPort,staticDir,allow},log=console.log){
