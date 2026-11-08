@@ -58,6 +58,12 @@ jobs:
           cache-on-failure: false
 
       - uses: mozilla-actions/sccache-action@v0.0.11
+        id: sccache
+        continue-on-error: true
+      - name: Compile without sccache when its download fails
+        if: steps.sccache.outcome == 'failure'
+        shell: bash
+        run: echo 'RUSTC_WRAPPER=' >> "$GITHUB_ENV"
 
       - name: Build
         run: cargo xtask build
@@ -85,6 +91,12 @@ jobs:
           cache-on-failure: false
 
       - uses: mozilla-actions/sccache-action@v0.0.11
+        id: sccache
+        continue-on-error: true
+      - name: Compile without sccache when its download fails
+        if: steps.sccache.outcome == 'failure'
+        shell: bash
+        run: echo 'RUSTC_WRAPPER=' >> "$GITHUB_ENV"
 
       - name: Install NASM
         uses: ilammy/setup-nasm@v1.5.2
@@ -122,6 +134,12 @@ jobs:
           cache-on-failure: false
 
       - uses: mozilla-actions/sccache-action@v0.0.11
+        id: sccache
+        continue-on-error: true
+      - name: Compile without sccache when its download fails
+        if: steps.sccache.outcome == 'failure'
+        shell: bash
+        run: echo 'RUSTC_WRAPPER=' >> "$GITHUB_ENV"
 
       - name: Test
         run: cargo xtask test
@@ -149,6 +167,12 @@ jobs:
           cache-on-failure: false
 
       - uses: mozilla-actions/sccache-action@v0.0.11
+        id: sccache
+        continue-on-error: true
+      - name: Compile without sccache when its download fails
+        if: steps.sccache.outcome == 'failure'
+        shell: bash
+        run: echo 'RUSTC_WRAPPER=' >> "$GITHUB_ENV"
 
       # One cargo run builds the crates they share once, not once per crate.
       - name: Test zellij-utils, zellij-server and zellij-client
@@ -192,6 +216,12 @@ jobs:
           cache-on-failure: false
 
       - uses: mozilla-actions/sccache-action@v0.0.11
+        id: sccache
+        continue-on-error: true
+      - name: Compile without sccache when its download fails
+        if: steps.sccache.outcome == 'failure'
+        shell: bash
+        run: echo 'RUSTC_WRAPPER=' >> "$GITHUB_ENV"
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
@@ -221,6 +251,12 @@ jobs:
           cache-on-failure: false
 
       - uses: mozilla-actions/sccache-action@v0.0.11
+        id: sccache
+        continue-on-error: true
+      - name: Compile without sccache when its download fails
+        if: steps.sccache.outcome == 'failure'
+        shell: bash
+        run: echo 'RUSTC_WRAPPER=' >> "$GITHUB_ENV"
 
       - name: Test without web support
         run: cargo xtask test --no-web
@@ -241,6 +277,12 @@ jobs:
           cache: false
 
       - uses: mozilla-actions/sccache-action@v0.0.11
+        id: sccache
+        continue-on-error: true
+      - name: Compile without sccache when its download fails
+        if: steps.sccache.outcome == 'failure'
+        shell: bash
+        run: echo 'RUSTC_WRAPPER=' >> "$GITHUB_ENV"
 
       - name: Test xtask
         run: cargo test -p xtask
@@ -262,6 +304,12 @@ jobs:
           cache: false
 
       - uses: mozilla-actions/sccache-action@v0.0.11
+        id: sccache
+        continue-on-error: true
+      - name: Compile without sccache when its download fails
+        if: steps.sccache.outcome == 'failure'
+        shell: bash
+        run: echo 'RUSTC_WRAPPER=' >> "$GITHUB_ENV"
 
       - name: Check Format
         run: cargo xtask format --check
