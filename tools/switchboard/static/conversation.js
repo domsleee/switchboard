@@ -645,20 +645,28 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
     function sameTranscript(entry,payload){return sameMessage(entry,payload)||withoutFiles(entry)===withoutFiles(payload)&&attachedList.test(normalizeMessage(entry))&&attachedList.test(normalizeMessage(payload));}
     function outgoingLabel(state){return state==='sending'?'Sending…':state==='queued'?'Queued':state==='sent'?'Sent':'Could not confirm sending';}
     function sendItem(sent,state,detail){sent.state=state;sent.detail=detail||'';if(identity(target)===sent.key)paint();}
-    function nearBottom(){return list.scrollHeight-list.scrollTop-list.clientHeight<80;}
-    let following=true,readingAnchor=null;
+    function nearBottom(){return following&&list.scrollHeight-list.scrollTop-list.clientHeight<80;}
+    let following=true,readingAnchor=null,readingPosition=0;
     function rememberReading(){
-      following=nearBottom();
+      const position=list.scrollTop,atBottom=list.scrollHeight-position-list.clientHeight<2;
+      // A short upward gesture stops following. A queued programmatic scroll
+      // after new output must not undo an explicit jump to the latest reply.
+      following=atBottom||following&&position>=readingPosition-1;readingPosition=position;
       if(following){readingAnchor=null;return;}
       const top=list.getBoundingClientRect().top,node=[...list.querySelectorAll('.conversation-message')].find(node=>node.getBoundingClientRect().bottom>top);
       readingAnchor=node?{node,id:node.dataset.conversationEntry,offset:node.getBoundingClientRect().top-top}:null;
+    }
+    function restoreReadingAnchor(){
+      if(!readingAnchor)return;
+      const node=readingAnchor.node.isConnected?readingAnchor.node:[...list.querySelectorAll('.conversation-message')].find(node=>node.dataset.conversationEntry===readingAnchor.id);
+      if(node)list.scrollTop+=node.getBoundingClientRect().top-list.getBoundingClientRect().top-readingAnchor.offset;
     }
     // Resize observers run after layout and before paint, so correcting here keeps the
     // reader's place in the same frame an image or code block above them grows.
     const contentResize=globalThis.ResizeObserver?new ResizeObserver(()=>{
       if(panel.hidden||!loaded)return;
       if(following)list.scrollTop=list.scrollHeight;
-      else if(readingAnchor){const node=readingAnchor.node.isConnected?readingAnchor.node:[...list.querySelectorAll('.conversation-message')].find(node=>node.dataset.conversationEntry===readingAnchor.id);if(node)list.scrollTop+=node.getBoundingClientRect().top-list.getBoundingClientRect().top-readingAnchor.offset;}
+      else restoreReadingAnchor();
       updateLatest();rememberReading();
     }):null;
     contentResize?.observe(list);contentResize?.observe(working);
@@ -755,6 +763,9 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       if(list.lastChild!==background||background.previousSibling!==working)list.append(working,background);
       if(prepend)list.scrollTop=position+list.scrollHeight-height;
       else if(follow)list.scrollTop=list.scrollHeight;
+      // Replacing an earlier message can move the reader before ResizeObserver
+      // runs. Restore the saved anchor before remembering the new layout.
+      else restoreReadingAnchor();
       syncAsyncQuestions();syncLiveStep();updateLatest();rememberReading();paintFiles();
       if(shown)shown.stages.render_ms=Math.round(performance.now()-renderStarted);
     }
@@ -991,7 +1002,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       if(target)drafts.set(identity(target),draft.value);
       if(target&&loaded){conversations.delete(identity(target));conversations.set(identity(target),{chat,messages,startCursor,tailCursor,nextCursor,streamSupported,position:restorePosition?.position??list.scrollTop,follow:restorePosition?.follow??nearBottom()});if(conversations.size>8)conversations.delete(conversations.keys().next().value);}
       window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();
-      costDetails.hidePopover();stopStream();streamSupported=false;restorePosition=null;target=current;loadRequest?.abort();lastFailure=null;lastDiagnostic='';newOutput=false;sendStatus('');generation++;settle(false,false);settleClears=false;loaded=false;lastPaint=null;busy(false);messages=[];startCursor=tailCursor=0;nextCursor=null;following=true;readingAnchor=null;for(const entry of [...rendered.values(),...renderedOutgoing.values()])contentResize?.unobserve(entry.node);rendered.clear();renderedOutgoing.clear();summaries.clear();list.replaceChildren(older,working);older.hidden=true;historyStatus.hidden=true;latest.hidden=refresh.hidden=true;
+      costDetails.hidePopover();stopStream();streamSupported=false;restorePosition=null;target=current;loadRequest?.abort();lastFailure=null;lastDiagnostic='';newOutput=false;sendStatus('');generation++;settle(false,false);settleClears=false;loaded=false;lastPaint=null;busy(false);messages=[];startCursor=tailCursor=0;nextCursor=null;following=true;readingAnchor=null;readingPosition=0;for(const entry of [...rendered.values(),...renderedOutgoing.values()])contentResize?.unobserve(entry.node);rendered.clear();renderedOutgoing.clear();summaries.clear();list.replaceChildren(older,working);older.hidden=true;historyStatus.hidden=true;latest.hidden=refresh.hidden=true;
       chat=target?.chatId?{id:target.chatId,agent:target.agent,title:target.title}:null;
       // The temporary Creating tab identity becomes a pane before it gets a chat.
       // Keep its follow-ups, draft and attachments through both transitions.

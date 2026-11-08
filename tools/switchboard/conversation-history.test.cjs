@@ -3,7 +3,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),path=requir
 for(const mobile of [false,true])test(`older history survives a busy refresh and a failed read (${mobile?'phone':'desktop'})`,{skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
  const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch();
  const history=Array.from({length:180},(_,i)=>({role:i%2?'assistant':'user',text:`Message ${i}. `+'Content to read. '.repeat(20)}));
- let holdPoll=false,releasePoll,pollStarted,failOlder=false,olderReads=0;
+ let holdPoll=false,releasePoll,pollStarted,failOlder=false,olderReads=0,background=[];
  try{
   const page=await browser.newPage({viewport:mobile?{width:390,height:844}:{width:1280,height:800},isMobile:mobile,hasTouch:mobile});page.setDefaultTimeout(5000);
   const errors=[];page.on('pageerror',error=>errors.push(error.message));
@@ -17,7 +17,7 @@ for(const mobile of [false,true])test(`older history survives a busy refresh and
     const limit=Number(q.get('limit')),end=q.has('before')?Number(q.get('before')):history.length;
     const start=q.has('tail')||q.has('before')?Math.max(0,end-limit):Number(q.get('cursor'));
     const messages=history.slice(start,Math.min(start+limit,end));
-    return route.fulfill({json:{messages,start_cursor:start,previous_cursor:start||null,next_cursor:start+messages.length<end?start+messages.length:null}});
+    return route.fulfill({json:{messages,background_agents:background,start_cursor:start,previous_cursor:start||null,next_cursor:start+messages.length<end?start+messages.length:null}});
    }
    if(url.pathname==='/')return route.fulfill({contentType:'text/html',body:`<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/conversation.css"><style>body{margin:0}#terminals{height:100dvh;position:relative}</style><main id="terminals"><iframe id="terminal"></iframe><section id="artifact-preview" hidden></section></main><script src="/conversation.js"></script><script>window.current={key:'pane1',host:'fixture',pane:1,agent:'codex',state:'ready',chatId:'chat-1',frame:document.getElementById('terminal')};SwitchboardConversation.install({selection:()=>current,terminal:()=>{}});</script>`});
    return route.fulfill({path:path.join(__dirname,'static',path.basename(url.pathname)),contentType:url.pathname.endsWith('.css')?'text/css':'application/javascript'});
@@ -33,6 +33,10 @@ for(const mobile of [false,true])test(`older history survives a busy refresh and
   await page.getByText(new RegExp(`^Message ${180-15-50}\\.`)).waitFor();await settled();
   assert.equal(olderReads,1,'The refresh must service the reader waiting at the top');
   assert.equal(await page.getByLabel('Reply draft').inputValue(),'Keep this draft');
+  // An agent awaiting named background work must still accept history pages.
+  background=[{description:'Review the changes',model:'claude-opus-5-5',started:new Date().toISOString()}];
+  await page.evaluate(()=>{current.state='waiting';SwitchboardConversation.update();intervals.forEach(fn=>fn());});
+  await page.locator('.conversation-agent-title').getByText('Review the changes',{exact:true}).waitFor();await settled();
   // A failed older read exposes a retry which incoming output must not remove.
   failOlder=true;await top();const retry=page.getByRole('button',{name:'Retry earlier messages',exact:true});await retry.waitFor();await settled();
   history.push({role:'assistant',text:'A new answer while reading history'});

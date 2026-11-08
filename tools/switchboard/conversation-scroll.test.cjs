@@ -141,3 +141,41 @@ test('Hovering a tab warms its first page once, and only in Conversation',
   assert.deepEqual(terminal.errors,[]);
  }finally{await browser.close();}
 });
+
+for(const mobile of [false,true])test(`live replies preserve upward scrolling and the message being read (${mobile?'phone':'desktop'})`,
+ {skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
+ const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch();
+ const messages=Array.from({length:40},(_,i)=>({role:i%2?'assistant':'user',text:`Message ${i} `+'Content to read. '.repeat(30)}));
+ try{
+  const page=await browser.newPage({viewport:mobile?{width:390,height:844}:{width:1280,height:800},isMobile:mobile,hasTouch:mobile});page.setDefaultTimeout(5000);
+  const errors=[];page.on('pageerror',error=>errors.push(error.message));
+  await page.addInitScript(()=>{window.intervals=[];window.setInterval=fn=>intervals.push(fn);localStorage.setItem('switchboard-view-mode','conversation');});
+  await page.route('http://reading.test/**',route=>{
+   const p=new URL(route.request().url()).pathname;
+   if(p.startsWith('/api/diagnostics/'))return route.fulfill({status:204});
+   if(p.startsWith('/api/chats/'))return route.fulfill({json:{messages,start_cursor:0,next_cursor:null}});
+   if(p==='/')return route.fulfill({contentType:'text/html',body:`<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/conversation.css"><style>body{margin:0}#terminals{position:relative;height:100dvh}</style><main id="terminals"><iframe id="terminal"></iframe><section id="artifact-preview" hidden></section></main><script src="/conversation.js"></script><script>window.current={key:'pane1',host:'fixture',session:'main',pane:1,title:'Reading',agent:'codex',state:'working',chatId:'chat-1',frame:document.getElementById('terminal')};SwitchboardConversation.install({selection:()=>current,terminal(){}});</script>`});
+   return route.fulfill({path:path.join(__dirname,'static',path.basename(p)),contentType:p.endsWith('.css')?'text/css':'text/javascript'});
+  });
+  await page.goto('http://reading.test/');await page.getByText(/^Message 39 /).waitFor();
+  const list=page.locator('.conversation-messages');
+  const settled=()=>page.waitForFunction(()=>!document.querySelector('[aria-label="Refresh"]').disabled);
+  const frames=()=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  const scrollUp=distance=>list.evaluate((node,distance)=>new Promise(resolve=>{node.addEventListener('scroll',()=>resolve(node.scrollTop),{once:true});node.dispatchEvent(new Event('touchmove'));node.scrollTop-=distance;}),distance);
+  const poll=async()=>{await page.evaluate(()=>intervals.forEach(fn=>fn()));await settled();await frames();};
+  await settled();await frames();
+  // A short first gesture must be enough to stop following a streaming reply.
+  const position=await scrollUp(40);
+  messages.push({role:'assistant',text:'New output while the reader scrolls up'});await poll();
+  assert.equal(await list.evaluate(node=>node.scrollTop),position,'A short upward gesture must not snap back to the latest reply');
+  // A refresh can change a message above the viewport, not just append output.
+  await scrollUp(600);
+  const anchor=await list.evaluate(node=>{const top=node.getBoundingClientRect().top,entry=[...node.querySelectorAll('.conversation-message')].find(item=>item.getBoundingClientRect().bottom>top+40);return {id:entry.dataset.conversationEntry,top:entry.getBoundingClientRect().top};});
+  messages[0]={...messages[0],text:messages[0].text+' More earlier content. '.repeat(100)};await poll();
+  const after=await page.locator(`[data-conversation-entry="${anchor.id}"]`).evaluate(node=>node.getBoundingClientRect().top);
+  assert.ok(Math.abs(after-anchor.top)<1,'A changed earlier message must preserve the message being read');
+  await page.getByRole('button',{name:'Terminal',exact:true}).click();await page.getByRole('button',{name:'Conversation',exact:true}).click();await settled();await frames();
+  assert.ok(Math.abs(await page.locator(`[data-conversation-entry="${anchor.id}"]`).evaluate(node=>node.getBoundingClientRect().top)-anchor.top)<1,'Returning from Terminal keeps the reading position');
+  assert.deepEqual(errors,[]);
+ }finally{await browser.close();}
+});
