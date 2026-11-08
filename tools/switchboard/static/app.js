@@ -1820,29 +1820,6 @@ $('new-tab-form').onsubmit=async event=>{
   }catch(error){if(isCurrent()){uploads.abort();newTabRetrying=true;newTabProblem(error.message);}}
   finally{if(form.pendingSubmission===request){form.pendingSubmission=null;newTabUploadStatus('');for(const item of files)if(item.state==='uploading')delete item.state;paintNewTabFiles();newTabBusy(false);newTabSubmitText();}}
 };
-// A problem while the dialog is open shows in the dialog; the status bar sits under its backdrop.
-// The checks createNewTab makes, run before uploads; [message, field] or null.
-function newTabTargetProblem(key){
-  const entry=sessions.get(key),[id,name]=JSON.parse(key);
-  if(entry&&!entry.state&&sessionTabs(entry).length)return null;
-  if(!entry?.state)return firstSessionName(hosts.get(id))===name?null:[noSessionMessage(id),'target'];
-  if(!sessionTabs(entry).length)return [noSessionMessage(id),'target'];
-  if(entry.pendingNewTab||entry.requestedPane||entry.focusPending)return ['Another tab is still opening on '+(hosts.get(id)?.name||'that computer')+'. Retry in a moment.'];
-  return null;
-}
-function newTabProblem(message,field='prompt'){
-  if(!$('new-tab-dialog').open){setStatus(message,true);return;}
-  if(field!=='target'&&!$('new-tab-form').pendingSubmission){newTabRetrying=true;newTabSubmitText();}
-  if(field==='target'){$('new-tab-target-error').textContent=message;$('new-tab-target').setAttribute('aria-invalid','true');newTabTargetBlocked=true;$('new-tab-submit').disabled=true;newTabSubmitText();}
-  else $('new-tab-error').textContent=message;
-  setTimeout(()=>(field==='target'?$('new-tab-machine'):$('new-tab-prompt')).focus());
-}
-let newTabTargetBlocked=false;
-function clearNewTabFieldProblem(){
-  $('new-tab-target-error').textContent='';$('new-tab-target').removeAttribute('aria-invalid');
-  if(newTabTargetBlocked){newTabTargetBlocked=false;if(!$('new-tab-form').pendingSubmission){newTabBusy(false);newTabSubmitText();}}
-}
-function noSessionMessage(id){return (hosts.get(id)?.name||'That computer')+' has no terminal session to open a tab in. Choose another computer.';}
 async function createNewTab(key,launch,isCurrent=()=>true){
   if(!launch.project||(!launch.command&&typeof launch.prompt!=='string'))return;
   if(globalThis.SwitchboardConversation?.wantsConversation?.())return createConversationTab(key,launch);
@@ -1884,6 +1861,29 @@ async function createNewTab(key,launch,isCurrent=()=>true){
   setStatus(`Creating a tab on ${hosts.get(entry.host)?.name}…`);
   setTimeout(()=>failNewTab(entry,pending.requestId,'No new tab received. Check the connection and try again.'),30000);
 };
+// A problem while the dialog is open shows in the dialog; the status bar sits under its backdrop.
+// The checks createNewTab makes, run before uploads; [message, field] or null.
+function newTabTargetProblem(key){
+  const entry=sessions.get(key),[id,name]=JSON.parse(key);
+  if(entry&&!entry.state&&sessionTabs(entry).length)return null;
+  if(!entry?.state)return firstSessionName(hosts.get(id))===name?null:[noSessionMessage(id),'target'];
+  if(!sessionTabs(entry).length)return [noSessionMessage(id),'target'];
+  if(entry.pendingNewTab||entry.requestedPane||entry.focusPending)return ['Another tab is still opening on '+(hosts.get(id)?.name||'that computer')+'. Retry in a moment.'];
+  return null;
+}
+function newTabProblem(message,field='prompt'){
+  if(!$('new-tab-dialog').open){setStatus(message,true);return;}
+  if(field!=='target'&&!$('new-tab-form').pendingSubmission){newTabRetrying=true;newTabSubmitText();}
+  if(field==='target'){$('new-tab-target-error').textContent=message;$('new-tab-target').setAttribute('aria-invalid','true');newTabTargetBlocked=true;$('new-tab-submit').disabled=true;newTabSubmitText();}
+  else $('new-tab-error').textContent=message;
+  setTimeout(()=>(field==='target'?$('new-tab-machine'):$('new-tab-prompt')).focus());
+}
+let newTabTargetBlocked=false;
+function clearNewTabFieldProblem(){
+  $('new-tab-target-error').textContent='';$('new-tab-target').removeAttribute('aria-invalid');
+  if(newTabTargetBlocked){newTabTargetBlocked=false;if(!$('new-tab-form').pendingSubmission){newTabBusy(false);newTabSubmitText();}}
+}
+function noSessionMessage(id){return (hosts.get(id)?.name||'That computer')+' has no terminal session to open a tab in. Choose another computer.';}
 $('ready').onclick=()=>{
   const item=contextItem;if(!item)return;
   ready[item.key]=Date.now();saveReady();
