@@ -36,6 +36,17 @@
 .conversation-subtitle:empty,.conversation-subtitle:not(:has(:not(:empty))){display:none}
 .conversation-context{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .conversation-context:empty{display:none}
+/* Desktop: one row reading "project · computer / title", with the status after it. */
+@media (min-width:701px) and (not (pointer:coarse)),(min-width:1001px){
+  .conversation-modes{top:8px}
+  .conversation-panel>header{min-height:52px;padding-top:6px;padding-right:max(216px,calc(100% - var(--edge) - var(--chat-width)));padding-bottom:6px;border-bottom:0}
+  .conversation-heading{flex-direction:row;justify-content:flex-start;align-items:center;gap:8px;flex:1 1 auto}
+  .conversation-subtitle{display:contents}
+  .conversation-context{flex:0 1 auto;max-width:45%;font-size:14px;font-weight:500;line-height:1.35}
+  .conversation-heading strong{order:1;font-size:14px;font-weight:500;letter-spacing:-.008em}
+  .conversation-heading:has(.conversation-context:not(:empty)) strong::before{content:"/";margin-right:8px;color:var(--faint)}
+  .conversation-activity{order:2;margin-left:4px}
+}
 .conversation-compose .conversation-cost{grid-column:3;grid-row:3;justify-self:start;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-variant-numeric:tabular-nums;color:var(--muted)}
 .conversation-compose .conversation-cost:empty{display:none}
 .conversation-model{font-size:12px;line-height:1.5;color:var(--muted);overflow-wrap:anywhere}

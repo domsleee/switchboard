@@ -958,7 +958,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
     function update(){
       root.classList.toggle('conversation-open',open);
       const current=selection();modes.hidden=!current;
-      title.textContent=current?.title||'Conversation';
+      title.textContent=current?.title||'Conversation';title.title=title.textContent;
       if(identity(current)===identity(target)){target=current;updateActivity();if(!chat)status(unboundNotice());prepare();flushStartup();return;}
       // A mode switch may already have started a timer before calling update.
       if(!current)shownProgress('left');else if(open&&!document.hidden&&(!shown||shown.generation!==null))startShown('selection');
