@@ -1679,14 +1679,15 @@ function paintNewTabMachine(){
 }
 // A focused chip shows its choices. Arrows or a digit change the value at once;
 // Enter, Escape or a click on a choice return to the prompt. Options are [value, label, detail, disabled, group].
-// With a search box, typing on the chip filters the list; the first match is chosen at once,
+// With a search box, typing on the chip filters by name; the first match is chosen at once,
 // a name nobody listed comes from custom(query), and Escape restores the choice from before the search.
+// A digit still picks its row, and letters after it join the search, so "1fern" finds a computer named 1fern.
 function newTabChipMenu(chip,menu,options,current,set,{search=null,custom=()=>[],note=()=>''}={}){
-  const list=menu.querySelector('[role=listbox]')||menu;let before=null;
+  const list=menu.querySelector('[role=listbox]')||menu;let before=null,typed='';
   const query=()=>search?.value.trim().toLowerCase()||'';
   function shown(){
     const text=query();if(!text)return options();
-    const matches=options().filter(([value,label,detail])=>[value,label,detail].some(field=>String(field||'').toLowerCase().includes(text)));
+    const matches=options().filter(([,label])=>label.toLowerCase().includes(text));
     return matches.some(([,label])=>label.toLowerCase()===text)?matches:[...matches,...custom(search.value)];
   }
   function paint(){
@@ -1701,7 +1702,7 @@ function newTabChipMenu(chip,menu,options,current,set,{search=null,custom=()=>[]
       option.onclick=()=>{if(disabled)return;set(value);before=null;paint();$('new-tab-prompt').focus();};
       list.append(option);
     });
-    const message=search&&query()&&!shown().length?'Model names use letters, digits and . - _ [ ] / : @':!query()&&note();
+    const message=search&&query()&&!shown().length?'No computer matches':!query()&&note();
     if(message){const small=document.createElement('p');small.className='new-tab-menu-note';small.textContent=message;list.append(small);}
     const selected=list.querySelector('[aria-selected=true]');
     if(selected){chip.setAttribute('aria-activedescendant',selected.id);search?.setAttribute('aria-activedescendant',selected.id);if(!menu.hidden)selected.scrollIntoView({block:'nearest'});}
@@ -1709,11 +1710,9 @@ function newTabChipMenu(chip,menu,options,current,set,{search=null,custom=()=>[]
   }
   function open(){
     if(chip.disabled)return;menu.hidden=false;
-    // A long list opens upward only as far as the window allows; the rest scrolls.
-    if(list!==menu)list.style.maxHeight=Math.max(120,Math.min(360,chip.getBoundingClientRect().top-(search?.offsetHeight||0)-32))+'px';
     paint();chip.setAttribute('aria-expanded','true');
   }
-  function close(){menu.hidden=true;chip.setAttribute('aria-expanded','false');chip.removeAttribute('aria-activedescendant');if(search){search.value='';before=null;}}
+  function close(){menu.hidden=true;chip.setAttribute('aria-expanded','false');chip.removeAttribute('aria-activedescendant');typed='';if(search){search.value='';search.hidden=true;before=null;}}
   function pick(value){set(value);paint();}
   function step(delta){const usable=shown().filter(option=>!option[3]),index=usable.findIndex(option=>option[0]===current()),next=usable[(index+delta+usable.length)%usable.length];if(next)pick(next[0]);}
   // Focus moving between the chip and its search box keeps the menu open.
@@ -1724,10 +1723,11 @@ function newTabChipMenu(chip,menu,options,current,set,{search=null,custom=()=>[]
   function keys(event){
     if(event.altKey||event.ctrlKey||event.metaKey)return;
     const typing=event.target===search;
-    if(event.key==='ArrowDown'||(!typing&&event.key==='ArrowRight')){event.preventDefault();step(1);}
-    else if(event.key==='ArrowUp'||(!typing&&event.key==='ArrowLeft')){event.preventDefault();step(-1);}
-    else if(!typing&&/^[1-9]$/.test(event.key)){const option=options()[+event.key-1];if(option&&!option[3]){event.preventDefault();pick(option[0]);}}
-    else if(!typing&&search&&event.key.length===1&&event.key!==' '){event.preventDefault();before=current();search.value=event.key;search.focus();filter();}
+    const delta=event.key==='ArrowDown'||(!typing&&event.key==='ArrowRight')?1:event.key==='ArrowUp'||(!typing&&event.key==='ArrowLeft')?-1:0;
+    const row=!typing&&/^[1-9]$/.test(event.key)?options()[+event.key-1]:null;
+    if(delta){event.preventDefault();if(!typing){typed='';before=null;}step(delta);}
+    else if(row&&!row[3]){event.preventDefault();if(before===null)before=current();typed+=event.key;pick(row[0]);}
+    else if(!typing&&search&&event.key.length===1&&event.key!==' '){event.preventDefault();if(before===null)before=current();search.hidden=false;search.value=typed+event.key;typed='';search.focus();filter();}
     else if(event.key==='Escape'&&typing&&before!==null){event.preventDefault();event.stopPropagation();set(before);before=null;$('new-tab-prompt').focus();}
     else if(event.key==='Enter'||(!typing&&event.key===' ')||event.key==='Escape'){event.preventDefault();event.stopPropagation();before=null;$('new-tab-prompt').focus();}
   }
@@ -1744,7 +1744,7 @@ const newTabModelMenu=ModelPicker.create({chip:$('new-tab-model'),menu:$('new-ta
   reload:loadNewTabModels,
   // The choice is announced once, when the picker closes, not on every arrow.
   done(){if(newTabHandover){$('new-tab-form').requestSubmit();return;}$('new-tab-progress').textContent=$('new-tab-model').getAttribute('aria-label');$('new-tab-prompt').focus();}});
-const newTabMachineMenu=newTabChipMenu($('new-tab-machine'),$('new-tab-machine-menu'),()=>[...$('new-tab-target').options].map(option=>[option.value,option.textContent.replace(/ · no session$/,''),option.disabled?'no session':'',option.disabled]),()=>$('new-tab-target').value,value=>{$('new-tab-target').value=value;$('new-tab-target').dispatchEvent(new Event('change'));$('new-tab-progress').textContent='Computer: '+$('new-tab-target').selectedOptions[0].textContent;});
+const newTabMachineMenu=newTabChipMenu($('new-tab-machine'),$('new-tab-machine-menu'),()=>[...$('new-tab-target').options].map(option=>[option.value,option.textContent.replace(/ · no session$/,''),option.disabled?'no session':'',option.disabled]),()=>$('new-tab-target').value,value=>{$('new-tab-target').value=value;$('new-tab-target').dispatchEvent(new Event('change'));$('new-tab-progress').textContent='Computer: '+$('new-tab-target').selectedOptions[0].textContent;},{search:$('new-tab-machine-search')});
 // Project: a chip that opens the folder search.
 function openNewTabProjectPicker(){
   if($('new-tab-project-chip').disabled)return;
