@@ -3,9 +3,10 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 test('hover snooze and settle preserve the selected view, review state and keyboard navigation',
  {skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
   const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch();
-  const panes=[1,2,3].map(id=>({pane_id:id,is_plugin:false,tab_id:id,tab_position:id-1,title:['Fix volume performance','Review the sidebar','Plan the next release'][id-1],cwd:'/home/developer/git/sample'}));
-  const tabs=panes.map(pane=>({host:'desktop',session:'main',id:pane.tab_id,position:pane.tab_position,name:pane.title,panes:[pane]}));
-  async function fixture(mode){
+  const titles=['Fix volume performance','Review the sidebar','Plan the next release','Tidy the docs'];
+  const makePanes=count=>titles.slice(0,count).map((title,index)=>({pane_id:index+1,is_plugin:false,tab_id:index+1,tab_position:index,title,cwd:'/home/developer/git/sample'}));
+  async function fixture(mode,panes=makePanes(3)){
+    const tabs=panes.map(pane=>({host:'desktop',session:'main',id:pane.tab_id,position:pane.tab_position,name:pane.title,panes:[pane]}));
     const page=await browser.newPage({viewport:{width:1100,height:760},timezoneId:'Australia/Sydney'}),errors=[],writes=[];
     await page.clock.setFixedTime(new Date('2026-11-08T07:11:00Z'));
     page.setDefaultTimeout(5000);page.on('pageerror',e=>errors.push(e.message));
@@ -32,6 +33,22 @@ test('hover snooze and settle preserve the selected view, review state and keybo
   }
   try{
     for(const mode of ['terminal','conversation']){
+      const groups=await fixture(mode,makePanes(4));
+      await groups.page.waitForFunction(()=>allTabs().length===4);
+      await groups.page.evaluate(()=>{
+        const byId=id=>allTabs().find(item=>item.tab.id===id);
+        paneAttention.get(attentionKey('desktop','main',2)).state='working';
+        parkTab(byId(3),'settled');setHidden(byId(4),true);render();
+      });
+      const headerTops=()=>groups.page.evaluate(()=>['#snoozed-toggle','#manual-settled-toggle','#hidden-toggle'].flatMap(selector=>{const header=document.querySelector(selector);return header?[Math.round(header.getBoundingClientRect().top)]:[];}));
+      const [working,settled,hiddenGroup]=await headerTops();
+      assert.equal(settled-working,hiddenGroup-settled,'group headers are evenly spaced');
+      if(mode==='terminal'&&process.env.SWITCHBOARD_PARKING_SCREENSHOTS)await groups.page.locator('#sidebar').screenshot({path:process.env.SWITCHBOARD_PARKING_SCREENSHOTS+'/groups.png'});
+      await groups.page.evaluate(()=>{paneAttention.get(attentionKey('desktop','main',2)).state='ready';render();});
+      await groups.page.locator('#snoozed-toggle').waitFor({state:'detached'});
+      const [settledAlone,hiddenAlone]=await headerTops();
+      assert.equal(hiddenAlone-settledAlone,hiddenGroup-settled,'a group after the tabs stays with the headers at the bottom');
+      assert.deepEqual(groups.errors,[]);await groups.page.close();
       const {page,errors,writes}=await fixture(mode);
       const first=page.locator('.tab-row').filter({has:page.locator('.tab-name',{hasText:'Fix volume performance'})});
       const second=page.locator('.tab-select').filter({has:page.locator('.tab-name',{hasText:'Review the sidebar'})});
