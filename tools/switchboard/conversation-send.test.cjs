@@ -9,6 +9,7 @@ test('outgoing replies stay visible through queue acknowledgement and reconcile 
   await page.addInitScript(()=>{window.intervals=[];window.setInterval=fn=>intervals.push(fn);});
   await page.route('http://send.test/**',async route=>{
    const url=new URL(route.request().url());
+   if(url.pathname.startsWith('/api/diagnostics/'))return route.fulfill({status:204});
    if(url.pathname.endsWith('/conversation/reply')){replies.push(route.request().postDataJSON());await relayHold;return relay===200?route.fulfill({json:{ok:true,...relayNotice&&{draft:'stashed',notice:relayNotice}}}):route.fulfill({status:relay,body:relay===409?'Claude is not at its prompt. Open Terminal to see what it needs.':''});}
    if(url.pathname.endsWith('/codex/reply')){requests.push(route.request().postDataJSON());if(fail)return route.abort();if(hold)await new Promise(resolve=>held=resolve);return route.fulfill({json:{status:'queued'}});}
    if(url.pathname.startsWith('/api/chats/'))return route.fulfill({json:{session_id:'00000000-0000-4000-8000-000000000001',messages:history,start_cursor:0,next_cursor:null}});

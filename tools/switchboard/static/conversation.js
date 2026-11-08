@@ -425,10 +425,10 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
 
     toggle.onclick=()=>show(true);back.onclick=()=>show(false);
     let loadRequest=null,lastFailure=null,lastDiagnostic='',lastDiagnosticAt=0,newOutput=false,scrollIdle,shown=null;
-    // Times a switch from Terminal to Conversation until its messages are on screen.
-    function startShown(){
+    // Times each visible chat selection or mode switch until its messages are on screen.
+    function startShown(reason='mode'){
       shownProgress('superseded');
-      const timing=shown={started:performance.now(),cached:loaded,generation:null,paint_ms:null,deadline:setTimeout(()=>shownProgress('timeout'),20000)};
+      const timing=shown={started:performance.now(),reason,stages:{render_ms:0},remote:target?.chatHost!=='local',cached:loaded,generation:null,paint_ms:null,deadline:setTimeout(()=>shownProgress('timeout'),20000)};
       requestAnimationFrame(()=>setTimeout(()=>{if(shown!==timing)return;timing.paint_ms=Math.round(performance.now()-timing.started);shownProgress();},0));
     }
     function shownProgress(end){
@@ -439,7 +439,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
         if(!end)return;
       }
       shown=null;clearTimeout(timing.deadline);
-      void fetch('/api/diagnostics/conversation-shown',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({end,elapsed_ms:Math.min(120000,Math.round(performance.now()-timing.started)),paint_ms:timing.paint_ms})}).catch(()=>{});
+      void fetch('/api/diagnostics/conversation-shown',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({end,elapsed_ms:Math.min(120000,Math.round(performance.now()-timing.started)),paint_ms:timing.paint_ms,reason:timing.reason,remote:timing.remote,...timing.stages})}).catch(()=>{});
     }
     function reportLoad(phase,outcome,started){
       const now=Date.now(),key=phase+':'+outcome;
@@ -447,12 +447,18 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       lastDiagnostic=key;lastDiagnosticAt=now;
       void fetch('/api/diagnostics/conversation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phase,outcome,elapsed_ms:Math.min(120000,Math.round(performance.now()-started))})}).catch(()=>{});
     }
-    async function get(url,signal){
-      const response=await fetch(url,{signal});
+    async function get(url,signal,stages){
+      const started=performance.now(),response=await fetch(url,{signal});
       if(!response.ok)throw Object.assign(Error('The conversation could not be loaded. Retrying…'),{code:'http'});
       let data;try{data=await response.json();}catch{throw Object.assign(Error('The conversation response was incomplete. Retrying…'),{code:'invalid_response'});}
       if(data.error)throw Object.assign(Error('The conversation is temporarily unavailable. Retrying…'),{code:'http'});
       if(!Array.isArray(data.messages))throw Object.assign(Error('The conversation response was incomplete. Retrying…'),{code:'invalid_response'});
+      stages.request_ms=Math.round(performance.now()-started);
+      // Fixed numeric metrics from the owning relay; old peers omit the header.
+      for(const metric of (response.headers.get('Server-Timing')||'').split(',')){
+        const match=metric.trim().match(/^(queue|read|index|page);dur=(\d+)$/);
+        if(match)stages[match[1]+'_ms']=Math.min(120000,Number(match[2]));
+      }
       return data;
     }
     function partialNotice(data){
@@ -587,6 +593,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       return sentItems;
     }
     function paint(prepend=false,initial=false){
+      const renderStarted=performance.now();
       syncAsyncQuestions();
       const key=identity(target),sentItems=acknowledge(key,messages,startCursor);
       const visibleOutgoing=sentItems.filter(item=>item.transcriptCursor===undefined);
@@ -656,6 +663,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       if(prepend)list.scrollTop=position+list.scrollHeight-height;
       else if(follow)list.scrollTop=list.scrollHeight;
       syncAsyncQuestions();syncLiveStep();updateLatest();rememberReading();paintFiles();
+      if(shown)shown.stages.render_ms=Math.round(performance.now()-renderStarted);
     }
     function applyPage(data,kind,cursor){
       const initial=kind==='initial',prepend=kind==='older',page=data.messages||[],start=data.start_cursor??(initial?0:prepend?Math.max(0,startCursor-page.length):cursor);
@@ -679,10 +687,11 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       if(!target||!binding()||loading||(!open&&kind!=='initial'))return;if(!loaded)kind='initial';const version=generation,chat=binding(),started=performance.now(),request=new AbortController();loadRequest=request;let timedOut=false,catchUp=false;busy(true);const timeout=setTimeout(()=>{timedOut=true;request.abort();},15000);
       const initial=kind==='initial',prepend=kind==='older',cursor=nextCursor??tailCursor;
       historyStatus.hidden=!prepend;historyStatus.textContent='Loading earlier messages…';
-      const params={host:target.chatHost||target.host,context:'true',limit:initial&&(mobile||navigator.connection?.saveData)?15:50};
+      const params={host:target.chatHost||target.host,context:'true',limit:initial?15:50},stages={};
       if(initial)params.tail=true;else if(prepend)params.before=startCursor;else params.cursor=cursor;
-      try{const data=await get('/api/chats/'+encodeURIComponent(chat.id)+'?'+new URLSearchParams(params),request.signal);if(version!==generation)return;
-        applyPage(data,kind,cursor);if(shown)requestAnimationFrame(()=>setTimeout(()=>shownProgress(),0));streamSupported=data.stream===true;startStream();const warning=partialNotice(data);status(warning,!warning);if(warning){reportLoad(kind,'partial',started);lastFailure='partial';}else if(lastFailure){reportLoad(kind,'recovered',started);lastFailure=null;}updateLatest();catchUp=nextCursor!==null&&!prepend;
+      try{const data=await get('/api/chats/'+encodeURIComponent(chat.id)+'?'+new URLSearchParams(params),request.signal,stages);if(version!==generation)return;
+        const renderStarted=performance.now();applyPage(data,kind,cursor);stages.render_ms=Math.round(performance.now()-renderStarted);if(initial&&shown&&!shown.cached)shown.stages=stages;
+        if(shown)requestAnimationFrame(()=>setTimeout(()=>shownProgress(),0));streamSupported=data.stream===true;startStream();const warning=partialNotice(data);status(warning,!warning);if(warning){reportLoad(kind,'partial',started);lastFailure='partial';}else if(lastFailure){reportLoad(kind,'recovered',started);lastFailure=null;}updateLatest();catchUp=nextCursor!==null&&!prepend;
       }catch(error){if(version===generation&&!(!timedOut&&request.signal.aborted)){const outcome=timedOut?'timeout':error.code||'network';lastFailure=outcome;reportLoad(kind,outcome,started);if(initial)shownProgress('failed');const message=timedOut?'Loading took too long. Retrying…':error.code?error.message:'Connection interrupted. Retrying…';if(prepend){older.textContent='Retry earlier messages';older.hidden=false;}else{status(message);refresh.hidden=false;updateLatest();}}}finally{clearTimeout(timeout);if(loadRequest===request)loadRequest=null;if(version===generation){busy(false);historyStatus.hidden=true;for(const data of streamPages)streamPage(data);streamPages=[];if(catchUp)setTimeout(()=>{if(version===generation)load();},0);else if(open&&loaded&&startCursor>0&&older.hidden&&(list.scrollTop<80||list.scrollHeight<=list.clientHeight))setTimeout(()=>{if(version===generation)load('older');},0);}}
     }
     older.onclick=()=>load('older');refresh.onclick=()=>load(messages.length?'poll':'initial');latest.onclick=()=>{list.scrollTop=list.scrollHeight;rememberReading();updateLatest();};
@@ -879,11 +888,13 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       const current=selection();modes.hidden=!current;
       title.textContent=current?.title||'Conversation';
       if(identity(current)===identity(target)){target=current;updateActivity();if(!chat)status(unboundNotice());prepare();flushStartup();return;}
+      // A mode switch may already have started a timer before calling update.
+      if(!current)shownProgress('left');else if(open&&!document.hidden&&(!shown||shown.generation!==null))startShown('selection');
       closeCompletions();navigationRevision++;
       if(target)drafts.set(identity(target),draft.value);
       if(target&&loaded){conversations.delete(identity(target));conversations.set(identity(target),{chat,messages,startCursor,tailCursor,nextCursor,streamSupported,position:restorePosition?.position??list.scrollTop,follow:restorePosition?.follow??nearBottom()});if(conversations.size>8)conversations.delete(conversations.keys().next().value);}
       window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();
-      stopStream();streamSupported=false;restorePosition=null;target=current;loadRequest?.abort();lastFailure=null;lastDiagnostic='';newOutput=false;sendStatus('');generation++;shownProgress();loaded=false;lastPaint=null;busy(false);messages=[];startCursor=tailCursor=0;nextCursor=null;following=true;readingAnchor=null;for(const entry of [...rendered.values(),...renderedOutgoing.values()])contentResize?.unobserve(entry.node);rendered.clear();renderedOutgoing.clear();summaries.clear();list.replaceChildren(older,working);older.hidden=true;historyStatus.hidden=true;latest.hidden=refresh.hidden=true;
+      stopStream();streamSupported=false;restorePosition=null;target=current;loadRequest?.abort();lastFailure=null;lastDiagnostic='';newOutput=false;sendStatus('');generation++;loaded=false;lastPaint=null;busy(false);messages=[];startCursor=tailCursor=0;nextCursor=null;following=true;readingAnchor=null;for(const entry of [...rendered.values(),...renderedOutgoing.values()])contentResize?.unobserve(entry.node);rendered.clear();renderedOutgoing.clear();summaries.clear();list.replaceChildren(older,working);older.hidden=true;historyStatus.hidden=true;latest.hidden=refresh.hidden=true;
       chat=target?.chatId?{id:target.chatId,agent:target.agent,title:target.title}:null;
       // The temporary Creating tab identity becomes a pane before it gets a chat.
       // Keep its follow-ups, draft and attachments through both transitions.
@@ -893,6 +904,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       if(target&&chat&&handoverDrafts.has(target.key)){drafts.set(identity(target),handoverDrafts.get(target.key));handoverDrafts.delete(target.key);}
       if(target&&chat&&handoverAttachments.has(target.key)){attachments.set(identity(target),[...fileList(),...handoverAttachments.get(target.key)]);handoverAttachments.delete(target.key);}
       const cached=conversations.get(identity(target));if(cached){({chat,messages,startCursor,tailCursor,nextCursor,streamSupported}=cached);loaded=true;}
+      if(shown){shown.generation=generation;shown.cached=loaded;shown.remote=target?.chatHost!=='local';}
       updateActivity();actions.hidden=true;
       if(!target){setPanelHidden(true);viewport();return;}draft.value=drafts.get(identity(target))||'';
       setPanelHidden(!open);paintFiles();viewport();
