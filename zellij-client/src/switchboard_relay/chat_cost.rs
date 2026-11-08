@@ -12,7 +12,7 @@ struct Price {
     cache_read: f64,
 }
 
-/// Anthropic first-party rates (cached from the pricing page, 2026-10-06).
+/// Anthropic first-party rates (platform.claude.com pricing page, 2026-11-08).
 fn price(model: &str) -> Option<Price> {
     let p = |input, output, cache_read| {
         Some(Price {
@@ -44,7 +44,8 @@ fn price(model: &str) -> Option<Price> {
             p(5.0, 25.0, 0.5)
         },
         _ if family("claude-opus-4-1") || family("claude-opus-4") => p(15.0, 75.0, 1.5),
-        _ if family("claude-sonnet-5-5") || family("claude-sonnet-5") => p(2.0, 10.0, 0.2),
+        _ if family("claude-sonnet-5-5") => p(2.0, 10.0, 0.1),
+        _ if family("claude-sonnet-5") => p(2.0, 10.0, 0.2),
         _ if family("claude-sonnet-4-6")
             || family("claude-sonnet-4-5")
             || family("claude-sonnet-4") =>
@@ -81,8 +82,11 @@ impl Turn {
                 cache_read: 0.05,
             };
         }
-        // Fast mode doubles the Opus 5 and 5.5 rates.
-        if self.fast && self.model.starts_with("claude-opus-5") {
+        // Fast mode doubles the Opus 5.5, 5 and 4.8 rates.
+        if self.fast
+            && (self.model.starts_with("claude-opus-5")
+                || self.model.starts_with("claude-opus-4-8"))
+        {
             price.input *= 2.0;
             price.output *= 2.0;
             price.cache_read *= 2.0;
@@ -254,6 +258,9 @@ mod tests {
             ..Turn::default()
         };
         assert_eq!(turn("claude-opus-5-5", 1_000_000, true).cost(), Some(8.0));
+        assert_eq!(turn("claude-opus-4-8", 1_000_000, true).cost(), Some(10.0));
+        assert_eq!(price("claude-sonnet-5-5").unwrap().cache_read, 0.1);
+        assert_eq!(price("claude-sonnet-5").unwrap().cache_read, 0.2);
         assert_eq!(turn("claude-haiku-5-5", 100_000, false).cost(), Some(0.01));
         assert_eq!(turn("claude-haiku-5-5", 200_000, false).cost(), Some(0.1));
         assert_eq!(Usage::default().summary(), Value::Null);
