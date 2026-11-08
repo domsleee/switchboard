@@ -8,7 +8,7 @@ const source = name => read(name).replace(/^import[\s\S]*?from ["'][^"']+["'];\s
 
 function fixture() {
   let now = 1000, serial = 0, signalSerial = 0;
-  const timers = new Map(), sockets = [], nodes = [], requests = [];
+  const timers = new Map(), sockets = [], nodes = [], requests = [], failures = [];
   const listeners = new Map();
   const term = { rows: 24, cols: 80, options: {}, writes: [], resize(cols, rows) { this.cols = cols; this.rows = rows; }, write(data) { this.writes.push(data); } };
   term._core = { coreService: { triggerDataEvent(data, user = false) {
@@ -25,11 +25,11 @@ function fixture() {
     drop(code = 1006) { this.readyState = 3; this.onclose?.({ code }); }
   }
   const ctx = {
-    Date: { now: () => now }, AbortSignal: { timeout: () => ({ id: ++signalSerial }) }, URLSearchParams, console,
+    Date: { now: () => now }, performance: { now: () => now }, AbortSignal: { timeout: () => ({ id: ++signalSerial }) }, URLSearchParams, console, crypto: require('node:crypto').webcrypto, CustomEvent,
     setTimeout(fn, ms) { const id = ++serial; timers.set(id, { fn, at: now + ms }); return id; },
     clearTimeout(id) { timers.delete(id); },
     WebSocket: Socket, location: { pathname: '/hosts/mac/main' },
-    window: { innerHeight: 800, innerWidth: 1000, addEventListener(name, fn) { listeners.set(name, fn); } },
+    window: { innerHeight: 800, innerWidth: 1000, addEventListener(name, fn) { listeners.set(name, fn); }, dispatchEvent(event) { if(event.type==='zellij-terminal-failed')failures.push(event.detail); } },
     document: {
       documentElement: { style: { setProperty() {} } },
       createElement() { return { style: {}, setAttribute() {}, remove() { nodes.splice(nodes.indexOf(this), 1); } }; },
@@ -75,7 +75,7 @@ function fixture() {
     const [terminal, control] = sockets.slice(-2);
     terminal.open(); control.open(); control.message(JSON.stringify({type:'MobileState',payload:{active_pane:ctx.activePane}})); terminal.message('screen'); await flush();
   }
-  return { ctx, sockets, client, term, nodes, requests, listeners, advance, attach, flush };
+  return { ctx, sockets, client, term, nodes, requests, failures, listeners, advance, attach, flush };
 }
 
 test('quick retry schedule backs off after ten seconds', () => {
@@ -237,6 +237,9 @@ test('intentional close stops both sockets and never reconnects', async () => {
   assert.equal(f.ctx.disconnected, true);
   assert.equal(f.sockets.length, 2);
   assert.equal(f.requests.length, 0);
+  assert.equal(f.failures.length, 1);
+  assert.equal(f.failures[0].code, 'browser_failure');
+  assert.match(f.failures[0].reference, /^[a-f0-9]{12}$/);
 });
 
 test('a deleted or unshared session is not recreated after a transport failure', async () => {
