@@ -1774,6 +1774,8 @@ $('handover-cancel').onclick=()=>$('new-tab-dialog').close();
 $('new-tab-dialog').addEventListener('keydown',event=>{
   if(newTabHandover)return;
   if(event.key!=='Tab'||event.altKey||event.ctrlKey||event.metaKey)return;
+  // This runs before the prompt's own handler, so an open menu claims Tab here.
+  if(document.activeElement===$('new-tab-prompt')&&newTabCompletions?.key(event))return;
   const picker=$('new-tab-project-popover'),inPicker=picker.contains(document.activeElement);
   // In the project search, Tab is the lookup's own (fill, then back to the prompt).
   if(inPicker&&!event.shiftKey)return;
@@ -1789,7 +1791,12 @@ $('new-tab-dialog').addEventListener('keydown',event=>{
 },true);
 // The prompt grows with its text, up to a limit where it scrolls.
 function fitNewTabPrompt(){const input=$('new-tab-prompt');input.style.height='';input.style.height=Math.min(input.scrollHeight+2,Math.max(innerHeight*.4,160))+'px';}
-$('new-tab-prompt').addEventListener('input',fitNewTabPrompt);
+$('new-tab-prompt').addEventListener('input',()=>{fitNewTabPrompt();newTabCompletions?.paint();});
+// A single-line /command runs in the agent's terminal rather than being sent to it as a message.
+const newTabCommand=text=>/^\/[a-z][\w:.-]*(?:[ \t][^\n]*)?$/i.test(text.trim());
+function newTabAgent(model=newTabModel()){return newTabModelProvider(model)||(model==='c'?'claude':'codex');}
+let newTabCompletions=null;
+function attachNewTabCompletions(){newTabCompletions??=globalThis.SwitchboardConversation?.attachCompletions?.({draft:$('new-tab-prompt'),parent:$('new-tab-form').querySelector('.new-tab-composer'),id:'new-tab-completions',changed:fitNewTabPrompt,surface(){const host=newTabModelHost();return host&&!newTabHandover&&$('new-tab-dialog').open?{agent:newTabAgent(),host,cwd:$('new-tab-project').value.trim(),owner:host}:null;}})||null;}
 $('new-tab').onclick=()=>openNewTabDialog(false);
 $('new-admin-tab').onclick=()=>openNewTabDialog(true);
 function openNewTabDialog(elevated){
@@ -1823,7 +1830,7 @@ function openNewTabDialog(elevated){
   newTabRetrying=false;newTabSubmitText();paintNewTabMachine();closeNewTabProjectPicker(false);
   newTabProjectEdited=false;clearNewTabFieldProblem();$('new-tab-project').value=newTabSavedProject(JSON.parse(select.value)[0]);updateNewTabProject();
   loadNewTabProjects();loadNewTabModels();
-  $('new-tab-dialog').showModal();fitNewTabPrompt();fitNewTabDialog();
+  attachNewTabCompletions();$('new-tab-dialog').showModal();fitNewTabPrompt();fitNewTabDialog();
   $('new-tab-prompt').focus();
 }
 function lastFolder(path){return path.split(/[\\/]/).filter(Boolean).pop()||path;}
@@ -1966,7 +1973,8 @@ async function createConversationTab(key,launch,typed=launch.prompt){
   if(entry.pendingNewTab){setStatus('A tab is already being created on this computer.',true);return;}
   const pending=entry.pendingNewTab=new Set(sessionTabs(entry).map(tab=>tabKey(entry,tab)));
   pending.requestId=entry.newTabRequestId=(entry.newTabRequestId||0)+1;pending.api=true;
-  const started=promptLaunch(launch,typed);
+  // A command's output stays in the terminal, so no message waits for it in Conversation.
+  const command=newTabCommand(typed),started=command?null:promptLaunch(launch,typed);
   entry.creatingTab={id:'creating',pending:true,name:'Creating tab…',position:Infinity,panes:[],launch:started};
   const placeholder=selected=tabKey(entry,entry.creatingTab);restoringTab=false;entry.followActiveTab=false;
   if(filter!=='all'&&groups[hostId]!==filter)setFilter('all');$('tab-search').value='';
@@ -1981,7 +1989,7 @@ async function createConversationTab(key,launch,typed=launch.prompt){
     const tab={id:result.pane_id,pending:true,name:'New tab',position:Infinity,panes:[{pane_id:result.pane_id,is_plugin:false,tab_position:Infinity}],launch:started};
     entry.provisionalTabs??=[];entry.provisionalTabs.push(tab);entry.creatingTab=null;entry.pendingNewTab=null;
     if(selected===placeholder)selected=tabKey(entry,tab);
-    render();refreshAttention(true);refresh();
+    render();if(command)globalThis.SwitchboardConversation.showTerminal();refreshAttention(true);refresh();
   }catch(error){failNewTab(entry,pending.requestId,error.message||'Could not confirm tab creation. Check the tab list before retrying.');}
 }
 let newTabFiles=[];
@@ -2054,7 +2062,7 @@ $('new-tab-form').addEventListener('dragenter',event=>{if(event.dataTransfer?.ty
 $('new-tab-form').addEventListener('dragleave',()=>{if(newTabDragDepth&&!--newTabDragDepth)newTabDragging(false);});
 $('new-tab-form').addEventListener('dragover',event=>{if(event.dataTransfer?.types.includes('Files'))event.preventDefault();});
 $('new-tab-form').addEventListener('drop',event=>{newTabDragDepth=0;newTabDragging(false);if(event.dataTransfer?.files.length){event.preventDefault();addNewTabFiles([...event.dataTransfer.files]);}});
-$('new-tab-prompt').onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing&&!(matchMedia('(pointer:coarse)').matches&&!matchMedia('(any-pointer:fine)').matches)){event.preventDefault();$('new-tab-form').requestSubmit();}};
+$('new-tab-prompt').onkeydown=event=>{if(newTabCompletions?.key(event))return;if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing&&!(matchMedia('(pointer:coarse)').matches&&!matchMedia('(any-pointer:fine)').matches)){event.preventDefault();$('new-tab-form').requestSubmit();}};
 // On a phone the sheet rests on the on-screen keyboard, so Create stays in reach.
 function fitNewTabDialog(){
   if(newTabHandover){placeModelSwitch();return;}
@@ -2067,9 +2075,10 @@ $('new-tab-dialog').addEventListener('close',()=>{if($('new-tab-dialog').open)re
 $('new-tab-form').onsubmit=async event=>{
   event.preventDefault();const form=$('new-tab-form');if(form.pendingSubmission)return;
   if(newTabHandover)newTabModelMenu.commit();
-  const key=$('new-tab-target').value,project=$('new-tab-project').value.trim(),command=ModelPicker.fit(newTabModel(),newTabHostCodexModels(),newTabHostClaudeModels()),text=newTabHandover?newTabHandover.text:$('new-tab-prompt').value,files=[...newTabFiles],elevated=newTabElevated;
+  const key=$('new-tab-target').value,project=$('new-tab-project').value.trim(),command=ModelPicker.fit(newTabModel(),newTabHostCodexModels(),newTabHostClaudeModels()),text=newTabHandover?newTabHandover.text:newTabCompletions?.expand($('new-tab-prompt').value)??$('new-tab-prompt').value,files=[...newTabFiles],elevated=newTabElevated;
   const handover=newTabHandover?.context,source=newTabHandover?.source;if(newTabHandover&&!handover)return;
   if(/[\x00-\x08\x0b-\x1f\x7f]/.test(text)||new TextEncoder().encode(text).length>16000){$('new-tab-error').textContent='Use a prompt up to 16 KB without control characters.';return;}
+  if(!newTabHandover&&files.length&&newTabAgent(command)!=='claude'&&newTabCommand(text)){$('new-tab-error').textContent='Send commands without attachments.';return;}
   // Check the computer before spending time on uploads.
   $('new-tab-error').textContent='';clearNewTabFieldProblem();
   // A busy agent is never interrupted; the switch waits for its turn to end.

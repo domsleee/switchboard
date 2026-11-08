@@ -44,6 +44,14 @@ test('Conversation completes commands and host skills, and sends commands throug
    await page.evaluate(()=>{current={...current,key:'pane2',host:'other',chatId:'chat-2',state:'ready'};SwitchboardConversation.update();});await page.getByText('Ready for a reply',{exact:true}).waitFor();
    failSkills=true;await draft.fill('$br');await page.getByText('Skills unavailable. You can still type a skill name.',{exact:true}).waitFor();assert.equal(skills.at(-1).path,'/api/hosts/other/conversation/skills');
    await draft.fill('$bro');await send.click();await page.getByText('Queued',{exact:true}).waitFor();assert.equal(queues.at(-1).message,'$bro');
+   failSkills=false;await page.evaluate(()=>{current={...current,agent:'claude',state:'ready'};SwitchboardConversation.update();});
+   await draft.fill('$br');await page.getByRole('option',{name:'$bro Review with a colleague'}).waitFor();assert.deepEqual(skills.at(-1),{path:'/api/hosts/other/conversation/skills',cwd:'/projects/example',agent:'claude'});await draft.press('Enter');assert.equal(await draft.inputValue(),'/bro ');
+   await draft.fill('/bu');await page.getByRole('option',{name:'/build Build the project'}).waitFor();await draft.press('Escape');
+   const claudePastes=await page.evaluate(()=>pastes.length);await draft.fill('$bro look closely');await draft.press('Escape');await send.click();await page.waitForFunction(count=>pastes.length===count+1,claudePastes);assert.equal(await page.evaluate(()=>pastes.at(-1).text),'/bro look closely');
+   await page.getByRole('button',{name:'Conversation',exact:true}).click();assert.equal(await draft.inputValue(),'','A sent $skill leaves no draft behind');
+   // Phones leave the draft unfocused here, and tapping it loads the list.
+   if(!mobile){await draft.focus();await page.evaluate(()=>{current={...current,key:'pane3',host:'third',chatId:'chat-3',state:'ready'};SwitchboardConversation.update();});
+   for(let tries=0;!skills.some(item=>item.path==='/api/hosts/third/conversation/skills'&&item.cwd==='/projects/example')&&tries<200;tries++)await page.waitForTimeout(20);assert.deepEqual(skills.at(-1),{path:'/api/hosts/third/conversation/skills',cwd:'/projects/example',agent:'claude'},'A draft focused before its project is known still gets that project\'s skills');}
    if(!mobile&&process.env.COMMAND_SCREENSHOTS){baseline=true;await page.reload();await page.getByText('Ready for a reply',{exact:true}).waitFor();await draft.fill('/ren');await screenshot('commands-before');}
    assert.deepEqual(errors,[]);await page.close();
   }

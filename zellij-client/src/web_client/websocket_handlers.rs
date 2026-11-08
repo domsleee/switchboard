@@ -442,7 +442,7 @@ impl Agent {
             _ => None,
         }
     }
-    fn is_claude(&self) -> bool {
+    pub(super) fn is_claude(&self) -> bool {
         matches!(self, Self::Alias("c") | Self::Claude(..))
     }
     /// The command the terminal shell must find to start this agent.

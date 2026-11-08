@@ -120,6 +120,10 @@ test('Conversation never attaches a terminal, including initial mobile load and 
    assert.equal(await page.getByRole('button',{name:'Conversation',exact:true}).getAttribute('aria-pressed'),'true');
   }
   assert.equal(creations.length,3);
+  await page.locator('#new-tab').click();await page.locator('#new-tab-prompt').fill('/status');await page.locator('#new-tab-prompt').press('Escape');
+  await page.locator('#new-tab-form button[type="submit"]').click();
+  await page.waitForFunction(()=>document.querySelector('.conversation-panel')?.hidden);
+  assert.equal(creations.at(-1).prompt,'/status');assert.equal(await page.getByRole('button',{name:'Terminal',exact:true}).getAttribute('aria-pressed'),'true','A command opens where its output appears');
   assert.deepEqual(errors,[]);
  }finally{await browser.close();}
 });
