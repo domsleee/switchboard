@@ -18,10 +18,21 @@ To check this on Windows with private test sessions:
 ## Switch between Claude and Codex
 
 When the agent is ready, click its model name in Conversation, or choose
-**Handover context…** from the tab's actions. Choose Claude (`c`) or Codex
-(`csol` or `castra`), add the next request, and press **Switch model**.
+**Handover context…** from the tab's actions. Choose a model, add the next
+request, and press **Switch model**.
 The agent changes in the same tab and working directory. Switchboard checks
-the destination alias before replacing the original process.
+the destination alias or program before replacing the original process.
+
+## Models
+
+The model chip in New tab and handover lists the dotfiles shortcuts (`csol`,
+`castra`, `c`) first, then every Claude model, then the models the chosen
+computer's Codex reports (`codex app-server` `model/list`, served at
+`/hosts/<host>/model-list`). Type on the chip to search, or to name any
+model. A model other than a shortcut starts the agent directly, with the
+shortcuts' bypass flags: `claude --dangerously-skip-permissions --model <model>`
+or `codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust -m <model>`.
+The Claude list is in `app.js` (`NEW_TAB_CLAUDE_MODELS`); add new Claude models there.
 
 The handover carries attributed user and assistant messages, including the
 original request and recent exchanges, within 64 KB. Included messages keep

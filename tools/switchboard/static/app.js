@@ -1412,49 +1412,122 @@ function newTabSubmitText(text,announce=true){
   $('new-tab-status').textContent=text||(newTabRetrying?'Enter to retry':unknown?'Enter creates anyway':'');
   if(announce)$('new-tab-progress').textContent=text||'';
 }
+// The owner's shell shortcuts come first. Any other model starts `claude` or `codex`
+// directly as `claude:<model>` or `codex:<model>`, with the same bypass flags as the shortcuts.
 const NEW_TAB_MODELS=[['csol','Codex · Sol'],['castra','Codex · Astra'],['c','Claude Code']];let newTabModelValue='csol';
+const NEW_TAB_CLAUDE_MODELS=[['claude-fable-5-1','Fable 5.1'],['claude-opus-5-5','Opus 5.5'],['claude-sonnet-5-5','Sonnet 5.5'],['claude-haiku-5-5','Haiku 5.5'],['claude-fable-5','Fable 5'],['claude-opus-5','Opus 5'],['claude-sonnet-5','Sonnet 5'],['claude-opus-4-8','Opus 4.8'],['claude-opus-4-7','Opus 4.7'],['claude-opus-4-6','Opus 4.6'],['claude-sonnet-4-6','Sonnet 4.6'],['claude-haiku-4-5','Haiku 4.5']];
+const NEW_TAB_PROVIDERS={claude:'Claude Code',codex:'Codex'};
+// Codex lists its own models on each computer; until that arrives, the menu says so.
+const newTabCodexModels=new Map();
+function newTabModelParts(value){
+  const match=/^(claude|codex):([A-Za-z0-9][A-Za-z0-9._\-[\]/:@]{0,99})$/.exec(String(value||''));
+  return match?{provider:match[1],model:match[2]}:null;
+}
+function newTabModelProvider(value){return value==='c'?'claude':NEW_TAB_MODELS.some(([alias])=>alias===value)?'codex':newTabModelParts(value)?.provider||'';}
 function newTabModel(){return newTabModelValue;}
 function setNewTabModel(value){
-  const [alias,name]=NEW_TAB_MODELS.find(([v])=>v===value)||NEW_TAB_MODELS[0];newTabModelValue=alias;
+  const parts=newTabModelParts(value),[alias,name]=parts?[parts.model,NEW_TAB_PROVIDERS[parts.provider]]:NEW_TAB_MODELS.find(([v])=>v===value)||NEW_TAB_MODELS[0];
+  newTabModelValue=parts?value:alias;
   $('new-tab-model-alias').textContent=alias;$('new-tab-model-name').textContent=name;$('new-tab-model').setAttribute('aria-label',`Model: ${alias}, ${name}`);
+}
+function newTabModelOptions(){
+  const host=$('new-tab-target').value?JSON.parse($('new-tab-target').value)[0]:'',codex=newTabCodexModels.get(host);
+  const options=[...NEW_TAB_MODELS.map(([alias,name])=>[alias,alias,name,false,'Shortcuts']),...NEW_TAB_CLAUDE_MODELS.map(([id,name])=>['claude:'+id,id,name,false,'Claude Code'])];
+  if(Array.isArray(codex))options.push(...codex.map(({id,name})=>['codex:'+id,id,name===id?'':name,false,'Codex']));
+  // A remembered model that is not listed stays visible, so arrows never lose it. While searching, typed names offer both agents instead.
+  if(!$('new-tab-model-search').value.trim()&&!options.some(option=>option[0]===newTabModelValue)){const parts=newTabModelParts(newTabModelValue);if(parts)options.push([newTabModelValue,parts.model,'',false,NEW_TAB_PROVIDERS[parts.provider]]);}
+  return options;
+}
+function newTabModelNote(){
+  const host=$('new-tab-target').value?JSON.parse($('new-tab-target').value)[0]:'',codex=newTabCodexModels.get(host);
+  return codex==='failed'?'Codex models unavailable on this computer. Type a model name.':!codex?'Loading Codex models…':'';
+}
+// A typed name that is not listed can start with either agent.
+function newTabCustomModels(query){
+  query=query.trim();if(!newTabModelParts('codex:'+query))return [];
+  const claudeFirst=/^(claude|opus|sonnet|haiku|fable)/i.test(query);
+  const rows=[['claude:'+query,query,'Claude Code',false,'Other model'],['codex:'+query,query,'Codex',false,'Other model']];
+  return claudeFirst?rows:rows.reverse();
+}
+async function loadNewTabCodexModels(){
+  const host=$('new-tab-target').value?JSON.parse($('new-tab-target').value)[0]:'';
+  if(!host||Array.isArray(newTabCodexModels.get(host)))return;
+  newTabCodexModels.delete(host);
+  try{
+    const response=await fetch('/hosts/'+encodeURIComponent(host)+'/model-list',{cache:'no-store',signal:AbortSignal.timeout(15000)});
+    if(!response.ok)throw Error('Models unavailable');
+    const data=await response.json(),models=(Array.isArray(data?.codex)?data.codex:[]).filter(model=>typeof model?.id==='string'&&newTabModelParts('codex:'+model.id)).map(({id,name})=>({id,name:typeof name==='string'?name:id}));
+    newTabCodexModels.set(host,models.length?models:'failed');
+  }catch(_){newTabCodexModels.set(host,'failed');}
+  newTabModelMenu.refresh();
 }
 function paintNewTabMachine(){
   const name=$('new-tab-target').selectedOptions[0]?.textContent||'';
   $('new-tab-machine-name').textContent=name;$('new-tab-machine').setAttribute('aria-label','Computer: '+(name||'none'));
 }
 // A focused chip shows its choices. Arrows or a digit change the value at once;
-// Enter, Escape or a click on a choice return to the prompt. Options are [value, label, detail, disabled].
-function newTabChipMenu(chip,menu,options,current,set){
+// Enter, Escape or a click on a choice return to the prompt. Options are [value, label, detail, disabled, group].
+// With a search box, typing on the chip filters the list; the first match is chosen at once,
+// a name nobody listed comes from custom(query), and Escape restores the choice from before the search.
+function newTabChipMenu(chip,menu,options,current,set,{search=null,custom=()=>[],note=()=>''}={}){
+  const list=menu.querySelector('[role=listbox]')||menu;let before=null;
+  const query=()=>search?.value.trim().toLowerCase()||'';
+  function shown(){
+    const text=query();if(!text)return options();
+    const matches=options().filter(([value,label,detail])=>[value,label,detail].some(field=>String(field||'').toLowerCase().includes(text)));
+    return matches.some(([,label])=>label.toLowerCase()===text)?matches:[...matches,...custom(search.value)];
+  }
   function paint(){
-    menu.replaceChildren();
-    options().forEach(([value,label,detail,disabled],index)=>{
-      const option=document.createElement('div');option.id=menu.id+'-'+index;option.setAttribute('role','option');option.setAttribute('aria-selected',String(value===current()));
+    list.replaceChildren();let group;
+    shown().forEach(([value,label,detail,disabled,heading],index)=>{
+      if(heading&&heading!==group){group=heading;const title=document.createElement('div');title.className='new-tab-menu-group';title.setAttribute('role','presentation');title.textContent=heading;list.append(title);}
+      const option=document.createElement('div');option.id=list.id+'-'+index;option.setAttribute('role','option');option.setAttribute('aria-selected',String(value===current()));
       if(disabled)option.setAttribute('aria-disabled','true');
-      const key=document.createElement('kbd'),text=document.createElement('span');key.textContent=index+1;key.setAttribute('aria-hidden','true');text.textContent=label;option.append(key,text);
+      const key=document.createElement('kbd'),text=document.createElement('span');key.setAttribute('aria-hidden','true');if(index<9&&!query())key.textContent=index+1;else key.className='blank';text.textContent=label;option.append(key,text);
       if(detail){const small=document.createElement('small');small.textContent=detail;option.append(small);}
       option.onmousedown=event=>event.preventDefault();
-      option.onclick=()=>{if(disabled)return;set(value);paint();$('new-tab-prompt').focus();};
-      menu.append(option);
+      option.onclick=()=>{if(disabled)return;set(value);before=null;paint();$('new-tab-prompt').focus();};
+      list.append(option);
     });
-    const selected=menu.querySelector('[aria-selected=true]');if(selected)chip.setAttribute('aria-activedescendant',selected.id);
+    const message=search&&query()&&!shown().length?'Model names use letters, digits and . - _ [ ] / : @':!query()&&note();
+    if(message){const small=document.createElement('p');small.className='new-tab-menu-note';small.textContent=message;list.append(small);}
+    const selected=list.querySelector('[aria-selected=true]');
+    if(selected){chip.setAttribute('aria-activedescendant',selected.id);search?.setAttribute('aria-activedescendant',selected.id);if(!menu.hidden)selected.scrollIntoView({block:'nearest'});}
+    else{chip.removeAttribute('aria-activedescendant');search?.removeAttribute('aria-activedescendant');}
   }
-  function open(){if(chip.disabled)return;paint();menu.hidden=false;chip.setAttribute('aria-expanded','true');}
-  function close(){menu.hidden=true;chip.setAttribute('aria-expanded','false');chip.removeAttribute('aria-activedescendant');}
+  function open(){
+    if(chip.disabled)return;menu.hidden=false;
+    // A long list opens upward only as far as the window allows; the rest scrolls.
+    if(list!==menu)list.style.maxHeight=Math.max(120,Math.min(360,chip.getBoundingClientRect().top-(search?.offsetHeight||0)-32))+'px';
+    paint();chip.setAttribute('aria-expanded','true');
+  }
+  function close(){menu.hidden=true;chip.setAttribute('aria-expanded','false');chip.removeAttribute('aria-activedescendant');if(search){search.value='';before=null;}}
   function pick(value){set(value);paint();}
-  function step(delta){const usable=options().filter(option=>!option[3]),index=usable.findIndex(option=>option[0]===current()),next=usable[(index+delta+usable.length)%usable.length];if(next)pick(next[0]);}
-  chip.addEventListener('focus',open);chip.addEventListener('blur',close);
+  function step(delta){const usable=shown().filter(option=>!option[3]),index=usable.findIndex(option=>option[0]===current()),next=usable[(index+delta+usable.length)%usable.length];if(next)pick(next[0]);}
+  // Focus moving between the chip and its search box keeps the menu open.
+  const leave=event=>{if(event.relatedTarget!==chip&&!menu.contains(event.relatedTarget))close();};
+  chip.addEventListener('focus',open);chip.addEventListener('blur',leave);
   // Safari does not focus a clicked button, so a click focuses it to show the list.
   chip.addEventListener('click',()=>{if(document.activeElement!==chip)chip.focus();else if(menu.hidden)open();});
-  chip.addEventListener('keydown',event=>{
+  function keys(event){
     if(event.altKey||event.ctrlKey||event.metaKey)return;
-    if(event.key==='ArrowDown'||event.key==='ArrowRight'){event.preventDefault();step(1);}
-    else if(event.key==='ArrowUp'||event.key==='ArrowLeft'){event.preventDefault();step(-1);}
-    else if(/^[1-9]$/.test(event.key)){const option=options()[+event.key-1];if(option&&!option[3]){event.preventDefault();pick(option[0]);}}
-    else if(event.key==='Enter'||event.key===' '||event.key==='Escape'){event.preventDefault();event.stopPropagation();$('new-tab-prompt').focus();}
-  });
-  return {close};
+    const typing=event.target===search;
+    if(event.key==='ArrowDown'||(!typing&&event.key==='ArrowRight')){event.preventDefault();step(1);}
+    else if(event.key==='ArrowUp'||(!typing&&event.key==='ArrowLeft')){event.preventDefault();step(-1);}
+    else if(!typing&&/^[1-9]$/.test(event.key)){const option=options()[+event.key-1];if(option&&!option[3]){event.preventDefault();pick(option[0]);}}
+    else if(!typing&&search&&event.key.length===1&&event.key!==' '){event.preventDefault();before=current();search.value=event.key;search.focus();filter();}
+    else if(event.key==='Escape'&&typing&&before!==null){event.preventDefault();event.stopPropagation();set(before);before=null;$('new-tab-prompt').focus();}
+    else if(event.key==='Enter'||(!typing&&event.key===' ')||event.key==='Escape'){event.preventDefault();event.stopPropagation();before=null;$('new-tab-prompt').focus();}
+  }
+  function filter(){
+    if(before===null)before=current();
+    const first=query()?shown().find(option=>!option[3]):null;set(first?first[0]:before);paint();
+  }
+  chip.addEventListener('keydown',keys);
+  if(search){search.addEventListener('keydown',keys);search.addEventListener('input',filter);search.addEventListener('blur',leave);search.addEventListener('focus',()=>{if(menu.hidden)open();});}
+  return {close,refresh(){if(!menu.hidden)paint();}};
 }
-const newTabModelMenu=newTabChipMenu($('new-tab-model'),$('new-tab-model-menu'),()=>NEW_TAB_MODELS.map(([alias,name])=>[alias,alias,name,false]),()=>newTabModelValue,value=>{setNewTabModel(value);$('new-tab-progress').textContent='Model: '+value;});
+const newTabModelMenu=newTabChipMenu($('new-tab-model'),$('new-tab-model-menu'),newTabModelOptions,()=>newTabModelValue,value=>{setNewTabModel(value);$('new-tab-progress').textContent='Model: '+$('new-tab-model-alias').textContent;},{search:$('new-tab-model-search'),custom:newTabCustomModels,note:newTabModelNote});
 const newTabMachineMenu=newTabChipMenu($('new-tab-machine'),$('new-tab-machine-menu'),()=>[...$('new-tab-target').options].map(option=>[option.value,option.textContent.replace(/ · no session$/,''),option.disabled?'no session':'',option.disabled]),()=>$('new-tab-target').value,value=>{$('new-tab-target').value=value;$('new-tab-target').dispatchEvent(new Event('change'));$('new-tab-progress').textContent='Computer: '+$('new-tab-target').selectedOptions[0].textContent;});
 // Project: a chip that opens the folder search.
 function openNewTabProjectPicker(){
@@ -1487,7 +1560,7 @@ $('new-tab-dialog').addEventListener('keydown',event=>{
   if(inPicker&&!event.shiftKey)return;
   const chips=['new-tab-machine','new-tab-project-chip','new-tab-model'];
   const ring=[...chips,'new-tab-prompt','new-tab-attach','new-tab-submit','new-tab-close'].map($).filter(element=>!element.disabled&&element.getClientRects().length);
-  const from=inPicker?$('new-tab-project-chip'):document.activeElement,index=ring.indexOf(from);if(index<0)return;
+  const from=inPicker?$('new-tab-project-chip'):document.activeElement===$('new-tab-model-search')?$('new-tab-model'):document.activeElement,index=ring.indexOf(from);if(index<0)return;
   const next=!event.shiftKey&&chips.includes(from.id)?$('new-tab-prompt'):ring[(index+(event.shiftKey?-1:1)+ring.length)%ring.length];
   event.preventDefault();
   if(next===$('new-tab-project-chip'))openNewTabProjectPicker();else{closeNewTabProjectPicker(false);next.focus();}
@@ -1504,7 +1577,7 @@ function openNewTabDialog(elevated){
   // A fresh dialog cancels any submission still uploading for the previous one.
   $('new-tab-form').pendingSubmission=null;newTabBusy(false);
   $('new-tab-prompt').value='';clearNewTabFiles();newTabProjectLookup.close();
-  // Each browser remembers its last model; Sol is the default.
+  // Each browser remembers its last model, listed or typed; Sol is the default.
   let model='csol';try{model=localStorage.getItem('switchboard-new-tab-model')||model;}catch(_){}
   setNewTabModel(model);newTabSubmitText();
   $('new-tab-dialog').classList.toggle('elevated',elevated);
@@ -1528,7 +1601,7 @@ function openNewTabDialog(elevated){
   if(select.selectedOptions[0]?.disabled){const usable=[...select.options].find(option=>!option.disabled);if(usable)select.value=usable.value;}
   newTabRetrying=false;newTabSubmitText();paintNewTabMachine();closeNewTabProjectPicker(false);
   newTabProjectEdited=false;clearNewTabFieldProblem();$('new-tab-project').value=newTabSavedProject(JSON.parse(select.value)[0]);updateNewTabProject();
-  loadNewTabProjects();
+  loadNewTabProjects();loadNewTabCodexModels();
   $('new-tab-dialog').showModal();fitNewTabPrompt();fitNewTabDialog();
   $('new-tab-prompt').focus();
 }
@@ -1622,7 +1695,7 @@ $('new-tab-target').onchange=()=>{
   closeNewTabProjectPicker(false);newTabProjectLookup.close();clearNewTabFieldProblem();paintNewTabMachine();
   for(const item of newTabFiles){delete item.uploaded;delete item.state;}paintNewTabFiles();
   if(!newTabProjectEdited&&!newTabHandover){$('new-tab-project').value=newTabSavedProject(JSON.parse($('new-tab-target').value)[0]);updateNewTabProject();}
-  loadNewTabProjects();
+  loadNewTabProjects();loadNewTabCodexModels();
 };
 function setHandoverProject(){
   const source=newTabHandover?.context?.source;if(!source?.project)return;
@@ -1817,7 +1890,7 @@ $('new-tab-form').onsubmit=async event=>{
       if(!Number.isInteger(result.pane_id)||result.tab_id!==source.target.tab_id)throw Error('The switch was not confirmed. Check the terminal before trying again.');
       globalThis.SwitchboardConversation?.handoverSent?.(source,text,result.pane_id);
       if(isCurrent())$('new-tab-dialog').close();
-      await refreshAttention(true);setStatus('Continuing with '+(command==='c'?'Claude':'Codex')+' in the same tab.');
+      await refreshAttention(true);setStatus('Continuing with '+(newTabModelProvider(command)==='claude'?'Claude':'Codex')+' in the same tab.');
     }else await createNewTab(key,{project,command,prompt,images,elevated},isCurrent);
   }catch(error){if(isCurrent()){uploads.abort();newTabRetrying=true;newTabProblem(error.message);}}
   finally{if(form.pendingSubmission===request){form.pendingSubmission=null;newTabUploadStatus('');for(const item of files)if(item.state==='uploading')delete item.state;paintNewTabFiles();newTabBusy(false);newTabSubmitText();}}
@@ -2155,7 +2228,7 @@ function openAgentHandover(item,paneId){
   closeTabMenu();openNewTabDialog(false);if(!$('new-tab-dialog').open)return;
   const option=[...$('new-tab-target').options].find(option=>JSON.parse(option.value)[0]===host);
   if(!option){$('new-tab-dialog').close();setStatus('The source computer is unavailable.',true);return;}
-  $('new-tab-target').value=option.value;paintNewTabMachine();loadNewTabProjects();
+  $('new-tab-target').value=option.value;paintNewTabMachine();loadNewTabProjects();loadNewTabCodexModels();
   $('new-tab-title').textContent='Switch model with context';$('new-tab-note').textContent='Continue in this tab with the selected model. Recent messages carry across, as counted below; attachments and tool state stay in the original history.';
   setNewTabModel(source.agent==='claude'?'csol':'c');
   $('new-tab-prompt').value=globalThis.SwitchboardConversation?.handoverDraft?.(source)||'';fitNewTabPrompt();

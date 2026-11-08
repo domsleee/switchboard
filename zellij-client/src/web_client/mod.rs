@@ -7,6 +7,7 @@ mod host_query_seed;
 mod http_handlers;
 mod ipc_listener;
 mod message_handlers;
+mod models;
 mod projects;
 mod server_listener;
 mod session_management;
@@ -65,8 +66,13 @@ use websocket_handlers::{ws_handler_control, ws_handler_terminal};
 #[allow(dead_code)] // used in #[cfg(not(unix))] code path
 const DEFAULT_SERVER_STARTUP_TIMEOUT_SECS: u64 = 10;
 
-/// Use the same configured shell and model aliases as New tab. Check the alias
-/// before replacing a running provider, so an unavailable model leaves it intact.
+/// Whether New tab and handover can launch this model choice.
+pub(crate) fn known_agent(model: &str) -> bool {
+    websocket_handlers::Agent::parse(model).is_some()
+}
+
+/// Use the same configured shell and models as New tab. Check the alias or
+/// program before replacing a running provider, so an unavailable model leaves it intact.
 pub(crate) async fn handover_command(
     agent: &str,
     prompt: &str,
@@ -85,8 +91,9 @@ pub(crate) async fn handover_command(
         },
         None => None,
     };
-    let command = websocket_handlers::prompt_command(shell.clone(), agent, prompt, &[]);
+    let command = websocket_handlers::prompt_command(shell.clone(), &agent, prompt, &[]);
     let run = websocket_handlers::tab_command(shell.clone(), command, Some(cwd), false);
+    let agent = agent.program();
     let name = run
         .command
         .file_stem()
@@ -355,6 +362,7 @@ pub async fn serve_web_client(
         .route("/session", post(create_new_client))
         .route("/session-list", get(list_sessions_handler))
         .route("/project-list", get(projects::list))
+        .route("/model-list", get(models::list))
         .route("/new-tab", post(tab_creation::create))
         .route(
             "/paste-image",

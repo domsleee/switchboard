@@ -42,6 +42,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
       }
       if(path==='/hosts/windows/project-list'){if(delayProjects)await new Promise(resolve=>releaseProjects=resolve);return projectError?route.fulfill({status:503,body:'unavailable'}):json(['dotfiles','switchboard','switchboard-tools']);}
       if(path==='/hosts/other/project-list')return json(['other-project']);
+      if(path==='/hosts/windows/model-list')return json({codex:[{id:'gpt-6.1-sol',name:'GPT-6.1-Sol',default:true},{id:'gpt-6-luna',name:'GPT-6-Luna',default:false}]});
       if(path.startsWith('/hosts/')){connected=true;frameBoots++;return route.fulfill({contentType:'text/html',body:`<div id="terminal"><input id="terminal-input"></div><script>
         window.WebSocket=class extends EventTarget {constructor(){super();this.readyState=1;}send(){}};
         const input=document.querySelector('input');let count=${created},active=count;
@@ -109,11 +110,36 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
       // Shift+Tab from the prompt reaches the model chip, which shows its choices; arrows change it, Enter returns.
       await page.keyboard.press('Shift+Tab');assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-model');
       assert.equal(await page.locator('#new-tab-model-menu').isVisible(),true);
-      assert.deepEqual(await page.locator('#new-tab-model-menu [role=option] span').allTextContents(),['csol','castra','c']);
+      // Shortcuts come first, then every Claude model, then the models this computer's Codex lists.
+      await page.waitForFunction(()=>Array.isArray(newTabCodexModels.get('windows'))&&document.querySelector('#new-tab-model-menu').textContent.includes('gpt-6-luna'));
+      const listed=await page.locator('#new-tab-model-menu [role=option] span').allTextContents();
+      assert.deepEqual(listed.slice(0,4),['csol','castra','c','claude-fable-5-1']);
+      assert.deepEqual(listed.slice(-2),['gpt-6.1-sol','gpt-6-luna']);
+      assert.deepEqual(await page.locator('#new-tab-model-menu .new-tab-menu-group').allTextContents(),['Shortcuts','Claude Code','Codex']);
       await page.keyboard.press('ArrowDown');assert.equal(await page.evaluate(()=>newTabModel()),'castra');
       await page.keyboard.press('1');assert.equal(await page.evaluate(()=>newTabModel()),'csol');
       await page.keyboard.press('Enter');assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-prompt');
       assert.equal(await page.locator('#new-tab-model-menu').isVisible(),false);
+      // Typing on the chip searches every model and picks the first match; Escape keeps the earlier choice.
+      await page.keyboard.press('Shift+Tab');await page.keyboard.type('luna');
+      assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-model-search');
+      assert.equal(await page.evaluate(()=>newTabModel()),'codex:gpt-6-luna');
+      await page.keyboard.press('Escape');assert.equal(await page.evaluate(()=>newTabModel()),'csol');
+      assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-prompt');
+      await page.keyboard.press('Shift+Tab');await page.keyboard.type('opus-4-6');
+      assert.equal(await page.evaluate(()=>newTabModel()),'claude:claude-opus-4-6');
+      await page.keyboard.press('Escape');
+      // A name nobody listed can start either agent; Enter keeps the choice.
+      await page.keyboard.press('Shift+Tab');await page.keyboard.type('my-model[1m]');
+      assert.deepEqual(await page.locator('#new-tab-model-menu [role=option] small').allTextContents(),['Codex','Claude Code']);
+      await page.keyboard.press('ArrowDown');await page.keyboard.press('Enter');
+      assert.equal(await page.evaluate(()=>newTabModel()),'claude:my-model[1m]');
+      assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-prompt');
+      assert.equal(await page.locator('#new-tab-model').getAttribute('aria-label'),'Model: my-model[1m], Claude Code');
+      await page.keyboard.press('Shift+Tab');await page.keyboard.type('bad name');
+      assert.equal(await page.locator('#new-tab-model-menu [role=option]').count(),0);
+      assert.equal(await page.evaluate(()=>newTabModel()),'claude:my-model[1m]','An invalid name keeps the earlier choice');
+      await page.keyboard.press('Escape');await page.evaluate(()=>setNewTabModel('csol'));
       // Shift+Tab twice more walks to project, then computer; Tab returns to the prompt.
       await page.keyboard.press('Shift+Tab');await page.keyboard.press('Shift+Tab');
       assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-project');

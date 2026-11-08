@@ -466,6 +466,16 @@ body.sidebar-collapsed #artifact-preview header{padding-left:42px}
 .new-tab-menu [role=option]{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;color:#b4b8c0;font-size:13px;cursor:pointer;white-space:nowrap}
 .new-tab-menu [role=option] kbd{display:grid;place-items:center;width:18px;height:18px;border-radius:5px;background:#26282e;color:var(--nt-muted);font:11px ui-monospace,SFMono-Regular,Consolas,monospace}
 #new-tab-model-menu [role=option] span{font:600 13px ui-monospace,SFMono-Regular,Consolas,monospace}
+/* The model list is long: its search box stays put while the choices scroll. */
+#new-tab-model-menu{display:flex;flex-direction:column;width:min(340px,calc(100vw - 32px))}
+#new-tab-model-menu[hidden]{display:none}
+#new-tab-model-search{margin:2px 2px 4px;padding:7px 10px;border:1px solid #2a2c32;border-radius:8px;background:#121317;color:#e6e8ec;font:13px ui-monospace,SFMono-Regular,Consolas,monospace;outline:0}
+#new-tab-model-search:focus{border-color:#4a4e58}
+#new-tab-model-options{overflow-y:auto;overscroll-behavior:contain}
+#new-tab-model-menu [role=option] span{overflow:hidden;text-overflow:ellipsis}
+.new-tab-menu-group{padding:8px 10px 3px;color:var(--nt-faint);font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+.new-tab-menu-note{margin:0;padding:8px 10px;color:var(--nt-faint);font-size:12px;white-space:normal}
+.new-tab-menu [role=option] kbd.blank{visibility:hidden}
 .new-tab-menu [role=option] small{margin-left:auto;padding-left:16px;color:var(--nt-faint);font-size:12px}
 @media(hover:hover){.new-tab-menu [role=option]:hover{background:#23252b}}
 .new-tab-menu [aria-selected=true]{background:#2a2c33;color:#fff}
@@ -504,6 +514,7 @@ body.sidebar-collapsed #artifact-preview header{padding-left:42px}
   #new-tab-project-guess{padding:5px 12px;font-size:14px}
   #new-tab-machine-menu{top:auto;bottom:calc(100% + 6px)}
   .new-tab-menu [role=option]{min-height:44px;font-size:15px}
+  #new-tab-model-search{font-size:16px;padding:10px 12px}
 }
 /* Health keeps the fleet scannable; schedules and diagnostics live inside each computer. */
 .health-heading{margin:16px 0 6px;flex-wrap:wrap}

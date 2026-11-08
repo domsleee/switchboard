@@ -277,8 +277,40 @@ pub(super) async fn skills_local(host: &Host, request: Skills) -> Result<Json<Va
         return Err((StatusCode::BAD_REQUEST, "Invalid project directory"));
     }
     control::require_writable_host(host).await?;
-    let (program, path) = agent_setup::codex_queue_program()
-        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Codex is unavailable"))?;
+    let cwds: Vec<&str> = if request.cwd.is_empty() {
+        vec![]
+    } else {
+        vec![&request.cwd]
+    };
+    let cwd = (!request.cwd.is_empty()).then(|| Path::new(&request.cwd));
+    let result = codex_app_server(cwd, "skills/list", json!({"cwds":cwds}))
+        .await
+        .ok_or((StatusCode::BAD_GATEWAY, "Cannot list Codex skills"))?;
+    Ok(Json(json!({"skills":skill_choices(&result)})))
+}
+
+/// The models this computer's Codex offers, as `{id, name, default}`, in Codex's order.
+/// Empty when Codex is missing or does not answer.
+pub(crate) async fn codex_models() -> Vec<Value> {
+    let Some(result) = codex_app_server(None, "model/list", json!({})).await else {
+        return vec![];
+    };
+    result["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|model| model["hidden"] != true)
+        .filter_map(|model| {
+            let id = model["model"].as_str().or_else(|| model["id"].as_str())?;
+            let name = model["displayName"].as_str().unwrap_or(id);
+            Some(json!({"id":id,"name":name,"default":model["isDefault"] == true}))
+        })
+        .collect()
+}
+
+/// Ask a short-lived `codex app-server` one question, in `cwd` or the home folder.
+async fn codex_app_server(cwd: Option<&Path>, method: &str, params: Value) -> Option<Value> {
+    let (program, path) = agent_setup::codex_queue_program()?;
     let mut command = tokio::process::Command::new(program);
     command
         .arg("app-server")
@@ -287,12 +319,15 @@ pub(super) async fn skills_local(host: &Host, request: Skills) -> Result<Json<Va
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true);
-    if request.cwd.is_empty() {
-        if let Some(home) = std::env::home_dir() {
-            command.current_dir(home);
-        }
-    } else {
-        command.current_dir(&request.cwd);
+    match cwd {
+        Some(cwd) => {
+            command.current_dir(cwd);
+        },
+        None => {
+            if let Some(home) = std::env::home_dir() {
+                command.current_dir(home);
+            }
+        },
     }
     for key in [
         "CODEX_THREAD_ID",
@@ -304,64 +339,61 @@ pub(super) async fn skills_local(host: &Host, request: Skills) -> Result<Json<Va
     }
     #[cfg(windows)]
     command.creation_flags(0x0800_0000);
-    let mut child = command
-        .spawn()
-        .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot list Codex skills"))?;
+    let mut child = command.spawn().ok()?;
     let result = tokio::time::timeout(Duration::from_secs(10), async {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-        let mut input = child.stdin.take().ok_or(())?;
-        let mut output = BufReader::new(child.stdout.take().ok_or(())?).lines();
-        let cwds: Vec<&str> = if request.cwd.is_empty() {
-            vec![]
-        } else {
-            vec![&request.cwd]
-        };
+        let mut input = child.stdin.take()?;
+        let mut output = BufReader::new(child.stdout.take()?).lines();
         for (id, method, params) in [
             (
                 1,
                 "initialize",
                 json!({"clientInfo":{"name":"switchboard","version":env!("SWITCHBOARD_COMMIT")}}),
             ),
-            (2, "skills/list", json!({"cwds":cwds})),
+            (2, method, params),
         ] {
             input
                 .write_all(
-                    format!("{}\n", json!({"id":id,"method":method,"params":params})).as_bytes(),
+                    format!(
+                        "{}
+",
+                        json!({"id":id,"method":method,"params":params})
+                    )
+                    .as_bytes(),
                 )
                 .await
-                .map_err(|_| ())?;
+                .ok()?;
             if id == 1 {
                 input
-                    .write_all(b"{\"method\":\"initialized\"}\n")
+                    .write_all(
+                        b"{\"method\":\"initialized\"}
+",
+                    )
                     .await
-                    .map_err(|_| ())?;
+                    .ok()?;
             }
             loop {
-                let line = output.next_line().await.map_err(|_| ())?.ok_or(())?;
-                let Ok(message) = serde_json::from_str::<Value>(&line) else {
+                let line = output.next_line().await.ok()??;
+                let Ok(mut message) = serde_json::from_str::<Value>(&line) else {
                     continue;
                 };
                 if message["id"] != id {
                     continue;
                 }
                 if message.get("error").is_some() {
-                    return Err(());
+                    return None;
                 }
                 if id == 2 {
-                    return Ok(skill_choices(&message["result"]));
+                    return Some(message["result"].take());
                 }
                 break;
             }
         }
-        Err(())
+        None
     })
     .await;
     let _ = child.kill().await;
-    let skills = result
-        .ok()
-        .and_then(Result::ok)
-        .ok_or((StatusCode::BAD_GATEWAY, "Cannot list Codex skills"))?;
-    Ok(Json(json!({"skills":skills})))
+    result.ok().flatten()
 }
 
 fn skill_choices(result: &Value) -> Vec<Value> {
