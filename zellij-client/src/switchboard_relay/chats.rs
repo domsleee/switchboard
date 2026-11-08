@@ -461,7 +461,9 @@ static SECRETS: LazyLock<Vec<(regex::Regex, &'static str)>> = LazyLock::new(|| {
     [
         (format!(r#"({name})(\s*=\s*)(?:"[^"]*"|'[^']*'|[^\s&;|"']+)"#), "$1$2***"),
         (format!(r#"(^|\s)(--?{name})(\s+)(?:"[^"]*"|'[^']*'|[^\s\-"'][^\s"']*)"#), "$1$2$3***"),
-        (r#"\b((?i-u:authorization|cookie|x-api-key))(\s*:\s*)[^"'\r\n]+"#.into(), "$1$2***"),
+        // Headers named like credentials, and quoted JSON fields, as in curl -H or --data.
+        (format!(r#"\b({name}|[A-Za-z0-9_-]*(?i-u:auth)[A-Za-z0-9_-]*)(\s*:\s*)[^"'\r\n]+"#), "$1$2***"),
+        (format!(r#"(\\?"{name}\\?"\s*:\s*)(?:\\?"(?:[^"\\]|\\[^"])*\\?"|[^\s,}}"]+)"#), "$1\"***\""),
         (r"\b((?i-u:bearer|basic))(\s+)[A-Za-z0-9._~+/=-]{8,}".into(), "$1$2***"),
         (r"(://)[^/\s:@]+:[^/\s@]+@".into(), "$1***@"),
         (r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|sk-[\w-]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,})".into(), "***"),
@@ -573,19 +575,68 @@ fn patch_files(patch: &str, project: &str) -> (&'static str, String) {
         detail,
     )
 }
-// Codex code mode runs JavaScript that calls its tools, usually `exec_command`.
-static CODE_CALLS: LazyLock<(regex::Regex, regex::Regex)> = LazyLock::new(|| {
-    (
-        regex::Regex::new(r"\btools\.(\w+)\s*\(").unwrap(),
-        regex::Regex::new(r#"\b(?:cmd|command)\s*:\s*("(?:[^"\\\r\n]|\\.)*")"#).unwrap(),
-    )
+/// The code with the contents of strings, templates and comments blanked, keeping byte
+/// offsets, so a patch body or other string is never read as a call.
+fn code_only(code: &str) -> String {
+    let mut out = String::with_capacity(code.len());
+    let blank = |out: &mut String, c: char| out.extend(std::iter::repeat_n(' ', c.len_utf8()));
+    let mut chars = code.chars().peekable();
+    // A quote character, or '/' and '*' for line and block comments.
+    let mut inside: Option<char> = None;
+    while let Some(c) = chars.next() {
+        match (inside, c) {
+            (None, '"' | '\'' | '`') => {
+                inside = Some(c);
+                out.push(c);
+            },
+            (None, '/') if matches!(chars.peek(), Some('/' | '*')) => {
+                inside = chars.next();
+                out.push_str("  ");
+            },
+            (None, _) => out.push(c),
+            (Some('/'), '\n') => {
+                inside = None;
+                out.push(c);
+            },
+            (Some('*'), '*') if chars.peek() == Some(&'/') => {
+                chars.next();
+                inside = None;
+                out.push_str("  ");
+            },
+            (Some('/' | '*'), _) => blank(&mut out, c),
+            (Some(_), '\\') => {
+                blank(&mut out, c);
+                if let Some(next) = chars.next() {
+                    blank(&mut out, next);
+                }
+            },
+            (Some(quote), _) if c == quote => {
+                inside = None;
+                out.push(c);
+            },
+            (Some(_), _) => blank(&mut out, c),
+        }
+    }
+    out
+}
+// Codex code mode runs JavaScript that calls its tools, usually `exec_command`. Only a
+// command given as the first argument field of an exec call counts as one.
+static CODE_CALLS: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r#"\btools\.(\w+)\s*\(\s*(\{\s*(?:cmd|command)\s*:\s*")?"#).unwrap()
 });
 fn code_mode(code: &str) -> (&'static str, String) {
-    let (calls, commands) = &*CODE_CALLS;
-    let commands: Vec<String> = commands
-        .captures_iter(code)
-        .filter_map(|c| serde_json::from_str(&c[1]).ok())
-        .collect();
+    let masked = code_only(code);
+    let (mut names, mut commands) = (Vec::new(), Vec::<String>::new());
+    for call in CODE_CALLS.captures_iter(&masked) {
+        names.push(tool_name(&call[1]));
+        if let (Some(argument), "exec_command" | "shell_command") = (call.get(2), &call[1]) {
+            let open = argument.end() - 1;
+            let literal = masked[open + 1..]
+                .find('"')
+                .map(|close| &code[open..open + close + 2]);
+            commands.extend(literal.and_then(|literal| serde_json::from_str(literal).ok()));
+        }
+    }
     if let Some(first) = commands.first() {
         let line = one_line(first);
         return match commands.len() {
@@ -593,10 +644,6 @@ fn code_mode(code: &str) -> (&'static str, String) {
             n => ("run", format!("{line} (+{} more)", n - 1)),
         };
     }
-    let mut names: Vec<String> = calls
-        .captures_iter(code)
-        .map(|c| tool_name(&c[1]))
-        .collect();
     names.dedup();
     ("tool", clip(&names.join(", "), 120))
 }
@@ -648,7 +695,15 @@ fn tool_step(name: &str, input: &Value, project: &str) -> (&'static str, String)
             ),
         },
         "Task" | "Agent" => ("agent", text("description")),
-        "spawn_agent" => ("agent", text("message")),
+        // Its message is the delegated prompt; show only a name the agent gave the task.
+        "spawn_agent" => (
+            "agent",
+            ["description", "task_name", "name"]
+                .into_iter()
+                .map(text)
+                .find(|name| !name.is_empty())
+                .unwrap_or("a task".into()),
+        ),
         "TodoWrite" | "update_plan" => ("plan", String::new()),
         "Skill" => (
             "tool",
@@ -2526,6 +2581,14 @@ mod tests {
             item(
                 json!({"type":"local_shell_call","action":{"type":"exec","command":["git","log","-1"]}}),
             ),
+            function(
+                "spawn_agent",
+                json!({"agent_type":"explorer","message":"DELEGATED PROMPT"}),
+            ),
+            function(
+                "spawn_agent",
+                json!({"task_name":"Audit the relay","message":"DELEGATED PROMPT"}),
+            ),
             item(
                 json!({"type":"reasoning","summary":[{"type":"summary_text","text":"SECRET REASONING"}]}),
             ),
@@ -2547,6 +2610,8 @@ mod tests {
                 step("tool", "Used cheatengine read_memory"),
                 step("search", "Searched zellij docs"),
                 step("run", "Ran git log -1"),
+                step("agent", "Delegated a task"),
+                step("agent", "Delegated Audit the relay"),
                 ("".into(), "".into(), "Done.".into()),
             ]
         );
@@ -2562,6 +2627,7 @@ mod tests {
                 "ADDRESS ARG",
                 "SECRET REASONING",
                 "Begin Patch",
+                "DELEGATED PROMPT",
             ],
         );
     }
@@ -2598,10 +2664,38 @@ mod tests {
                 "cd $PWD && zellij --session main",
                 "cd $PWD && zellij --session main",
             ),
+            (
+                "curl -H \"api-key: private-value\" https://x",
+                "curl -H \"api-key: ***\" https://x",
+            ),
+            (
+                "curl --data '{\"user\":\"dom\",\"password\":\"private-value\"}' https://x",
+                "curl --data '{\"user\":\"dom\",\"password\":\"***\"}' https://x",
+            ),
+            (
+                "curl -d \"{\\\"client_secret\\\": \\\"private-value\\\"}\" https://x",
+                "curl -d \"{\\\"client_secret\\\": \"***\"}\" https://x",
+            ),
+            (
+                "curl --data 'grant=pw&password=private-value' https://x",
+                "curl --data 'grant=pw&password=***' https://x",
+            ),
         ] {
             assert_eq!(one_line(command), expected);
         }
         assert_eq!(one_line(&"a".repeat(200)).chars().count(), 120);
+    }
+
+    #[test]
+    fn switchboard_chats_read_code_mode_commands_only_from_exec_calls() {
+        // A patch body or a comment can look like a command; neither is one.
+        let patch = "await tools.apply_patch(`*** Begin Patch\n+const job = {cmd: \"PRIVATE FILE BODY\"};\n+tools.exec_command({cmd:\"HIDDEN\"});\n*** End Patch`);";
+        assert_eq!(code_mode(patch), ("tool", "apply_patch".into()));
+        let code = "// tools.exec_command({cmd:\"COMMENTED\"})\nconst note='{cmd: \"QUOTED\"}';\ntext(await tools.exec_command({cmd:\"git status\",workdir:\"C:\\\\repo\"}));";
+        assert_eq!(code_mode(code), ("run", "git status".into()));
+        // A command that is not the call's first field falls back to the tool name.
+        let late = "await tools.exec_command({workdir:\"/repo\",cmd:\"cargo test\"});";
+        assert_eq!(code_mode(late), ("tool", "exec_command".into()));
     }
 
     #[test]
