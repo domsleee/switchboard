@@ -1583,14 +1583,16 @@ function newTabSubmitText(text,announce=true){
 // A model and its effort, as `claude:<model>#<effort>` or `codex:<model>#<effort>` (see model-picker.js).
 // The owner's shell shortcuts from older choices become the model and effort they run.
 const ModelPicker=globalThis.SwitchboardModelPicker;let newTabModelValue=ModelPicker.DEFAULT;
-// Codex lists its own models and their efforts on each computer; until that arrives, the picker says so.
-const newTabCodexModels=new Map();
-function newTabHostCodexModels(){const host=$('new-tab-target').value?JSON.parse($('new-tab-target').value)[0]:'';return newTabCodexModels.get(host);}
+// Each computer lists its agents' current models and efforts. Older relays omit Claude's list.
+const newTabModels=new Map(),newTabModelRequests=new Set();
+function newTabModelHost(){return $('new-tab-target').value?JSON.parse($('new-tab-target').value)[0]:'';}
+function newTabHostCodexModels(){return newTabModels.get(newTabModelHost())?.codex;}
+function newTabHostClaudeModels(){return newTabModels.get(newTabModelHost())?.claude;}
 function newTabModelProvider(value){return ModelPicker.parse(value)?.provider||'';}
 function newTabModel(){return newTabModelValue;}
 function setNewTabModel(value){
   newTabModelValue=ModelPicker.normalize(value);
-  const choice=ModelPicker.describe(newTabModelValue,newTabHostCodexModels()),icon=globalThis.SwitchboardConversation?.agentIcons?.[choice.provider];
+  const choice=ModelPicker.describe(newTabModelValue,newTabHostCodexModels(),newTabHostClaudeModels()),icon=globalThis.SwitchboardConversation?.agentIcons?.[choice.provider];
   $('new-tab-model-icon').innerHTML=icon||'';$('new-tab-model-icon').hidden=!icon;
   $('new-tab-model-name').textContent=choice.name;$('new-tab-model-effort').textContent=choice.effort?choice.effortName:'';
   const effort=choice.effort?choice.effortName+' effort':'effort from the agent setting';
@@ -1600,8 +1602,8 @@ function setNewTabModel(value){
 // A remembered effort the destination's model does not offer is dropped for the agent setting, and the picker says why.
 let newTabEffortWarning='';
 function fitNewTabModel(){
-  const fitted=ModelPicker.fit(newTabModelValue,newTabHostCodexModels());if(fitted===newTabModelValue)return;
-  const before=ModelPicker.describe(newTabModelValue,newTabHostCodexModels());
+  const fitted=ModelPicker.fit(newTabModelValue,newTabHostCodexModels(),newTabHostClaudeModels());if(fitted===newTabModelValue)return;
+  const before=ModelPicker.describe(newTabModelValue,newTabHostCodexModels(),newTabHostClaudeModels());
   newTabEffortWarning=`${before.effortName} isn't offered for ${before.name} on this computer, so the agent setting is used.`;
   setNewTabModel(fitted);$('new-tab-progress').textContent=newTabEffortWarning;
 }
@@ -1617,19 +1619,32 @@ function saveNewTabModel(value){
   try{localStorage.setItem('switchboard-new-tab-recent',JSON.stringify([value,...newTabRecentModels().filter(other=>other!==value)].slice(0,4)));}catch(_){}
   try{localStorage.setItem('switchboard-new-tab-model',value);const saved=JSON.parse(localStorage.getItem('switchboard-new-tab-models')||'{}');saved[newTabModelProvider(value)]=value;localStorage.setItem('switchboard-new-tab-models',JSON.stringify(saved));}catch(_){}
 }
-async function loadNewTabCodexModels(){
-  const host=$('new-tab-target').value?JSON.parse($('new-tab-target').value)[0]:'';
-  if(!host||Array.isArray(newTabCodexModels.get(host)))return;
-  newTabCodexModels.delete(host);
+async function loadNewTabModels(){
+  const host=newTabModelHost();if(!host)return;
+  // Refresh for each new chat or computer choice. Keep the last good list usable while
+  // waiting, and share an outstanding request rather than starting agents twice.
+  const previous=newTabModels.get(host)||{};
+  if(previous.codex==='failed')delete previous.codex;
+  setNewTabModel(newTabModelValue);newTabModelMenu.refresh();
+  if(newTabModelRequests.has(host))return;
+  newTabModelRequests.add(host);
   try{
     const response=await fetch('/hosts/'+encodeURIComponent(host)+'/model-list',{cache:'no-store',signal:AbortSignal.timeout(15000)});
     if(!response.ok)throw Error('Models unavailable');
-    const data=await response.json(),models=(Array.isArray(data?.codex)?data.codex:[]).filter(model=>typeof model?.id==='string'&&ModelPicker.parse('codex:'+model.id)).map(({id,name,default:isDefault,efforts,default_effort})=>({id,name:typeof name==='string'?name:id,default:isDefault===true,
+    const data=await response.json(),catalog={...previous};
+    for(const provider of ['codex','claude']){
+      const models=(Array.isArray(data?.[provider])?data[provider]:[]).filter(model=>typeof model?.id==='string'&&ModelPicker.parse(provider+':'+model.id)).map(({id,name,default:isDefault,efforts,default_effort})=>({id,name:typeof name==='string'?name:id,default:isDefault===true,
       // No levels from an older relay stays unknown; an empty list means the model has none.
       efforts:Array.isArray(efforts)?efforts.filter(effort=>typeof effort?.id==='string'&&/^[a-z]+$/.test(effort.id)).map(({id,description})=>({id,description:typeof description==='string'?description:''})):undefined,
       default_effort:typeof default_effort==='string'&&/^[a-z]+$/.test(default_effort)?default_effort:''}));
-    newTabCodexModels.set(host,models.length?models:'failed');
-  }catch(_){newTabCodexModels.set(host,'failed');}
+      if(models.length)catalog[provider]=models;
+    }
+    if(!Array.isArray(catalog.codex))catalog.codex='failed';
+    newTabModels.set(host,catalog);
+  }catch(_){newTabModels.set(host,{...previous,codex:Array.isArray(previous.codex)?previous.codex:'failed'});}
+  finally{newTabModelRequests.delete(host);}
+  // An answer from a previous computer must not change the current choice or focus.
+  if(host!==newTabModelHost()||!$('new-tab-dialog').open)return;
   setNewTabModel(newTabModelValue);fitNewTabModel();newTabModelMenu.refresh();
 }
 function paintNewTabMachine(){
@@ -1698,9 +1713,9 @@ function newTabChipMenu(chip,menu,options,current,set,{search=null,custom=()=>[]
   if(search){search.addEventListener('keydown',keys);search.addEventListener('input',filter);search.addEventListener('blur',leave);search.addEventListener('focus',()=>{if(menu.hidden)open();});}
   return {close,refresh(){if(!menu.hidden)paint();}};
 }
-const newTabModelMenu=ModelPicker.create({chip:$('new-tab-model'),menu:$('new-tab-model-menu'),value:()=>newTabModelValue,codex:newTabHostCodexModels,recent:newTabRecentModels,warning:()=>newTabEffortWarning,icons:globalThis.SwitchboardConversation?.agentIcons||{},
+const newTabModelMenu=ModelPicker.create({chip:$('new-tab-model'),menu:$('new-tab-model-menu'),value:()=>newTabModelValue,codex:newTabHostCodexModels,claude:newTabHostClaudeModels,recent:newTabRecentModels,warning:()=>newTabEffortWarning,icons:globalThis.SwitchboardConversation?.agentIcons||{},
   set(value){newTabEffortWarning='';setNewTabModel(value);},
-  reload(){const host=$('new-tab-target').value?JSON.parse($('new-tab-target').value)[0]:'';newTabCodexModels.delete(host);loadNewTabCodexModels();},
+  reload:loadNewTabModels,
   // The choice is announced once, when the picker closes, not on every arrow.
   done(){if(newTabHandover){$('new-tab-form').requestSubmit();return;}$('new-tab-progress').textContent=$('new-tab-model').getAttribute('aria-label');$('new-tab-prompt').focus();}});
 const newTabMachineMenu=newTabChipMenu($('new-tab-machine'),$('new-tab-machine-menu'),()=>[...$('new-tab-target').options].map(option=>[option.value,option.textContent.replace(/ · no session$/,''),option.disabled?'no session':'',option.disabled]),()=>$('new-tab-target').value,value=>{$('new-tab-target').value=value;$('new-tab-target').dispatchEvent(new Event('change'));$('new-tab-progress').textContent='Computer: '+$('new-tab-target').selectedOptions[0].textContent;});
@@ -1761,7 +1776,7 @@ function openNewTabDialog(elevated){
   $('new-tab-form').pendingSubmission=null;newTabBusy(false);
   $('new-tab-prompt').value='';clearNewTabFiles();newTabProjectLookup.close();
   // Each browser remembers its last model and effort, listed or typed; Sol at high effort is the default.
-  newTabModelMenu.close();newTabEffortWarning='';setNewTabModel(newTabSavedModel());fitNewTabModel();newTabSubmitText();
+  newTabModelMenu.close();newTabEffortWarning='';setNewTabModel(newTabSavedModel());newTabSubmitText();
   $('new-tab-dialog').classList.toggle('elevated',elevated);
   $('new-tab-note').textContent=elevated?'Runs as administrator. Someone at that computer must approve it (UAC on Windows, sudo elsewhere).':'';
   const select=$('new-tab-target');select.replaceChildren();
@@ -1783,7 +1798,7 @@ function openNewTabDialog(elevated){
   if(select.selectedOptions[0]?.disabled){const usable=[...select.options].find(option=>!option.disabled);if(usable)select.value=usable.value;}
   newTabRetrying=false;newTabSubmitText();paintNewTabMachine();closeNewTabProjectPicker(false);
   newTabProjectEdited=false;clearNewTabFieldProblem();$('new-tab-project').value=newTabSavedProject(JSON.parse(select.value)[0]);updateNewTabProject();
-  loadNewTabProjects();loadNewTabCodexModels();
+  loadNewTabProjects();loadNewTabModels();
   $('new-tab-dialog').showModal();fitNewTabPrompt();fitNewTabDialog();
   $('new-tab-prompt').focus();
 }
@@ -1888,7 +1903,7 @@ $('new-tab-target').onchange=()=>{
   closeNewTabProjectPicker(false);newTabProjectLookup.close();clearNewTabFieldProblem();paintNewTabMachine();
   for(const item of newTabFiles){delete item.uploaded;delete item.state;}paintNewTabFiles();
   if(!newTabProjectEdited&&!newTabHandover){$('new-tab-project').value=newTabSavedProject(JSON.parse($('new-tab-target').value)[0]);updateNewTabProject();}
-  loadNewTabProjects();loadNewTabCodexModels();
+  loadNewTabProjects();loadNewTabModels();
 };
 function setHandoverProject(){
   const source=newTabHandover?.context?.source;if(!source?.project)return;
@@ -2028,7 +2043,7 @@ $('new-tab-dialog').addEventListener('close',()=>{if($('new-tab-dialog').open)re
 $('new-tab-form').onsubmit=async event=>{
   event.preventDefault();const form=$('new-tab-form');if(form.pendingSubmission)return;
   if(newTabHandover)newTabModelMenu.commit();
-  const key=$('new-tab-target').value,project=$('new-tab-project').value.trim(),command=ModelPicker.fit(newTabModel(),newTabHostCodexModels()),text=newTabHandover?newTabHandover.text:$('new-tab-prompt').value,files=[...newTabFiles],elevated=newTabElevated;
+  const key=$('new-tab-target').value,project=$('new-tab-project').value.trim(),command=ModelPicker.fit(newTabModel(),newTabHostCodexModels(),newTabHostClaudeModels()),text=newTabHandover?newTabHandover.text:$('new-tab-prompt').value,files=[...newTabFiles],elevated=newTabElevated;
   const handover=newTabHandover?.context,source=newTabHandover?.source;if(newTabHandover&&!handover)return;
   if(/[\x00-\x08\x0b-\x1f\x7f]/.test(text)||new TextEncoder().encode(text).length>16000){$('new-tab-error').textContent='Use a prompt up to 16 KB without control characters.';return;}
   // Check the computer before spending time on uploads.
@@ -2455,7 +2470,7 @@ function restartAgentTarget(item){
 // for its turn to end (see runPendingSwitches); an idle agent that cannot restart has none.
 const pendingSwitches=new Map();
 function switchPossible(state){return !!state?.chat_id&&(!!state.restart_available||!['ready','working'].includes(state.state));}
-function newTabModelLabel(value){const choice=ModelPicker.describe(value,newTabHostCodexModels());return choice.name+(choice.effort?' '+choice.effortName:'');}
+function newTabModelLabel(value){const choice=ModelPicker.describe(value,newTabHostCodexModels(),newTabHostClaudeModels());return choice.name+(choice.effort?' '+choice.effortName:'');}
 function openAgentHandover(item,paneId){
   const target=agentChatTarget(item,paneId);if(!target||!switchPossible(target.state)||!globalThis.SwitchboardHandover)return;
   const queued=pendingSwitches.get(item.key);if(queued?.running){closeTabMenu();setStatus('The model switch is already running.');return;}
@@ -2465,7 +2480,7 @@ function openAgentHandover(item,paneId){
   closeTabMenu();openNewTabDialog(false);if(!$('new-tab-dialog').open)return;
   const option=[...$('new-tab-target').options].find(option=>JSON.parse(option.value)[0]===host);
   if(!option){$('new-tab-dialog').close();setStatus('The source computer is unavailable.',true);return;}
-  $('new-tab-target').value=option.value;paintNewTabMachine();loadNewTabProjects();loadNewTabCodexModels();
+  $('new-tab-target').value=option.value;paintNewTabMachine();loadNewTabProjects();loadNewTabModels();
   $('new-tab-title').textContent='Switch model';$('new-tab-note').textContent='';
   setNewTabModel(queued?.model||newTabSavedModel(source.agent==='claude'?'codex':'claude'));
   $('new-tab-dialog').classList.add('handover-mode');
