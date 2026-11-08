@@ -61,6 +61,12 @@ test('output may skip dropped terminal records only at a resync record',async()=
  await apply({seq:10,channel:'terminal',data:'repaint'});assert.equal(f.client.applied,10);
  await apply({seq:20,channel:'terminal',data:'gap'});assert.equal(f.client.stopped,true);
 });
+test('a coalesced control snapshot may follow dropped records',async()=>{
+ const f=fixture();const apply=async record=>{f.sockets[0].message({type:'output',record});await new Promise(r=>setImmediate(r));f.renders.at(-1)?.applied?.();await f.client.outputWork;};
+ await apply({seq:1,channel:'terminal',data:'a'});
+ await apply({seq:7,channel:'control',data:JSON.stringify({type:'MobileState',payload:{}}),resync:true});
+ assert.equal(f.client.stopped,false);assert.equal(f.client.applied,7);
+});
 test('unicode paste splitting preserves every byte and has bounded records',()=>{
  const f=fixture();const data='\x1b[200~'+'😀'.repeat(20000)+'\x1b[201~';f.client.terminal.send(data);
  assert.equal(f.client.pending.map(x=>x.data).join(''),data);
