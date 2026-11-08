@@ -7,14 +7,14 @@
           {
             "type": "command",
             "command": "\"$HOME/.local/share/switchboard/codex-agent-hook\"",
-            "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}/hooks/codex.ps1\"",
+            "commandWindows": "cmd /d /c 'call \"%USERPROFILE%\\.local\\share\\switchboard\\codex-agent-hook.cmd\"'",
             "statusMessage": "Registering this conversation with Switchboard",
             "timeout": 5
           },
           {
             "type": "command",
             "command": "\"$HOME/.local/share/switchboard/codex-agent-hook\" --wait",
-            "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}/hooks/codex.ps1\" -WaitForMessages",
+            "commandWindows": "cmd /d /c 'call \"%USERPROFILE%\\.local\\share\\switchboard\\codex-agent-hook.cmd\" --wait'",
             "statusMessage": "Listening for Switchboard messages",
             "async": true,
             "timeout": 31536000
@@ -28,7 +28,7 @@
           {
             "type": "command",
             "command": "\"$HOME/.local/share/switchboard/codex-agent-hook\"",
-            "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}/hooks/codex.ps1\"",
+            "commandWindows": "cmd /d /c 'call \"%USERPROFILE%\\.local\\share\\switchboard\\codex-agent-hook.cmd\"'",
             "statusMessage": "Reporting Switchboard activity and checking messages",
             "timeout": 5
           }
@@ -41,7 +41,7 @@
           {
             "type": "command",
             "command": "\"$HOME/.local/share/switchboard/codex-agent-hook\"",
-            "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}/hooks/codex.ps1\"",
+            "commandWindows": "cmd /d /c 'call \"%USERPROFILE%\\.local\\share\\switchboard\\codex-agent-hook.cmd\"'",
             "statusMessage": "Updating Switchboard and checking messages",
             "timeout": 5
           }
@@ -54,7 +54,7 @@
           {
             "type": "command",
             "command": "\"$HOME/.local/share/switchboard/codex-agent-hook\"",
-            "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}/hooks/codex.ps1\"",
+            "commandWindows": "cmd /d /c 'call \"%USERPROFILE%\\.local\\share\\switchboard\\codex-agent-hook.cmd\"'",
             "statusMessage": "Reporting an approval request to Switchboard",
             "timeout": 5
           }
@@ -67,14 +67,14 @@
           {
             "type": "command",
             "command": "\"$HOME/.local/share/switchboard/codex-agent-hook\"",
-            "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}/hooks/codex.ps1\"",
+            "commandWindows": "cmd /d /c 'call \"%USERPROFILE%\\.local\\share\\switchboard\\codex-agent-hook.cmd\"'",
             "statusMessage": "Reporting completion and checking Switchboard messages",
             "timeout": 5
           },
           {
             "type": "command",
             "command": "\"$HOME/.local/share/switchboard/codex-agent-hook\" --wait",
-            "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}/hooks/codex.ps1\" -WaitForMessages",
+            "commandWindows": "cmd /d /c 'call \"%USERPROFILE%\\.local\\share\\switchboard\\codex-agent-hook.cmd\" --wait'",
             "statusMessage": "Listening for Switchboard messages",
             "async": true,
             "timeout": 31536000
@@ -88,7 +88,7 @@
           {
             "type": "command",
             "command": "\"$HOME/.local/share/switchboard/codex-agent-hook\"",
-            "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}/hooks/codex.ps1\"",
+            "commandWindows": "cmd /d /c 'call \"%USERPROFILE%\\.local\\share\\switchboard\\codex-agent-hook.cmd\"'",
             "statusMessage": "Clearing interrupted activity in Switchboard",
             "timeout": 3
           }
@@ -101,7 +101,7 @@
           {
             "type": "command",
             "command": "\"$HOME/.local/share/switchboard/codex-agent-hook\"",
-            "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}/hooks/codex.ps1\"",
+            "commandWindows": "cmd /d /c 'call \"%USERPROFILE%\\.local\\share\\switchboard\\codex-agent-hook.cmd\"'",
             "statusMessage": "Closing this conversation in Switchboard",
             "timeout": 3
           }

@@ -21,17 +21,18 @@ test('Codex plugin selects described Codex hooks without inheriting Claude hooks
       total++;
       assert.match(hook.statusMessage,/Switchboard/);
       assert.match(hook.command,/codex-agent-hook/);
-      assert.match(hook.commandWindows,/hooks\/codex\.ps1/);
+      assert.match(hook.commandWindows,/codex-agent-hook\.cmd/);
+      assert.doesNotMatch(hook.commandWindows,/powershell/i,'Each hook would start another process');
       assert.equal(hook.args,undefined,'Codex does not support Claude exec-form args');
-      if(hook.async){assert.ok(['SessionStart','Stop'].includes(event));assert.match(hook.command,/ --wait$/);assert.match(hook.commandWindows,/ -WaitForMessages$/);}
+      if(hook.async){assert.ok(['SessionStart','Stop'].includes(event));assert.match(hook.command,/ --wait$/);assert.match(hook.commandWindows,/ --wait'$/);}
     }
   }
   assert.equal(total,9);
 });
 
-test('Windows plugin wrapper preserves Unicode stdin and message listener arguments',
+test('Windows hook command preserves Unicode stdin and message listener arguments',
   {skip:process.platform!=='win32'},()=>{
-  const root=fs.mkdtempSync(path.join(os.tmpdir(),'switchboard-codex-wrapper-'));
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'switchboard codex wrapper-'));
   try{
     const launcherDir=path.join(root,'.local/share/switchboard');fs.mkdirSync(launcherDir,{recursive:true});
     const output=path.join(root,'event.json'),stub=path.join(root,'capture.cjs');
@@ -39,7 +40,8 @@ test('Windows plugin wrapper preserves Unicode stdin and message listener argume
     fs.writeFileSync(path.join(launcherDir,'codex-agent-hook.cmd'),`@"${process.execPath}" "${stub}" %*\r\n`);
     const input=JSON.stringify({hook_event_name:'PostToolUse',cwd:'C:\\Users\\Zoë\\🦀',text:'東京\nsecond line'});
     for(const wait of [false,true]){
-      const result=spawnSync('powershell.exe',['-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',path.join(plugin,'hooks/codex.ps1'),...(wait?['-WaitForMessages']:[])],{env:{...process.env,USERPROFILE:root,HOOK_CAPTURE:output},input,encoding:'utf8',windowsHide:true,timeout:10000});
+      const command=Object.values(config.hooks).flatMap(groups=>groups[0].hooks).map(hook=>hook.commandWindows).find(hook=>hook.includes('--wait')===wait);
+      const result=spawnSync('powershell.exe',['-NoLogo','-NoProfile','-NonInteractive','-Command',command],{env:{...process.env,USERPROFILE:root,HOOK_CAPTURE:output},input,encoding:'utf8',windowsHide:true,timeout:10000});
       assert.equal(result.status,0,result.stderr);
       const captured=JSON.parse(fs.readFileSync(output,'utf8'));
       assert.deepEqual(JSON.parse(captured.input),JSON.parse(input));
@@ -140,9 +142,11 @@ test('Codex discovers and executes its plugin hooks and reloads content trust',
     assert.ok(events.some(item=>item.event.hook_event_name==='UserPromptSubmit'));
     assert.ok(events.some(item=>item.event.hook_event_name==='Stop'),'Codex must complete the local fixture turn');
     await call('thread/archive',{threadId:thread.thread.id});
-    // A changed bundled script requires fresh trust even with the same command.
-    const script=path.join(root,'plugins/cache/switchboard/switchboard/local/hooks/codex.ps1');
-    fs.appendFileSync(script,'\n# fixture changed script\n');
+    // A changed hook requires fresh trust.
+    const cached=path.join(root,'plugins/cache/switchboard/switchboard/local/hooks/codex.json');
+    const changedConfig=JSON.parse(fs.readFileSync(cached,'utf8'));
+    changedConfig.hooks.UserPromptSubmit[0].hooks[0].timeout+=1;
+    fs.writeFileSync(cached,JSON.stringify(changedConfig));
     const changed=hooks(await list());
     assert.ok(changed.some(h=>h.trustStatus==='modified'),JSON.stringify(changed));
   }finally{

@@ -866,7 +866,8 @@ fn codex_plugin_hooks_complete(cache: &Path) -> bool {
                     let hook = &group["hooks"][index];
                     hook["type"] == "command"
                         && hook["command"] == required["command"]
-                        && hook["commandWindows"] == required["commandWindows"]
+                        && (hook["commandWindows"] == required["commandWindows"]
+                            || codex_powershell_hook(hook, required))
                         && hook["async"] == required["async"]
                         && hook["args"].is_null()
                         && hook["if"].is_null()
@@ -875,7 +876,36 @@ fn codex_plugin_hooks_complete(cache: &Path) -> bool {
                             .as_u64()
                             .is_some_and(|timeout| timeout >= required["timeout"].as_u64().unwrap())
                 })
-    }) && cache.join("hooks/codex.ps1").is_file()
+    }) && (!codex_cache_uses_powershell(cache) || cache.join("hooks/codex.ps1").is_file())
+}
+
+/// Each Windows hook once started PowerShell to run this script. A cache from then still
+/// works, so it stays healthy until the relay refreshes it.
+/// The script stays in the plugin because Codex sessions already running keep calling it.
+fn codex_powershell_hook(hook: &Value, required: &Value) -> bool {
+    let wait = required["commandWindows"]
+        .as_str()
+        .is_some_and(|command| command.contains(" --wait"));
+    hook["commandWindows"].as_str().is_some_and(|command| {
+        command.starts_with("powershell.exe ")
+            && command.contains("hooks/codex.ps1")
+            && command.ends_with("-WaitForMessages") == wait
+    })
+}
+
+fn codex_cache_uses_powershell(cache: &Path) -> bool {
+    std::fs::read_to_string(cache.join("hooks/codex.json"))
+        .is_ok_and(|hooks| hooks.contains("hooks/codex.ps1"))
+}
+
+async fn refresh_codex_plugin(codex: &Path, folders: &[PathBuf]) -> Result<(), String> {
+    run(
+        codex,
+        &["plugin", "marketplace", "upgrade", "switchboard"],
+        folders,
+    )
+    .await?;
+    run(codex, &["plugin", "add", PLUGIN], folders).await
 }
 
 /// A report from a legacy global hook cannot prove that the plugin is ready.
@@ -966,6 +996,17 @@ pub(super) fn trust_codex_hooks_on_start() {
         };
         if !dir.is_dir() || check_codex_plugin(&dir).is_err() {
             return;
+        }
+        // Updates replace the relay but not Codex's copy of the plugin. Only Windows runs
+        // the old PowerShell hooks, so only Windows needs the new copy.
+        if cfg!(windows) && codex_cache_uses_powershell(&codex_plugin_cache(&dir)) {
+            if let Err(error) = refresh_codex_plugin(&codex, &folders).await {
+                log::warn!("Cannot refresh Switchboard's Codex plugin: {error}");
+                logs::record(
+                    "codex",
+                    &format!("Cannot refresh Switchboard's Codex plugin: {error}"),
+                );
+            }
         }
         match trust_codex_hooks(&codex, &folders, &dir)
             .await
@@ -1224,13 +1265,7 @@ async fn set_up(agent: Agent) -> Result<(), String> {
                     &folders,
                 )
                 .await?;
-                run(
-                    &codex,
-                    &["plugin", "marketplace", "upgrade", "switchboard"],
-                    &folders,
-                )
-                .await?;
-                run(&codex, &["plugin", "add", PLUGIN], &folders).await?;
+                refresh_codex_plugin(&codex, &folders).await?;
                 check_codex_plugin(&dir).map_err(String::from)?;
             }
             let binary = control::own_executable()
@@ -1994,10 +2029,6 @@ mod tests {
             &cache.join("hooks/codex.json"),
             include_str!("../../../plugins/switchboard/hooks/codex.json"),
         );
-        write(
-            &cache.join("hooks/codex.ps1"),
-            include_str!("../../../plugins/switchboard/hooks/codex.ps1"),
-        );
         assert_eq!(
             check_codex_plugin(dir),
             Err("Switchboard plugin skills missing")
@@ -2054,10 +2085,6 @@ mod tests {
         write(
             &cache.join("hooks/codex.json"),
             include_str!("../../../plugins/switchboard/hooks/codex.json"),
-        );
-        write(
-            &cache.join("hooks/codex.ps1"),
-            include_str!("../../../plugins/switchboard/hooks/codex.ps1"),
         );
         for skill in ["close-tab", "interactive", "message-board", "sudo"] {
             write(&cache.join("skills").join(skill).join("SKILL.md"), "skill");
@@ -2129,9 +2156,9 @@ mod tests {
             original
         );
         assert_eq!(check_codex(dir, &launcher).state, "ready");
-        let script = codex_plugin_cache(dir).join("hooks/codex.ps1");
+        let script = codex_plugin_cache(dir).join("hooks/codex.json");
         let original_script = std::fs::read_to_string(&script).unwrap();
-        write(&script, &format!("{original_script}\n# updated plugin"));
+        write(&script, &format!("{original_script}\n"));
         assert_eq!(
             check_codex(dir, &launcher).state,
             "approve",
@@ -2217,10 +2244,6 @@ mod tests {
             &plugin.join("hooks/codex.json"),
             include_str!("../../../plugins/switchboard/hooks/codex.json"),
         );
-        write(
-            &plugin.join("hooks/codex.ps1"),
-            include_str!("../../../plugins/switchboard/hooks/codex.ps1"),
-        );
         install().await;
         assert_eq!(
             check_codex_plugin(&dir),
@@ -2247,14 +2270,60 @@ mod tests {
                 .len(),
             1
         );
-        let script = codex_plugin_cache(&dir).join("hooks/codex.ps1");
+        let script = codex_plugin_cache(&dir).join("hooks/codex.json");
         let text = std::fs::read_to_string(&script).unwrap();
-        write(&script, &format!("{text}\n# changed plugin content"));
+        write(&script, &format!("{text}\n"));
         assert_eq!(check_codex(&dir, &launcher).state, "approve");
         trust_codex_hooks(&codex, &search_path(), &dir)
             .await
             .unwrap();
         assert_eq!(check_codex(&dir, &launcher).state, "ready");
+    }
+
+    #[test]
+    fn switchboard_codex_health_accepts_powershell_hooks_until_they_are_refreshed() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = temp.path();
+        let current = include_str!("../../../plugins/switchboard/hooks/codex.json");
+        let mut old: Value = serde_json::from_str(current).unwrap();
+        for groups in old["hooks"].as_object_mut().unwrap().values_mut() {
+            for hook in groups[0]["hooks"].as_array_mut().unwrap() {
+                let wait = hook["commandWindows"].as_str().unwrap().contains(" --wait");
+                hook["commandWindows"] = json!(format!(
+                    "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"${{PLUGIN_ROOT}}/hooks/codex.ps1\"{}",
+                    if wait { " -WaitForMessages" } else { "" }
+                ));
+            }
+        }
+        write(&cache.join("hooks/codex.json"), &old.to_string());
+        assert!(
+            codex_cache_uses_powershell(cache),
+            "the relay must refresh this cache"
+        );
+        assert!(
+            !codex_plugin_hooks_complete(cache),
+            "the script it runs must exist"
+        );
+        write(&cache.join("hooks/codex.ps1"), "script");
+        assert!(
+            codex_plugin_hooks_complete(cache),
+            "an old cache keeps working"
+        );
+
+        let swapped = old.to_string().replace(" -WaitForMessages", "");
+        write(&cache.join("hooks/codex.json"), &swapped);
+        assert!(
+            !codex_plugin_hooks_complete(cache),
+            "the listener must keep its argument"
+        );
+
+        write(&cache.join("hooks/codex.json"), current);
+        std::fs::remove_file(cache.join("hooks/codex.ps1")).unwrap();
+        assert!(!codex_cache_uses_powershell(cache));
+        assert!(
+            codex_plugin_hooks_complete(cache),
+            "the current hooks need no script"
+        );
     }
 
     #[test]
