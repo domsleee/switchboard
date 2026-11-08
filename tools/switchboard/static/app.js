@@ -350,7 +350,7 @@ function tabTitle(item){
 // A tab started from New tab with a prompt shows that prompt as its name, and a spinner until
 // its agent reports in, instead of a blank "New tab"; Conversation shows the prompt as sent.
 const launches=new Map();
-function promptLaunch(launch,typed=launch.prompt){const text=typeof typed==='string'?typed:'',images=launch.images?.length||0;return text.trim()||images?{text:text.trim()?text:images===1?'Image attached':`${images} images attached`,agent:newTabModelProvider(launch.command),at:Date.now()}:null;}
+function promptLaunch(launch,typed=launch.prompt){const text=typeof typed==='string'?typed:'',attachments=(launch.images||[]).map(url=>({kind:'image',name:url.split(/[\\/]/).pop(),url}));return text.trim()||attachments.length?{text:text.trim()?text:attachments.length===1?'Image attached':`${attachments.length} images attached`,attachments,agent:newTabModelProvider(launch.command),at:Date.now()}:null;}
 function launchFor(item){
   const pane=item.tab.panes.find(p=>!p.is_plugin),key=pane&&JSON.stringify([item.entry.host,item.entry.name,pane.pane_id]);
   const launch=item.tab.launch||key&&launches.get(key);

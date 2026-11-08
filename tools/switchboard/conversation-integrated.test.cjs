@@ -561,6 +561,36 @@ test('integrated Conversation journeys use production markup and preserve delive
     f.chatPrefix='chat-';await f.refresh();assert.equal(await draft.inputValue(),'Keep typing','The original chat keeps its draft');
    }finally{await f.close();}
   });
+  await t.test('new-chat images embed before creation finishes and survive view changes until history arrives',async()=>{
+   for(const text of ['Inspect this image','']){
+    const f=await fixture(),{page}=f;try{
+     f.holdCreation=true;
+     await page.route('**/project-list',route=>route.fulfill({json:['switchboard']}));
+     await page.route('**/model-list',route=>route.fulfill({json:{}}));
+     await page.getByLabel('Reply draft').press('Alt+t');await page.locator('#new-tab-prompt').fill(text);
+     const choosing=page.waitForEvent('filechooser');await page.locator('#new-tab-attach').click();
+     await(await choosing).setFiles({name:'portrait.svg',mimeType:'image/svg+xml',buffer:Buffer.from(portrait)});
+     await page.locator('#new-tab-form button[type=submit]').click();
+     const preview=page.locator('.conversation-launch').getByRole('button',{name:'Preview portrait.svg',exact:true});
+     await preview.waitFor();await page.waitForFunction(()=>document.querySelector('.conversation-launch img')?.naturalHeight===640);
+     if(process.env.MODE_SCREENSHOTS&&text){
+      const panel=page.locator('.conversation-panel'),hidden=await page.addStyleTag({content:'.conversation-launch .conversation-media{display:none!important}'});
+      await panel.screenshot({path:path.join(process.env.MODE_SCREENSHOTS,'new-chat-image-before.png')});await hidden.evaluate(node=>node.remove());
+      await panel.screenshot({path:path.join(process.env.MODE_SCREENSHOTS,'new-chat-image-after.png')});
+     }
+     assert.equal(f.newTabs.length,1);assert.deepEqual(f.newTabs[0].images,[uploadRoot+'portrait.svg']);
+     assert.deepEqual(f.connections,[],'The immediate preview does not attach a terminal');
+     await preview.click();await page.getByRole('dialog',{name:'Media viewer'}).waitFor();await page.getByRole('button',{name:'Close',exact:true}).click();
+     f.releaseCreation();await page.waitForFunction(()=>allTabs().find(item=>item.key===selected)?.tab.id===3);
+     f.tabs=[1,2,3];f.bound=false;await f.refresh();await preview.waitFor();
+     await page.getByRole('button',{name:'Terminal',exact:true}).click();
+     await page.getByRole('button',{name:'Conversation',exact:true}).click();await preview.waitFor();
+     f.bound=true;f.history.set(3,[{role:'user',text,attachments:[{kind:'image',name:'portrait.svg',url:uploadRoot+'portrait.svg'}]}]);await f.refresh();
+     await page.locator('.conversation-message.user:not(.conversation-launch) img').waitFor();
+     assert.equal(await page.locator('.conversation-launch').count(),0,'History replaces the immediate preview without duplication');
+    }finally{await f.close();}
+   }
+  });
   await t.test('a submitted prompt starts Working immediately and yields to reported activity and attention',async()=>{
    const f=await fixture({agent:'claude'}),{page}=f;try{
     await page.evaluate(()=>createNewTab(sessionKey('fixture','main'),{project:'switchboard',command:'claude:claude-haiku-5-5',prompt:'Fix the flaky test\n\nAttached files:\n/tmp/log.txt'},()=>true,'Fix the flaky test'));
