@@ -117,7 +117,8 @@ test('phone chat opens the latest page, hides setup, and preserves messages and 
   assert.equal(requests.at(-1).cursor,'502');assert.equal(payloads.at(-1).length,1);
   assert.equal(await page.getByText(/Session instructions|Internal setup|Internal environment|Enter to send/).count(),0);
   assert.equal(await page.locator('.conversation-working').isVisible(),true);
-  assert.ok(await page.evaluate(()=>{const n=document.querySelector('.conversation-messages');return n.scrollHeight-n.scrollTop-n.clientHeight<3;}));
+  // ResizeObserver restores the bottom after layout; Refresh only tracks the request.
+  await page.waitForFunction(()=>{const n=document.querySelector('.conversation-messages');return n.scrollHeight-n.scrollTop-n.clientHeight<3;});
   await page.getByLabel('Reply draft').fill('A mobile draft');await page.getByLabel('Reply draft').press('Enter');
   assert.equal(await page.getByLabel('Reply draft').inputValue(),'A mobile draft\n');
   const bounds=await page.locator('.conversation-compose').boundingBox();assert.ok(bounds.height<130);
