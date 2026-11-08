@@ -59,7 +59,7 @@ test('integrated Conversation journeys use production markup and preserve delive
     f.state='working';await f.refresh();
     await page.waitForFunction(()=>document.querySelector('.conversation-activity').textContent==='Working…');
     if(process.env.MODE_SCREENSHOTS)await page.screenshot({path:path.join(process.env.MODE_SCREENSHOTS,'conversation-integrated-mobile.png')});
-    assert.equal(await page.locator('.conversation-model').textContent(),'6.1 Sol · medium');
+    assert.equal(await page.locator('.conversation-model').textContent(),'6.1 Sol Medium');
     assert.equal(await page.locator('.conversation-panel [role=status]').filter({hasText:/^Working…$/}).count(),1);
     assert.equal(await page.locator('.conversation-working').getAttribute('aria-hidden'),'true');
     for(const viewport of [{width:360,height:844},{width:360,height:400},{width:1280,height:844}]){
@@ -72,7 +72,7 @@ test('integrated Conversation journeys use production markup and preserve delive
     }
     for(const state of ['approval','input']){f.state=state;await f.refresh();assert.equal(await page.getByRole('button',{name:'Open Terminal',exact:true}).isVisible(),true);assert.equal(await page.locator('.conversation-working').isVisible(),false);}
     assert.equal(await page.getByLabel('Reply draft').inputValue(),'Keep this draft');assert.deepEqual(f.connections,[]);
-    f.model='team-deployment-custom-v2';await f.poll();assert.equal(await page.locator('.conversation-model').textContent(),'team-deployment-custom-v2 · medium');
+    f.model='team-deployment-custom-v2';await f.poll();assert.equal(await page.locator('.conversation-model').textContent(),'team-deployment-custom-v2 Medium');
    }finally{await f.close();}
   });
   await t.test('long messages with attachments reconcile after a lost HTTP acknowledgement',async()=>{
