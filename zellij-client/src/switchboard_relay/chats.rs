@@ -1783,30 +1783,115 @@ fn add_result(chat: &Chat, p: &Params, results: &mut Vec<Value>) {
 // A small, inert Markdown event stream. The browser creates allowlisted DOM nodes;
 // neither transcript HTML nor provider-controlled attributes are inserted as HTML.
 fn markdown_events(source: &str) -> Vec<Value> {
-    use pulldown_cmark::{Event, Options, Parser, Tag};
-    Parser::new_ext(source, Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS).map(|event| match event {
+    use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+    let options =
+        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+    let events: Vec<_> = Parser::new_ext(source, options)
+        .into_offset_iter()
+        .collect();
+    let mut result = Vec::with_capacity(events.len());
+    let mut index = 0;
+    while index < events.len() {
+        let run = events[index..]
+            .iter()
+            .take_while(|(event, _)| matches!(event, Event::Text(_)))
+            .count();
+        if run == 0 {
+            result.push(markdown_event(events[index].0.clone()));
+            index += 1;
+            continue;
+        }
+        // Markdown reads `\.` in C:\Users\me\.cache as an escape, which drops the backslash and
+        // splits the text. A line that is only a media path is shown from its original source.
+        let line = &source[events[index].1.start..events[index + run - 1].1.end];
+        let starts_line = index == 0
+            || matches!(
+                events[index - 1].0,
+                Event::SoftBreak
+                    | Event::HardBreak
+                    | Event::Start(
+                        Tag::Paragraph | Tag::Item | Tag::Heading { .. } | Tag::TableCell
+                    )
+            );
+        let ends_line = events.get(index + run).is_none_or(|(event, _)| {
+            matches!(
+                event,
+                Event::SoftBreak
+                    | Event::HardBreak
+                    | Event::End(
+                        TagEnd::Paragraph | TagEnd::Item | TagEnd::Heading(_) | TagEnd::TableCell
+                    )
+            )
+        });
+        if starts_line && ends_line && is_windows_media_path(line) {
+            result.push(json!({"type":"text","text":line}));
+        } else {
+            result.extend(
+                events[index..index + run]
+                    .iter()
+                    .map(|(event, _)| markdown_event(event.clone())),
+            );
+        }
+        index += run;
+    }
+    result
+}
+
+fn is_windows_media_path(line: &str) -> bool {
+    let after_root = line.strip_prefix('~').or_else(|| {
+        line.strip_prefix(|c: char| c.is_ascii_alphabetic())?
+            .strip_prefix(':')
+    });
+    after_root.is_some_and(|rest| rest.starts_with(['\\', '/'])) && media_kind(line) != "file"
+}
+
+fn media_kind(name: &str) -> &'static str {
+    match name
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "svg" => "image",
+        "mp4" | "webm" | "mov" | "m4v" => "video",
+        _ => "file",
+    }
+}
+
+fn markdown_event(event: pulldown_cmark::Event<'_>) -> Value {
+    use pulldown_cmark::{Event, Tag};
+    match event {
         Event::Start(tag) => match tag {
             Tag::Link { dest_url, .. } => json!({"type":"start","tag":"a","url":dest_url.as_ref()}),
-            Tag::Image { dest_url, .. } => json!({"type":"start","tag":"image","url":dest_url.as_ref()}),
+            Tag::Image { dest_url, .. } => {
+                json!({"type":"start","tag":"image","url":dest_url.as_ref()})
+            },
             Tag::Heading { level, .. } => json!({"type":"start","tag":format!("{level}")}),
-            Tag::List(start) => json!({"type":"start","tag":if start.is_some(){"ol"}else{"ul"},"start":start}),
+            Tag::List(start) => {
+                json!({"type":"start","tag":if start.is_some(){"ol"}else{"ul"},"start":start})
+            },
             // The fence's language labels the code card and picks its highlighting.
-            Tag::CodeBlock(pulldown_cmark::CodeBlockKind::Fenced(info)) => json!({"type":"start","tag":"pre","lang":info.split(|c: char| c.is_whitespace() || c == ',').next().unwrap_or("")}),
+            Tag::CodeBlock(pulldown_cmark::CodeBlockKind::Fenced(info)) => {
+                json!({"type":"start","tag":"pre","lang":info.split(|c: char| c.is_whitespace() || c == ',').next().unwrap_or("")})
+            },
             tag => json!({"type":"start","tag":match tag {
                 Tag::Paragraph=>"p",Tag::BlockQuote(_)=>"blockquote",Tag::CodeBlock(_)=>"pre",
                 Tag::Item=>"li",Tag::Emphasis=>"em",Tag::Strong=>"strong",Tag::Strikethrough=>"del",
                 Tag::Table(_)=>"table",Tag::TableHead=>"thead",Tag::TableRow=>"tr",Tag::TableCell=>"td",_=>"span"
             }}),
         },
-        Event::End(_)=>json!({"type":"end"}),
-        Event::Text(text)|Event::Html(text)|Event::InlineHtml(text)=>json!({"type":"text","text":text.as_ref()}),
-        Event::Code(text)=>json!({"type":"code","text":text.as_ref()}),
-        Event::SoftBreak=>json!({"type":"text","text":"\n"}),
-        Event::HardBreak=>json!({"type":"break"}),
-        Event::Rule=>json!({"type":"rule"}),
-        Event::TaskListMarker(done)=>json!({"type":"text","text":if done {"☑ "}else{"☐ "}}),
-        _=>json!({"type":"text","text":""}),
-    }).collect()
+        Event::End(_) => json!({"type":"end"}),
+        Event::Text(text) | Event::Html(text) | Event::InlineHtml(text) => {
+            json!({"type":"text","text":text.as_ref()})
+        },
+        Event::Code(text) => json!({"type":"code","text":text.as_ref()}),
+        Event::SoftBreak => json!({"type":"text","text":"\n"}),
+        Event::HardBreak => json!({"type":"break"}),
+        Event::Rule => json!({"type":"rule"}),
+        Event::TaskListMarker(done) => json!({"type":"text","text":if done {"☑ "}else{"☐ "}}),
+        _ => json!({"type":"text","text":""}),
+    }
 }
 
 // The composer sends uploaded paths as a text suffix so terminal agents can
@@ -1908,13 +1993,7 @@ fn uploaded_file(path: &str) -> Option<Value> {
     {
         return None;
     }
-    let extension = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-    let kind = match extension.as_str() {
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "svg" => "image",
-        "mp4" | "webm" | "mov" | "m4v" => "video",
-        _ => "file",
-    };
-    Some(json!({"kind":kind,"name":clip(name,120),"url":path}))
+    Some(json!({"kind":media_kind(name),"name":clip(name,120),"url":path}))
 }
 
 fn read_page(chat: &Chat, p: &Params) -> Value {
@@ -3863,6 +3942,25 @@ mod tests {
         };
         c.record(&json!({"type":"user","message":{"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGVsbG8="}}]}}),0);
         assert!(c.messages[0]["attachments"][0]["unavailable"].is_string());
+    }
+    #[test]
+    fn switchboard_chats_markdown_keeps_windows_media_lines_whole() {
+        let texts = |source: &str| {
+            markdown_events(source)
+                .iter()
+                .filter(|event| event["type"] == "text")
+                .map(|event| event["text"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        let image = r"C:\Users\example\.cache\runs\01\final.png";
+        let video = r"D:\work\_build\clip.MP4";
+        assert_eq!(texts(&format!("{image}\n{video}")), [image, "\n", video]);
+        assert_eq!(texts(&format!("- {image}")), [image]);
+        assert_eq!(texts(r"~\.cache\final.png"), [r"~\.cache\final.png"]);
+        // Only a whole line that is a media path differs from ordinary Markdown.
+        assert_eq!(texts(r"See C:\a\.b.png"), [r"See C:\a", ".b.png"]);
+        assert_eq!(texts(r"C:\a\.b\notes.txt"), [r"C:\a", r".b\notes.txt"]);
+        assert_eq!(texts(&format!("```\n{image}\n```")), [format!("{image}\n")]);
     }
     #[test]
     fn switchboard_chats_readers_exclude_tools_reasoning_and_duplicate_events() {
