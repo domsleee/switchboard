@@ -270,10 +270,10 @@ window.SwitchboardBrowserDiagnostics = function (report, probe) {
     delete result.started;span=null;
     report(result);
   }
-  function start(reason,event) {
+  function start(reason,event,since=hiddenAt) {
     finish('superseded');
     const started=now();
-    span={id:++sequence,started,reason,hidden_ms:hiddenAt===null?null:rounded(started-hiddenAt),frozen,
+    span={id:++sequence,started,reason,hidden_ms:since===null?null:rounded(started-since),frozen,
       load_ms:reason==='discarded'?rounded(started):null,
       event_delay_ms:event?.timeStamp>0&&event.timeStamp<=started?rounded(started-event.timeStamp):null,
       first_animation_ms:null,terminal_animation_ms:null,terminal_probe:false,
@@ -301,6 +301,8 @@ window.SwitchboardBrowserDiagnostics = function (report, probe) {
   window.addEventListener('pagehide',()=>finish('hidden'));
   if(document.wasDiscarded&&!document.hidden)start('discarded');
   return {
+    // Times a switch back to Terminal from Conversation; hidden_ms is the time spent in Conversation.
+    measure(reason,since) {if(!document.hidden)start(reason,undefined,since);},
     terminal(sample) {
       if(!span||sample?.id!==span.id||span.terminal_animation_ms!==null)return;
       const receivedOnly=sample.phase==='received';

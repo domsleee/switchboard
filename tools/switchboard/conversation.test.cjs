@@ -4,7 +4,7 @@ test('current conversation opens directly, stays pane-local, and follows a new c
  const server=http.createServer((req,res)=>{
   const url=new URL(req.url,'http://localhost');const json=value=>{res.setHeader('Content-Type','application/json');res.end(JSON.stringify(value));};
   // Reloading the fixture can report its interrupted transcript request.
-  if(url.pathname==='/api/diagnostics/conversation')return json({});
+  if(url.pathname.startsWith('/api/diagnostics/'))return json({});
   if(url.pathname==='/api/chats/search'){queries++;return json({error:'Unexpected history search'});}
   if(url.pathname==='/api/chats/claude-two'){assert.equal(url.searchParams.get('host'),'peer');return json({title:'Remote Claude',messages:[{role:'assistant',text:'Remote Claude answer'}],next_cursor:null});}
   if(url.pathname==='/api/chats/codex-one'){if(hold){hold=false;held=()=>json({messages:[{role:'assistant',text:'Stale response'}],next_cursor:null});return;}assert.equal(url.searchParams.get('host'),'local');const cursor=Number(url.searchParams.get('cursor'));return json({title:'Actual chat',messages:[{role:'user',text:'<img src=x onerror="window.injected=true">'},{role:'user',text:'draft one'},{role:'assistant',phase:'commentary',text:'Working on it'},{role:'assistant',text:answer}],start_cursor:0,next_cursor:null});}
