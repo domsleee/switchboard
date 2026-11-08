@@ -110,3 +110,34 @@ for(const platform of ['MacIntel','Win32','Linux x86_64'])test(`${platform}: sid
     assert.deepEqual(errors,[]);
   }finally{await browser.close();}
 });
+
+test('Alt+H/L switch tabs from the Conversation draft and keep typing there',
+  {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
+  const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch();
+  try{
+    const page=await browser.newPage(),errors=[],ids=[42,90,105];
+    page.setDefaultTimeout(5000);page.on('pageerror',error=>errors.push(error.message));
+    await page.addInitScript(()=>{window.setInterval=()=>0;localStorage.setItem('switchboard-view-mode','conversation');localStorage.setItem('switchboard-mobile-view-mode','conversation');});
+    await page.route('https://switchboard.test/**',async route=>{
+      const pathname=new URL(route.request().url()).pathname,json=value=>route.fulfill({json:value});
+      if(pathname==='/api/hosts')return json([{id:'fixture',name:'Fixture desktop',local:true}]);
+      if(pathname==='/api/hosts/fixture')return json({id:'fixture',name:'Fixture desktop',local:true,sessions:[{name:'main',web_clients_allowed:true}]});
+      if(pathname==='/api/attention')return json({tabs:ids.map((id,position)=>({host:'fixture',session:'main',id,position,name:'Conversation '+id,panes:[{pane_id:id+1,tab_position:position,is_plugin:false}]})),panes:ids.map(id=>({host:'fixture',session:'main',pane_id:id+1,agent:'codex',state:'ready',chat_id:'chat-'+id})),errors:[]});
+      if(pathname.startsWith('/api/chats/'))return json({messages:[{role:'assistant',text:pathname.split('/').at(-1)}],start_cursor:0,next_cursor:null});
+      if(pathname.startsWith('/api/'))return json({});
+      if(pathname.startsWith('/hosts/'))return route.fulfill({body:''});
+      const file=__dirname+'/static/'+(pathname==='/'?'index.html':pathname.slice(1));
+      return fs.existsSync(file)?route.fulfill({path:file,contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html'}):route.fulfill({status:404,body:''});
+    });
+    await page.goto('https://switchboard.test/?host=fixture&session=main&tab=42');
+    const draft=page.getByLabel('Reply draft'),shows=text=>page.waitForFunction(text=>document.querySelector('.conversation-message')?.textContent.includes(text),text);
+    await shows('chat-42');await draft.fill('Draft for 42');
+    await page.keyboard.press('Alt+l');await shows('chat-90');
+    assert.equal(await draft.evaluate(node=>document.activeElement===node),true,'The draft keeps focus after switching');
+    assert.equal(await draft.inputValue(),'');
+    await page.keyboard.press('Alt+h');await shows('chat-42');
+    assert.equal(await draft.inputValue(),'Draft for 42','Alt+H must not type into the draft');
+    await page.keyboard.press('Alt+h');await shows('chat-105');
+    assert.deepEqual(errors,[]);
+  }finally{await browser.close();}
+});
