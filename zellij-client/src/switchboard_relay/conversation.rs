@@ -1,5 +1,5 @@
 //! What Conversation does to a pane without opening a terminal viewer: complete
-//! Codex's startup hooks review, type a reply into Claude's empty prompt, and
+//! Codex's startup hooks review and Claude's folder trust, type a reply into Claude's empty prompt, and
 //! answer Claude's numbered menus (see `prompt`).
 use super::*;
 use serde::Serialize;
@@ -159,18 +159,22 @@ async fn acting_on(session: &str, pane_id: u32) -> tokio::sync::OwnedMutexGuard<
 pub(super) async fn local(host: &Host, target: Target) -> Result<Json<Value>, Error> {
     let _guard = acting_on(&target.session, target.pane_id).await;
     let (pane, screen) = checked_screen(host, &target, tokio::time::Instant::now()).await?;
-    if attention::classify(&pane, &screen)["agent"] != "codex" {
-        return Ok(Json(json!({"trusted":false})));
-    }
-    let Some(keys) = trust_keys(&screen) else {
+    let keys = match attention::classify(&pane, &screen)["agent"].as_str() {
+        Some("codex") => {
+            trust_keys(&screen).map(|keys| keys.iter().map(|key| (*key).to_string()).collect())
+        },
+        Some("claude") => prompt::folder_trust_keys(&screen),
+        _ => None,
+    };
+    let Some(keys) = keys else {
         return Ok(Json(json!({"trusted":false})));
     };
     let id = target.pane_id.to_string();
     let mut args = vec!["write", "-p", &id];
-    args.extend_from_slice(keys);
+    args.extend(keys.iter().map(String::as_str));
     control::run_local(host, &target.session, &args, Duration::from_secs(5))
         .await
-        .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot confirm hook trust"))?;
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot confirm startup trust"))?;
     Ok(Json(json!({"trusted":true})))
 }
 
@@ -1245,13 +1249,23 @@ esac
             "-s fixture action write -p 7 27 91 66 13"
         );
 
-        // Claude replies type into an empty prompt only.
+        // Claude's startup trust uses the same checked pane and writable host.
         std::fs::remove_file(&actions).unwrap();
         std::fs::write(
             &catalog,
             r#"[{"id":7,"tab_id":8,"pane_command":"claude","is_plugin":false}]"#,
         )
         .unwrap();
+        std::fs::write(&screen, include_str!("fixtures/claude-folder-trust.txt")).unwrap();
+        assert_eq!(local(&host, target()).await.unwrap().0["trusted"], true);
+        assert_eq!(local(&host, target()).await.unwrap().0["trusted"], false);
+        assert_eq!(
+            std::fs::read_to_string(&actions).unwrap().trim(),
+            "-s fixture action write -p 7 27 91 66 13"
+        );
+        std::fs::remove_file(&actions).unwrap();
+
+        // Claude replies type into an empty prompt only.
         let reply = |text: &str| Reply {
             session: "fixture".into(),
             pane_id: 7,

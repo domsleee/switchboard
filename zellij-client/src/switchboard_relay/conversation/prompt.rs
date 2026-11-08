@@ -280,6 +280,14 @@ fn folder_trust(rows: &[Row]) -> Option<Menu> {
     })
 }
 
+pub(super) fn folder_trust_keys(screen: &str) -> Option<Vec<String>> {
+    let menu = folder_trust(&rows(screen))?;
+    match keys(&menu, 1, None)?.pop()? {
+        Key::Bytes(bytes) => Some(bytes),
+        Key::Paste(_) => None,
+    }
+}
+
 #[derive(Debug, PartialEq)]
 enum Key {
     Bytes(Vec<String>),
@@ -443,6 +451,10 @@ mod tests {
     fn switchboard_conversation_folder_trust_shows_workspace_and_answers_with_arrows() {
         let screen = include_str!("../fixtures/claude-folder-trust.txt");
         let menu = claude_menu(screen).unwrap();
+        assert_eq!(
+            folder_trust_keys(screen),
+            Some(["27", "91", "66", "13"].map(String::from).into())
+        );
         assert_eq!(labels(&menu), ["No, exit", "Yes, I trust this folder"]);
         assert!(menu
             .detail
@@ -487,7 +499,10 @@ mod tests {
             screen.replace("Accessing workspace:", ""),
         ] {
             assert_eq!(claude_menu(&invalid), None);
+            assert_eq!(folder_trust_keys(&invalid), None);
         }
+        assert_eq!(folder_trust_keys(&permission()), None);
+        assert_eq!(folder_trust_keys(&question()), None);
     }
 
     const RULE: &str = "─────────────────────────────────────────────────────────────";

@@ -138,12 +138,16 @@
     let target=null,open=savedMode? savedMode==='conversation':mobile,generation=0,startCursor=0,tailCursor=0,nextCursor=null,messages=[],loading=false,loaded=false,lastPaint=null,modeRevision=0,navigationRevision=0;
     const outgoing=new Map(),consumedTranscript=new Map(),pendingSends=new Map(),bridgeSends=new Map(),startups=new Map(),draftVersions=new Map(),firstSends=new Set();
     const conversations=new Map(),handoverDrafts=new Map(),handoverAttachments=new Map(),launchKeys=new WeakMap();
-    const asyncQuestions=new Map();
+    const asyncQuestions=new Map(),trustPreparations=new Map();
     let stream=null,streamReady=false,streamSupported=false,streamPages=[],restorePosition=null;
     async function prepare(){
-      if(!open||document.hidden||!target||target.agent!=='codex'||!target.session||!Number.isInteger(target.tab))return;
+      if(!open||document.hidden||!target||!['codex','claude'].includes(target.agent)||!target.session||!Number.isInteger(target.tab))return;
+      const folderTrust=target.agent==='claude';
+      if(folderTrust&&(target.chatId||target.state!=='approval'))return;
       if(target.chatId&&['ready','working'].includes(target.state))return;
-      const destination=target,key=identity(destination),startup=startupState();
+      const destination=target,key=identity(destination);
+      if(folderTrust&&!trustPreparations.has(key))trustPreparations.set(key,{started:Date.now()});
+      const startup=folderTrust?trustPreparations.get(key):startupState();
       if(!startup||startup.pending||startup.error||Date.now()-startup.started>=30000||Date.now()-(startup.at||0)<5000)return;
       startup.at=Date.now();startup.pending=true;
       try{const response=await fetch('/api/hosts/'+encodeURIComponent(destination.host)+'/conversation/prepare',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:destination.session,tab_id:destination.tab,pane_id:destination.pane}),signal:AbortSignal.timeout(20000)});if(!response.ok)throw Error(response.status===404?'Update Switchboard on this computer to prepare the agent.':'Could not prepare this agent. Retry or open Terminal.');}
