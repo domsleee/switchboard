@@ -54,7 +54,8 @@
 .conversation-recovery button{min-height:40px;border-color:var(--line-2);background:var(--raised)}
 
 /* Transcript */
-.conversation-messages{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:28px var(--edge) 20px;-webkit-mask-image:linear-gradient(#0000,#000 12px,#000 calc(100% - 20px),#0000);mask-image:linear-gradient(#0000,#000 12px,#000 calc(100% - 20px),#0000);scrollbar-width:thin;scrollbar-color:#2c2d33 transparent;overflow-anchor:none}
+.conversation-messages{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:28px var(--edge) 20px;-webkit-mask-image:linear-gradient(#0000,#000 12px,#000 calc(100% - 20px),#0000);mask-image:linear-gradient(#0000,#000 12px,#000 calc(100% - 20px),#0000);scrollbar-width:thin;scrollbar-color:transparent transparent;overflow-anchor:none}
+.conversation-messages.scrolling{scrollbar-color:#3a3b42 transparent}
 .conversation-message{margin:0 0 28px;overflow-wrap:anywhere}
 .conversation-message.user{width:fit-content;max-width:min(80%,36rem);background:#1f2024;color:var(--text);border-radius:14px;padding:8px 14px;margin-left:auto;line-height:1.55}
 .conversation-message.user:not(:first-of-type){margin-top:24px}

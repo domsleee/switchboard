@@ -288,25 +288,28 @@
     function outgoingLabel(state){return state==='sending'?'Sending…':state==='queued'?'Queued':state==='sent'?'Sent':'Could not confirm sending';}
     function sendItem(sent,state,detail){sent.state=state;sent.detail=detail||'';if(identity(target)===sent.key)paint();}
     function nearBottom(){return list.scrollHeight-list.scrollTop-list.clientHeight<80;}
-    let following=true,readingAnchor=null,resizeFrame=null;
+    let following=true,readingAnchor=null;
     function rememberReading(){
       following=nearBottom();
       if(following){readingAnchor=null;return;}
       const top=list.getBoundingClientRect().top,node=[...list.querySelectorAll('.conversation-message')].find(node=>node.getBoundingClientRect().bottom>top);
       readingAnchor=node?{node,id:node.dataset.conversationEntry,offset:node.getBoundingClientRect().top-top}:null;
     }
+    // Resize observers run after layout and before paint, so correcting here keeps the
+    // reader's place in the same frame an image or code block above them grows.
     const contentResize=globalThis.ResizeObserver?new ResizeObserver(()=>{
-      if(resizeFrame!==null)return;
-      resizeFrame=requestAnimationFrame(()=>{resizeFrame=null;if(panel.hidden||!loaded)return;
-        if(following)list.scrollTop=list.scrollHeight;
-        else if(readingAnchor){const node=readingAnchor.node.isConnected?readingAnchor.node:[...list.querySelectorAll('.conversation-message')].find(node=>node.dataset.conversationEntry===readingAnchor.id);if(node)list.scrollTop+=node.getBoundingClientRect().top-list.getBoundingClientRect().top-readingAnchor.offset;}
-        updateLatest();rememberReading();
-      });
+      if(panel.hidden||!loaded)return;
+      if(following)list.scrollTop=list.scrollHeight;
+      else if(readingAnchor){const node=readingAnchor.node.isConnected?readingAnchor.node:[...list.querySelectorAll('.conversation-message')].find(node=>node.dataset.conversationEntry===readingAnchor.id);if(node)list.scrollTop+=node.getBoundingClientRect().top-list.getBoundingClientRect().top-readingAnchor.offset;}
+      updateLatest();rememberReading();
     }):null;
     contentResize?.observe(list);contentResize?.observe(working);
     if(globalThis.ResizeObserver)new ResizeObserver(()=>panel.style.setProperty('--conversation-header-height',header.offsetHeight+'px')).observe(header);
     function updateLatest(){latest.hidden=nearBottom();if(latest.hidden)newOutput=false;latest.textContent=newOutput?'↓ New messages':'↓ Latest';actions.hidden=latest.hidden&&refresh.hidden;}
-    list.addEventListener('scroll',()=>{rememberReading();list.classList.add('scrolling');clearTimeout(scrollIdle);scrollIdle=setTimeout(()=>list.classList.remove('scrolling'),700);updateLatest();if(loaded&&startCursor>0&&list.scrollTop<80&&!loading&&older.hidden)load('older');},{passive:true});
+    // The scrollbar shows only while the reader scrolls, not when new output, the composer
+    // growing or a resize moves the list.
+    let scrollInput=0;for(const type of ['wheel','touchmove','pointerdown','keydown'])list.addEventListener(type,()=>{scrollInput=Date.now();},{passive:true});
+    list.addEventListener('scroll',()=>{rememberReading();if(Date.now()-scrollInput<1000){list.classList.add('scrolling');clearTimeout(scrollIdle);scrollIdle=setTimeout(()=>list.classList.remove('scrolling'),700);}updateLatest();if(loaded&&startCursor>0&&list.scrollTop<80&&!loading&&older.hidden)load('older');},{passive:true});
     function paint(prepend=false,initial=false){
       const key=identity(target),sentItems=outgoing.get(key)||[],used=consumedTranscript.get(key)||new Set();
       for(const sent of sentItems){
