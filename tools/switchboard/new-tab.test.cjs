@@ -77,6 +77,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
       await page.waitForFunction(()=>document.querySelector('iframe.active')?.contentWindow.creationRequested);
       const input=page.frameLocator('iframe[title="Windows: main"]').locator('#terminal-input');
       assert.deepEqual(await input.evaluate(()=>window.creationLaunch),{project:'switchboard',command:'csol',prompt:'',images:[]});
+      assert.notEqual(await page.locator('#tabs .tab-select.selected').getAttribute('data-agent-state'),'Working','A blank agent tab has no submitted task');
       await input.evaluate(()=>window.confirmCreation());
       await page.waitForFunction(()=>document.querySelector('#tabs .selected .tab-name')?.textContent==='New shell 1');
       assert.equal(frameBoots,1);
@@ -200,16 +201,18 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
         assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-prompt','Tab returns to the prompt');
       }
       await page.keyboard.press('Enter');
-      await page.waitForFunction(()=>document.querySelector('#tabs .selected .tab-name')?.textContent==='Creating tab…');
+      await page.waitForFunction(()=>allTabs().find(item=>item.key===selected)?.tab.id==='creating');
       if(number===1){
         assert.equal(await input.evaluate(()=>!!window.creationRequested),false);
         await input.evaluate(()=>{window.controlSocket.readyState=1;window.controlSocket.dispatchEvent(new Event('open'));});
         await page.waitForFunction(()=>document.querySelector('iframe.active')?.contentWindow.creationRequested===true);
       }
-      assert.equal(await page.locator('#tabs .tab-select').count(),number+1);
+      assert.equal(await page.evaluate(()=>allTabs().length),number+1);
       // Repeated old scans must not treat the preceding provisional tab as this creation.
       await page.evaluate(()=>refreshAttention());
-      assert.equal(await page.locator('#tabs .selected .tab-name').textContent(),'Creating tab…');
+      assert.equal(await page.locator('#tabs .selected .tab-name').textContent(),number===2?'Update this project':'Fix spaces, "quotes", $vars & symbols 🦀');
+      assert.equal(await page.locator('#tabs .tab-select.selected').getAttribute('data-agent-state'),'Working');
+      assert.equal(await page.evaluate(()=>sidebarTabs().find(item=>item.key===selected).snoozed),true,'Terminal submissions immediately enter Working too');
       assert.equal(await input.evaluate(()=>window.creationElevated),number===2);
       assert.deepEqual(await input.evaluate(()=>window.creationLaunch),number===2?{project:'dotfiles',command:'c',prompt:'Update this project',images:[]}:{project:'switchboard',command:'csol',prompt:'  Fix spaces, "quotes", $vars & symbols 🦀\nsecond line  \n\nAttached files:\nC:/User files/attachments/it\'s notes.txt',images:["C:/User files/attachments/it's screen shot.png","C:/User files/attachments/it's pasted.png"]});
       if(number===1){
@@ -218,6 +221,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
       }
       await input.evaluate(()=>window.confirmCreation());created=number;
       await page.waitForFunction(n=>document.querySelector('#tabs .selected .tab-name')?.textContent==='New shell '+n,number);
+      assert.equal(await page.locator('#tabs .tab-select.selected').getAttribute('data-agent-state'),'Working','Working survives the native pane appearing');
       assert.equal(new URL(page.url()).searchParams.get('pane'),String(8+number));
       assert.equal(await page.evaluate(()=>document.activeElement===document.querySelector('#terminals>iframe.active')),true,'New terminal receives keyboard focus after shortcut and Enter');
       assert.equal(await input.evaluate(i=>document.activeElement===i&&!window.term.options.disableStdin),true);

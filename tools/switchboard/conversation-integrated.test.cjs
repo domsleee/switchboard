@@ -262,6 +262,10 @@ test('integrated Conversation journeys use production markup and preserve delive
     await page.evaluate(agent=>{void createNewTab(sessionKey('fixture','main'),{project:'switchboard',command:agent==='codex'?'codex:gpt-6.1-sol':'claude:claude-haiku-5-5',prompt:'First task'});},agent);
     await page.locator('.conversation-launch').getByText('First task',{exact:true}).waitFor();
     const draft=page.getByLabel('Reply draft'),send=page.getByRole('button',{name:'Send',exact:true});await draft.waitFor();
+    assert.equal(await page.locator('#tabs .tab-select.selected').getAttribute('data-agent-state'),'Working');
+    assert.equal(await page.locator('#tabs .tab-select.selected .star.working').count(),1);
+    assert.equal(await page.locator('.conversation-activity').textContent(),'Working…');
+    assert.equal(await page.evaluate(()=>sidebarTabs().find(item=>item.key===selected).snoozed),true,'A chat submitted with text immediately belongs to Working');
     const box=await page.locator('.conversation-compose').boundingBox();assert.ok(box.y>600&&box.y+box.height<=844,'The composer stays at the bottom');
     assert.equal(await draft.evaluate(node=>document.activeElement===node),desktop,'Only desktop startup focuses the draft');
     if(process.env.MODE_SCREENSHOTS)await page.screenshot({path:path.join(process.env.MODE_SCREENSHOTS,`startup-composer-${agent}-${desktop?'desktop':'phone'}.png`)});
@@ -305,29 +309,41 @@ test('integrated Conversation journeys use production markup and preserve delive
     f.chatPrefix='chat-';await f.refresh();assert.equal(await draft.inputValue(),'Keep typing','The original chat keeps its draft');
    }finally{await f.close();}
   });
-  await t.test('a tab started from New tab shows its prompt and a starting spinner until the transcript has it',async()=>{
+  await t.test('a submitted prompt starts Working immediately and yields to reported activity and attention',async()=>{
    const f=await fixture({agent:'claude'}),{page}=f;try{
     await page.evaluate(()=>createNewTab(sessionKey('fixture','main'),{project:'switchboard',command:'claude:claude-haiku-5-5',prompt:'Fix the flaky test\n\nAttached files:\n/tmp/log.txt'},()=>true,'Fix the flaky test'));
     await page.locator('.conversation-launch').getByText('Fix the flaky test',{exact:true}).waitFor();
     assert.deepEqual(f.newTabs.map(body=>body.prompt),['Fix the flaky test\n\nAttached files:\n/tmp/log.txt'],'The relay gets the full prompt');
-    assert.equal(await page.locator('.conversation-working-step').getAttribute('data-step'),'Starting Claude…');
+    assert.equal(await page.locator('.conversation-working-step').getAttribute('data-step'),'Working');
     assert.equal(await page.locator('.conversation-notice').isVisible(),false,'No connection notices while the prompt stands in');
     assert.equal(await page.locator('.conversation-panel header strong').textContent(),'Fix the flaky test');
     const row=page.locator('#tabs .tab-select.selected');
-    assert.equal(await row.getAttribute('data-agent-state'),'Starting');assert.equal(await row.locator('.star.starting').count(),1);
+    assert.equal(await row.getAttribute('data-agent-state'),'Working');assert.equal(await row.locator('.star.working').count(),1);
     assert.equal(await row.locator('.tab-name').textContent(),'Fix the flaky test');
     // The relay first reports the new pane with no agent yet.
     f.tabs=[1,2,3];f.agent=null;f.state='unknown';f.bound=false;await f.refresh();
     assert.equal(await page.evaluate(()=>SwitchboardConversation&&allTabs().find(item=>item.key===selected)?.tab.id),3,'The real tab replaced the placeholder');
-    assert.equal(await page.locator('#tabs .tab-select.selected').getAttribute('data-agent-state'),'Starting');
-    assert.equal(await page.locator('.conversation-working-step').getAttribute('data-step'),'Starting Claude…');
+    assert.equal(await page.locator('#tabs .tab-select.selected').getAttribute('data-agent-state'),'Working');
+    assert.equal(await page.locator('.conversation-working-step').getAttribute('data-step'),'Working');
     assert.equal(await page.locator('.conversation-notice').isVisible(),false);
+    f.agent='claude';f.state='ready';await f.refresh();
+    assert.equal(await page.locator('#tabs .tab-select.selected').getAttribute('data-agent-state'),'Working','An empty startup prompt has not finished the submitted task');
+    assert.equal(await page.evaluate(()=>sidebarTabs().find(item=>item.key===selected).snoozed),true);
+    for(const [state,label] of [['approval','Approval needed'],['input','Input needed']]){
+     f.state=state;await f.refresh();
+     assert.equal(await row.getAttribute('data-agent-state'),label,'Reported attention overrides startup');
+     assert.equal(await page.locator('.conversation-working').isVisible(),false);
+     assert.equal(await page.evaluate(()=>sidebarTabs().find(item=>item.key===selected).snoozed),false);
+    }
     f.agent='claude';f.bound=true;
     f.state='working';f.history.set(3,[{role:'user',text:'Fix the flaky test'},{role:'assistant',text:'Looking at the test'}]);await f.refresh();
     await page.getByText('Looking at the test',{exact:true}).waitFor();
     assert.equal(await page.locator('.conversation-launch').count(),0,'The transcript replaces the stand-in');
     assert.equal(await page.locator('.conversation-message.user').count(),1);
-    assert.notEqual(await page.locator('#tabs .tab-select.selected').getAttribute('data-agent-state'),'Starting');
+    assert.equal(await page.locator('#tabs .tab-select.selected').getAttribute('data-agent-state'),'Working');
+    f.state='ready';await f.refresh();
+    assert.equal(await page.locator('.conversation-activity').textContent(),'Ready');
+    assert.equal(await page.locator('.conversation-working').isVisible(),false,'Completion ends Working even though the launch record remains');
    }finally{await f.close();}
   });
   await t.test('Codex and Claude commands attach only after leaving Conversation and keep Terminal available',async()=>{

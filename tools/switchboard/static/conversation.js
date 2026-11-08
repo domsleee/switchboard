@@ -231,7 +231,7 @@
         if(step){step.classList.add('live');workingStep.dataset.step=step.dataset.live||[...step.childNodes].filter(node=>!node.classList?.contains('conversation-label')).map(node=>node.textContent).join(' ').replace(/\s+/g,' ').trim();}
         working.classList.toggle('has-step',!!step);
       }
-      if(!step)workingStep.dataset.step=waiting?'Waiting on a background agent':launchShown()&&!target.agent?`Starting ${target.launch.agent==='codex'?'Codex':'Claude'}…`:'Working';
+      if(!step)workingStep.dataset.step=waiting?'Waiting on a background agent':'Working';
       const run=step&&liveRun,expanded=!!run&&!run.collapsed,count=run?`· ${run.count} steps`:'';
       working.classList.toggle('has-run',!!run);working.disabled=!run;if(workingCount.textContent!==count)workingCount.textContent=count;
       if(run){working.removeAttribute('aria-hidden');working.setAttribute('aria-expanded',String(expanded));working.setAttribute('aria-label',`${expanded?'Hide':'Show'} ${run.count-1} earlier step${run.count===2?'':'s'}`);}
@@ -244,7 +244,7 @@
       if(switchModel){model.disabled=!target?.switchAvailable||!chat;cancelModel.hidden=!target?.pendingSwitch||!!target.pendingSwitch.running;}
       if(activity.textContent!==label)activity.textContent=label;
       activity.classList.toggle('working',state==='working');
-      const follow=nearBottom();paintLaunch();working.hidden=!launchShown()&&(!chat||!(state==='working'||state==='waiting'&&!backgroundAgents().length));tickWorking();
+      const follow=nearBottom();paintLaunch();working.hidden=['approval','input','ready'].includes(state)||!launchShown()&&(!chat||!(state==='working'||state==='waiting'&&!backgroundAgents().length));tickWorking();
       if(follow)list.scrollTop=list.scrollHeight;
       const startup=startupState(),stalled=!!startup&&(!!startup.error||Date.now()-startup.started>=30000);
       terminalAction.hidden=!['approval','input'].includes(state)&&!stalled;recovery.hidden=!stalled||!!chat;

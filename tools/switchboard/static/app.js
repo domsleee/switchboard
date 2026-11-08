@@ -282,6 +282,7 @@ function updateCreatedTabs(entry){
     entry.provisionalTabs??=[];
     if(!entry.provisionalTabs.some(tab=>tab.id===paneId))entry.provisionalTabs.push({id:paneId,pending:true,name:'New tab',panes:[]});
     if(creating){
+      if(creating.launch){entry.provisionalTabs.find(tab=>tab.id===paneId).launch=creating.launch;launches.set(JSON.stringify([entry.host,entry.name,paneId]),creating.launch);}
       if(selected===tabKey(entry,creating))selected=tabKey(entry,entry.provisionalTabs.find(tab=>tab.id===paneId));
       entry.creatingTab=null;entry.pendingNewTab=null;entry.followActiveTab=false;
     }
@@ -320,13 +321,20 @@ function tabTitle(item){
 // A tab started from New tab with a prompt shows that prompt as its name, and a spinner until
 // its agent reports in, instead of a blank "New tab"; Conversation shows the prompt as sent.
 const launches=new Map();
+function promptLaunch(launch,typed=launch.prompt){const text=typeof typed==='string'?typed:'',images=launch.images?.length||0;return text.trim()||images?{text:text.trim()?text:images===1?'Image attached':`${images} images attached`,agent:newTabModelProvider(launch.command),at:Date.now()}:null;}
 function launchFor(item){
   const pane=item.tab.panes.find(p=>!p.is_plugin),key=pane&&JSON.stringify([item.entry.host,item.entry.name,pane.pane_id]);
   const launch=item.tab.launch||key&&launches.get(key);
   if(launch&&Date.now()-launch.at>600000){if(key)launches.delete(key);return null;}
   return launch||null;
 }
-function launchingTab(item){const launch=launchFor(item);return launch&&!tabAgent(item)?launch:null;}
+function launchingTab(item){
+  const launch=launchFor(item);if(!launch||launch.reported)return null;
+  // The empty prompt can report Ready before receiving the launch text. Once the
+  // task reports real activity or a conversation, its own status takes over.
+  if(statesForTab(item).some(state=>state.agent&&(state.chat_id||['working','waiting','approval','input'].includes(state.state)))){launch.reported=true;return null;}
+  return launch;
+}
 function displayTitle(item){
   const title=tabTitle(item),launch=launchFor(item);
   if(!launch||!/^(?:New tab|Creating tab…|Tab #\d+|Claude(?: Code)?|Codex)$/i.test(title))return title;
@@ -456,6 +464,7 @@ function autoLabel(item){
   const states=statesForTab(item);
   if(states.some(s=>s.state==='approval'))return 'Approval needed';
   if(states.some(s=>s.state==='input'))return 'Input needed';
+  if(launchingTab(item))return 'Working';
   if(states.some(s=>s.state==='working'))return 'Working';
   // Claude finished its turn but a background shell it started is still running.
   if(states.some(s=>s.state==='waiting'))return 'Waiting on an agent';
@@ -484,7 +493,7 @@ function acknowledgeConversation(view){
   if(!view.chatId||state?.chat_id!==view.chatId)return;
   if(acknowledgeAttention(item,view.pane))render();
 }
-function isReady(item){return !systemTab(item.tab)&&!!(ready[item.key] || item.tab.name.startsWith('*') || askpassForTab(item) || statesForTab(item).some(needsAttention));}
+function isReady(item){return !systemTab(item.tab)&&!!(ready[item.key] || item.tab.name.startsWith('*') || askpassForTab(item) || !launchingTab(item)&&statesForTab(item).some(needsAttention));}
 // Agents open tabs named System for their own checks: hidden, and never asking for attention.
 function systemTab(tab){return tab.name.replace(/^\*\s*/,'')==='System';}
 function matchesSearch(item){
@@ -723,21 +732,20 @@ function render() {
     const starred=isReady(item);
     // The web server names tabs opened with Run as administrator.
     const elevated=item.tab.name.replace(/^\*\s*/,'')==='Administrator';
-    const starting=!unavailable&&!!launchingTab(item);
-    const status=unavailable?'Status unavailable':starting?'Starting':stateLabel==='Ready'?'':stateLabel;
+    const status=unavailable?'Status unavailable':stateLabel==='Ready'?'':stateLabel;
     const duplicate=titleCounts.get(JSON.stringify([item.entry.host,title]))>1;
     const project=tabProject(item);
     const subtitle=`${project?project+' · ':''}${machine}${duplicate?' · '+item.entry.name:''}${isPinned(item.key)?' · Pinned':''}`;
     button.className='tab-select'+(item.key===selected?' selected':'')+(starred?' needs-attention':'')+(elevated?' elevated':'')+(systemTab(item.tab)?' system':'');
     button.setAttribute('aria-pressed',String(item.key===selected));
     button.setAttribute('aria-label',`${title}${elevated&&title!=='Administrator'?', Administrator':''}${systemTab(item.tab)?', System tab opened by an agent':''}, ${project?project+', ':''}${machine}, ${item.entry.name}${status?', '+status:''}${flagged?', Flagged for review':''}${isPinned(item.key)?', Pinned':''}`);
-    button._star.className='star '+(unavailable?'unavailable':starting?'starting':starred?'attention':stateLabel==='Working'?'working':stateLabel.startsWith('Waiting')?'waiting':'quiet');
+    button._star.className='star '+(unavailable?'unavailable':starred?'attention':stateLabel==='Working'?'working':stateLabel.startsWith('Waiting')?'waiting':'quiet');
     const working=stateLabel==='Working'?tabAge(item,'working'):'';
-    const short=unavailable?'Unavailable':starting?'Starting':working&&working!=='now'?`Working ${working}`:statusWords[stateLabel]||(flagged?'Review':tabAge(item));
-    button._status.dataset.tone=unavailable?'':starting?'working':stateLabel==='Ready to review'?'done':starred?'attention':stateLabel==='Working'?'working':'';
+    const short=unavailable?'Unavailable':working&&working!=='now'?`Working ${working}`:statusWords[stateLabel]||(flagged?'Review':tabAge(item));
+    button._status.dataset.tone=unavailable?'':stateLabel==='Ready to review'?'done':starred?'attention':stateLabel==='Working'?'working':'';
     if(button._status.lastChild.textContent!==short)button._status.lastChild.textContent=short;
     if(button._name.textContent!==title)button._name.textContent=title;
-    button.dataset.agentState=unavailable?'Status unavailable':starting?'Starting':stateLabel;
+    button.dataset.agentState=unavailable?'Status unavailable':stateLabel;
     if(button._where.textContent!==subtitle)button._where.textContent=subtitle;
     const agentName=tabAgent(item);
     if(button._agent.dataset.agent!==agentName){button._agent.dataset.agent=agentName;button._agent.innerHTML=agentIcons[agentName]||'';}
@@ -1764,8 +1772,7 @@ async function createConversationTab(key,launch,typed=launch.prompt){
   if(entry.pendingNewTab){setStatus('A tab is already being created on this computer.',true);return;}
   const pending=entry.pendingNewTab=new Set(sessionTabs(entry).map(tab=>tabKey(entry,tab)));
   pending.requestId=entry.newTabRequestId=(entry.newTabRequestId||0)+1;pending.api=true;
-  const text=typeof typed==='string'?typed:'',images=launch.images?.length||0;
-  const started=text.trim()||images?{text:text.trim()?text:images===1?'Image attached':`${images} images attached`,agent:newTabModelProvider(launch.command),at:Date.now()}:null;
+  const started=promptLaunch(launch,typed);
   entry.creatingTab={id:'creating',pending:true,name:'Creating tab…',position:Infinity,panes:[],launch:started};
   const placeholder=selected=tabKey(entry,entry.creatingTab);restoringTab=false;entry.followActiveTab=false;
   if(filter!=='all'&&groups[hostId]!==filter)setFilter('all');$('tab-search').value='';
@@ -1948,7 +1955,7 @@ async function createNewTab(key,launch,isCurrent=()=>true,typed){
   pending.startedAt=performance.timeOrigin+performance.now();
   pending.paneIds=new Set((entry.state.panes||[]).filter(p=>!p.is_plugin).map(p=>p.pane_id));
   if(entry.state.active_pane&&!entry.state.active_pane.is_plugin)pending.paneIds.add(entry.state.active_pane.pane_id);
-  entry.creatingTab={id:'creating',pending:true,name:'Creating tab…',position:Infinity,panes:[]};
+  entry.creatingTab={id:'creating',pending:true,name:'Creating tab…',position:Infinity,panes:[],launch:promptLaunch(launch,typed??launch.prompt)};
   selected=tabKey(entry,entry.creatingTab);
   restoringTab=false;entry.followActiveTab=true;
   if(filter!=='all'&&groups[entry.host]!==filter)setFilter('all');$('tab-search').value='';
@@ -2616,11 +2623,11 @@ window.SwitchboardConversation?.install({
   selection(){
     const item=allTabs().find(item=>item.key===selected);if(!item)return null;
     const active=item.entry.state?.active_pane,panes=(!item.entry.state?item.tab.panes:tabPanes(item.entry,item.tab)).filter(p=>!p.is_plugin);
-    const preferred=item.entry.resumePane||active;
-    const pane=panes.find(p=>p.pane_id===preferred?.pane_id)||panes.find(p=>p.is_focused)||panes[0];if(!pane)return {key:item.key,host:item.entry.host,frame:item.entry.frame,title:displayTitle(item),starting:!!item.tab.pending,launch:launchFor(item)};
+    const preferred=item.entry.resumePane||active,launch=launchingTab(item);
+    const pane=panes.find(p=>p.pane_id===preferred?.pane_id)||panes.find(p=>p.is_focused)||panes[0];if(!pane)return {key:item.key,host:item.entry.host,frame:item.entry.frame,title:displayTitle(item),state:launch?'working':undefined,since:launch?.at/1000,starting:!!item.tab.pending,launch:launchFor(item)};
 
     const state=paneAttention.get(attentionKey(item.entry.host,item.entry.name,pane.pane_id)),queued=pendingSwitches.get(item.key);
-    return {key:JSON.stringify([item.entry.host,item.entry.name,pane.pane_id]),host:item.entry.host,showCost:chatCostShown(item.entry.host),chatHost:hosts.get(item.entry.host)?.local?'local':item.entry.host,session:item.entry.name,tab:item.tab.id,pane:pane.pane_id,frame:item.entry.frame,terminalReady:!item.entry.suspended&&!item.entry.disconnected&&!item.entry.needsFocus&&!item.entry.focusPending&&active?.pane_id===pane.pane_id,title:displayTitle(item),agent:state?.agent,state:state?.state,chatId:state?.chat_id,since:state?.since,computer:hosts.get(item.entry.host)?.name,switchAvailable:switchPossible(state),pendingSwitch:queued?.source.target.pane_id===pane.pane_id?queued:null,starting:!!item.tab.pending,launch:launchFor(item)};
+    return {key:JSON.stringify([item.entry.host,item.entry.name,pane.pane_id]),host:item.entry.host,showCost:chatCostShown(item.entry.host),chatHost:hosts.get(item.entry.host)?.local?'local':item.entry.host,session:item.entry.name,tab:item.tab.id,pane:pane.pane_id,frame:item.entry.frame,terminalReady:!item.entry.suspended&&!item.entry.disconnected&&!item.entry.needsFocus&&!item.entry.focusPending&&active?.pane_id===pane.pane_id,title:displayTitle(item),agent:state?.agent,state:launch?'working':state?.state,chatId:state?.chat_id,since:launch?launch.at/1000:state?.since,computer:hosts.get(item.entry.host)?.name,switchAvailable:switchPossible(state),pendingSwitch:queued?.source.target.pane_id===pane.pane_id?queued:null,starting:!!item.tab.pending,launch:launchFor(item)};
   },
   terminal(target){const item=allTabs().find(item=>item.key===selected);if(item&&item.entry.frame===target.frame){item.entry.frame.focus();focus(item);}}
 });
