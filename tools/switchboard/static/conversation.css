@@ -467,10 +467,11 @@
   .conversation-messages.scrolling{scrollbar-width:thin}
   .conversation-messages.scrolling::-webkit-scrollbar{width:3px}
   .conversation-messages.scrolling::-webkit-scrollbar-thumb{background:#2c2d33;border-radius:3px}
-  .conversation-message{margin-bottom:20px}
-  .conversation-message.user{max-width:88%;font-size:14px}
+  /* Same size as the composer, which needs 16px so iOS does not zoom when it takes focus. */
+  .conversation-message{margin-bottom:20px;font-size:16px}
+  .conversation-message.user{max-width:88%}
   .conversation-message.commentary,.conversation-panel .conversation-working{font-size:13px}
-  .conversation-message h1{font-size:18px}.conversation-message h2{font-size:16px}.conversation-message h3,.conversation-message h4{font-size:15px}
+  .conversation-message h1{font-size:20px}.conversation-message h2{font-size:18px}.conversation-message h3,.conversation-message h4{font-size:16px}
   .conversation-table table{font-size:13px;width:100%}.conversation-table thead td{font-size:12px}
   .conversation-message pre{font-size:12px}
   .conversation-code>pre{padding-left:12px;padding-right:12px}
