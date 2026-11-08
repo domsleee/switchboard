@@ -85,6 +85,17 @@ test('integrated Conversation journeys use production markup and preserve delive
     assert.equal(f.requests.length,1);assert.equal(f.requests[0].message,text+'\n\nAttached files:\n'+uploadRoot+'portrait.svg');
    }finally{await f.close();}
   });
+  await t.test('a send is acknowledged when hidden records shift its entry to an earlier cursor',async()=>{
+   const f=await fixture(),{page}=f;try{
+    const history=f.history.get(1);history.push({role:'assistant',text:'[Request interrupted by user]',timestamp:new Date(Date.now()-60000).toISOString()});await f.poll();
+    await page.getByLabel('Reply draft').fill('Shifted reply');await page.getByRole('button',{name:'Send',exact:true}).click();
+    await page.waitForFunction(()=>document.querySelectorAll('.conversation-outgoing').length===1);
+    // The relay now hides the settled interrupt record, so the reply takes its cursor.
+    history.pop();history.push({role:'user',text:'Shifted reply',timestamp:new Date().toISOString()});await f.poll();
+    await page.waitForFunction(()=>document.querySelectorAll('.conversation-outgoing').length===0);
+    assert.equal(await page.evaluate(()=>SwitchboardConversation.hasUnsentWork()),false);
+   }finally{await f.close();}
+  });
   await t.test('an image-only send is acknowledged by the transcript entry Claude rewrote',async()=>{
    const f=await fixture(),{page}=f;try{
     await f.upload();await page.getByRole('button',{name:'Send',exact:true}).click();
