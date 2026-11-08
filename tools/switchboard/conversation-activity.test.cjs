@@ -10,6 +10,7 @@ test('Conversation shows the model, animates real work and keeps delivery receip
   await page.addInitScript(()=>{window.intervals=[];window.setInterval=fn=>intervals.push(fn);});
   await page.route('http://activity.test/**',route=>{
    const p=new URL(route.request().url()).pathname;
+   if(p.startsWith('/api/diagnostics/'))return route.fulfill({status:204});
    if(p.endsWith('/codex/reply'))return route.fulfill({json:{status:'queued'}});
    if(p.startsWith('/api/chats/'))return route.fulfill({json:{model,reasoning_effort:effort,background_agents:background,session_id:'00000000-0000-4000-8000-000000000001',messages:[{role:'assistant',text:'Earlier answer',model:'gpt-6.1-sol',reasoning_effort:'low'},{role:'assistant',text:'Newer answer',model:'gpt-6.1-sol',reasoning_effort:'medium'}],start_cursor:0,next_cursor:null}});
    if(p==='/')return route.fulfill({contentType:'text/html',body:`<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/conversation.css"><style>body{margin:0}#terminals{position:relative;height:100dvh}</style><main id="terminals"><iframe id="terminal"></iframe><section id="artifact-preview" hidden></section></main><script src="/conversation.js"></script><script>window.current={key:'pane1',host:'fixture',pane:1,title:'Switchboard',agent:'codex',state:'ready',chatId:'chat-1',frame:document.getElementById('terminal')};SwitchboardConversation.install({selection:()=>current,terminal(){}});</script>`});
@@ -22,7 +23,8 @@ test('Conversation shows the model, animates real work and keeps delivery receip
   assert.equal(await labels.first().textContent(),'Codex');
   assert.equal(await labels.last().textContent(),'Codex');assert.equal(await page.locator('.conversation-compose .conversation-model').count(),1,'The model shows once, in the composer');
   // Speaker labels stay for screen readers; layout shows who is speaking.
-  for(const label of [labels.first(),labels.last()]){const box=await label.boundingBox();assert.ok(!box||box.width<=1&&box.height<=1,'Speaker labels are visually hidden');}
+  for(const label of await page.locator('.conversation-label').all()){const box=await label.boundingBox();assert.ok(!box||box.width<=1&&box.height<=1,'Speaker labels are visually hidden, even after a user message');}
+  assert.equal(await page.locator('.conversation-compose .conversation-model .conversation-model-icon svg').count(),1,'The model button shows the provider icon');
   assert.equal(await working.isVisible(),false);
   await page.getByLabel('Reply draft').fill('Please continue');await page.getByRole('button',{name:'Send',exact:true}).click();
   await page.locator('.conversation-outgoing').getByText('Queued',{exact:true}).waitFor();
