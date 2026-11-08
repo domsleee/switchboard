@@ -27,6 +27,7 @@ test('integrated Conversation journeys use production markup and preserve delive
    if(p.endsWith('/codex/reply')){
     const data=route.request().postDataJSON(),id=Number(data.thread.slice(-12));f.requests.push(data);
     if(f.replyMode==='failed')return route.fulfill({status:503,json:{status:'failed',detail:'Codex could not accept this answer.'}});
+    if(f.replyMode==='unknown')return route.fulfill({status:409,json:{status:'unknown',detail:'Queue outcome is uncertain; this key will not submit again.'}});
     if(f.autoHistory)f.history.get(id).push(f.receipt(data.message));
     if(f.replyMode==='hold')await new Promise(resolve=>f.releaseReplies.push(resolve));
     if(f.replyMode==='lost')return route.abort();
@@ -99,7 +100,7 @@ test('integrated Conversation journeys use production markup and preserve delive
      await page.waitForFunction(()=>!document.querySelector('.conversation-compose textarea').value);
      assert.equal(f.requests[1].message,'Continue the other changes while I decide');
      assert.equal(f.requests.length,2);assert.deepEqual(f.connections,[]);
-     f.release();await card.getByText('Answer on its way…',{exact:true}).waitFor();
+     f.release();await card.getByText('Answer submitted',{exact:true}).waitFor();
      assert.equal(await card.getByRole('button',{name:'Show question and answer',exact:true}).getAttribute('aria-expanded'),'false');
      await card.getByRole('button',{name:'Show question and answer',exact:true}).click();
      assert.equal(await card.getByRole('button',{name:/Keep the Hidden label/}).isDisabled(),true);
@@ -116,18 +117,50 @@ test('integrated Conversation journeys use production markup and preserve delive
      await second.getByText('Codex could not accept this answer.',{exact:true}).waitFor();
      assert.deepEqual(f.requests.at(-1),uncertain,'An uncertain delivery keeps its receipt key');
      f.replyMode='queue';await second.getByRole('button',{name:'Retry',exact:true}).click();
-     await second.getByText('Answer on its way…',{exact:true}).waitFor();
+     await second.getByText('Answer submitted',{exact:true}).waitFor();
      assert.equal(f.requests.at(-1).message,uncertain.message);assert.notEqual(f.requests.at(-1).send_key,uncertain.send_key,'A confirmed rejection permits a fresh attempt');assert.deepEqual(f.connections,[]);
      // Navigating to another chat and back preserves the pending answer and draft.
      await draft.fill('Keep my draft');await f.select(2);await f.select(1);
      assert.equal(await draft.inputValue(),'Keep my draft');
-     await second.getByText('Answer on its way…',{exact:true}).waitFor();
+     await second.getByText('Answer submitted',{exact:true}).waitFor();
      await page.getByRole('button',{name:'Terminal',exact:true}).click();
      await page.waitForFunction(()=>[...sessions.values()].some(entry=>!entry.suspended));
      assert.equal(await page.locator('.tab-select.selected.needs-attention').count(),1);
      await page.getByRole('button',{name:'Conversation',exact:true}).click();
-     await second.getByText('Answer on its way…',{exact:true}).waitFor();
+     await second.getByText('Answer submitted',{exact:true}).waitFor();
      assert.equal(await draft.inputValue(),'Keep my draft');
+    }finally{await f.close();}
+   }
+  });
+  await t.test('question drafts keep their input, focus and text through transcript changes and reloads',async()=>{
+   for(const desktop of [true,false]){
+    const q=asyncQuestion('draft-refresh',[{title:'Which colour should I use?',options:['Blue','Green']}]);
+    const f=await fixture({desktop,viewport:desktop?{width:1100,height:800}:{width:390,height:844},messages:[q],turnState:'working'}),{page}=f;
+    try{
+     f.state='input';await f.refresh();const card=page.getByRole('region',{name:'Codex question'});
+     await card.getByRole('button',{name:'Write a different answer',exact:true}).click();
+     const answer=card.getByLabel('Type your own answer');await answer.fill('Blue');
+     await answer.evaluate(node=>{window.questionDraftInput=node;node.setSelectionRange(1,3);});
+     // The same question can acquire metadata or move when history is refreshed.
+     f.history.set(1,[{role:'assistant',text:'Earlier progress.'},{...q,timestamp:'2026-11-08T08:00:00Z'}]);await f.poll();
+     assert.equal(await answer.inputValue(),'Blue','A custom answer matching an option is still a draft');
+     assert.deepEqual(await answer.evaluate(node=>[node===questionDraftInput,document.activeElement===node,node.selectionStart,node.selectionEnd]),[true,true,1,3],'Refreshing the same question preserves its input and selection');
+     f.history.set(1,[{...q,timestamp:'2026-11-08T08:00:00Z'}]);await f.poll();
+     assert.deepEqual(await answer.evaluate(node=>[node===questionDraftInput,document.activeElement===node,node.selectionStart,node.selectionEnd]),[true,true,1,3],'Removing an earlier transcript entry also preserves the question input and focus');
+     f.activities=new Map([[1,[{id:'native:fixture:focus-probe',direction:'sent',status:'queued',timestamp:Date.parse('2026-11-08T07:00:00Z'),text:'Coordination note',peer:{label:'Another task'}}]]]);await f.poll();
+     f.activities=new Map();await f.poll();
+     assert.deepEqual(await answer.evaluate(node=>[node===questionDraftInput,document.activeElement===node,node.selectionStart,node.selectionEnd]),[true,true,1,3],'A disappearing activity row also preserves question focus');
+     await answer.fill('Keep this answer while the agent works');
+     await f.select(2);await f.select(1);assert.equal(await answer.inputValue(),'Keep this answer while the agent works');
+     await page.getByRole('button',{name:'Terminal',exact:true}).click();await page.getByRole('button',{name:'Conversation',exact:true}).click();
+     assert.equal(await answer.inputValue(),'Keep this answer while the agent works');
+     await page.reload();await answer.waitFor();assert.equal(await answer.inputValue(),'Keep this answer while the agent works','Reload restores unsent question text');
+     assert.equal(f.requests.length,0,'Restoring a draft never sends it');
+     await answer.press('Enter');await card.getByText('Answer submitted',{exact:true}).waitFor();
+     await page.reload();await card.getByText('Answer submitted',{exact:true}).waitFor();
+     assert.equal(f.requests.length,1,'Reload keeps the pending receipt without resending');
+     f.history.get(1).push(questionReceipt(f.requests[0].message));await f.poll();await card.getByText('Answered',{exact:true}).waitFor();
+     assert.equal(await page.evaluate(()=>Object.keys(sessionStorage).filter(key=>key.startsWith('switchboard-question-draft:')).length),0,'Confirmed answers clear their saved draft');
     }finally{await f.close();}
    }
   });
@@ -138,8 +171,12 @@ test('integrated Conversation journeys use production markup and preserve delive
     f.state='input';await f.refresh();const card=page.getByRole('region',{name:'Codex question'}),send=card.getByRole('button',{name:'Send answers',exact:true});
     await send.waitFor();assert.equal(await send.isDisabled(),true);
     await card.getByRole('button',{name:/Blue/}).click();assert.equal(f.requests.length,0);assert.equal(await send.isDisabled(),true);
-    await card.getByLabel('Answer: What should the label say?').fill('-Awaiting review');await send.click();
-    await card.getByText('Answer on its way…',{exact:true}).waitFor();
+    await card.getByLabel('Answer: What should the label say?').fill('-Awaiting review');
+    await page.reload();await send.waitFor();
+    assert.equal(await card.getByRole('button',{name:/Blue/}).getAttribute('aria-pressed'),'true');
+    assert.equal(await card.getByLabel('Answer: What should the label say?').inputValue(),'-Awaiting review');
+    assert.equal(f.requests.length,0,'Reload restores both selected and typed answers without sending');await send.click();
+    await card.getByText('Answer submitted',{exact:true}).waitFor();
     const answers=JSON.parse(f.requests[0].message.split('\n')[1]);
     assert.deepEqual(answers,questions.map((question,index)=>({questionItemId:'multi',question:question.title,answer:index===0?'Blue':'-Awaiting review'})));
     f.history.get(1).push(questionReceipt(f.requests[0].message));await f.poll();await card.getByText('Answered',{exact:true}).waitFor();
@@ -149,6 +186,57 @@ test('integrated Conversation journeys use production markup and preserve delive
     assert.equal(await page.getByRole('region',{name:'Codex question'}).getByRole('button',{name:/Blue/}).getAttribute('aria-pressed'),'true');
     assert.deepEqual(f.connections,[]);
    }finally{await f.close();}
+  });
+  await t.test('a question answer with an uncertain receipt survives reload and retries its original delivery',async()=>{
+   const q=asyncQuestion('uncertain-reload',[{title:'What label should I use?',options:[]}]);
+   const f=await fixture({messages:[q]}),{page}=f;
+   try{
+    const card=page.getByRole('region',{name:'Codex question'}),answer=card.getByLabel('Type your own answer');
+    await answer.fill('Keep my label');f.replyMode='lost';await answer.press('Enter');
+    await card.getByRole('button',{name:'Retry',exact:true}).waitFor();const sent=f.requests[0];
+    await page.reload();await card.getByRole('button',{name:'Retry',exact:true}).waitFor();
+    assert.equal(f.requests.length,1,'Reload never retries an uncertain answer automatically');
+    assert.equal(await answer.inputValue(),'Keep my label');
+    f.replyMode='queue';await card.getByRole('button',{name:'Retry',exact:true}).click();
+    await card.getByText('Answer submitted',{exact:true}).waitFor();assert.deepEqual(f.requests[1],sent);
+   }finally{await f.close();}
+  });
+  await t.test('an interrupted question send explains its uncertainty and offers terminal recovery without a new key',async()=>{
+   const q=asyncQuestion('held-reload',[{title:'What label should I use?',options:[]}]);
+   const f=await fixture({messages:[q]}),{page}=f;
+   try{
+    const card=page.getByRole('region',{name:'Codex question'}),answer=card.getByLabel('Type your own answer');
+    await answer.fill('Keep my label');f.replyMode='hold';await answer.press('Enter');
+    await card.getByText('Sending answer…',{exact:true}).waitFor();await page.waitForFunction(()=>!!document.querySelector('.conversation-async-question.answering'));
+    await page.reload();await card.getByText('Delivery is not confirmed. Retry to check its status.',{exact:true}).waitFor();
+    assert.equal(await answer.inputValue(),'Keep my label');assert.equal(await answer.isDisabled(),true);
+    assert.equal(f.requests.length,1,'Reload does not resubmit the interrupted send');
+    f.release();f.replyMode='unknown';await card.getByRole('button',{name:'Retry',exact:true}).click();
+    await card.getByText('Queue outcome is uncertain; this key will not submit again.',{exact:true}).waitFor();
+    assert.deepEqual(f.requests[1],f.requests[0],'A persistent unknown receipt keeps the original key and payload');
+    await card.getByRole('button',{name:'Check in Terminal',exact:true}).click();
+    assert.equal(await page.getByRole('button',{name:'Terminal',exact:true}).getAttribute('aria-pressed'),'true');
+    await page.getByRole('button',{name:'Conversation',exact:true}).click();await card.getByRole('button',{name:'Retry',exact:true}).waitFor();
+    assert.equal(f.requests.length,2,'Checking Terminal does not resubmit the answer');
+   }finally{await f.close();}
+  });
+  await t.test('an accepted question answer settles before its delayed transcript receipt',async()=>{
+   for(const turnState of ['working','ready']){
+   const q=asyncQuestion('delayed-receipt',[{title:'Which colour should I use?',options:['Blue','Green']}]);
+   const f=await fixture({messages:[q],turnState}),{page}=f;
+   try{
+    f.state='input';await f.refresh();const card=page.getByRole('region',{name:'Codex question'});
+    await card.getByRole('button',{name:/Blue/}).click();await card.getByText('Answer submitted',{exact:true}).waitFor();
+    assert.equal(await card.evaluate(node=>node.classList.contains('answering')),false,'Queue acceptance ends the busy presentation');
+    assert.equal(await page.locator('.conversation-activity').textContent(),turnState==='working'?'Working…':'Answer submitted','A submitted question does not keep asking for an answer');
+    assert.equal(await page.locator('.conversation-activity').evaluate(node=>node.classList.contains('question')),false);
+    for(let i=0;i<3;i++)await f.poll();
+    assert.equal(await card.getByText('Answer submitted',{exact:true}).count(),1);
+    assert.equal(await card.getByText('Answered',{exact:true}).count(),0,'Acceptance does not claim transcript confirmation');
+    assert.equal(f.requests.length,1,'Waiting for a receipt never resubmits');
+    f.history.get(1).push(questionReceipt(f.requests[0].message));await f.poll();await card.getByText('Answered',{exact:true}).waitFor();
+   }finally{await f.close();}
+   }
   });
   await t.test('pending questions stay discoverable without taking over the draft, and sent answers fold into a receipt',async()=>{
    for(const desktop of [true,false]){
@@ -179,7 +267,7 @@ test('integrated Conversation journeys use production markup and preserve delive
      assert.equal(await card.locator('.conversation-async-copy>span').textContent(),'Amber');
      assert.ok((await card.boundingBox()).height<=80,'The sent answer becomes a compact receipt');
      assert.equal(await draft.inputValue(),'Keep this separate follow-up');
-     f.release();await card.getByText('Answer on its way…',{exact:true}).waitFor();
+     f.release();await card.getByText('Answer submitted',{exact:true}).waitFor();
      f.history.get(1).push(questionReceipt(f.requests[0].message));await f.poll();await card.getByText('Answered',{exact:true}).waitFor();
      f.state='working';await f.refresh();
      if(process.env.MODE_SCREENSHOTS){await card.scrollIntoViewIfNeeded();await page.screenshot({path:path.join(process.env.MODE_SCREENSHOTS,`codex-question-receipt-${desktop?'desktop':'phone'}.png`)});}

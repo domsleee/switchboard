@@ -241,14 +241,15 @@
       else{working.setAttribute('aria-hidden','true');working.removeAttribute('aria-expanded');working.removeAttribute('aria-label');}
     }
     function updateActivity(){
-      const state=target?.state,asyncInput=state==='input'&&pendingAsyncQuestion(),label=state==='working'?'Working…':state==='approval'?'Approval needed':asyncInput?'Question for you':state==='input'?'Input needed':state==='waiting'?'Waiting on an agent':state==='ready'?'Ready':'';
+      const state=target?.state,questions=state==='input'&&target.agent==='codex'?messages.filter(item=>item.async_question).map(asyncState).filter(question=>question.status!=='answered'):[];
+      const asyncInput=questions.length>0,needsAnswer=questions.some(question=>['draft','failed','uncertain'].includes(question.status)),sendingAnswer=questions.some(question=>question.status==='sending');
+      const asyncWorking=asyncInput&&target.turnState==='working',label=state==='working'?'Working…':state==='approval'?'Approval needed':needsAnswer?'Question for you':sendingAnswer?'Sending answer…':asyncInput?(asyncWorking?'Working…':'Answer submitted'):state==='input'?'Input needed':state==='waiting'?'Waiting on an agent':state==='ready'?'Ready':'';
       paintModel();
       // The model stays a control whenever there is an agent chat; a busy agent switches after its turn.
       if(switchModel){model.disabled=!target?.switchAvailable||!chat;cancelModel.hidden=!target?.pendingSwitch||!!target.pendingSwitch.running;}
       if(activity.textContent!==label)activity.textContent=label;
-      activity.classList.toggle('working',state==='working');
-      activity.classList.toggle('question',asyncInput);
-      const asyncWorking=state==='input'&&target.turnState==='working'&&pendingAsyncQuestion();
+      activity.classList.toggle('working',state==='working'||asyncWorking&&!needsAnswer&&!sendingAnswer);
+      activity.classList.toggle('question',needsAnswer);
       const follow=nearBottom();paintLaunch();working.hidden=['approval','ready'].includes(state)||state==='input'&&!asyncWorking||!launchShown()&&(!chat||!(state==='working'||asyncWorking||state==='waiting'&&!backgroundAgents().length));tickWorking();
       if(follow)list.scrollTop=list.scrollHeight;
       const startup=startupState(),stalled=!!startup&&(!!startup.error||Date.now()-startup.started>=30000);
@@ -344,9 +345,33 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       const note=promptError||(answering?'Answering…':'');if(questionStatus.textContent!==note)questionStatus.textContent=note;questionStatus.hidden=!note;
       if(!panel.hidden&&!form.hidden)sizeDraft();if(follow){list.scrollTop=list.scrollHeight;updateLatest();}
     }
+    const asyncDraftKey=state=>'switchboard-question-draft:'+state.key;
+    const asyncUnconfirmed='Delivery is not confirmed. Retry to check its status.';
+    function saveAsyncDraft(state){
+      try{
+        if(state.status==='answered'||state.status==='draft'&&!state.answers.some(Boolean)){
+          if(state.saved!==null)sessionStorage.removeItem(asyncDraftKey(state));state.saved=null;return;
+        }
+        const status=state.status==='sending'?'uncertain':state.status;
+        const value=JSON.stringify({questions:state.questions,answers:state.answers,custom:state.custom,collapsed:state.collapsed,status,payload:state.payload,sendKey:state.sendKey,error:state.error||(status==='uncertain'?asyncUnconfirmed:'')});
+        if(value!==state.saved){sessionStorage.setItem(asyncDraftKey(state),value);state.saved=value;}
+      }catch{}
+    }
     function asyncState(item){
       const key=identity(target)+':'+item.async_question.id;
-      if(!asyncQuestions.has(key))asyncQuestions.set(key,{key,status:'draft',collapsed:false,custom:item.async_question.questions.map(q=>!q.options.length),questions:item.async_question.questions,answers:item.async_question.questions.map(()=>''),destination:{host:target.host,thread:chat?.thread,chatKey:identity(target)}});
+      if(!asyncQuestions.has(key)){
+        const questions=item.async_question.questions,state={key,status:'draft',collapsed:false,custom:questions.map(q=>!q.options.length),questions,answers:questions.map(()=>''),destination:{host:target.host,thread:chat?.thread,chatKey:identity(target)}};
+        try{
+          const saved=JSON.parse(sessionStorage.getItem(asyncDraftKey(state)));
+          if(saved&&JSON.stringify(saved.questions)===JSON.stringify(questions)&&Array.isArray(saved.answers)&&saved.answers.length===questions.length&&saved.answers.every(answer=>fits(answer,4000))&&Array.isArray(saved.custom)&&saved.custom.length===questions.length&&saved.custom.every(value=>typeof value==='boolean')){
+            state.answers=saved.answers;state.custom=saved.custom;state.collapsed=saved.collapsed===true;
+            if(['queued','uncertain','failed'].includes(saved.status)&&fits(saved.payload,8192)&&fits(saved.sendKey,128)){
+              state.status=saved.status;state.payload=saved.payload;state.sendKey=saved.sendKey;state.error=(fits(saved.error,4000)?saved.error:'')||(saved.status==='uncertain'?asyncUnconfirmed:'');
+            }
+          }
+        }catch{}
+        asyncQuestions.set(key,state);
+      }
       return asyncQuestions.get(key);
     }
     function pendingAsyncQuestion(){return target?.agent==='codex'&&messages.some(item=>item.async_question&&asyncState(item).status!=='answered');}
@@ -359,6 +384,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
         }
       }
       for(const card of list.querySelectorAll('.conversation-async-question'))card.sync?.();
+      for(const state of asyncQuestions.values())saveAsyncDraft(state);
       updateAsyncShortcut();
     }
     function updateAsyncShortcut(){
@@ -386,14 +412,14 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
         if(new TextEncoder().encode(state.payload).length>8192){state.error='This answer is too long. Shorten it before sending.';syncAsyncQuestions();return;}
         state.sendKey='question-'+Array.from(crypto.getRandomValues(new Uint32Array(4)),n=>n.toString(16)).join('-');
       }
-      state.status='sending';state.error='';syncAsyncQuestions();
+      state.status='sending';state.error='';syncAsyncQuestions();if(identity(target)===state.destination.chatKey)updateActivity();
       try{
         const response=await fetch('/api/hosts/'+encodeURIComponent(state.destination.host)+'/codex/reply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({thread:state.destination.thread,message:state.payload,send_key:state.sendKey}),signal:AbortSignal.timeout(30000)});
         const result=await response.json();
         if(state.status!=='answered')state.status=response.ok&&result.status==='queued'?'queued':result.status==='failed'?'failed':'uncertain';
         if(!['queued','answered'].includes(state.status))state.error=result.detail||'Delivery is not confirmed. Retry to check its status.';
       }catch{if(state.status!=='answered'){state.status='uncertain';state.error='Delivery is not confirmed. Retry to check its status.';}}
-      finally{syncAsyncQuestions();if(identity(target)===state.destination.chatKey)void load();idle();}
+      finally{syncAsyncQuestions();if(identity(target)===state.destination.chatKey){updateActivity();void load();}idle();}
     }
     let asyncCardId=0;
     function renderAsyncQuestion(article,item){
@@ -403,7 +429,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       toggle.type='button';mark.setAttribute('aria-hidden','true');chevron.setAttribute('aria-hidden','true');label.setAttribute('role','status');copy.append(label,preview);toggle.append(mark,copy,chevron);
       const body=el('div',undefined,'conversation-async-body');body.id=card.id+'-body';toggle.setAttribute('aria-controls',body.id);card.append(toggle,body);
       toggle.onclick=()=>{state.collapsed=!state.collapsed;card.sync();updateAsyncShortcut();};
-      const controls=[],groups=[],send=el('button','Send answers','conversation-question-choice submit'),status=el('small',undefined,'conversation-question-status'),retry=el('button','Retry','conversation-question-choice');
+      const controls=[],groups=[],send=el('button','Send answers','conversation-question-choice submit'),status=el('small',undefined,'conversation-question-status'),retry=el('button','Retry','conversation-question-choice'),checkTerminal=el('button','Check in Terminal','conversation-question-choice');
       for(const [index,question] of request.questions.entries()){
         const group=el('div',undefined,'conversation-async-question-group'),heading=el('p',question.title,'conversation-question-text'),choices=el('div',undefined,'conversation-question-choices');
         choices.setAttribute('role','group');choices.setAttribute('aria-label',question.title);
@@ -417,13 +443,14 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
         }
         const write=el('button','Write a different answer','conversation-async-write'),other=el('form',undefined,'conversation-question-other'),input=el('input'),submit=el('button','Send');input.type='text';input.maxLength=4000;input.placeholder=question.options.length?'Your answer…':'Type your answer…';input.setAttribute('aria-label',request.questions.length===1?'Type your own answer':'Answer: '+question.title);
         write.type='button';write.onclick=()=>{state.custom[index]=true;card.sync();input.focus({preventScroll:true});};
-        input.value=question.options.includes(state.answers[index])?'':state.answers[index];
+        input.value=state.custom[index]?state.answers[index]:'';
         input.oninput=()=>{state.answers[index]=input.value;syncAsyncQuestions();};
         submit.type='submit';other.append(input);if(request.questions.length===1)other.append(submit);
         other.onsubmit=event=>{event.preventDefault();state.answers[index]=input.value;if(request.questions.length===1)void sendAsyncAnswer(item,state);};
         choices.append(write,other);controls.push(write,input,submit);groups.push({index,options,write,other,input});
       }
       send.type='button';send.onclick=()=>void sendAsyncAnswer(item,state);if(request.questions.length>1)body.append(send);
+      checkTerminal.type='button';checkTerminal.onclick=()=>show(false);body.append(checkTerminal);
       retry.type='button';retry.onclick=()=>void sendAsyncAnswer(item,state,state.status!=='failed');status.setAttribute('role','status');card.append(status,retry);
       card.sync=()=>{
         const locked=!['draft','failed'].includes(state.status);
@@ -431,7 +458,8 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
         const focusInBody=body.contains(document.activeElement);body.hidden=state.collapsed;
         toggle.setAttribute('aria-expanded',String(!state.collapsed));toggle.setAttribute('aria-label',state.collapsed?'Show question and answer':'Hide question and answer');
         card.classList.toggle('collapsed',state.collapsed);card.classList.toggle('settled',['sending','queued','answered'].includes(state.status));
-        label.textContent=({sending:'Sending answer…',queued:'Answer on its way…',answered:'Answered'}[state.status]||'Question for you');
+        label.textContent=({sending:'Sending answer…',queued:'Answer submitted',answered:'Answered'}[state.status]||'Question for you');
+        label.title=state.status==='queued'?'Codex accepted your answer. Waiting for its conversation receipt.':'';
         const summary=['sending','queued','answered'].includes(state.status);preview.textContent=summary?state.answers.join(' · '):'Reply when you’re ready';preview.title=summary?preview.textContent:'';
         mark.textContent=state.status==='answered'?'✓':summary?'↗':'?';
         if(state.collapsed&&focusInBody&&!panel.hidden)toggle.focus({preventScroll:true});
@@ -444,8 +472,9 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
         }
         send.disabled=locked||!state.answers.every(answer=>answer.trim());
         retry.hidden=!['failed','uncertain'].includes(state.status);
-        card.classList.toggle('answering',['sending','queued'].includes(state.status));
-        status.textContent=state.error||'';status.hidden=!status.textContent;
+        checkTerminal.hidden=!['queued','uncertain'].includes(state.status);
+        card.classList.toggle('answering',state.status==='sending');
+        status.textContent=state.error||'';status.hidden=!status.textContent;saveAsyncDraft(state);
       };
       card.sync();article.append(card);
     }
@@ -559,7 +588,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
           entries.push({key:startCursor+offset,item:{kind:'message',direction:'received',status:'received',text:body,peer:{label:'Agent'},timestamp:item.timestamp}});continue;
         }
         if(notice&&notice[1].split(', ').every(id=>activity.some(event=>event.id.startsWith('board:'+id+':'))))continue;
-        entries.push({key:startCursor+offset,item});
+        entries.push({key:item.async_question?'question-'+item.async_question.id:startCursor+offset,item});
       }
       for(const event of activity){
         if(startCursor>0&&!received.has(event.id)&&Number.isFinite(firstTime)&&event.timestamp<firstTime)continue;
@@ -642,13 +671,16 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       lastPaint=snapshot;
       // The transcript now has the launched prompt: drop the stand-in and its starting row.
       if(launchNode.isConnected&&!launchShown())updateActivity();
-      const follow=initial||nearBottom(),height=list.scrollHeight,position=list.scrollTop,keys=new Set();
+      const follow=initial||nearBottom(),height=list.scrollHeight,position=list.scrollTop,keys=new Set(entries.filter(({item})=>!setupMessage(item)).map(({key})=>key));
       if(!follow&&!prepend&&!initial)newOutput=true;
+      // Remove vanished entries before placing retained inputs. Moving a question
+      // ahead of a stale sibling would detach its input and lose keyboard focus.
+      for(const [key,entry] of rendered)if(!keys.has(key)){contentResize?.unobserve(entry.node);entry.node.remove();rendered.delete(key);}
       let previous=launchShown()?launchNode:older,previousRole=null,previousSpeaker=null;
       const runs=activityRuns(),summaryKeys=new Set();liveRun=[...runs.values()].find(run=>run.inProgress)||null;
       for(const {key,item} of entries){
         if(setupMessage(item))continue;
-        const mail=item.kind==='message',notices=mailboxCount(item),signature=signatureOf(item),speaker=mail||notices?'Switchboard':item.role==='user'?'You':providerLabel();keys.add(key);
+        const mail=item.kind==='message',notices=mailboxCount(item),signature=item.async_question?JSON.stringify(item.async_question):signatureOf(item),speaker=mail||notices?'Switchboard':item.role==='user'?'You':providerLabel();
         const run=runs.get(key);
         if(run?.start===key){
           let summary=summaries.get(key);
@@ -679,7 +711,6 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
         if(previous.nextSibling!==entry.node)previous.after(entry.node);
         previous=entry.node;
       }
-      for(const [key,entry] of rendered)if(!keys.has(key)){contentResize?.unobserve(entry.node);entry.node.remove();rendered.delete(key);}
       for(const [key,summary] of summaries)if(!summaryKeys.has(key)){summary.remove();summaries.delete(key);}
       for(const sent of visibleOutgoing){
         const signature=JSON.stringify([sent.text,sent.files.map(file=>file.name),sent.state,sent.detail]);let entry=renderedOutgoing.get(sent.id);
