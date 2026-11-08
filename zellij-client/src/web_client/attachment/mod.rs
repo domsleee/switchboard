@@ -455,15 +455,10 @@ async fn attachment(
                             }
                             focus=match &payload {WebClientToWebServerControlMessagePayload::FocusPane{pane_id,is_plugin}=>Some((*pane_id,*is_plugin)),_=>None};
                             if let Some(message)=control_payload_to_server_msg(payload,app.config.lock().unwrap().options.default_shell.clone()) {
-                                os.send_to_server(message.clone());
-                                if focus.is_some() {
-                                    // An idempotent second focus gives explicit native
-                                    // confirmation even when MobileState is unchanged.
+                                if let Some(target)=focus {
+                                    send_focus_probe(&*os,target);
+                                } else {
                                     os.send_to_server(message);
-                                    os.send_to_server(ClientToServerMsg::Action {
-                                        action:zellij_utils::input::actions::Action::CurrentTabInfo{output_json:false},
-                                        terminal_id:None,client_id:None,is_cli_client:false,
-                                    });
                                 }
                             }
                             if focus.is_some() {if let Some(refresh)=app.connection_table.lock().unwrap().client_id_to_channels.get(&id).and_then(|c|c.recovery_metadata_refresh.clone()){refresh.request();}}
@@ -472,7 +467,7 @@ async fn attachment(
                         ensure!(os.send_failure().is_none(),"Terminal IPC failed; input delivery is uncertain");
                     }
                     if let Some(target)=focus {
-                        confirm_focus(&viewer,target,&mut output,&mut controls).await?;
+                        confirm_focus(&viewer,target,&mut output,&mut controls,|| send_focus_probe(&*os,target)).await?;
                     }
                     // The action was dispatched before a newer generation could
                     // fence it. Commit before processing its queued retry.
@@ -524,6 +519,25 @@ async fn attachment(
     worker.views.lock().unwrap().remove(&id);
 }
 
+fn send_focus_probe(os: &dyn crate::os_input_output::ClientOsApi, target: (u32, bool)) {
+    let message = control_payload_to_server_msg(
+        WebClientToWebServerControlMessagePayload::FocusPane {
+            pane_id: target.0,
+            is_plugin: target.1,
+        },
+        None,
+    )
+    .expect("FocusPane always maps to an engine action");
+    os.send_to_server(message.clone());
+    os.send_to_server(message);
+    os.send_to_server(ClientToServerMsg::Action {
+        action: zellij_utils::input::actions::Action::CurrentTabInfo { output_json: false },
+        terminal_id: None,
+        client_id: None,
+        is_cli_client: false,
+    });
+}
+
 /// Every focus transaction issues two identical focus actions, followed by this
 /// connection's reserved plain CurrentTabInfo query. The second action reports
 /// "already focused" only after the engine actually selects that pane. Drain to
@@ -534,6 +548,7 @@ async fn confirm_focus(
     target: (u32, bool),
     output: &mut mpsc::UnboundedReceiver<String>,
     controls: &mut mpsc::UnboundedReceiver<Message>,
+    mut retry: impl FnMut(),
 ) -> Result<()> {
     let deadline = tokio::time::sleep(Duration::from_secs(10));
     tokio::pin!(deadline);
@@ -553,6 +568,7 @@ async fn confirm_focus(
                 let value:serde_json::Value=serde_json::from_str(&text)?;
                 match confirmation.consume(&value)? {
                     FocusReply::Private=>continue,
+                    FocusReply::Retry=>{retry();continue;},
                     FocusReply::Complete=>{
                         viewer.journal.lock().unwrap().emit("control",json!({"type":"FocusConfirmed","payload":{"pane_id":target.0,"is_plugin":target.1}}).to_string());
                         viewer.notify.notify_waiters();return Ok(());
@@ -567,6 +583,7 @@ async fn confirm_focus(
 
 #[derive(Debug, PartialEq)]
 enum FocusReply {
+    Retry,
     Forward,
     Private,
     Complete,
@@ -575,6 +592,7 @@ struct FocusConfirmation {
     pane: String,
     positive: String,
     confirmed: bool,
+    attempts: usize,
 }
 impl FocusConfirmation {
     fn new(target: (u32, bool)) -> Self {
@@ -587,6 +605,7 @@ impl FocusConfirmation {
             positive: format!("Pane {pane} is already focused"),
             pane,
             confirmed: false,
+            attempts: 1,
         }
     }
     fn consume(&mut self, value: &serde_json::Value) -> Result<FocusReply> {
@@ -616,13 +635,23 @@ impl FocusConfirmation {
             }
         }
         if value["type"] == "Log" && focus_marker(&value["lines"]) {
+            if self.confirmed {
+                return Ok(FocusReply::Complete);
+            }
+            // The engine drops an action's completion receiver after one second.
+            // A busy screen can apply both focus actions after their receivers
+            // expire, then answer this barrier without delivering either reply.
+            // Re-probe only after draining the barrier, preserving queued typing
+            // and the original deadline until a fresh native reply confirms it.
             ensure!(
-                self.confirmed,
+                self.attempts < 3,
                 "Engine did not confirm terminal pane selection; queued typing was not sent"
             );
-            return Ok(FocusReply::Complete);
+            self.attempts += 1;
+            Ok(FocusReply::Retry)
+        } else {
+            Ok(FocusReply::Forward)
         }
-        Ok(FocusReply::Forward)
     }
 }
 
@@ -646,6 +675,26 @@ fn focus_marker(lines: &serde_json::Value) -> bool {
 mod tests {
     use super::*;
     #[test]
+    fn switchboard_attachment_focus_recovers_lost_completion_without_trusting_metadata() {
+        let marker = json!({"type":"Log","lines":["name: tab","id: 0","position: 0"]});
+        let snapshot = json!({"type":"MobileState","payload":{"active_pane":{"pane_id":7,"is_plugin":false}}});
+        let yes = json!({"type":"LogError","lines":["Pane Terminal(7) is already focused"]});
+        let mut focus = FocusConfirmation::new((7, false));
+        // Both native completion receivers expired while the screen was busy.
+        // Even a matching snapshot cannot release the queued input.
+        for _ in 0..2 {
+            assert_eq!(focus.consume(&snapshot).unwrap(), FocusReply::Forward);
+            assert_eq!(focus.consume(&marker).unwrap(), FocusReply::Retry);
+        }
+        // A fresh probe finally receives native proof. Its barrier must also
+        // arrive before the caller can acknowledge focus and drain input.
+        assert_eq!(focus.consume(&yes).unwrap(), FocusReply::Private);
+        assert_eq!(focus.consume(&marker).unwrap(), FocusReply::Complete);
+        let mut next = FocusConfirmation::new((7, false));
+        assert_eq!(next.consume(&marker).unwrap(), FocusReply::Retry);
+    }
+
+    #[test]
     fn switchboard_attachment_focus_ignores_stale_state_and_drains_duplicate_confirmations() {
         let marker = json!({"type":"Log","lines":["name: tab","id: 0","position: 0"]});
         let stale =
@@ -653,8 +702,8 @@ mod tests {
         let mut focus = FocusConfirmation::new((7, false));
         assert_eq!(focus.consume(&stale).unwrap(), FocusReply::Forward);
         assert!(
-            focus.consume(&marker).is_err(),
-            "Cached metadata cannot prove focus"
+            focus.consume(&marker).unwrap() == FocusReply::Retry,
+            "Cached metadata cannot prove focus or release typing"
         );
         let yes = json!({"type":"LogError","lines":["Pane Terminal(7) is already focused"]});
         assert_eq!(focus.consume(&yes).unwrap(), FocusReply::Private);
@@ -667,6 +716,8 @@ mod tests {
             .is_err());
         let mut wrong = FocusConfirmation::new((8, false));
         wrong.consume(&yes).unwrap();
+        assert_eq!(wrong.consume(&marker).unwrap(), FocusReply::Retry);
+        assert_eq!(wrong.consume(&marker).unwrap(), FocusReply::Retry);
         assert!(wrong.consume(&marker).is_err());
     }
 }
