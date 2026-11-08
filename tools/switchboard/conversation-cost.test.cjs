@@ -26,7 +26,7 @@ for(const agent of ['claude','codex'])test(`Conversation shows ${agent} cost onl
   assert.match(await cost.getAttribute('title'),agent==='codex'?/Codex chat at OpenAI/:/subagents at Anthropic/);
   if(process.env.COST_SCREENSHOT_DIR)await page.locator('.conversation-compose').screenshot({path:path.join(process.env.COST_SCREENSHOT_DIR,agent+'-cost.png')});
   const [model,dollars]=await Promise.all([page.locator('.conversation-compose .conversation-model').boundingBox(),cost.boundingBox()]);
-  assert.ok(Math.abs(model.y+model.height/2-(dollars.y+dollars.height/2))<3&&dollars.x>=model.x+model.width,'The cost follows the model in the composer');
+  assert.ok(Math.abs(model.y+model.height/2-(dollars.y+dollars.height/2))<3&&dollars.x+dollars.width<=model.x,'The cost sits just before the model in the composer');
   const breakdown=page.getByRole('dialog',{name:'API cost breakdown'});
   await cost.click();
   assert.equal(await breakdown.isVisible(),true,'Tapping the cost opens the breakdown');
