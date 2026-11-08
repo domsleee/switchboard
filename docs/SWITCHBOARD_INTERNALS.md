@@ -197,6 +197,20 @@ Ctrl+O, Ctrl+G and the other Zellij mode keys reach Claude as in a terminal wind
 Use **+ New tab** or **Alt+T** on any platform to open a shell in a chosen machine/session.
 **Create tab** is focused by default, so **Enter** creates a tab in the selected
 machine/session. The new tab is selected automatically.
+
+The project picker lists the folders in that computer's `~/git`. To list projects kept
+elsewhere, write `~/.config/switchboard/projects.json` on that computer. Each entry is a
+folder whose subfolders are projects; a final `*` makes every folder inside it such a
+folder, for layouts like `C:\git\GitHub\{org}\{repo}`. A leading `~` is the home folder.
+
+```json
+{ "folders": ["C:\\git\\GitHub\\*"] }
+```
+
+These projects appear as full paths, ranked by their last folder. An unreadable or
+invalid file is logged and ignored, and the picker still lists `~/git`. Changes apply
+the next time the picker loads.
+
 The 🛡️ button next to **+** opens an administrator tab: the default shell through `gsudo` on Windows (install it with
 `winget install gerardog.gsudo`) or `sudo` elsewhere, so the UAC or password prompt appears on
 that machine. Windows uses winget's install location `%ProgramFiles%\gsudo\Current` when it exists,
