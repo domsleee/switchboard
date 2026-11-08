@@ -207,7 +207,7 @@
       if(background.dataset.signature!==signature){
         background.dataset.signature=signature;
         background.replaceChildren(...agents.map(agent=>{
-          const row=el('div',undefined,'conversation-agent'),avatar=el('span',undefined,'conversation-agent-avatar'),model=modelLabel({model:agent.model}),time=el('span',undefined,'conversation-agent-time');
+          const row=el('div',undefined,'conversation-agent'),avatar=el('span',undefined,'conversation-agent-avatar'),model=modelName({model:agent.model}),time=el('span',undefined,'conversation-agent-time');
           avatar.innerHTML=claudeMark;time.dataset.started=agent.started||'';
           row.append(avatar,el('span',agent.description||'Background agent','conversation-agent-title'));if(model)row.append(el('span',model,'conversation-agent-model'));row.append(time);
           row.setAttribute('aria-label',`Background agent running: ${agent.description||'unnamed'}${model?`, ${model}`:''}`);return row;
