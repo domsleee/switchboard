@@ -54,18 +54,19 @@ test('phone sidebar, actions, Settings, Computers and Messages fit without horiz
       await page.locator('#new-tab').click();
       await page.locator('#new-tab-dialog').waitFor({state:'visible'});
       if (viewport.width<1000) {
-        for (const selector of ['#new-tab-target','#new-tab-project','#new-tab-prompt']) {
-          const input=page.locator(selector),box=await input.boundingBox();
-          assert.ok(box.height>=44,`${selector} must fit a touch target`);
-          assert.equal(await input.evaluate(el=>getComputedStyle(el).fontSize),'16px');
-        }
-        for (const selector of ['#new-tab-project-lookup','#new-tab-attach']) {
+        assert.equal(await page.locator('#new-tab-prompt').evaluate(el=>getComputedStyle(el).fontSize),'16px');
+        for (const selector of ['#new-tab-attach','#new-tab-model','#new-tab-submit','#new-tab-machine','#new-tab-project-chip']) {
           const button=page.locator(selector);await button.scrollIntoViewIfNeeded();const box=await button.boundingBox();
           assert.ok(box.width>=44&&box.height>=44,`${selector} must fit a touch target`);
           assert.equal(await button.evaluate(el=>{const r=el.getBoundingClientRect();return document.elementFromPoint(r.x+r.width/2,r.bottom-1)===el;}),true,`${selector} must not overlap another control`);
         }
-        const project=await page.locator('#new-tab-project-lookup').boundingBox(),command=await page.locator('#new-tab-prompt').boundingBox();
-        assert.ok(project.y+project.height<=command.y,'project dropdown must stay above the command field');
+        // The project picker opens over the prompt with phone-sized controls.
+        await page.locator('#new-tab-project-chip').click();
+        for (const selector of ['#new-tab-project','#new-tab-project-lookup']) {
+          const box=await page.locator(selector).boundingBox();assert.ok(box.height>=44&&box.x>=0&&box.x+box.width<=viewport.width,`${selector} must fit a touch target on screen`);
+        }
+        assert.equal(await page.locator('#new-tab-project').evaluate(el=>getComputedStyle(el).fontSize),'16px');
+        await page.keyboard.press('Escape');
       }
       await page.keyboard.press('Escape');
       await page.locator('.tab-actions').first().click();
