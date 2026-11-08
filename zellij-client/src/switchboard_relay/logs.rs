@@ -20,7 +20,9 @@ struct Log(std::sync::Mutex<VecDeque<Value>>, AtomicBool);
 
 /// Browser and terminal timing reports are samples rather than failures.
 fn diagnostic(message: &str) -> bool {
-    message.starts_with("Terminal ") || message.starts_with("Browser tab ")
+    message.starts_with("Terminal ")
+        || message.starts_with("Browser tab ")
+        || message.starts_with("Conversation shown ")
 }
 
 /// Eviction order: routine samples, then slow samples, then failures.
@@ -531,7 +533,7 @@ impl BrowserDiagnostic {
     fn message(&self) -> Option<String> {
         if !matches!(
             self.reason.as_str(),
-            "visible" | "resumed" | "restored" | "discarded"
+            "visible" | "resumed" | "restored" | "discarded" | "conversation"
         ) || !matches!(self.outcome.as_str(), "sampled" | "hidden" | "superseded")
             || [self.terminal_socket, self.control_socket]
                 .into_iter()
@@ -664,11 +666,18 @@ struct LoadDiagnostic {
     frame_ms: Option<u32>,
     render_ms: Option<u32>,
     visible: bool,
+    /// What the viewer was loaded for, when the load is the wait the user saw.
+    #[serde(default)]
+    after: Option<String>,
 }
 
 impl LoadDiagnostic {
     fn message(&self) -> Option<String> {
         if self.outcome != "ready"
+            || self
+                .after
+                .as_deref()
+                .is_some_and(|after| after != "conversation")
             || [self.page_ms, self.socket_ms, self.frame_ms, self.render_ms]
                 .into_iter()
                 .flatten()
@@ -684,7 +693,7 @@ impl LoadDiagnostic {
             "ready"
         };
         Some(format!(
-            "Terminal load {} t={}ms page={}ms socket={}ms frame={}ms render={}ms visible={}",
+            "Terminal load {} t={}ms page={}ms socket={}ms frame={}ms render={}ms visible={}{}",
             outcome,
             self.elapsed_ms,
             timing(self.page_ms),
@@ -692,6 +701,9 @@ impl LoadDiagnostic {
             timing(self.frame_ms),
             timing(self.render_ms),
             self.visible,
+            self.after
+                .as_ref()
+                .map_or_else(String::new, |after| format!(" after={after}")),
         ))
     }
 }
@@ -1162,6 +1174,17 @@ mod tests {
         };
         assert_eq!(load(240), "Terminal load ready t=240ms page=90ms socket=150ms frame=200ms render=240ms visible=true");
         assert!(load(1800).starts_with("Terminal load slow t=1800ms "));
+        let after = |after: &str| {
+            serde_json::from_value::<LoadDiagnostic>(
+                json!({"host":"mac","outcome":"ready","elapsed_ms":900,"visible":true,"after":after}),
+            )
+            .unwrap()
+            .message()
+        };
+        assert!(after("conversation")
+            .unwrap()
+            .ends_with("visible=true after=conversation"));
+        assert_eq!(after("token=x"), None);
         let bad = json!({"host":"mac","outcome":"token=x","elapsed_ms":1,"visible":true});
         assert_eq!(
             serde_json::from_value::<LoadDiagnostic>(bad)
@@ -1610,11 +1633,24 @@ mod tests {
             .unwrap()
             .starts_with("Browser tab slow"));
         sample["terminal_probe"] = json!(false);
-        assert!(serde_json::from_value::<BrowserDiagnostic>(sample)
+        assert!(serde_json::from_value::<BrowserDiagnostic>(sample.clone())
             .unwrap()
             .message()
             .unwrap()
             .starts_with("Browser tab resumed"));
+        sample["reason"] = json!("conversation");
+        assert!(serde_json::from_value::<BrowserDiagnostic>(sample.clone())
+            .unwrap()
+            .message()
+            .unwrap()
+            .starts_with("Browser tab resumed reason=conversation "));
+        sample["reason"] = json!("token=x");
+        assert_eq!(
+            serde_json::from_value::<BrowserDiagnostic>(sample)
+                .unwrap()
+                .message(),
+            None
+        );
     }
 
     #[tokio::test]
@@ -1827,6 +1863,52 @@ impl ConversationDiagnostic {
         ))
     }
 }
+/// A switch from Terminal to Conversation, timed until its messages are on screen.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ShownDiagnostic {
+    end: String,
+    elapsed_ms: u32,
+    paint_ms: Option<u32>,
+}
+impl ShownDiagnostic {
+    fn message(&self) -> Option<String> {
+        if !matches!(
+            self.end.as_str(),
+            "cached"
+                | "history"
+                | "unbound"
+                | "failed"
+                | "changed"
+                | "left"
+                | "superseded"
+                | "timeout"
+        ) || self.elapsed_ms > 120_000
+            || self.paint_ms.is_some_and(|t| t > self.elapsed_ms)
+        {
+            return None;
+        }
+        let slow = self.elapsed_ms > 500 || matches!(self.end.as_str(), "failed" | "timeout");
+        Some(format!(
+            "Conversation shown {} t={}ms paint={}ms end={}",
+            if slow { "slow" } else { "ready" },
+            self.elapsed_ms,
+            self.paint_ms.map_or_else(|| "-".into(), |t| t.to_string()),
+            self.end,
+        ))
+    }
+}
+pub(super) async fn conversation_shown(request: Request) -> StatusCode {
+    let diagnostic: ShownDiagnostic = match diagnostic_body(request).await {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let Some(message) = diagnostic.message() else {
+        return StatusCode::BAD_REQUEST;
+    };
+    record("Conversation", &message);
+    StatusCode::NO_CONTENT
+}
 pub(super) async fn conversation(request: Request) -> StatusCode {
     let diagnostic: ConversationDiagnostic = match diagnostic_body(request).await {
         Ok(value) => value,
@@ -1842,6 +1924,41 @@ pub(super) async fn conversation(request: Request) -> StatusCode {
 #[cfg(test)]
 mod conversation_diagnostic_tests {
     use super::*;
+    #[test]
+    fn switchboard_conversation_shown_reports_wait_and_how_it_ended() {
+        let shown = |value: Value| {
+            serde_json::from_value::<ShownDiagnostic>(value)
+                .unwrap()
+                .message()
+        };
+        let message = shown(json!({"end":"cached","elapsed_ms":40,"paint_ms":30})).unwrap();
+        assert_eq!(
+            message,
+            "Conversation shown ready t=40ms paint=30ms end=cached"
+        );
+        assert!(diagnostic(&message));
+        assert_eq!(
+            shown(json!({"end":"history","elapsed_ms":2400,"paint_ms":20})).unwrap(),
+            "Conversation shown slow t=2400ms paint=20ms end=history"
+        );
+        assert!(
+            shown(json!({"end":"failed","elapsed_ms":300,"paint_ms":null}))
+                .unwrap()
+                .starts_with("Conversation shown slow ")
+        );
+        assert_eq!(
+            shown(json!({"end":"token=x","elapsed_ms":1,"paint_ms":1})),
+            None
+        );
+        assert_eq!(
+            shown(json!({"end":"cached","elapsed_ms":1,"paint_ms":5})),
+            None
+        );
+        assert!(serde_json::from_value::<ShownDiagnostic>(
+            json!({"end":"cached","elapsed_ms":1,"paint_ms":1,"text":"x"})
+        )
+        .is_err());
+    }
     #[tokio::test]
     async fn switchboard_conversation_diagnostics_accept_only_content_free_codes() {
         let request = |value: Value| {
