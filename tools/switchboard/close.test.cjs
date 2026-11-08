@@ -50,7 +50,7 @@ test('Close (menu or Ctrl+D) closes the clicked tab immediately and restores it 
   };
   const entry={host:'win',name:'main',state:{panes:[{tab_position:2,pane_id:17,is_plugin:false}]}};
   const item={entry,tab:{id:42,position:2,name:'Clicked tab'},key:'clicked'};
-  const context={$,contextItem:item,hosts:new Map([['win',{name:'Windows'}]]),statuses:[],
+  const context={$,contextItem:item,hosts:new Map([['win',{name:'Windows'}]]),statuses:[],parkedTabs:{clicked:{state:'settled'}},saveParkedTabs(){},
     tabTitle:item=>item.tab.name,closeTabMenu(){context.contextItem=null;},
     setStatus(message){context.statuses.push(message);},ready:{clicked:1},hidden:{clicked:1},isHidden:key=>key in context.hidden,canonKey:key=>key,saveHidden(){},saveReady(){},localStorage:{setItem(){}},render(){},activate(next){context.selected=next.key;},
     fetch:async(url,options)=>{calls.push([url,JSON.parse(options.body)]);return {ok:true};}};
@@ -69,6 +69,7 @@ test('Close (menu or Ctrl+D) closes the clicked tab immediately and restores it 
   context.closeSelectedTab();await clicked;
   assert.deepEqual(calls[0],['/api/hosts/win/close-tab',{session:'main',tab_id:42}],'no confirmation step');
   assert.equal(context.ready.clicked,undefined);assert.equal(context.hidden.clicked,undefined);
+  assert.equal(context.parkedTabs.clicked,undefined);
   context.contextItem=item;
   context.fetch=async()=>({ok:false,text:async()=>'That tab is no longer available'});
   await $('close-tab').onclick();
@@ -84,7 +85,7 @@ test('close removes the selected tab before the request finishes, keeps stale ca
   const entry={host:'win',name:'main',state:{panes:[]},catalog:[{id:42,name:'A',panes:[]},{id:90,name:'B',panes:[]}]};
   let finish,requests=0;
   const source=fs.readFileSync(__dirname+'/static/app.js','utf8');
-  const context={$,sessions:new Map([['main',entry]]),hosts:new Map(),SwitchboardTitles:{tabTitle:(_,tab)=>tab.name},selected:null,tabOrder:[],filter:'all',groups:{},hidden:{},ready:{},
+  const context={$,sessions:new Map([['main',entry]]),hosts:new Map(),SwitchboardTitles:{tabTitle:(_,tab)=>tab.name},selected:null,tabOrder:[],filter:'all',groups:{},hidden:{},ready:{},parkedTabs:{},saveParkedTabs(){},
     saveReady(){},localStorage:{setItem(){}},tabTitle:item=>item.tab.name,closeTabMenu(){context.contextItem=null;},render(){},
     activate(item){context.selected=item.key;},setStatus(message){context.status=message;},
     fetch:()=>{requests++;return new Promise(resolve=>finish=resolve);}};
@@ -123,7 +124,7 @@ test('close resolves a provisional tab by its live pane, without closing a tab w
     activate(item){context.selected=item.key;},setStatus(message){context.status=message;},
     fetch:(url,options)=>{calls.push([url,JSON.parse(options.body)]);return new Promise(resolve=>finish=resolve);},AbortSignal};
   vm.createContext(context);
-  context.pinned={};
+  context.pinned={};context.parkedTabs={};context.saveParkedTabs=()=>{};
   vm.runInContext(source.slice(source.indexOf('function isPinned('),source.indexOf('// Tabs in the Hidden')),context);
   vm.runInContext(source.slice(source.indexOf('function tabKey('),source.indexOf('function moveSelected(')),context);
   context.listedTabs=()=>context.allTabs();
@@ -304,7 +305,7 @@ test('closing a tab selects a visible neighbor, skipping collapsed working tabs'
     const button={},context={selected,contextItem:tabs.find(t=>t.key===selected),$:()=>button,
       allTabs:()=>tabs,listedTabs:()=>[tabs[0],tabs[2]],closeTabMenu(){},render(){},
       activate:item=>{context.selected=item.key;},fetch:async()=>({ok:true}),
-      ready:{},saveReady(){},isHidden:()=>false,AbortSignal};
+      ready:{},saveReady(){},isHidden:()=>false,parkedTabs:{},saveParkedTabs(){},canonKey:key=>key,AbortSignal};
     vm.createContext(context);
     vm.runInContext(fs.readFileSync(__dirname+'/static/close.js','utf8'),context);
     await button.onclick();

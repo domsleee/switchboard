@@ -87,6 +87,26 @@ function sectionExpanded(section){
 let snoozedOpen = sectionExpanded('snoozed');
 let hiddenOpen = sectionExpanded('hidden');
 const seenAttention = load('switchboard-attention-seen');
+// Manual parking is a browser preference, like pins. Keep it separate from the
+// automatic Working shelf and from Hidden tabs.
+let parkedTabs=load('switchboard-parked-tabs');
+function parkedTab(item){return parkedTabs[canonKey(item.key)];}
+function saveParkedTabs(){localStorage.setItem('switchboard-parked-tabs',JSON.stringify(parkedTabs));}
+function urgentTokens(item){return statesForTab(item).filter(s=>['approval','input'].includes(s.state)).map(s=>JSON.stringify([s.key,s.state,s.token,s.since]));}
+function parkTab(item,state,until){
+  if(state)parkedTabs[canonKey(item.key)]={state,until,urgent:urgentTokens(item)};
+  else delete parkedTabs[canonKey(item.key)];
+  saveParkedTabs();
+  if(state){setPinned(item,false);if(item.hidden)setHidden(item,false);}
+  render();
+  // Moving the selected row keeps its conversation open. Return keyboard focus
+  // to that view, including when the action removed the focused button.
+  if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.focus();
+  else allTabs().find(t=>t.key===selected)?.entry.frame.focus();
+}
+window.addEventListener('storage',event=>{
+  if(event.key==='switchboard-parked-tabs'){parkedTabs=load('switchboard-parked-tabs');render();}
+});
 let attentionLoaded=false,paneAttention=keyedAttention(globalThis.SwitchboardStartup?.snapshot.attention||[]),tabCatalog=[],attentionErrors=[],attentionLoading=false,attentionRefreshPending=false,attentionVersion=0;
 let contextItem = null, menuTrigger = null;
 let tabOrder=load('switchboard-tab-order');
@@ -173,6 +193,15 @@ function firstSessionName(host){
   for(let i=1;;i++){const name=i===1?'main':`main-${i}`;if(!taken.has(name))return name;}
 }
 function tabKey(entry, tab) { return JSON.stringify([entry.host, entry.name, tab.pending?'pane':'tab', tab.id]); }
+function remapParkedTabs(remap){
+  const next={};let changed=false;
+  for(const [old,value] of Object.entries(parkedTabs)){
+    const key=remap(canonKey(old));
+    if(key)next[key]=value;
+    if(key!==old)changed=true;
+  }
+  if(changed){parkedTabs=next;saveParkedTabs();}
+}
 // Tabs created after this browser first saw their session go last, oldest first.
 // Native tab IDs only grow within a session, so a higher ID is a newer tab.
 let newTabState;
@@ -398,6 +427,11 @@ function followRestart(entry,tabs){
       const [,,kind,id]=JSON.parse(key);
       return kind==='tab'&&moved.get(id)!==undefined?[JSON.stringify([host,name,'tab',moved.get(id)])]:[];
     }));
+    remapParkedTabs(key=>{
+      if(!mine(key))return key;
+      const [,,kind,id]=JSON.parse(key);
+      return kind==='tab'&&moved.get(id)!==undefined?JSON.stringify([host,name,'tab',moved.get(id)]):null;
+    });
   }
   const key=JSON.stringify([host,name,'layout',created,ids]);
   if(key.length>512)return;
@@ -420,6 +454,7 @@ function setCatalog(entry,tabs){
   if(pinnedMoved)savePinned();
   if(migrations.has(selected)){selected=migrations.get(selected);changed=true;}
   const order=tabOrder.map(canonKey),moved=new Map([...migrations].map(([old,key])=>[canonKey(old),canonKey(key)]));
+  remapParkedTabs(key=>moved.get(key)||key);
   if(order.some(key=>moved.has(key))){tabOrder=[...new Set(order.map(key=>moved.get(key)||key))];changed=true;}
   if(changed){saveReady();localStorage.setItem('switchboard-tab-order',JSON.stringify(tabOrder));}
   followRestart(entry,tabs);markNewTabs(entry,tabs);
@@ -545,6 +580,14 @@ function sidebarTabs(){
   const now=Date.now(),tabs=allTabs(),present=new Set(tabs.map(item=>item.key));
   clearTimeout(snoozedExitTimer);
   let next=Infinity;
+  for(const item of allTabs(true)){
+    const parked=parkedTab(item);if(!parked)continue;
+    // Completion and background work do not cancel an explicit snooze. A new
+    // question does; an existing question can be snoozed until later.
+    if(parked.state==='snoozed'&&parked.until<=now||urgentTokens(item).some(token=>!parked.urgent?.includes(token))||askpassForTab(item)){
+      delete parkedTabs[canonKey(item.key)];saveParkedTabs();
+    }else if(parked.state==='snoozed')next=Math.min(next,parked.until);
+  }
   for(const key of snoozedPlacement.keys())if(!present.has(key))snoozedPlacement.delete(key);
   const result=tabs.map(item=>{
     const eligible=settingValue('move-working-to-snoozed')==='true'&&!item.hidden&&!isPinned(item.key)&&!isReady(item)
@@ -559,15 +602,18 @@ function sidebarTabs(){
       if(placement.deadline>now){snoozed=true;next=Math.min(next,placement.deadline);}
       else snoozedPlacement.delete(item.key);
     }else snoozedPlacement.delete(item.key);
-    return {...item,snoozed};
+    const parked=parkedTab(item);
+    const shelf=!item.hidden&&parked?.state;
+    return {...item,snoozed:snoozed&&!shelf,shelf};
   });
-  if(next!==Infinity)snoozedExitTimer=setTimeout(()=>render(),next-now);
-  return result.sort((a,b)=>(a.hidden?2:a.snoozed?1:0)-(b.hidden?2:b.snoozed?1:0));
+  if(next!==Infinity)snoozedExitTimer=setTimeout(()=>render(),Math.min(next-now,2147483647));
+  const rank=item=>item.hidden?4:item.shelf==='settled'?3:item.shelf==='snoozed'?2:item.snoozed?1:0;
+  return result.sort((a,b)=>rank(a)-rank(b));
 }
 // Search includes collapsed groups; keyboard navigation follows the visible rows.
 function listedTabs(){
   const searching=!!$('tab-search').value.trim();
-  return sidebarTabs().filter(item=>matchesSearch(item)&&(!item.hidden||hiddenOpen||searching)&&(!item.snoozed||snoozedOpen||searching||item.key===selected));
+  return sidebarTabs().filter(item=>matchesSearch(item)&&(!item.hidden||hiddenOpen||searching)&&(!item.snoozed||snoozedOpen||searching||item.key===selected)&&(!item.shelf||sectionExpanded('manual-'+item.shelf)||searching||item.key===selected));
 }
 function moveTab(key,targetKey,after=false) {
   if(key===targetKey)return;
@@ -642,6 +688,70 @@ snoozedHeader.onclick=()=>{
   if(dragging||Date.now()<suppressTabClickUntil)return;
   snoozedOpen=!snoozedOpen;localStorage.setItem(`switchboard-snoozed-open:${filter}`,String(snoozedOpen));render();
 };
+const parkedHeaders=new Map(['snoozed','settled'].map(shelf=>{
+  const header=document.createElement('button');header.id=`manual-${shelf}-toggle`;header.className='parked-header';
+  header.innerHTML=`<span class="chevron" aria-hidden="true">›</span><span>${shelf==='snoozed'?'Snoozed':'Settled'}</span><span class="count"></span>`;
+  header.onclick=()=>{localStorage.setItem(`switchboard-manual-${shelf}-open:${filter}`,String(!sectionExpanded('manual-'+shelf)));render();};
+  return [shelf,header];
+}));
+const parkIcons={clock:'<circle cx="8" cy="8" r="6"/><path d="M8 4v4l3 2"/>',check:'<path d="m3 8 3 3 7-7"/>',wake:'<path d="M3 7a5 5 0 1 1 0 4M3 3v4h4"/>'};
+function parkAction(label,icon){
+  const button=document.createElement('button');button.type='button';
+  button.innerHTML=`<svg viewBox="0 0 16 16" aria-hidden="true">${parkIcons[icon]}</svg>`;
+  button.setAttribute('aria-label',label);button.title=label;return button;
+}
+let snoozeItem=null,snoozeTrigger=null;
+function closeSnoozeMenu(restore=false){
+  $('snooze-menu').hidden=true;snoozeTrigger?.setAttribute('aria-expanded','false');
+  if(restore&&snoozeTrigger?.isConnected)snoozeTrigger.focus();
+}
+function tomorrowMorning(){const date=new Date();date.setDate(date.getDate()+1);date.setHours(9,0,0,0);return date.getTime();}
+function openSnooze(item,trigger){
+  if(!$('snooze-menu').hidden&&snoozeItem?.key===item.key){closeSnoozeMenu(true);return;}
+  closeSnoozeMenu();
+  snoozeItem=item;snoozeTrigger=trigger;closeTabMenu();
+  const menu=$('snooze-menu'),now=Date.now(),time=new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit'});
+  menu.setAttribute('aria-label',`Snooze ${tabTitle(item)}`);
+  for(const button of menu.querySelectorAll('[data-minutes]'))button.lastElementChild.textContent=time.format(new Date(now+Number(button.dataset.minutes)*60000));
+  $('snooze-tomorrow').lastElementChild.textContent=time.format(new Date(tomorrowMorning()));
+  menu.hidden=false;trigger?.setAttribute('aria-expanded','true');
+  const bounds=(trigger||tabButtons.get(item.key)).getBoundingClientRect();
+  menu.style.left=`${Math.max(8,Math.min(bounds.right-menu.offsetWidth,innerWidth-menu.offsetWidth-8))}px`;
+  const top=bounds.bottom+6;
+  menu.style.top=`${Math.max(8,Math.min(top+menu.offsetHeight>innerHeight-8?bounds.top-menu.offsetHeight-6:top,innerHeight-menu.offsetHeight-8))}px`;
+  menu.querySelector('button').focus();
+}
+$('snooze-custom').onclick=()=>{
+  closeSnoozeMenu();
+  const item=snoozeItem;if(!item)return;
+  $('snooze-title').textContent=`Snooze ${tabTitle(item)}`;
+  $('snooze-error').textContent='';$('snooze-until').value='';$('snooze-dialog').showModal();
+};
+function snoozeUntil(until){
+  if(!Number.isFinite(until)||until<=Date.now()){$('snooze-error').textContent='Choose a future date and time.';return;}
+  const item=allTabs().find(item=>item.key===snoozeItem?.key);
+  closeSnoozeMenu();
+  if(!item){$('snooze-dialog').close();return;}
+  $('snooze-dialog').close();parkTab(item,'snoozed',until);
+}
+$('snooze-dialog').addEventListener('close',()=>{snoozeTrigger?.isConnected&&snoozeTrigger.focus();snoozeTrigger=null;});
+for(const button of $('snooze-menu').querySelectorAll('[data-minutes]'))button.onclick=()=>snoozeUntil(Date.now()+Number(button.dataset.minutes)*60000);
+$('snooze-tomorrow').onclick=()=>snoozeUntil(tomorrowMorning());
+$('snooze-form').onsubmit=event=>{event.preventDefault();snoozeUntil(new Date($('snooze-until').value).getTime());};
+$('snooze-cancel').onclick=()=>$('snooze-dialog').close();
+window.addEventListener('keydown',event=>{
+  if($('snooze-menu').hidden)return;
+  if(event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();closeSnoozeMenu(true);}
+  else if(['ArrowDown','ArrowUp','Home','End'].includes(event.key)){
+    event.preventDefault();event.stopImmediatePropagation();
+    const items=[...$('snooze-menu').querySelectorAll('button')],index=items.indexOf(document.activeElement);
+    items[event.key==='Home'?0:event.key==='End'?items.length-1:(index+(event.key==='ArrowDown'?1:-1)+items.length)%items.length]?.focus();
+  }else if(event.key==='Tab')closeSnoozeMenu();
+},true);
+document.addEventListener('pointerdown',event=>{if(!$('snooze-menu').hidden&&!$('snooze-menu').contains(event.target)&&!snoozeTrigger?.contains(event.target))closeSnoozeMenu();},true);
+window.addEventListener('blur',()=>closeSnoozeMenu());
+window.addEventListener('resize',()=>closeSnoozeMenu());
+$('tabs').addEventListener('scroll',()=>closeSnoozeMenu());
 // A row's top-right corner: what the tab is doing, or how long ago its state changed.
 const statusWords={'Password needed':'Password','Approval needed':'Approve','Input needed':'Answer','Working':'Working','Waiting on an agent':'Waiting','Ready to review':'Done'};
 function tabProject(item){
@@ -685,11 +795,16 @@ function render() {
   const snoozedTabs=tabs.filter(item=>item.snoozed),snoozedShown=shown.filter(item=>item.snoozed);
   const showSnoozedGroup=snoozedTabs.length>0&&(!searching||snoozedShown.length>0);
   const showHiddenGroup=hiddenTabs.length>0&&(!searching||hiddenShown.length>0);
+  const parkedGroups=[...parkedHeaders].map(([shelf,header])=>({shelf,header,tabs:tabs.filter(item=>item.shelf===shelf),shown:shown.filter(item=>item.shelf===shelf)}));
+  const ensureHeaders=rank=>{
+    if(rank>=1&&showSnoozedGroup&&!nodes.includes(snoozedHeader))nodes.push(snoozedHeader);
+    for(const [index,group] of parkedGroups.entries())if(rank>=index+2&&group.tabs.length&&(!searching||group.shown.length)&&!nodes.includes(group.header))nodes.push(group.header);
+    if(rank>=4&&showHiddenGroup&&!nodes.includes(hiddenHeader))nodes.push(hiddenHeader);
+  };
   const titles=new Map(tabs.map(item=>[item.key,displayTitle(item)])),titleCounts=new Map();
   for(const item of tabs){const key=JSON.stringify([item.entry.host,titles.get(item.key)]);titleCounts.set(key,(titleCounts.get(key)||0)+1);}
   for (const item of listed) {
-    if((item.snoozed||item.hidden)&&showSnoozedGroup&&!nodes.includes(snoozedHeader))nodes.push(snoozedHeader);
-    if(item.hidden&&!nodes.includes(hiddenHeader))nodes.push(hiddenHeader);
+    ensureHeaders(item.hidden?4:item.shelf==='settled'?3:item.shelf==='snoozed'?2:item.snoozed?1:0);
     let button=tabButtons.get(item.key);
     if(!button){
       button=document.createElement('button');button.draggable=true;
@@ -702,6 +817,12 @@ function render() {
         contextItem=button._item;$('close-tab').click();
       };
       row.append(button);button._row=row;holdTabForMenu(button);
+      const actions=document.createElement('div');actions.className='tab-hover-actions';
+      const snooze=parkAction('Snooze thread','clock'),settle=parkAction('Settle thread','check');
+      snooze.setAttribute('aria-haspopup','menu');snooze.setAttribute('aria-controls','snooze-menu');snooze.setAttribute('aria-expanded','false');
+      snooze.onclick=()=>openSnooze(button._item,snooze);
+      settle.onclick=()=>parkTab(button._item,parkedTab(button._item)?null:'settled');
+      actions.append(snooze,settle);row.append(actions);button._parkActions=actions;button._snooze=snooze;button._settle=settle;
       button.onkeydown=event=>{if(event.key==='ContextMenu'||event.shiftKey&&event.key==='F10'){event.preventDefault();const bounds=button.getBoundingClientRect();openTabMenu(button._item,bounds.right,bounds.top,button);}};
       const where=document.createElement('small');where.className='tab-where';
       const status=document.createElement('span');status.className='tab-status';status.setAttribute('aria-hidden','true');
@@ -723,6 +844,11 @@ function render() {
       tabButtons.set(item.key,button);
     }
     button._item=item;
+    const parking=parkedTab(item),restoreLabel=parking?.state==='snoozed'?'Wake thread':parking?'Un-settle thread':'Settle thread';
+    button._parkActions.hidden=systemTab(item.tab)||!!item.tab.pending;
+    button._snooze.hidden=!!parking;
+    button._settle.setAttribute('aria-label',restoreLabel);button._settle.title=restoreLabel;
+    button._settle.innerHTML=`<svg viewBox="0 0 16 16" aria-hidden="true">${parkIcons[parking?'wake':'check']}</svg><span>${parking?'': 'Settle'}</span>`;
     button.draggable=!item.tab.pending||Number.isInteger(item.tab.id);
     const title=titles.get(item.key);
     const machine=hosts.get(item.entry.host)?.name || item.entry.host;
@@ -760,6 +886,12 @@ function render() {
     snoozedHeader.setAttribute('aria-label',`Working tabs, ${snoozedTabs.length}`);
     snoozedHeader.lastElementChild.textContent=searching?`${snoozedShown.length} / ${snoozedTabs.length}`:String(snoozedTabs.length);
   }else snoozedHeader.remove();
+  ensureHeaders(3);
+  for(const group of parkedGroups){
+    if(!group.tabs.length||(searching&&!group.shown.length)){group.header.remove();continue;}
+    group.header.setAttribute('aria-expanded',String(sectionExpanded('manual-'+group.shelf)||searching));
+    group.header.lastElementChild.textContent=String(group.tabs.length);
+  }
   if(showHiddenGroup&&!nodes.includes(hiddenHeader))nodes.push(hiddenHeader);
   if(showHiddenGroup)renderHiddenHeader(hiddenTabs,hiddenShown,searching);else hiddenHeader.remove();
   for(const button of tabButtons.values())if(!shownKeys.has(button._item.key))button._row.remove();
@@ -772,12 +904,12 @@ function render() {
 
   const current=tabs.find(t=>t.key===selected);
   updateTabUrl(current);
-  const notifications=allTabs(true).filter(isReady).length;
+  const notifications=allTabs(true).filter(item=>!parkedTab(item)&&isReady(item)).length;
   $('notifications').textContent=`${notifications} notification${notifications===1?'':'s'}`;
   $('notifications').classList.toggle('has-notifications',notifications>0);
   $('notifications').hidden=notifications===0;
   document.title=`${notifications?'('+notifications+') ':''}`+(current?`${tabTitle(current)} · ${hosts.get(current.entry.host)?.name} · Switchboard`:'Switchboard');
-  globalThis.SwitchboardNotifications?.check(allTabs(true).filter(isReady));
+  globalThis.SwitchboardNotifications?.check(allTabs(true).filter(item=>!parkedTab(item)&&isReady(item)));
   const startingEntry=[...sessions.values()].find(entry=>entry.starting&&(filter==='all'||groups[entry.host]===filter));
   const currentEntry=current?.entry||(waitingForRequestedTab()?sessions.get(sessionKey(...JSON.parse(selected).slice(0,2))):startingEntry);
   for (const entry of sessions.values()) entry.frame.classList.toggle('active',entry===currentEntry);
@@ -1451,14 +1583,16 @@ function newTabSubmitText(text,announce=true){
 // A model and its effort, as `claude:<model>#<effort>` or `codex:<model>#<effort>` (see model-picker.js).
 // The owner's shell shortcuts from older choices become the model and effort they run.
 const ModelPicker=globalThis.SwitchboardModelPicker;let newTabModelValue=ModelPicker.DEFAULT;
-// Codex lists its own models and their efforts on each computer; until that arrives, the picker says so.
-const newTabCodexModels=new Map();
-function newTabHostCodexModels(){const host=$('new-tab-target').value?JSON.parse($('new-tab-target').value)[0]:'';return newTabCodexModels.get(host);}
+// Each computer lists its agents' current models and efforts. Older relays omit Claude's list.
+const newTabModels=new Map(),newTabModelRequests=new Set();
+function newTabModelHost(){return $('new-tab-target').value?JSON.parse($('new-tab-target').value)[0]:'';}
+function newTabHostCodexModels(){return newTabModels.get(newTabModelHost())?.codex;}
+function newTabHostClaudeModels(){return newTabModels.get(newTabModelHost())?.claude;}
 function newTabModelProvider(value){return ModelPicker.parse(value)?.provider||'';}
 function newTabModel(){return newTabModelValue;}
 function setNewTabModel(value){
   newTabModelValue=ModelPicker.normalize(value);
-  const choice=ModelPicker.describe(newTabModelValue,newTabHostCodexModels()),icon=globalThis.SwitchboardConversation?.agentIcons?.[choice.provider];
+  const choice=ModelPicker.describe(newTabModelValue,newTabHostCodexModels(),newTabHostClaudeModels()),icon=globalThis.SwitchboardConversation?.agentIcons?.[choice.provider];
   $('new-tab-model-icon').innerHTML=icon||'';$('new-tab-model-icon').hidden=!icon;
   $('new-tab-model-name').textContent=choice.name;$('new-tab-model-effort').textContent=choice.effort?choice.effortName:'';
   const effort=choice.effort?choice.effortName+' effort':'effort from the agent setting';
@@ -1468,8 +1602,8 @@ function setNewTabModel(value){
 // A remembered effort the destination's model does not offer is dropped for the agent setting, and the picker says why.
 let newTabEffortWarning='';
 function fitNewTabModel(){
-  const fitted=ModelPicker.fit(newTabModelValue,newTabHostCodexModels());if(fitted===newTabModelValue)return;
-  const before=ModelPicker.describe(newTabModelValue,newTabHostCodexModels());
+  const fitted=ModelPicker.fit(newTabModelValue,newTabHostCodexModels(),newTabHostClaudeModels());if(fitted===newTabModelValue)return;
+  const before=ModelPicker.describe(newTabModelValue,newTabHostCodexModels(),newTabHostClaudeModels());
   newTabEffortWarning=`${before.effortName} isn't offered for ${before.name} on this computer, so the agent setting is used.`;
   setNewTabModel(fitted);$('new-tab-progress').textContent=newTabEffortWarning;
 }
@@ -1485,19 +1619,32 @@ function saveNewTabModel(value){
   try{localStorage.setItem('switchboard-new-tab-recent',JSON.stringify([value,...newTabRecentModels().filter(other=>other!==value)].slice(0,4)));}catch(_){}
   try{localStorage.setItem('switchboard-new-tab-model',value);const saved=JSON.parse(localStorage.getItem('switchboard-new-tab-models')||'{}');saved[newTabModelProvider(value)]=value;localStorage.setItem('switchboard-new-tab-models',JSON.stringify(saved));}catch(_){}
 }
-async function loadNewTabCodexModels(){
-  const host=$('new-tab-target').value?JSON.parse($('new-tab-target').value)[0]:'';
-  if(!host||Array.isArray(newTabCodexModels.get(host)))return;
-  newTabCodexModels.delete(host);
+async function loadNewTabModels(){
+  const host=newTabModelHost();if(!host)return;
+  // Refresh for each new chat or computer choice. Keep the last good list usable while
+  // waiting, and share an outstanding request rather than starting agents twice.
+  const previous=newTabModels.get(host)||{};
+  if(previous.codex==='failed')delete previous.codex;
+  setNewTabModel(newTabModelValue);newTabModelMenu.refresh();
+  if(newTabModelRequests.has(host))return;
+  newTabModelRequests.add(host);
   try{
     const response=await fetch('/hosts/'+encodeURIComponent(host)+'/model-list',{cache:'no-store',signal:AbortSignal.timeout(15000)});
     if(!response.ok)throw Error('Models unavailable');
-    const data=await response.json(),models=(Array.isArray(data?.codex)?data.codex:[]).filter(model=>typeof model?.id==='string'&&ModelPicker.parse('codex:'+model.id)).map(({id,name,default:isDefault,efforts,default_effort})=>({id,name:typeof name==='string'?name:id,default:isDefault===true,
+    const data=await response.json(),catalog={...previous};
+    for(const provider of ['codex','claude']){
+      const models=(Array.isArray(data?.[provider])?data[provider]:[]).filter(model=>typeof model?.id==='string'&&ModelPicker.parse(provider+':'+model.id)).map(({id,name,default:isDefault,efforts,default_effort})=>({id,name:typeof name==='string'?name:id,default:isDefault===true,
       // No levels from an older relay stays unknown; an empty list means the model has none.
       efforts:Array.isArray(efforts)?efforts.filter(effort=>typeof effort?.id==='string'&&/^[a-z]+$/.test(effort.id)).map(({id,description})=>({id,description:typeof description==='string'?description:''})):undefined,
       default_effort:typeof default_effort==='string'&&/^[a-z]+$/.test(default_effort)?default_effort:''}));
-    newTabCodexModels.set(host,models.length?models:'failed');
-  }catch(_){newTabCodexModels.set(host,'failed');}
+      if(models.length)catalog[provider]=models;
+    }
+    if(!Array.isArray(catalog.codex))catalog.codex='failed';
+    newTabModels.set(host,catalog);
+  }catch(_){newTabModels.set(host,{...previous,codex:Array.isArray(previous.codex)?previous.codex:'failed'});}
+  finally{newTabModelRequests.delete(host);}
+  // An answer from a previous computer must not change the current choice or focus.
+  if(host!==newTabModelHost()||!$('new-tab-dialog').open)return;
   setNewTabModel(newTabModelValue);fitNewTabModel();newTabModelMenu.refresh();
 }
 function paintNewTabMachine(){
@@ -1566,9 +1713,9 @@ function newTabChipMenu(chip,menu,options,current,set,{search=null,custom=()=>[]
   if(search){search.addEventListener('keydown',keys);search.addEventListener('input',filter);search.addEventListener('blur',leave);search.addEventListener('focus',()=>{if(menu.hidden)open();});}
   return {close,refresh(){if(!menu.hidden)paint();}};
 }
-const newTabModelMenu=ModelPicker.create({chip:$('new-tab-model'),menu:$('new-tab-model-menu'),value:()=>newTabModelValue,codex:newTabHostCodexModels,recent:newTabRecentModels,warning:()=>newTabEffortWarning,icons:globalThis.SwitchboardConversation?.agentIcons||{},
+const newTabModelMenu=ModelPicker.create({chip:$('new-tab-model'),menu:$('new-tab-model-menu'),value:()=>newTabModelValue,codex:newTabHostCodexModels,claude:newTabHostClaudeModels,recent:newTabRecentModels,warning:()=>newTabEffortWarning,icons:globalThis.SwitchboardConversation?.agentIcons||{},
   set(value){newTabEffortWarning='';setNewTabModel(value);},
-  reload(){const host=$('new-tab-target').value?JSON.parse($('new-tab-target').value)[0]:'';newTabCodexModels.delete(host);loadNewTabCodexModels();},
+  reload:loadNewTabModels,
   // The choice is announced once, when the picker closes, not on every arrow.
   done(){if(newTabHandover){$('new-tab-form').requestSubmit();return;}$('new-tab-progress').textContent=$('new-tab-model').getAttribute('aria-label');$('new-tab-prompt').focus();}});
 const newTabMachineMenu=newTabChipMenu($('new-tab-machine'),$('new-tab-machine-menu'),()=>[...$('new-tab-target').options].map(option=>[option.value,option.textContent.replace(/ · no session$/,''),option.disabled?'no session':'',option.disabled]),()=>$('new-tab-target').value,value=>{$('new-tab-target').value=value;$('new-tab-target').dispatchEvent(new Event('change'));$('new-tab-progress').textContent='Computer: '+$('new-tab-target').selectedOptions[0].textContent;});
@@ -1629,7 +1776,7 @@ function openNewTabDialog(elevated){
   $('new-tab-form').pendingSubmission=null;newTabBusy(false);
   $('new-tab-prompt').value='';clearNewTabFiles();newTabProjectLookup.close();
   // Each browser remembers its last model and effort, listed or typed; Sol at high effort is the default.
-  newTabModelMenu.close();newTabEffortWarning='';setNewTabModel(newTabSavedModel());fitNewTabModel();newTabSubmitText();
+  newTabModelMenu.close();newTabEffortWarning='';setNewTabModel(newTabSavedModel());newTabSubmitText();
   $('new-tab-dialog').classList.toggle('elevated',elevated);
   $('new-tab-note').textContent=elevated?'Runs as administrator. Someone at that computer must approve it (UAC on Windows, sudo elsewhere).':'';
   const select=$('new-tab-target');select.replaceChildren();
@@ -1651,7 +1798,7 @@ function openNewTabDialog(elevated){
   if(select.selectedOptions[0]?.disabled){const usable=[...select.options].find(option=>!option.disabled);if(usable)select.value=usable.value;}
   newTabRetrying=false;newTabSubmitText();paintNewTabMachine();closeNewTabProjectPicker(false);
   newTabProjectEdited=false;clearNewTabFieldProblem();$('new-tab-project').value=newTabSavedProject(JSON.parse(select.value)[0]);updateNewTabProject();
-  loadNewTabProjects();loadNewTabCodexModels();
+  loadNewTabProjects();loadNewTabModels();
   $('new-tab-dialog').showModal();fitNewTabPrompt();fitNewTabDialog();
   $('new-tab-prompt').focus();
 }
@@ -1756,7 +1903,7 @@ $('new-tab-target').onchange=()=>{
   closeNewTabProjectPicker(false);newTabProjectLookup.close();clearNewTabFieldProblem();paintNewTabMachine();
   for(const item of newTabFiles){delete item.uploaded;delete item.state;}paintNewTabFiles();
   if(!newTabProjectEdited&&!newTabHandover){$('new-tab-project').value=newTabSavedProject(JSON.parse($('new-tab-target').value)[0]);updateNewTabProject();}
-  loadNewTabProjects();loadNewTabCodexModels();
+  loadNewTabProjects();loadNewTabModels();
 };
 function setHandoverProject(){
   const source=newTabHandover?.context?.source;if(!source?.project)return;
@@ -1896,7 +2043,7 @@ $('new-tab-dialog').addEventListener('close',()=>{if($('new-tab-dialog').open)re
 $('new-tab-form').onsubmit=async event=>{
   event.preventDefault();const form=$('new-tab-form');if(form.pendingSubmission)return;
   if(newTabHandover)newTabModelMenu.commit();
-  const key=$('new-tab-target').value,project=$('new-tab-project').value.trim(),command=ModelPicker.fit(newTabModel(),newTabHostCodexModels()),text=newTabHandover?newTabHandover.text:$('new-tab-prompt').value,files=[...newTabFiles],elevated=newTabElevated;
+  const key=$('new-tab-target').value,project=$('new-tab-project').value.trim(),command=ModelPicker.fit(newTabModel(),newTabHostCodexModels(),newTabHostClaudeModels()),text=newTabHandover?newTabHandover.text:$('new-tab-prompt').value,files=[...newTabFiles],elevated=newTabElevated;
   const handover=newTabHandover?.context,source=newTabHandover?.source;if(newTabHandover&&!handover)return;
   if(/[\x00-\x08\x0b-\x1f\x7f]/.test(text)||new TextEncoder().encode(text).length>16000){$('new-tab-error').textContent='Use a prompt up to 16 KB without control characters.';return;}
   // Check the computer before spending time on uploads.
@@ -2323,7 +2470,7 @@ function restartAgentTarget(item){
 // for its turn to end (see runPendingSwitches); an idle agent that cannot restart has none.
 const pendingSwitches=new Map();
 function switchPossible(state){return !!state?.chat_id&&(!!state.restart_available||!['ready','working'].includes(state.state));}
-function newTabModelLabel(value){const choice=ModelPicker.describe(value,newTabHostCodexModels());return choice.name+(choice.effort?' '+choice.effortName:'');}
+function newTabModelLabel(value){const choice=ModelPicker.describe(value,newTabHostCodexModels(),newTabHostClaudeModels());return choice.name+(choice.effort?' '+choice.effortName:'');}
 function openAgentHandover(item,paneId){
   const target=agentChatTarget(item,paneId);if(!target||!switchPossible(target.state)||!globalThis.SwitchboardHandover)return;
   const queued=pendingSwitches.get(item.key);if(queued?.running){closeTabMenu();setStatus('The model switch is already running.');return;}
@@ -2333,7 +2480,7 @@ function openAgentHandover(item,paneId){
   closeTabMenu();openNewTabDialog(false);if(!$('new-tab-dialog').open)return;
   const option=[...$('new-tab-target').options].find(option=>JSON.parse(option.value)[0]===host);
   if(!option){$('new-tab-dialog').close();setStatus('The source computer is unavailable.',true);return;}
-  $('new-tab-target').value=option.value;paintNewTabMachine();loadNewTabProjects();loadNewTabCodexModels();
+  $('new-tab-target').value=option.value;paintNewTabMachine();loadNewTabProjects();loadNewTabModels();
   $('new-tab-title').textContent='Switch model';$('new-tab-note').textContent='';
   setNewTabModel(queued?.model||newTabSavedModel(source.agent==='claude'?'codex':'claude'));
   $('new-tab-dialog').classList.add('handover-mode');
@@ -2443,6 +2590,11 @@ function updateTabMenu(){
   pin.textContent=isPin?'Unpin':'Pin';
   pin.title=isPin?'Allow automatic grouping':'Keep in the list while working';
   const hide=$('hide-tab');
+  const parking=parkedTab(item);
+  $('snooze-tab').hidden=!!parking;
+  $('snooze-tab').disabled=!!item.tab.pending||systemTab(item.tab);
+  $('settle-tab').textContent=parking?.state==='snoozed'?'Wake thread':parking?'Un-settle thread':'Settle thread';
+  $('settle-tab').disabled=!!item.tab.pending||systemTab(item.tab);
   hide.disabled=!!item.tab.pending&&!Number.isInteger(item.tab.id);
   hide.textContent=item.hidden?'Show in list':'Hide';
   hide.title=item.hidden?'Move back among your tabs':'Move to Hidden; keep processes running';
@@ -2497,6 +2649,7 @@ $('tab-menu').onkeydown=event=>{
 };
 $('pin-tab').onclick=()=>{
   const item=contextItem;if(!item)return;
+  if(parkedTab(item)){delete parkedTabs[canonKey(item.key)];saveParkedTabs();}
   setPinned(item,!isPinned(item.key));
   closeTabMenu();render();
   tabButtons.get(item.key)?.scrollIntoView({block:'nearest',inline:'nearest'});
@@ -2504,11 +2657,14 @@ $('pin-tab').onclick=()=>{
 };
 $('hide-tab').onclick=()=>{
   const item=contextItem;if(!item)return;
+  if(parkedTab(item)){delete parkedTabs[canonKey(item.key)];saveParkedTabs();}
   setHidden(item,!item.hidden);
   closeTabMenu();render();
   tabButtons.get(item.key)?.scrollIntoView({block:'nearest',inline:'nearest'});
   if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.focus();else allTabs().find(t=>t.key===selected)?.entry.frame.focus();
 };
+$('snooze-tab').onclick=()=>{if(contextItem)openSnooze(contextItem,menuTrigger);};
+$('settle-tab').onclick=()=>{const item=contextItem;if(!item)return;closeTabMenu();parkTab(item,parkedTab(item)?null:'settled');};
 document.addEventListener('pointerdown',event=>{if(!$('tab-menu').contains(event.target))closeTabMenu();},true);
 window.addEventListener('blur',closeTabMenu);
 $('tabs').addEventListener('scroll',closeTabMenu);
@@ -2645,6 +2801,10 @@ const browserDiagnostics=window.SwitchboardBrowserDiagnostics?.(diagnostic=>{
 let conversationSince=null;
 window.SwitchboardConversation?.install({
   viewed:acknowledgeConversation,
+  sending(view){
+    const item=allTabs(true).find(item=>item.entry.host===view.host&&item.entry.name===view.session&&item.tab.panes.some(p=>!p.is_plugin&&p.pane_id===view.pane));
+    if(item&&parkedTab(item)){delete parkedTabs[canonKey(item.key)];saveParkedTabs();render();}
+  },
   switchModel(view){openAgentHandover(allTabs().find(item=>item.key===selected),view?.pane);},
   cancelSwitch(){cancelSwitch(selected);},
   idle(){if(pendingSwitches.size)queueMicrotask(runPendingSwitches);},

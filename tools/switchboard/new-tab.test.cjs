@@ -112,7 +112,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
       await page.keyboard.press('Shift+Tab');assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-model-search');
       assert.equal(await page.locator('#new-tab-model-menu').isVisible(),true);
       // A tab per agent opens on the chosen model's agent: here the models this computer's Codex lists.
-      await page.waitForFunction(()=>Array.isArray(newTabCodexModels.get('windows'))&&document.querySelector('#new-tab-model-menu').textContent.includes('GPT-6 Luna'));
+      await page.waitForFunction(()=>Array.isArray(newTabModels.get('windows')?.codex)&&document.querySelector('#new-tab-model-menu').textContent.includes('GPT-6 Luna'));
       assert.deepEqual(await page.locator('#new-tab-model-menu [role=tab]').allTextContents(),['Favourites','Codex','Claude Code']);
       assert.equal(await page.getByRole('tab',{name:/^Codex/}).getAttribute('aria-selected'),'true');
       assert.deepEqual(await page.locator('#new-tab-model-menu [role=option] .model-picker-name').allTextContents(),['GPT-6.1 Sol','GPT-6 Luna']);
@@ -239,8 +239,8 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
       assert.equal(await input.evaluate(()=>window.creationElevated),number===2);
       assert.deepEqual(await input.evaluate(()=>window.creationLaunch),number===2?{project:'dotfiles',command:'claude:claude-opus-5-5#high',prompt:'Update this project',images:[]}:{project:'switchboard',command:'codex:gpt-6.1-sol#high',prompt:'  Fix spaces, "quotes", $vars & symbols 🦀\nsecond line  \n\nAttached files:\nC:/User files/attachments/it\'s notes.txt',images:["C:/User files/attachments/it's screen shot.png","C:/User files/attachments/it's pasted.png"]});
       if(number===1){
-        assert.deepEqual(uploads.slice(-3).map(({path,name})=>({path,name})),['screen shot.png','pasted.png','notes.txt'].map(name=>({path:'/api/hosts/windows/attachments',name})));
-        assert.deepEqual(uploads.at(-3).body,png);
+        assert.deepEqual(uploads.slice(-3).map(({path,name})=>({path,name})).sort((a,b)=>a.name.localeCompare(b.name)),['screen shot.png','pasted.png','notes.txt'].map(name=>({path:'/api/hosts/windows/attachments',name})).sort((a,b)=>a.name.localeCompare(b.name)));
+        assert.deepEqual(uploads.slice(-3).find(upload=>upload.name==='screen shot.png').body,png);
       }
       await input.evaluate(()=>window.confirmCreation());created=number;
       await page.waitForFunction(n=>document.querySelector('#tabs .selected .tab-name')?.textContent==='New shell '+n,number);

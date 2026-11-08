@@ -10,6 +10,7 @@ test('Conversation keeps the reader in place in the same frame and shows the scr
   await page.addInitScript(()=>{window.intervals=[];window.setInterval=fn=>intervals.push(fn);localStorage.setItem('switchboard-view-mode','conversation');});
   await page.route('http://scroll.test/**',route=>{
    const p=new URL(route.request().url()).pathname;
+   if(p.startsWith('/api/diagnostics/'))return route.fulfill({status:204,body:''});
    if(p.endsWith('/stream'))return route.fulfill({status:404,body:''});
    if(p.startsWith('/api/chats/'))return route.fulfill({json:{messages,start_cursor:0,next_cursor:null}});
    if(p==='/')return route.fulfill({contentType:'text/html',body:`<meta charset="utf-8"><link rel="stylesheet" href="/conversation.css"><style>body{margin:0}#terminals{position:relative;height:100dvh}</style><main id="terminals"><iframe id="terminal"></iframe><section id="artifact-preview" hidden></section></main><script src="/conversation-media.js"></script><script src="/conversation.js"></script><script>window.current={key:'pane1',host:'fixture',session:'main',pane:1,title:'Scroll',agent:'claude',state:'ready',chatId:'chat-1',frame:document.getElementById('terminal')};SwitchboardConversation.install({selection:()=>current,terminal(){}});</script>`});
