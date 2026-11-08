@@ -3134,59 +3134,32 @@ fn enrich_panes_with_pty_data(
     pane_entries: &mut [PaneListEntry],
     senders: &ThreadSenders,
 ) -> Result<()> {
-    for entry in pane_entries.iter_mut() {
-        if !entry.pane_info.is_plugin {
-            let pane_id = PaneId::Terminal(entry.pane_info.id);
-            enrich_pane_with_running_command(entry, pane_id, senders)?;
-            enrich_pane_with_cwd(entry, pane_id, senders)?;
+    let terminal_ids: Vec<u32> = pane_entries
+        .iter()
+        .filter(|entry| !entry.pane_info.is_plugin)
+        .map(|entry| entry.pane_info.id)
+        .collect();
+    if terminal_ids.is_empty() {
+        return Ok(());
+    }
+    let wait = std::time::Duration::from_millis(200).saturating_mul(terminal_ids.len() as u32);
+    let (response_channel, response) = crossbeam_channel::unbounded();
+    senders.send_to_pty(PtyInstruction::GetPanesProcessInfo {
+        terminal_ids,
+        response_channel,
+    })?;
+    let Ok(mut info) = response.recv_timeout(wait) else {
+        return Ok(());
+    };
+    for entry in pane_entries
+        .iter_mut()
+        .filter(|entry| !entry.pane_info.is_plugin)
+    {
+        if let Some(info) = info.remove(&entry.pane_info.id) {
+            entry.pane_command = info.command.map(|command| command.join(" "));
+            entry.pane_cwd = info.cwd.map(|cwd| cwd.to_string_lossy().to_string());
         }
     }
-    Ok(())
-}
-
-fn enrich_pane_with_running_command(
-    entry: &mut PaneListEntry,
-    pane_id: PaneId,
-    senders: &ThreadSenders,
-) -> Result<()> {
-    use crossbeam_channel::unbounded;
-    use std::time::Duration;
-    use zellij_utils::data::GetPaneRunningCommandResponse;
-
-    let (cmd_sender, cmd_receiver) = unbounded();
-    senders.send_to_pty(PtyInstruction::GetPaneRunningCommand {
-        pane_id,
-        response_channel: cmd_sender,
-    })?;
-
-    if let Ok(GetPaneRunningCommandResponse::Ok(command_vec)) =
-        cmd_receiver.recv_timeout(Duration::from_millis(100))
-    {
-        entry.pane_command = Some(command_vec.join(" "));
-    }
-
-    Ok(())
-}
-
-fn enrich_pane_with_cwd(
-    entry: &mut PaneListEntry,
-    pane_id: PaneId,
-    senders: &ThreadSenders,
-) -> Result<()> {
-    use crossbeam_channel::unbounded;
-    use std::time::Duration;
-    use zellij_utils::data::GetPaneCwdResponse;
-
-    let (cwd_sender, cwd_receiver) = unbounded();
-    senders.send_to_pty(PtyInstruction::GetPaneCwd {
-        pane_id,
-        response_channel: cwd_sender,
-    })?;
-
-    if let Ok(GetPaneCwdResponse::Ok(cwd)) = cwd_receiver.recv_timeout(Duration::from_millis(100)) {
-        entry.pane_cwd = Some(cwd.to_string_lossy().to_string());
-    }
-
     Ok(())
 }
 

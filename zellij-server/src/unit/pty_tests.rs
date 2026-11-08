@@ -18,6 +18,7 @@ struct MockOsApi {
     cwds: Arc<Mutex<HashMap<u32, PathBuf>>>,
     cmds: Arc<Mutex<HashMap<u32, Vec<String>>>>,
     cmds_by_ppid: Arc<Mutex<HashMap<String, Vec<String>>>>,
+    foreground_scans: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl MockOsApi {
@@ -26,6 +27,7 @@ impl MockOsApi {
             cwds: Arc::new(Mutex::new(HashMap::new())),
             cmds: Arc::new(Mutex::new(HashMap::new())),
             cmds_by_ppid: Arc::new(Mutex::new(HashMap::new())),
+            foreground_scans: Default::default(),
         }
     }
     fn set_cwd(&self, pid: u32, path: PathBuf) {
@@ -130,6 +132,7 @@ impl ServerOsApi for MockOsApi {
         panes: &[(u32, u32)],
         _: &Option<String>,
     ) -> HashMap<u32, Vec<String>> {
+        self.foreground_scans.fetch_add(1, Ordering::SeqCst);
         let cmds_by_ppid = self.cmds_by_ppid.lock().unwrap();
         panes
             .iter()
@@ -166,6 +169,39 @@ fn make_pty_with_plugin_receiver(
     bus.senders.to_plugin = Some(plugin_sender);
     let pty = Pty::new(bus, false, None, None);
     (pty, plugin_rx)
+}
+
+#[test]
+fn listing_panes_scans_processes_once_and_prefers_the_foreground_program() {
+    let mock = MockOsApi::new();
+    let scans = mock.foreground_scans.clone();
+    mock.set_cwd(100, PathBuf::from("/work"));
+    mock.set_cmd(100, vec!["bash".into()]);
+    mock.set_foreground_cmd(100, vec!["nvim".into(), "a.rs".into()]);
+    mock.set_cmd(200, vec!["fish".into()]);
+    let (mut pty, _plugins) = make_pty_with_plugin_receiver(mock);
+    set_active_terminal(&mut pty, 1, 100);
+    set_active_terminal(&mut pty, 2, 200);
+
+    let info = pty.panes_process_info(&[1, 2, 3]);
+
+    assert_eq!(
+        scans.load(Ordering::SeqCst),
+        1,
+        "one scan however many panes"
+    );
+    assert_eq!(
+        info[&1],
+        PaneProcessInfo {
+            command: Some(vec!["nvim".into(), "a.rs".into()]),
+            cwd: Some(PathBuf::from("/work")),
+        }
+    );
+    assert_eq!(info[&2].command, Some(vec!["fish".to_owned()]));
+    assert!(
+        !info.contains_key(&3),
+        "a pane with no process has no entry"
+    );
 }
 
 fn set_active_terminal(pty: &mut Pty, terminal_id: u32, child_pid: u32) {
