@@ -42,11 +42,19 @@ test('Conversation shows the model, animates real work and keeps delivery receip
   await Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/')),page.evaluate(()=>intervals.forEach(fn=>fn()))]);
   await page.waitForFunction(()=>document.querySelector('.conversation-model').textContent==='6 Astra · high');assert.equal(await activity.textContent(),'Working…');
   assert.equal(await labels.first().textContent(),'Codex');
-  for(const state of ['ready','approval','input','waiting']){
+  for(const state of ['ready','approval','input']){
    await page.evaluate(state=>{current.state=state;SwitchboardConversation.update();},state);
    assert.equal(await working.isVisible(),false,state+' must stop the animation');
    assert.equal(await activity.evaluate(node=>getComputedStyle(node,'::before').animationName),'none');
   }
+  // A background agent outliving the reply keeps the live row, naming what it waits on.
+  await page.evaluate(()=>{current.state='waiting';SwitchboardConversation.update();});
+  assert.equal(await working.isVisible(),true,'A running background agent shows in the transcript');
+  assert.equal(await page.locator('.conversation-working-step').getAttribute('data-step'),'Waiting on a background agent');
+  assert.equal(await activity.evaluate(node=>getComputedStyle(node,'::before').animationName),'none');
+  await page.evaluate(()=>{current.state='ready';SwitchboardConversation.update();});
+  assert.equal(await working.isVisible(),false,'The row leaves once the agent finishes');
+  await page.evaluate(()=>{current.state='waiting';SwitchboardConversation.update();});
   model=null;effort=null;
   await Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/')),page.evaluate(()=>intervals.forEach(fn=>fn()))]);
   await page.waitForFunction(()=>document.querySelector('.conversation-model').textContent==='Codex');assert.equal(await activity.textContent(),'Waiting on an agent');
