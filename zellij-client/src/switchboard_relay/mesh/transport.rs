@@ -790,7 +790,7 @@ async fn terminal_response(
     if path == "/switchboard/codex/queue" && request.method() == Method::POST {
         return Ok(native_messages::gateway(request).await);
     }
-    if path == "/switchboard/codex/receipt" && request.method() == Method::GET {
+    if request.uri().path() == "/switchboard/codex/receipt" && request.method() == Method::GET {
         return Ok(native_messages::gateway_receipt(request).await);
     }
     if path == "/switchboard/conversation/prepare" && request.method() == Method::POST {
