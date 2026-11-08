@@ -26,3 +26,21 @@ test('A line that is only an image or video path shows the media; paths inside s
   assert.match(await page.locator('#message').textContent(),/See \/tmp\/bold\.png for details\./);
  }finally{await browser.close();server.close();}
 });
+
+test('Bare URLs become links, keeping sentence punctuation outside and code untouched',{skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
+ const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
+ const server=http.createServer((req,res)=>{
+  if(req.url==='/'){res.setHeader('Content-Type','text/html');return res.end('<meta charset="utf-8"><div class="conversation-panel"><article class="conversation-message" id="message"></article></div><script src="/conversation-media.js"></script>');}
+  res.setHeader('Content-Type','application/javascript');res.end(fs.readFileSync(path.join(__dirname,'static',path.basename(req.url))));});
+ await new Promise(r=>server.listen(0,'127.0.0.1',r));const browser=await chromium.launch();
+ try{const page=await browser.newPage();await page.goto(`http://127.0.0.1:${server.address().port}`);
+  await page.evaluate(()=>SwitchboardConversationMedia.render(document.getElementById('message'),{markdown:[
+   {type:'start',tag:'p'},{type:'text',text:"I've opened PR #428: https://github.com/domsleee/switchboard/pull/428."},{type:'end'},
+   {type:'start',tag:'p'},{type:'text',text:'See (https://en.wikipedia.org/wiki/Tab_(interface)) and http://localhost:8199/ then '},{type:'code',text:'curl https://example.com/x'},{type:'end'}]},{host:'windows',project:'C:\\repo'}));
+  const links=await page.locator('#message a').evaluateAll(as=>as.map(a=>[a.textContent,a.href,a.target,a.rel]));
+  assert.deepEqual(links,[
+   ['https://github.com/domsleee/switchboard/pull/428','https://github.com/domsleee/switchboard/pull/428','_blank','noopener noreferrer'],
+   ['https://en.wikipedia.org/wiki/Tab_(interface)','https://en.wikipedia.org/wiki/Tab_(interface)','_blank','noopener noreferrer']]);
+  assert.match(await page.locator('#message').textContent(),/pull\/428\.See \(https:\/\/en\.wikipedia\.org\/wiki\/Tab_\(interface\)\) and http:\/\/localhost:8199\/ then curl https:\/\/example\.com\/x/);
+ }finally{await browser.close();server.close();}
+});

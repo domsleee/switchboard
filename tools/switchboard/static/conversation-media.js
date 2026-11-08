@@ -96,6 +96,20 @@
     const walker=document.createTreeWalker(parent,NodeFilter.SHOW_TEXT),paths=[];
     while(walker.nextNode()){const text=walker.currentNode;if((text.parentElement===parent||text.parentElement.matches('p,li,td,h1,h2,h3,h4,h5,h6'))&&!text.parentElement.closest('blockquote,.conversation-media')&&mediaPath.test(text.data)&&(imageExt.test(text.data.trim())||videoExt.test(text.data.trim()))&&lineEdge(text.previousSibling,true)&&lineEdge(text.nextSibling,false))paths.push(text);}
     for(const text of paths){const path=text.data.trim();text.replaceWith(media(path,path.split(/[\\/]/).pop(),videoExt.test(path)?'video':'image',context,gallery));}
+    // Agents print bare URLs; markdown only links <url> and [text](url). Link the rest,
+    // leaving trailing sentence punctuation outside the link.
+    const urls=document.createTreeWalker(parent,NodeFilter.SHOW_TEXT),bare=[];
+    while(urls.nextNode()){const text=urls.currentNode;if(/https?:\/\//i.test(text.data)&&!text.parentElement.closest('a,pre,code,.conversation-media'))bare.push(text);}
+    for(const text of bare){
+      const parts=[];let last=0;
+      for(const match of text.data.matchAll(/https?:\/\/[^\s<>"'`]+/gi)){
+        let url=match[0];while(/[.,;:!?)\]}]$/.test(url)&&!(url.endsWith(')')&&url.split('(').length>url.split(')').length-1))url=url.slice(0,-1);
+        const href=resolve(url,context);if(!href)continue;
+        parts.push(document.createTextNode(text.data.slice(last,match.index)));
+        const link=node('a',url);link.href=href;link.target='_blank';link.rel='noopener noreferrer';parts.push(link);last=match.index+url.length;
+      }
+      if(parts.length){parts.push(document.createTextNode(text.data.slice(last)));text.replaceWith(...parts);}
+    }
     for(const attachment of message.attachments||[]){
       if(attachment.unavailable){const unavailable=node('p',`${attachment.name||'Attachment'} · ${attachment.unavailable}`);unavailable.className='conversation-media-unavailable';parent.append(unavailable);}
       else if(attachment.kind==='file'){
