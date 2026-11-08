@@ -85,6 +85,16 @@ test('integrated Conversation journeys use production markup and preserve delive
     assert.equal(f.requests.length,1);assert.equal(f.requests[0].message,text+'\n\nAttached files:\n'+uploadRoot+'portrait.svg');
    }finally{await f.close();}
   });
+  await t.test('an image-only send is acknowledged by the transcript entry Claude rewrote',async()=>{
+   const f=await fixture(),{page}=f;try{
+    await f.upload();await page.getByRole('button',{name:'Send',exact:true}).click();
+    await page.waitForFunction(()=>document.querySelectorAll('.conversation-outgoing').length===1);
+    // Claude replaces the uploaded path with an image block and a placeholder.
+    f.history.get(1).push({role:'user',text:'[Image #1]\nAttached files:',attachments:[{kind:'image',name:'Attachment',url:'data:image/png;base64,AA=='}]});await f.poll();
+    await page.waitForFunction(()=>document.querySelectorAll('.conversation-outgoing').length===0);
+    assert.equal(await page.evaluate(()=>SwitchboardConversation.hasUnsentWork()),false);
+   }finally{await f.close();}
+  });
   await t.test('late receipt proof does not clear a new identical draft',async()=>{
    const f=await fixture(),{page}=f;try{
     const draft=page.getByLabel('Reply draft');await draft.fill('Same message');await page.getByRole('button',{name:'Send',exact:true}).click();

@@ -1083,6 +1083,34 @@ fn uploaded_attachments(text: &str) -> Option<(String, Vec<Value>)> {
     }
     (!attachments.is_empty()).then_some((body, attachments))
 }
+/// Claude Code turns an attached image path into an image block and leaves
+/// `[Image #3]` in the text, so the composer's "Attached files:" header can end
+/// up with nothing under it. The image shows as an attachment; drop both.
+fn without_image_placeholders(text: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("[Image #") {
+        let tail = &rest[start + "[Image #".len()..];
+        let digits = tail.chars().take_while(char::is_ascii_digit).count();
+        out.push_str(&rest[..start]);
+        if digits > 0 && tail[digits..].starts_with(']') {
+            rest = &tail[digits + 1..];
+        } else {
+            out.push_str("[Image #");
+            rest = tail;
+        }
+    }
+    out.push_str(rest);
+    let mut lines: Vec<&str> = out.lines().collect();
+    while lines
+        .last()
+        .is_some_and(|line| matches!(line.trim(), "" | "Attached files:" | "Attached images:"))
+    {
+        lines.pop();
+    }
+    let cleaned = lines.join("\n").trim().to_owned();
+    (cleaned != text).then_some(cleaned)
+}
 fn uploaded_file(path: &str) -> Option<Value> {
     if path.len() > 4096 || path.chars().any(char::is_control) {
         return None;
@@ -1146,6 +1174,8 @@ fn read_page(chat: &Chat, p: &Params) -> Value {
                     message["receipt_text"] = json!(text);
                 }
             }
+            // What the bubble shows. `text` stays raw for delivery reconciliation.
+            let mut display = None;
             if let Some((body, files)) = source["text"].as_str().and_then(uploaded_attachments) {
                 let mut attachments = message["attachments"]
                     .as_array()
@@ -1166,6 +1196,20 @@ fn read_page(chat: &Chat, p: &Params) -> Value {
                     }
                 }
                 message["attachments"] = json!(attachments);
+                display = Some(body);
+            }
+            if message["attachments"]
+                .as_array()
+                .is_some_and(|files| !files.is_empty())
+            {
+                let shown = display
+                    .clone()
+                    .unwrap_or_else(|| source["text"].as_str().unwrap_or_default().to_owned());
+                if let Some(clean) = without_image_placeholders(&shown) {
+                    display = Some(clean);
+                }
+            }
+            if let Some(body) = display {
                 message["markdown"] = json!(markdown_events(&clip(&body, 4000)));
             }
         }
@@ -1674,6 +1718,27 @@ mod tests {
     use std::io::Write;
 
     #[test]
+    fn switchboard_chats_drop_claude_image_placeholders_beside_their_images() {
+        // Captured from Claude Code 2.1.319 after Conversation attached a screenshot.
+        assert_eq!(
+            without_image_placeholders("[Image #3]and images should render? \nAttached files:")
+                .as_deref(),
+            Some("and images should render?")
+        );
+        assert_eq!(
+            without_image_placeholders("See [Image #1] and [Image #12]\n\nAttached images:\n")
+                .as_deref(),
+            Some("See  and")
+        );
+        // An image-only message keeps nothing but its image.
+        assert_eq!(
+            without_image_placeholders("[Image #1]\nAttached files:").as_deref(),
+            Some("")
+        );
+        assert_eq!(without_image_placeholders("Plain [Image #x] text"), None);
+        assert_eq!(without_image_placeholders("No placeholders"), None);
+    }
+    #[test]
     fn switchboard_chats_long_composer_messages_have_bounded_receipts() {
         let upload = "/home/fixture/.local/share/switchboard/attachments/11111111-2222-4333-8444-555555555555/photo.png";
         let text = format!("{}\n\nAttached files:\n{upload}", "a".repeat(4500));
@@ -1841,6 +1906,27 @@ mod tests {
         let message = &read_page(&assistant, &Params::default())["messages"][0];
         assert!(message["attachments"].is_null());
         assert!(message["markdown"].to_string().contains("Attached files:"));
+        // Claude turned the image into an image block and left a placeholder; the
+        // text file stays an uploaded path. Only the caption shows; text stays raw.
+        let image = json!({"kind":"image","name":"Attachment","url":"data:image/png;base64,AA=="});
+        let mixed = Chat {
+            messages: vec![
+                json!({"role":"user","text":format!("[Image #2]Check this\n\nAttached files:\n{unix}"),"attachments":[image]}),
+                json!({"role":"user","text":"[Image #1]\nAttached files:","attachments":[image]}),
+            ],
+            ..Chat::default()
+        };
+        let page = read_page(&mixed, &Params::default());
+        assert_eq!(
+            page["messages"][0]["markdown"],
+            json!(markdown_events("Check this"))
+        );
+        assert_eq!(
+            page["messages"][0]["attachments"].as_array().unwrap().len(),
+            2
+        );
+        assert_eq!(page["messages"][1]["markdown"], json!(markdown_events("")));
+        assert_eq!(page["messages"][1]["text"], "[Image #1]\nAttached files:");
     }
 
     #[test]

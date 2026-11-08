@@ -265,6 +265,10 @@
     function setupMessage(item){return item.role==='user'&&/^(?:# AGENTS\.md instructions|<environment_context>|<permissions instructions>|<skills_instructions>)/.test((item.text||'').trimStart());}
     function normalizeMessage(value){return String(value||'').replace(/\r\n/g,'\n');}
     function sameMessage(a,b){return normalizeMessage(a)===normalizeMessage(b);}
+    // Claude swaps an attached image's path for an image block and leaves "[Image #N]",
+    // so its transcript entry lacks the file list the composer sent; compare what remains.
+    const attachedList=/\n*Attached (?:files|images):(?:\n[^\n]*)*\n*$/,withoutFiles=value=>normalizeMessage(value).replace(/\[Image #\d+\]/g,'').replace(attachedList,'').trim();
+    function sameTranscript(entry,payload){return sameMessage(entry,payload)||withoutFiles(entry)===withoutFiles(payload)&&attachedList.test(normalizeMessage(entry))&&attachedList.test(normalizeMessage(payload));}
     function outgoingLabel(state){return state==='sending'?'Sending…':state==='queued'?'Queued':state==='sent'?'Sent':'Could not confirm sending';}
     function sendItem(sent,state,detail){sent.state=state;sent.detail=detail||'';if(identity(target)===sent.key)paint();}
     function nearBottom(){return list.scrollHeight-list.scrollTop-list.clientHeight<80;}
@@ -291,7 +295,7 @@
       const key=identity(target),sentItems=outgoing.get(key)||[],used=consumedTranscript.get(key)||new Set();
       for(const sent of sentItems){
         if(sent.transcriptCursor!==undefined)continue;
-        const match=messages.findIndex((item,offset)=>startCursor+offset>sent.baseline&&item.role==='user'&&!used.has(startCursor+offset)&&sameMessage(item.receipt_text??item.text??'',sent.payload));
+        const match=messages.findIndex((item,offset)=>startCursor+offset>sent.baseline&&item.role==='user'&&!used.has(startCursor+offset)&&sameTranscript(item.receipt_text??item.text??'',sent.payload));
         if(match>=0){sent.transcriptCursor=startCursor+match;used.add(sent.transcriptCursor);if(pendingFor(sent.key)===sent){pendingSends.delete(sent.key);sent.request?.abort();}clearSentDraft(sent);}
       }
       consumedTranscript.set(key,used);
