@@ -253,6 +253,7 @@
       const hover=matchMedia('(hover:hover)').matches;
       choices.forEach(([id,description],index)=>{
         const row=el('button','model-picker-level');row.type='button';row.setAttribute('role','radio');row.dataset.effort=id;
+        row.setAttribute('aria-label',effortName(id));
         row.setAttribute('aria-checked',String(id===current));row.tabIndex=id===current?0:-1;
         const mark=el('span','model-picker-glyph');mark.setAttribute('aria-hidden','true');
         if(id)mark.append(glyph(id));else mark.classList.add('model-picker-auto');
