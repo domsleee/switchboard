@@ -207,7 +207,12 @@ folder, for layouts like `C:\git\GitHub\{org}\{repo}`. A leading `~` is the home
 { "folders": ["C:\\git\\GitHub\\*"] }
 ```
 
-These projects appear as full paths, ranked by their last folder. An unreadable or
+The picker shows the folder name above its parent path, adding enough parent folders
+to distinguish names such as `Glow/DotNet` and `Glow2/DotNet`. Selections still use
+the full path. Overlapping roots and directory aliases list each folder once.
+Linked Git worktrees, including their subfolders, are omitted from suggestions using
+Git's common-directory metadata; separate clones and submodules remain available.
+A worktree can still be opened by typing its full path. An unreadable or
 invalid file is logged and ignored, and the picker still lists `~/git`. Changes apply
 the next time the picker loads.
 
