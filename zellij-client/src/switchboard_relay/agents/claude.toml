@@ -18,6 +18,10 @@ screen = [['(?:bypass permissions|accept edits|auto mode|plan mode) on|shift\+ta
 # Under the idle prompt box (❯). Without it the screen is a dialog or unknown.
 footer = ['(?:bypass permissions|accept edits|auto mode|plan mode) on|shift\+tab to cycle', 'for shortcuts']
 
+# In that footer: a count of running tasks, "· 1 shell ·" or "· 1 shell, 1 monitor".
+# "← 1 agent" is always there and only names the key for switching agents (2.1.319).
+background = ['·\s*[1-9]\d*\s+[a-z]']
+
 # A finished turn, e.g. "✻ Baked for 4m 5s" or "✻ Sautéed for 26s".
 completion = ['(?:worked for|[✻✽✶✳] \S+ for)\s+(?:\d+\s*[hms]\s*)+(?:[•·]\s*(?:done\s+)?\d{1,2}:\d{2}\s*(?:am|pm)?)?']
 
