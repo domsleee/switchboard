@@ -1183,7 +1183,9 @@ function syncTerminalConnection(entry) {
     retireTerminal(entry,retire);
     return;
   }
-  entry.state=null;entry.disconnected=false;entry.requestedPane=null;entry.focusPending=false;entry.needsFocus=true;entry.hideUnsupported=false;
+  entry.state=null;entry.disconnected=false;entry.requestedPane=null;entry.focusPending=false;entry.needsFocus=true;
+  // Stay disconnected once an engine fails to confirm hidden, rather than retrying the attach.
+  if(!suspended)entry.hideUnsupported=false;
   entry.frame.src=src;
 }
 function terminalTransition(entry,busy) {

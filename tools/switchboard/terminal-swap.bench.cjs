@@ -6,6 +6,9 @@
 //   --latency MS    added browser network latency, like another computer on the mesh (default 0)
 //   --static DIR    sidebar files to serve (default this checkout's tools/switchboard/static)
 //   --scrollback N  lines printed into the measured terminal (default 5000)
+//   --engine PATH   start the session with this older build; the web server and relay stay on BINARY
+//   --observer      keep a second, larger viewer visible on the measured tab
+//   --phone         also check that a phone in Conversation never resizes a tab, including when its keyboard opens
 // Scenarios:
 //   connected     Terminal -> Conversation -> Terminal, the viewer having been shown already
 //   after_reload  the sidebar reloads in Conversation (as after an update), then Terminal
@@ -20,9 +23,10 @@ const windows=process.platform==='win32',delay=ms=>new Promise(resolve=>setTimeo
 const stats=values=>{const s=[...values].sort((a,b)=>a-b),q=p=>s[Math.min(s.length-1,Math.floor(p*s.length))];return s.length?{n:s.length,p50:Math.round(q(.5)),p95:Math.round(q(.95)),max:Math.round(s.at(-1))}:{n:0};};
 const dir=fs.mkdtempSync(path.join(windows?os.tmpdir():'/tmp','sb-terminal-swap-'));
 const installed=path.join(dir,windows?'zellij.exe':'zellij'),config=path.join(dir,'config.kdl');
+const engineSource=option('engine',null),observed=args.includes('--observer'),engine=engineSource?path.join(dir,windows?'engine.exe':'engine'):installed;
 const shell=windows?['cmd.exe']:['/bin/bash','--noprofile','--norc'];
 const name='swap-'+crypto.randomBytes(6).toString('hex');
-const env={...process.env,ZELLIJ_SOCKET_DIR:path.join(dir,'sockets'),TERM:'xterm-256color',ZELLIJ_CONFIG_FILE:config,HOME:dir};
+const env={...process.env,ZELLIJ_SOCKET_DIR:path.join(dir,'sockets'),TERM:'xterm-256color',ZELLIJ_CONFIG_FILE:config,HOME:dir,TMP:dir,TEMP:dir,TMPDIR:dir};
 for(const key of ['ZELLIJ','ZELLIJ_SESSION_NAME','ZELLIJ_CONFIG_DIR'])delete env[key];
 const cli=(...a)=>execFileSync(installed,['--config',config,...a],{env,encoding:'utf8',timeout:15000,stdio:['ignore','pipe','pipe']});
 const kdl=s=>JSON.stringify(s.replace(/\\/g,'/'));
@@ -32,10 +36,11 @@ async function stop(child){if(!child||child.exitCode!==null)return;const done=ne
 let native,relay,browser,tokenName,created=false,failed=false;
 (async()=>{try{
   fs.copyFileSync(binary,installed);fs.chmodSync(installed,0o755);
+  if(engineSource){fs.copyFileSync(path.resolve(engineSource),engine);fs.chmodSync(engine,0o755);}
   // Unshared-session recovery is UNIX-socket only, so the session is shared from the start.
   fs.writeFileSync(config,`web_sharing "on"\ndefault_shell ${kdl(shell[0])}\nshow_startup_tips false\nsession_serialization false\ndisable_session_metadata false\n`);
-  if(windows)await new Promise((resolve,reject)=>spawn(installed,['--config',config,'attach','--create-background',name,'--',...shell],{env,detached:true,windowsHide:true,stdio:'ignore'}).on('exit',resolve).on('error',reject));
-  else cli('attach','--create-background',name,'--',...shell);
+  if(windows)await new Promise((resolve,reject)=>spawn(engine,['--config',config,'attach','--create-background',name,'--',...shell],{env,detached:true,windowsHide:true,stdio:'ignore'}).on('exit',resolve).on('error',reject));
+  else execFileSync(engine,['--config',config,'attach','--create-background',name,'--',...shell],{env,timeout:15000,stdio:'ignore'});
   created=true;
   await until(()=>JSON.parse(cli('-s',name,'action','list-panes','--json','--all')).some(p=>!p.is_plugin),'Private terminal did not start');
   const filler=windows?['cmd.exe','/k',`for /l %i in (1,1,${scrollback}) do @echo swap scrollback line %i`]:['/bin/bash','--noprofile','--norc','-c',`seq 1 ${scrollback} | sed 's/^/swap scrollback line /'; exec sleep 86400`];
@@ -54,14 +59,18 @@ let native,relay,browser,tokenName,created=false,failed=false;
   const page=await browser.newPage({viewport:{width:1400,height:900}});page.setDefaultTimeout(30000);
   if(latency){const cdp=await page.context().newCDPSession(page);await cdp.send('Network.enable');await cdp.send('Network.emulateNetworkConditions',{offline:false,latency,downloadThroughput:-1,uploadThroughput:-1});}
   const loads=[];
-  await page.route(url+'/**',route=>{
+  const serve=(target,record)=>target.route(url+'/**',route=>{
     const p=new URL(route.request().url()).pathname;
-    if(p.startsWith('/hosts/')&&route.request().resourceType()==='document')loads.push(p);
+    if(record&&p.startsWith('/hosts/')&&route.request().resourceType()==='document')loads.push(p);
     if(p.startsWith('/api/')||p.startsWith('/hosts/')||p.startsWith('/ws'))return route.continue();
     const file=path.join(staticDir,p==='/'?'index.html':p.slice(1));
     if(!fs.existsSync(file)||!fs.statSync(file).isFile())return route.continue();
     return route.fulfill({path:file,contentType:p.endsWith('.js')?'text/javascript':p.endsWith('.css')?'text/css':p.endsWith('.json')||p.endsWith('.webmanifest')?'application/json':'text/html'});
   });
+  await serve(page,true);
+  // The engine logs every tab resize, so even one lasting milliseconds is counted.
+  const engineLog=()=>{for(const file of fs.readdirSync(dir,{recursive:true}))if(path.basename(String(file))==='zellij.log')return fs.readFileSync(path.join(dir,String(file)),'utf8');return null;};
+  const tabResizes=text=>text.split('\n').filter(line=>/Tab \d+ resized/.test(line));
   // Typing reaches the measured terminal: it is shown, not inert, focused, and its focus is confirmed.
   const ready=`(()=>{const f=document.querySelector('#terminals>iframe.active'),w=f?.contentWindow;return !!(f&&getComputedStyle(f).display!=='none'&&!f.inert&&w?.term&&!w.term.options.disableStdin&&f.contentDocument?.activeElement===w.term.textarea&&[...sessions.values()].every(e=>!e.needsFocus&&!e.focusPending&&!e.suspended&&e.state));})()`;
   const swap=async label=>{await page.evaluate(label=>{window.benchStart=performance.now();[...document.querySelectorAll('.conversation-modes button')].find(b=>b.textContent===label).click();},label);};
@@ -69,15 +78,44 @@ let native,relay,browser,tokenName,created=false,failed=false;
   const target=url+'/?host=fixture&session='+name+'&tab='+measured.tab_id;
   await page.addInitScript(()=>{try{if(!sessionStorage.getItem('bench-conversation'))localStorage.setItem('switchboard-view-mode','terminal');}catch{}});
   await page.goto(target);await page.waitForFunction(ready);await delay(1000);
-  const results={connected:[],after_reload:[]};
+  let observer;
+  if(observed){observer=await browser.newPage({viewport:{width:1700,height:1050}});observer.setDefaultTimeout(30000);await serve(observer,false);await observer.goto(target);await observer.waitForFunction(ready);await delay(1000);}
+  const results={connected:[],after_reload:[]},attachResizes=[];
   for(let n=0;n<rounds;n++){await swap('Conversation');await delay(1500);results.connected.push(await toTerminal());}
   for(let n=0;n<rounds;n++){
     await page.evaluate(()=>{sessionStorage.setItem('bench-conversation','1');localStorage.setItem('switchboard-view-mode','conversation');});
-    await page.reload();await page.locator('.conversation-panel:not([hidden])').waitFor();await delay(3000);
+    // Detach first and let the tab settle, so the window below holds only the background attach.
+    await page.goto('about:blank');await delay(1500);
+    const logStart=engineLog()?.length??0;
+    await page.goto(target);await page.locator('.conversation-panel:not([hidden])').waitFor();await delay(3000);
+    attachResizes.push(...tabResizes((engineLog()??'').slice(logStart)));
     results.after_reload.push(await toTerminal());
   }
   const summary=Object.fromEntries(Object.entries(results).map(([scenario,runs])=>[scenario,{ms:stats(runs.map(r=>r.ms)),terminal_reloads:runs.filter(r=>r.reloaded).length}]));
-  console.log(JSON.stringify({platform:process.platform,latency_ms:latency,scrollback,hidden_attach:(await (await fetch(url+'/api/hosts/fixture')).json()).sessions.find(s=>s.name===name)?.hidden_attach??false,...summary},null,2));
+  if(args.includes('--phone')){
+    const phone=await browser.newPage({viewport:{width:390,height:844},isMobile:true,hasTouch:true});phone.setDefaultTimeout(30000);
+    await phone.addInitScript(()=>{try{if(!sessionStorage.getItem('bench-phone'))localStorage.setItem('switchboard-view-mode','conversation');}catch{}});
+    await serve(phone,false);
+    const panel=()=>phone.locator('.conversation-panel:not([hidden])').waitFor();
+    const keyboard=async()=>{await phone.setViewportSize({width:390,height:420});await delay(1500);await phone.setViewportSize({width:390,height:844});await delay(1500);};
+    const during=async action=>{const start=engineLog()?.length??0;await action();return tabResizes((engineLog()??'').slice(start));};
+    const connected=()=>phone.evaluate(()=>[...document.querySelectorAll('#terminals>iframe')].filter(f=>f.getAttribute('src')!=='about:blank').length);
+    const fromLoad=await during(async()=>{await phone.goto(target);await panel();await delay(2500);await keyboard();});
+    summary.phone_viewers_connected_after_load=await connected();
+    await phone.evaluate(()=>{sessionStorage.setItem('bench-phone','1');[...document.querySelectorAll('.conversation-modes button')].find(b=>b.textContent==='Terminal').click();});
+    await delay(4000);
+    await phone.evaluate(()=>[...document.querySelectorAll('.conversation-modes button')].find(b=>b.textContent==='Conversation').click());
+    await panel();await delay(3000);
+    const fromReturn=await during(keyboard);
+    summary.phone_viewers_connected_after_return=await connected();
+    summary.phone_tab_resizes_loading_conversation=fromLoad;summary.phone_tab_resizes_keyboard_after_return=fromReturn;
+    await phone.close();
+  }
+  const finalLog=engineLog();
+  summary.tab_resizes_logged_in_run=finalLog===null?null:tabResizes(finalLog).length;
+  summary.tab_resizes_during_background_attach=finalLog===null?null:attachResizes.length;
+  if(attachResizes.length)summary.background_attach_resize_lines=attachResizes.slice(0,6);
+  console.log(JSON.stringify({platform:process.platform,latency_ms:latency,scrollback,engine:engineSource?path.basename(engineSource):'same',observer:observed,hidden_attach:(await (await fetch(url+'/api/hosts/fixture')).json()).sessions.find(s=>s.name===name)?.hidden_attach??false,...summary},null,2));
 }catch(error){failed=true;console.error('Private fixture logs:',dir);throw error;}
 finally{if(browser)await browser.close();if(created)try{cli('kill-session',name);}catch{}await stop(relay);await stop(native);if(tokenName)try{cli('web','--revoke-token',tokenName);}catch{}if(!failed)try{fs.rmSync(dir,{recursive:true,force:true,maxRetries:5,retryDelay:500});}catch{}}
 })().catch(error=>{console.error(error);process.exitCode=1;});

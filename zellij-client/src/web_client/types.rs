@@ -11,8 +11,10 @@ use crate::web_client::control_message::SetConfigPayload;
 use crate::web_client::session_management::spawn_new_session;
 use std::path::PathBuf;
 use zellij_utils::{
+    data::SessionInfo,
     input::{config::Config, options::Options},
     ipc::ClientToServerMsg,
+    pane_size::Size,
 };
 
 pub trait ClientOsApiFactory: Send + Sync + std::fmt::Debug {
@@ -50,6 +52,98 @@ pub trait SessionManager: Send + Sync + std::fmt::Debug {
 #[derive(Debug, Clone)]
 pub struct RealSessionManager;
 
+/// When #357 merged, plus an hour to reach every computer. The engine publishes no marker
+/// for it, and engines started earlier ignore SetViewerHidden.
+const ENGINES_OBEY_HIDDEN_SINCE_UNIX_SECS: u64 = 1_794_048_177;
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+/// The size to attach a hidden viewer at on an engine that honours SetViewerHidden only
+/// once the viewer has attached. A web viewer lands on the first tab, so attaching at that
+/// tab's size cannot resize it before the hidden report arrives.
+fn late_hidden_attach_size(info: &SessionInfo, now: u64) -> Option<Size> {
+    if info.hidden_attach
+        || now.saturating_sub(info.creation_time.as_secs()) < ENGINES_OBEY_HIDDEN_SINCE_UNIX_SECS
+    {
+        return None;
+    }
+    info.tabs
+        .iter()
+        .min_by_key(|tab| tab.position)
+        .map(|tab| Size {
+            rows: tab.display_area_rows,
+            cols: tab.display_area_columns,
+        })
+        .filter(|size| size.rows > 0 && size.cols > 0)
+}
+
+#[cfg(test)]
+mod late_hidden_attach_tests {
+    use super::*;
+    use std::time::Duration;
+    use zellij_utils::data::TabInfo;
+
+    const AFTER: u64 = ENGINES_OBEY_HIDDEN_SINCE_UNIX_SECS + 3600;
+
+    fn tab(position: usize, cols: usize, rows: usize) -> TabInfo {
+        TabInfo {
+            position,
+            display_area_columns: cols,
+            display_area_rows: rows,
+            ..Default::default()
+        }
+    }
+
+    fn session(age: u64, hidden_attach: bool, tabs: Vec<TabInfo>) -> SessionInfo {
+        SessionInfo {
+            hidden_attach,
+            tabs,
+            creation_time: Duration::from_secs(age),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn switchboard_late_hidden_attach_uses_the_tab_a_new_viewer_lands_on() {
+        let info = session(60, false, vec![tab(1, 200, 60), tab(0, 120, 40)]);
+        assert_eq!(
+            late_hidden_attach_size(&info, AFTER),
+            Some(Size {
+                rows: 40,
+                cols: 120
+            })
+        );
+    }
+
+    #[test]
+    fn switchboard_late_hidden_attach_leaves_out_engines_it_cannot_help() {
+        let tabs = vec![tab(0, 120, 40)];
+        // Started before engines obeyed SetViewerHidden.
+        assert_eq!(
+            late_hidden_attach_size(&session(3601, false, tabs.clone()), AFTER),
+            None
+        );
+        // Already keeps a report sent before the attach.
+        assert_eq!(
+            late_hidden_attach_size(&session(60, true, tabs), AFTER),
+            None
+        );
+        // No known size could still resize the tab.
+        assert_eq!(
+            late_hidden_attach_size(&session(60, false, vec![tab(0, 0, 0)]), AFTER),
+            None
+        );
+        assert_eq!(
+            late_hidden_attach_size(&session(60, false, vec![]), AFTER),
+            None
+        );
+    }
+}
+
 impl SessionManager for RealSessionManager {
     fn session_exists(&self, session_name: &str) -> Result<bool, Box<dyn std::error::Error>> {
         zellij_utils::sessions::session_exists(session_name)
@@ -59,15 +153,19 @@ impl SessionManager for RealSessionManager {
     fn list_sessions(&self) -> Vec<WebSessionInfo> {
         zellij_utils::sessions::read_live_session_states_default_dirs("")
             .into_values()
-            .map(|info| WebSessionInfo {
-                name: info.name,
-                web_clients_allowed: info.web_clients_allowed,
-                sharing_recovery: false,
-                hidden_attach: info.hidden_attach,
-                tab_count: info.tabs.len(),
-                pane_count: info.panes.panes.values().map(|panes| panes.len()).sum(),
-                connected_clients: info.connected_clients,
-                creation_secs_ago: info.creation_time.as_secs(),
+            .map(|info| {
+                let late_hidden_attach_size = late_hidden_attach_size(&info, unix_now());
+                WebSessionInfo {
+                    hidden_attach: info.hidden_attach || late_hidden_attach_size.is_some(),
+                    late_hidden_attach_size,
+                    name: info.name,
+                    web_clients_allowed: info.web_clients_allowed,
+                    sharing_recovery: false,
+                    tab_count: info.tabs.len(),
+                    pane_count: info.panes.panes.values().map(|panes| panes.len()).sum(),
+                    connected_clients: info.connected_clients,
+                    creation_secs_ago: info.creation_time.as_secs(),
+                }
             })
             .collect()
     }
@@ -260,6 +358,9 @@ pub struct WebSessionInfo {
     /// A viewer can attach hidden (`hidden=true`) without sizing this session's tab.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hidden_attach: bool,
+    /// Set when this session's engine needs the hidden report after the attach instead.
+    #[serde(skip)]
+    pub late_hidden_attach_size: Option<Size>,
     pub tab_count: usize,
     pub pane_count: usize,
     pub connected_clients: usize,

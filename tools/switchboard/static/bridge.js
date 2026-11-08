@@ -118,7 +118,7 @@
   // A viewer behind Conversation or another sidebar tab must not size the
   // terminal on other screens. The engine confirms in tab_viewport.hidden;
   // an older engine never does, so the sidebar disconnects that viewer instead.
-  let sentHidden=null,hiddenAck=0;
+  let sentHidden=null,viewerReportedHidden=false,hiddenAck=0;
   function viewerHidden(){return conversationOpen()||!!window.frameElement&&!window.frameElement.classList.contains('active');}
   // The web client asks on every attach, so a viewer that loads or reconnects
   // behind Conversation never sizes the tab for other screens.
@@ -127,7 +127,7 @@
     if(!latest||!window.__zjSendControl||controlSocket?.readyState!==1)return;
     const hidden=viewerHidden();
     if(hidden===(sentHidden??false)){sentHidden=hidden;return;}
-    sentHidden=hidden;clearTimeout(hiddenAck);
+    sentHidden=hidden;viewerReportedHidden=true;clearTimeout(hiddenAck);
     window.__zjSendControl({type:'SetViewerHidden',hidden});
     if(hidden){
       claimedViewportTab=null;
@@ -484,9 +484,11 @@
     const was=latest?.active_pane,now=payload?.active_pane;
     if(was&&(was.pane_id!==now?.pane_id||was.is_plugin!==now?.is_plugin))predict?.reset();
     latest = payload;
-    // The first state says how the viewer attached: hidden behind Conversation, it
-    // must still rejoin sizing if Terminal was shown before this state arrived.
-    if(sentHidden===null&&typeof payload?.tab_viewport?.hidden==='boolean')sentHidden=payload.tab_viewport.hidden;
+    // The engine says how the viewer attached: hidden behind Conversation, it must still
+    // rejoin sizing if Terminal was shown first. On an older engine the web server reports
+    // hidden just after the first state, so until this viewer reports, a hidden state wins.
+    const reportedHidden=payload?.tab_viewport?.hidden;
+    if(typeof reportedHidden==='boolean'&&(sentHidden===null||reportedHidden&&!viewerReportedHidden))sentHidden=reportedHidden;
     diagnostics?.state(payload);
     if(viewportSupported())window.dispatchEvent(new Event('zellij:rendering-resize'));
     const created=pendingNewTab&&pendingNewTab.sentAt!==null&&latest.active_pane&&!latest.active_pane.is_plugin&&!pendingNewTab.panes.has(latest.active_pane.pane_id)&&
@@ -536,16 +538,19 @@
           disconnectedPane = desiredFocus || latest?.active_pane || disconnectedPane;
           latest = undefined;
           diagnostics?.finish('disconnected');
-          lastViewport=null;claimedViewportTab=null;sentHidden=null;clearTimeout(hiddenAck);updateViewport();
+          lastViewport=null;claimedViewportTab=null;sentHidden=null;viewerReportedHidden=false;clearTimeout(hiddenAck);updateViewport();
           releaseFocus();
           parent.postMessage({type:'zellij-disconnected',host},location.origin);
           releaseNewTab('disconnected');
         });
       }
   }
+  // All the ways a viewer can change a terminal's size. Every control message passes
+  // through here, so a viewer behind Conversation cannot size the terminal by any route.
+  const sizingMessages=new Set(['TerminalResize','SetTabViewport','SetMobileRenderPreferences']);
   function suppressConversationResize(socket,data){
     if(controlSocket!==socket||!conversationOpen())return false;
-    try{return JSON.parse(data)?.payload?.type==='TerminalResize';}catch{return false;}
+    try{return sizingMessages.has(JSON.parse(data)?.payload?.type);}catch{return false;}
   }
   // Tells the sidebar the moment typed text is submitted, so the tab can show Working
   // before the agent reports its turn. Commands (/, !) may not start a turn at all.
