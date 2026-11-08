@@ -47,14 +47,12 @@ body.sidebar-collapsed #sidebar-toggle{left:8px}
 #tabs .tab-select.needs-attention .tab-name{color:#fff;font-weight:500}
 #tabs .star{display:none;flex-shrink:0;box-sizing:border-box;width:12px;height:12px;border-radius:50%;font-size:0}
 #tabs .tab-status[data-tone=working]{color:#7eaaf2}
-#tabs .star.working{display:block;border:1.5px dashed currentColor;animation:tab-spin 3s linear infinite}
+#tabs .star.working{display:block;width:8px;height:8px;background:currentColor}
 #tabs .star.waiting{display:block;border:2px solid #8cabe9}
 #tabs .star.unavailable{display:block;border:1px solid #a3aec0}
 #tabs .tab-status[data-tone=attention] .star{display:block;width:7px;height:7px;background:#f0bc63}
 #tabs .tab-status[data-tone=done] .star{display:block;position:relative;border:1.5px solid currentColor}
 #tabs .tab-status[data-tone=done] .star::after{content:'';position:absolute;left:3.2px;top:1.2px;width:2.5px;height:5px;border:solid currentColor;border-width:0 1.5px 1.5px 0;transform:rotate(45deg)}
-@keyframes tab-spin{to{transform:rotate(360deg)}}
-@media (prefers-reduced-motion:reduce){#tabs .star.working{animation:none}}
 .tab-row{position:relative;flex-shrink:0}
 /* With a mouse, the actions button covers the row's right edge only while hovered. */
 #tabs .tab-actions{position:absolute;top:4px;bottom:4px;right:4px;width:30px;padding:0;border:0;border-radius:6px;background:#1b1f27;font-size:18px;color:#bdcce3;opacity:0}

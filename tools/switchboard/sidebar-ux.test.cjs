@@ -182,6 +182,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.equal(await snoozed.count(),0);
     assert.ok(await page.evaluate(()=>Object.keys(JSON.parse(localStorage.getItem('switchboard-pinned'))).length===1));
     assert.match(await workingTab.locator('.tab-where').textContent(),/Pinned/);
+    assert.equal(await workingTab.locator('.star.working').evaluate(el=>getComputedStyle(el).animationName),'none','The working dot stays still');
     await pinProof('after',workingTab,'Pinned tab stays here while working');
     await workingTab.click({button:'right'});
     assert.equal(await page.locator('#pin-tab').textContent(),'Unpin');
