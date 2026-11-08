@@ -751,6 +751,10 @@ test('Claude Send types over dim hints and sets a typed draft aside in Claude\'s
   assert.deepEqual(writes,[['input','\x7f']]);assert.equal(h.messages.at(-1).error,'Claude stayed in shell mode. Open Terminal to send.');
   [box,footer]=shell;chat=[[row('❯ Try "write a test for <filepath>"',2)],row('  ⏵⏵ auto mode on')];send();tick();
   assert.deepEqual(writes,[['input','\x7f'],['paste','hello'],['input','\r']]);assert.equal(h.messages.at(-1).ok,true);
+  // A renamed session shows its name in the box's top rule.
+  h.window.term.buffer.active={baseY:0,viewportY:0,getLine:i=>[row('● Done.'),row(rule+' improve-conversation-mode ─'),...box,row(rule),footer][i]};
+  box=[row('❯ ')];footer=row('  ⏵⏵ auto mode on · 1 shell');chat=null;send();
+  assert.deepEqual(writes,[['paste','hello'],['input','\r']]);assert.equal(h.messages.at(-1).ok,true);
   // A dialog in place of the input box is never typed into.
   h.window.term.buffer.active={baseY:0,viewportY:0,getLine:i=>[row(rule+' Bash command'),row(' Do you want to proceed?'),row(' ❯ 1. Yes'),row('   2. No')][i]};
   writes.length=0;h.window.term.rows=4;h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-conversation-paste',id:'claude',pane_id:7,agent:'claude',submit:true,text:'hello'}});

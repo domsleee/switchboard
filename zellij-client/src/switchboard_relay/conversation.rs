@@ -180,14 +180,30 @@ fn styled_rows(screen: &str) -> Vec<Vec<(char, bool)>> {
         let mut i = 0;
         while i < row.len() {
             let run = row[i..].iter().take_while(|cell| rule(cell.0)).count();
+            let mut taken = run;
             if run >= 8 {
+                // A renamed session's box shows its name in the top rule:
+                // `──── name ─`. The name is part of the rule, not a row.
+                let rest = &row[i + run..];
+                let label = rest.iter().take_while(|cell| !rule(cell.0)).count();
+                let tail = rest[label..].iter().take_while(|cell| rule(cell.0)).count();
+                if label > 2
+                    && tail > 0
+                    && rest[0].0 == ' '
+                    && rest[label - 1].0 == ' '
+                    && rest[1..label - 1]
+                        .iter()
+                        .any(|cell| !cell.0.is_whitespace())
+                {
+                    taken += label + tail;
+                }
                 if row[start..i].iter().any(|cell| !cell.0.is_whitespace()) {
                     split.push(row[start..i].to_vec());
                 }
                 split.push(row[i..i + run].to_vec());
-                start = i + run;
+                start = i + taken;
             }
-            i += run.max(1);
+            i += taken.max(1);
         }
         if start == 0 || row[start..].iter().any(|cell| !cell.0.is_whitespace()) {
             split.push(row[start..].to_vec());
@@ -679,6 +695,12 @@ mod tests {
         let shell = |name: &str| claude_prompt(capture(name)).map(|p| (p.draft, p.shell));
         assert_eq!(shell("shell mode, empty"), Some((String::new(), true)));
         assert_eq!(shell("shell-mode draft"), Some(("echo hi".into(), true)));
+        // A renamed session shows its name in the box's top rule.
+        assert_eq!(
+            read(capture("named session, typed draft")),
+            draft("this is")
+        );
+        assert_eq!(read(&format!("{RULE} main ─❯ x\n{RULE}\n")), draft("x"));
         assert_eq!(shell("idle placeholder"), Some((String::new(), false)));
         assert_eq!(read(capture("stashed, empty")), Some((String::new(), true)));
         assert_eq!(

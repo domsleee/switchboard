@@ -575,7 +575,8 @@
       else text=bright=line?.translateToString(true)||'';
       rows.push({text,bright});
     }
-    const rule=row=>/^[─━]{8,}$/.test(row.text.trim());
+    // A renamed session's box shows its name in the top rule: `──── name ─`.
+    const rule=row=>/^[─━]{8,}(?: [^─━]*\S[^─━]* [─━]+)?$/.test(row.text.trim());
     for(let start=rows.length-1;start>0;start--){
       const marker=rows[start].text.trimStart()[0];
       if(!['❯','!'].includes(marker)||!rule(rows[start-1]))continue;
