@@ -9,11 +9,12 @@
 #
 # Lists match when any pattern matches. A list of lists matches when every
 # pattern in one inner list matches.
-version = "2026-10-14"
+version = "2026-11-08"
 
 # Which panes are Codex: the running command, its title, or its model footer on screen.
 command = ['\bcodex(?:\.(?:cmd|exe))?\b']
 title = ['^codex\s*[-:]']
+input_title = ['^\[\s*!\s*\]\s+action required(?:\s*\||$)']
 screen = [['gpt-[\w.-]+', 'for shortcuts|enter to send|tab to queue message']]
 
 # Under the idle prompt (›). Without it the screen is a dialog or unknown.
@@ -28,7 +29,12 @@ approval = [[
   'esc(?:ape)? to cancel|enter to (?:submit|select|confirm)|press enter to confirm',
   '(?:^|\s)[12][.)]\s+(?:yes|no|allow|approve|deny)',
 ]]
-input = [['esc(?:ape)? to cancel|enter to (?:submit|select|confirm)|press enter to confirm', '[❯›]\s*\d+[.)]']]
+input = [
+  ['esc(?:ape)? to cancel|enter to (?:submit|select|confirm)|press enter to confirm', '[❯›]\s*\d+[.)]'],
+  # Async questions can keep a working line above them. Their footer has no
+  # "to" after Enter; anchor it at the end so old questions cannot win.
+  ['(?m)^\s*enter\s+submit\s+ctrl\+\]\s+skip\s+shift\+→\s+main\s+prompt\s*\z'],
+]
 
 [working]
 # Braille spinner at the start of the terminal title.

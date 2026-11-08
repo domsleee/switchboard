@@ -248,6 +248,13 @@ identities are saved beside the relay configuration as `.attention.json`, so a
 relay restart preserves viewed results.
 Hiding a tab preserves processes and does not erase attention state.
 
+Codex's asynchronous questions use an `enter submit · ctrl+] skip · shift+→ main prompt`
+footer. An open question or approval takes priority over Codex's turn hooks, even
+while it continues working or finishes its turn. Viewing the tab keeps the input
+badge until the dialog is answered; its normal turn status then resumes. The
+`[ ! ] Action Required` title also keeps it flagged when the user switches from
+the question back to Codex's main prompt.
+
 Claude tabs use live spinners and active background-agent rows to indicate work.
 A background-shell count alone does not keep a finished reply working: that shell
 may be a persistent dev server. Finished-turn markers also recognize accented
