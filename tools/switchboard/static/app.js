@@ -1144,12 +1144,12 @@ function recordTerminalDiagnostic(entry,type,diagnostic){
     'render_tracking','first_render_ms','last_render_ms','render_events','max_render_lag_ms','render_pending','first_animation_ms','last_animation_ms','max_animation_lag_ms','animation_pending','first_quiet_ms','late_frames','hidden_at_start','document_hidden','browser_focused','viewport_size_changes','first_native_cols','first_native_rows','first_owner_active','first_is_owner','min_native_cols','min_native_rows','max_native_cols','max_native_rows','xterm_cols','buffer_scroll_events','line_feed_events','wheel_events','wheel_reports','wheel_delta_mode','max_wheel_delta','xterm_size_changes','first_xterm_cols','first_xterm_rows','min_xterm_cols','min_xterm_rows','max_xterm_cols','max_xterm_rows','clipped_bottom_rows','max_clipped_bottom_rows',
     'control_tracking','focus_commands','terminal_metrics','cell_size_changes','first_cell_width_px','first_cell_height_px','last_cell_width_px','last_cell_height_px','min_cell_width_px','min_cell_height_px','max_cell_width_px','max_cell_height_px']:
     type==='new-tab'?['request_id','outcome','elapsed_ms','delivery_ms','sent_ms','pane_id','control_socket']:
-    type==='terminal-load'?['outcome','elapsed_ms','page_ms','socket_ms','frame_ms','render_ms','visible']:
+    type==='terminal-load'?['outcome','elapsed_ms','page_ms','socket_ms','frame_ms','render_ms','visible','after']:
     type==='clipboard'?['outcome','chars','attempt','selection_mode','mouse_tracking','focused','secure','clipboard_api']:
     type==='instant-typing'?['outcome','pane_id','is_plugin','pending','typed','confirmed','frames','age_ms','srtt_ms','since_input_ms','since_write_ms','run_row','cursor_row','cursor_col','expected_col','cursor_hidden']:
     ['pane_id','is_plugin','shift','ctrl','alt','meta','repeat','held_ms','released_ms'];
   const body={host:entry.host};
-  for(const field of fields){const value=diagnostic[field];if(value===null||typeof value==='boolean'||typeof value==='string'&&field==='outcome'||typeof value==='number'&&Number.isFinite(value)&&value>=0)body[field]=value;}
+  for(const field of fields){const value=diagnostic[field];if(value===null||typeof value==='boolean'||typeof value==='string'&&(field==='outcome'||field==='after')||typeof value==='number'&&Number.isFinite(value)&&value>=0)body[field]=value;}
   fetch('/api/diagnostics/'+type,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).catch(()=>{});
 }
 window.addEventListener('message',event=>{
@@ -1214,7 +1214,9 @@ window.addEventListener('message',event=>{
   }else if(event.data?.type==='zellij-new-tab-failed'){
     failNewTab(entry,event.data.request_id,event.data.message);
   }else if(event.data?.type==='zellij-load-diagnostic'){
-    recordTerminalDiagnostic(entry,'terminal-load',event.data.diagnostic);
+    // A load that Terminal started when leaving Conversation is the time that switch took.
+    const after=entry.loadAfter;entry.loadAfter=null;
+    recordTerminalDiagnostic(entry,'terminal-load',after?{...event.data.diagnostic,after}:event.data.diagnostic);
   }else if(event.data?.type==='zellij-predict-diagnostic'){
     recordTerminalDiagnostic(entry,'instant-typing',event.data.diagnostic);
   }else if(event.data?.type==='zellij-new-tab-diagnostic'){
@@ -2455,11 +2457,20 @@ const browserDiagnostics=window.SwitchboardBrowserDiagnostics?.(diagnostic=>{
   return true;
 });
 
+// When Conversation opened, so a slow switch back to Terminal reports how long it was away.
+let conversationSince=null;
 window.SwitchboardConversation?.install({
   viewed:acknowledgeConversation,
   switchModel(view){openAgentHandover(allTabs().find(item=>item.key===selected),view?.pane);},
-  modeChanged(){
-    for(const entry of sessions.values())syncTerminalConnection(entry);render();
+  modeChanged(transient){
+    const wants=globalThis.SwitchboardConversation.wantsConversation(),shown=allTabs().find(item=>item.key===selected);
+    // Terminal either shows the viewer kept through Conversation or loads a new one.
+    // Time both, except the brief automatic visit that sends a reply.
+    const timed=!wants&&conversationSince!==null&&!!shown&&!transient,blank=shown?.entry.frame.getAttribute('src')==='about:blank';
+    if(timed&&!blank)browserDiagnostics?.measure('conversation',conversationSince);
+    for(const entry of sessions.values()){if(wants)entry.loadAfter=null;syncTerminalConnection(entry);}render();
+    if(timed&&blank&&shown.entry.frame.getAttribute('src')!=='about:blank')shown.entry.loadAfter='conversation';
+    conversationSince=wants?conversationSince??performance.now():null;
     // A viewer kept connected through Conversation reclaims its tab size, which
     // another computer may have taken meanwhile.
     const current=allTabs().find(item=>item.key===selected);
@@ -2476,6 +2487,7 @@ window.SwitchboardConversation?.install({
   },
   terminal(target){const item=allTabs().find(item=>item.key===selected);if(item&&item.entry.frame===target.frame){item.entry.frame.focus();focus(item);}}
 });
+if(globalThis.SwitchboardConversation?.wantsConversation?.())conversationSince=performance.now();
 
 new MutationObserver(updateMobileTerminalViewport).observe($('terminals'),{attributes:true,attributeFilter:['class']});
 updateMobileTerminalViewport();

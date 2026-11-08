@@ -129,7 +129,7 @@ test('Desktop keeps a connected terminal through Conversation so switching back 
  const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch();
  try{
   const page=await browser.newPage({viewport:{width:1200,height:900}});page.setDefaultTimeout(10000);
-  const errors=[],connections=[];page.on('pageerror',e=>errors.push(e.message));
+  const errors=[],connections=[],timings=[];page.on('pageerror',e=>errors.push(e.message));
   const pane={pane_id:1,is_plugin:false,tab_id:1,tab_position:1,tab_name:'Agent',title:'Agent',is_focused:true};
   const tabs=[{host:'local',session:'main',id:1,position:1,name:'Agent',panes:[pane]}];
   await page.route('http://conversation.test/**',async route=>{
@@ -144,8 +144,10 @@ test('Desktop keeps a connected terminal through Conversation so switching back 
     return route.fulfill({contentType:'text/html',body:`<script>
       const state=()=>parent.postMessage({type:'zellij-state',payload:{session_name:'main',active_pane:${JSON.stringify(pane)},panes:${JSON.stringify([pane])}}},location.origin);
       addEventListener('message',event=>{if(event.data.type==='zellij-focus')state();});state();
+      parent.postMessage({type:'zellij-load-diagnostic',diagnostic:{outcome:'ready',elapsed_ms:700,page_ms:100,socket_ms:200,frame_ms:300,render_ms:700,visible:true}},location.origin);
      </script>`});
    }
+   if(p.startsWith('/api/diagnostics/')){timings.push({type:p.split('/').at(-1),...route.request().postDataJSON()});return route.fulfill({status:204});}
    if(p.startsWith('/api/'))return json({});
    const file=path.join(__dirname,'static',p==='/'?'index.html':p.slice(1));
    if(!fs.existsSync(file))return route.fulfill({status:404,body:''});
@@ -162,6 +164,17 @@ test('Desktop keeps a connected terminal through Conversation so switching back 
    assert.equal(await page.evaluate(()=>{const e=[...sessions.values()][0];return !!e.state&&!e.frame.inert;}),true,'Terminal is ready without reconnecting');
   }
   assert.equal(connections.length,1,'Switching modes never reloads a connected desktop viewer');
+  const until=async(check,message)=>{for(let i=0;i<100&&!check();i++)await page.waitForTimeout(20);assert.ok(check(),message);};
+  const swaps=()=>timings.filter(t=>t.type==='browser-resume'&&t.reason==='conversation');
+  await page.getByRole('button',{name:'Conversation',exact:true}).click();await page.waitForTimeout(300);
+  await page.getByRole('button',{name:'Terminal',exact:true}).click();
+  // The next switch ends the open timing, as hiding the browser or its 5 s sample would.
+  await page.getByRole('button',{name:'Conversation',exact:true}).click();
+  await page.getByRole('button',{name:'Terminal',exact:true}).click();
+  await until(()=>swaps().length>=4,'Each switch back to a kept viewer is timed');
+  assert.ok(swaps().every(t=>t.outcome==='superseded'&&t.terminal_probe===true&&Number.isInteger(t.elapsed_ms)&&Number.isInteger(t.hidden_ms)),'A kept viewer is probed for its first frame');
+  assert.ok(swaps()[3].hidden_ms>=300,'The timing says how long Conversation was open');
+  assert.deepEqual(timings.filter(t=>t.type==='terminal-load').map(t=>t.after),[undefined],'The first load did not follow Conversation');
   await page.getByRole('button',{name:'Conversation',exact:true}).click();
   await page.evaluate(()=>{const w=[...sessions.values()][0].frame.contentWindow;w.eval("parent.postMessage({type:'zellij-disconnected'},location.origin)");});
   await page.waitForFunction(()=>{const e=[...sessions.values()][0];return e.suspended&&e.frame.getAttribute('src')==='about:blank';});
@@ -169,6 +182,9 @@ test('Desktop keeps a connected terminal through Conversation so switching back 
   await page.getByRole('button',{name:'Terminal',exact:true}).click();
   await page.waitForFunction(()=>[...sessions.values()][0].state);
   assert.equal(connections.length,2,'Terminal reconnects a dropped viewer when shown');
+  await until(()=>timings.filter(t=>t.type==='terminal-load').length===2,'The reconnect reports its load');
+  assert.deepEqual(timings.filter(t=>t.type==='terminal-load').map(t=>t.after),[undefined,'conversation'],'A viewer reloaded on leaving Conversation reports that load as the switch time');
+  assert.equal(swaps().length,4,'A reconnect is timed by its load; probing the blank frame would have ended the open timing');
   await page.getByRole('button',{name:'Conversation',exact:true}).click();
   await page.setViewportSize({width:390,height:844});
   await page.waitForFunction(()=>[...sessions.values()].every(e=>e.suspended&&e.frame.getAttribute('src')==='about:blank'));

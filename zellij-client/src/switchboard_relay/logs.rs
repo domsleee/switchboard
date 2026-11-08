@@ -531,7 +531,7 @@ impl BrowserDiagnostic {
     fn message(&self) -> Option<String> {
         if !matches!(
             self.reason.as_str(),
-            "visible" | "resumed" | "restored" | "discarded"
+            "visible" | "resumed" | "restored" | "discarded" | "conversation"
         ) || !matches!(self.outcome.as_str(), "sampled" | "hidden" | "superseded")
             || [self.terminal_socket, self.control_socket]
                 .into_iter()
@@ -664,11 +664,15 @@ struct LoadDiagnostic {
     frame_ms: Option<u32>,
     render_ms: Option<u32>,
     visible: bool,
+    /// What the viewer was loaded for, when the load is the wait the user saw.
+    #[serde(default)]
+    after: Option<String>,
 }
 
 impl LoadDiagnostic {
     fn message(&self) -> Option<String> {
         if self.outcome != "ready"
+            || self.after.as_deref().is_some_and(|after| after != "conversation")
             || [self.page_ms, self.socket_ms, self.frame_ms, self.render_ms]
                 .into_iter()
                 .flatten()
@@ -684,7 +688,7 @@ impl LoadDiagnostic {
             "ready"
         };
         Some(format!(
-            "Terminal load {} t={}ms page={}ms socket={}ms frame={}ms render={}ms visible={}",
+            "Terminal load {} t={}ms page={}ms socket={}ms frame={}ms render={}ms visible={}{}",
             outcome,
             self.elapsed_ms,
             timing(self.page_ms),
@@ -692,6 +696,9 @@ impl LoadDiagnostic {
             timing(self.frame_ms),
             timing(self.render_ms),
             self.visible,
+            self.after
+                .as_ref()
+                .map_or_else(String::new, |after| format!(" after={after}")),
         ))
     }
 }
@@ -1162,6 +1169,17 @@ mod tests {
         };
         assert_eq!(load(240), "Terminal load ready t=240ms page=90ms socket=150ms frame=200ms render=240ms visible=true");
         assert!(load(1800).starts_with("Terminal load slow t=1800ms "));
+        let after = |after: &str| {
+            serde_json::from_value::<LoadDiagnostic>(
+                json!({"host":"mac","outcome":"ready","elapsed_ms":900,"visible":true,"after":after}),
+            )
+            .unwrap()
+            .message()
+        };
+        assert!(after("conversation")
+            .unwrap()
+            .ends_with("visible=true after=conversation"));
+        assert_eq!(after("token=x"), None);
         let bad = json!({"host":"mac","outcome":"token=x","elapsed_ms":1,"visible":true});
         assert_eq!(
             serde_json::from_value::<LoadDiagnostic>(bad)
@@ -1610,11 +1628,24 @@ mod tests {
             .unwrap()
             .starts_with("Browser tab slow"));
         sample["terminal_probe"] = json!(false);
-        assert!(serde_json::from_value::<BrowserDiagnostic>(sample)
+        assert!(serde_json::from_value::<BrowserDiagnostic>(sample.clone())
             .unwrap()
             .message()
             .unwrap()
             .starts_with("Browser tab resumed"));
+        sample["reason"] = json!("conversation");
+        assert!(serde_json::from_value::<BrowserDiagnostic>(sample.clone())
+            .unwrap()
+            .message()
+            .unwrap()
+            .starts_with("Browser tab resumed reason=conversation "));
+        sample["reason"] = json!("token=x");
+        assert_eq!(
+            serde_json::from_value::<BrowserDiagnostic>(sample)
+                .unwrap()
+                .message(),
+            None
+        );
     }
 
     #[tokio::test]
