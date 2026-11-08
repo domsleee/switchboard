@@ -61,6 +61,7 @@ test('the shipped handover dialog switches providers in place and preserves cont
    const url=new URL(route.request().url()),p=url.pathname,json=value=>route.fulfill({json:value}).catch(()=>{});requests.push(p);
    if(p==='/api/hosts')return json([{id:'fixture',name:'Desktop',local:true}]);
    if(p==='/api/hosts/fixture')return json({id:'fixture',name:'Desktop',local:true,sessions:[{name:'main',web_clients_allowed:true}]});
+   if(p==='/api/attention'&&url.searchParams.has('after'))return;
    if(p==='/api/attention')return json({tabs:[{host:'fixture',session:'main',id:1,position:0,name:'Source work',panes:[{pane_id:switched?2:1,is_plugin:false,tab_position:0,cwd:'/home/fixture/git/project-worktree'}]}],panes:[{host:'fixture',session:'main',pane_id:switched?2:1,agent:switched?(agent==='codex'?'claude':'codex'):agent,state:'ready',chat_id:switched?'destination-chat':'source-chat',restart_available:true}],errors:[]});
    if(p==='/api/chats/source-chat'||p==='/api/chats/destination-chat'){
     if(url.searchParams.has('context')){
@@ -97,19 +98,19 @@ test('the shipped handover dialog switches providers in place and preserves cont
    await page.getByLabel('Reply draft').fill('Unsent source draft');
    const open=async()=>{await page.getByRole('button',{name:'Switch model with context',exact:true}).click();};
    historyFailure=true;await open();await page.getByRole('button',{name:'Retry loading context'}).waitFor();assert.equal(await page.getByRole('button',{name:'Switch model',exact:true}).isEnabled(),false);
-   historyFailure=false;await page.getByRole('button',{name:'Retry loading context'}).click();await page.getByText(/2 messages included/).waitFor();
-   assert.equal(await page.locator('#new-tab-project').inputValue(),'/home/fixture/git/project-worktree');assert.equal(await page.locator('#new-tab-project').isVisible(),false);assert.equal(await page.getByLabel('Additional instructions',{exact:true}).inputValue(),'Unsent source draft');
+   historyFailure=false;await page.getByRole('button',{name:'Retry loading context'}).click();await page.waitForFunction(()=>!!newTabHandover?.context);
+   assert.equal(await page.locator('#new-tab-project').inputValue(),'/home/fixture/git/project-worktree');assert.equal(await page.locator('#new-tab-project').isVisible(),false);assert.equal(await page.locator('#new-tab-prompt').isVisible(),false);
    if(process.env.HANDOVER_SCREENSHOTS&&agent==='codex')await page.locator('#new-tab-dialog').screenshot({path:path.join(process.env.HANDOVER_SCREENSHOTS,'handover-dialog.png')});
-   await page.evaluate(model=>setNewTabModel(model),agent==='codex'?'c':'csol');await page.getByLabel('Additional instructions',{exact:true}).fill('Finish the tests\nKeep this exact instruction');
+   await page.evaluate(model=>setNewTabModel(model),agent==='codex'?'claude:claude-opus-5-5#max':'codex:gpt-6.1-sol#xhigh');
    await page.getByRole('button',{name:'Switch model',exact:true}).click();await page.getByText('Could not transfer context to the destination computer. Try again.').waitFor();assert.equal(created.length,0);
    uploadFailure=false;await page.getByRole('button',{name:'Switch model',exact:true}).click();await page.waitForFunction(()=>!document.querySelector('#new-tab-dialog').open);
-   assert.equal(created.length,1);assert.equal(created[0].handover.model,agent==='codex'?'c':'csol');assert.equal(created[0].pane_id,1);assert.equal(created[0].tab_id,1);assert.equal(created[0].chat_id,'source-chat');assert.equal(created[0].handover.source_messages,2);
-   assert.ok(created[0].handover.prompt.endsWith('Finish the tests\nKeep this exact instruction'));assert.ok(created[0].handover.prompt.includes('context handover.json'));
+   assert.equal(created.length,1);assert.equal(created[0].handover.model,agent==='codex'?'claude:claude-opus-5-5#max':'codex:gpt-6.1-sol#xhigh');assert.equal(created[0].pane_id,1);assert.equal(created[0].tab_id,1);assert.equal(created[0].chat_id,'source-chat');assert.equal(created[0].handover.source_messages,2);
+   assert.ok(created[0].handover.prompt.endsWith('Continue the work from the previous conversation.'));assert.ok(!created[0].handover.prompt.includes('Unsent source draft'));assert.ok(created[0].handover.prompt.includes('context handover.json'));
    assert.equal(uploads.at(-1).messages[1].text,sourceText);assert.deepEqual(uploads.at(-1).messages.map(m=>m.role),['user','assistant']);
    assert.equal(requests.some(p=>p.includes('close-tab')||p.includes('/new-tab')||p.includes('/reply')),false);
    // Cancelling a slow load must not repopulate the next ordinary new-tab dialog.
    await page.getByLabel('Reply draft').waitFor();assert.equal(await page.getByLabel('Reply draft').inputValue(),'Unsent source draft');
-   holdHistory=true;await open();await page.waitForFunction(()=>document.querySelector('#handover-summary').textContent.includes('Loading context'));
+   holdHistory=true;await open();await page.waitForFunction(()=>document.querySelector('#handover-summary').textContent.includes('Loading conversation'));
    while(!releaseHistory)await new Promise(resolve=>setTimeout(resolve,10));
    await page.keyboard.press('Escape');await page.getByRole('button',{name:'New tab',exact:true}).click();holdHistory=false;releaseHistory();
    assert.equal(await page.locator('#handover-preview').isVisible(),false);assert.equal(await page.locator('#new-tab-title').textContent(),'New tab');assert.equal(await page.getByRole('button',{name:'Create tab',exact:true}).isEnabled(),true);assert.equal(await page.getByLabel('Prompt',{exact:true}).inputValue(),'');
@@ -131,7 +132,8 @@ async function busySwitch(browser){
   if(p==='/api/hosts')return json([{id:'fixture',name:'Desktop',local:true}]);
   if(p==='/api/hosts/fixture')return json({id:'fixture',name:'Desktop',local:true,sessions:[{name:'main',web_clients_allowed:true}]});
   // Like the relay: a restartable agent reports it only while ready or working.
-  if(p==='/api/attention')return json({tabs:[{host:'fixture',session:'main',id:1,position:0,name:'Source work',panes:[{pane_id:f.switched?2:1,is_plugin:false,tab_position:0,cwd:'/home/fixture/git/project'}]},{host:'fixture',session:'main',id:3,position:1,name:'Other work',panes:[{pane_id:3,is_plugin:false,tab_position:1,cwd:'/home/fixture'}]}],panes:[{host:'fixture',session:'main',pane_id:f.switched?2:1,agent:f.switched?'codex':'claude',state:f.switched?'ready':f.state,chat_id:f.switched?'destination-chat':'source-chat',restart_available:f.switched||f.restartable&&['ready','working'].includes(f.state)}],errors:[]});
+  if(p==='/api/attention'&&url.searchParams.has('after'))return;
+   if(p==='/api/attention')return json({tabs:[{host:'fixture',session:'main',id:1,position:0,name:'Source work',panes:[{pane_id:f.switched?2:1,is_plugin:false,tab_position:0,cwd:'/home/fixture/git/project'}]},{host:'fixture',session:'main',id:3,position:1,name:'Other work',panes:[{pane_id:3,is_plugin:false,tab_position:1,cwd:'/home/fixture'}]}],panes:[{host:'fixture',session:'main',pane_id:f.switched?2:1,agent:f.switched?'codex':'claude',state:f.switched?'ready':f.state,chat_id:f.switched?'destination-chat':'source-chat',restart_available:f.switched||f.restartable&&['ready','working'].includes(f.state)}],errors:[]});
   // Pages like the relay: tail and before end a page, cursor starts one, next_cursor continues it.
   if(p==='/api/chats/source-chat'||p==='/api/chats/destination-chat'){
    const q=url.searchParams,limit=Number(q.get('limit')||10),end=q.has('before')?Math.min(Number(q.get('before')),f.history.length):f.history.length,start=q.get('tail')==='true'||q.has('before')?Math.max(0,end-limit):Math.min(Number(q.get('cursor')||0),end),page=f.history.slice(start,Math.min(end,start+limit));
@@ -158,7 +160,7 @@ async function busySwitch(browser){
   visit:name=>page.evaluate(name=>activate(allTabs().find(item=>item.tab.name===name)),name),
   send:async text=>{await f.draft.fill(text);await page.getByRole('button',{name:'Send',exact:true}).click();await page.locator('.conversation-outgoing').getByText(text).waitFor();},
   attach:async name=>{const [chooser]=await Promise.all([page.waitForEvent('filechooser'),page.getByRole('button',{name:'Attach files'}).click()]);await chooser.setFiles({name,mimeType:'text/plain',buffer:Buffer.from(name)});await page.locator('.conversation-attachment',{hasText:name}).getByText('Ready',{exact:true}).waitFor();},
-  open:async()=>{await f.chip.click();await page.getByText(/messages included/).waitFor();await page.evaluate(()=>setNewTabModel('claude:claude-sonnet-5-5'));},
+  open:async()=>{await f.chip.click();await page.waitForFunction(()=>!!newTabHandover?.context);await page.evaluate(()=>setNewTabModel('claude:claude-sonnet-5-5'));},
   confirm:async()=>{await page.getByRole('button',{name:'Switch model',exact:true}).click();await page.waitForFunction(()=>!document.querySelector('#new-tab-dialog').open);},
  });
  await page.goto('http://busy-switch.test/?host=fixture&session=main&tab=1');await page.getByText('First answer').waitFor();
@@ -180,18 +182,18 @@ test('the model switch stays available while the agent works and waits for its t
    // A reply the agent has not yet shown in its transcript stays queued, and the chip stays a control.
    await f.send('Please continue');assert.equal(await chip.isEnabled(),true);
    await f.attention('working');assert.equal(await page.locator('.conversation-activity').textContent(),'Working…');assert.equal(await chip.isEnabled(),true);
-   // An attachment waiting in the composer does not block the switch either; it goes with the instructions.
+   // An attachment waiting in the composer does not block the switch; it stays unsent.
    await f.attach('notes.txt');assert.equal(await chip.isEnabled(),true);
    await draft.fill('Then tidy up');
    const choose=async()=>{
     await f.open();
-    assert.match(await page.locator('#new-tab-note').textContent(),/The file attached in the composer goes with your instructions\. The agent is busy, so the switch waits for its turn to end\./);
-    assert.equal(await page.getByLabel('Additional instructions',{exact:true}).inputValue(),'Then tidy up');
+    assert.equal(await page.locator('#new-tab-prompt').isVisible(),false);
+    assert.equal(await draft.inputValue(),'Then tidy up');
     await f.confirm();
    };
    await choose();
    assert.equal(await model.textContent(),'Opus 5.5 → Sonnet 5.5 · after this turn');assert.equal(await chip.isEnabled(),true);assert.equal(await cancel.isVisible(),true);
-   assert.equal(await draft.inputValue(),'','The instructions moved into the queued switch');assert.equal(f.created.length,0,'A busy agent is not interrupted');
+   assert.equal(await draft.inputValue(),'Then tidy up','Unsent text stays in the composer while the model switch is queued');assert.equal(f.created.length,0,'A busy agent is not interrupted');
    // Cancelling restores the instructions to the composer.
    await cancel.click();assert.equal(await model.textContent(),'Opus 5.5');assert.equal(await cancel.isVisible(),false);assert.equal(await draft.inputValue(),'Then tidy up');
    await choose();await model.filter({hasText:'→ Sonnet 5.5'}).waitFor();
@@ -204,13 +206,13 @@ test('the model switch stays available while the agent works and waits for its t
    await page.evaluate(()=>dispatchEvent(new Event('focus')));
    await page.waitForFunction(()=>!document.querySelector('.conversation-model')?.classList.contains('pending'));
    assert.equal(f.created.length,1);assert.equal(f.created[0].pane_id,1);assert.equal(f.created[0].chat_id,'source-chat');assert.equal(f.created[0].handover.model,'claude:claude-sonnet-5-5');
-   assert.ok(f.created[0].handover.prompt.endsWith('Then tidy up\n\nAttached files:\n/home/fixture/attachments/notes.txt'));
+   assert.ok(f.created[0].handover.prompt.endsWith('Continue the work from the previous conversation.'));assert.ok(!f.created[0].handover.prompt.includes('notes.txt'));
    assert.equal(f.uploads.length,1,'Context loads when the switch runs');assert.equal(f.uploads.at(-1).messages.at(-1).text,'Finished this turn');
-   assert.equal(await page.locator('.conversation-attachment').count(),0,'Carried files leave the composer');
+   assert.equal(await page.locator('.conversation-attachment').count(),1,'Unsent attachments stay in the composer');assert.equal(await draft.inputValue(),'Then tidy up');
   });
   await scenario('an automatic cancellation puts the queued instructions back in the composer',async f=>{
    await f.attention('working');await f.draft.fill('Keep these instructions');await f.open();await f.confirm();
-   assert.equal(await f.draft.inputValue(),'');
+   assert.equal(await f.draft.inputValue(),'Keep these instructions');
    f.restartable=false;await f.attention('ready');
    await f.page.waitForFunction(()=>!document.querySelector('.conversation-model').classList.contains('pending'));
    assert.equal(await f.draft.inputValue(),'Keep these instructions');assert.equal(f.created.length,0);
@@ -229,8 +231,8 @@ test('the model switch stays available while the agent works and waits for its t
    await f.model.filter({hasText:'switching…'}).waitFor();
    await f.attach('later.txt');release();
    await f.page.waitForFunction(()=>!pendingSwitches.size);
-   assert.ok(f.created[0].handover.prompt.endsWith('Attached files:\n/home/fixture/attachments/notes.txt'));
-   await f.page.locator('.conversation-attachment',{hasText:'later.txt'}).waitFor();assert.equal(await f.page.locator('.conversation-attachment').count(),1);
+   assert.ok(!f.created[0].handover.prompt.includes('notes.txt'));
+   await f.page.locator('.conversation-attachment',{hasText:'later.txt'}).waitFor();assert.equal(await f.page.locator('.conversation-attachment').count(),2);
   });
   await scenario('a selection still uploading when the switch completes moves to the new agent whole',async f=>{
    await f.attention('working');await f.open();await f.confirm();

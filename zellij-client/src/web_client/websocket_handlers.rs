@@ -395,14 +395,19 @@ fn tab_shell(default_shell: Option<PathBuf>) -> PathBuf {
 // Prompt text is data, never shell source. Quote on the destination computer,
 // where the configured shell and uploaded image paths are known.
 /// What New tab and handover launch: one of the owner's shell shortcuts, or
-/// Claude Code or Codex with a chosen model (`claude:<model>`, `codex:<model>`).
-/// An empty name keeps older clients on Sol.
+/// Claude Code or Codex with a chosen model and optional reasoning effort
+/// (`claude:<model>`, `codex:<model>#<effort>`). An empty name keeps older clients on Sol.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Agent {
     Alias(&'static str),
-    Claude(String),
-    Codex(String),
+    Claude(String, Option<String>),
+    Codex(String, Option<String>),
 }
+/// Effort levels each agent's command line accepts. Anything else is refused, never passed on.
+const CLAUDE_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+const CODEX_EFFORTS: [&str; 8] = [
+    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+];
 impl Agent {
     pub(crate) fn parse(command: &str) -> Option<Self> {
         let command = command.trim();
@@ -412,7 +417,11 @@ impl Agent {
             "c" => return Some(Self::Alias("c")),
             _ => {},
         }
-        let (provider, model) = command.split_once(':')?;
+        let (provider, choice) = command.split_once(':')?;
+        let (model, effort) = match choice.rsplit_once('#') {
+            Some((model, effort)) => (model, Some(effort)),
+            None => (choice, None),
+        };
         // A model name is data, never a flag or shell source. It is quoted as well.
         let valid = model.len() <= 100
             && model.starts_with(|c: char| c.is_ascii_alphanumeric())
@@ -420,21 +429,28 @@ impl Agent {
                 c.is_ascii_alphanumeric()
                     || matches!(c, '.' | '-' | '_' | '[' | ']' | '/' | ':' | '@')
             });
+        if !valid {
+            return None;
+        }
+        let effort = |levels: &[&str]| match effort {
+            None => Some(None),
+            Some(effort) => levels.contains(&effort).then(|| Some(effort.to_owned())),
+        };
         match provider {
-            "claude" if valid => Some(Self::Claude(model.into())),
-            "codex" if valid => Some(Self::Codex(model.into())),
+            "claude" => Some(Self::Claude(model.into(), effort(&CLAUDE_EFFORTS)?)),
+            "codex" => Some(Self::Codex(model.into(), effort(&CODEX_EFFORTS)?)),
             _ => None,
         }
     }
     fn is_claude(&self) -> bool {
-        matches!(self, Self::Alias("c") | Self::Claude(_))
+        matches!(self, Self::Alias("c") | Self::Claude(..))
     }
     /// The command the terminal shell must find to start this agent.
     pub(crate) fn program(&self) -> &str {
         match self {
             Self::Alias(alias) => alias,
-            Self::Claude(_) => "claude",
-            Self::Codex(_) => "codex",
+            Self::Claude(..) => "claude",
+            Self::Codex(..) => "codex",
         }
     }
 }
@@ -474,14 +490,27 @@ pub(super) fn prompt_command(
     // A chosen model passes the same bypass flags as the owner's shortcuts.
     let mut command = match agent {
         Agent::Alias(alias) => (*alias).to_owned(),
-        Agent::Claude(model) => format!(
-            "claude --dangerously-skip-permissions --model {}",
-            quote(model)
-        ),
-        Agent::Codex(model) => format!(
-            "codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust -m {}",
-            quote(model)
-        ),
+        Agent::Claude(model, effort) => {
+            let mut command = format!(
+                "claude --dangerously-skip-permissions --model {}",
+                quote(model)
+            );
+            if let Some(effort) = effort {
+                command.push_str(&format!(" --effort {}", quote(effort)));
+            }
+            command
+        },
+        Agent::Codex(model, effort) => {
+            let mut command = format!(
+                "codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust -m {}",
+                quote(model)
+            );
+            if let Some(effort) = effort {
+                let setting = format!("model_reasoning_effort={effort}");
+                command.push_str(&format!(" -c {}", quote(&setting)));
+            }
+            command
+        },
     };
     let mut prompt = prompt.to_owned();
     if agent.is_claude() {
@@ -932,8 +961,10 @@ mod tests {
         let agents = [
             Agent::Alias("csol"),
             Agent::Alias("c"),
-            Agent::Claude("claude-opus-5-5[1m]".into()),
-            Agent::Codex("gpt-6.1-sol".into()),
+            Agent::Claude("claude-opus-5-5[1m]".into(), None),
+            Agent::Claude("claude-opus-5-5".into(), Some("xhigh".into())),
+            Agent::Codex("gpt-6.1-sol".into(), None),
+            Agent::Codex("gpt-6.1-sol".into(), Some("high".into())),
         ];
         for (shell, choice) in shells
             .into_iter()
@@ -973,15 +1004,31 @@ mod tests {
                     .collect()
             };
             let claude_prompt = format!("{prompt}\n\nAttached images:\n{}", images.join("\n"));
+            let setting = match &choice {
+                Agent::Codex(_, Some(effort)) => format!("model_reasoning_effort={effort}"),
+                _ => String::new(),
+            };
             let mut expected: Vec<&str> = match &choice {
                 Agent::Alias(_) => vec![],
-                Agent::Claude(model) => vec!["--dangerously-skip-permissions", "--model", model],
-                Agent::Codex(model) => vec![
-                    "--dangerously-bypass-approvals-and-sandbox",
-                    "--dangerously-bypass-hook-trust",
-                    "-m",
-                    model,
-                ],
+                Agent::Claude(model, effort) => {
+                    let mut args = vec!["--dangerously-skip-permissions", "--model", model];
+                    if let Some(effort) = effort {
+                        args.extend(["--effort", effort.as_str()]);
+                    }
+                    args
+                },
+                Agent::Codex(model, effort) => {
+                    let mut args = vec![
+                        "--dangerously-bypass-approvals-and-sandbox",
+                        "--dangerously-bypass-hook-trust",
+                        "-m",
+                        model,
+                    ];
+                    if effort.is_some() {
+                        args.extend(["-c", setting.as_str()]);
+                    }
+                    args
+                },
             };
             if choice.is_claude() {
                 expected.extend(["--", claude_prompt.as_str()]);
@@ -1072,6 +1119,19 @@ Attached images:
             launch("codex:gpt-6-luna").as_deref(),
             Some("codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust -m r#'gpt-6-luna'# --image r#'/tmp/a.png'# r#'--'# r#'go'#")
         );
+        assert_eq!(
+            launch("codex:gpt-6.1-sol#xhigh").as_deref(),
+            Some("codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust -m r#'gpt-6.1-sol'# -c r#'model_reasoning_effort=xhigh'# --image r#'/tmp/a.png'# r#'--'# r#'go'#")
+        );
+        assert_eq!(
+            launch("claude:claude-opus-5-5#max").as_deref(),
+            Some(
+                "claude --dangerously-skip-permissions --model r#'claude-opus-5-5'# --effort r#'max'# r#'--'# r#'go
+
+Attached images:
+/tmp/a.png'#"
+            )
+        );
         for command in [
             "rm -rf ~",
             "claude:",
@@ -1080,6 +1140,11 @@ Attached images:
             "codex:$(id)",
             "gemini:pro",
             "claude:a;b",
+            "claude:claude-opus-5-5#ultra",
+            "codex:gpt-6.1-sol#",
+            "codex:gpt-6.1-sol#high;id",
+            "codex:#high",
+            "csol#high",
         ] {
             assert_eq!(launch(command), None, "{command}");
         }

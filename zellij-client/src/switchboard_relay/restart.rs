@@ -448,6 +448,8 @@ mod tests {
             "castra",
             "claude:claude-opus-5-5",
             "codex:gpt-6-luna",
+            "codex:gpt-6.1-sol#xhigh",
+            "claude:claude-opus-5-5#max",
         ] {
             let mut value = base.clone();
             value["handover"] =
@@ -458,7 +460,13 @@ mod tests {
                 .is_ok());
         }
         let mut value = base;
-        for model in ["sh -c bad", "", "codex:-c", "claude:$(id)"] {
+        for model in [
+            "sh -c bad",
+            "",
+            "codex:-c",
+            "claude:$(id)",
+            "claude:claude-opus-5-5#ultra",
+        ] {
             value["handover"] = json!({"model":model,"prompt":"text","source_messages":2});
             assert!(
                 serde_json::from_value::<Target>(value.clone()).is_err(),

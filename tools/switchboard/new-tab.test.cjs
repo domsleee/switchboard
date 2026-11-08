@@ -42,7 +42,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
       }
       if(path==='/hosts/windows/project-list'){if(delayProjects)await new Promise(resolve=>releaseProjects=resolve);return projectError?route.fulfill({status:503,body:'unavailable'}):json(['dotfiles','switchboard','switchboard-tools','C:\\work\\Org\\Sample.Tools','C:\\work\\Org\\Sample','C:/work/Glow/DotNet','C:/work/Glow2/DotNet']);}
       if(path==='/hosts/other/project-list')return json(['other-project']);
-      if(path==='/hosts/windows/model-list')return json({codex:[{id:'gpt-6.1-sol',name:'GPT-6.1-Sol',default:true},{id:'gpt-6-luna',name:'GPT-6-Luna',default:false}]});
+      if(path==='/hosts/windows/model-list')return json({codex:[{id:'gpt-6.1-sol',name:'GPT-6.1-Sol',default:true,efforts:[{id:'low'},{id:'high'}]},{id:'gpt-6-luna',name:'GPT-6-Luna',default:false}]});
       if(path.startsWith('/hosts/')){connected=true;frameBoots++;return route.fulfill({contentType:'text/html',body:`<div id="terminal"><input id="terminal-input"></div><script>
         window.WebSocket=class extends EventTarget {constructor(){super();this.readyState=1;}send(){}};
         const input=document.querySelector('input');let count=${created},active=count;
@@ -55,7 +55,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
         window.confirmCreation=()=>{count++;window.creationPane=8+count;window.creationRequested=false;state()};state();
       </script>`});}
       const file=path==='/'?'index.html':path.slice(1);
-      if(!['index.html','app.js','bridge.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
+      if(!['index.html','app.js','model-picker.js','bridge.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
       return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
     });
     await page.goto('https://switchboard.test/'+(emptyMachine?'':'?host=windows&session=main&tab=42'));
@@ -76,7 +76,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
       await page.locator('#new-tab-form button[type="submit"]').click();
       await page.waitForFunction(()=>document.querySelector('iframe.active')?.contentWindow.creationRequested);
       const input=page.frameLocator('iframe[title="Windows: main"]').locator('#terminal-input');
-      assert.deepEqual(await input.evaluate(()=>window.creationLaunch),{project:'switchboard',command:'csol',prompt:'',images:[]});
+      assert.deepEqual(await input.evaluate(()=>window.creationLaunch),{project:'switchboard',command:'codex:gpt-6.1-sol#high',prompt:'',images:[]});
       assert.notEqual(await page.locator('#tabs .tab-select.selected').getAttribute('data-agent-state'),'Working','A blank agent tab has no submitted task');
       await input.evaluate(()=>window.confirmCreation());
       await page.waitForFunction(()=>document.querySelector('#tabs .selected .tab-name')?.textContent==='New shell 1');
@@ -107,47 +107,67 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
       assert.equal(await page.locator('#new-tab-prompt').evaluate(input=>document.activeElement===input),true);
       assert.equal(await page.locator('#new-tab-prompt').inputValue(),'');
       assert.equal(await page.getByLabel('Prompt',{exact:true}).count(),1);
-      assert.match(await page.locator('#new-tab-model').getAttribute('aria-label'),/^Model: csol, Codex · Sol$/);
-      // Shift+Tab from the prompt reaches the model chip, which shows its choices; arrows change it, Enter returns.
-      await page.keyboard.press('Shift+Tab');assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-model');
+      assert.equal(await page.locator('#new-tab-model').getAttribute('aria-label'),'Model: GPT-6.1 Sol, Codex, High effort');
+      // Shift+Tab from the prompt reaches the model chip, which opens the picker with focus in its search.
+      await page.keyboard.press('Shift+Tab');assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-model-search');
       assert.equal(await page.locator('#new-tab-model-menu').isVisible(),true);
-      // Shortcuts come first, then every Claude model, then the models this computer's Codex lists.
-      await page.waitForFunction(()=>Array.isArray(newTabCodexModels.get('windows'))&&document.querySelector('#new-tab-model-menu').textContent.includes('gpt-6-luna'));
-      const listed=await page.locator('#new-tab-model-menu [role=option] span').allTextContents();
-      assert.deepEqual(listed.slice(0,4),['csol','castra','c','claude-fable-5-1']);
-      assert.deepEqual(listed.slice(-2),['gpt-6.1-sol','gpt-6-luna']);
-      assert.deepEqual(await page.locator('#new-tab-model-menu .new-tab-menu-group').allTextContents(),['Shortcuts','Claude Code','Codex']);
-      await page.keyboard.press('ArrowDown');assert.equal(await page.evaluate(()=>newTabModel()),'castra');
-      await page.keyboard.press('1');assert.equal(await page.evaluate(()=>newTabModel()),'csol');
-      await page.keyboard.press('Enter');assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-prompt');
+      // A tab per agent opens on the chosen model's agent: here the models this computer's Codex lists.
+      await page.waitForFunction(()=>Array.isArray(newTabCodexModels.get('windows'))&&document.querySelector('#new-tab-model-menu').textContent.includes('GPT-6 Luna'));
+      assert.deepEqual(await page.locator('#new-tab-model-menu [role=tab]').allTextContents(),['Favourites','Codex','Claude Code']);
+      assert.equal(await page.getByRole('tab',{name:/^Codex/}).getAttribute('aria-selected'),'true');
+      assert.deepEqual(await page.locator('#new-tab-model-menu [role=option] .model-picker-name').allTextContents(),['GPT-6.1 Sol','GPT-6 Luna']);
+      // The chosen model's levels follow Auto. Without a search, arrows choose as they move.
+      assert.deepEqual(await page.locator('#new-tab-model-menu [role=radio] .model-picker-level-name').allTextContents(),['Agent setting','Low','High']);
+      await page.keyboard.press('ArrowDown');assert.equal(await page.evaluate(()=>newTabModel()),'codex:gpt-6-luna#high','The chosen effort carries to the next model');
+      assert.deepEqual(await page.locator('#new-tab-model-menu [role=radio] .model-picker-level-name').allTextContents(),['Agent setting','Low','Medium','High','Extra high'],'A model the relay lists without levels gets the common ones');
+      // Arrows stay in the agent's tab, wrapping at its ends.
+      await page.keyboard.press('ArrowDown');assert.equal(await page.evaluate(()=>newTabModel()),'codex:gpt-6.1-sol#high');
+      await page.keyboard.press('ArrowUp');assert.equal(await page.evaluate(()=>newTabModel()),'codex:gpt-6-luna#high');
+      // Another agent's tab says what is chosen instead of offering effort for a model not on screen.
+      await page.getByRole('tab',{name:/^Claude Code/}).click();
+      assert.match(await page.locator('#new-tab-model-menu .model-picker-effort-away').textContent(),/^GPT-6 Luna at High effort is chosen/);
+      await page.getByRole('tab',{name:/^Codex/}).click();
+      await page.keyboard.press('Enter');
+      assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-prompt');
       assert.equal(await page.locator('#new-tab-model-menu').isVisible(),false);
-      // Typing on the chip searches every model and picks the first match; Escape keeps the earlier choice.
-      await page.keyboard.press('Shift+Tab');await page.keyboard.type('luna');
-      assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-model-search');
-      assert.equal(await page.evaluate(()=>newTabModel()),'codex:gpt-6-luna');
-      await page.keyboard.press('Escape');assert.equal(await page.evaluate(()=>newTabModel()),'csol');
+      // Escape cancels back to the choice from when the picker opened.
+      await page.keyboard.press('Shift+Tab');await page.keyboard.press('ArrowUp');await page.keyboard.press('Tab');
+      assert.equal(await page.evaluate(()=>newTabModel()),'codex:gpt-6.1-sol#high');
+      await page.keyboard.press('Escape');assert.equal(await page.evaluate(()=>newTabModel()),'codex:gpt-6-luna#high');
       assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-prompt');
-      await page.keyboard.press('Shift+Tab');await page.keyboard.type('opus-4-6');
-      assert.equal(await page.evaluate(()=>newTabModel()),'claude:claude-opus-4-6');
-      await page.keyboard.press('Escape');
-      // A name nobody listed can start either agent; Enter keeps the choice.
+      // A search highlights its first match without choosing it; the first Escape only clears the search.
+      await page.keyboard.press('Shift+Tab');await page.keyboard.type('opus 4.6');
+      assert.equal(await page.evaluate(()=>newTabModel()),'codex:gpt-6-luna#high');
+      await page.keyboard.press('Escape');assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-model-search');
+      await page.keyboard.type('opus 4.6');await page.keyboard.press('Enter');
+      assert.equal(await page.evaluate(()=>newTabModel()),'claude:claude-opus-4-6#high');
+      // A name nobody listed can start either agent, chosen only by picking its row.
       await page.keyboard.press('Shift+Tab');await page.keyboard.type('my-model[1m]');
-      assert.deepEqual(await page.locator('#new-tab-model-menu [role=option] small').allTextContents(),['Codex','Claude Code']);
+      assert.deepEqual(await page.locator('#new-tab-model-menu [role=option] small').allTextContents(),['with Codex','with Claude Code']);
       await page.keyboard.press('ArrowDown');await page.keyboard.press('Enter');
-      assert.equal(await page.evaluate(()=>newTabModel()),'claude:my-model[1m]');
+      assert.equal(await page.evaluate(()=>newTabModel()),'claude:my-model[1m]#high');
       assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-prompt');
-      assert.equal(await page.locator('#new-tab-model').getAttribute('aria-label'),'Model: my-model[1m], Claude Code');
+      assert.equal(await page.locator('#new-tab-model').getAttribute('aria-label'),'Model: my-model[1m], Claude Code, High effort');
       await page.keyboard.press('Shift+Tab');await page.keyboard.type('bad name');
       assert.equal(await page.locator('#new-tab-model-menu [role=option]').count(),0);
-      assert.equal(await page.evaluate(()=>newTabModel()),'claude:my-model[1m]','An invalid name keeps the earlier choice');
-      await page.keyboard.press('Escape');await page.evaluate(()=>setNewTabModel('csol'));
+      await page.keyboard.press('Enter');
+      assert.equal(await page.evaluate(()=>newTabModel()),'claude:my-model[1m]#high','An invalid name keeps the earlier choice');
+      // Tab moves to the agent tabs, then effort; arrows change it and Enter keeps it.
+      await page.keyboard.press('Shift+Tab');await page.keyboard.press('Tab');
+      assert.equal(await page.evaluate(()=>document.activeElement.getAttribute('role')),'tab');
+      await page.keyboard.press('Tab');
+      assert.equal(await page.evaluate(()=>document.activeElement.getAttribute('role')),'radio');
+      await page.keyboard.press('ArrowDown');await page.keyboard.press('Enter');
+      assert.equal(await page.evaluate(()=>newTabModel()),'claude:my-model[1m]#xhigh');
+      assert.equal(await page.locator('#new-tab-model-effort').textContent(),'Extra high');
+      await page.evaluate(()=>setNewTabModel('codex:gpt-6.1-sol#high'));
       // Shift+Tab twice more walks to project, then computer; Tab returns to the prompt.
       await page.keyboard.press('Shift+Tab');await page.keyboard.press('Shift+Tab');
       assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-project');
       await page.keyboard.press('Shift+Tab');assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-machine');
       assert.equal(await page.locator('#new-tab-project-popover').isVisible(),false);
       await page.keyboard.press('Tab');assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-prompt');
-      assert.equal(await page.evaluate(()=>newTabModel()),'csol','Sol is the default model');
+      assert.equal(await page.evaluate(()=>newTabModel()),'codex:gpt-6.1-sol#high','Sol is the default model');
       assert.equal(await page.locator('#new-tab-machine-name').textContent(),'Windows');
       assert.equal(await page.locator('#new-tab-target option').count(),1,'One option per computer even with multiple sessions');
       assert.equal(await page.locator('#new-tab-target option').first().textContent(),'Windows');
@@ -170,8 +190,11 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
       }
       if(number===2){
         await page.locator('#new-tab-prompt').fill('Update this project');
-        await page.locator('#new-tab-model').click();await page.locator('#new-tab-model-menu').getByRole('option',{name:/Claude Code/}).click();
-        assert.equal(await page.evaluate(()=>newTabModel()),'c','Clicking the model chip lists the models');
+        await page.locator('#new-tab-model').click();await page.getByRole('tab',{name:/^Claude Code/}).click();
+        await page.locator('#new-tab-model-menu').getByRole('option',{name:'Opus 5.5',exact:true}).click();
+        assert.equal(await page.evaluate(()=>newTabModel()),'claude:claude-opus-5-5#high','Clicking a model chooses it');
+        assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-model-search','A clicked model leaves focus in search');
+        await page.locator('#new-tab-model-menu').getByRole('button',{name:/^Done/}).click();
         assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-prompt');
         // Folders from projects.json arrive as full paths and rank by their last folder.
         await page.locator('#new-tab-project-chip').click();
@@ -214,7 +237,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
       assert.equal(await page.locator('#tabs .tab-select.selected').getAttribute('data-agent-state'),'Working');
       assert.equal(await page.evaluate(()=>sidebarTabs().find(item=>item.key===selected).snoozed),true,'Terminal submissions immediately enter Working too');
       assert.equal(await input.evaluate(()=>window.creationElevated),number===2);
-      assert.deepEqual(await input.evaluate(()=>window.creationLaunch),number===2?{project:'dotfiles',command:'c',prompt:'Update this project',images:[]}:{project:'switchboard',command:'csol',prompt:'  Fix spaces, "quotes", $vars & symbols 🦀\nsecond line  \n\nAttached files:\nC:/User files/attachments/it\'s notes.txt',images:["C:/User files/attachments/it's screen shot.png","C:/User files/attachments/it's pasted.png"]});
+      assert.deepEqual(await input.evaluate(()=>window.creationLaunch),number===2?{project:'dotfiles',command:'claude:claude-opus-5-5#high',prompt:'Update this project',images:[]}:{project:'switchboard',command:'codex:gpt-6.1-sol#high',prompt:'  Fix spaces, "quotes", $vars & symbols 🦀\nsecond line  \n\nAttached files:\nC:/User files/attachments/it\'s notes.txt',images:["C:/User files/attachments/it's screen shot.png","C:/User files/attachments/it's pasted.png"]});
       if(number===1){
         assert.deepEqual(uploads.slice(-3).map(({path,name})=>({path,name})),['screen shot.png','pasted.png','notes.txt'].map(name=>({path:'/api/hosts/windows/attachments',name})));
         assert.deepEqual(uploads.at(-3).body,png);
@@ -327,13 +350,13 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
     assert.equal(await input.evaluate(i=>document.activeElement===i),true);
     // A deliberate move to search while creation waits must still win.
     await page.locator('#new-tab').click();
-    assert.equal(await page.evaluate(()=>newTabModel()),'c','The dialog remembers the last model');
+    assert.equal(await page.evaluate(()=>newTabModel()),'claude:claude-opus-5-5#high','The dialog remembers the last model');
     await page.locator('#new-tab-prompt').fill('custom --flag');await page.keyboard.press('Tab');
     assert.equal(await page.locator('#new-tab-prompt').inputValue(),'custom --flag');
     assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-attach','Tab moves to attachments');
     await page.locator('#new-tab-prompt').focus();await page.keyboard.press('Enter');
     await page.waitForFunction(()=>document.querySelector('iframe.active')?.contentWindow.creationRequested);
-    assert.deepEqual(await input.evaluate(()=>window.creationLaunch),{project:'dotfiles',command:'c',prompt:'custom --flag',images:[]},'The dialog remembers the last project on this computer');
+    assert.deepEqual(await input.evaluate(()=>window.creationLaunch),{project:'dotfiles',command:'claude:claude-opus-5-5#high',prompt:'custom --flag',images:[]},'The dialog remembers the last project on this computer');
     await page.locator('#tab-search').click();
     await input.evaluate(()=>window.confirmCreation());
     await page.waitForFunction(()=>document.querySelector('#tabs .selected .tab-name')?.textContent==='New shell 3');
