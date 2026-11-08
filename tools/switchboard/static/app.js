@@ -1431,8 +1431,8 @@ renderFilter();
 let newTabElevated=false,newTabHandover=null;
 function clearNewTabHandover(){
   newTabHandover?.request?.abort();newTabHandover=null;newTabModelMenu.embed(null);
-  for(const id of ['handover-route','handover-picker','handover-preview','handover-actions'])$(id).hidden=true;
-  $('handover-details').open=false;
+  for(const id of ['handover-picker','handover-preview','handover-actions'])$(id).hidden=true;
+  for(const property of ['left','top','bottom','width','max-height'])$('new-tab-dialog').style.removeProperty(property);
   $('new-tab-form').querySelector('.new-tab-composer-bar').append($('new-tab-submit'));
   $('new-tab-prompt-label').textContent='Prompt';$('new-tab-prompt-label').classList.add('sr-only');
   $('new-tab-prompt').rows=3;
@@ -1464,16 +1464,6 @@ function setNewTabModel(value){
   const effort=choice.effort?choice.effortName+' effort':'effort from the agent setting';
   $('new-tab-model').setAttribute('aria-label',`Model: ${choice.name}, ${choice.providerName}, ${effort}`);
   $('new-tab-model').title=`${choice.providerName} · ${choice.model} · ${effort}`;
-  if(newTabHandover)paintHandoverRoute();
-}
-function paintHandoverRoute(){
-  if(!newTabHandover)return;
-  const source=newTabHandover.source,context=newTabHandover.context;
-  const from=context?.source.model,choice=ModelPicker.describe(newTabModelValue,newTabHostCodexModels());
-  const fill=(id,provider,name)=>{const element=$(id),mark=document.createElement('span');mark.className='handover-agent-icon';mark.setAttribute('aria-hidden','true');mark.innerHTML=globalThis.SwitchboardConversation?.agentIcons?.[provider]||'';element.replaceChildren(mark,document.createTextNode(name));};
-  const sourceChoice=from&&ModelPicker.parse(source.agent+':'+from);
-  fill('handover-from',source.agent,sourceChoice?ModelPicker.describe(source.agent+':'+from,newTabHostCodexModels()).name:source.agent==='claude'?'Claude Code':'Codex');
-  fill('handover-to',choice.provider,choice.name+(choice.effort?' '+choice.effortName:''));
 }
 // A remembered effort the destination's model does not offer is dropped for the agent setting, and the picker says why.
 let newTabEffortWarning='';
@@ -1580,7 +1570,7 @@ const newTabModelMenu=ModelPicker.create({chip:$('new-tab-model'),menu:$('new-ta
   set(value){newTabEffortWarning='';setNewTabModel(value);},
   reload(){const host=$('new-tab-target').value?JSON.parse($('new-tab-target').value)[0]:'';newTabCodexModels.delete(host);loadNewTabCodexModels();},
   // The choice is announced once, when the picker closes, not on every arrow.
-  done(){$('new-tab-progress').textContent=$('new-tab-model').getAttribute('aria-label');$('new-tab-prompt').focus();}});
+  done(){if(newTabHandover){$('new-tab-form').requestSubmit();return;}$('new-tab-progress').textContent=$('new-tab-model').getAttribute('aria-label');$('new-tab-prompt').focus();}});
 const newTabMachineMenu=newTabChipMenu($('new-tab-machine'),$('new-tab-machine-menu'),()=>[...$('new-tab-target').options].map(option=>[option.value,option.textContent.replace(/ · no session$/,''),option.disabled?'no session':'',option.disabled]),()=>$('new-tab-target').value,value=>{$('new-tab-target').value=value;$('new-tab-target').dispatchEvent(new Event('change'));$('new-tab-progress').textContent='Computer: '+$('new-tab-target').selectedOptions[0].textContent;});
 // Project: a chip that opens the folder search.
 function openNewTabProjectPicker(){
@@ -1775,19 +1765,15 @@ function setHandoverProject(){
 async function loadNewTabHandover(){
   const handover=newTabHandover;if(!handover)return;
   handover.request?.abort();const request=handover.request=new AbortController();handover.context=null;
-  $('handover-summary').textContent='Loading context…';$('handover-retry').hidden=true;newTabBusy(false);
+  $('handover-preview').hidden=false;$('handover-summary').textContent='Loading conversation…';$('handover-retry').hidden=true;newTabBusy(false);
   try{
     const context=await SwitchboardHandover.load(handover.source,{signal:AbortSignal.any([request.signal,AbortSignal.timeout(60000)])});
     if(newTabHandover!==handover||handover.request!==request||!$('new-tab-dialog').open)return;
     handover.context=context;setHandoverProject();
-    const coverage=context.coverage;
-    $('handover-summary').textContent=`${coverage.included_messages} messages included`+(coverage.partial_history?' · Some history unavailable':'');
-    $('handover-source').textContent=`From “${handover.source.title}” on ${handover.source.computer}`+(handover.source.project?` · ${handover.source.project}`:'');
-    $('handover-coverage').textContent=coverage.omitted_messages?`${coverage.omitted_messages} history entries excluded. The original request and recent complete messages are prioritised.`:'All complete conversation messages are included.';
-    paintHandoverRoute();
-    $('handover-retry').textContent='Reload context';$('handover-retry').hidden=false;
-    newTabBusy(false);
-  }catch(error){if(newTabHandover!==handover||handover.request!==request)return;$('handover-summary').textContent=error.name==='TimeoutError'?'Loading context timed out. Retry when the source computer is connected.':error.message;$('handover-retry').textContent='Retry loading context';$('handover-retry').hidden=false;$('handover-details').open=true;}
+    $('handover-preview').hidden=true;
+    $('handover-summary').textContent='Context ready';
+    newTabBusy(false);placeModelSwitch();
+  }catch(error){if(newTabHandover!==handover||handover.request!==request)return;$('handover-summary').textContent=error.name==='TimeoutError'?'Loading context timed out. Retry when the source computer is connected.':error.message;$('handover-retry').textContent='Retry loading context';$('handover-preview').hidden=false;$('handover-retry').hidden=false;placeModelSwitch();}
 }
 $('handover-retry').onclick=loadNewTabHandover;
 // A click on the backdrop closes a dialog. Both press and release must land
@@ -1834,7 +1820,7 @@ function clearNewTabFiles(){
 }
 function newTabBusy(busy){
   $('new-tab-close').title=busy?'Stop and close · Esc':'Close · Esc';$('new-tab-close').setAttribute('aria-label',busy?'Stop upload and close':'Close');$('new-tab-form').classList.toggle('busy',busy);
-  for(const control of $('new-tab-form').querySelectorAll('input,textarea,select,button'))control.disabled=busy&&control.id!=='new-tab-close';
+  for(const control of $('new-tab-form').querySelectorAll('input,textarea,select,button'))control.disabled=busy&&control.id!=='new-tab-close'&&control.id!=='handover-cancel';
   if(newTabHandover){$('new-tab-target').disabled=true;$('new-tab-project').disabled=true;}
   $('new-tab-submit').disabled=busy||newTabTargetBlocked||!!newTabHandover&&!newTabHandover.context;
 }
@@ -1900,16 +1886,17 @@ $('new-tab-form').addEventListener('drop',event=>{newTabDragDepth=0;newTabDraggi
 $('new-tab-prompt').onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing&&!(matchMedia('(pointer:coarse)').matches&&!matchMedia('(any-pointer:fine)').matches)){event.preventDefault();$('new-tab-form').requestSubmit();}};
 // On a phone the sheet rests on the on-screen keyboard, so Create stays in reach.
 function fitNewTabDialog(){
+  if(newTabHandover){placeModelSwitch();return;}
   const dialog=$('new-tab-dialog'),view=globalThis.visualViewport,fit=dialog.open&&view&&matchMedia('(max-width:700px), (pointer:coarse)').matches;
   dialog.style.marginBottom=fit?Math.max(0,innerHeight-view.offsetTop-view.height)+'px':'';dialog.style.maxHeight=fit?view.height-12+'px':'';
 }
-globalThis.visualViewport?.addEventListener('resize',fitNewTabDialog);globalThis.visualViewport?.addEventListener('scroll',fitNewTabDialog);
+addEventListener('resize',fitNewTabDialog);globalThis.visualViewport?.addEventListener('resize',fitNewTabDialog);globalThis.visualViewport?.addEventListener('scroll',fitNewTabDialog);
 // The close event is queued; a reopen before it arrives owns the dialog, so leave its draft alone.
 $('new-tab-dialog').addEventListener('close',()=>{if($('new-tab-dialog').open)return;$('new-tab-form').pendingSubmission?.uploads?.abort();$('new-tab-form').pendingSubmission=null;clearNewTabHandover();newTabBusy(false);clearNewTabFiles();runPendingSwitches();});
 $('new-tab-form').onsubmit=async event=>{
   event.preventDefault();const form=$('new-tab-form');if(form.pendingSubmission)return;
   if(newTabHandover)newTabModelMenu.commit();
-  const key=$('new-tab-target').value,project=$('new-tab-project').value.trim(),command=ModelPicker.fit(newTabModel(),newTabHostCodexModels()),text=$('new-tab-prompt').value,files=[...newTabFiles],elevated=newTabElevated;
+  const key=$('new-tab-target').value,project=$('new-tab-project').value.trim(),command=ModelPicker.fit(newTabModel(),newTabHostCodexModels()),text=newTabHandover?newTabHandover.text:$('new-tab-prompt').value,files=[...newTabFiles],elevated=newTabElevated;
   const handover=newTabHandover?.context,source=newTabHandover?.source;if(newTabHandover&&!handover)return;
   if(/[\x00-\x08\x0b-\x1f\x7f]/.test(text)||new TextEncoder().encode(text).length>16000){$('new-tab-error').textContent='Use a prompt up to 16 KB without control characters.';return;}
   // Check the computer before spending time on uploads.
@@ -2021,7 +2008,7 @@ function newTabProblem(message,field='prompt'){
   if(field!=='target'&&!$('new-tab-form').pendingSubmission){newTabRetrying=true;newTabSubmitText();}
   if(field==='target'){$('new-tab-target-error').textContent=message;$('new-tab-target').setAttribute('aria-invalid','true');newTabTargetBlocked=true;$('new-tab-submit').disabled=true;newTabSubmitText();}
   else $('new-tab-error').textContent=message;
-  setTimeout(()=>(field==='target'?$('new-tab-machine'):$('new-tab-prompt')).focus());
+  setTimeout(()=>(newTabHandover?$('new-tab-submit'):field==='target'?$('new-tab-machine'):$('new-tab-prompt')).focus());
 }
 let newTabTargetBlocked=false;
 function clearNewTabFieldProblem(){
@@ -2347,35 +2334,42 @@ function openAgentHandover(item,paneId){
   const option=[...$('new-tab-target').options].find(option=>JSON.parse(option.value)[0]===host);
   if(!option){$('new-tab-dialog').close();setStatus('The source computer is unavailable.',true);return;}
   $('new-tab-target').value=option.value;paintNewTabMachine();loadNewTabProjects();loadNewTabCodexModels();
-  const files=globalThis.SwitchboardConversation?.handoverFiles?.(source).length||0;
-  $('new-tab-title').textContent='Switch model';$('new-tab-note').textContent=target.state.state==='ready'?'Continue this conversation in the same tab.':'Switches when the current turn ends.';
+  $('new-tab-title').textContent='Switch model';$('new-tab-note').textContent='';
   setNewTabModel(queued?.model||newTabSavedModel(source.agent==='claude'?'codex':'claude'));
-  $('new-tab-prompt').value=queued?queued.text:globalThis.SwitchboardConversation?.handoverDraft?.(source)||'';fitNewTabPrompt();
   $('new-tab-dialog').classList.add('handover-mode');
-  $('new-tab-prompt-label').textContent='Additional instructions';$('new-tab-prompt-label').classList.remove('sr-only');$('new-tab-prompt').rows=2;$('new-tab-prompt').placeholder='Anything the next model should know?';
-  newTabHandover={source};
+  const anchor=globalThis.SwitchboardConversation?.isOpen?.()?document.querySelector('.conversation-model'):null;
+  newTabHandover={source,anchor,text:queued?.text||''};
   fitNewTabModel();
-  for(const id of ['handover-route','handover-picker','handover-preview','handover-actions'])$(id).hidden=false;
-  $('handover-timing').textContent=(files?`${files===1?'The attached file goes':'The '+files+' attached files go'} with your instructions. `:'')+'The agent starts a new conversation using this context. The original conversation remains in history.';
+  for(const id of ['handover-picker','handover-actions'])$(id).hidden=false;
   $('handover-actions').append($('new-tab-submit'));
-  paintHandoverRoute();newTabSubmitText();newTabModelMenu.embed($('handover-picker'));fitNewTabPrompt();loadNewTabHandover();
-  newTabModelMenu.search.focus({preventScroll:true});
+  newTabSubmitText();newTabModelMenu.embed($('handover-picker'));loadNewTabHandover();placeModelSwitch();
+  if(matchMedia('(max-width:700px),(pointer:coarse)').matches)$('new-tab-model-menu').focus({preventScroll:true});else newTabModelMenu.search.focus({preventScroll:true});
 }
-// Restarts the agent in its tab with the model, carrying recent history, the
-// instructions and the files uploaded in its composer. Context loads now unless given.
+function placeModelSwitch(){
+  const dialog=$('new-tab-dialog');if(!newTabHandover||!dialog.open)return;
+  const view=globalThis.visualViewport,compact=matchMedia('(max-width:700px),(pointer:coarse)').matches;
+  if(compact){
+    Object.assign(dialog.style,{left:'0px',top:'auto',bottom:Math.max(0,innerHeight-(view?.height||innerHeight)-(view?.offsetTop||0))+'px',width:'100vw',maxHeight:((view?.height||innerHeight)-12)+'px',marginBottom:'0px'});return;
+  }
+  const width=Math.min(560,innerWidth-24),height=Math.min(dialog.scrollHeight,innerHeight-24),anchor=newTabHandover.anchor;
+  const rect=anchor?.isConnected?anchor.getBoundingClientRect():null;
+  Object.assign(dialog.style,{width:width+'px',maxHeight:(innerHeight-24)+'px',bottom:'auto',marginBottom:'0px',left:Math.max(12,Math.min(rect?.left??innerWidth-width-24,innerWidth-width-12))+'px',top:Math.max(12,Math.min((rect?.top||innerHeight-16)-height-8,innerHeight-height-12))+'px'});
+}
+// Restarts the agent in its tab with the model, carrying recent history and
+// any previously queued instructions. Drafts and attachments stay in the composer.
 async function switchAgentModel(source,model,text,context,isCurrent=()=>true){
   context||=await SwitchboardHandover.load(source,{signal:AbortSignal.timeout(60000)});
   const response=await fetch('/api/hosts/'+encodeURIComponent(source.host)+'/attachments?'+new URLSearchParams({name:'switchboard-context-handover.json'}),{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:JSON.stringify(context)});
   if(!isCurrent())return null;
   if(!response.ok)throw Error('Could not transfer context to the destination computer. Try again.');
   const data=await response.json();if(typeof data.path!=='string'||!data.path||/[\x00-\x1f]/.test(data.path))throw Error('Invalid handover file response. Try again.');
-  const files=globalThis.SwitchboardConversation?.handoverFiles?.(source)||[],prompt=SwitchboardHandover.prompt(data.path,text)+(files.length?'\n\nAttached files:\n'+files.join('\n'):'');
+  const prompt=SwitchboardHandover.prompt(data.path,text);
   if(new TextEncoder().encode(prompt).length>16000)throw Error('The prompt and file paths must fit within 16 KB.');
   const restart=await fetch('/api/hosts/'+encodeURIComponent(source.host)+'/restart-agent',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...source.target,handover:{model,prompt,source_messages:context.coverage.total_messages}}),signal:AbortSignal.timeout(120000)});
   if(!restart.ok)throw Error(await restart.text()||'Could not switch models.');
   const result=await restart.json();
   if(!Number.isInteger(result.pane_id)||result.tab_id!==source.target.tab_id)throw Error('The switch was not confirmed. Check the terminal before trying again.');
-  globalThis.SwitchboardConversation?.handoverSent?.(source,text,result.pane_id,files);
+  globalThis.SwitchboardConversation?.handoverSent?.(source,text,result.pane_id);
   return result;
 }
 // Switch at once only when the agent is idle and Conversation has nothing in flight for it.

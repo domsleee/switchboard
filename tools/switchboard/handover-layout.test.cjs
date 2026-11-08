@@ -36,48 +36,46 @@ test('the single switch dialog supports model and effort selection in Conversati
      await page.locator('.tab-select').first().click({button:'right'});
      await page.getByRole('menuitem',{name:'Handover context…'}).click();
     }
-    await page.getByText('2 messages included',{exact:true}).waitFor();
+    await page.waitForFunction(()=>!!newTabHandover?.context);
    };
    await open();
    assert.equal(await page.getByRole('dialog').count(),1,'The picker must not create a second dialog');
    assert.equal(await page.locator('.model-picker-foot-done').isVisible(),false);
-   assert.equal(await page.locator('#handover-details').evaluate(n=>n.open),false);
-   assert.equal(await page.locator('#handover-from').textContent(),'Opus 5.5');
+   assert.equal(await page.locator('#new-tab-prompt').isVisible(),false,'Switching has no instructions field');
+   assert.equal(await page.locator('.new-tab-head').isVisible(),false,'Only the selector is shown');
    await page.getByRole('button',{name:'Add GPT-6.1 Sol to favourites',exact:true}).click();
    await page.getByRole('tab',{name:/^Claude Code/}).click();
    await page.getByRole('button',{name:'Add Opus 5.5 to favourites',exact:true}).click();
    await page.getByRole('tab',{name:'Favourites',exact:true}).click();
    assert.deepEqual(await page.locator('.model-picker-name').allTextContents(),['GPT-6.1 Sol','Opus 5.5']);
-   assert.equal(await page.locator('#handover-to').textContent(),'GPT-6.1 Sol High','Starring does not change the handoff target');
+   assert.equal(await page.locator('#new-tab-model-name').textContent(),'GPT-6.1 Sol','Starring does not change the handoff target');
    const geometry=await page.locator('#new-tab-dialog').evaluate(n=>{const r=n.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:innerWidth,height:innerHeight,scroll:n.scrollWidth,client:n.clientWidth};});
    assert.ok(geometry.left>=0&&geometry.right<=geometry.width&&geometry.top>=0&&geometry.bottom<=geometry.height+1,JSON.stringify(geometry));
    assert.ok(geometry.scroll<=geometry.client,'No horizontal scrolling');
+   if(mode==='conversation'&&!phone){const anchor=await page.locator('.conversation-model').boundingBox();assert.ok(geometry.bottom<=anchor.y,'The selector opens above the bottom model chip');assert.ok(Math.abs(geometry.left-Math.min(anchor.x,viewport.width-(geometry.right-geometry.left)-12))<1,'The selector aligns with the model chip inside the conversation');}
    const search=page.getByRole('combobox',{name:'Search all models, or type any model name'});
-   await search.fill('astra');await search.press('ArrowDown');await search.press('Enter');
+   await search.fill('astra');await page.getByRole('option',{name:'GPT-6 Astra',exact:true}).click();
    await page.getByRole('radio',{name:'Extra high',exact:true}).click();
-   assert.equal(await page.locator('#handover-to').textContent(),'GPT-6 Astra Extra high');
+   assert.equal(await page.locator('#new-tab-model-effort').textContent(),'Extra high');
    assert.equal(created.length,0,'Choosing a model or effort does not start the switch');
-   await page.getByLabel('Additional instructions',{exact:true}).fill('Keep the current changes.');
    if(!phone){
-    await page.getByLabel('Additional instructions',{exact:true}).press('Tab');
-    assert.equal(await page.getByRole('button',{name:'Cancel',exact:true}).evaluate(n=>document.activeElement===n),true);
+    await page.getByRole('button',{name:'Cancel',exact:true}).focus();await page.keyboard.press('Tab');
+    assert.equal(await page.getByRole('button',{name:'Switch model',exact:true}).evaluate(n=>document.activeElement===n),true);
    }
-   await page.locator('#handover-details summary').click();
-   await page.getByText('Selected conversation messages carry across.',{exact:false}).waitFor();
-   // Expanding context in a short viewport must still let the final action scroll into reach.
+   // The selector and final action stay reachable in a short viewport.
    await page.setViewportSize({width:viewport.width,height:phone?600:650});
    await page.getByRole('button',{name:'Cancel',exact:true}).click();
    await page.waitForFunction(()=>!document.querySelector('#new-tab-dialog').open);
    assert.equal(created.length,0,'Cancel never starts a replacement agent');
    await page.setViewportSize(viewport);await open();
-   assert.equal(await page.locator('#handover-to').textContent(),'GPT-6.1 Sol High','Cancelling does not save the draft model choice');
+   assert.equal(await page.locator('#new-tab-model-name').textContent(),'GPT-6.1 Sol','Cancelling does not save the draft model choice');
    await search.fill('astra');await search.press('Escape');
    assert.equal(await search.inputValue(),'');assert.equal(await page.locator('#new-tab-dialog').evaluate(n=>n.open),true,'Escape clears a search first');
    await search.press('Escape');await page.waitForFunction(()=>!document.querySelector('#new-tab-dialog').open);
    await open();await search.fill('astra');
    // The primary action must take the highlighted search result, even without Enter first.
    await search.press('ArrowDown');
-   await page.getByRole('button',{name:'Switch model',exact:true}).click();
+   if(phone)await page.getByRole('button',{name:'Switch model',exact:true}).click();else await search.press('Enter');
    await page.waitForFunction(()=>!document.querySelector('#new-tab-dialog').open);
    assert.equal(created.length,1);assert.equal(created[0].handover.model,'codex:gpt-6-astra#high');
    assert.equal(created[0].pane_id,1);assert.equal(created[0].chat_id,'source');
