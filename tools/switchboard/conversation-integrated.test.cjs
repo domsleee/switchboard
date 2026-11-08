@@ -94,6 +94,11 @@ test('integrated Conversation journeys use production markup and preserve delive
     history.pop();history.push({role:'user',text:'Shifted reply',timestamp:new Date().toISOString()});await f.poll();
     await page.waitForFunction(()=>document.querySelectorAll('.conversation-outgoing').length===0);
     assert.equal(await page.evaluate(()=>SwitchboardConversation.hasUnsentWork()),false);
+    // An identical message already in the chat a moment ago is not this send's receipt.
+    history.push({role:'user',text:'Again',timestamp:new Date(Date.now()-5000).toISOString()});await f.poll();
+    f.replyMode='lost';await page.getByLabel('Reply draft').fill('Again');await page.getByRole('button',{name:'Send',exact:true}).click();
+    await page.locator('.conversation-outgoing.uncertain').waitFor();await f.poll();
+    assert.equal(await page.locator('.conversation-outgoing').count(),1);
    }finally{await f.close();}
   });
   await t.test('an image-only send is acknowledged by the transcript entry Claude rewrote',async()=>{

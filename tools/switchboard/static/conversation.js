@@ -388,7 +388,7 @@
         if(sent.transcriptCursor!==undefined)continue;
         // Cursors can shift down when the relay hides records that settle (interrupts, local
         // command output), so an entry written after the send also counts by its timestamp.
-        const after=(item,offset)=>startCursor+offset>sent.baseline||Date.parse(item.timestamp)>=sent.at-30000;
+        const after=(item,offset)=>startCursor+offset>sent.baseline||Date.parse(item.timestamp)>=sent.at-30000&&!sent.earlier.has(item.timestamp);
         const match=messages.findIndex((item,offset)=>after(item,offset)&&item.role==='user'&&!used.has(startCursor+offset)&&sameTranscript(item.receipt_text??item.text??'',sent.payload));
         if(match>=0){sent.transcriptCursor=startCursor+match;used.add(sent.transcriptCursor);if(pendingFor(sent.key)===sent){pendingSends.delete(sent.key);sent.request?.abort();}clearSentDraft(sent);}
       }
@@ -587,7 +587,7 @@
       if(retry){retrySend(retry,true);return;}
       const key=identity(target),id='conversation-'+Array.from(crypto.getRandomValues(new Uint32Array(4)),n=>n.toString(16)).join('-');
       const items=outgoing.get(key)||[],failedBridge=!native&&items.find(item=>item.state==='failed'&&!item.native&&sameMessage(item.payload,payload));
-      const sent={id,key,pane:target.key,unbound:!chat,frame:target.frame,text,payload,files:[...selected],native,command,host:target.host,thread:chat?.thread,draftRevision:draftVersions.get(key)||0,baseline:failedBridge?failedBridge.baseline:startCursor+messages.length-1,at:failedBridge?failedBridge.at:Date.now(),sendKey:id,state:'sending'};
+      const sent={id,key,pane:target.key,unbound:!chat,frame:target.frame,text,payload,files:[...selected],native,command,host:target.host,thread:chat?.thread,draftRevision:draftVersions.get(key)||0,baseline:failedBridge?failedBridge.baseline:startCursor+messages.length-1,at:failedBridge?failedBridge.at:Date.now(),earlier:failedBridge?failedBridge.earlier:new Set(messages.filter(item=>item.role==='user'&&item.timestamp).map(item=>item.timestamp)),sendKey:id,state:'sending'};
       if(failedBridge)items[items.indexOf(failedBridge)]=sent;else items.push(sent);
       outgoing.set(key,items);pendingSends.set(key,sent);insert.disabled=true;paintFiles();sendStatus('');paint();
       if(native){
