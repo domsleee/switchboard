@@ -65,7 +65,67 @@
       requestAnimationFrame(()=>pre.classList.toggle('fits',pre.scrollWidth<=pre.clientWidth+1));
     }
   }
-  window.SwitchboardConversation={agentIcons,install({selection,terminal,openConversation=()=>false,modeChanged=()=>{},viewed=()=>{},sending=()=>{},notSent=()=>{},switchModel=null,cancelSwitch=()=>{},idle=()=>{}}){
+  // The / and $ menu shared by the Conversation draft and the New tab prompt. surface() names what
+  // the draft talks to: {agent, host, cwd, owner}, or null while it should stay closed.
+  const agentCommands={codex:[['rename','Rename this conversation'],['compact','Compact conversation context'],['model','Choose a model'],['permissions','Change permissions'],['status','Show session status'],['skills','Browse skills'],['diff','Show changes'],['review','Review changes'],['resume','Resume a conversation'],['fork','Fork this conversation'],['new','Start a new conversation']],claude:[['rename','Rename this conversation'],['compact','Compact conversation context'],['model','Choose a model'],['permissions','Change permissions'],['status','Show session status'],['help','Show commands'],['clear','Clear conversation context'],['resume','Resume a conversation']]};
+  function attachCompletions({draft,parent,id,surface,changed}){
+    const completions=el('div',undefined,'conversation-completions');completions.id=id;completions.hidden=true;completions.setAttribute('role','listbox');completions.setAttribute('aria-label','Commands and skills');parent.prepend(completions);
+    draft.setAttribute('aria-autocomplete','list');draft.setAttribute('aria-controls',id);draft.setAttribute('aria-expanded','false');
+    const skillLists=new Map();let completionItems=[],completionIndex=0,completionToken=null;
+    const skillKey=current=>JSON.stringify([current.host,current.cwd,current.agent==='claude']);
+    function completionContext(){
+      const current=surface();if(!current||document.activeElement!==draft||draft.selectionStart!==draft.selectionEnd)return null;
+      const before=draft.value.slice(0,draft.selectionStart),slash=/^\/[\w:.-]*$/.exec(before),skill=/(?:^|\s)(\$[\w:.-]*)$/.exec(before);
+      return slash?{current,prefix:'/',query:before.slice(1),start:0,end:before.length}:skill&&['codex','claude'].includes(current.agent)?{current,prefix:'$',query:skill[1].slice(1),start:before.length-skill[1].length,end:before.length}:null;
+    }
+    function closeCompletions(){completions.hidden=true;completionItems=[];draft.setAttribute('aria-expanded','false');draft.removeAttribute('aria-activedescendant');}
+    function selectCompletion(index){
+      const item=completionItems[index],context=completionContext();if(!item||!context)return;
+      // Claude Code spells every skill with a slash; $ is only how it was typed here.
+      draft.setRangeText((context.current.agent==='claude'?'/':context.prefix)+item.name+' ',context.start,context.end,'end');closeCompletions();changed();draft.focus({preventScroll:true});
+    }
+    function paintCompletions(reset=true){
+      const context=completionContext();if(!context){closeCompletions();return;}
+      const {current,prefix,query}=context,token=JSON.stringify([current.owner,prefix,query,context.start,context.end]);if(reset&&token!==completionToken)completionIndex=0;completionToken=token;
+      const key=skillKey(current),skills=skillLists.get(key),usesSkills=prefix==='$'||current.agent==='claude';
+      const builtIn=prefix==='/'?(agentCommands[current.agent]||[]).map(([name,description])=>({name,description})):[],names=new Set(builtIn.map(item=>item.name));
+      const source=[...builtIn,...(usesSkills?skills?.items||[]:[]).filter(item=>!names.has(item.name))],typed=query.toLowerCase();
+      // A plugin skill is also found by the part after "plugin:".
+      completionItems=source.filter(item=>{const name=item.name.toLowerCase();return name.startsWith(typed)||name.slice(name.indexOf(':')+1).startsWith(typed);}).slice(0,30);
+      completions.replaceChildren();completionIndex=Math.min(completionIndex,Math.max(0,completionItems.length-1));
+      completionItems.forEach((item,index)=>{const option=el('button',undefined,'conversation-completion');option.type='button';option.id=id+'-'+index;option.setAttribute('role','option');option.setAttribute('aria-selected',String(index===completionIndex));option.append(el('strong',prefix+item.name),el('span',item.description));option.onpointerdown=event=>event.preventDefault();option.onclick=()=>selectCompletion(index);completions.append(option);});
+      if(prefix==='$'&&!completionItems.length)completions.append(el('small',skills?.error||(!skills||skills.pending?'Loading skills…':'No matching skills')));
+      completions.hidden=!completionItems.length&&prefix!=='$';draft.setAttribute('aria-expanded',String(!completions.hidden));
+      if(completionItems.length){draft.setAttribute('aria-activedescendant',id+'-'+completionIndex);completions.children[completionIndex].scrollIntoView({block:'nearest'});}else draft.removeAttribute('aria-activedescendant');
+      if(usesSkills)ensureSkills(current);
+    }
+    function ensureSkills(current){const key=skillKey(current),skills=skillLists.get(key);if((!skills||Date.now()-skills.at>60000)&&!skills?.pending)void loadSkills(key,current);}
+    async function loadSkills(key,{host,cwd,agent}){
+      const entry={pending:true,at:Date.now()};skillLists.set(key,entry);
+      try{const response=await fetch('/api/hosts/'+encodeURIComponent(host)+'/conversation/skills',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(agent==='claude'?{cwd,agent}:{cwd}),signal:AbortSignal.timeout(15000)});if(!response.ok)throw Error();const result=await response.json();if(!Array.isArray(result.skills))throw Error();entry.items=result.skills.filter(item=>typeof item.name==='string'&&typeof item.description==='string');}
+      catch{entry.error='Skills unavailable. You can still type a skill name.';}
+      finally{entry.pending=false;const current=surface();if(current&&key===skillKey(current))paintCompletions();}
+    }
+    // Enter, Tab and the arrows belong to an open menu. True means the key was used.
+    function completionKey(event){
+      if(event.isComposing||completions.hidden||event.ctrlKey||event.altKey||event.metaKey)return false;
+      if(event.key==='Escape'){event.preventDefault();event.stopPropagation();closeCompletions();return true;}
+      if(!completionItems.length||event.shiftKey||!['ArrowDown','ArrowUp','Tab','Enter'].includes(event.key))return false;
+      event.preventDefault();event.stopPropagation();
+      if(event.key==='Tab'||event.key==='Enter')selectCompletion(completionIndex);else{completionIndex=(completionIndex+(event.key==='ArrowDown'?1:-1)+completionItems.length)%completionItems.length;paintCompletions(false);}
+      return true;
+    }
+    // A $skill typed out in full and sent to Claude becomes the slash form Claude runs.
+    function expandSkills(text){
+      const current=surface(),items=current?.agent==='claude'?skillLists.get(skillKey(current))?.items:null;if(!items?.length)return text;
+      return text.replace(/(^|\s)\$([\w:.-]+)(?=\s|$)/g,(match,space,name)=>{const short=items.filter(item=>item.name.split(':').pop()===name),item=items.find(item=>item.name===name)||(short.length===1?short[0]:null);return item?space+'/'+item.name:match;});
+    }
+    // Claude's list is needed even without the menu: a pasted $skill is still rewritten on send.
+    function refreshSkills(){const current=surface();if(current?.agent==='claude'&&document.activeElement===draft)ensureSkills(current);}
+    draft.addEventListener('focus',()=>{refreshSkills();paintCompletions();});draft.addEventListener('click',()=>paintCompletions());draft.addEventListener('blur',closeCompletions);
+    return {paint:paintCompletions,close:closeCompletions,key:completionKey,expand:expandSkills,refresh:refreshSkills};
+  }
+  window.SwitchboardConversation={agentIcons,attachCompletions,install({selection,terminal,openConversation=()=>false,modeChanged=()=>{},viewed=()=>{},sending=()=>{},notSent=()=>{},switchModel=null,cancelSwitch=()=>{},idle=()=>{}}){
     const root=document.getElementById('terminals'),drafts=new Map(),attachments=new Map(),retryKeys=new Map();
     const mobile=matchMedia('(max-width:700px), (pointer:coarse) and (max-width:1000px)').matches;
     const modeKey=mobile?'switchboard-mobile-view-mode':'switchboard-view-mode';
@@ -130,40 +190,7 @@
     form.append(files,attach,draft,cost,cancelModel,model,insert,stop,picker);
     const sendNotice=el('small',undefined,'conversation-send-notice');sendNotice.hidden=true;sendNotice.setAttribute('role','status');form.append(sendNotice);
     const transportNotice=el('small','Replies use Terminal briefly, then return here.','conversation-transport-notice');transportNotice.hidden=true;form.append(transportNotice);
-    const completions=el('div',undefined,'conversation-completions');completions.id='conversation-completions';completions.hidden=true;completions.setAttribute('role','listbox');completions.setAttribute('aria-label','Commands and skills');form.prepend(completions);
-    draft.setAttribute('aria-autocomplete','list');draft.setAttribute('aria-controls',completions.id);draft.setAttribute('aria-expanded','false');
-    const commands={codex:[['rename','Rename this conversation'],['compact','Compact conversation context'],['model','Choose a model'],['permissions','Change permissions'],['status','Show session status'],['skills','Browse skills'],['diff','Show changes'],['review','Review changes'],['resume','Resume a conversation'],['fork','Fork this conversation'],['new','Start a new conversation']],claude:[['rename','Rename this conversation'],['compact','Compact conversation context'],['model','Choose a model'],['permissions','Change permissions'],['status','Show session status'],['help','Show commands'],['clear','Clear conversation context'],['resume','Resume a conversation']]};
-    const skillLists=new Map();let completionItems=[],completionIndex=0,completionToken=null;
-    function completionContext(){
-      if(!open||!target||document.activeElement!==draft||draft.selectionStart!==draft.selectionEnd)return null;
-      const before=draft.value.slice(0,draft.selectionStart),slash=/^\/[\w:.-]*$/.exec(before),skill=/(?:^|\s)(\$[\w:.-]*)$/.exec(before);
-      return slash?{prefix:'/',query:before.slice(1),start:0,end:before.length}:skill&&target.agent==='codex'?{prefix:'$',query:skill[1].slice(1),start:before.length-skill[1].length,end:before.length}:null;
-    }
-    function closeCompletions(){completions.hidden=true;completionItems=[];draft.setAttribute('aria-expanded','false');draft.removeAttribute('aria-activedescendant');}
-    function selectCompletion(index){
-      const item=completionItems[index],context=completionContext();if(!item||!context)return;
-      draft.setRangeText(context.prefix+item.name+' ',context.start,context.end,'end');closeCompletions();draft.oninput();draft.focus({preventScroll:true});
-    }
-    function paintCompletions(reset=true){
-      const context=completionContext();if(!context){closeCompletions();return;}
-      const token=JSON.stringify([identity(target),context]);if(reset&&token!==completionToken)completionIndex=0;completionToken=token;
-      const key=JSON.stringify([target.host,chat?.project||'']),skills=skillLists.get(key);
-      const source=context.prefix==='/'?(commands[target.agent]||[]).map(([name,description])=>({name,description})):skills?.items||[];
-      completionItems=source.filter(item=>item.name.toLowerCase().startsWith(context.query.toLowerCase())).slice(0,30);
-      completions.replaceChildren();completionIndex=Math.min(completionIndex,Math.max(0,completionItems.length-1));
-      completionItems.forEach((item,index)=>{const option=el('button',undefined,'conversation-completion');option.type='button';option.id='conversation-completion-'+index;option.setAttribute('role','option');option.setAttribute('aria-selected',String(index===completionIndex));option.append(el('strong',context.prefix+item.name),el('span',item.description));option.onpointerdown=event=>event.preventDefault();option.onclick=()=>selectCompletion(index);completions.append(option);});
-      if(context.prefix==='$'&&!completionItems.length)completions.append(el('small',skills?.error||(!skills||skills.pending?'Loading skills…':'No matching skills')));
-      completions.hidden=!completionItems.length&&context.prefix!=='$';draft.setAttribute('aria-expanded',String(!completions.hidden));
-      if(completionItems.length){draft.setAttribute('aria-activedescendant','conversation-completion-'+completionIndex);completions.children[completionIndex].scrollIntoView({block:'nearest'});}else draft.removeAttribute('aria-activedescendant');
-      if(context.prefix==='$'&&(!skills||Date.now()-skills.at>60000)&&!skills?.pending)void loadSkills(key,target.host,chat?.project||'');
-    }
-    async function loadSkills(key,host,cwd){
-      const entry={pending:true,at:Date.now()};skillLists.set(key,entry);
-      try{const response=await fetch('/api/hosts/'+encodeURIComponent(host)+'/conversation/skills',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd}),signal:AbortSignal.timeout(15000)});if(!response.ok)throw Error();const result=await response.json();if(!Array.isArray(result.skills))throw Error();entry.items=result.skills.filter(item=>typeof item.name==='string'&&typeof item.description==='string');}
-      catch{entry.error='Skills unavailable. You can still type a skill name.';}
-      finally{entry.pending=false;if(key===JSON.stringify([target?.host,chat?.project||'']))paintCompletions();}
-    }
-    draft.addEventListener('focus',()=>paintCompletions());draft.addEventListener('click',()=>paintCompletions());draft.addEventListener('blur',closeCompletions);
+    const completions=attachCompletions({draft,parent:form,id:'conversation-completions',changed:()=>draft.oninput(),surface:()=>open&&target?{agent:target.agent,host:target.host,cwd:chat?.project||'',owner:identity(target)}:null});
     let sendNoticeReceipt=null;
     function sendStatus(text,receipt=null){const follow=nearBottom();sendNoticeReceipt=receipt;if(sendNotice.textContent!==text)sendNotice.textContent=text;sendNotice.hidden=!text;if(form.isConnected){sizeDraft();if(follow){list.scrollTop=list.scrollHeight;updateLatest();}}}
     // Claude's numbered menus (permission prompts, questions), read from the pane by
@@ -505,7 +532,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
     // there navigation focuses the panel for reading and only a tap on the draft starts a reply. A
     // draft already in use keeps focus unless the selected conversation changes.
     function focusSurface(navigated=false){if(panel.hidden||!navigated&&document.activeElement===draft)return;(form.hidden||matchMedia('(pointer:coarse)').matches?panel:draft).focus({preventScroll:true});}
-    function show(value,transient=false){if(!transient){modeRevision++;if(value)startShown();else shownProgress('left');}if(!value){costDetails.hidePopover();closeCompletions();stopStream();loadRequest?.abort();window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();}open=value;root.classList.toggle('conversation-open',open);modeChanged(transient);if(!transient)try{localStorage.setItem(modeKey,value?'conversation':'terminal');}catch{}setPanelHidden(!value);toggle.setAttribute('aria-pressed',String(value));back.setAttribute('aria-pressed',String(!value));if(value){document.getElementById('artifact-preview').hidden=true;update();if(loaded){paint(false,restorePosition===null&&lastPaint===null);if(restorePosition!==null){list.scrollTop=restorePosition.follow?list.scrollHeight:restorePosition.position;restorePosition=null;updateLatest();}}if(binding())load(loaded?'poll':'initial');startStream();focusSurface();}else if(target)terminal(target);viewport();if(shown&&shown.generation===null)shown.generation=generation;}
+    function show(value,transient=false){if(!transient){modeRevision++;if(value)startShown();else shownProgress('left');}if(!value){costDetails.hidePopover();completions.close();stopStream();loadRequest?.abort();window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();}open=value;root.classList.toggle('conversation-open',open);modeChanged(transient);if(!transient)try{localStorage.setItem(modeKey,value?'conversation':'terminal');}catch{}setPanelHidden(!value);toggle.setAttribute('aria-pressed',String(value));back.setAttribute('aria-pressed',String(!value));if(value){document.getElementById('artifact-preview').hidden=true;update();if(loaded){paint(false,restorePosition===null&&lastPaint===null);if(restorePosition!==null){list.scrollTop=restorePosition.follow?list.scrollHeight:restorePosition.position;restorePosition=null;updateLatest();}}if(binding())load(loaded?'poll':'initial');startStream();focusSurface();}else if(target)terminal(target);viewport();if(shown&&shown.generation===null)shown.generation=generation;}
 
     toggle.onclick=()=>show(true);back.onclick=()=>show(false);
     let loadRequest=null,lastFailure=null,lastDiagnostic='',lastDiagnosticAt=0,newOutput=false,scrollIdle,shown=null,settling=false,settleTimer,settleClears=false;
@@ -692,6 +719,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       return sentItems;
     }
     function paint(prepend=false,initial=false){
+      completions.refresh();
       const renderStarted=performance.now();
       syncAsyncQuestions();
       const key=identity(target),sentItems=acknowledge(key,messages,startCursor);
@@ -850,13 +878,10 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
     }
     picker.onchange=()=>{const selected=[...picker.files],destination=pickerTarget;picker.value='';pickerTarget=null;void addFiles(selected,destination);};
     draft.addEventListener('paste',event=>{const selected=[...(event.clipboardData?.files||[])];if(selected.length){event.preventDefault();void addFiles(selected);}});
-    draft.oninput=()=>{if(target){const key=identity(target);drafts.set(key,draft.value);draftVersions.set(key,(draftVersions.get(key)||0)+1);}sizeDraft();if(!pendingFor())sendStatus('');paintCompletions();};
+    draft.oninput=()=>{if(target){const key=identity(target);drafts.set(key,draft.value);draftVersions.set(key,(draftVersions.get(key)||0)+1);}sizeDraft();if(!pendingFor())sendStatus('');completions.paint();};
     draft.onkeydown=event=>{
       if(event.isComposing)return;
-      if(!completions.hidden&&!event.ctrlKey&&!event.altKey&&!event.metaKey){
-        if(event.key==='Escape'){event.preventDefault();event.stopPropagation();closeCompletions();return;}
-        if(completionItems.length&&['ArrowDown','ArrowUp','Tab','Enter'].includes(event.key)&&!event.shiftKey){event.preventDefault();event.stopPropagation();if(event.key==='Tab'||event.key==='Enter')selectCompletion(completionIndex);else{completionIndex=(completionIndex+(event.key==='ArrowDown'?1:-1)+completionItems.length)%completionItems.length;paintCompletions(false);}return;}
-      }
+      if(completions.key(event))return;
       if(event.key==='Enter'&&!event.shiftKey&&!matchMedia('(pointer:coarse)').matches){event.preventDefault();form.requestSubmit();}
     };
     // Enter empties the draft at once so the next message can be typed while this one sends.
@@ -864,7 +889,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
     function takeDraft(sent){
       if(identity(target)!==sent.key||draft.value!==sent.text)return;
       const version=(draftVersions.get(sent.key)||0)+1;draftVersions.set(sent.key,version);sent.draftRevision=version;sent.draftTaken=true;
-      drafts.delete(sent.key);draft.value='';sizeDraft();closeCompletions();
+      drafts.delete(sent.key);draft.value='';sizeDraft();completions.close();
     }
     function restoreDraft(sent){
       if(!sent.draftTaken)return;sent.draftTaken=false;
@@ -923,6 +948,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       const asyncReply=current.agent==='codex'&&current.state==='input'&&/^[0-9a-f-]{36}$/.test(chat?.thread||'');
       if(!waiting&&!['ready','waiting','working'].includes(current.state)&&!asyncReply){sendStatus(question.hidden?'The agent needs attention in Terminal. Your draft is kept.':'Answer the agent’s question first. Your draft is kept.');return;}
       const selected=fileList();if(selected.some(item=>!item.path)){sendStatus(selected.some(item=>item.error)?'Remove failed attachments before sending.':'Wait for attachments to finish uploading.');return;}
+      const expanded=completions.expand(draft.value);if(expanded!==draft.value){draft.value=expanded;draft.oninput();}
       const text=draft.value,payload=text+(selected.length?'\n\nAttached files:\n'+selected.map(item=>item.path).join('\n'):'');
       if(/[\x00-\x08\x0b-\x1f\x7f]/.test(payload)){sendStatus('The draft contains terminal control characters. Remove them first.');return;}
       const command=/^\/[a-z][\w:.-]*(?:\s|$)/i.test(text),native=!command&&current.agent==='codex'&&/^[0-9a-f-]{36}$/.test(chat?.thread||'');
@@ -998,7 +1024,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       if(identity(current)===identity(target)){target=current;updateActivity();if(!chat)status(unboundNotice());prepare();flushStartup();return;}
       // A mode switch may already have started a timer before calling update.
       if(!current)shownProgress('left');else if(open&&!document.hidden&&(!shown||shown.generation!==null))startShown('selection');
-      closeCompletions();navigationRevision++;
+      completions.close();navigationRevision++;
       if(target)drafts.set(identity(target),draft.value);
       if(target&&loaded){conversations.delete(identity(target));conversations.set(identity(target),{chat,messages,startCursor,tailCursor,nextCursor,streamSupported,position:restorePosition?.position??list.scrollTop,follow:restorePosition?.follow??nearBottom()});if(conversations.size>8)conversations.delete(conversations.keys().next().value);}
       window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();

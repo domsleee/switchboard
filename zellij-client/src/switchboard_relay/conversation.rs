@@ -3,6 +3,8 @@
 //! answer Claude's numbered menus (see `prompt`).
 use super::*;
 use serde::Serialize;
+use std::path::PathBuf;
+mod claude_skills;
 pub(super) mod prompt;
 
 #[derive(Deserialize, Serialize)]
@@ -308,6 +310,9 @@ pub(super) const REPLY_LIMIT: usize = 16000;
 #[serde(deny_unknown_fields)]
 pub(super) struct Skills {
     cwd: String,
+    /// `claude` lists Claude Code's skills. Absent means Codex, which older computers expect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    agent: Option<String>,
 }
 
 pub(super) async fn skills_handler(
@@ -341,22 +346,55 @@ pub(super) async fn skills_handler(
 }
 
 pub(super) async fn skills_local(host: &Host, request: Skills) -> Result<Json<Value>, Error> {
-    if request.cwd.len() > 4096
-        || (!request.cwd.is_empty() && !Path::new(&request.cwd).is_absolute())
-    {
-        return Err((StatusCode::BAD_REQUEST, "Invalid project directory"));
+    let cwd = skills_dir(&request.cwd)?;
+    if !matches!(request.agent.as_deref(), None | Some("claude")) {
+        return Err((StatusCode::BAD_REQUEST, "Unknown agent"));
     }
     control::require_writable_host(host).await?;
-    let cwds: Vec<&str> = if request.cwd.is_empty() {
-        vec![]
-    } else {
-        vec![&request.cwd]
-    };
-    let cwd = (!request.cwd.is_empty()).then(|| Path::new(&request.cwd));
-    let result = codex_app_server(cwd, "skills/list", json!({"cwds":cwds}))
+    if request.agent.is_some() {
+        let config = claude_skills::config_dir(&skills_home()?);
+        let skills =
+            tokio::task::spawn_blocking(move || claude_skills::choices(&config, cwd.as_deref()))
+                .await
+                .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot list Claude skills"))?;
+        return Ok(Json(json!({ "skills": skills })));
+    }
+    let cwds: Vec<String> = cwd
+        .iter()
+        .map(|cwd| cwd.to_string_lossy().into_owned())
+        .collect();
+    let result = codex_app_server(cwd.as_deref(), "skills/list", json!({"cwds":cwds}))
         .await
         .ok_or((StatusCode::BAD_GATEWAY, "Cannot list Codex skills"))?;
     Ok(Json(json!({"skills":skill_choices(&result)})))
+}
+
+fn skills_home() -> Result<PathBuf, Error> {
+    std::env::home_dir().ok_or((StatusCode::BAD_GATEWAY, "Home directory unavailable"))
+}
+
+/// A full path, or a project name in ~/git as New tab takes it. A folder that does
+/// not exist yet, as while a project name is being typed, lists personal skills.
+fn skills_dir(cwd: &str) -> Result<Option<PathBuf>, Error> {
+    const INVALID: Error = (StatusCode::BAD_REQUEST, "Invalid project directory");
+    if cwd.len() > 4096 || cwd.contains('\0') {
+        return Err(INVALID);
+    }
+    if cwd.is_empty() {
+        return Ok(None);
+    }
+    let path = Path::new(cwd);
+    let path = if path.is_absolute() {
+        path.to_owned()
+    } else if path
+        .components()
+        .all(|part| matches!(part, std::path::Component::Normal(_)))
+    {
+        skills_home()?.join("git").join(path)
+    } else {
+        return Err(INVALID);
+    };
+    Ok(path.is_dir().then_some(path))
 }
 
 /// The models this computer's Codex offers, as `{id, name, default, efforts, default_effort}`,
@@ -1059,10 +1097,16 @@ esac
             *host.cookie.lock().await = Some(format!("session_token={session}"));
             if read_only {
                 assert_eq!(
-                    skills_local(&host, Skills { cwd: String::new() })
-                        .await
-                        .unwrap_err()
-                        .0,
+                    skills_local(
+                        &host,
+                        Skills {
+                            cwd: String::new(),
+                            agent: None,
+                        },
+                    )
+                    .await
+                    .unwrap_err()
+                    .0,
                     StatusCode::FORBIDDEN
                 );
                 assert_eq!(

@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use std::{ffi::OsString, path::PathBuf, process::Stdio, time::Duration};
 use zellij_utils::{
     cli::CliAction,
-    data::WebSharing,
+    data::{PaneId, WebSharing},
     input::actions::Action,
     ipc::{ClientToServerMsg, ExitReason, IpcReceiveError, ServerToClientMsg},
 };
@@ -306,11 +306,18 @@ pub(super) async fn create(
         .ok_or((StatusCode::BAD_GATEWAY, "Home directory unavailable"))?
         .join("git")
         .join(target.project.trim());
+    let agent = prompt_agent(&target.command).unwrap_or(Agent::Alias("csol"));
+    let typed = target
+        .prompt
+        .as_deref()
+        .filter(|text| !agent.is_claude() && target.images.is_empty() && is_agent_command(text))
+        .map(|text| text.trim().to_owned());
     let command = target
         .prompt
+        .as_ref()
         .map(|text| {
-            let agent = prompt_agent(&target.command).unwrap_or(Agent::Alias("csol"));
-            prompt_command(shell.clone(), &agent, &text, &target.images)
+            let text = if typed.is_some() { "" } else { text };
+            prompt_command(shell.clone(), &agent, text, &target.images)
         })
         .unwrap_or(target.command);
     let run = tab_command(shell, command, Some(cwd.clone()), target.elevated);
@@ -326,7 +333,7 @@ pub(super) async fn create(
         "Tab created but its identity was not returned; check the tab list",
     ))?;
     if let Some(pane_id) = pane_id {
-        return Ok(Json(json!({"pane_id":pane_id,"tab_id":tab_id})));
+        return Ok(created(&target.session, pane_id, tab_id, typed));
     }
     // Without the terminal, resolve it from the tab's catalog. Listing costs a
     // command and folder lookup for every terminal in the session.
@@ -334,7 +341,7 @@ pub(super) async fn create(
     loop {
         let panes = panes(&target.session).await?;
         if let Some(pane_id) = created_pane(&panes, tab_id) {
-            return Ok(Json(json!({"pane_id":pane_id,"tab_id":tab_id})));
+            return Ok(created(&target.session, pane_id, tab_id, typed));
         }
         if tokio::time::Instant::now() >= deadline {
             return Err((
@@ -344,6 +351,75 @@ pub(super) async fn create(
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+fn created(session: &str, pane_id: u32, tab_id: u32, command: Option<String>) -> Json<Value> {
+    if let Some(command) = command {
+        tokio::spawn(type_when_ready(session.to_owned(), pane_id, command));
+    }
+    Json(json!({"pane_id":pane_id,"tab_id":tab_id}))
+}
+
+/// One line that starts with a command name, as Conversation recognizes one.
+/// A path such as `/etc/hosts is broken` is still a message.
+fn is_agent_command(text: &str) -> bool {
+    let text = text.trim();
+    let Some(rest) = text.strip_prefix('/') else {
+        return false;
+    };
+    let name = rest.split([' ', '\t']).next().unwrap_or_default();
+    !text.contains('\n')
+        && name.starts_with(|c: char| c.is_ascii_alphabetic())
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '_' | ':' | '.' | '-'))
+}
+
+/// Codex sends a prompt given on its command line to the model, even a slash
+/// command, and refuses commands while its MCP servers start. So type it instead.
+fn codex_takes_commands(screen: &str) -> bool {
+    !screen.contains("Starting MCP servers")
+        && ["Ask Codex to do anything", "Ask a follow-up question"]
+            .iter()
+            .any(|placeholder| screen.contains(placeholder))
+}
+
+async fn type_when_ready(session: String, pane_id: u32, command: String) {
+    let pane_id = PaneId::Terminal(pane_id);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    while tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let screen = action(
+            &session,
+            Action::DumpScreen {
+                file_path: None,
+                include_scrollback: false,
+                pane_id: Some(pane_id),
+                ansi: false,
+            },
+        )
+        .await;
+        if !screen.is_ok_and(|screen| codex_takes_commands(&screen)) {
+            continue;
+        }
+        let chars = Action::WriteCharsToPaneId {
+            chars: command,
+            pane_id,
+        };
+        if action(&session, chars).await.is_ok() {
+            // Codex reads an Enter that follows typed text at once as a pasted newline.
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let enter = Action::WriteToPaneId {
+                bytes: vec![13],
+                pane_id,
+            };
+            if action(&session, enter).await.is_ok() {
+                return;
+            }
+        }
+        break;
+    }
+    log::warn!("Could not type a New tab command into Codex in session {session}");
 }
 
 /// Sidebars mark tabs by these names: a shield for Administrator, and System tabs
@@ -375,6 +451,31 @@ fn created_pane(panes: &[Value], tab_id: u32) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn switchboard_new_tab_recognizes_commands_but_not_paths_or_messages() {
+        for command in ["/status", "/review focus on auth", " /prompts:deploy-now "] {
+            assert!(super::is_agent_command(command), "{command}");
+        }
+        for message in [
+            "/etc/hosts is broken",
+            "/status\nthen continue",
+            "/ status",
+            "/1password login",
+            "please run /status",
+        ] {
+            assert!(!super::is_agent_command(message), "{message}");
+        }
+    }
+
+    #[test]
+    fn switchboard_new_tab_waits_for_codex_to_finish_starting() {
+        let starting = "› /status\nStarting MCP servers (3/4): blender (1s • esc to interrupt)\n› Ask Codex to do anything\n";
+        assert!(!super::codex_takes_commands(starting));
+        assert!(!super::codex_takes_commands("Quick safety check\n"));
+        assert!(super::codex_takes_commands("  /status - show current session configuration\n› Ask Codex to do anything\n  GPT-6-Sol high\n"));
+    }
+
     use super::*;
     use zellij_utils::{data::CommandOrPlugin, input::command::RunCommandAction};
     #[test]
