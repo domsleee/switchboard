@@ -1,7 +1,9 @@
 //! What Conversation does to a pane without opening a terminal viewer: complete
-//! Codex's startup hooks review, and type a reply into Claude's empty prompt.
+//! Codex's startup hooks review, type a reply into Claude's empty prompt, and
+//! answer Claude's numbered menus (see `prompt`).
 use super::*;
 use serde::Serialize;
+pub(super) mod prompt;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -738,6 +740,100 @@ esac
                 "-s fixture action paste -p 7 -- -v",
                 "-s fixture action write -p 7 13"
             ]
+        );
+
+        // Claude's menus are answered only while the menu the browser showed is on screen.
+        std::fs::remove_file(&actions).unwrap();
+        let permission = format!("● Bash(echo hi)\n{RULE} Bash command\n echo hi\n\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n\n Esc to cancel · Tab to amend\n");
+        std::fs::write(&screen, &permission).unwrap();
+        let shown = prompt::local(&host, target()).await.unwrap().0;
+        assert_eq!(shown["prompt"]["question"], "Do you want to proceed?");
+        assert_eq!(
+            shown["prompt"]["detail"],
+            json!(["Bash command", "echo hi"])
+        );
+        let token = shown["prompt"]["token"].as_str().unwrap().to_owned();
+        let answer = |value: Value| {
+            let mut answer = json!({"session":"fixture","pane_id":7,"tab_id":8});
+            answer
+                .as_object_mut()
+                .unwrap()
+                .extend(value.as_object().unwrap().clone());
+            serde_json::from_value::<prompt::Answer>(answer).unwrap()
+        };
+        for (wrong, status) in [
+            (json!({"token":"stale","choice":1}), StatusCode::CONFLICT),
+            (json!({"token":token,"choice":5}), StatusCode::BAD_REQUEST),
+            (
+                json!({"token":token,"choice":0,"text":"yes"}),
+                StatusCode::BAD_REQUEST,
+            ),
+        ] {
+            assert_eq!(
+                prompt::answer_local(&host, answer(wrong))
+                    .await
+                    .unwrap_err()
+                    .0,
+                status
+            );
+        }
+        assert!(!actions.exists());
+        let no = || answer(json!({"token":token,"choice":1}));
+        assert_eq!(
+            prompt::answer_local(&host, no()).await.unwrap().0["ok"],
+            true
+        );
+        // The fake terminal clears its screen on input, so the menu is gone.
+        assert_eq!(
+            prompt::answer_local(&host, no()).await.unwrap_err().0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            prompt::local(&host, target()).await.unwrap().0["prompt"],
+            Value::Null
+        );
+        std::fs::write(
+            &screen,
+            format!("{RULE}\nWhich pet?\n\n❯ 1. Cat\n  2. Dog\n  3. Type something.\n\nEnter to select · Esc to cancel\n"),
+        )
+        .unwrap();
+        let token = prompt::local(&host, target()).await.unwrap().0["prompt"]["token"].clone();
+        assert_eq!(
+            prompt::answer_local(
+                &host,
+                answer(json!({"token":token,"choice":2,"text":"a\x1b[201~"}))
+            )
+            .await
+            .unwrap_err()
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        let typed = answer(json!({"token":token,"choice":2,"text":"-goldfish"}));
+        assert_eq!(
+            prompt::answer_local(&host, typed).await.unwrap().0["ok"],
+            true
+        );
+        assert_eq!(
+            std::fs::read_to_string(&actions)
+                .unwrap()
+                .lines()
+                .collect::<Vec<_>>(),
+            [
+                "-s fixture action write -p 7 50",
+                "-s fixture action write -p 7 51",
+                "-s fixture action paste -p 7 -- -goldfish",
+                "-s fixture action write -p 7 13"
+            ]
+        );
+        std::fs::write(&screen, &permission).unwrap();
+        std::fs::write(
+            &catalog,
+            r#"[{"id":7,"tab_id":8,"pane_command":"codex","is_plugin":false}]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            prompt::local(&host, target()).await.unwrap().0["prompt"],
+            Value::Null
         );
         server.abort();
     }

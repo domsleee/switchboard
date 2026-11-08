@@ -153,7 +153,11 @@
     draft.addEventListener('focus',()=>paintCompletions());draft.addEventListener('click',()=>paintCompletions());draft.addEventListener('blur',closeCompletions);
     let sendNoticeReceipt=null;
     function sendStatus(text,receipt=null){const follow=nearBottom();sendNoticeReceipt=receipt;if(sendNotice.textContent!==text)sendNotice.textContent=text;sendNotice.hidden=!text;if(form.isConnected){sizeDraft();if(follow){list.scrollTop=list.scrollHeight;updateLatest();}}}
-    panel.append(header,notice,recovery,list,historyStatus,actions,form);root.append(panel);
+    // Claude's numbered menus (permission prompts, questions), read from the pane by
+    // the relay and answered with the keys Claude Code takes. Older relays answer 404.
+    const question=el('section',undefined,'conversation-question'),questionStatus=el('small',undefined,'conversation-question-status');question.hidden=true;question.setAttribute('aria-label','Agent question');questionStatus.setAttribute('role','status');
+    const promptHosts=new Set();let prompt=null,promptKey=null,promptSignature='',promptRequest=null,promptAt=0,answering=false,answered=null,promptError='',otherDraft='';
+    panel.append(header,notice,recovery,list,historyStatus,actions,question,form);root.append(panel);
     const identity=t=>t?JSON.stringify([t.key,t.chatId]):null;
     let chat=null;
     const binding=()=>chat;
@@ -206,9 +210,77 @@
       form.classList.toggle('can-stop',state==='working'&&!!chat&&!!target?.session&&Number.isInteger(target?.pane));
       const project=String(chat?.project||'').replace(/[\\/]+$/,'').split(/[\\/]/).pop();
       const where=[project,target?.computer].filter(Boolean).join(' · ');if(context.textContent!==where)context.textContent=where;
-      const prompt=target?.agent?`Ask ${providerLabel()} a follow-up…`:'Message…';if(draft.placeholder!==prompt)draft.placeholder=prompt;
+      const placeholder=target?.agent?`Ask ${providerLabel()} a follow-up…`:'Message…';if(draft.placeholder!==placeholder)draft.placeholder=placeholder;
       transportNotice.hidden=!chat||!(target?.terminalReady===false&&target?.agent!=='claude'&&!(target?.agent==='codex'&&/^[0-9a-f-]{36}$/.test(chat.thread||'')));
       insert.setAttribute('aria-label',transportNotice.hidden?'Send':'Send via Terminal');insert.title=transportNotice.hidden?'Send message':'Send via Terminal and return to Conversation';
+      paintPrompt();void loadPrompt();
+    }
+    function promptTarget(){const t=target;return open&&!panel.hidden&&!document.hidden&&t?.agent==='claude'&&['approval','input'].includes(t.state)&&!!t.session&&Number.isInteger(t.pane)&&Number.isInteger(t.tab)&&!promptHosts.has(t.host)?t:null;}
+    const fits=(value,limit)=>typeof value==='string'&&value.length<=limit;
+    function validPrompt(value){
+      if(!value||!fits(value.question,4000)||!fits(value.token,64)||!Array.isArray(value.detail)||value.detail.length>80||!value.detail.every(line=>fits(line,2000))||!Array.isArray(value.choices)||value.choices.length<2||value.choices.length>20)return null;
+      return value.choices.every(c=>fits(c.label,4000)&&(c.description===undefined||fits(c.description,8000))&&(c.number===null||Number.isInteger(c.number))&&(c.checked===null||typeof c.checked==='boolean')&&typeof c.text==='boolean')?value:null;
+    }
+    async function loadPrompt(force=false){
+      const destination=promptTarget(),key=identity(destination);
+      if(!destination){if(promptKey!==null){prompt=null;promptKey=null;promptError='';answered=null;paintPrompt();}return;}
+      if(promptRequest||answering||(!force&&promptKey===key&&Date.now()-promptAt<1500))return;
+      promptAt=Date.now();const request=promptRequest={};
+      try{
+        const response=await fetch('/api/hosts/'+encodeURIComponent(destination.host)+'/conversation/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:destination.session,tab_id:destination.tab,pane_id:destination.pane}),signal:AbortSignal.timeout(10000)});
+        if(response.status===404){promptHosts.add(destination.host);return;}
+        if(!response.ok)return;const data=await response.json();if(identity(target)!==key)return;
+        const menu=validPrompt(data.prompt);
+        // The screen can still show the menu just answered; keep it inert until it changes.
+        if(answered&&(menu?.token!==answered.token||Date.now()-answered.at>3000))answered=null;
+        if(promptKey!==key){otherDraft='';answered=null;}
+        if(promptKey!==key||menu?.token!==prompt?.token)promptError='';
+        prompt=menu;promptKey=key;paintPrompt();
+      }catch{}
+      finally{if(promptRequest===request)promptRequest=null;}
+    }
+    async function answer(menu,choice,reply){
+      const destination=target,key=identity(destination);if(answering||answered||!destination)return;
+      answering=true;promptError='';paintPrompt();let ok=false;
+      try{
+        const response=await fetch('/api/hosts/'+encodeURIComponent(destination.host)+'/conversation/answer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:destination.session,tab_id:destination.tab,pane_id:destination.pane,token:menu.token,choice,...(reply===undefined?{}:{text:reply})}),signal:AbortSignal.timeout(10000)});
+        ok=response.ok;if(!ok)promptError=(await response.text().catch(()=>''))||'Could not answer here. Open Terminal to answer.';
+      }catch{promptError='No confirmation from this computer. Check Terminal before answering again.';}
+      finally{
+        answering=false;if(ok){answered={token:menu.token,at:Date.now()};if(reply!==undefined)otherDraft='';}
+        if(identity(target)===key){paintPrompt();setTimeout(()=>loadPrompt(true),300);}
+      }
+    }
+    function paintPrompt(){
+      const menu=promptKey===identity(target)&&promptTarget()?prompt:null,signature=menu?JSON.stringify(menu):'',follow=nearBottom();
+      if(signature!==promptSignature){
+        promptSignature=signature;question.replaceChildren();
+        if(menu){
+          if(menu.detail.length){const detail=el('div',undefined,'conversation-question-detail');for(const line of menu.detail)detail.append(el('div',line));question.append(detail);}
+          const choices=el('div',undefined,'conversation-question-choices');choices.setAttribute('role','group');
+          const heading=el('p',menu.question,'conversation-question-text');heading.id='conversation-question-text';choices.setAttribute('aria-labelledby',heading.id);
+          menu.choices.forEach((choice,index)=>{
+            if(choice.text){
+              const other=el('form',undefined,'conversation-question-other'),input=el('input'),send=el('button','Send');
+              input.type='text';input.maxLength=4000;input.placeholder='Type something…';input.setAttribute('aria-label','Type your own answer');input.value=otherDraft;input.oninput=()=>{otherDraft=input.value;};
+              send.type='submit';other.append(input,send);other.onsubmit=event=>{event.preventDefault();const reply=input.value.trim();if(reply&&!/[\x00-\x1f\x7f]/.test(reply))void answer(menu,index,reply);};
+              choices.append(other);return;
+            }
+            const button=el('button',undefined,'conversation-question-choice');button.type='button';
+            if(choice.checked!==null){button.classList.add('checkbox');button.setAttribute('aria-pressed',String(choice.checked));}
+            if(choice.number===null)button.classList.add('submit');
+            const body=el('span',undefined,'conversation-question-label');body.append(el('strong',choice.label));if(choice.description)body.append(el('span',choice.description));
+            button.append(el('span',choice.number===null?'':String(choice.number),'conversation-question-number'),body);
+            button.onclick=()=>void answer(menu,index);choices.append(button);
+          });
+          question.append(heading,choices,questionStatus);
+        }
+      }
+      question.hidden=!menu;
+      const inert=answering||!!answered;question.classList.toggle('answering',inert);
+      for(const control of question.querySelectorAll('button,input'))control.disabled=inert;
+      const note=promptError||(answering?'Answering…':'');if(questionStatus.textContent!==note)questionStatus.textContent=note;questionStatus.hidden=!note;
+      if(!panel.hidden&&!form.hidden)sizeDraft();if(follow){list.scrollTop=list.scrollHeight;updateLatest();}
     }
     // A new Claude at its empty prompt has no transcript until its first message, which
     // the relay types into the prompt. Its connection timer starts after that message.
@@ -414,7 +486,7 @@
       const key=JSON.stringify([draft.value,draft.clientWidth,window.visualViewport?.height||innerHeight]);
       const follow=nearBottom(),limit=Math.min(144,Math.max(60,(window.visualViewport?.height||innerHeight)*.25));
       if(key!==draftSizeKey){draftSizeKey=key;draft.style.height='0px';const height=draft.scrollHeight;draft.style.height=Math.min(height,limit)+'px';draft.style.overflowY=height>limit?'auto':'hidden';}
-      panel.style.setProperty('--composer-height',form.offsetHeight+'px');if(follow)list.scrollTop=list.scrollHeight;updateLatest();
+      panel.style.setProperty('--composer-height',form.offsetHeight+(question.hidden?0:question.offsetHeight+8)+'px');if(follow)list.scrollTop=list.scrollHeight;updateLatest();
     }
     function viewport(){
       const mobile=matchMedia('(max-width:700px), (pointer:coarse) and (max-width:1000px)').matches;
@@ -499,7 +571,7 @@
     form.onsubmit=async event=>{
       event.preventDefault();const current=selection();if(!target||identity(current)!==identity(target)||!binding()&&!firstMessage()||(!draft.value.trim()&&!fileList().length)||pendingFor())return;
       // Waiting: the turn ended while background work runs; the prompt still takes input.
-      if(!['ready','waiting','working'].includes(current.state)){sendStatus('The agent needs attention in Terminal. Your draft is kept.');return;}
+      if(!['ready','waiting','working'].includes(current.state)){sendStatus(question.hidden?'The agent needs attention in Terminal. Your draft is kept.':'Answer the agent’s question first. Your draft is kept.');return;}
       const selected=fileList();if(selected.some(item=>!item.path)){sendStatus(selected.some(item=>item.error)?'Remove failed attachments before sending.':'Wait for attachments to finish uploading.');return;}
       const text=draft.value,payload=text+(selected.length?'\n\nAttached files:\n'+selected.map(item=>item.path).join('\n'):'');
       if(/[\x00-\x08\x0b-\x1f\x7f]/.test(payload)){sendStatus('The draft contains terminal control characters. Remove them first.');return;}
@@ -570,7 +642,7 @@
       if(cached){if(open){paint();list.scrollTop=cached.follow?list.scrollHeight:cached.position;updateLatest();}else restorePosition=cached;}if(open)focusSurface();if(chat){load(loaded?'poll':'initial');startStream();}prepare();
     }
     // Open at the latest messages; older history is fetched only on request.
-    setInterval(()=>{if(open&&!document.hidden){if(!chat){status(unboundNotice());updateActivity();}prepare();if(!streamReady)load();}},2000);
+    setInterval(()=>{if(open&&!document.hidden){if(!chat){status(unboundNotice());updateActivity();}prepare();void loadPrompt();if(!streamReady)load();}},2000);
     document.addEventListener('visibilitychange',()=>{if(document.hidden)stopStream();else if(open){load();startStream();}});
     window.addEventListener('focus',()=>{if(open&&!document.hidden)load();});
     window.addEventListener('pagehide',()=>{stopStream();loadRequest?.abort();});

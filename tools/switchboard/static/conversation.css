@@ -163,6 +163,27 @@
 .conversation-actions button{font:500 12.5px var(--sans);min-height:30px;min-width:30px;background:var(--raised);border:1px solid var(--line-2);border-radius:999px;box-shadow:0 6px 18px #0007;color:var(--text-2)}
 .conversation-actions button:last-child{width:auto;padding:4px 12px;white-space:nowrap}
 
+/* A question or permission prompt from the agent, answered here instead of in Terminal. */
+.conversation-question{align-self:center;width:min(var(--chat-width),calc(100% - 48px));max-height:min(60%,32rem);overflow:auto;margin:0 0 8px;padding:12px;border:1px solid #e0b25c4d;border-radius:14px;background:#1a1916;flex-shrink:0;overscroll-behavior:contain}
+.conversation-question-detail{margin:0 0 10px;padding:8px 10px;border-radius:8px;background:var(--code-bg);color:var(--text-2);font:12.5px/1.55 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
+.conversation-question-text{margin:0 2px 10px;color:#f1cf8c;font-weight:600}
+.conversation-question-choices{display:flex;flex-direction:column;gap:6px}
+.conversation-panel .conversation-question-choice{display:flex;align-items:flex-start;gap:10px;width:100%;min-height:40px;padding:8px 10px;border:1px solid var(--line-2);border-radius:10px;background:var(--raised);color:var(--text);font:400 14px/1.45 var(--sans);text-align:left;cursor:pointer}
+.conversation-panel .conversation-question-choice:hover:enabled{border-color:#e0b25c80;background:#22211c}
+.conversation-question-choice:focus-visible,.conversation-question-other input:focus-visible,.conversation-question-other button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.conversation-question-choice:disabled,.conversation-question-other :disabled{cursor:default;opacity:.55}
+.conversation-question-number{flex:0 0 22px;height:22px;display:grid;place-items:center;border-radius:6px;background:#ffffff10;color:var(--muted);font:600 12px/1 var(--sans)}
+.conversation-question-choice.checkbox[aria-pressed="true"] .conversation-question-number{background:#e0b25c;color:#1a1916}
+.conversation-panel .conversation-question-choice.submit{justify-content:center;border-color:#e0b25c66;background:#e0b25c1f;color:#f1cf8c;font-weight:600}
+.conversation-question-choice.submit .conversation-question-number{display:none}
+.conversation-question-label{display:flex;flex-direction:column;min-width:0;overflow-wrap:anywhere}
+.conversation-question-label strong{font-weight:500}
+.conversation-question-label span{color:var(--muted);font-size:12.5px}
+.conversation-question-other{display:flex;gap:6px}
+.conversation-question-other input{flex:1;min-width:0;min-height:40px;padding:8px 10px;border:1px solid var(--line-2);border-radius:10px;background:var(--bg);color:var(--text);font:inherit}
+.conversation-panel .conversation-question-other button{min-height:40px;padding:0 14px;border:1px solid var(--line-2);border-radius:10px;background:var(--raised);color:var(--text);font:500 13px var(--sans);cursor:pointer}
+.conversation-question-status{display:block;margin:8px 2px 0;color:var(--text-2);font-size:12px}
+
 /* Composer: a card with the draft on top and a toolbar below. */
 .conversation-compose{position:relative;align-self:center;width:min(var(--chat-width),calc(100% - 48px));margin:0 0 max(20px,env(safe-area-inset-bottom));border:1px solid #ffffff1f;border-radius:14px;background:#17181b;padding:4px 8px 8px;display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;align-items:center;gap:0 4px;flex-shrink:0;box-shadow:0 16px 32px -16px #000;transition:border-color .15s}
 .conversation-compose:focus-within{border-color:#ffffff33}
@@ -275,6 +296,7 @@
   .conversation-code>pre{padding-bottom:10px;scrollbar-width:thin;scrollbar-color:#55565e transparent}
   .conversation-code>pre::-webkit-scrollbar{height:3px}
   .conversation-code>pre::-webkit-scrollbar-thumb{background:#55565e;border-radius:3px}
+  .conversation-question{width:calc(100% - 32px);max-height:50%}
   .conversation-compose{width:calc(100% - 32px);padding:2px 6px 6px;margin-bottom:max(8px,env(safe-area-inset-bottom));border-radius:18px;box-shadow:none}
   .conversation-compose textarea{font-size:16px;min-height:42px;padding:9px 6px 4px}
   .conversation-compose>button[type=submit],.conversation-compose .conversation-stop,.conversation-compose .conversation-attach{width:36px;height:36px;min-height:36px}

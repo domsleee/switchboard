@@ -810,6 +810,29 @@ async fn terminal_response(
             .await
             .map(IntoResponse::into_response);
     }
+    if path == "/switchboard/conversation/prompt" && request.method() == Method::POST {
+        let bytes = to_bytes(request.into_body(), 4096)
+            .await
+            .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid conversation request"))?;
+        let target = serde_json::from_slice::<conversation::Target>(&bytes)
+            .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid conversation target"))?;
+        return conversation::prompt::local(&host, target)
+            .await
+            .map(IntoResponse::into_response);
+    }
+    if path == "/switchboard/conversation/answer" && request.method() == Method::POST {
+        let bytes = to_bytes(
+            request.into_body(),
+            conversation::prompt::ANSWER_LIMIT * 4 + 4096,
+        )
+        .await
+        .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid conversation request"))?;
+        let answer = serde_json::from_slice::<conversation::prompt::Answer>(&bytes)
+            .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid conversation answer"))?;
+        return conversation::prompt::answer_local(&host, answer)
+            .await
+            .map(IntoResponse::into_response);
+    }
     if path == "/switchboard/conversation/skills" && request.method() == Method::POST {
         let bytes = to_bytes(request.into_body(), 32768)
             .await

@@ -1426,6 +1426,14 @@ fn app(state: RelayState) -> Router {
             post(conversation::reply_handler),
         )
         .route(
+            "/api/hosts/{host}/conversation/prompt",
+            post(conversation::prompt::handler),
+        )
+        .route(
+            "/api/hosts/{host}/conversation/answer",
+            post(conversation::prompt::answer_handler),
+        )
+        .route(
             "/api/hosts/{host}/conversation/skills",
             post(conversation::skills_handler),
         )
