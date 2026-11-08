@@ -1,6 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs');
 
-test('hover snooze and settle preserve the selected view, review state and keyboard navigation',
+test('hover snooze preserves the selected view and settle closes the tab',
  {skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
   const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch();
   const titles=['Fix volume performance','Review the sidebar','Plan the next release','Tidy the docs'];
@@ -38,21 +38,22 @@ test('hover snooze and settle preserve the selected view, review state and keybo
       await groups.page.evaluate(()=>{
         const byId=id=>allTabs().find(item=>item.tab.id===id);
         paneAttention.get(attentionKey('desktop','main',2)).state='working';
-        parkTab(byId(3),'settled');setHidden(byId(4),true);render();
+        parkTab(byId(3),'snoozed',Date.now()+3600000);setHidden(byId(4),true);render();
       });
-      const headerTops=()=>groups.page.evaluate(()=>['#snoozed-toggle','#manual-settled-toggle','#hidden-toggle'].flatMap(selector=>{const header=document.querySelector(selector);return header?[Math.round(header.getBoundingClientRect().top)]:[];}));
-      const [working,settled,hiddenGroup]=await headerTops();
-      assert.equal(settled-working,hiddenGroup-settled,'group headers are evenly spaced');
+      const headerTops=()=>groups.page.evaluate(()=>['#snoozed-toggle','#manual-snoozed-toggle','#hidden-toggle'].flatMap(selector=>{const header=document.querySelector(selector);return header?[Math.round(header.getBoundingClientRect().top)]:[];}));
+      const [working,snoozed,hiddenGroup]=await headerTops();
+      assert.equal(snoozed-working,hiddenGroup-snoozed,'group headers are evenly spaced');
       if(mode==='terminal'&&process.env.SWITCHBOARD_PARKING_SCREENSHOTS)await groups.page.locator('#sidebar').screenshot({path:process.env.SWITCHBOARD_PARKING_SCREENSHOTS+'/groups.png'});
       await groups.page.evaluate(()=>{paneAttention.get(attentionKey('desktop','main',2)).state='ready';render();});
       await groups.page.locator('#snoozed-toggle').waitFor({state:'detached'});
-      const [settledAlone,hiddenAlone]=await headerTops();
-      assert.equal(hiddenAlone-settledAlone,hiddenGroup-settled,'a group after the tabs stays with the headers at the bottom');
+      const [snoozedAlone,hiddenAlone]=await headerTops();
+      assert.equal(hiddenAlone-snoozedAlone,hiddenGroup-snoozed,'a group after the tabs stays with the headers at the bottom');
       assert.deepEqual(groups.errors,[]);await groups.page.close();
-      const {page,errors,writes}=await fixture(mode);
+      const {page,errors,writes}=await fixture(mode,makePanes(4));
       const first=page.locator('.tab-row').filter({has:page.locator('.tab-name',{hasText:'Fix volume performance'})});
       const second=page.locator('.tab-select').filter({has:page.locator('.tab-name',{hasText:'Review the sidebar'})});
-      await page.waitForFunction(()=>allTabs().length===3);
+      await page.waitForFunction(()=>allTabs().length===4);
+      const fourth=page.locator('.tab-row').filter({has:page.locator('.tab-name',{hasText:'Tidy the docs'})});
       const selected=await page.evaluate(()=>selected),order=await page.evaluate(()=>allTabs().map(t=>t.key));
       const settle=first.getByRole('button',{name:'Settle thread',exact:true});
       await page.mouse.move(1000,700);
@@ -60,15 +61,21 @@ test('hover snooze and settle preserve the selected view, review state and keybo
       await first.locator('.tab-select').focus();assert.equal(await settle.isVisible(),true,'keyboard focus exposes the actions');
       await first.hover();
       if(mode==='terminal'&&process.env.SWITCHBOARD_PARKING_SCREENSHOTS){await page.evaluate(()=>document.activeElement.blur());await page.locator('#sidebar').screenshot({path:process.env.SWITCHBOARD_PARKING_SCREENSHOTS+'/after.png'});}
-      await settle.click();
-      assert.equal(await page.evaluate(()=>selected),selected,'settle does not switch conversations');
-      assert.equal(await page.locator('#manual-settled-toggle .count').textContent(),'1');
+      await fourth.hover();await fourth.getByRole('button',{name:'Settle thread',exact:true}).click();
+      await fourth.waitFor({state:'detached'});
+      assert.deepEqual(writes.filter(p=>/close-tab|restart-agent/.test(p)),['/api/hosts/desktop/close-tab'],'settle closes that tab');
+      assert.equal(await page.evaluate(()=>selected),selected,'settling another tab does not switch conversations');
       assert.equal(await page.evaluate(()=>globalThis.SwitchboardConversation.isOpen()),mode==='conversation');
-      assert.deepEqual(await page.evaluate(()=>allTabs().map(t=>t.key)),order);
-      assert.equal(writes.some(p=>/close-tab|restart-agent/.test(p)),false);
-      await page.reload();await page.locator('#manual-settled-toggle').waitFor();
-      await first.hover();await first.getByRole('button',{name:'Un-settle thread'}).click();
-      assert.equal(await page.locator('#manual-settled-toggle').count(),0);
+      assert.deepEqual(await page.evaluate(()=>allTabs().map(t=>t.key)),order.slice(0,3));
+      assert.equal(await page.locator('#manual-settled-toggle').count(),0,'there is no Settled section');
+      // A tab settled by an earlier build returns to the list instead of disappearing.
+      await page.evaluate(()=>localStorage.setItem('switchboard-parked-tabs',JSON.stringify({[canonKey(allTabs()[1].key)]:{state:'settled'}})));
+      await page.reload();await page.waitForFunction(()=>allTabs().length===4);
+      await second.waitFor();assert.equal(await page.locator('#manual-settled-toggle').count(),0);
+      assert.deepEqual(await page.evaluate(()=>parkedTabs),{});
+      await fourth.locator('.tab-select').click({button:'right'});await page.locator('#settle-tab').click();
+      await fourth.waitFor({state:'detached'});
+      assert.equal(writes.filter(p=>p.endsWith('/close-tab')).length,2,'the menu settles the same way');
       await first.hover();await first.getByRole('button',{name:'Snooze thread',exact:true}).click();
       assert.deepEqual(await page.locator('#snooze-menu button>span:first-child').allTextContents(),['In 1 hour','In 3 hours','Tomorrow']);
       const expected=await page.evaluate(()=>{const time=new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit'});return ['2026-11-08T08:11:00Z','2026-11-08T10:11:00Z','2026-11-08T22:00:00Z'].map(date=>time.format(new Date(date)));});
@@ -83,7 +90,7 @@ test('hover snooze and settle preserve the selected view, review state and keybo
       await page.keyboard.press('Alt+1');assert.equal(await page.evaluate(()=>allTabs().find(t=>t.key===selected).tab.id),2,'number shortcuts skip collapsed shelves');
       await page.locator('#tab-search').fill('volume');await first.waitFor();
       await first.locator('.tab-select').click({button:'right'});await page.locator('#settle-tab').click();
-      assert.equal(await page.locator('#manual-snoozed-toggle').count(),0,'context menu wakes the tab without selecting it');
+      assert.equal(await page.locator('#manual-snoozed-toggle').count(),0,'context menu wakes the tab without selecting it');assert.equal(await page.locator('#tab-menu').isHidden(),true,'waking closes the menu');
       await page.locator('#tab-search').fill('');await first.hover();await first.getByRole('button',{name:'Snooze thread',exact:true}).click();
       await page.keyboard.press('Escape');assert.equal(await page.evaluate(()=>Object.keys(parkedTabs).length),0);
       assert.equal(await first.getByRole('button',{name:'Snooze thread',exact:true}).evaluate(el=>document.activeElement===el),true);
@@ -115,9 +122,9 @@ test('hover snooze and settle preserve the selected view, review state and keybo
         assert.equal(await page.locator('#manual-snoozed-toggle').count(),0,'sending wakes a snoozed conversation');
       }
       const third=page.locator('.tab-row').filter({has:page.locator('.tab-name',{hasText:'Plan the next release'})});
-      await third.hover();await third.getByRole('button',{name:'Settle thread',exact:true}).click();
+      await third.hover();await third.getByRole('button',{name:'Snooze thread',exact:true}).click();await page.locator('#snooze-menu button[data-minutes="60"]').click();
       await page.evaluate(()=>{const state=paneAttention.get(attentionKey('desktop','main',3));Object.assign(state,{state:'approval',token:'approval',since:state.since+1});render();});
-      await third.waitFor();assert.equal(await third.locator('.tab-select').evaluate(el=>el.classList.contains('needs-attention')),true,'a settled tab with a new approval returns with its badge');
+      await third.waitFor();assert.equal(await third.locator('.tab-select').evaluate(el=>el.classList.contains('needs-attention')),true,'a snoozed tab with a new approval returns with its badge');
       assert.equal(await page.evaluate(()=>allTabs().filter(item=>item.tab.id===3).some(item=>!!parkedTab(item))),false);
       await page.setViewportSize({width:390,height:740});await page.locator('#sidebar-toggle').click();
       await first.locator('.tab-select').click({button:'right'});await page.locator('#snooze-tab').click();

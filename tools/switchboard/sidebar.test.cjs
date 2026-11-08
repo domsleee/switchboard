@@ -628,7 +628,7 @@ test('a recreated session keeps its tabs where they were dragged, though Zellij 
   before.context.hidden[key('mesh-24',7)]=1;
   before.context.setPinned({key:key('mesh-24',9)},true);
   before.context.setPinned({key:key('mesh-d1',0)},true);
-  before.context.parkedTabs[key('mesh-24',5)]={state:'settled'};
+  before.context.parkedTabs[key('mesh-24',5)]={state:'snoozed',until:90000};
   before.context.parkedTabs[key('mesh-24',9)]={state:'snoozed',until:60000};
   before.context.applyTabOrder({tab_order:{keys:[key('mesh-24',9),key('mesh-d1',0),key('mesh-24',5),key('mesh-d1',1),key('mesh-24',7)],updated:1}},{id:'me'});
   for(const entry of before.sessions.values())before.context.setCatalog(entry,entry.catalog);
@@ -643,7 +643,7 @@ test('a recreated session keeps its tabs where they were dragged, though Zellij 
   assert.equal(before.context.isPinned(key('mesh-24',2)),true);
   assert.equal(before.context.isPinned(key('mesh-24',9)),false);
   assert.equal(before.context.isPinned(key('mesh-d1',0)),true);
-  assert.equal(before.context.parkedTabs[key('mesh-24',0)].state,'settled');
+  assert.equal(before.context.parkedTabs[key('mesh-24',0)].until,90000);
   assert.equal(before.context.parkedTabs[key('mesh-24',2)].state,'snoozed');
   assert.equal(before.context.parkedTabs[key('mesh-24',5)],undefined);
   // The hidden tab stays hidden under its new number, and no other tab takes its place.
@@ -652,7 +652,7 @@ test('a recreated session keeps its tabs where they were dragged, though Zellij 
   const shared=before.posted.at(-1);
   // Overlapping old/new IDs must migrate from a snapshot, without moving a pin twice.
   before.restart([1,2,3],18000);
-  assert.equal(before.context.parkedTabs[key('mesh-24',1)].state,'settled');
+  assert.equal(before.context.parkedTabs[key('mesh-24',1)].until,90000);
   assert.equal(before.context.parkedTabs[key('mesh-24',3)].state,'snoozed');
   assert.equal(before.context.isPinned(key('mesh-24',3)),true);
   assert.equal(before.context.isPinned(key('mesh-24',2)),false);

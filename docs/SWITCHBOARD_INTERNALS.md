@@ -180,11 +180,11 @@ Snooze opens a menu with 1 hour, 3 hours, tomorrow at 9 AM, or a custom local
 date and time. Each preset shows its wake time. Snoozed tabs keep running and move to **Snoozed** until their wake
 time. A new approval, question or password request brings them back early;
 ordinary completion and background work leave the snooze in place. **Wake thread**
-returns one early. Settle moves a tab into **Settled**; **Un-settle thread** brings
-it back. Both actions also appear in the right-click or long-press menu.
-Sending a Conversation message wakes a parked tab. These choices persist in this
+returns one early. Settle closes the tab and stops its processes to free memory,
+like **Close**, without confirmation. Both actions also appear in the right-click
+or long-press menu. Sending a Conversation message wakes a snoozed tab. Snoozes persist in this
 browser, like pins, and do not stop terminal processes. They are separate from
-the automatic **Working** shelf and the shared **Hidden** group. Parked tabs
+the automatic **Working** shelf and the shared **Hidden** group. Snoozed tabs
 are omitted from this browser's notification count; relay push alerts are unchanged.
 
 Machine names stay beneath each tab, and work/home remain optional filters. Search names and
