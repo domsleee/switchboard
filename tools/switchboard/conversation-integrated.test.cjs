@@ -306,6 +306,25 @@ test('integrated Conversation journeys use production markup and preserve delive
     }finally{await f.close();}
    }
   });
+  await t.test('desktop header is one row that clears the view controls in both modes',async()=>{
+   const f=await fixture({desktop:true,viewport:{width:1280,height:844}}),{page}=f;try{
+    await page.getByText('Review response',{exact:true}).waitFor();
+    const box=selector=>page.locator(selector).boundingBox(),middle=rect=>rect.y+rect.height/2;
+    for(const width of [1280,760]){
+     await page.setViewportSize({width,height:844});
+     const header=await box('.conversation-panel>header'),heading=await box('.conversation-heading'),title=await box('.conversation-heading strong'),context=await box('.conversation-context'),modes=await box('.conversation-modes');
+     assert.equal(Math.round(header.height),52);
+     assert.ok(context.x+context.width<=title.x,'Context leads the title');
+     assert.ok(Math.abs(middle(context)-middle(title))<=1,'Context and title share a row');
+     assert.ok(Math.abs(middle(modes)-middle(header))<=1,'View controls are centred in the header');
+     assert.ok(heading.x+heading.width<=modes.x,'Header text must not run under the view controls');
+    }
+    const title=page.locator('.conversation-heading strong');assert.equal(await title.getAttribute('title'),await title.textContent());
+    const before=await box('.conversation-modes');
+    await page.getByRole('button',{name:'Terminal',exact:true}).click();assert.deepEqual(await box('.conversation-modes'),before);
+    await page.getByRole('button',{name:'Conversation',exact:true}).click();assert.deepEqual(await box('.conversation-modes'),before);
+   }finally{await f.close();}
+  });
   await t.test('mobile model/activity layout and actionable attention survive the real toolbar and keyboard',async()=>{
    const f=await fixture(),{page}=f;try{
     await page.getByText('Review response',{exact:true}).waitFor();await page.getByLabel('Reply draft').fill('Keep this draft');
