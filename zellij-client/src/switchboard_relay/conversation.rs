@@ -184,10 +184,13 @@ fn claude_prompt_empty(screen: &str) -> bool {
     };
     let bright = lines[index].1.trim_start();
     let prompt = bright.strip_prefix('❯').unwrap_or("").trim();
-    // Narrow panes cut the placeholder short with an ellipsis.
+    // Narrow panes cut the placeholder short with an ellipsis. While a reply sent
+    // mid-turn waits in Claude's queue, the empty prompt says how to edit it.
     let placeholder = prompt.len() > 5
         && prompt.starts_with("Try \"")
-        && (prompt.ends_with('"') || prompt.ends_with('…'));
+        && (prompt.ends_with('"') || prompt.ends_with('…'))
+        || prompt.len() > 5
+            && "Press up to edit queued messages".starts_with(prompt.trim_end_matches('…'));
     if !prompt.is_empty() && !placeholder {
         return false;
     }
@@ -478,6 +481,16 @@ mod tests {
         assert!(claude_prompt_empty(
             &CLAUDE_IDLE.replace("❯\u{a0}", "❯ Try \"write a test for …")
         ));
+        // Captured from a working Claude Code 2.1.319 pane with a reply in its queue.
+        for queued in ["Press up to edit queued messages", "Press up to edit queu…"] {
+            assert!(claude_prompt_empty(
+                &CLAUDE_IDLE.replace("❯\u{a0}", &format!("❯\u{a0}{queued}"))
+            ));
+        }
+        assert!(!claude_prompt_empty(&CLAUDE_IDLE.replace(
+            "❯\u{a0}",
+            "❯\u{a0}Press up to edit queued messages now"
+        )));
         // Claude Code 2.1.319 suggests a next prompt in dim text once a turn ends;
         // captured with `dump-screen --ansi` (styling trimmed to what it sets).
         let suggested = "\x1b[m❯\u{a0}\x1b[39m\x1b[49m\x1b[22m\x1b[24m\x1b[2m\x1b[23mok waiting";

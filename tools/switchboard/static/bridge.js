@@ -585,7 +585,7 @@
         const bright=row=>{const line=buffer.getLine(buffer.baseY+row);if(!line)return '';if(typeof line.getCell!=='function')return lines[row];let text='';
           for(let x=0;x<line.length;x++){const cell=line.getCell(x);if(cell&&!cell.isDim())text+=cell.getChars()||' ';}return text;};
         const prompt=index<0?null:bright(index).trimStart().replace(marker,'').trim();
-        const placeholder=message.agent==='codex'?['Ask Codex to do anything','Ask a follow-up question'].includes(prompt):/^Try ".*"$/.test(prompt||'');
+        const placeholder=message.agent==='codex'?['Ask Codex to do anything','Ask a follow-up question'].includes(prompt):/^Try ".*"$/.test(prompt||'')||prompt?.length>5&&'Press up to edit queued messages'.startsWith(prompt.replace(/…$/,''));
         if(prompt===null||(prompt!==''&&!placeholder))return reply(false,'Clear the terminal prompt before sending.');
         for(const line of lines.slice(index+1)){
           const text=line.trim();if(!text)continue;
