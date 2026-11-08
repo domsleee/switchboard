@@ -47,7 +47,7 @@ body.sidebar-collapsed #sidebar-toggle{left:8px}
 #tabs .tab-select.needs-attention .tab-name{color:#fff;font-weight:500}
 #tabs .star{display:none;flex-shrink:0;box-sizing:border-box;width:12px;height:12px;border-radius:50%;font-size:0}
 #tabs .tab-status[data-tone=working]{color:#7eaaf2}
-#tabs .star.working{display:block;width:8px;height:8px;background:currentColor}
+#tabs .star.working{display:block;border:1.5px dashed currentColor}
 #tabs .star.waiting{display:block;border:2px solid #8cabe9}
 #tabs .star.unavailable{display:block;border:1px solid #a3aec0}
 #tabs .tab-status[data-tone=attention] .star{display:block;width:7px;height:7px;background:#f0bc63}
