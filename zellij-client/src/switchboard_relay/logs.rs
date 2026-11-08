@@ -672,7 +672,10 @@ struct LoadDiagnostic {
 impl LoadDiagnostic {
     fn message(&self) -> Option<String> {
         if self.outcome != "ready"
-            || self.after.as_deref().is_some_and(|after| after != "conversation")
+            || self
+                .after
+                .as_deref()
+                .is_some_and(|after| after != "conversation")
             || [self.page_ms, self.socket_ms, self.frame_ms, self.render_ms]
                 .into_iter()
                 .flatten()
