@@ -90,10 +90,11 @@
       else if(event.type==='text')current().append(document.createTextNode(event.text||''));
     }
     // A line that is only an absolute image or video path shows the media, as the terminal does.
-    // Markdown text arrives in fragments, so the whole line must be that one text node.
+    // Markdown text arrives in fragments, so the whole line must be that one text node,
+    // directly inside a block: a path in bold or italics belongs to its sentence.
     const lineEdge=(sibling,start)=>!sibling||sibling.nodeName==='BR'||sibling.nodeType===3&&(start?sibling.data.endsWith('\n'):sibling.data.startsWith('\n'));
     const walker=document.createTreeWalker(parent,NodeFilter.SHOW_TEXT),paths=[];
-    while(walker.nextNode()){const text=walker.currentNode;if(!text.parentElement.closest('pre,code,a,blockquote,.conversation-media')&&mediaPath.test(text.data)&&(imageExt.test(text.data.trim())||videoExt.test(text.data.trim()))&&lineEdge(text.previousSibling,true)&&lineEdge(text.nextSibling,false))paths.push(text);}
+    while(walker.nextNode()){const text=walker.currentNode;if((text.parentElement===parent||text.parentElement.matches('p,li,td,h1,h2,h3,h4,h5,h6'))&&!text.parentElement.closest('blockquote,.conversation-media')&&mediaPath.test(text.data)&&(imageExt.test(text.data.trim())||videoExt.test(text.data.trim()))&&lineEdge(text.previousSibling,true)&&lineEdge(text.nextSibling,false))paths.push(text);}
     for(const text of paths){const path=text.data.trim();text.replaceWith(media(path,path.split(/[\\/]/).pop(),videoExt.test(path)?'video':'image',context,gallery));}
     for(const attachment of message.attachments||[]){
       if(attachment.unavailable){const unavailable=node('p',`${attachment.name||'Attachment'} · ${attachment.unavailable}`);unavailable.className='conversation-media-unavailable';parent.append(unavailable);}
