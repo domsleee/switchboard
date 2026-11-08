@@ -167,7 +167,8 @@
     // the relay and answered with the keys Claude Code takes. Older relays answer 404.
     const question=el('section',undefined,'conversation-question'),questionStatus=el('small',undefined,'conversation-question-status');question.hidden=true;question.setAttribute('aria-label','Agent question');questionStatus.setAttribute('role','status');
     const promptHosts=new Set();let prompt=null,promptKey=null,promptSignature='',promptRequest=null,promptAt=0,answering=false,answered=null,promptError='',otherDraft='';
-    panel.append(header,notice,recovery,list,historyStatus,actions,question,form);root.append(panel);
+    const asyncShortcut=el('button',undefined,'conversation-pending-question');asyncShortcut.type='button';asyncShortcut.hidden=true;
+    panel.append(header,notice,recovery,list,historyStatus,actions,question,asyncShortcut,form);root.append(panel);
     const identity=t=>t?JSON.stringify([t.key,t.chatId]):null;
     let chat=null;
     const binding=()=>chat;
@@ -239,12 +240,13 @@
       else{working.setAttribute('aria-hidden','true');working.removeAttribute('aria-expanded');working.removeAttribute('aria-label');}
     }
     function updateActivity(){
-      const state=target?.state,label=state==='working'?'Working…':state==='approval'?'Approval needed':state==='input'?'Input needed':state==='waiting'?'Waiting on an agent':state==='ready'?'Ready':'';
+      const state=target?.state,asyncInput=state==='input'&&pendingAsyncQuestion(),label=state==='working'?'Working…':state==='approval'?'Approval needed':asyncInput?'Question for you':state==='input'?'Input needed':state==='waiting'?'Waiting on an agent':state==='ready'?'Ready':'';
       paintModel();
       // The model stays a control whenever there is an agent chat; a busy agent switches after its turn.
       if(switchModel){model.disabled=!target?.switchAvailable||!chat;cancelModel.hidden=!target?.pendingSwitch||!!target.pendingSwitch.running;}
       if(activity.textContent!==label)activity.textContent=label;
       activity.classList.toggle('working',state==='working');
+      activity.classList.toggle('question',asyncInput);
       const asyncWorking=state==='input'&&target.turnState==='working'&&pendingAsyncQuestion();
       const follow=nearBottom();paintLaunch();working.hidden=['approval','ready'].includes(state)||state==='input'&&!asyncWorking||!launchShown()&&(!chat||!(state==='working'||asyncWorking||state==='waiting'&&!backgroundAgents().length));tickWorking();
       if(follow)list.scrollTop=list.scrollHeight;
@@ -343,7 +345,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
     }
     function asyncState(item){
       const key=identity(target)+':'+item.async_question.id;
-      if(!asyncQuestions.has(key))asyncQuestions.set(key,{key,status:'draft',questions:item.async_question.questions,answers:item.async_question.questions.map(()=>''),destination:{host:target.host,thread:chat?.thread,chatKey:identity(target)}});
+      if(!asyncQuestions.has(key))asyncQuestions.set(key,{key,status:'draft',collapsed:false,custom:item.async_question.questions.map(q=>!q.options.length),questions:item.async_question.questions,answers:item.async_question.questions.map(()=>''),destination:{host:target.host,thread:chat?.thread,chatKey:identity(target)}});
       return asyncQuestions.get(key);
     }
     function pendingAsyncQuestion(){return target?.agent==='codex'&&messages.some(item=>item.async_question&&asyncState(item).status!=='answered');}
@@ -356,6 +358,23 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
         }
       }
       for(const card of list.querySelectorAll('.conversation-async-question'))card.sync?.();
+      updateAsyncShortcut();
+    }
+    function updateAsyncShortcut(){
+      const cards=[...list.querySelectorAll('.conversation-async-question')].filter(card=>['draft','failed','uncertain'].includes(card.questionState?.status));
+      const bounds=list.getBoundingClientRect(),away=cards.find(card=>{const r=card.getBoundingClientRect();return card.questionState.collapsed||r.top<bounds.top+8||r.bottom>bounds.bottom-8;});
+      const count=cards.reduce((sum,card)=>sum+card.questionState.questions.length,0),hidden=!away,text=count+' question'+(count===1?'':'s')+' to answer';
+      const changed=asyncShortcut.hidden!==hidden||asyncShortcut.textContent!==text;
+      asyncShortcut.hidden=hidden;asyncShortcut.textContent=text;
+      asyncShortcut.setAttribute('aria-label',text);
+      if(away)asyncShortcut.setAttribute('aria-controls',away.id);else asyncShortcut.removeAttribute('aria-controls');
+      asyncShortcut.onclick=()=>{
+        if(!away?.isConnected)return;
+        away.questionState.collapsed=false;away.sync();
+        list.scrollTop+=away.getBoundingClientRect().top-list.getBoundingClientRect().top-16;
+        rememberReading();updateLatest();away.querySelector('.conversation-async-toggle').focus({preventScroll:true});
+      };
+      if(changed&&!panel.hidden)sizeDraft();
     }
     async function sendAsyncAnswer(item,state,retry=false){
       if(state.status==='sending'||state.status==='queued'||state.status==='answered')return;
@@ -375,37 +394,57 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       }catch{if(state.status!=='answered'){state.status='uncertain';state.error='Delivery is not confirmed. Retry to check its status.';}}
       finally{syncAsyncQuestions();if(identity(target)===state.destination.chatKey)void load();idle();}
     }
+    let asyncCardId=0;
     function renderAsyncQuestion(article,item){
       const request=item.async_question,state=asyncState(item),card=el('section',undefined,'conversation-question conversation-async-question');
-      card.setAttribute('aria-label','Codex question');
+      card.setAttribute('aria-label','Codex question');card.id='async-question-'+(++asyncCardId);card.questionState=state;
+      const toggle=el('button',undefined,'conversation-async-toggle'),mark=el('span','?','conversation-async-mark'),copy=el('span',undefined,'conversation-async-copy'),label=el('strong'),preview=el('span'),chevron=el('span',undefined,'conversation-async-chevron');
+      toggle.type='button';mark.setAttribute('aria-hidden','true');chevron.setAttribute('aria-hidden','true');label.setAttribute('role','status');copy.append(label,preview);toggle.append(mark,copy,chevron);
+      const body=el('div',undefined,'conversation-async-body');body.id=card.id+'-body';toggle.setAttribute('aria-controls',body.id);card.append(toggle,body);
+      toggle.onclick=()=>{state.collapsed=!state.collapsed;card.sync();updateAsyncShortcut();};
       const controls=[],groups=[],send=el('button','Send answers','conversation-question-choice submit'),status=el('small',undefined,'conversation-question-status'),retry=el('button','Retry','conversation-question-choice');
       for(const [index,question] of request.questions.entries()){
         const group=el('div',undefined,'conversation-async-question-group'),heading=el('p',question.title,'conversation-question-text'),choices=el('div',undefined,'conversation-question-choices');
-        group.append(heading,choices);card.append(group);const options=[];
-        for(const [number,label] of question.options.entries()){
+        choices.setAttribute('role','group');choices.setAttribute('aria-label',question.title);
+        group.append(heading,choices);body.append(group);const options=[];
+        for(const label of question.options){
           const button=el('button',undefined,'conversation-question-choice');button.type='button';
-          button.append(el('span',String(number+1),'conversation-question-number'),el('span',label,'conversation-question-label'));
+          const mark=el('span',undefined,'conversation-async-option-mark');mark.setAttribute('aria-hidden','true');button.append(mark,el('span',label,'conversation-question-label'));
           button.setAttribute('aria-pressed',String(state.answers[index]===label));
-          button.onclick=()=>{state.answers[index]=label;if(request.questions.length===1)void sendAsyncAnswer(item,state);else syncAsyncQuestions();};
-          choices.append(button);controls.push(button);options.push({button,label});
+          button.onclick=()=>{state.answers[index]=label;state.custom[index]=false;input.value='';if(request.questions.length===1)void sendAsyncAnswer(item,state);else syncAsyncQuestions();};
+          choices.append(button);controls.push(button);options.push({button,label,mark});
         }
-        const other=el('form',undefined,'conversation-question-other'),input=el('input'),submit=el('button','Send');input.type='text';input.maxLength=4000;input.placeholder=question.options.length?'Other…':'Your answer…';input.setAttribute('aria-label',request.questions.length===1?'Type your own answer':'Answer: '+question.title);
+        const write=el('button','Write a different answer','conversation-async-write'),other=el('form',undefined,'conversation-question-other'),input=el('input'),submit=el('button','Send');input.type='text';input.maxLength=4000;input.placeholder=question.options.length?'Your answer…':'Type your answer…';input.setAttribute('aria-label',request.questions.length===1?'Type your own answer':'Answer: '+question.title);
+        write.type='button';write.onclick=()=>{state.custom[index]=true;card.sync();input.focus({preventScroll:true});};
         input.value=question.options.includes(state.answers[index])?'':state.answers[index];
         input.oninput=()=>{state.answers[index]=input.value;syncAsyncQuestions();};
         submit.type='submit';other.append(input);if(request.questions.length===1)other.append(submit);
         other.onsubmit=event=>{event.preventDefault();state.answers[index]=input.value;if(request.questions.length===1)void sendAsyncAnswer(item,state);};
-        choices.append(other);controls.push(input,submit);groups.push({index,options});
+        choices.append(write,other);controls.push(write,input,submit);groups.push({index,options,write,other,input});
       }
-      send.type='button';send.onclick=()=>void sendAsyncAnswer(item,state);if(request.questions.length>1)card.append(send);
+      send.type='button';send.onclick=()=>void sendAsyncAnswer(item,state);if(request.questions.length>1)body.append(send);
       retry.type='button';retry.onclick=()=>void sendAsyncAnswer(item,state,state.status!=='failed');status.setAttribute('role','status');card.append(status,retry);
       card.sync=()=>{
         const locked=!['draft','failed'].includes(state.status);
+        if(state.status!==state.shownStatus){if(locked&&state.status!=='uncertain')state.collapsed=true;else if(['failed','uncertain'].includes(state.status))state.collapsed=false;state.shownStatus=state.status;}
+        const focusInBody=body.contains(document.activeElement);body.hidden=state.collapsed;
+        toggle.setAttribute('aria-expanded',String(!state.collapsed));toggle.setAttribute('aria-label',state.collapsed?'Show question and answer':'Hide question and answer');
+        card.classList.toggle('collapsed',state.collapsed);card.classList.toggle('settled',['sending','queued','answered'].includes(state.status));
+        label.textContent=({sending:'Sending answer…',queued:'Answer on its way…',answered:'Answered'}[state.status]||'Question for you');
+        const summary=['sending','queued','answered'].includes(state.status);preview.textContent=summary?state.answers.join(' · '):'Reply when you’re ready';preview.title=summary?preview.textContent:'';
+        mark.textContent=state.status==='answered'?'✓':summary?'↗':'?';
+        if(state.collapsed&&focusInBody&&!panel.hidden)toggle.focus({preventScroll:true});
         for(const control of controls)control.disabled=locked;
-        for(const {index,options} of groups)for(const {button,label} of options)button.setAttribute('aria-pressed',String(state.answers[index]===label));
+        for(const {index,options,write,other,input} of groups){
+          for(const {button,label,mark} of options){const selected=state.answers[index]===label;button.setAttribute('aria-pressed',String(selected));mark.textContent=selected?'✓':'';}
+          if(locked&&state.answers[index]&&!request.questions[index].options.includes(state.answers[index]))state.custom[index]=true;
+          other.hidden=!state.custom[index];write.hidden=state.custom[index]||locked;
+          if(locked)input.value=state.custom[index]?state.answers[index]:'';
+        }
         send.disabled=locked||!state.answers.every(answer=>answer.trim());
         retry.hidden=!['failed','uncertain'].includes(state.status);
         card.classList.toggle('answering',['sending','queued'].includes(state.status));
-        status.textContent=state.error||({sending:'Sending answer…',queued:'Answer on its way…',answered:'Answered'}[state.status]||'');status.hidden=!status.textContent;
+        status.textContent=state.error||'';status.hidden=!status.textContent;
       };
       card.sync();article.append(card);
     }
@@ -524,7 +563,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
     }):null;
     contentResize?.observe(list);contentResize?.observe(working);
     if(globalThis.ResizeObserver)new ResizeObserver(()=>panel.style.setProperty('--conversation-header-height',header.offsetHeight+'px')).observe(header);
-    function updateLatest(){latest.hidden=nearBottom();if(latest.hidden)newOutput=false;latest.textContent=newOutput?'↓ New messages':'↓ Latest';actions.hidden=latest.hidden&&refresh.hidden;}
+    function updateLatest(){latest.hidden=nearBottom();if(latest.hidden)newOutput=false;latest.textContent=newOutput?'↓ New messages':'↓ Latest';actions.hidden=latest.hidden&&refresh.hidden;updateAsyncShortcut();}
     // The scrollbar shows only while the reader scrolls, not when new output, the composer
     // growing or a resize moves the list.
     let scrollInput=0;for(const type of ['wheel','touchmove','pointerdown','keydown'])list.addEventListener(type,()=>{scrollInput=Date.now();},{passive:true});
@@ -647,7 +686,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       const key=JSON.stringify([draft.value,draft.clientWidth,window.visualViewport?.height||innerHeight]);
       const follow=nearBottom(),limit=Math.min(144,Math.max(60,(window.visualViewport?.height||innerHeight)*.25));
       if(key!==draftSizeKey){draftSizeKey=key;draft.style.height='0px';const height=draft.scrollHeight;draft.style.height=Math.min(height,limit)+'px';draft.style.overflowY=height>limit?'auto':'hidden';}
-      panel.style.setProperty('--composer-height',form.offsetHeight+(question.hidden?0:question.offsetHeight+8)+'px');if(follow)list.scrollTop=list.scrollHeight;updateLatest();
+      panel.style.setProperty('--composer-height',form.offsetHeight+(question.hidden?0:question.offsetHeight+8)+(asyncShortcut.hidden?0:asyncShortcut.offsetHeight+8)+'px');if(follow)list.scrollTop=list.scrollHeight;updateLatest();
     }
     function viewport(){
       const mobile=matchMedia('(max-width:700px), (pointer:coarse) and (max-width:1000px)').matches;
