@@ -171,7 +171,17 @@
     let chat=null;
     const binding=()=>chat;
     const pendingFor=(key=identity(target))=>pendingSends.get(key);
-    function status(text,quiet=false){if(notice.textContent!==text)notice.textContent=text;notice.hidden=quiet;}
+    function status(text,quiet=false){if(launchShown()&&transitional.has(text))quiet=true;if(notice.textContent!==text)notice.textContent=text;notice.hidden=quiet;}
+    // A tab started from New tab shows its prompt as sent, with a starting row under it, until the
+    // transcript has it, instead of a run of connection notices and an empty page.
+    const transitional=new Set(['Starting agent…','Connecting to this agent’s conversation…','Loading conversation…','Loading this terminal’s conversation…','No agent']);
+    const launchNode=el('article',undefined,'conversation-message user conversation-outgoing conversation-launch');launchNode.dataset.conversationEntry='launch';
+    function launchShown(){return !!target?.launch&&!messages.some(item=>item.role==='user'&&!setupMessage(item));}
+    function paintLaunch(){
+      if(!launchShown()){launchNode.remove();return;}
+      const text=target.launch.text;if(launchNode.dataset.text!==text){launchNode.dataset.text=text;launchNode.replaceChildren(el('div','You','conversation-label'));textBlocks(launchNode,text);}
+      if(launchNode.nextSibling!==working)working.before(launchNode);
+    }
     function modelName(value){
       const raw=String(value?.model||'');
       return /^gpt-\d+(?:\.\d+)?-(?:sol|astra|luna|terra)(?:-codex)?$/i.test(raw)?raw.replace(/^gpt-/i,'').replace(/-/g,' ').replace(/\b[a-z]/g,char=>char.toUpperCase()):/^claude-(opus|sonnet|haiku|fable)-\d+(?:-\d+)?(?:-\d{8})?$/i.test(raw)?raw.replace(/^claude-/i,'').replace(/-\d{8}$/,'').replace(/^(opus|sonnet|haiku|fable)-(\d+)-(\d+)$/i,'$1 $2.$3').replace(/-/g,' ').replace(/^\w/,char=>char.toUpperCase()):raw;
@@ -204,7 +214,7 @@
     }
     function tickWorking(){
       clearTimeout(workingTimer);syncLiveStep();paintBackground();if((working.hidden&&background.hidden)||panel.hidden)return;
-      const since=Number(target?.since),time=since>0?duration(Math.max(0,Date.now()/1000-since)):'';
+      const since=Number(target?.since)||(launchShown()?target.launch.at/1000:0),time=since>0?duration(Math.max(0,Date.now()/1000-since)):'';
       if(workingTime.textContent!==time)workingTime.textContent=time;workingTimer=setTimeout(tickWorking,1000);
     }
     // The newest progress update moves into the live row, so the step in progress
@@ -218,7 +228,7 @@
         if(step){step.classList.add('live');workingStep.dataset.step=step.dataset.live||[...step.childNodes].filter(node=>!node.classList?.contains('conversation-label')).map(node=>node.textContent).join(' ').replace(/\s+/g,' ').trim();}
         working.classList.toggle('has-step',!!step);
       }
-      if(!step)workingStep.dataset.step=waiting?'Waiting on a background agent':'Working';
+      if(!step)workingStep.dataset.step=waiting?'Waiting on a background agent':launchShown()&&!target.state?`Starting ${target.launch.agent==='codex'?'Codex':'Claude'}…`:'Working';
       const run=step&&liveRun,expanded=!!run&&!run.collapsed,count=run?`· ${run.count} steps`:'';
       working.classList.toggle('has-run',!!run);working.disabled=!run;if(workingCount.textContent!==count)workingCount.textContent=count;
       if(run){working.removeAttribute('aria-hidden');working.setAttribute('aria-expanded',String(expanded));working.setAttribute('aria-label',`${expanded?'Hide':'Show'} ${run.count-1} earlier step${run.count===2?'':'s'}`);}
@@ -230,7 +240,7 @@
       if(switchModel)model.disabled=!target?.switchAvailable||!chat||!!pendingFor()||!!(outgoing.get(identity(target))||[]).length||!!(attachments.get(identity(target))||[]).length;
       if(activity.textContent!==label)activity.textContent=label;
       activity.classList.toggle('working',state==='working');
-      const follow=nearBottom();working.hidden=!chat||!(state==='working'||state==='waiting'&&!backgroundAgents().length);tickWorking();
+      const follow=nearBottom();paintLaunch();working.hidden=!launchShown()&&(!chat||!(state==='working'||state==='waiting'&&!backgroundAgents().length));tickWorking();
       if(follow)list.scrollTop=list.scrollHeight;
       const startup=startupState(),stalled=!!startup&&(!!startup.error||Date.now()-startup.started>=30000);
       terminalAction.hidden=!['approval','input'].includes(state)&&!stalled;recovery.hidden=!stalled||!!chat;
@@ -314,7 +324,8 @@
     }
     // A new Claude at its empty prompt has no transcript until its first message, which
     // the relay types into the prompt. Its connection timer starts after that message.
-    function firstMessage(){return !chat&&target?.agent==='claude'&&target.state==='ready'&&!!target.session&&Number.isInteger(target.pane)&&!firstSends.has(target.key);}
+    // A launched prompt is the first message; offer the composer if it has not shown up within 30s.
+    function firstMessage(){return !chat&&!(launchShown()&&Date.now()-target.launch.at<30000)&&target?.agent==='claude'&&target.state==='ready'&&!!target.session&&Number.isInteger(target.pane)&&!firstSends.has(target.key);}
     function startupState(){if(!target||chat||!target.agent&&!target.starting)return null;const key=identity(target);if(firstMessage()){startups.delete(key);return null;}if(!startups.has(key)&&open&&!document.hidden)startups.set(key,{started:Date.now()});return startups.get(key);}
     function unboundNotice(){if(firstMessage())return 'Send a message to start the conversation.';const startup=startupState();return startup?.error||(startup&&Date.now()-startup.started>=30000?'The agent has not connected. Retry or open Terminal.':target?.starting?'Starting agent…':target?.agent?'Connecting to this agent’s conversation…':'No agent');}
     function busy(value){loading=value;older.disabled=refresh.disabled=value;}
@@ -431,6 +442,8 @@
       const snapshot={start:startCursor,messages:messages.map(signatureOf),outgoing:JSON.stringify(visibleOutgoing.map(({id,text,files,state,detail})=>({id,text,files:files.map(file=>file.name),state,detail})))};
       if(lastPaint&&lastPaint.start===snapshot.start&&lastPaint.outgoing===snapshot.outgoing&&lastPaint.messages.length===snapshot.messages.length&&snapshot.messages.every((signature,i)=>signature===lastPaint.messages[i]))return;
       lastPaint=snapshot;
+      // The transcript now has the launched prompt: drop the stand-in and its starting row.
+      if(launchNode.isConnected&&!launchShown())updateActivity();
       const follow=initial||nearBottom(),height=list.scrollHeight,position=list.scrollTop,keys=new Set();
       if(!follow&&!prepend&&!initial)newOutput=true;
       older.hidden=true;

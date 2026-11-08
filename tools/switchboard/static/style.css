@@ -49,6 +49,9 @@ body.sidebar-collapsed #sidebar-toggle{left:8px}
 #tabs .tab-status[data-tone=working]{color:#7eaaf2}
 #tabs .star.working{display:block;width:8px;height:8px;background:currentColor}
 #tabs .star.waiting{display:block;border:2px solid #8cabe9}
+#tabs .star.starting{display:block;width:10px;height:10px;border:1.5px solid #7eaaf240;border-top-color:#7eaaf2;animation:tab-starting .9s linear infinite}
+@keyframes tab-starting{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#tabs .star.starting{animation-duration:3s}}
 #tabs .star.unavailable{display:block;border:1px solid #a3aec0}
 #tabs .tab-status[data-tone=attention] .star{display:block;width:7px;height:7px;background:#f0bc63}
 #tabs .tab-status[data-tone=done] .star{display:block;position:relative;border:1.5px solid currentColor}

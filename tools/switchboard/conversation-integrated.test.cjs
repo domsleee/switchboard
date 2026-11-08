@@ -9,7 +9,7 @@ test('integrated Conversation journeys use production markup and preserve delive
  async function fixture(options={}){
   const page=await browser.newPage({viewport:options.viewport||{width:390,height:844},isMobile:true,hasTouch:true});page.setDefaultTimeout(7000);
   if(options.clock)await page.clock.install();
-  const f={page,errors:[],connections:[],requests:[],preparations:[],claudeReplies:[],claudeReplyStatus:404,history:new Map([[1,options.messages||[{role:'assistant',text:'Review response',model:'gpt-6.1-sol',reasoning_effort:'medium'}]],[2,[{role:'assistant',text:'Second conversation'}]]]),agent:options.agent||'codex',state:'ready',bound:options.bound!==false,model:'gpt-6.1-sol',effort:'medium',replyMode:'queue',autoHistory:false,prepareStatus:200,releaseReplies:[],releaseImages:[],delayImages:!!options.delayImages};
+  const f={page,errors:[],connections:[],requests:[],preparations:[],claudeReplies:[],claudeReplyStatus:404,history:new Map([[1,options.messages||[{role:'assistant',text:'Review response',model:'gpt-6.1-sol',reasoning_effort:'medium'}]],[2,[{role:'assistant',text:'Second conversation'}]]]),agent:options.agent||'codex',state:'ready',bound:options.bound!==false,model:'gpt-6.1-sol',effort:'medium',replyMode:'queue',autoHistory:false,prepareStatus:200,tabs:[1,2],newTabs:[],releaseReplies:[],releaseImages:[],delayImages:!!options.delayImages};
   await page.addInitScript(()=>{localStorage.setItem('switchboard-mobile-view-mode','conversation');localStorage.setItem('switchboard-view-mode','conversation');window.reviewIntervals=[];window.setInterval=fn=>reviewIntervals.push(fn);window.reviewOffset=0;const now=Date.now.bind(Date);Date.now=()=>now()+reviewOffset;window.reviewPastes=[];window.reviewHoldBridge=false;});
   const pane=id=>({pane_id:id,is_plugin:false,tab_id:id,tab_position:id-1,title:'Conversation '+id,is_focused:true});
   const thread=id=>'00000000-0000-4000-8000-'+String(id).padStart(12,'0');
@@ -20,7 +20,7 @@ test('integrated Conversation journeys use production markup and preserve delive
    if(p==='/api/mesh')return json({members:[]});
    if(p==='/api/hosts')return json([{id:'fixture',name:'Fixture desktop',local:true}]);
    if(p==='/api/hosts/fixture')return json({id:'fixture',name:'Fixture desktop',local:true,sessions:[{name:'main',web_clients_allowed:true}]});
-   if(p==='/api/attention')return json({tabs:[1,2].map(id=>({host:'fixture',session:'main',id,position:id-1,name:'Conversation '+id,panes:[pane(id)]})),panes:[1,2].map(id=>({host:'fixture',session:'main',pane_id:id,...(f.agent?{agent:f.agent}:{}),state:f.state,...(f.bound?{chat_id:'chat-'+id}:{})})),errors:[]});
+   if(p==='/api/attention')return json({tabs:f.tabs.map(id=>({host:'fixture',session:'main',id,position:id-1,name:'Conversation '+id,panes:[pane(id)]})),panes:f.tabs.map(id=>({host:'fixture',session:'main',pane_id:id,...(f.agent?{agent:f.agent}:{}),state:f.state,...(f.bound?{chat_id:'chat-'+id}:{})})),errors:[]});
    if(p.startsWith('/api/chats/')){const id=Number(p.split('-').at(-1));return json({id:'chat-'+id,model:f.model,reasoning_effort:f.effort,session_id:f.agent==='codex'?thread(id):null,messages:f.history.get(id)||[],start_cursor:0,next_cursor:null});}
    if(p.endsWith('/conversation/reply')){f.claudeReplies.push(route.request().postDataJSON());return route.fulfill({status:f.claudeReplyStatus,json:{ok:true}});}
    if(p.endsWith('/conversation/prepare')){f.preparations.push(route.request().postDataJSON());return route.fulfill({status:f.prepareStatus,json:{trusted:false}});}
@@ -33,6 +33,7 @@ test('integrated Conversation journeys use production markup and preserve delive
    }
    if(p.endsWith('/attachments'))return json({path:uploadRoot+url.searchParams.get('name')});
    if(p.endsWith('/file')){if(f.delayImages)await new Promise(resolve=>f.releaseImages.push(resolve));return route.fulfill({contentType:'image/svg+xml',body:portrait}).catch(()=>{});}
+   if(p.endsWith('/new-tab')&&route.request().method()==='POST'){f.newTabs.push(route.request().postDataJSON());return json({pane_id:3,tab_id:3});}
    if(p.startsWith('/hosts/')){
     f.connections.push(p);
     return route.fulfill({contentType:'text/html',body:`<script>let active=${JSON.stringify(pane(1))};const state=id=>parent.postMessage({type:'zellij-state',focus_id:id,payload:{session_name:'main',active_pane:active,panes:${JSON.stringify([pane(1),pane(2)])}}},location.origin);addEventListener('message',event=>{const data=event.data;if(data.type==='zellij-focus'){active=${JSON.stringify([pane(1),pane(2)])}.find(p=>p.pane_id===data.pane_id);state(data.focus_id);}else if(data.type==='zellij-conversation-paste'){parent.reviewPastes.push(data);if(!parent.reviewHoldBridge)parent.postMessage({type:'zellij-conversation-paste-result',id:data.id,ok:true},location.origin);}});state();</script>`});
@@ -247,6 +248,24 @@ test('integrated Conversation journeys use production markup and preserve delive
     f.state='working';f.history.get(1).push({role:'user',text:'First task'});f.bound=true;await f.refresh();
     await page.locator('.conversation-message.user').getByText('First task',{exact:true}).waitFor();assert.equal(await page.locator('.conversation-outgoing').count(),0);
     assert.equal(await page.evaluate(()=>SwitchboardConversation.hasUnsentWork()),false,'The first send moves to the chat it started');
+   }finally{await f.close();}
+  });
+  await t.test('a tab started from New tab shows its prompt and a starting spinner until the transcript has it',async()=>{
+   const f=await fixture({agent:'claude'}),{page}=f;try{
+    await page.evaluate(()=>createNewTab(sessionKey('fixture','main'),{project:'switchboard',command:'claude:claude-haiku-5-5',prompt:'Fix the flaky test\n\nAttached files:\n/tmp/log.txt'},()=>true,'Fix the flaky test'));
+    await page.locator('.conversation-launch').getByText('Fix the flaky test',{exact:true}).waitFor();
+    assert.deepEqual(f.newTabs.map(body=>body.prompt),['Fix the flaky test\n\nAttached files:\n/tmp/log.txt'],'The relay gets the full prompt');
+    assert.equal(await page.locator('.conversation-working-step').getAttribute('data-step'),'Starting Claude…');
+    assert.equal(await page.locator('.conversation-notice').isVisible(),false,'No connection notices while the prompt stands in');
+    assert.equal(await page.locator('.conversation-panel header strong').textContent(),'Fix the flaky test');
+    const row=page.locator('#tabs .tab-select.selected');
+    assert.equal(await row.getAttribute('data-agent-state'),'Starting');assert.equal(await row.locator('.star.starting').count(),1);
+    assert.equal(await row.locator('.tab-name').textContent(),'Fix the flaky test');
+    f.tabs=[1,2,3];f.state='working';f.history.set(3,[{role:'user',text:'Fix the flaky test'},{role:'assistant',text:'Looking at the test'}]);await f.refresh();
+    await page.getByText('Looking at the test',{exact:true}).waitFor();
+    assert.equal(await page.locator('.conversation-launch').count(),0,'The transcript replaces the stand-in');
+    assert.equal(await page.locator('.conversation-message.user').count(),1);
+    assert.notEqual(await page.locator('#tabs .tab-select.selected').getAttribute('data-agent-state'),'Starting');
    }finally{await f.close();}
   });
   await t.test('Codex and Claude commands attach only after leaving Conversation and keep Terminal available',async()=>{
