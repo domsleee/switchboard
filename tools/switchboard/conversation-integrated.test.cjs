@@ -574,7 +574,7 @@ test('integrated Conversation journeys use production markup and preserve delive
      const preview=page.locator('.conversation-launch').getByRole('button',{name:'Preview portrait.svg',exact:true});
      await preview.waitFor();await page.waitForFunction(()=>document.querySelector('.conversation-launch img')?.naturalHeight===640);
      if(process.env.MODE_SCREENSHOTS&&text){
-      const panel=page.locator('.conversation-panel'),hidden=await page.addStyleTag({content:'.conversation-launch .conversation-media{display:none}'});
+      const panel=page.locator('.conversation-panel'),hidden=await page.addStyleTag({content:'.conversation-launch .conversation-media{display:none!important}'});
       await panel.screenshot({path:path.join(process.env.MODE_SCREENSHOTS,'new-chat-image-before.png')});await hidden.evaluate(node=>node.remove());
       await panel.screenshot({path:path.join(process.env.MODE_SCREENSHOTS,'new-chat-image-after.png')});
      }
