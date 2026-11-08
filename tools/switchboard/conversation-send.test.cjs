@@ -54,11 +54,18 @@ test('outgoing replies stay visible through queue acknowledgement and reconcile 
   await page.evaluate(()=>window.dispatchEvent(new MessageEvent('message',{origin:location.origin,source:current.frame.contentWindow,data:{type:'zellij-conversation-paste-result',id:pastes[1].id,ok:true}})));
   await outgoing.getByText('Sent',{exact:true}).waitFor();history.push({role:'user',text:'Bridge reply'});await poll();
   await page.waitForFunction(()=>document.querySelectorAll('.conversation-outgoing').length===0);
+  // The transcript may acknowledge a bridge send before its result says where a terminal draft went.
+  const stashNotice="Your terminal draft is in Claude's stash. Press Ctrl+S on its empty prompt to bring it back.";
+  await draft.fill('Bridge acknowledged first');await send.click();await page.waitForFunction(()=>pastes.length===3);
+  history.push({role:'user',text:'Bridge acknowledged first'});await poll();
+  await page.waitForFunction(()=>document.querySelectorAll('.conversation-outgoing').length===0);
+  await page.evaluate(notice=>window.dispatchEvent(new MessageEvent('message',{origin:location.origin,source:current.frame.contentWindow,data:{type:'zellij-conversation-paste-result',id:pastes[2].id,ok:true,error:'',notice}})),stashNotice);
+  await page.getByText(stashNotice,{exact:true}).waitFor();
   // A current relay types Claude replies itself; the terminal is never used.
   relay=409;await draft.fill('Relay reply');await send.click();
   await outgoing.getByText('Claude is not at its prompt. Open Terminal to see what it needs.',{exact:true}).waitFor();
   relay=200;await send.click();await outgoing.getByText('Queued',{exact:true}).waitFor();
-  assert.equal(await page.evaluate(()=>pastes.length),2);
+  assert.equal(await page.evaluate(()=>pastes.length),3);
   assert.deepEqual(replies.at(-1),{pane_id:1,text:'Relay reply'});
   assert.equal(await draft.inputValue(),'');
   // The relay sets a terminal draft aside; if Claude did not restore it, say where it is.
