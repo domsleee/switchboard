@@ -39,6 +39,14 @@ bounded delivery journals. Relay and web services can update while these viewers
 stay open: typing is buffered and resumes in order on the same attachment, and
 output is acknowledged only after the browser renderer applies it. A restart can
 briefly delay display; it does not move queued typing to a new session.
+A viewer whose sockets close for another reason asks for a resumable attachment
+again, and waits up to 30 seconds for a new worker's first reply, so it does not
+fall back to legacy sockets that later updates disconnect.
+
+While the local relay restarts, the sidebar keeps every tab's last status and shows
+no error for 30 seconds. Relays do the same for a paired computer that stops
+answering after answering in the last 30 seconds, so its update does not flip its
+tabs to Unavailable on other computers.
 
 Switching to Conversation drains queued typing and waits for the retained
 viewer to confirm native disconnection before unloading the terminal. Returning

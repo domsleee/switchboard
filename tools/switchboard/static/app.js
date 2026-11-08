@@ -1137,10 +1137,14 @@ async function refresh() {
           connectSession(host,session.name);
         }
         pruneSessions(null,host.id);
-      }catch(error){hosts.set(summary.id,{...hosts.get(summary.id),connecting:false,error:error.message});if(error instanceof TypeError)relayLost();}
+      }catch(error){
+        // A network error means the local relay itself is down, usually restarting.
+        if(error instanceof TypeError)relayLost();
+        if(!(error instanceof TypeError&&relayRestarting()))hosts.set(summary.id,{...hosts.get(summary.id),connecting:false,error:error.message});
+      }
       renderMachines();render();
     }));
-  }catch(error){setStatus(error.message,true);relayLost();}finally{loading=false;}
+  }catch(error){relayLost();if(!relayRestarting())setStatus(error.message,true);}finally{loading=false;}
 }
 function failNewTab(entry,requestId,message){
   if(!entry.pendingNewTab||entry.pendingNewTab.requestId!==requestId)return;
@@ -2495,7 +2499,14 @@ async function refreshAttention(immediate=false,watch=false){
     const selectedTab=allTabs().find(item=>item.key===selected);if(selectedTab?.entry.needsFocus)focus(selectedTab,true);
     // A relay without versions answers at once, so wait before asking again.
     return data.version!==undefined;
-  }catch(_){attentionLoaded=true;paneAttention.clear();askpassRequests=[];attentionErrors=[{host:'Switchboard'}];render();relayLost();return false;}
+  }catch(_){
+    attentionLoaded=true;relayLost();
+    // A relay restart (an update) takes a few seconds. Keep every tab's last
+    // status meanwhile instead of flipping them all to Unavailable and back.
+    if(relayRestarting())attentionErrors=[{host:'Switchboard',pending:true}];
+    else{paneAttention.clear();askpassRequests=[];attentionErrors=[{host:'Switchboard'}];}
+    render();return false;
+  }
   finally{if(!watch){attentionLoading=false;if(attentionRefreshPending){attentionRefreshPending=false;refreshAttention();}}}
 }
 function keyedAttention(states){
@@ -2504,6 +2515,8 @@ function keyedAttention(states){
 // An upgrade restarts the relay for about a second. Retry every 250 ms for 10 s
 // instead of waiting for the next poll, and reload hosts once it answers.
 let relayLostAt=0;
+const RELAY_RESTART_GRACE_MS=30000;
+function relayRestarting(){return !!relayLostAt&&Date.now()-relayLostAt<RELAY_RESTART_GRACE_MS;}
 function relayLost(){
   relayLostAt||=Date.now();
   if(Date.now()-relayLostAt<10000)setTimeout(refreshAttention,250);

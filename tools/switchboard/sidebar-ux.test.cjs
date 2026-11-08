@@ -868,3 +868,48 @@ test('working tabs show their age in blue, and long titles run under the status 
     assert.deepEqual(errors,[]);
   }finally{await browser.close();}
 });
+
+test('a relay restart keeps every tab status instead of flashing Unavailable',
+  {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
+  const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch({headless:true});
+  try{
+    const page=await browser.newPage({viewport:{width:1100,height:600}}),errors=[];
+    page.setDefaultTimeout(5000);
+    page.on('pageerror',error=>errors.push(error.message));
+    const tabs=[{host:'mac',session:'main',id:1,position:0,name:'Build',panes:[{pane_id:1,is_plugin:false,tab_position:0}]}];
+    const panes=[{host:'mac',session:'main',pane_id:1,tab_id:1,state:'working',since:Date.now()/1000-30,agent:'claude'}];
+    let down=false;
+    await page.route('**/*',route=>{
+      const url=new URL(route.request().url()),path=url.pathname;
+      const json=value=>route.fulfill({contentType:'application/json',body:JSON.stringify(value)});
+      if(down&&path.startsWith('/api/'))return route.abort('connectionrefused');
+      if(path==='/api/attention'&&url.searchParams.has('after'))return;
+      if(path==='/api/hosts')return json([{id:'mac',name:'Mac'}]);
+      if(path==='/api/hosts/mac')return json({id:'mac',name:'Mac',sessions:[{name:'main',web_clients_allowed:true}]});
+      if(path==='/api/attention')return json({tabs,panes,errors:[]});
+      if(path.startsWith('/api/'))return json({});
+      if(path.startsWith('/hosts/'))return route.fulfill({contentType:'text/html',body:'<body style="background:#111318"></body>'});
+      const file=path==='/'?'index.html':path.slice(1);
+      if(!/^[\w.-]+$/.test(file)||!fs.existsSync(__dirname+'/static/'+file))return route.fulfill({status:404,body:''});
+      return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file)});
+    });
+    await page.goto('https://switchboard.test/');
+    await page.locator('#snoozed-toggle').click();
+    const status=page.locator('#tabs .tab-select .tab-status');
+    await page.waitForFunction(()=>document.querySelector('#tabs .tab-select .tab-status')?.textContent.startsWith('Working'));
+    // The relay goes down for an update: status and tabs stay, and no error shows.
+    down=true;
+    await page.evaluate(async()=>{await refreshAttention();await refresh();});
+    assert.match(await status.textContent(),/^Working/);
+    assert.equal(await page.locator('#tabs .tab-select').count(),1);
+    assert.doesNotMatch(await page.locator('#status').textContent(),/unavailable|Cannot reach/);
+    // Down for longer than a restart: report it as before.
+    await page.evaluate(async()=>{relayLostAt=Date.now()-RELAY_RESTART_GRACE_MS;await refreshAttention();});
+    assert.match(await page.locator('#status').textContent(),/attention status unavailable/);
+    assert.doesNotMatch(await status.textContent(),/^Working/);
+    down=false;
+    await page.evaluate(()=>refreshAttention());
+    await page.waitForFunction(()=>document.querySelector('#tabs .tab-select .tab-status')?.textContent.startsWith('Working'));
+    assert.deepEqual(errors,[]);
+  }finally{await browser.close();}
+});
