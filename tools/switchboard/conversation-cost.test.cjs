@@ -22,8 +22,13 @@ test('Conversation shows the chat’s API cost only on computers chosen in Setti
   await page.evaluate(()=>{current.showCost=true;SwitchboardConversation.update();});
   assert.equal(await cost.textContent(),'$1.23');
   assert.match(await cost.getAttribute('title'),/cache read 56,000/);
-  const [where,dollars]=await Promise.all([page.locator('.conversation-context').boundingBox(),cost.boundingBox()]);
-  assert.ok(Math.abs(where.y-dollars.y)<4&&dollars.x>where.x,'The cost follows the project on the subtitle line');
+  const [model,dollars]=await Promise.all([page.locator('.conversation-compose .conversation-model').boundingBox(),cost.boundingBox()]);
+  assert.ok(Math.abs(model.y+model.height/2-(dollars.y+dollars.height/2))<3&&dollars.x>=model.x+model.width,'The cost follows the model in the composer');
+  // A pending model switch takes the space.
+  await page.evaluate(()=>{current.pendingSwitch={label:'Codex'};SwitchboardConversation.update();});
+  assert.equal(await cost.textContent(),'');
+  await page.evaluate(()=>{delete current.pendingSwitch;SwitchboardConversation.update();});
+  assert.equal(await cost.textContent(),'$1.23');
   // New responses update it; tokens from an unknown model make it a lower bound.
   usage={...usage,cost_usd:0.004,unpriced_tokens:900};
   await page.evaluate(()=>intervals.forEach(fn=>fn()));
