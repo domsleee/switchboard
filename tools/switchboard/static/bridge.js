@@ -563,17 +563,74 @@
       return super.send(data);
     }
   };
+  // Claude's input box, read as the relay's claude_prompt reads a screen dump: the
+  // row after a rule that starts with ❯ (! in shell mode), through the next rule.
+  // Claude draws its placeholder, queued-message hint and suggested prompt dim and
+  // typed text never, so only undimmed cells are a draft.
+  function claudePrompt(){
+    const buffer=window.term.buffer.active,rows=[];
+    for(let y=0;y<window.term.rows;y++){
+      const line=buffer.getLine(buffer.baseY+y);let text='',bright='';
+      if(typeof line?.getCell==='function')for(let x=0;x<line.length;x++){const cell=line.getCell(x),c=cell?.getChars()||' ';text+=c;bright+=cell?.isDim()?' ':c;}
+      else text=bright=line?.translateToString(true)||'';
+      rows.push({text,bright});
+    }
+    const rule=row=>/^[─━]{8,}$/.test(row.text.trim());
+    for(let start=rows.length-1;start>0;start--){
+      const marker=rows[start].text.trimStart()[0];
+      if(!['❯','!'].includes(marker)||!rule(rows[start-1]))continue;
+      const end=rows.findIndex((row,i)=>i>start&&rule(row));if(end<0)continue;
+      const first=rows[start].bright.slice(rows[start].text.indexOf(marker)+1);
+      const draft=[first,...rows.slice(start+1,end).map(row=>row.bright)].map(line=>line.trim()).join('\n').trim();
+      return {draft,stashed:rows.slice(end+1).some(row=>row.text.includes('› stashed')),shell:marker==='!'};
+    }
+    return null;
+  }
+  // A draft typed in Terminal goes into Claude's stash (Ctrl+S), which keeps its
+  // pasted blocks and shell mode; Claude restores it once the reply is submitted.
+  // Ctrl+S never interrupts a turn, unlike Escape.
+  function sendToClaude(message,reply,unchanged){
+    const box=claudePrompt();
+    if(!box)return reply(false,'Claude is not at its prompt. Open Terminal to see what it needs.');
+    if(box.draft&&box.stashed)return reply(false,'Claude already holds a stashed prompt and a new draft in Terminal. Send or clear the draft there first.');
+    const wait=(done,tries,then)=>{const now=claudePrompt();if(now&&done(now))return then(true);if(!tries)return then(false);setTimeout(()=>wait(done,tries-1,then),50);};
+    const send=()=>{
+      try{window.term.paste(message.text);window.term.input('\r');}catch{return reply(false,'Could not send the reply. Check the terminal before retrying.');}
+      if(!box.draft)return reply(true);
+      wait(now=>!now.stashed&&now.draft===box.draft&&now.shell===box.shell,20,restored=>reply(true,'',restored?'':"Your terminal draft is in Claude's stash. Press Ctrl+S on its empty prompt to bring it back."));
+    };
+    // An empty shell-mode box would run the reply as a command. Ctrl+S has nothing
+    // to stash there; Backspace returns it to chat mode.
+    if(!box.draft&&box.shell){
+      try{window.term.input('\x7f');}catch{return reply(false,'Could not send the reply. Check the terminal before retrying.');}
+      return wait(now=>!now.draft&&!now.shell,30,chat=>{
+        if(!chat)return reply(false,'Claude stayed in shell mode. Open Terminal to send.');
+        if(!unchanged()||terminalSocket?.readyState!==1)return reply(false,'The terminal pane changed. Open the intended terminal before replying.');
+        send();
+      });
+    }
+    if(!box.draft)return send();
+    try{window.term.input('\x13');}catch{return reply(false,'Could not send the reply. Check the terminal before retrying.');}
+    // Stashing also leaves shell mode.
+    wait(now=>!now.draft&&now.stashed&&!now.shell,30,stashed=>{
+      if(!stashed)return reply(false,'Claude did not set the terminal draft aside. Open Terminal to send.');
+      if(!unchanged()||terminalSocket?.readyState!==1)return reply(false,'The terminal pane changed. Your terminal draft is in Claude\'s stash; press Ctrl+S on its empty prompt to bring it back.');
+      send();
+    });
+  }
   window.addEventListener('message', event => {
     if (event.origin !== location.origin || event.source !== parent) return;
     const message = event.data;
     if (message?.type === 'zellij-conversation-paste') {
-      const reply=(ok,error)=>parent.postMessage({type:'zellij-conversation-paste-result',id:message.id,ok,error},location.origin);
+      const reply=(ok,error,notice)=>parent.postMessage({type:'zellij-conversation-paste-result',id:message.id,ok,error,...notice&&{notice}},location.origin);
       if(typeof message.id!=='string'||typeof message.text!=='string'||!message.text||message.text.length>16000||/[\x00-\x08\x0b-\x1f\x7f]/.test(message.text))return reply(false,'Invalid terminal draft.');
-      if(pendingFocus||pendingNewTab||latest?.active_pane?.is_plugin||latest?.active_pane?.pane_id!==message.pane_id||!window.frameElement?.classList.contains('active'))return reply(false,'The terminal pane changed. Open the intended terminal before replying.');
+      const unchanged=()=>!pendingFocus&&!pendingNewTab&&!latest?.active_pane?.is_plugin&&latest?.active_pane?.pane_id===message.pane_id&&window.frameElement?.classList.contains('active');
+      if(!unchanged())return reply(false,'The terminal pane changed. Open the intended terminal before replying.');
       if(terminalSocket?.readyState!==1||!window.term||window.term.options.disableStdin)return reply(false,'The terminal is disconnected or not ready.');
       if(message.text.includes('\n')&&!window.term.modes.bracketedPasteMode)return reply(false,'This terminal cannot safely paste a multiline reply. Open the terminal instead.');
+      if(message.submit&&message.agent==='claude')return sendToClaude(message,reply,unchanged);
       if(message.submit){
-        const marker=message.agent==='codex'?'›':message.agent==='claude'?'❯':null;
+        const marker=message.agent==='codex'?'›':null;
         const buffer=window.term.buffer.active,lines=[];
         for(let row=0;row<window.term.rows;row++)lines.push(buffer.getLine(buffer.baseY+row)?.translateToString(true)||'');
         if(message.agent==='copilot'){
@@ -581,11 +638,10 @@
           if(top<0||bottom<=top+1||!lines.slice(top+1,bottom).every(line=>/^┃\s*$/.test(line.trim())))return reply(false,'Clear the terminal prompt before sending.');
         }else{
         const index=marker?lines.findLastIndex(line=>line.trimStart().startsWith(marker)):-1;
-        // Claude draws a suggested next prompt dim; only undimmed text is a draft.
         const bright=row=>{const line=buffer.getLine(buffer.baseY+row);if(!line)return '';if(typeof line.getCell!=='function')return lines[row];let text='';
           for(let x=0;x<line.length;x++){const cell=line.getCell(x);if(cell&&!cell.isDim())text+=cell.getChars()||' ';}return text;};
         const prompt=index<0?null:bright(index).trimStart().replace(marker,'').trim();
-        const placeholder=message.agent==='codex'?['Ask Codex to do anything','Ask a follow-up question'].includes(prompt):/^Try ".*"$/.test(prompt||'')||prompt?.length>5&&'Press up to edit queued messages'.startsWith(prompt.replace(/…$/,''));
+        const placeholder=['Ask Codex to do anything','Ask a follow-up question'].includes(prompt);
         if(prompt===null||(prompt!==''&&!placeholder))return reply(false,'Clear the terminal prompt before sending.');
         for(const line of lines.slice(index+1)){
           const text=line.trim();if(!text)continue;
