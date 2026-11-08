@@ -259,7 +259,8 @@
     const sb=computer.switchboard,agents=(computer.agents||[]).filter(agent=>agent.state!=='absent');
     // Builds before automaticUpdates existed leave it out: shown as unknown, not off.
     const updating=['requested','applying'].includes(sb.updatePhase);
-    const updates=updating?'running':sb.automaticUpdates===true?((sb.lastUpdateError||sb.readyUpdate||sb.updatePhase==='recovery')?'attention':'ok'):sb.automaticUpdates===false?'failed':'never';
+    const checkOnly=sb.updateCheckError&&!sb.lastUpdateError&&!sb.readyUpdate&&sb.updatePhase!=='recovery';
+    const updates=updating?'running':sb.automaticUpdates===true?((sb.lastUpdateError||sb.updateCheckError||sb.readyUpdate||sb.updatePhase==='recovery')?'attention':'ok'):sb.automaticUpdates===false?'failed':'never';
     const installWarnings=agents.filter(agent=>agent.installation?.state==='attention');
     const pluginWarnings=agents.filter(agent=>agent.plugins?.state==='attention');
     const skillWarnings=agents.filter(agent=>agent.skills?.state==='attention'||agent.skillRepair?.error);
@@ -273,7 +274,7 @@
     let text='All set';
     if(updating)text=sb.updatePhase==='applying'?'Installing update…':'Update requested…';
     else if(updates==='failed')text='Automatic updates are off';
-    else if(updates==='attention')text=sb.lastUpdateError?'Last update failed':sb.updatePhase==='recovery'?'Interrupted update · recovery waiting':'Update ready · terminals connected';
+    else if(updates==='attention')text=sb.lastUpdateError?'Last update failed':checkOnly?"Couldn't check for updates":sb.updatePhase==='recovery'?'Interrupted update · recovery waiting':'Update ready · terminals connected';
     else if(updates==='never')text='Update status unknown';
     else if(waiting.length)text=waiting.map(agent=>`${agent.name}: ${agent.state==='approve'?'hooks not trusted':agent.state==='running'?'setting up…':'needs setup'}`).join(' · ');
     if(installWarnings.length)text=(text==='All set'?'':text+' · ')+installWarnings.map(agent=>`${agent.name}: installation needs attention`).join(' · ');
@@ -285,7 +286,7 @@
     block.append(summary);
     const update=element('div','task-row');update.dataset.status=updates;
     const head=element('div','task-head');
-    head.append(dot(updates),element('span','task-name','Automatic updates'),element('small','task-meta',updating?'on · updating':updates==='ok'?'on':updates==='attention'?(sb.lastUpdateError?'on · last update failed':'on · update waiting'):updates==='failed'?'off':'unknown on this build'));
+    head.append(dot(updates),element('span','task-name','Automatic updates'),element('small','task-meta',updating?'on · updating':updates==='ok'?'on':updates==='attention'?(sb.lastUpdateError?'on · last update failed':checkOnly?"on · couldn't check":'on · update waiting'):updates==='failed'?'off':'unknown on this build'));
     const activate=sb.activateUpdate&&(sb.activationTarget||sb.readyUpdate?.commit);
     if(sb.updateNow||activate){
       const actions=element('span','task-links');
@@ -295,7 +296,7 @@
     update.append(head);
     if(sb.readyUpdate)update.append(element('p','task-note',`Build ${sb.readyUpdate.commit.slice(0,7)} ready${sb.readyUpdate.since?` · downloaded ${ago(sb.readyUpdate.since*1000)}`:''}. ${sb.activateUpdate?'Terminals briefly reconnect; running commands continue.':'This computer needs a newer updater to activate while terminals are connected.'}`));
     else if(sb.updateNotice)update.append(element('p','task-note',sb.updateNotice));
-    if(sb.lastUpdateError)update.append(element('pre','task-tail',sb.lastUpdateError));
+    if(sb.lastUpdateError||sb.updateCheckError)update.append(element('pre','task-tail',sb.lastUpdateError||sb.updateCheckError));
     block.append(update,...agents.map(agent=>agentRow(computer,agent)));
     if(!agents.length)block.append(element('p','task-note agent-none','No Claude Code, Copilot CLI or Codex on this computer'));
     // Open by default while something needs the user.

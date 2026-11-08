@@ -528,6 +528,65 @@ fn a_published_build_older_than_the_running_one_is_not_installed() {
     assert!(state.get("ready").is_none());
 }
 
+/// Publishes run 5 and records it as already handled, so a run only reads the manifest.
+fn nothing_due(harness: &Harness, state: serde_json::Value) {
+    harness.publish(&full('c'), 5, "");
+    fs::write(harness.updater.state_path(), state.to_string()).unwrap();
+}
+
+#[test]
+fn a_failed_manifest_read_is_settled_by_the_next_successful_read() {
+    let harness = Harness::new(true);
+    assert!(harness.updater.run().is_err(), "nothing is published yet");
+    let mut state = harness.state();
+    assert!(state["error"]
+        .as_str()
+        .unwrap()
+        .starts_with("Release manifest unavailable"));
+    state["run_number"] = 5.into();
+    nothing_due(&harness, state);
+    harness.updater.run().unwrap();
+    let state = harness.state();
+    assert!(state.get("error").is_none(), "{state}");
+    assert!(state.get("manifest_failure").is_none(), "{state}");
+}
+
+#[test]
+fn a_manifest_read_leaves_other_failures_standing() {
+    let harness = Harness::new(true);
+    // A failed activation, then another source's failure that this run cannot judge.
+    nothing_due(
+        &harness,
+        serde_json::json!({"run_number": 5, "error": "Handoff failed"}),
+    );
+    harness.updater.run().unwrap();
+    assert_eq!(harness.state()["error"], "Handoff failed");
+    let state = serde_json::json!({"run_number": 5, "error": "Download failed",
+        "manifest_failure": {"source": "https://elsewhere/", "error": "Download failed"}});
+    fs::write(harness.updater.state_path(), state.to_string()).unwrap();
+    harness.updater.run().unwrap();
+    assert_eq!(harness.state()["error"], "Download failed");
+}
+
+#[test]
+fn a_published_build_keeps_a_newer_local_build_and_its_wait() {
+    let harness = Harness::new(true);
+    write_executable(
+        &harness.root.join("running"),
+        &fake_binary(&harness.root, "ccccccc", ""),
+    );
+    let waiting = serde_json::json!({"commit": full('e'), "since": 123});
+    nothing_due(
+        &harness,
+        serde_json::json!({"run_number": 4, "ready": waiting, "notice": "waiting"}),
+    );
+    harness.updater.run().unwrap();
+    let state = harness.state();
+    assert_eq!(state["run_number"], 5);
+    assert_eq!(state["ready"], waiting);
+    assert_eq!(state["notice"], "waiting");
+}
+
 #[test]
 fn state_written_by_the_python_updater_round_trips() {
     let text = r#"{"run_number": 7, "commit": "abc", "notice": "n", "extra": [1],

@@ -1512,12 +1512,18 @@ fn update_running(directory: &std::path::Path) -> bool {
     }
 }
 
+/// Whether the recorded error only says the release manifest could not be read: no
+/// update was attempted, so it is not a failed update.
+fn check_failed(state: &Value) -> bool {
+    !state["error"].is_null() && state["error"] == state["manifest_failure"]["error"]
+}
+
 fn update_phase(state: &Value, requested: bool, running: bool) -> &'static str {
     if !state["pending"].is_null() && running {
         "applying"
     } else if requested {
         "requested"
-    } else if !state["error"].is_null() {
+    } else if !state["error"].is_null() && !check_failed(state) {
         "failed"
     } else if !state["pending"].is_null() {
         "recovery"
@@ -1547,6 +1553,11 @@ fn switchboard_in(directory: &Path, automatic: bool) -> Value {
                 .is_some_and(|expires| expires >= now() / 1000 && expires <= now() / 1000 + 300)
         });
     let phase = update_phase(&update_state, request_active, update_running(directory));
+    let (update_error, check_error) = if check_failed(&update_state) {
+        (Value::Null, update_state["error"].clone())
+    } else {
+        (update_state["error"].clone(), Value::Null)
+    };
     json!({
         "updatePhase": phase,
         "commit": env!("SWITCHBOARD_COMMIT"),
@@ -1554,7 +1565,8 @@ fn switchboard_in(directory: &Path, automatic: bool) -> Value {
         "automaticUpdates": automatic,
         // Windows has no update job to start; its tray checks every 2 minutes.
         "updateNow": automatic && cfg!(any(target_os = "linux", target_os = "macos")),
-        "lastUpdateError": update_state["error"],
+        "lastUpdateError": update_error,
+        "updateCheckError": check_error,
         "updateNotice": update_state["notice"],
         "readyUpdate": update_state["ready"],
         "activationTarget": update_state["ready"]["commit"].as_str().or(update_state["pending"]["target"].as_str()),
@@ -1625,6 +1637,32 @@ mod tests {
         let stopped = switchboard_in(directory.path(), false);
         assert_eq!(stopped["activateUpdate"], false);
         assert_eq!(stopped["updateNow"], false);
+    }
+
+    #[test]
+    fn switchboard_update_failed_check_is_not_a_failed_update() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.json");
+        let error = "Release manifest unavailable: 504";
+        write_json(
+            &path,
+            &json!({"error": error, "manifest_failure": {"source": "s", "error": error}}),
+        )
+        .unwrap();
+        let status = switchboard_in(directory.path(), true);
+        assert_eq!(status["updatePhase"], "current");
+        assert_eq!(status["updateCheckError"], error);
+        assert!(status["lastUpdateError"].is_null());
+
+        write_json(
+            &path,
+            &json!({"error": "Handoff failed", "manifest_failure": {"source": "s", "error": error}}),
+        )
+        .unwrap();
+        let status = switchboard_in(directory.path(), true);
+        assert_eq!(status["updatePhase"], "failed");
+        assert_eq!(status["lastUpdateError"], "Handoff failed");
+        assert!(status["updateCheckError"].is_null());
     }
 
     #[test]

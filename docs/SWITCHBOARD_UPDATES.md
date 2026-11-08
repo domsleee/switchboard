@@ -153,7 +153,9 @@ and not retried; a newer build remains eligible. Failures before the handoff,
 including unavailable local services or the session catalog, remain eligible for
 the next scheduled check. Catalog requests allow 30 seconds so the relay's
 20-second peer timeout can report an offline computer without blocking updates.
-Download failures leave running services untouched.
+Download failures leave running services untouched. A failed read of the release
+manifest shows in Health as **Couldn't check for updates**, not a failed update,
+and clears on the next successful read.
 
 The Windows tray retains the updater's native process handle until it exits.
 An unrelated process reusing its PID cannot suppress later checks. Timestamped
