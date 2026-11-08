@@ -677,7 +677,8 @@ mod tests {
     #[test]
     fn switchboard_attachment_focus_recovers_lost_completion_without_trusting_metadata() {
         let marker = json!({"type":"Log","lines":["name: tab","id: 0","position: 0"]});
-        let snapshot = json!({"type":"MobileState","payload":{"active_pane":{"pane_id":7,"is_plugin":false}}});
+        let snapshot =
+            json!({"type":"MobileState","payload":{"active_pane":{"pane_id":7,"is_plugin":false}}});
         let yes = json!({"type":"LogError","lines":["Pane Terminal(7) is already focused"]});
         let mut focus = FocusConfirmation::new((7, false));
         // Both native completion receivers expired while the screen was busy.
