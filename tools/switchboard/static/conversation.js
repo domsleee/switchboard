@@ -64,14 +64,14 @@
       requestAnimationFrame(()=>pre.classList.toggle('fits',pre.scrollWidth<=pre.clientWidth+1));
     }
   }
-  window.SwitchboardConversation={agentIcons,install({selection,terminal,modeChanged=()=>{},viewed=()=>{},switchModel=null}){
+  window.SwitchboardConversation={agentIcons,install({selection,terminal,modeChanged=()=>{},viewed=()=>{},switchModel=null,cancelSwitch=()=>{},idle=()=>{}}){
     const root=document.getElementById('terminals'),drafts=new Map(),attachments=new Map(),retryKeys=new Map();
     const mobile=matchMedia('(max-width:700px), (pointer:coarse) and (max-width:1000px)').matches;
     const modeKey=mobile?'switchboard-mobile-view-mode':'switchboard-view-mode';
     let savedMode;try{savedMode=localStorage.getItem(modeKey);}catch{}
     let target=null,open=savedMode? savedMode==='conversation':mobile,generation=0,startCursor=0,tailCursor=0,nextCursor=null,messages=[],loading=false,loaded=false,lastPaint=null,modeRevision=0,navigationRevision=0;
     const outgoing=new Map(),consumedTranscript=new Map(),pendingSends=new Map(),bridgeSends=new Map(),startups=new Map(),draftVersions=new Map(),firstSends=new Set();
-    const conversations=new Map(),handoverDrafts=new Map();
+    const conversations=new Map(),handoverDrafts=new Map(),handoverAttachments=new Map();
     let stream=null,streamReady=false,streamSupported=false,streamPages=[],restorePosition=null;
     async function prepare(){
       if(!open||document.hidden||!target||target.agent!=='codex'||!target.session||!Number.isInteger(target.tab))return;
@@ -101,7 +101,7 @@
     const panel=el('section',undefined,'conversation-panel');
     // CSS keeps a hidden panel laid out (see conversation.css), so hide it from assistive technology here.
     const setPanelHidden=value=>{panel.hidden=value;panel.setAttribute('aria-hidden',String(value));};setPanelHidden(true);panel.tabIndex=-1;panel.setAttribute('aria-label','Agent conversation');
-    const header=el('header'),heading=el('div',undefined,'conversation-heading'),title=el('strong'),model=el(switchModel?'button':'span',undefined,'conversation-model'),activity=el('span',undefined,'conversation-activity'),terminalAction=el('button','Open Terminal','conversation-terminal-action');model.title=switchModel?'Switch between Claude and Codex with context':'Last reported model';if(switchModel){model.type='button';model.setAttribute('aria-label','Switch model with context');model.onclick=()=>switchModel(target);}activity.setAttribute('role','status');terminalAction.type='button';terminalAction.hidden=true;terminalAction.onclick=()=>show(false);const context=el('span',undefined,'conversation-context'),subtitle=el('div',undefined,'conversation-subtitle');subtitle.append(context,activity);heading.append(title,subtitle);header.append(heading,terminalAction);
+    const header=el('header'),heading=el('div',undefined,'conversation-heading'),title=el('strong'),model=el(switchModel?'button':'span',undefined,'conversation-model'),activity=el('span',undefined,'conversation-activity'),terminalAction=el('button','Open Terminal','conversation-terminal-action');model.title=switchModel?'Switch between Claude and Codex with context':'Last reported model';if(switchModel){model.type='button';model.setAttribute('aria-label','Switch model with context');model.onclick=()=>switchModel(target);}const cancelModel=el('button','×','conversation-model-cancel');cancelModel.type='button';cancelModel.hidden=true;cancelModel.setAttribute('aria-label','Cancel model switch');cancelModel.title='Cancel model switch';cancelModel.onclick=()=>cancelSwitch(target);activity.setAttribute('role','status');terminalAction.type='button';terminalAction.hidden=true;terminalAction.onclick=()=>show(false);const context=el('span',undefined,'conversation-context'),subtitle=el('div',undefined,'conversation-subtitle');subtitle.append(context,activity);heading.append(title,subtitle);header.append(heading,terminalAction);
     const notice=el('p','Loading this terminal’s conversation…','conversation-notice');notice.setAttribute('role','status');
     const list=el('div',undefined,'conversation-messages'),older=el('button','Load older messages'),refresh=el('button','↻'),latest=el('button','↓');refresh.setAttribute('aria-label','Refresh');refresh.title='Refresh conversation';latest.setAttribute('aria-label','Scroll to bottom');latest.title='Scroll to bottom';older.hidden=true;
     // One live row: a pulsing marker, the step in progress (or "Working"), and the elapsed time.
@@ -123,7 +123,7 @@
       catch{if(identity(target)===identity(destination))sendStatus('Could not interrupt the agent. Open Terminal and press Esc.');}
       finally{stop.disabled=false;}
     };
-    form.append(files,attach,draft,model,insert,stop,picker);
+    form.append(files,attach,draft,model,cancelModel,insert,stop,picker);
     const sendNotice=el('small',undefined,'conversation-send-notice');sendNotice.hidden=true;sendNotice.setAttribute('role','status');form.append(sendNotice);
     const transportNotice=el('small','Replies use Terminal briefly, then return here.','conversation-transport-notice');transportNotice.hidden=true;form.append(transportNotice);
     const completions=el('div',undefined,'conversation-completions');completions.id='conversation-completions';completions.hidden=true;completions.setAttribute('role','listbox');completions.setAttribute('aria-label','Commands and skills');form.prepend(completions);
@@ -189,11 +189,13 @@
     function effortName(value){const raw=String(value||'').trim();return /^xhigh$/i.test(raw)?'Extra High':raw.replace(/^\w/,char=>char.toUpperCase());}
     function providerLabel(){const agent=target?.agent||chat?.agent;return agent?agent[0].toUpperCase()+agent.slice(1):'Assistant';}
     // The model, then its effort as a dimmer word, the way T3 Code labels its model button.
+    // A switch waiting for the turn to end shows where it goes instead of the effort.
     function paintModel(){
-      const name=modelName(chat),label=name||(chat||target?.agent?providerLabel():''),effort=name?effortName(chat.reasoning_effort):'',agent=label?target?.agent||chat?.agent||'':'',signature=JSON.stringify([agent,label,effort]);
+      const name=modelName(chat),pending=target?.pendingSwitch,base=name||(chat||target?.agent?providerLabel():''),label=base+(pending?` → ${pending.label} · ${pending.running?'switching…':'after this turn'}`:''),effort=name&&!pending?effortName(chat.reasoning_effort):'',agent=base?target?.agent||chat?.agent||'':'',signature=JSON.stringify([agent,label,effort,!!pending]);
+      model.classList.toggle('pending',!!pending);model.title=pending?label+(pending.text?'\nInstructions: '+pending.text:''):switchModel?'Switch between Claude and Codex with context':'Last reported model';
       if(model.dataset.painted===signature)return;model.dataset.painted=signature;
       const icon=agentIcons[agent]?el('span',undefined,'conversation-model-icon'):null;if(icon){icon.innerHTML=agentIcons[agent];icon.setAttribute('aria-hidden','true');}
-      model.replaceChildren(...(icon?[icon]:[]),effort?`${label} `:label,...(effort?[el('span',effort,'conversation-effort')]:[]));
+      model.replaceChildren(...(icon?[icon]:[]),...(pending?[el('span',label,'conversation-model-label')]:[effort?`${label} `:label,...(effort?[el('span',effort,'conversation-effort')]:[])]));
     }
     // The in-transcript indicator counts up from when the agent started this turn.
     let workingTimer=null;
@@ -237,7 +239,8 @@
     function updateActivity(){
       const state=target?.state,label=state==='working'?'Working…':state==='approval'?'Approval needed':state==='input'?'Input needed':state==='waiting'?'Waiting on an agent':state==='ready'?'Ready':'';
       paintModel();
-      if(switchModel)model.disabled=!target?.switchAvailable||!chat||!!pendingFor()||!!(outgoing.get(identity(target))||[]).length||!!(attachments.get(identity(target))||[]).length;
+      // The model stays a control whenever there is an agent chat; a busy agent switches after its turn.
+      if(switchModel){model.disabled=!target?.switchAvailable||!chat;cancelModel.hidden=!target?.pendingSwitch||!!target.pendingSwitch.running;}
       if(activity.textContent!==label)activity.textContent=label;
       activity.classList.toggle('working',state==='working');
       const follow=nearBottom();paintLaunch();working.hidden=!launchShown()&&(!chat||!(state==='working'||state==='waiting'&&!backgroundAgents().length));tickWorking();
@@ -253,7 +256,7 @@
       const placeholder=target?.agent?`Ask ${providerLabel()} a follow-up…`:'Message…';if(draft.placeholder!==placeholder)draft.placeholder=placeholder;
       transportNotice.hidden=!chat||!(target?.terminalReady===false&&target?.agent!=='claude'&&!(target?.agent==='codex'&&/^[0-9a-f-]{36}$/.test(chat.thread||'')));
       insert.setAttribute('aria-label',transportNotice.hidden?'Send':'Send via Terminal');insert.title=transportNotice.hidden?'Send message':'Send via Terminal and return to Conversation';
-      paintPrompt();void loadPrompt();
+      paintPrompt();void loadPrompt();idle();
     }
     function promptTarget(){const t=target;return open&&!panel.hidden&&!document.hidden&&t?.agent==='claude'&&['approval','input'].includes(t.state)&&!!t.session&&Number.isInteger(t.pane)&&Number.isInteger(t.tab)&&!promptHosts.has(t.host)?t:null;}
     const fits=(value,limit)=>typeof value==='string'&&value.length<=limit;
@@ -426,8 +429,9 @@
     // growing or a resize moves the list.
     let scrollInput=0;for(const type of ['wheel','touchmove','pointerdown','keydown'])list.addEventListener(type,()=>{scrollInput=Date.now();},{passive:true});
     list.addEventListener('scroll',()=>{rememberReading();if(Date.now()-scrollInput<1000){list.classList.add('scrolling');clearTimeout(scrollIdle);scrollIdle=setTimeout(()=>list.classList.remove('scrolling'),700);}updateLatest();if(loaded&&startCursor>0&&list.scrollTop<80&&!loading&&older.hidden)load('older');},{passive:true});
-    function paint(prepend=false,initial=false){
-      const key=identity(target),sentItems=outgoing.get(key)||[],used=consumedTranscript.get(key)||new Set();
+    // Sends the transcript now shows leave the outgoing list; returns the list as it was.
+    function acknowledge(key,messages,startCursor){
+      const sentItems=outgoing.get(key)||[],used=consumedTranscript.get(key)||new Set();
       for(const sent of sentItems){
         if(sent.transcriptCursor!==undefined)continue;
         // Cursors can shift down when the relay hides records that settle (interrupts, local
@@ -438,6 +442,10 @@
       }
       consumedTranscript.set(key,used);
       outgoing.set(key,sentItems.filter(item=>item.transcriptCursor===undefined));
+      return sentItems;
+    }
+    function paint(prepend=false,initial=false){
+      const key=identity(target),sentItems=acknowledge(key,messages,startCursor);
       const visibleOutgoing=sentItems.filter(item=>item.transcriptCursor===undefined);
       const snapshot={start:startCursor,messages:messages.map(signatureOf),outgoing:JSON.stringify(visibleOutgoing.map(({id,text,files,state,detail})=>({id,text,files:files.map(file=>file.name),state,detail})))};
       if(lastPaint&&lastPaint.start===snapshot.start&&lastPaint.outgoing===snapshot.outgoing&&lastPaint.messages.length===snapshot.messages.length&&snapshot.messages.every((signature,i)=>signature===lastPaint.messages[i]))return;
@@ -562,15 +570,19 @@
     let pickerTarget=null;
     attach.onclick=()=>{pickerTarget=target;picker.click();};
     async function addFiles(selected,destination=target){
-      if(!destination||pendingFor(identity(destination)))return;const key=identity(destination),host=destination.host;
+      if(!destination||pendingFor(identity(destination)))return;const key=identity(destination),host=destination.host,added=[];
+      // The whole selection joins the composer before any upload, so a model switch meanwhile moves all of it.
       for(const file of selected){
         if(fileList(key).length>=8){if(identity(target)===key)sendStatus('Attach up to 8 files per message.');break;}
         if(!file.size||file.size>20*1024*1024){if(identity(target)===key)sendStatus('Choose a non-empty file up to 20 MB.');continue;}
-        const item={name:file.name,kind:file.type.startsWith('image/')?'image':file.type.startsWith('video/')?'video':'file',preview:file.type.startsWith('image/')?URL.createObjectURL(file):null};attachments.set(key,[...fileList(key),item]);if(identity(target)===key)paintFiles();
+        const item={name:file.name,kind:file.type.startsWith('image/')?'image':file.type.startsWith('video/')?'video':'file',preview:file.type.startsWith('image/')?URL.createObjectURL(file):null};attachments.set(key,[...fileList(key),item]);added.push([file,item]);
+      }
+      if(identity(target)===key)paintFiles();
+      for(const [file,item] of added){
         try{const response=await fetch('/api/hosts/'+encodeURIComponent(host)+'/attachments?'+new URLSearchParams({name:file.name}),{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:file});
           if(!response.ok)throw Error('Could not upload '+file.name+'. Remove it and try again.');const data=await response.json();if(typeof data.path!=='string'||!data.path||/[\x00-\x1f]/.test(data.path))throw Error('Invalid attachment response');item.path=data.path;
-        }catch(error){item.error=true;if(identity(target)===key)sendStatus(error.message);}
-        if(identity(target)===key)paintFiles();
+        }catch(error){item.error=true;if(fileList().includes(item))sendStatus(error.message);}
+        if(fileList().includes(item))paintFiles();
       }
     }
     picker.onchange=()=>{const selected=[...picker.files],destination=pickerTarget;picker.value='';pickerTarget=null;void addFiles(selected,destination);};
@@ -691,6 +703,7 @@
         for(const map of [outgoing,pendingSends,drafts,draftVersions,consumedTranscript,attachments])if(map.has(unbound)&&!map.has(bound)){map.set(bound,map.get(unbound));map.delete(unbound);}
         for(const item of outgoing.get(bound)||[])item.key=bound;}
       if(target&&chat&&handoverDrafts.has(target.key)){drafts.set(identity(target),handoverDrafts.get(target.key));handoverDrafts.delete(target.key);}
+      if(target&&chat&&handoverAttachments.has(target.key)){attachments.set(identity(target),[...fileList(),...handoverAttachments.get(target.key)]);handoverAttachments.delete(target.key);}
       const cached=conversations.get(identity(target));if(cached){({chat,messages,startCursor,tailCursor,nextCursor,streamSupported}=cached);loaded=true;}
       updateActivity();actions.hidden=true;
       if(!target){setPanelHidden(true);viewport();return;}draft.value=drafts.get(identity(target))||'';
@@ -705,10 +718,27 @@
     window.addEventListener('pagehide',()=>{stopStream();loadRequest?.abort();});
     window.SwitchboardConversation.hasUnsentWork=()=>!!pendingSends.size||[...outgoing.values()].some(items=>items.length)||!!draft.value||[...drafts.values()].some(Boolean)||[...attachments.values()].some(files=>files.length);
     const handoverKey=source=>JSON.stringify([JSON.stringify([source.host,source.target.session,source.target.pane_id]),source.chatId]);
-    window.SwitchboardConversation.canHandover=source=>{const key=handoverKey(source);return !pendingFor(key)&&!(outgoing.get(key)||[]).length&&!(attachments.get(key)||[]).length;};
+    // A switch waits for sends still on their way and for uploads; failed ones do not hold it.
+    window.SwitchboardConversation.canHandover=source=>{const key=handoverKey(source);return !pendingFor(key)&&!(outgoing.get(key)||[]).some(item=>!['failed','uncertain'].includes(item.state))&&!fileList(key).some(item=>!item.path&&!item.error);};
+    // A queued switch on a tab not on screen learns from its chat's latest page that its sends landed.
+    window.SwitchboardConversation.acknowledgeSends=async source=>{
+      // Pages forward from just before the oldest unconfirmed send; the agent may have written much since.
+      const key=handoverKey(source);let cursor=Math.max(0,Math.min(...(outgoing.get(key)||[]).map(sent=>sent.baseline))-49);
+      for(let pages=0;(outgoing.get(key)||[]).length&&Number.isFinite(cursor)&&pages<100;pages++){
+        try{const response=await fetch('/api/chats/'+encodeURIComponent(source.chatId)+'?'+new URLSearchParams({host:source.chatHost,limit:50,cursor}),{signal:AbortSignal.timeout(15000)});if(!response.ok)break;const data=await response.json();if(!Array.isArray(data.messages))break;acknowledge(key,data.messages,data.start_cursor??cursor);cursor=data.next_cursor??NaN;}catch{break;}
+      }
+      if(identity(target)===key&&loaded)paint();
+    };
+    window.SwitchboardConversation.handoverFiles=source=>fileList(handoverKey(source)).filter(item=>item.path).map(item=>item.path);
+    // A queued switch takes the draft it was given; cancelling or failing puts it back.
+    window.SwitchboardConversation.handoverQueued=(source,text)=>{const key=handoverKey(source);if((identity(target)===key?draft.value:drafts.get(key)||'')!==text)return;if(identity(target)===key){draft.value='';sizeDraft();}drafts.delete(key);};
+    window.SwitchboardConversation.handoverCancelled=(source,text)=>{const key=handoverKey(source),current=identity(target)===key?draft.value:drafts.get(key)||'';if(!text||current.includes(text))return;const value=current?current+'\n\n'+text:text;drafts.set(key,value);if(identity(target)===key){draft.value=value;sizeDraft();}};
     window.SwitchboardConversation.handoverDraft=source=>identity(target)===handoverKey(source)?draft.value:drafts.get(handoverKey(source))||'';
-    window.SwitchboardConversation.handoverSent=(source,text,pane)=>{
+    window.SwitchboardConversation.handoverSent=(source,text,pane,carried=[])=>{
       const key=handoverKey(source),original=identity(target)===key?draft.value:drafts.get(key)||'',next=JSON.stringify([source.host,source.target.session,pane]);
+      // Files that went with the instructions leave the composer; any others follow it to the new agent.
+      const rest=fileList(key).filter(item=>!carried.includes(item.path));for(const item of fileList(key))if(!rest.includes(item)&&item.preview)URL.revokeObjectURL(item.preview);
+      attachments.delete(key);if(rest.length)handoverAttachments.set(next,rest);if(identity(target)===key)paintFiles();
       if(identity(target)===key)draft.value='';drafts.delete(key);
       if(original&&original!==text){if(target?.key===next&&!draft.value){draft.value=original;drafts.set(identity(target),original);}else handoverDrafts.set(next,original);}
     };

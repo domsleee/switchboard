@@ -219,6 +219,12 @@
 .conversation-model-icon svg{width:14px;height:14px}
 .conversation-effort{opacity:.6;font-weight:400}
 .conversation-compose button.conversation-model:enabled:hover .conversation-effort{opacity:1}
+/* A switch waiting for the turn to end names both models, with a quiet cancel beside it. */
+.conversation-compose button.conversation-model.pending{max-width:min(26em,calc(100vw - 170px));color:var(--text)}
+.conversation-compose .conversation-model-label{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.conversation-compose .conversation-model-cancel{grid-column:3;grid-row:3;justify-self:start;width:26px;height:26px;min-height:26px;border-radius:50%;border:0;background:transparent;color:var(--muted);font-size:16px;line-height:1}
+.conversation-compose .conversation-model-cancel:hover{background:#ffffff0d;color:var(--text)}
+.conversation-compose .conversation-model-cancel[hidden]{display:none}
 .conversation-compose .conversation-send-notice{grid-column:1/-1;grid-row:4;color:var(--text-2);font-size:12px;line-height:1.5;padding:4px 6px 0}
 .conversation-transport-notice{grid-column:1/-1;grid-row:5;padding:2px 6px 0;color:var(--muted);font-size:11.5px;line-height:1.5}
 .conversation-attachments{grid-column:1/-1;grid-row:1;display:flex;gap:8px;overflow-x:auto;padding:4px 0}
