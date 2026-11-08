@@ -13,6 +13,16 @@ function fixture(){
  client.connect();sockets[0].message({type:'hello',generation:1,input_ack:0});
  return {client,sockets,timers,renders,controls,window,intervals,advance:ms=>now+=ms};
 }
+test('Fatal worker reports reach the disconnect handler with their reference and without queued text',()=>{
+ const f=fixture(),failure={reference:'0123456789ab',code:'focus_unconfirmed',pane_id:7};
+ f.client.terminal.send('private unsent prompt');
+ f.sockets[0].message({type:'error',message:'Engine did not confirm terminal pane selection; queued typing was not sent\nReference: 0123456789ab',failure,failure_saved:true});
+ assert.equal(f.client.stopped,true);assert.deepEqual(JSON.parse(JSON.stringify(f.window.__zjTerminalFailure)),failure);
+ assert.equal(f.window.__zjPendingTerminalRecords,1);
+ assert.equal(f.window.__zjTerminalFailureSaved,true);
+ assert.doesNotMatch(JSON.stringify(f.window.__zjTerminalFailure),/private unsent prompt/);
+});
+
 test('input and focus controls remain ordered across lost acknowledgments and rollback',()=>{
  const f=fixture();const {client,sockets}=f;
  client.terminal.send('first');client.control.send(JSON.stringify({web_client_id:'viewer',payload:{type:'FocusPane',pane_id:2,is_plugin:false}}));client.terminal.send('second');

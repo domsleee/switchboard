@@ -25,6 +25,16 @@ function harness(withDiagnostics=false,platform='MacIntel',predict){
   return{window,handlers,parent,messages,properties,classes,key,state,error,setFetch:fn=>fetchHandler=fn,setTime:v=>now=v,setFocus:v=>focused=v,setBodyFocus:()=>{focused=false;document.activeElement=document.body;},setBrowserFocus:v=>browserFocused=v,setFrameActive:v=>frameActive=v,setModal:v=>modal=v,setBottomRows:v=>bottomRows=v,setFirstRow:v=>firstRow=v,frames,resizes,timers};
 }
 
+test('Terminal failures forward structured metadata without the displayed error or pending text',()=>{
+  const h=harness();h.state({session_name:'fixture',active_pane:{pane_id:7,is_plugin:false}});
+  h.handlers['zellij-terminal-failed']({detail:{reference:'0123456789ab',operation:'browser',code:'resume_timeout',pending_records:2}});
+  const report=JSON.parse(JSON.stringify(h.messages.at(-1)));
+  assert.deepEqual(report,{type:'zellij-terminal-failed',failure:{reference:'0123456789ab',operation:'browser',code:'resume_timeout',pending_records:2,session:'fixture',pane_id:7,is_plugin:false}});
+  const worker={reference:'abcdef012345',operation:'focus',session:'fixture',pane_id:8};
+  h.handlers['zellij-terminal-failed']({detail:worker});
+  assert.deepEqual(JSON.parse(JSON.stringify(h.messages.at(-1).failure)),worker,'Worker target survives a stale browser snapshot');
+});
+
 test('Model launches use the updated service while a retained worker only focuses the returned pane',async()=>{
   for(const command of ['c','csol','castra']){
     const h=harness(),sent=[],requests=[];let respond;

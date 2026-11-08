@@ -40,6 +40,22 @@ export async function handleDisconnected(reason = "You have been disconnected by
     isDisconnected = true;
     isReconnecting = false;
     clearConnectionStatus();
+    const failure = window.__zjTerminalFailure || {
+        reference:crypto.randomUUID().replaceAll('-','').slice(0,12),
+        code:reason.startsWith('Engine did not confirm terminal pane selection')?'focus_unconfirmed':
+          reason.startsWith('Terminal pane selection was not confirmed')?'focus_timeout':
+          reason.startsWith('Requested terminal pane could not be selected')?'pane_unavailable':
+          reason.startsWith('Terminal attachment could not resume')?'resume_timeout':
+          reason.startsWith('Pending terminal input reached')?'input_limit':
+          reason.startsWith('Terminal renderer unavailable')?'renderer_unavailable':
+          /^(Invalid terminal|Unknown terminal|Terminal output sequence)/.test(reason)?'invalid_delivery':'browser_failure',session:'',
+        pane_id:null,is_plugin:false,operation:'browser',elapsed_ms:Math.min(86400000,Math.round(performance.now())),
+        focus_confirmed:false,query_received:false,worker_build:null,engine_build:null,pending_records:window.__zjPendingTerminalRecords??null,
+    };
+    if (!window.__zjTerminalFailure) reason += `\nReference: ${failure.reference}`;
+    // The source computer exposes its durable report through paired Logs.
+    // Browser reporting is a fallback, so remote viewers do not create a second copy.
+    if (!window.__zjTerminalFailureSaved) window.dispatchEvent(new CustomEvent('zellij-terminal-failed',{detail:failure}));
     await showErrorModal("Disconnected", reason);
 }
 

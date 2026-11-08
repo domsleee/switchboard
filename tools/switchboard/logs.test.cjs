@@ -53,6 +53,14 @@ test('The Logs section shows recent errors per computer, newest first, with refr
     assert.equal(await page.locator('#logs details .log-entry').count(),3);
     assert.match((await page.locator('#logs details .log-entry').allTextContents()).join(' '),/Browser tab resumed stages/);
     assert.equal(await page.locator('#logs details').getAttribute('open'),null,'Fast returns stay folded away');
+    logs={computers:[{name:'Mac',local:true,entries:[{time:now,source:'Terminal worker',message:'Terminal failure focus_unconfirmed ref=0123456789ab',count:2,
+      failure:{session:'fixture',pane_id:7,worker_build:'abcdef01',engine_build:null,focus_confirmed:false,query_received:true},references:['0123456789ab']}]}]};
+    await page.locator('#refresh-logs').click();
+    await page.locator('#logs .log-failure summary').click();
+    assert.match(await page.locator('#logs .log-failure pre').textContent(),/"query_received": true/);
+    assert.match(await page.locator('#logs .log-failure pre').textContent(),/0123456789ab/);
+    assert.match(await page.locator('#logs .log-entry small').textContent(),/×2/);
+    assert.equal(await page.locator('#logs .log-timing .log-entry').count(),0,'Fatal failures stay outside performance samples');
     logs={computers:[{name:'Mac',local:true,entries:[]}]};
     await page.locator('#refresh-logs').click();
     await page.waitForFunction(()=>document.querySelectorAll('#logs .log-computer').length===1);

@@ -142,7 +142,7 @@ export class ResumableConnection {
                     if (!this.retirement) throw new Error('Terminal attachment was retired');
                     const {resolve} = this.retirement; this.clearRetirement();
                     this.connected = false; this.close(); resolve(true);
-                } else if (message.type === 'error') this.fail(message.message);
+                } else if (message.type === 'error') this.fail(message.message, message.failure, message.failure_saved);
                 else if (message.type === 'output') {
                     this.outputWork = this.outputWork.then(() => this.apply(message.record)).catch(error => this.fail(error.message));
                 } else throw new Error('Unknown terminal delivery response');
@@ -222,7 +222,7 @@ export class ResumableConnection {
         this.checkRetirement();
         return promise;
     }
-    fail(message) {
+    fail(message, failure, saved = false) {
         if (this.stopped) return;
         if (this.retirement) {
             const {reject} = this.retirement; this.clearRetirement();
@@ -232,6 +232,9 @@ export class ResumableConnection {
         // attach it to a different viewer, pane or newly-created session.
         window.__zjPendingTerminalInput = this.pending.map(({ channel, data }) => ({ channel, data }));
         window.__zjResumeFailure = String(message);
+        window.__zjTerminalFailure = failure;
+        window.__zjTerminalFailureSaved = saved === true;
+        window.__zjPendingTerminalRecords = this.pending.length;
         this.close();
         showConnectionStatus();
         window.dispatchEvent(new CustomEvent('zellij-resume-failed', { detail: String(message) }));

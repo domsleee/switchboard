@@ -323,6 +323,18 @@ machines, including tabs outside the selected group.
 
 ## Native tab bar and connections
 
+Fatal terminal failures appear in **Settings → Logs**, with the reference shown in
+the disconnect dialog. Retained workers save a content-free report before replying;
+the browser reports failures that were not saved at source, including those from
+older workers. Reports live
+in `~/.config/switchboard/terminal-failures.json`, independently of relay restarts.
+The store keeps 200 failure groups, counts repeats, and retains the latest eight
+references per group. **Failure details** includes the session, target pane, operation,
+worker build and focus/query confirmation flags. An engine build that was not
+reported stays unknown. Reports exclude error text, terminal contents and typed input.
+Existing retained workers pick up source reporting when they exit naturally and a
+new worker starts; updated browser clients provide reporting in the meantime.
+
 The native tab row is hidden in the desktop combined view; **Settings → Native tab bar** shows
 it again. This is client-side viewport clipping of an identified Zellij header,
 not a remote layout change. Fullscreen views without that header and the stock

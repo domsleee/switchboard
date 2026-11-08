@@ -1274,6 +1274,10 @@ window.addEventListener('message',event=>{
   }else if(event.data?.type==='zellij-hide-unsupported'){
     // This engine still sizes tabs for hidden viewers. Disconnect it during Conversation.
     entry.hideUnsupported=true;syncTerminalConnection(entry);render();
+  }else if(event.data?.type==='zellij-terminal-failed'){
+    // Frame identity selects the host; never accept a host supplied by the frame.
+    fetch('/api/diagnostics/terminal-failure',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({host:entry.host,failure:event.data.failure}),keepalive:true}).catch(()=>{});
   }else if(event.data?.type==='zellij-disconnected'){
     entry.disconnected=true;entry.needsFocus=true;
     // A hidden viewer's reconnect would attach again, sized while hidden. Stop it;
@@ -2063,7 +2067,12 @@ async function loadLogs(){
       const row=entry=>{
         const row=element('div','log-entry',''),when=new Date(entry.time);
         const meta=element('small','',[entry.source,when.toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}),entry.count>1?`×${entry.count}`:''].filter(Boolean).join(' · '));
-        meta.title=humanTime(when);row.append(element('span','',entry.message),meta);return row;
+        meta.title=humanTime(when);row.append(element('span','',entry.message),meta);
+        if(entry.failure){
+          const details=element('details','log-failure',''),summary=element('summary','','Failure details');
+          details.append(summary,element('pre','',JSON.stringify({...entry.failure,references:entry.references},null,2)));row.append(details);
+        }
+        return row;
       };
       group.append(...errors.map(row));
       if(samples.length){

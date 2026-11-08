@@ -17,6 +17,7 @@ const installed = path.join(dir,process.platform==='win32'?'zellij.exe':'zellij'
 const config = path.join(dir, 'config.kdl');
 const name = `update-acceptance-${crypto.randomBytes(8).toString('hex')}`;
 const env = {...process.env, HOME:dir, USERPROFILE:dir, APPDATA:path.join(dir,'AppData','Roaming'), LOCALAPPDATA:path.join(dir,'AppData','Local'), XDG_DATA_HOME:path.join(dir,'data'), XDG_CACHE_HOME:path.join(dir,'cache'), ZELLIJ_SOCKET_DIR:path.join(dir,'sockets'),
+    SWITCHBOARD_TERMINAL_FAILURE_FILE:path.join(dir,'terminal-failures.json'),
     SWITCHBOARD_ATTACHMENT_DIRECTORY:path.join(dir,'attachments'), SWITCHBOARD_RELEASES_DIR:path.join(dir,'releases'), SWITCHBOARD_VIEWER_LOCK:path.join(dir,'viewers.lock'), TERM:'xterm-256color'};
 // Windows known-folder lookup verifies these profile directories before CLI startup.
 for(const folder of [env.APPDATA,env.LOCALAPPDATA])fs.mkdirSync(folder,{recursive:true});
@@ -77,6 +78,45 @@ let native, relay, browser, updateController, created=false;
   await page.waitForFunction(()=>document.querySelector('#terminals>iframe.active')?.contentWindow.testPair?.terminal.readyState===1);
   await page.waitForFunction(()=>document.querySelector('#terminals>iframe.active')?.contentWindow.__zjLastMobileState?.active_pane);
   const workers=(await(await fetch(url+'/api/health')).json()).attachment_workers;assert.equal(workers.length,1);
+  if(process.env.SWITCHBOARD_FAILURE_LOG_PROOF==='1') {
+    const browserReports=[];
+    page.on('request',request=>{if(new URL(request.url()).pathname==='/api/diagnostics/terminal-failure')browserReports.push(request.postDataJSON());});
+    await page.evaluate(()=>{
+      const pair=document.querySelector('#terminals>iframe.active').contentWindow.testPair;
+      pair.control.send(JSON.stringify({web_client_id:pair.control.owner.viewer,payload:{type:'FocusPane',pane_id:4294967294,is_plugin:false}}));
+      pair.terminal.send('PRIVATE_UNSENT_PROMPT');
+    });
+    await page.waitForFunction(()=>document.querySelector('#terminals>iframe.active')?.contentWindow.__zjTerminalFailure);
+    const failure=await page.evaluate(()=>document.querySelector('#terminals>iframe.active').contentWindow.__zjTerminalFailure);
+    assert.equal(failure.code,'pane_unavailable');assert.equal(failure.pane_id,4294967294);
+    assert.match(failure.reference,/^[a-f0-9]{12}$/);assert.equal(failure.engine_build,null);
+    assert.equal(JSON.parse(fs.readFileSync(env.SWITCHBOARD_TERMINAL_FAILURE_FILE,'utf8')).some(e=>e.references.includes(failure.reference)),true,'Worker saved the report before sending the fatal response');
+    assert.match(await page.frameLocator('#terminals>iframe.active').locator('body').innerText(),new RegExp('Reference: '+failure.reference));
+    const entries=async()=> (await(await fetch(url+'/api/logs')).json()).computers.flatMap(c=>c.entries||[]);
+    await waitFor(async()=> (await entries()).some(e=>e.references?.includes(failure.reference)),'Failure missing from Logs');
+    const saved=(await entries()).find(e=>e.references?.includes(failure.reference));
+    assert.equal(saved.count,1,'Browser fallback does not double count the worker report');
+    assert.equal(browserReports.length,0,'A saved worker failure is not copied to the viewing relay');
+    assert.doesNotMatch(JSON.stringify(saved),/PRIVATE_UNSENT_PROMPT/);
+    const browserReference=crypto.randomBytes(6).toString('hex');
+    await page.evaluate(reference=>{
+      const w=document.querySelector('#terminals>iframe.active').contentWindow;
+      w.dispatchEvent(new w.CustomEvent('zellij-terminal-failed',{detail:{reference,code:'resume_timeout',session:'',pane_id:null,is_plugin:false,
+        operation:'browser',elapsed_ms:120000,focus_confirmed:false,query_received:false,worker_build:null,engine_build:null,pending_records:2}}));
+    },browserReference);
+    await waitFor(async()=> (await entries()).some(e=>e.references?.includes(browserReference)),'Browser-only failure missing from Logs');
+    assert.equal(browserReports.length,1);assert.equal(browserReports[0].host,'test');
+    const browserSaved=(await entries()).find(e=>e.references?.includes(browserReference));
+    assert.equal(browserSaved.failure.pending_records,2);assert.equal(browserSaved.failure.session,name);
+    await page.locator('#settings').click();await page.getByRole('tab',{name:'Logs'}).click();
+    await page.locator('#logs').getByText(saved.message,{exact:true}).waitFor();
+    if(process.env.SWITCHBOARD_FAILURE_SCREENSHOT)await page.screenshot({path:process.env.SWITCHBOARD_FAILURE_SCREENSHOT});
+    await stop(relay);relay=start(['serve','--host-config',relayConfig,'--port',String(relayPort)],'relay');
+    await waitFor(async()=>{try{const logs=await entries();return [failure.reference,browserReference].every(ref=>logs.some(e=>e.references?.includes(ref)));}catch{return false;}},'Failure missing after relay restart');
+    assert.deepEqual(identities(),before,'Logging and relay restart preserve the engine and panes');
+    console.log('PASS: terminal failure is saved at source, correlated with its dialog and Settings Logs, private, counted once, and retained after relay restart');
+    return;
+  }
   {
     // A slow first resumable hello (a worker starting under Defender) must not
     // fall back to legacy sockets, which every service update disconnects.

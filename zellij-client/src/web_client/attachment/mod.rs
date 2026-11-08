@@ -76,6 +76,28 @@ struct Viewer {
     incoming: Mutex<Option<mpsc::Receiver<Delivery>>>,
     retired: watch::Sender<bool>,
     parser_pending: AtomicBool,
+    session: String,
+    failure_context: Mutex<FailureContext>,
+    failure_report: tokio::sync::OnceCell<crate::terminal_failures::Failure>,
+    failure_saved: AtomicBool,
+}
+struct FailureContext {
+    operation: &'static str,
+    started: Instant,
+    target: Option<(u32, bool)>,
+    focus_confirmed: bool,
+    query_received: bool,
+}
+impl FailureContext {
+    fn new(operation: &'static str) -> Self {
+        Self {
+            operation,
+            started: Instant::now(),
+            target: None,
+            focus_confirmed: false,
+            query_received: false,
+        }
+    }
 }
 struct Delivery {
     generation: u64,
@@ -134,6 +156,10 @@ async fn create(State(worker): State<Worker>, Json(attach): Json<Attach>) -> Res
         incoming: Mutex::new(Some(rx)),
         retired: watch::channel(false).0,
         parser_pending: AtomicBool::new(false),
+        session: worker.session.clone(),
+        failure_context: Mutex::new(FailureContext::new("attach")),
+        failure_report: tokio::sync::OnceCell::new(),
+        failure_saved: AtomicBool::new(false),
     });
     {
         let mut views = worker.views.lock().unwrap();
@@ -229,6 +255,9 @@ async fn resume(
 }
 
 async fn final_reply(viewer: &Viewer, error: String) -> serde_json::Value {
+    if error == "Terminal viewer closed" {
+        return json!({"type":"retired"});
+    }
     if error == RETIRED {
         let mut retired = viewer.retired.subscribe();
         if matches!(
@@ -238,7 +267,70 @@ async fn final_reply(viewer: &Viewer, error: String) -> serde_json::Value {
             return json!({"type":"retired"});
         }
     }
-    json!({"type":"error","message":error})
+    let failure = report_failure(viewer, &error).await;
+    json!({"type":"error","message":format!("{error}\nReference: {}",failure.reference),"failure":failure,"failure_saved":viewer.failure_saved.load(Ordering::Acquire)})
+}
+
+/// Persist before publishing a fatal error. The report contains fixed codes and
+/// numeric protocol observations, never the error's potentially private contents.
+async fn report_failure<'a>(
+    viewer: &'a Viewer,
+    error: &str,
+) -> &'a crate::terminal_failures::Failure {
+    viewer
+        .failure_report
+        .get_or_init(|| async {
+            let failure = {
+                let context = viewer.failure_context.lock().unwrap();
+                let code = if error.starts_with("Engine did not confirm") {
+                    "focus_unconfirmed"
+                } else if error.starts_with("Terminal pane selection was not confirmed") {
+                    "focus_timeout"
+                } else if error.starts_with("Requested terminal pane could not be selected") {
+                    "pane_unavailable"
+                } else if error.starts_with("Terminal IPC failed") {
+                    "ipc_failure"
+                } else if error.starts_with("Terminal permission was revoked") {
+                    "permission_revoked"
+                } else if error.starts_with("Terminal attachment expired") {
+                    "attachment_expired"
+                } else if error.contains("sequence") || error.contains("input retry") {
+                    "input_sequence"
+                } else {
+                    "attachment_ended"
+                };
+                crate::terminal_failures::Failure {
+                    reference: Uuid::new_v4().simple().to_string()[..12].into(),
+                    code: code.into(),
+                    session: viewer.session.clone(),
+                    pane_id: context.target.map(|p| p.0),
+                    is_plugin: context.target.is_some_and(|p| p.1),
+                    operation: context.operation.into(),
+                    elapsed_ms: context.started.elapsed().as_millis().min(86_400_000) as u64,
+                    focus_confirmed: context.focus_confirmed,
+                    query_received: context.query_received,
+                    worker_build: Some(env!("SWITCHBOARD_COMMIT").into()),
+                    engine_build: None,
+                    pending_records: None,
+                }
+            };
+            let saved = failure.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                crate::terminal_failures::record_at(
+                    &crate::terminal_failures::path()?,
+                    "Terminal worker",
+                    &saved,
+                )
+            })
+            .await;
+            let saved = matches!(result, Ok(Ok(())));
+            viewer.failure_saved.store(saved, Ordering::Release);
+            if !saved {
+                log::warn!("Could not persist terminal failure {}", failure.reference);
+            }
+            failure
+        })
+        .await
 }
 
 async fn transport(socket: WebSocket, viewer: Arc<Viewer>, generation: u64, mut sent: u64) {
@@ -337,7 +429,7 @@ async fn transport(socket: WebSocket, viewer: Arc<Viewer>, generation: u64, mut 
                 }.await;
                 match result {
                     Ok(Some(reply))=>{let retired=reply["type"]=="retired";if writer.send(Message::Text(reply.to_string().into())).await.is_err()||retired{break;}},
-                    Ok(None)=>{},Err(error)=>{let _=writer.send(Message::Text(json!({"type":"error","message":error.to_string()}).to_string().into())).await;break;}
+                    Ok(None)=>{},Err(error)=>{let _=writer.send(Message::Text(final_reply(&viewer,error.to_string()).await.to_string().into())).await;break;}
                 }
             }
         }
@@ -355,10 +447,15 @@ async fn attachment(
     hidden: bool,
 ) {
     let app = &worker.app;
-    let os = match app.client_os_api_factory.create_client_os_api() {
+    let os = match app
+        .client_os_api_factory
+        .create_client_os_api()
+        .map_err(|e| e.to_string())
+    {
         Ok(os) => os,
         Err(error) => {
             viewer.journal.lock().unwrap().failure = Some(error.to_string());
+            report_failure(&viewer, &error.to_string()).await;
             viewer.notify.notify_waiters();
             return;
         },
@@ -436,6 +533,9 @@ async fn attachment(
                         if !journal.accepts(delivery.generation,&delivery.input)? { return Ok(journal.input_ack()); }
                         accepted=true;
                         if delivery.input.channel=="terminal" {
+                            let mut context=viewer.failure_context.lock().unwrap();
+                            let target=context.target;
+                            *context=FailureContext::new("input");context.target=target;drop(context);
                             if !viewer.read_only { parse_stdin(delivery.input.data.as_bytes(),os.clone(),&mut mouse,&mut stdin); }
                             held_since=Instant::now();focus=None;
                         } else {
@@ -454,6 +554,9 @@ async fn attachment(
                                 ensure!(!stdin.has_pending_bytes(),"Incomplete terminal sequence before a control command; attachment stopped to preserve its target pane");
                             }
                             focus=match &payload {WebClientToWebServerControlMessagePayload::FocusPane{pane_id,is_plugin}=>Some((*pane_id,*is_plugin)),_=>None};
+                            let mut context=FailureContext::new(if focus.is_some(){"focus"}else{"control"});
+                            context.target=focus.or(viewer.failure_context.lock().unwrap().target);
+                            *viewer.failure_context.lock().unwrap()=context;
                             if let Some(message)=control_payload_to_server_msg(payload,app.config.lock().unwrap().options.default_shell.clone()) {
                                 if let Some(target)=focus {
                                     send_focus_probe(&*os,target);
@@ -501,6 +604,10 @@ async fn attachment(
                 if viewer.touched.lock().unwrap().elapsed()>DETACHED_TTL{viewer.journal.lock().unwrap().failure=Some("Terminal attachment expired".into());}
             }
         }
+    }
+    let failure = viewer.journal.lock().unwrap().failure.clone();
+    if let Some(error) = failure.filter(|e| e != RETIRED && e != "Terminal viewer closed") {
+        report_failure(&viewer, &error).await;
     }
     viewer.notify.notify_waiters();
     os.send_to_server(ClientToServerMsg::ClientExited);
@@ -566,7 +673,13 @@ async fn confirm_focus(
             message=controls.recv()=>{
                 let Some(Message::Text(text))=message else {anyhow::bail!("Terminal ended while selecting pane");};
                 let value:serde_json::Value=serde_json::from_str(&text)?;
-                match confirmation.consume(&value)? {
+                let reply = confirmation.consume(&value);
+                {
+                    let mut context=viewer.failure_context.lock().unwrap();
+                    context.focus_confirmed=confirmation.confirmed;
+                    context.query_received |= value["type"]=="Log" && focus_marker(&value["lines"]);
+                }
+                match reply? {
                     FocusReply::Private=>continue,
                     FocusReply::Retry=>{retry();continue;},
                     FocusReply::Complete=>{
@@ -674,6 +787,34 @@ fn focus_marker(lines: &serde_json::Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn switchboard_attachment_intentional_close_and_retirement_do_not_report_failure() {
+        let (input, incoming) = mpsc::channel(1);
+        let viewer = Viewer {
+            journal: Mutex::new(Journal::default()),
+            notify: Notify::new(),
+            input,
+            owner: String::new(),
+            read_only: false,
+            touched: Mutex::new(Instant::now()),
+            incoming: Mutex::new(Some(incoming)),
+            retired: watch::channel(true).0,
+            parser_pending: AtomicBool::new(false),
+            session: "fixture".into(),
+            failure_context: Mutex::new(FailureContext::new("attach")),
+            failure_report: tokio::sync::OnceCell::new(),
+            failure_saved: AtomicBool::new(false),
+        };
+        assert_eq!(
+            final_reply(&viewer, "Terminal viewer closed".into()).await["type"],
+            "retired"
+        );
+        assert_eq!(
+            final_reply(&viewer, RETIRED.into()).await["type"],
+            "retired"
+        );
+        assert!(viewer.failure_report.get().is_none());
+    }
     #[test]
     fn switchboard_attachment_focus_recovers_lost_completion_without_trusting_metadata() {
         let marker = json!({"type":"Log","lines":["name: tab","id: 0","position: 0"]});
