@@ -20,7 +20,7 @@ test('integrated Conversation journeys use production markup and preserve delive
    if(p==='/api/mesh')return json({members:[]});
    if(p==='/api/hosts')return json([{id:'fixture',name:'Fixture desktop',local:true}]);
    if(p==='/api/hosts/fixture')return json({id:'fixture',name:'Fixture desktop',local:true,sessions:[{name:'main',web_clients_allowed:true}]});
-   if(p==='/api/attention'){if(url.searchParams.has('after'))return new Promise(()=>{});return json({tabs:f.tabs.map(id=>({host:'fixture',session:'main',id,position:id-1,name:'Conversation '+id,panes:[pane(id)]})),panes:f.tabs.map(id=>({host:'fixture',session:'main',pane_id:id,...(f.agent?{agent:f.agent}:{}),state:f.state,...(f.bound?{chat_id:'chat-'+id}:{})})),errors:[]});}
+   if(p==='/api/attention'){if(url.searchParams.has('after'))return new Promise(()=>{});return json({tabs:f.tabs.map(id=>({host:'fixture',session:'main',id,position:id-1,name:'Conversation '+id,panes:[pane(id)]})),panes:f.tabs.map(id=>({host:'fixture',session:'main',pane_id:id,...(f.agent?{agent:f.agent}:{}),state:f.state,...(f.bound?{chat_id:(f.chatPrefix||'chat-')+id}:{})})),errors:[]});}
    if(p.startsWith('/api/chats/')){const id=Number(p.split('-').at(-1));return json({id:'chat-'+id,model:f.model,reasoning_effort:f.effort,session_id:f.agent==='codex'?thread(id):null,messages:f.history.get(id)||[],start_cursor:0,next_cursor:null});}
    if(p.endsWith('/conversation/reply')){f.claudeReplies.push(route.request().postDataJSON());return route.fulfill({status:f.claudeReplyStatus,json:{ok:true}});}
    if(p.endsWith('/conversation/prepare')){f.preparations.push(route.request().postDataJSON());return route.fulfill({status:f.prepareStatus,json:{trusted:false}});}
@@ -300,6 +300,9 @@ test('integrated Conversation journeys use production markup and preserve delive
     assert.equal(replies.length,2,'Changing view modes never resends a follow-up');
     f.history.get(3).push(...replies.map(reply=>f.receipt(reply.message||reply.text)));await f.poll();
     assert.equal(await page.locator('.conversation-outgoing').count(),0,'Receipts replace each queued follow-up');
+    f.chatPrefix='fresh-chat-';await f.refresh();
+    assert.equal(await draft.inputValue(),'','A later conversation in the same pane starts with its own draft');
+    f.chatPrefix='chat-';await f.refresh();assert.equal(await draft.inputValue(),'Keep typing','The original chat keeps its draft');
    }finally{await f.close();}
   });
   await t.test('a tab started from New tab shows its prompt and a starting spinner until the transcript has it',async()=>{

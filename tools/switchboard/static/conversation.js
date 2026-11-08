@@ -770,7 +770,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       chat=target?.chatId?{id:target.chatId,agent:target.agent,title:target.title}:null;
       // The temporary Creating tab identity becomes a pane before it gets a chat.
       // Keep its follow-ups, draft and attachments through both transitions.
-      if(target?.launch){const previous=launchKeys.get(target.launch);if(previous)moveStartup(previous,identity(target));launchKeys.set(target.launch,identity(target));}
+      if(target?.launch){const previous=launchKeys.get(target.launch);if(previous&&JSON.parse(previous)[1]==null)moveStartup(previous,identity(target));launchKeys.set(target.launch,identity(target));}
       // A first message sent before the pane had a chat moves to the chat it started.
       if(chat)moveStartup(JSON.stringify([target.key,null]),identity(target));
       if(target&&chat&&handoverDrafts.has(target.key)){drafts.set(identity(target),handoverDrafts.get(target.key));handoverDrafts.delete(target.key);}
