@@ -25,29 +25,165 @@
     // Keep literal # and ? in filesystem names; URLSearchParams escapes them.
     return `/api/hosts/${encodeURIComponent(host)}/file?${new URLSearchParams({path:reference})}`;
   }
-  let dialog,stage,counter,original,zoomButton,previous,next,items=[],index=0,zoom=1,focusBefore,focusRoot,focusUrl;
+  // Full-screen viewer. Click or double-tap zooms, drag pans a zoomed image, pinch and the
+  // wheel zoom, and on touch a sideways swipe changes item and a downward swipe closes.
+  const ICONS={
+    close:'<path d="M5.5 5.5l9 9m0-9l-9 9"/>',
+    previous:'<path d="M12 4.5L6.5 10l5.5 5.5"/>',next:'<path d="M8 4.5l5.5 5.5L8 15.5"/>',
+    zoomIn:'<circle cx="8.75" cy="8.75" r="5.25"/><path d="M12.6 12.6l4 4M8.75 6.5v4.5M6.5 8.75H11"/>',
+    zoomOut:'<circle cx="8.75" cy="8.75" r="5.25"/><path d="M12.6 12.6l4 4M6.5 8.75H11"/>',
+    open:'<path d="M11.5 4h4.5v4.5M16 4l-6.5 6.5M14 11.5V15a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h3.5"/>',
+    download:'<path d="M10 3.5v9m-4-4 4 4 4-4M4.5 16h11"/>',
+    play:'<path d="M7 5.2v9.6a.5.5 0 0 0 .76.43l7.7-4.8a.5.5 0 0 0 0-.86l-7.7-4.8A.5.5 0 0 0 7 5.2z"/>'};
+  // ICONS are constants above, never transcript text.
+  const icon=name=>{const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 20 20');svg.setAttribute('aria-hidden','true');svg.innerHTML=ICONS[name];return svg;};
+  const control=(tag,label,name,className='conversation-viewer-icon')=>{const n=node(tag);if(tag==='button')n.type='button';n.className=className;n.setAttribute('aria-label',label);n.title=label;n.append(icon(name));return n;};
+  let dialog,scrim,stage,header,meta,title,count,original,download,zoomButton,previous,next,strip,items=[],index=0,focusBefore,focusRoot,focusUrl;
+  let view={scale:1,x:0,y:0},gesture=null,suppressClick=false,lastTap=null,tapTimer,pointerKind='mouse';
+  const pointers=new Map();
+  const image=()=>stage?.querySelector(':scope>img');
+  const shown=()=>stage?.querySelector(':scope>img,:scope>video');
   function pause(root){for(const video of root?.querySelectorAll('video')||[])video.pause();}
   function close(){
-    if(!dialog?.open)return;pause(dialog);dialog.close();stage.replaceChildren();items=[];
+    if(!dialog?.open)return;pause(dialog);dialog.close();stage.replaceChildren();items=[];pointers.clear();gesture=null;clearTimeout(tapTimer);
+    dialog.classList.remove('chrome-hidden','zoomed','loading');scrim.style.opacity='';
     const available=node=>node?.isConnected&&!node.disabled&&node.getClientRects().length>0;
     const replacement=[...(focusRoot?.querySelectorAll('[data-conversation-media-url]')||[])].find(node=>node.dataset.conversationMediaUrl===focusUrl&&available(node));
     const destination=[focusBefore,replacement,focusRoot?.querySelector('.conversation-compose textarea'),focusRoot].find(available);
     destination?.focus({preventScroll:true});focusBefore=focusRoot=focusUrl=null;
   }
-  function show(){
-    pause(stage);stage.replaceChildren();zoom=1;const item=items[index];counter.textContent=`${index+1} / ${items.length} · ${item.label}`;original.href=item.url;
-    previous.disabled=next.disabled=items.length<2;zoomButton.hidden=item.kind==='video';zoomButton.textContent='Zoom in';
-    const media=node(item.kind==='video'?'video':'img');media.src=item.url;
-    if(item.kind==='video'){media.controls=true;media.playsInline=true;media.preload='metadata';media.setAttribute('aria-label',item.label);}else media.alt=item.label;
-    media.onerror=()=>{if(media.parentNode===stage)stage.replaceChildren(node('p','Preview unavailable. Try Open original.'));};stage.append(media);
+  // A zoomed image keeps covering the screen: its edges never come inside the viewport.
+  function clamp(){
+    const img=image();if(!img)return;
+    const axis=(size,full,offset,value)=>{const half=Math.max(0,(size*view.scale-full)/2),center=offset+size/2-full/2;return Math.min(Math.max(half-center,0),Math.max(Math.min(-half-center,0),value));};
+    view.x=axis(img.offsetWidth,stage.clientWidth,img.offsetLeft,view.x);view.y=axis(img.offsetHeight,stage.clientHeight,img.offsetTop,view.y);
+  }
+  function apply(animate){
+    const img=image(),zoomed=view.scale>1.001;
+    if(img){img.classList.toggle('settling',!!animate);img.style.transform=zoomed||view.x||view.y?`translate(${view.x}px,${view.y}px) scale(${view.scale})`:'';}
+    dialog.classList.toggle('zoomed',zoomed);
+    const label=zoomed?'Fit image':'Zoom in';
+    if(zoomButton.getAttribute('aria-label')!==label){zoomButton.setAttribute('aria-label',label);zoomButton.title=label;zoomButton.replaceChildren(icon(zoomed?'zoomOut':'zoomIn'));}
+  }
+  // Zoom about a screen point, so the pixel under the pointer stays under it.
+  function zoomTo(scale,clientX,clientY,animate){
+    const img=image();if(!img)return;scale=Math.min(8,Math.max(1,scale));
+    const box=stage.getBoundingClientRect(),cx=box.left+img.offsetLeft+img.offsetWidth/2,cy=box.top+img.offsetTop+img.offsetHeight/2;
+    const px=(clientX??cx)-cx,py=(clientY??cy)-cy,ratio=scale/view.scale;
+    view={scale,x:px-(px-view.x)*ratio,y:py-(py-view.y)*ratio};if(scale===1)view.x=view.y=0;clamp();apply(animate);
+  }
+  function toggleZoom(clientX,clientY){
+    const img=image();if(!img)return;
+    if(view.scale>1.001)return zoomTo(1,null,null,true);
+    zoomTo(Math.min(6,Math.max(2,img.naturalWidth/Math.max(1,img.offsetWidth))),clientX,clientY,true);
+  }
+  function show(direction){
+    // A video's taps go to its controls, so a new item always shows the viewer's controls.
+    pause(stage);stage.replaceChildren();view={scale:1,x:0,y:0};gesture=null;scrim.style.opacity='';clearTimeout(tapTimer);dialog.classList.remove('chrome-hidden');
+    const item=items[index],media=node(item.kind==='video'?'video':'img');
+    title.textContent=item.label;count.textContent=`${index+1} / ${items.length}`;
+    original.href=download.href=item.url;download.download=item.label.split(/[\\/]/).pop()||'media';
+    zoomButton.hidden=item.kind==='video';
+    media.className='conversation-viewer-media'+(direction?' from-'+direction:'');
+    dialog.classList.add('loading');const loaded=()=>{if(media.parentNode===stage)dialog.classList.remove('loading');};
+    if(item.kind==='video'){media.controls=true;media.playsInline=true;media.preload='metadata';media.setAttribute('aria-label',item.label);media.onloadedmetadata=loaded;}
+    else{media.alt=item.label;media.draggable=false;media.decoding='async';media.onload=loaded;}
+    media.onerror=()=>{if(media.parentNode!==stage)return;dialog.classList.remove('loading');const failed=node('p','Preview unavailable. Try Open original.');failed.className='conversation-viewer-failed';stage.replaceChildren(failed);};
+    media.src=item.url;stage.append(media);apply();
+    for(const [position,thumb] of [...strip.children].entries()){thumb.setAttribute('aria-current',String(position===index));if(position===index&&dialog.open)thumb.scrollIntoView({block:'nearest',inline:'nearest'});}
+    if(items.length>1)for(const neighbour of [items[(index+1)%items.length],items[(index-1+items.length)%items.length]])if(neighbour.kind!=='video')new Image().src=neighbour.url;
+  }
+  function step(delta){if(items.length<2)return;index=(index+delta+items.length)%items.length;show(delta>0?'next':'previous');}
+  function settle(){const media=shown();if(media){media.classList.add('settling');media.style.transform='';}scrim.style.opacity='';}
+  function release(event){
+    const g=gesture;if(!pointers.delete(event.pointerId))return;
+    if(pointers.size===1&&g?.type==='pinch'){const [[,p]]=pointers;gesture={type:'pan',x0:p.x,y0:p.y,tx:view.x,ty:view.y,moved:true};return;}
+    if(pointers.size)return;gesture=null;stage.classList.remove('panning');if(!g)return;
+    if(g.moved)suppressClick=true;
+    const dx=event.clientX-g.x0,dy=event.clientY-g.y0,elapsed=Math.max(1,event.timeStamp-g.t0),done=event.type==='pointerup';
+    if(g.type==='swipe'){if(done&&items.length>1&&(Math.abs(dx)>Math.min(90,stage.clientWidth*.2)||Math.abs(dx)/elapsed>.5))step(dx<0?1:-1);else settle();}
+    else if(g.type==='dismiss'){if(done&&(dy>110||dy/elapsed>.6))close();else settle();}
+    else if(g.type==='pan'){if(view.scale<1.05)zoomTo(1,null,null,true);}
+    else if(!g.moved&&g.pointerType!=='mouse'&&done){
+      // On touch, a double-tap zooms and a single tap on the image shows or hides the controls.
+      const tap={t:event.timeStamp,x:event.clientX,y:event.clientY};clearTimeout(tapTimer);
+      if(lastTap&&tap.t-lastTap.t<320&&Math.hypot(tap.x-lastTap.x,tap.y-lastTap.y)<40){lastTap=null;toggleZoom(tap.x,tap.y);return;}
+      lastTap=tap;if(event.target===image())tapTimer=setTimeout(()=>dialog.classList.toggle('chrome-hidden'),320);
+    }
+  }
+  function build(){
+    dialog=node('dialog');dialog.className='conversation-media-dialog';dialog.setAttribute('aria-label','Media viewer');dialog.autofocus=true;dialog.tabIndex=-1;
+    scrim=node('div');scrim.className='conversation-viewer-scrim';
+    stage=node('div');stage.className='conversation-media-stage';
+    header=node('header');meta=node('div');meta.className='conversation-viewer-meta';title=node('strong');count=node('span');meta.append(title,count);
+    const actions=node('div');actions.className='conversation-viewer-actions';
+    zoomButton=control('button','Zoom in','zoomIn');zoomButton.onclick=()=>toggleZoom();
+    // Browsers ignore `download` on another origin's file; the new tab keeps Switchboard open.
+    download=control('a','Download','download');download.target='_blank';download.rel='noopener noreferrer';original=control('a','Open original','open');original.target='_blank';original.rel='noopener noreferrer';
+    const dismiss=control('button','Close','close');dismiss.onclick=close;
+    const divider=node('i');divider.className='conversation-viewer-divider';actions.append(zoomButton,download,original,divider,dismiss);header.append(meta,actions);
+    previous=control('button','Previous','previous','conversation-viewer-nav previous');next=control('button','Next','next','conversation-viewer-nav next');
+    previous.onclick=()=>step(-1);next.onclick=()=>step(1);
+    strip=node('nav');strip.className='conversation-viewer-strip';strip.setAttribute('aria-label','Gallery');
+    dialog.append(scrim,stage,header,previous,next,strip);document.body.append(dialog);
+    dialog.addEventListener('cancel',e=>{e.preventDefault();close();});
+    dialog.addEventListener('click',e=>{
+      if(suppressClick){suppressClick=false;return;}
+      if(e.target===image()){if(pointerKind==='mouse')toggleZoom(e.clientX,e.clientY);return;}
+      // Empty space closes. On touch only the stage counts, so a missed tap on a control does not.
+      if(e.target===stage||pointerKind==='mouse'&&[dialog,scrim,header,meta,strip].includes(e.target))close();
+    });
+    dialog.addEventListener('keydown',e=>{
+      if(e.target.tagName==='VIDEO'||e.altKey||e.ctrlKey||e.metaKey)return;
+      const zoomIn=()=>zoomTo(view.scale*1.5,null,null,true);
+      const keys={ArrowRight:()=>step(1),ArrowLeft:()=>step(-1),'+':zoomIn,'=':zoomIn,'-':()=>zoomTo(view.scale/1.5,null,null,true),'0':()=>zoomTo(1,null,null,true)};
+      if(keys[e.key]){e.preventDefault();keys[e.key]();}
+    });
+    stage.addEventListener('pointerdown',e=>{
+      pointerKind=e.pointerType;if(e.target.tagName==='VIDEO'||e.button>0)return;
+      pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});suppressClick=false;
+      if(pointers.size===2&&image()){const [a,b]=[...pointers.values()];stage.classList.remove('panning');gesture={type:'pinch',distance:Math.hypot(a.x-b.x,a.y-b.y)||1,scale:view.scale,mx:(a.x+b.x)/2,my:(a.y+b.y)/2,moved:true};}
+      else if(pointers.size===1)gesture={type:'pending',x0:e.clientX,y0:e.clientY,t0:e.timeStamp,tx:view.x,ty:view.y,pointerType:e.pointerType,moved:false};
+    });
+    dialog.addEventListener('pointermove',e=>{
+      if(!pointers.has(e.pointerId)||!gesture)return;pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});const g=gesture;
+      if(g.type==='pinch'){
+        const [a,b]=[...pointers.values()],mx=(a.x+b.x)/2,my=(a.y+b.y)/2;view.x+=mx-g.mx;view.y+=my-g.my;g.mx=mx;g.my=my;
+        zoomTo(g.scale*Math.hypot(a.x-b.x,a.y-b.y)/g.distance,mx,my);return;
+      }
+      const dx=e.clientX-g.x0,dy=e.clientY-g.y0;
+      if(g.type==='pending'){
+        if(Math.hypot(dx,dy)<6)return;g.moved=true;
+        g.type=view.scale>1.001&&image()?'pan':g.pointerType==='mouse'?'none':Math.abs(dx)>Math.abs(dy)?'swipe':dy>0?'dismiss':'none';
+        if(g.type==='pan')stage.classList.add('panning');
+      }
+      const media=shown();
+      if(g.type==='pan'){view.x=g.tx+dx;view.y=g.ty+dy;clamp();apply();}
+      else if(g.type==='swipe'&&media){media.classList.remove('settling');media.style.transform=`translateX(${items.length>1?dx:dx/4}px)`;}
+      else if(g.type==='dismiss'&&media){const progress=Math.min(1,Math.max(0,dy)/(stage.clientHeight*.6));media.classList.remove('settling');media.style.transform=`translateY(${Math.max(0,dy)}px) scale(${1-progress*.25})`;scrim.style.opacity=String(1-progress*.85);}
+    });
+    dialog.addEventListener('pointerup',release);dialog.addEventListener('pointercancel',release);
+    stage.addEventListener('wheel',e=>{
+      if(!image()||e.target.tagName==='VIDEO')return;e.preventDefault();
+      // At fit every wheel zooms. Zoomed, a trackpad pinch (ctrlKey) or a mouse wheel notch
+      // zooms and a two-finger trackpad scroll pans.
+      if(view.scale<=1.001||e.ctrlKey||e.deltaMode||Math.abs(e.deltaY)>=50&&!e.deltaX){const delta=Math.max(-100,Math.min(100,e.deltaMode?e.deltaY*33:e.deltaY));return zoomTo(view.scale*Math.exp(-delta*(e.ctrlKey?.01:.0025)),e.clientX,e.clientY);}
+      if(view.scale>1.001){view.x-=e.deltaX;view.y-=e.deltaY;clamp();apply();}
+    },{passive:false});
+    window.addEventListener('resize',()=>{if(dialog.open&&view.scale>1){view={scale:1,x:0,y:0};apply();}});
   }
   function expand(gallery,selected,trigger){
-    if(!dialog){dialog=node('dialog');dialog.className='conversation-media-dialog';dialog.setAttribute('aria-label','Media viewer');const header=node('header');counter=node('span');original=node('a','Open original');original.target='_blank';original.rel='noopener noreferrer';const dismiss=node('button','Close');dismiss.onclick=close;header.append(counter,original,dismiss);
-      stage=node('div');stage.className='conversation-media-stage';const controls=node('footer');previous=node('button','← Previous');next=node('button','Next →');zoomButton=node('button','Zoom in');previous.onclick=()=>{index=(index-1+items.length)%items.length;show();};next.onclick=()=>{index=(index+1)%items.length;show();};
-      zoomButton.onclick=()=>{zoom=zoom===1?2:1;const img=stage.querySelector('img');if(img){img.style.maxWidth=zoom===1?'100%':'none';img.style.maxHeight=zoom===1?'100%':'none';img.style.width=zoom===1?'auto':Math.max(img.naturalWidth,stage.clientWidth*1.5)+'px';}zoomButton.textContent=zoom===1?'Zoom in':'Fit image';};controls.append(previous,zoomButton,next);dialog.append(header,stage,controls);document.body.append(dialog);
-      dialog.addEventListener('cancel',e=>{e.preventDefault();close();});dialog.addEventListener('click',e=>{if(e.target===dialog)close();});dialog.addEventListener('keydown',e=>{if(e.target.tagName==='VIDEO')return;if(e.key==='ArrowRight'){e.preventDefault();next.click();}if(e.key==='ArrowLeft'){e.preventDefault();previous.click();}});
-    }
-    items=gallery;index=selected;focusBefore=trigger||document.activeElement;focusRoot=focusBefore?.closest('.conversation-panel');focusUrl=gallery[selected].url;if(!dialog.open)dialog.showModal();show();
+    if(!dialog)build();
+    items=gallery;index=selected;focusBefore=trigger||document.activeElement;focusRoot=focusBefore?.closest('.conversation-panel');focusUrl=gallery[selected].url;
+    dialog.classList.toggle('gallery',items.length>1);previous.hidden=next.hidden=strip.hidden=items.length<2;
+    strip.replaceChildren(...items.map((item,position)=>{
+      const thumb=node('button');thumb.type='button';thumb.setAttribute('aria-label','Show '+item.label);thumb.title=item.label;
+      if(item.kind==='video')thumb.append(icon('play'));
+      else{const img=node('img');img.src=item.url;img.alt='';img.loading='lazy';img.decoding='async';img.draggable=false;img.onerror=()=>img.remove();thumb.append(img);}
+      thumb.onclick=()=>{if(position!==index){const delta=position-index;index=position;show(delta>0?'next':'previous');}};return thumb;
+    }));
+    if(!dialog.open){dialog.showModal();dialog.focus({preventScroll:true});}
+    show();
   }
   function media(reference,label,kind,context,gallery,embedded=false){
     const url=resolve(reference,context,embedded),wrapper=node('span');wrapper.className='conversation-media';
