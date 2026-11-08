@@ -288,7 +288,10 @@
     function startupState(){if(!target||chat||!target.agent&&!target.starting)return null;const key=identity(target);if(firstMessage()){startups.delete(key);return null;}if(!startups.has(key)&&open&&!document.hidden)startups.set(key,{started:Date.now()});return startups.get(key);}
     function unboundNotice(){if(firstMessage())return 'Send a message to start the conversation.';const startup=startupState();return startup?.error||(startup&&Date.now()-startup.started>=30000?'The agent has not connected. Retry or open Terminal.':target?.starting?'Starting agent…':target?.agent?'Connecting to this agent’s conversation…':'No agent');}
     function busy(value){loading=value;older.disabled=refresh.disabled=value;}
-    function focusSurface(){if(!panel.hidden)(form.hidden?panel:draft).focus({preventScroll:true});}
+    // Touch screens open the on-screen keyboard over the conversation when the draft gains focus, so
+    // there navigation focuses the panel for reading and only a tap on the draft starts a reply. A
+    // draft already in use keeps focus unless the selected conversation changes.
+    function focusSurface(navigated=false){if(panel.hidden||!navigated&&document.activeElement===draft)return;(form.hidden||matchMedia('(pointer:coarse)').matches?panel:draft).focus({preventScroll:true});}
     function show(value,transient=false){if(!transient)modeRevision++;if(!value){closeCompletions();stopStream();loadRequest?.abort();window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();}open=value;root.classList.toggle('conversation-open',open);modeChanged();if(!transient)try{localStorage.setItem(modeKey,value?'conversation':'terminal');}catch{}setPanelHidden(!value);toggle.setAttribute('aria-pressed',String(value));back.setAttribute('aria-pressed',String(!value));if(value){document.getElementById('artifact-preview').hidden=true;update();if(loaded){paint(false,restorePosition===null&&lastPaint===null);if(restorePosition!==null){list.scrollTop=restorePosition.follow?list.scrollHeight:restorePosition.position;restorePosition=null;updateLatest();}}if(binding())load(loaded?'poll':'initial');startStream();focusSurface();}else if(target)terminal(target);viewport();}
 
     toggle.onclick=()=>show(true);back.onclick=()=>show(false);
@@ -648,7 +651,7 @@
       if(!target){setPanelHidden(true);viewport();return;}draft.value=drafts.get(identity(target))||'';
       setPanelHidden(!open);paintFiles();viewport();
       status(chat?'Loading conversation…':unboundNotice(),loaded);
-      if(cached){if(open){paint();list.scrollTop=cached.follow?list.scrollHeight:cached.position;updateLatest();}else restorePosition=cached;}if(open)focusSurface();if(chat){load(loaded?'poll':'initial');startStream();}prepare();
+      if(cached){if(open){paint();list.scrollTop=cached.follow?list.scrollHeight:cached.position;updateLatest();}else restorePosition=cached;}if(open)focusSurface(true);if(chat){load(loaded?'poll':'initial');startStream();}prepare();
     }
     // Open at the latest messages; older history is fetched only on request.
     setInterval(()=>{if(open&&!document.hidden){if(!chat){status(unboundNotice());updateActivity();}prepare();void loadPrompt();if(!streamReady)load();}},2000);
