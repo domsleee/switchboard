@@ -24,6 +24,7 @@ test('outgoing replies stay visible through queue acknowledgement and reconcile 
   hold=false;held();await outgoing.getByText('Queued',{exact:true}).waitFor();
   const status=await outgoing.locator('.conversation-outgoing-status').boundingBox();assert.ok(status.width<=1&&status.height<=1,'A queued message shows no status words');
   assert.equal(await outgoing.evaluate(node=>getComputedStyle(node).opacity),'0.6','A queued message shows faded');
+  assert.equal(await outgoing.locator('p').evaluate(node=>getComputedStyle(node).marginBottom),'0px','The hidden status leaves no gap under the text');
   assert.equal(await draft.inputValue(),'');assert.equal(await page.locator('.conversation-send-notice').isVisible(),false);assert.equal(await page.evaluate(()=>SwitchboardConversation.hasUnsentWork()),true);
   // Two identical sends need two distinct transcript entries.
   await draft.fill('Same message');await send.click();await page.waitForFunction(()=>document.querySelectorAll('.conversation-outgoing.queued').length===2);
