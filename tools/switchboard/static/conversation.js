@@ -346,12 +346,14 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       if(!panel.hidden&&!form.hidden)sizeDraft();if(follow){list.scrollTop=list.scrollHeight;updateLatest();}
     }
     const asyncDraftKey=state=>'switchboard-question-draft:'+state.key;
+    const asyncUnconfirmed='Delivery is not confirmed. Retry to check its status.';
     function saveAsyncDraft(state){
       try{
         if(state.status==='answered'||state.status==='draft'&&!state.answers.some(Boolean)){
           if(state.saved!==null)sessionStorage.removeItem(asyncDraftKey(state));state.saved=null;return;
         }
-        const value=JSON.stringify({questions:state.questions,answers:state.answers,custom:state.custom,collapsed:state.collapsed,status:state.status==='sending'?'uncertain':state.status,payload:state.payload,sendKey:state.sendKey,error:state.error});
+        const status=state.status==='sending'?'uncertain':state.status;
+        const value=JSON.stringify({questions:state.questions,answers:state.answers,custom:state.custom,collapsed:state.collapsed,status,payload:state.payload,sendKey:state.sendKey,error:state.error||(status==='uncertain'?asyncUnconfirmed:'')});
         if(value!==state.saved){sessionStorage.setItem(asyncDraftKey(state),value);state.saved=value;}
       }catch{}
     }
@@ -364,7 +366,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
           if(saved&&JSON.stringify(saved.questions)===JSON.stringify(questions)&&Array.isArray(saved.answers)&&saved.answers.length===questions.length&&saved.answers.every(answer=>fits(answer,4000))&&Array.isArray(saved.custom)&&saved.custom.length===questions.length&&saved.custom.every(value=>typeof value==='boolean')){
             state.answers=saved.answers;state.custom=saved.custom;state.collapsed=saved.collapsed===true;
             if(['queued','uncertain','failed'].includes(saved.status)&&fits(saved.payload,8192)&&fits(saved.sendKey,128)){
-              state.status=saved.status;state.payload=saved.payload;state.sendKey=saved.sendKey;state.error=fits(saved.error,4000)?saved.error:'';
+              state.status=saved.status;state.payload=saved.payload;state.sendKey=saved.sendKey;state.error=(fits(saved.error,4000)?saved.error:'')||(saved.status==='uncertain'?asyncUnconfirmed:'');
             }
           }
         }catch{}
@@ -427,7 +429,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       toggle.type='button';mark.setAttribute('aria-hidden','true');chevron.setAttribute('aria-hidden','true');label.setAttribute('role','status');copy.append(label,preview);toggle.append(mark,copy,chevron);
       const body=el('div',undefined,'conversation-async-body');body.id=card.id+'-body';toggle.setAttribute('aria-controls',body.id);card.append(toggle,body);
       toggle.onclick=()=>{state.collapsed=!state.collapsed;card.sync();updateAsyncShortcut();};
-      const controls=[],groups=[],send=el('button','Send answers','conversation-question-choice submit'),status=el('small',undefined,'conversation-question-status'),retry=el('button','Retry','conversation-question-choice');
+      const controls=[],groups=[],send=el('button','Send answers','conversation-question-choice submit'),status=el('small',undefined,'conversation-question-status'),retry=el('button','Retry','conversation-question-choice'),checkTerminal=el('button','Check in Terminal','conversation-question-choice');
       for(const [index,question] of request.questions.entries()){
         const group=el('div',undefined,'conversation-async-question-group'),heading=el('p',question.title,'conversation-question-text'),choices=el('div',undefined,'conversation-question-choices');
         choices.setAttribute('role','group');choices.setAttribute('aria-label',question.title);
@@ -448,6 +450,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
         choices.append(write,other);controls.push(write,input,submit);groups.push({index,options,write,other,input});
       }
       send.type='button';send.onclick=()=>void sendAsyncAnswer(item,state);if(request.questions.length>1)body.append(send);
+      checkTerminal.type='button';checkTerminal.onclick=()=>show(false);body.append(checkTerminal);
       retry.type='button';retry.onclick=()=>void sendAsyncAnswer(item,state,state.status!=='failed');status.setAttribute('role','status');card.append(status,retry);
       card.sync=()=>{
         const locked=!['draft','failed'].includes(state.status);
@@ -469,6 +472,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
         }
         send.disabled=locked||!state.answers.every(answer=>answer.trim());
         retry.hidden=!['failed','uncertain'].includes(state.status);
+        checkTerminal.hidden=!['queued','uncertain'].includes(state.status);
         card.classList.toggle('answering',state.status==='sending');
         status.textContent=state.error||'';status.hidden=!status.textContent;saveAsyncDraft(state);
       };

@@ -27,6 +27,7 @@ test('integrated Conversation journeys use production markup and preserve delive
    if(p.endsWith('/codex/reply')){
     const data=route.request().postDataJSON(),id=Number(data.thread.slice(-12));f.requests.push(data);
     if(f.replyMode==='failed')return route.fulfill({status:503,json:{status:'failed',detail:'Codex could not accept this answer.'}});
+    if(f.replyMode==='unknown')return route.fulfill({status:409,json:{status:'unknown',detail:'Queue outcome is uncertain; this key will not submit again.'}});
     if(f.autoHistory)f.history.get(id).push(f.receipt(data.message));
     if(f.replyMode==='hold')await new Promise(resolve=>f.releaseReplies.push(resolve));
     if(f.replyMode==='lost')return route.abort();
@@ -146,6 +147,9 @@ test('integrated Conversation journeys use production markup and preserve delive
      assert.deepEqual(await answer.evaluate(node=>[node===questionDraftInput,document.activeElement===node,node.selectionStart,node.selectionEnd]),[true,true,1,3],'Refreshing the same question preserves its input and selection');
      f.history.set(1,[{...q,timestamp:'2026-11-08T08:00:00Z'}]);await f.poll();
      assert.deepEqual(await answer.evaluate(node=>[node===questionDraftInput,document.activeElement===node,node.selectionStart,node.selectionEnd]),[true,true,1,3],'Removing an earlier transcript entry also preserves the question input and focus');
+     f.activities=new Map([[1,[{id:'native:fixture:focus-probe',direction:'sent',status:'queued',timestamp:Date.parse('2026-11-08T07:00:00Z'),text:'Coordination note',peer:{label:'Another task'}}]]]);await f.poll();
+     f.activities=new Map();await f.poll();
+     assert.deepEqual(await answer.evaluate(node=>[node===questionDraftInput,document.activeElement===node,node.selectionStart,node.selectionEnd]),[true,true,1,3],'A disappearing activity row also preserves question focus');
      await answer.fill('Keep this answer while the agent works');
      await f.select(2);await f.select(1);assert.equal(await answer.inputValue(),'Keep this answer while the agent works');
      await page.getByRole('button',{name:'Terminal',exact:true}).click();await page.getByRole('button',{name:'Conversation',exact:true}).click();
@@ -195,6 +199,25 @@ test('integrated Conversation journeys use production markup and preserve delive
     assert.equal(await answer.inputValue(),'Keep my label');
     f.replyMode='queue';await card.getByRole('button',{name:'Retry',exact:true}).click();
     await card.getByText('Answer submitted',{exact:true}).waitFor();assert.deepEqual(f.requests[1],sent);
+   }finally{await f.close();}
+  });
+  await t.test('an interrupted question send explains its uncertainty and offers terminal recovery without a new key',async()=>{
+   const q=asyncQuestion('held-reload',[{title:'What label should I use?',options:[]}]);
+   const f=await fixture({messages:[q]}),{page}=f;
+   try{
+    const card=page.getByRole('region',{name:'Codex question'}),answer=card.getByLabel('Type your own answer');
+    await answer.fill('Keep my label');f.replyMode='hold';await answer.press('Enter');
+    await card.getByText('Sending answer…',{exact:true}).waitFor();await page.waitForFunction(()=>!!document.querySelector('.conversation-async-question.answering'));
+    await page.reload();await card.getByText('Delivery is not confirmed. Retry to check its status.',{exact:true}).waitFor();
+    assert.equal(await answer.inputValue(),'Keep my label');assert.equal(await answer.isDisabled(),true);
+    assert.equal(f.requests.length,1,'Reload does not resubmit the interrupted send');
+    f.release();f.replyMode='unknown';await card.getByRole('button',{name:'Retry',exact:true}).click();
+    await card.getByText('Queue outcome is uncertain; this key will not submit again.',{exact:true}).waitFor();
+    assert.deepEqual(f.requests[1],f.requests[0],'A persistent unknown receipt keeps the original key and payload');
+    await card.getByRole('button',{name:'Check in Terminal',exact:true}).click();
+    assert.equal(await page.getByRole('button',{name:'Terminal',exact:true}).getAttribute('aria-pressed'),'true');
+    await page.getByRole('button',{name:'Conversation',exact:true}).click();await card.getByRole('button',{name:'Retry',exact:true}).waitFor();
+    assert.equal(f.requests.length,2,'Checking Terminal does not resubmit the answer');
    }finally{await f.close();}
   });
   await t.test('an accepted question answer settles before its delayed transcript receipt',async()=>{
