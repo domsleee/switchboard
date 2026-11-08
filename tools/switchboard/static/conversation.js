@@ -170,7 +170,7 @@
     const identity=t=>t?JSON.stringify([t.key,t.chatId]):null;
     let chat=null;
     const binding=()=>chat;
-    const pendingFor=(key=identity(target))=>pendingSends.get(key);
+    const pendingFor=(key=identity(target))=>pendingSends.get(key);let queuedSubmit=null;
     function status(text,quiet=false){if(launchShown()&&transitional.has(text))quiet=true;if(notice.textContent!==text)notice.textContent=text;notice.hidden=quiet;}
     // A tab started from New tab shows its prompt as sent, with a starting row under it, until the
     // transcript has it, instead of a run of connection notices and an empty page.
@@ -182,6 +182,7 @@
       const text=target.launch.text;if(launchNode.dataset.text!==text){launchNode.dataset.text=text;launchNode.replaceChildren(el('div','You','conversation-label'));textBlocks(launchNode,text);}
       if(launchNode.nextSibling!==working)working.before(launchNode);
     }
+
     function modelName(value){
       const raw=String(value?.model||'');
       return /^gpt-\d+(?:\.\d+)?-(?:sol|astra|luna|terra)(?:-codex)?$/i.test(raw)?raw.replace(/^gpt-/i,'').replace(/-/g,' ').replace(/\b[a-z]/g,char=>char.toUpperCase()):/^claude-(opus|sonnet|haiku|fable)-\d+(?:-\d+)?(?:-\d{8})?$/i.test(raw)?raw.replace(/^claude-/i,'').replace(/-\d{8}$/,'').replace(/^(opus|sonnet|haiku|fable)-(\d+)-(\d+)$/i,'$1 $2.$3').replace(/-/g,' ').replace(/^\w/,char=>char.toUpperCase()):raw;
@@ -451,7 +452,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
         // command output), so an entry written after the send also counts by its timestamp.
         const after=(item,offset)=>startCursor+offset>sent.baseline||Date.parse(item.timestamp)>=sent.at-30000&&!sent.earlier.has(item.timestamp);
         const match=messages.findIndex((item,offset)=>after(item,offset)&&item.role==='user'&&!used.has(startCursor+offset)&&sameTranscript(item.receipt_text??item.text??'',sent.payload));
-        if(match>=0){sent.transcriptCursor=startCursor+match;used.add(sent.transcriptCursor);if(pendingFor(sent.key)===sent){pendingSends.delete(sent.key);sent.request?.abort();}clearSentDraft(sent);}
+        if(match>=0){sent.transcriptCursor=startCursor+match;used.add(sent.transcriptCursor);if(pendingFor(sent.key)===sent){pendingSends.delete(sent.key);sent.request?.abort();sendQueued(sent.key,true);}clearSentDraft(sent);}
       }
       consumedTranscript.set(key,used);
       outgoing.set(key,sentItems.filter(item=>item.transcriptCursor===undefined));
@@ -610,6 +611,23 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       }
       if(event.key==='Enter'&&!event.shiftKey&&!matchMedia('(pointer:coarse)').matches){event.preventDefault();form.requestSubmit();}
     };
+    // Enter empties the draft at once so the next message can be typed while this one sends.
+    // A failed send puts its text back, unless something new was typed in the meantime.
+    function takeDraft(sent){
+      if(identity(target)!==sent.key||draft.value!==sent.text)return;
+      const version=(draftVersions.get(sent.key)||0)+1;draftVersions.set(sent.key,version);sent.draftRevision=version;sent.draftTaken=true;
+      drafts.delete(sent.key);draft.value='';sizeDraft();closeCompletions();
+    }
+    function restoreDraft(sent){
+      if(!sent.draftTaken)return;sent.draftTaken=false;
+      if((draftVersions.get(sent.key)||0)!==sent.draftRevision||drafts.get(sent.key))return;
+      drafts.set(sent.key,sent.text);if(identity(target)===sent.key&&!draft.value){draft.value=sent.text;sizeDraft();}
+    }
+    // A message submitted while another was sending goes next, once that one is confirmed.
+    function sendQueued(key,ok){
+      if(queuedSubmit!==key)return;queuedSubmit=null;
+      if(ok&&identity(target)===key&&draft.value.trim())setTimeout(()=>{if(identity(target)===key&&identity(selection())===key)form.requestSubmit();});
+    }
     function clearSentDraft(sent){
       if(sent.draftCleared)return;sent.draftCleared=true;
       if(retryKeys.get(sent.key)?.id===sent.sendKey)retryKeys.delete(sent.key);
@@ -624,7 +642,8 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       // The transcript can acknowledge a send before the relay answers; still say
       // where a terminal draft set aside for it went.
       if(pendingFor(sent.key)!==sent){if(ok&&message&&!pendingFor(sent.key)&&identity(target)===sent.key)sendStatus(message,sent);return;}
-      pendingSends.delete(sent.key);
+      pendingSends.delete(sent.key);if(!ok)restoreDraft(sent);
+      sendQueued(sent.key,ok);
       if(ok){clearSentDraft(sent);if(sent.command){outgoing.set(sent.key,(outgoing.get(sent.key)||[]).filter(item=>item!==sent));if(identity(target)===sent.key)paint();}else sendItem(sent,sent.native||sent.relay?'queued':'sent');}
       else sendItem(sent,uncertain?'uncertain':'failed',message);
       returnToConversation(sent);
@@ -648,7 +667,8 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       await sendNative(sent);
     }
     form.onsubmit=async event=>{
-      event.preventDefault();const current=selection();if(!target||identity(current)!==identity(target)||!binding()&&!firstMessage()||(!draft.value.trim()&&!fileList().length)||pendingFor())return;
+      event.preventDefault();const current=selection();if(!target||identity(current)!==identity(target)||!binding()&&!firstMessage()||(!draft.value.trim()&&!fileList().length))return;
+      if(pendingFor()){if(draft.value.trim())queuedSubmit=identity(target);return;}
       // Waiting: the turn ended while background work runs; the prompt still takes input.
       if(!['ready','waiting','working'].includes(current.state)){sendStatus(question.hidden?'The agent needs attention in Terminal. Your draft is kept.':'Answer the agent’s question first. Your draft is kept.');return;}
       const selected=fileList();if(selected.some(item=>!item.path)){sendStatus(selected.some(item=>item.error)?'Remove failed attachments before sending.':'Wait for attachments to finish uploading.');return;}
@@ -666,7 +686,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       const items=outgoing.get(key)||[],failedBridge=!native&&items.find(item=>item.state==='failed'&&!item.native&&sameMessage(item.payload,payload));
       const sent={id,key,pane:target.key,unbound:!chat,frame:target.frame,text,payload,files:[...selected],native,command,host:target.host,thread:chat?.thread,draftRevision:draftVersions.get(key)||0,baseline:failedBridge?failedBridge.baseline:startCursor+messages.length-1,at:failedBridge?failedBridge.at:Date.now(),earlier:failedBridge?failedBridge.earlier:new Set(messages.filter(item=>item.role==='user'&&item.timestamp).map(item=>item.timestamp)),sendKey:id,state:'sending'};
       if(failedBridge)items[items.indexOf(failedBridge)]=sent;else items.push(sent);
-      outgoing.set(key,items);pendingSends.set(key,sent);insert.disabled=true;paintFiles();sendStatus('');paint();
+      outgoing.set(key,items);pendingSends.set(key,sent);insert.disabled=true;takeDraft(sent);paintFiles();sendStatus('');paint();
       if(native){
         const prior=retryKeys.get(key),sendKey=prior?.payload===payload?prior.id:id;sent.sendKey=sendKey;retryKeys.set(key,{payload,id:sendKey});
         await sendNative(sent);return;
