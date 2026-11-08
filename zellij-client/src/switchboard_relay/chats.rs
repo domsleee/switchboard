@@ -458,12 +458,14 @@ fn is_tool(message: &Value) -> bool {
 static SECRETS: LazyLock<Vec<(regex::Regex, &'static str)>> = LazyLock::new(|| {
     let name =
         r"[A-Za-z0-9_.-]*(?i-u:key|token|secret|passw(?:or)?d|credential|cookie)[A-Za-z0-9_.-]*";
+    // Header and JSON field names also cover auth (authorization, auth_token…).
+    let field = r"[A-Za-z0-9_.-]*(?i-u:key|token|secret|passw(?:or)?d|credential|cookie|auth)[A-Za-z0-9_.-]*";
     [
         (format!(r#"({name})(\s*=\s*)(?:"[^"]*"|'[^']*'|[^\s&;|"']+)"#), "$1$2***"),
         (format!(r#"(^|\s)(--?{name})(\s+)(?:"[^"]*"|'[^']*'|[^\s\-"'][^\s"']*)"#), "$1$2$3***"),
         // Headers named like credentials, and quoted JSON fields, as in curl -H or --data.
-        (format!(r#"\b({name}|[A-Za-z0-9_-]*(?i-u:auth)[A-Za-z0-9_-]*)(\s*:\s*)[^"'\r\n]+"#), "$1$2***"),
-        (format!(r#"(\\?"{name}\\?"\s*:\s*)(?:\\?"(?:[^"\\]|\\[^"])*\\?"|[^\s,}}"]+)"#), "$1\"***\""),
+        (format!(r#"\b({field})(\s*:\s*)[^"'\r\n]+"#), "$1$2***"),
+        (format!(r#"(\\?"{field}\\?"\s*:\s*)(?:\\?"(?:[^"\\]|\\[^"])*\\?"|[^\s,}}"]+)"#), "$1\"***\""),
         (r"\b((?i-u:bearer|basic))(\s+)[A-Za-z0-9._~+/=-]{8,}".into(), "$1$2***"),
         (r"(://)[^/\s:@]+:[^/\s@]+@".into(), "$1***@"),
         (r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|sk-[\w-]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,})".into(), "***"),
@@ -2675,6 +2677,14 @@ mod tests {
             (
                 "curl -d \"{\\\"client_secret\\\": \\\"private-value\\\"}\" https://x",
                 "curl -d \"{\\\"client_secret\\\": \"***\"}\" https://x",
+            ),
+            (
+                "curl --data '{\"authorization\":\"private-value\"}' https://x",
+                "curl --data '{\"authorization\":\"***\"}' https://x",
+            ),
+            (
+                "curl -d \"{\\\"Auth_Token\\\":\\\"private-value\\\"}\" https://x",
+                "curl -d \"{\\\"Auth_Token\\\":\"***\"}\" https://x",
             ),
             (
                 "curl --data 'grant=pw&password=private-value' https://x",
