@@ -71,6 +71,11 @@ body.sidebar-collapsed #sidebar-toggle{left:8px}
 :is(#hidden-toggle,#snoozed-toggle) .star{width:6px;height:6px;border-radius:50%}
 #tabs :is(#hidden-toggle,#snoozed-toggle) .star.attention{display:block;background:#f0bc63}
 :is(#hidden-toggle,#snoozed-toggle) .count{margin-left:auto;font-variant-numeric:tabular-nums}
+#snoozed-toggle{gap:8px;padding:7px 10px;border:1px solid #2a3444;border-radius:8px;background:#1b222e;color:#bac8dc;font-weight:500}
+#snoozed-toggle:hover{background:#222c3b;color:#e5e7eb}
+#snoozed-toggle::before{content:'';flex-shrink:0;width:7px;height:7px;border:1.5px solid #8cabe9;border-radius:50%}
+#snoozed-toggle .count{min-width:20px;padding:0 5px;border-radius:5px;background:#2a374b;color:#b8cbea;font-size:11px;line-height:18px;text-align:center}
+#snoozed-toggle .chevron{order:2;margin:0 2px 0 3px;color:#8f9fb5}
 #tabs .tab-row.hidden-tab .tab-select:not(.selected):not(:hover){opacity:.7}
 @media (prefers-reduced-motion:reduce){:is(#hidden-toggle,#snoozed-toggle) .chevron{transition:none}}
 #tab-empty{display:grid;grid-template-columns:8px minmax(0,1fr);column-gap:7px;row-gap:8px;align-items:center;padding:16px 16px 4px 4px;font-size:12px;line-height:1.4;color:#9ba7bd;overflow-wrap:anywhere}
