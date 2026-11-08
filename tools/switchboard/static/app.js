@@ -89,7 +89,9 @@ let hiddenOpen = sectionExpanded('hidden');
 const seenAttention = load('switchboard-attention-seen');
 // Manual parking is a browser preference, like pins. Keep it separate from the
 // automatic Working shelf and from Hidden tabs.
-let parkedTabs=load('switchboard-parked-tabs');
+// Settling closes a tab now, so a Settled entry from an earlier build returns to the list.
+function loadParkedTabs(){return Object.fromEntries(Object.entries(load('switchboard-parked-tabs')).filter(([,parked])=>parked.state!=='settled'));}
+let parkedTabs=loadParkedTabs();
 function parkedTab(item){return parkedTabs[canonKey(item.key)];}
 function saveParkedTabs(){localStorage.setItem('switchboard-parked-tabs',JSON.stringify(parkedTabs));}
 function urgentTokens(item){return statesForTab(item).filter(s=>['approval','input'].includes(s.state)).map(s=>JSON.stringify([s.key,s.state,s.token,s.since]));}
@@ -99,13 +101,22 @@ function parkTab(item,state,until){
   saveParkedTabs();
   if(state){setPinned(item,false);if(item.hidden)setHidden(item,false);}
   render();
-  // Moving the selected row keeps its conversation open. Return keyboard focus
-  // to that view, including when the action removed the focused button.
+  focusSelectedView();
+}
+// Return keyboard focus to the open view, including when the action removed the focused button.
+function focusSelectedView(){
   if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.focus();
   else allTabs().find(t=>t.key===selected)?.entry.frame.focus();
 }
+// Settling frees the tab's memory by closing it. A snoozed tab offers Wake in the same place.
+function settleTab(item){
+  closeTabMenu();
+  if(parkedTab(item)){parkTab(item,null);return;}
+  contextItem=item;$('close-tab').click();
+  focusSelectedView();
+}
 window.addEventListener('storage',event=>{
-  if(event.key==='switchboard-parked-tabs'){parkedTabs=load('switchboard-parked-tabs');render();}
+  if(event.key==='switchboard-parked-tabs'){parkedTabs=loadParkedTabs();render();}
 });
 let attentionLoaded=false,paneAttention=keyedAttention(globalThis.SwitchboardStartup?.snapshot.attention||[]),tabCatalog=[],attentionErrors=[],attentionLoading=false,attentionRefreshPending=false,attentionVersion=0;
 let contextItem = null, menuTrigger = null;
@@ -608,7 +619,7 @@ function sidebarTabs(){
     return {...item,snoozed:snoozed&&!shelf,shelf};
   });
   if(next!==Infinity)snoozedExitTimer=setTimeout(()=>render(),Math.min(next-now,2147483647));
-  const rank=item=>item.hidden?4:item.shelf==='settled'?3:item.shelf==='snoozed'?2:item.snoozed?1:0;
+  const rank=item=>item.hidden?4:item.shelf==='snoozed'?2:item.snoozed?1:0;
   return result.sort((a,b)=>rank(a)-rank(b));
 }
 // Search includes collapsed groups; keyboard navigation follows the visible rows.
@@ -689,12 +700,13 @@ snoozedHeader.onclick=()=>{
   if(dragging||Date.now()<suppressTabClickUntil)return;
   snoozedOpen=!snoozedOpen;localStorage.setItem(`switchboard-snoozed-open:${filter}`,String(snoozedOpen));render();
 };
-const parkedHeaders=new Map(['snoozed','settled'].map(shelf=>{
+const parkedHeaders=new Map(['snoozed'].map(shelf=>{
   const header=document.createElement('button');header.id=`manual-${shelf}-toggle`;header.className='parked-header';
-  header.innerHTML=`<span class="chevron" aria-hidden="true">›</span><span>${shelf==='snoozed'?'Snoozed':'Settled'}</span><span class="count"></span>`;
+  header.innerHTML=`<span class="chevron" aria-hidden="true">›</span><span>Snoozed</span><span class="count"></span>`;
   header.onclick=()=>{localStorage.setItem(`switchboard-manual-${shelf}-open:${filter}`,String(!sectionExpanded('manual-'+shelf)));render();};
   return [shelf,header];
 }));
+const settleTitle='Settle: close this tab and stop its processes to free memory';
 const parkIcons={clock:'<circle cx="8" cy="8" r="6"/><path d="M8 4v4l3 2"/>',check:'<path d="m3 8 3 3 7-7"/>',wake:'<path d="M3 7a5 5 0 1 1 0 4M3 3v4h4"/>'};
 function parkAction(label,icon){
   const button=document.createElement('button');button.type='button';
@@ -824,7 +836,7 @@ function render() {
   const titles=new Map(tabs.map(item=>[item.key,displayTitle(item)])),titleCounts=new Map();
   for(const item of tabs){const key=JSON.stringify([item.entry.host,titles.get(item.key)]);titleCounts.set(key,(titleCounts.get(key)||0)+1);}
   for (const item of listed) {
-    ensureHeaders(item.hidden?4:item.shelf==='settled'?3:item.shelf==='snoozed'?2:item.snoozed?1:0);
+    ensureHeaders(item.hidden?4:item.shelf==='snoozed'?2:item.snoozed?1:0);
     let button=tabButtons.get(item.key);
     if(!button){
       button=document.createElement('button');button.draggable=true;
@@ -842,7 +854,7 @@ function render() {
       const snooze=parkAction('Snooze thread','clock'),settle=parkAction('Settle thread','check');
       snooze.setAttribute('aria-haspopup','menu');snooze.setAttribute('aria-controls','snooze-menu');snooze.setAttribute('aria-expanded','false');
       snooze.onclick=()=>openSnooze(button._item,snooze);
-      settle.onclick=()=>parkTab(button._item,parkedTab(button._item)?null:'settled');
+      settle.onclick=()=>settleTab(button._item);
       actions.append(snooze,settle);row.append(actions);button._parkActions=actions;button._snooze=snooze;button._settle=settle;
       button.onkeydown=event=>{if(event.key==='ContextMenu'||event.shiftKey&&event.key==='F10'){event.preventDefault();const bounds=button.getBoundingClientRect();openTabMenu(button._item,bounds.right,bounds.top,button);}};
       const where=document.createElement('small');where.className='tab-where';
@@ -866,10 +878,10 @@ function render() {
       tabButtons.set(item.key,button);
     }
     button._item=item;
-    const parking=parkedTab(item),restoreLabel=parking?.state==='snoozed'?'Wake thread':parking?'Un-settle thread':'Settle thread';
+    const parking=parkedTab(item),restoreLabel=parking?'Wake thread':'Settle thread';
     button._parkActions.hidden=systemTab(item.tab)||!!item.tab.pending;
     button._snooze.hidden=!!parking;
-    button._settle.setAttribute('aria-label',restoreLabel);button._settle.title=restoreLabel;
+    button._settle.setAttribute('aria-label',restoreLabel);button._settle.title=parking?restoreLabel:settleTitle;
     button._settle.innerHTML=`<svg viewBox="0 0 16 16" aria-hidden="true">${parkIcons[parking?'wake':'check']}</svg><span>${parking?'': 'Settle'}</span>`;
     button.draggable=!item.tab.pending||Number.isInteger(item.tab.id);
     const title=titles.get(item.key);
@@ -2632,8 +2644,9 @@ function updateTabMenu(){
   const parking=parkedTab(item);
   $('snooze-tab').hidden=!!parking;
   $('snooze-tab').disabled=!!item.tab.pending||systemTab(item.tab);
-  $('settle-tab').textContent=parking?.state==='snoozed'?'Wake thread':parking?'Un-settle thread':'Settle thread';
-  $('settle-tab').disabled=!!item.tab.pending||systemTab(item.tab);
+  $('settle-tab').textContent=parking?'Wake thread':'Settle thread';
+  $('settle-tab').title=parking?'':settleTitle;
+  $('settle-tab').disabled=!!item.tab.pending||systemTab(item.tab)||!parking&&!closeTabTarget(item);
   hide.disabled=!!item.tab.pending&&!Number.isInteger(item.tab.id);
   hide.textContent=item.hidden?'Show in list':'Hide';
   hide.title=item.hidden?'Move back among your tabs':'Move to Hidden; keep processes running';
@@ -2703,7 +2716,7 @@ $('hide-tab').onclick=()=>{
   if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.focus();else allTabs().find(t=>t.key===selected)?.entry.frame.focus();
 };
 $('snooze-tab').onclick=()=>{if(contextItem)openSnooze(contextItem,menuTrigger);};
-$('settle-tab').onclick=()=>{const item=contextItem;if(!item)return;closeTabMenu();parkTab(item,parkedTab(item)?null:'settled');};
+$('settle-tab').onclick=()=>{const item=contextItem;if(!item)return;settleTab(item);};
 document.addEventListener('pointerdown',event=>{if(!$('tab-menu').contains(event.target))closeTabMenu();},true);
 window.addEventListener('blur',closeTabMenu);
 $('tabs').addEventListener('scroll',closeTabMenu);
