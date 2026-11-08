@@ -325,6 +325,18 @@ test('integrated Conversation journeys use production markup and preserve delive
     await page.getByRole('button',{name:'Conversation',exact:true}).click();assert.deepEqual(await box('.conversation-modes'),before);
    }finally{await f.close();}
   });
+  await t.test('a phone Conversation has no sideways scroll with its steps folded or unfolded',async()=>{
+   const messages=[{role:'user',text:'Fix the flicker'},{role:'assistant',phase:'commentary',text:'Reading app.js'},{role:'assistant',phase:'commentary',kind:'tool',tool:'read',detail:'tools/switchboard/static/app.js',text:'Read tools/switchboard/static/app.js'},{role:'assistant',text:'Fixed.'}];
+   for(const viewport of [{width:360,height:800},{width:390,height:844},{width:844,height:390}]){
+    const f=await fixture({viewport,messages}),{page}=f;try{
+     const steps=page.locator('.conversation-steps').first();await steps.waitFor();
+     const overflow=()=>page.locator('.conversation-messages').evaluate(box=>box.scrollWidth-box.clientWidth);
+     assert.equal(await overflow(),0,`folded at ${viewport.width}px`);
+     await steps.click();await page.getByText('Reading app.js',{exact:true}).waitFor();
+     assert.equal(await overflow(),0,`unfolded at ${viewport.width}px`);
+    }finally{await f.close();}
+   }
+  });
   await t.test('mobile model/activity layout and actionable attention survive the real toolbar and keyboard',async()=>{
    const f=await fixture(),{page}=f;try{
     await page.getByText('Review response',{exact:true}).waitFor();await page.getByLabel('Reply draft').fill('Keep this draft');
