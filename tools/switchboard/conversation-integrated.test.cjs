@@ -77,6 +77,35 @@ test('integrated Conversation journeys use production markup and preserve delive
     }finally{await f.close();}
    }
   });
+  await t.test('question URLs open separately and preserve drafts across view modes',async()=>{
+   for(const viewport of [{width:1100,height:800},{width:390,height:844}]){
+    const url='https://github.com/example/project/pull/483';
+    const title=`Question-fix PR #483 (${url}) is blocked. See https://example.com/guide_(ci). Should I wait? <img src=x onerror=alert(1)> javascript:alert(1)`;
+    const f=await fixture({viewport,desktop:viewport.width>700,messages:[asyncQuestion('links',[{title,options:['Wait','Defer']}])]}),{page}=f;
+    try{
+     f.state='input';await f.refresh();
+     const card=page.getByRole('region',{name:'Codex question'}),link=card.getByRole('link',{name:url,exact:true});
+     assert.equal(await link.getAttribute('href'),url);
+     assert.equal(await link.getAttribute('target'),'_blank');
+     assert.equal(await link.getAttribute('rel'),'noopener noreferrer');
+     assert.equal(await card.getByRole('link',{name:'https://example.com/guide_(ci)',exact:true}).getAttribute('href'),'https://example.com/guide_(ci)');
+     assert.equal(await card.locator('a').count(),2);assert.equal(await card.locator('img').count(),0);
+     assert.equal(await card.locator('.conversation-question-text').textContent(),title);
+     await page.getByLabel('Reply draft').fill('Continue other work');
+     await card.getByRole('button',{name:'Write a different answer',exact:true}).click();
+     await card.getByRole('textbox').fill('Check again later');
+     await page.context().route(url,route=>route.fulfill({contentType:'text/html',body:'<title>Pull request</title>'}));
+     const opened=page.waitForEvent('popup');await link.click();const popup=await opened;
+     await popup.waitForLoadState();assert.equal(popup.url(),url);assert.equal(await popup.evaluate(()=>window.opener),null);await popup.close();
+     await page.getByRole('button',{name:'Terminal',exact:true}).click();
+     await page.getByRole('button',{name:'Conversation',exact:true}).click();
+     assert.equal(await card.getByRole('textbox').inputValue(),'Check again later');
+     assert.equal(await page.getByLabel('Reply draft').inputValue(),'Continue other work');
+     assert.equal(f.requests.length,0);await link.focus();assert.equal(await link.evaluate(el=>document.activeElement===el),true);
+     assert.equal(await card.locator('.conversation-async-toggle').getAttribute('aria-expanded'),'true');
+    }finally{await f.close();}
+   }
+  });
   await t.test('Codex async answers and ordinary follow-ups queue independently without opening Terminal',async()=>{
    for(const viewport of [{width:1100,height:800},{width:390,height:844}]){
     const q=asyncQuestion('q1',[{title:'Should I rename “Hidden” to “Settled”?',options:['Yes, use Settled','Keep the Hidden label']}]);
