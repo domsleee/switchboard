@@ -581,6 +581,8 @@ body.sidebar-collapsed #artifact-preview header{padding-left:42px}
 .model-picker-foot-done:focus-visible{outline:0;box-shadow:inset 0 0 0 1.5px #7a7f8c}
 @media(hover:hover){.model-picker-foot-done:hover{background:#363944}}
 .new-tab-menu-group{padding:8px 10px 3px;color:var(--nt-faint);font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+.new-tab-menu-search{box-sizing:border-box;display:block;width:100%;height:32px;margin:0 0 4px;padding:0 10px;border:0;border-bottom:1px solid #2a2c32;outline:0;background:transparent;color:#fff;font:13px system-ui,sans-serif}
+.new-tab-menu-search[hidden]{display:none}
 .new-tab-menu-note{margin:0;padding:8px 10px;color:var(--nt-faint);font-size:12px;white-space:normal}
 .new-tab-menu [role=option] kbd.blank{visibility:hidden}
 .new-tab-menu [role=option] small{margin-left:auto;padding-left:16px;color:var(--nt-faint);font-size:12px}

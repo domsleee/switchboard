@@ -279,7 +279,34 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
     // Shift+Tab three times reaches the computer, whose list shows every computer; an arrow picks the next.
     await page.locator('#new-tab-prompt').focus();for(let i=0;i<3;i++)await page.keyboard.press('Shift+Tab');
     assert.deepEqual(await page.locator('#new-tab-machine-menu [role=option] span').allTextContents(),['Windows','Other']);
-    await page.keyboard.press('ArrowDown');await page.keyboard.press('Enter');
+    // Typing finds a computer by name, even a name that starts with a digit; digits alone still pick a row.
+    await page.evaluate(()=>{const option=document.createElement('option');option.value=JSON.stringify(['named','main']);option.textContent='1fern';document.querySelector('#new-tab-target').append(option);});
+    await page.locator('#new-tab-prompt').focus();for(let i=0;i<3;i++)await page.keyboard.press('Shift+Tab');
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-machine');
+    assert.equal(await page.locator('#new-tab-machine-search').isVisible(),false);
+    await page.keyboard.type('1fern');
+    assert.equal(await page.locator('#new-tab-machine-search').inputValue(),'1fern');
+    assert.deepEqual(await page.locator('#new-tab-machine-menu [role=option] span').allTextContents(),['1fern']);
+    await page.keyboard.press('Enter');
+    assert.equal(await page.locator('#new-tab-machine-name').textContent(),'1fern');
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-prompt');
+    // Escape restores the computer from before the typing.
+    await page.keyboard.press('Shift+Tab');await page.keyboard.press('Shift+Tab');await page.keyboard.press('Shift+Tab');
+    await page.keyboard.type('other');assert.equal(await page.locator('#new-tab-machine-name').textContent(),'Other');
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#new-tab-machine-name').textContent(),'1fern');
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-prompt');
+    await page.keyboard.press('Shift+Tab');await page.keyboard.press('Shift+Tab');await page.keyboard.press('Shift+Tab');
+    await page.keyboard.press('2');assert.equal(await page.locator('#new-tab-machine-name').textContent(),'Other');
+    await page.keyboard.press('Enter');
+    // A leading digit that picked a row is undone by Escape too.
+    await page.keyboard.press('Shift+Tab');await page.keyboard.press('Shift+Tab');await page.keyboard.press('Shift+Tab');
+    await page.keyboard.type('1fern');assert.equal(await page.locator('#new-tab-machine-name').textContent(),'1fern');
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#new-tab-machine-name').textContent(),'Other');
+    await page.evaluate(()=>[...document.querySelectorAll('#new-tab-target option')].find(option=>option.textContent==='1fern').remove());
+    await page.locator('#new-tab-prompt').focus();for(let i=0;i<3;i++)await page.keyboard.press('Shift+Tab');
+    await page.keyboard.press('ArrowUp');await page.keyboard.press('ArrowDown');await page.keyboard.press('Enter');
     assert.equal(await page.locator('#new-tab-target').inputValue(),JSON.stringify(['other','main']));
     assert.equal(await page.locator('#new-tab-machine-name').textContent(),'Other');
     assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-prompt');
