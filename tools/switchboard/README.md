@@ -215,6 +215,26 @@ You can also connect with a link: choose **Create invitation** on one computer,
 send the link, and paste it under **Have an invitation?** on the other. Choose
 **Join computer**, then approve on the first computer when the codes match.
 
+## Preview sidebar changes live
+
+To see edits to `tools/switchboard/static` with your real tabs and chats before
+they ship, run this from a checkout on a computer with a running relay:
+
+```sh
+node tools/switchboard/dev-preview.cjs
+```
+
+Open `http://127.0.0.1:8199/`. The page, styles and scripts come from the
+checkout; everything else goes to the relay. Saving a stylesheet updates the
+page in place, and saving any other file reloads it. Changes to the relay itself
+still need a build.
+
+To open it from another of your devices, add `--allow` with that device's
+address, for example `--allow 192.168.1.20`, and open this computer's address
+on port 8199. Allowed devices get full terminal control over plain HTTP, so
+allow only your own devices on a network you trust. `--port`, `--relay` and
+`--static` change the port, the relay port and the folder served.
+
 ## If something is wrong
 
 - **In Switchboard:** **Settings → Logs** shows recent errors from every computer.
