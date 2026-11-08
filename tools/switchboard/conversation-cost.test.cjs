@@ -24,9 +24,19 @@ test('Conversation shows the chat’s API cost only on computers chosen in Setti
   assert.match(await cost.getAttribute('title'),/cache read 56,000/);
   const [model,dollars]=await Promise.all([page.locator('.conversation-compose .conversation-model').boundingBox(),cost.boundingBox()]);
   assert.ok(Math.abs(model.y+model.height/2-(dollars.y+dollars.height/2))<3&&dollars.x>=model.x+model.width,'The cost follows the model in the composer');
+  const breakdown=page.getByRole('dialog',{name:'API cost breakdown'});
+  await cost.click();
+  assert.equal(await breakdown.isVisible(),true,'Tapping the cost opens the breakdown');
+  const values=await breakdown.locator('dt').evaluateAll(labels=>Object.fromEntries(labels.map(label=>[label.textContent,label.nextElementSibling.textContent])));
+  assert.deepEqual(values,{'Input · cached':'56,000 tokens (94%)','Input · not cached':'12 tokens','Cache writes':'3,400 tokens','Output':'780 tokens'});
+  const bounds=await breakdown.boundingBox();assert.ok(bounds.x>=0&&bounds.x+bounds.width<=390,'The breakdown fits a phone screen');
+  await page.keyboard.press('Escape');assert.equal(await breakdown.isVisible(),false);
+  await cost.focus();await page.keyboard.press('Enter');assert.equal(await breakdown.isVisible(),true,'The breakdown opens from the keyboard');
   // A pending model switch takes the space.
+
   await page.evaluate(()=>{current.pendingSwitch={label:'Codex'};SwitchboardConversation.update();});
   assert.equal(await cost.textContent(),'');
+  assert.equal(await breakdown.isVisible(),false);
   await page.evaluate(()=>{delete current.pendingSwitch;SwitchboardConversation.update();});
   assert.equal(await cost.textContent(),'$1.23');
   // New responses update it; tokens from an unknown model make it a lower bound.
@@ -34,6 +44,10 @@ test('Conversation shows the chat’s API cost only on computers chosen in Setti
   await page.evaluate(()=>intervals.forEach(fn=>fn()));
   await page.waitForFunction(()=>document.querySelector('.conversation-cost').textContent==='≥ <$0.01');
   assert.match(await cost.getAttribute('title'),/900 tokens from models without a known price/);
+  await page.setViewportSize({width:1280,height:800});await cost.click();
+  assert.match(await breakdown.textContent(),/900 tokens from models without a known price/);
+  await page.locator('.conversation-heading').click();assert.equal(await breakdown.isVisible(),false,'Clicking outside dismisses the breakdown');
+
   await page.evaluate(()=>{current.showCost=false;SwitchboardConversation.update();});
   assert.equal(await cost.textContent(),'');
   assert.deepEqual(errors,[]);
