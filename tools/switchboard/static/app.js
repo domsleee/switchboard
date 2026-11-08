@@ -995,6 +995,7 @@ function renderMachines() {
   for(const label of rows.values())label.remove();
   let cursor=container.firstChild;
   for(const label of nodes){if(label!==cursor)container.insertBefore(label,cursor);else cursor=cursor.nextSibling;}
+  renderChatCost(settingScope==='browser'?settingValue('chat-cost'):sharedValue('chat-cost'));
 }
 // Conversation reads the catalog/transcript APIs. An older engine's terminal socket
 // attaches with a physical size and constrains the native tab before its first resize,
@@ -2080,7 +2081,43 @@ const settingDefs={
   'focus-group':{apply:remote=>{if(!remote)setFilter(focusGroup()||'all');}},
   'link-app-work':{},
   'link-app-home':{},
+  // Computers whose chats show their API cost, as the first 12 characters of each mesh ID.
+  'chat-cost':{apply:()=>window.SwitchboardConversation?.update?.(),render:renderChatCost,describe:value=>{
+    const names=[...hosts].filter(([id])=>chatCostIds(value).has(chatCostId(id))).map(([,host])=>host.name);
+    return names.join(', ')||'None';
+  }},
 };
+// A host's ID differs on each computer ("windows" here is "mesh-<id>" elsewhere); its mesh ID does not.
+function chatCostId(hostId){
+  const id=hosts.get(hostId)?.local?localMember?.id||hostId:String(hostId).replace(/^mesh-/,'');
+  return id.slice(0,12);
+}
+const chatCostIds=value=>new Set(String(value||'').split(',').filter(Boolean));
+function chatCostShown(hostId){return chatCostIds(settingValue('chat-cost')).has(chatCostId(hostId));}
+function renderChatCost(value){
+  const container=$('chat-cost'),ids=chatCostIds(value),rows=new Map([...container.children].map(row=>[row.dataset.host,row])),nodes=[];
+  for(const host of hosts.values()){
+    let row=rows.get(host.id);
+    if(!row){
+      row=document.createElement('button');row.type='button';row.className='setting-toggle';row.dataset.host=host.id;
+      row.append(document.createTextNode(''),Object.assign(document.createElement('span'),{className:'toggle-state'}));
+      row.lastChild.setAttribute('aria-hidden','true');
+      row.onclick=()=>{
+        const current=chatCostIds(settingScope==='browser'?settingValue('chat-cost'):sharedValue('chat-cost')),id=chatCostId(host.id);
+        current.has(id)?current.delete(id):current.add(id);
+        setSetting('chat-cost',[...current].sort().join(','));
+      };
+    }
+    const on=ids.has(chatCostId(host.id));
+    if(row.firstChild.textContent!==host.name)row.firstChild.textContent=host.name;
+    row.setAttribute('aria-pressed',String(on));
+    nodes.push(row);rows.delete(host.id);
+  }
+  for(const row of rows.values())row.remove();
+  // Move rows in place rather than replacing them, so the toggle just pressed keeps focus.
+  let cursor=container.firstChild;
+  for(const row of nodes){if(row!==cursor)container.insertBefore(row,cursor);else cursor=cursor.nextSibling;}
+}
 const settingDefault=key=>settingDefs[key].default??(settingDefs[key].toggle?'false':'');
 let sharedSettings=load('switchboard-shared-settings'),settingOverrides=load('switchboard-setting-overrides');
 let settingsShared=false,settingScope='shared';const savingSetting={};
@@ -2158,6 +2195,7 @@ const settingNotes={};
 function settingRow(key){const control=$(key),label=control.closest('#link-apps label');return label||control.closest('.settings-group');}
 function describeSetting(key,value){
   if(settingDefs[key].toggle)return value==='true'?'On':'Off';
+  if(settingDefs[key].describe)return settingDefs[key].describe(value);
   if(key==='focus-group')return [...$(key).options].find(option=>option.value===value)?.textContent||value;
   return value||'Default browser';
 }
@@ -2171,6 +2209,7 @@ function renderSettings(){
   for(const key in settingDefs){
     const control=$(key),value=browser?settingValue(key):sharedValue(key),overridden=browser&&key in settingOverrides;
     if(settingDefs[key].toggle){control.setAttribute('aria-pressed',String(value==='true'));control.classList.toggle('selected',value==='true');}
+    else if(settingDefs[key].render)settingDefs[key].render(value);
     else if(control!==document.activeElement||control.tagName==='SELECT')control.value=value;
     settingRow(key).classList.toggle('overridden',overridden);
     let note=settingNotes[key];
@@ -2188,7 +2227,7 @@ function renderSettings(){
 for(const key in settingDefs){
   const control=$(key);
   if(settingDefs[key].toggle)control.onclick=()=>setSetting(key,control.getAttribute('aria-pressed')==='true'?'false':'true');
-  else control.onchange=()=>setSetting(key,control.value.trim());
+  else if(!settingDefs[key].render)control.onchange=()=>setSetting(key,control.value.trim());
 }
 $('setting-scopes').onclick=event=>{const button=event.target.closest('[data-scope]');if(button){settingScope=button.dataset.scope;renderSettings();}};
 $('setting-scopes').onkeydown=event=>{
@@ -2542,7 +2581,7 @@ window.SwitchboardConversation?.install({
     const pane=panes.find(p=>p.pane_id===preferred?.pane_id)||panes.find(p=>p.is_focused)||panes[0];if(!pane)return {key:item.key,host:item.entry.host,frame:item.entry.frame,title:displayTitle(item),starting:!!item.tab.pending,launch:launchFor(item)};
 
     const state=paneAttention.get(attentionKey(item.entry.host,item.entry.name,pane.pane_id)),queued=pendingSwitches.get(item.key);
-    return {key:JSON.stringify([item.entry.host,item.entry.name,pane.pane_id]),host:item.entry.host,chatHost:hosts.get(item.entry.host)?.local?'local':item.entry.host,session:item.entry.name,tab:item.tab.id,pane:pane.pane_id,frame:item.entry.frame,terminalReady:!item.entry.suspended&&!item.entry.disconnected&&!item.entry.needsFocus&&!item.entry.focusPending&&active?.pane_id===pane.pane_id,title:displayTitle(item),agent:state?.agent,state:state?.state,chatId:state?.chat_id,since:state?.since,computer:hosts.get(item.entry.host)?.name,switchAvailable:switchPossible(state),pendingSwitch:queued?.source.target.pane_id===pane.pane_id?queued:null,starting:!!item.tab.pending,launch:launchFor(item)};
+    return {key:JSON.stringify([item.entry.host,item.entry.name,pane.pane_id]),host:item.entry.host,showCost:chatCostShown(item.entry.host),chatHost:hosts.get(item.entry.host)?.local?'local':item.entry.host,session:item.entry.name,tab:item.tab.id,pane:pane.pane_id,frame:item.entry.frame,terminalReady:!item.entry.suspended&&!item.entry.disconnected&&!item.entry.needsFocus&&!item.entry.focusPending&&active?.pane_id===pane.pane_id,title:displayTitle(item),agent:state?.agent,state:state?.state,chatId:state?.chat_id,since:state?.since,computer:hosts.get(item.entry.host)?.name,switchAvailable:switchPossible(state),pendingSwitch:queued?.source.target.pane_id===pane.pane_id?queued:null,starting:!!item.tab.pending,launch:launchFor(item)};
   },
   terminal(target){const item=allTabs().find(item=>item.key===selected);if(item&&item.entry.frame===target.frame){item.entry.frame.focus();focus(item);}}
 });

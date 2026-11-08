@@ -37,6 +37,10 @@ struct HistoryIndex {
     provisional: usize,
     provisional_state: Option<Chat>,
     page_cache: Option<(usize, usize, bool, Option<usize>, bool, Value)>,
+    /// Claude's API usage, including its subagents' transcripts and how far each was read.
+    usage: super::chat_cost::Usage,
+    subagents: HashMap<PathBuf, u64>,
+    subagents_checked: Option<std::time::Instant>,
 }
 static HISTORY: LazyLock<SyncMutex<HashMap<String, Arc<SyncMutex<HistoryIndex>>>>> =
     LazyLock::new(Default::default);
@@ -58,7 +62,67 @@ impl HistoryIndex {
             provisional: 0,
             provisional_state: None,
             page_cache: None,
+            usage: Default::default(),
+            subagents: HashMap::new(),
+            subagents_checked: None,
         }
+    }
+    /// Claude Code keeps each subagent's transcript in `<session>/subagents/`. Their usage is
+    /// part of the chat's cost, so read what they appended, at most every two seconds.
+    fn update_subagents(&mut self) -> bool {
+        if self.chat.agent != "claude"
+            || self
+                .subagents_checked
+                .is_some_and(|checked| checked.elapsed() < Duration::from_secs(2))
+        {
+            return false;
+        }
+        self.subagents_checked = Some(std::time::Instant::now());
+        let Ok(entries) = fs::read_dir(self.path.with_extension("").join("subagents")) else {
+            return false;
+        };
+        let mut changed = false;
+        for entry in entries.flatten().take(1000) {
+            let path = entry.path();
+            let length = entry.metadata().map_or(0, |metadata| metadata.len());
+            let offset = self.subagents.get(&path).copied().unwrap_or(0);
+            if path
+                .extension()
+                .is_none_or(|extension| extension != "jsonl")
+                || length <= offset
+            {
+                continue;
+            }
+            let Ok(mut file) = fs::File::open(&path) else {
+                continue;
+            };
+            if file.seek(SeekFrom::Start(offset)).is_err() {
+                continue;
+            }
+            let mut reader = BufReader::new(file);
+            let mut read = offset;
+            loop {
+                let mut line = Vec::new();
+                let Ok(bytes) = reader
+                    .by_ref()
+                    .take(LINE_BYTES + 1)
+                    .read_until(b'\n', &mut line)
+                else {
+                    break;
+                };
+                // Stop before an unfinished write or an oversized record.
+                if bytes == 0 || line.last() != Some(&b'\n') {
+                    break;
+                }
+                read += bytes as u64;
+                if let Ok(value) = serde_json::from_slice::<Value>(&line) {
+                    self.usage.record(&value);
+                    changed = true;
+                }
+            }
+            self.subagents.insert(path, read);
+        }
+        changed
     }
     fn update(&mut self) -> std::io::Result<()> {
         let mut file = match fs::File::open(&self.path) {
@@ -81,6 +145,9 @@ impl HistoryIndex {
             self.messages.clear();
             self.provisional = 0;
             self.provisional_state = None;
+            self.usage.clear();
+            self.subagents.clear();
+            self.subagents_checked = None;
             self.chat = Chat {
                 id: self.chat.id.clone(),
                 agent: self.chat.agent.clone(),
@@ -128,6 +195,9 @@ impl HistoryIndex {
             }
             match serde_json::from_slice::<Value>(&line) {
                 Ok(value) => {
+                    if self.chat.agent == "claude" {
+                        self.usage.record(&value);
+                    }
                     // Parse each record independently too, so offsets remain correct for
                     // providers whose envelopes contain several or deduplicated messages.
                     let mut record = Chat {
@@ -183,6 +253,9 @@ impl HistoryIndex {
     fn page(&mut self, p: &Params) -> std::io::Result<Value> {
         let previous = self.observed;
         self.update()?;
+        if self.update_subagents() {
+            self.page_cache = None;
+        }
         if previous == self.observed {
             if let Some((cursor, limit, tail, before, context, page)) = &self.page_cache {
                 if (*cursor, *limit, *tail, *before, *context)
@@ -264,6 +337,9 @@ impl HistoryIndex {
         let next = start + chat.messages.len();
         page["start_cursor"] = json!(start);
         page["message_count"] = json!(self.messages.len());
+        if self.chat.agent == "claude" {
+            page["usage"] = self.usage.summary();
+        }
         page["previous_cursor"] = if start > 0 { json!(start) } else { Value::Null };
         page["next_cursor"] = if next < end { json!(next) } else { Value::Null };
         self.page_cache = Some((
@@ -2227,6 +2303,45 @@ mod tests {
         assert_eq!(page["messages"][0]["attachments"][0]["name"], "photo.png");
         assert!(page["messages"][1].get("receipt_text").is_none());
         assert!(page["messages"][2].get("receipt_text").is_none());
+    }
+
+    #[test]
+    fn switchboard_chats_report_claude_usage_with_subagents_and_appended_responses() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let reply = |id: &str, text: &str, output: u64| {
+            format!(
+                "{}\n",
+                json!({"type":"assistant","sessionId":"s","timestamp":"2026-11-08T00:00:00Z",
+                    "message":{"id":id,"model":"claude-sonnet-4-6","role":"assistant",
+                        "content":[{"type":"text","text":text}],
+                        "usage":{"input_tokens":1_000_000,"output_tokens":output}}})
+            )
+        };
+        fs::write(&path, reply("msg_1", "One", 0).repeat(2)).unwrap();
+        let mut index = HistoryIndex::new("claude", dir.path(), &path);
+        let params = Params {
+            tail: true,
+            ..Params::default()
+        };
+        let page = index.page(&params).unwrap();
+        assert_eq!(page["usage"]["responses"], 1);
+        assert_eq!(page["usage"]["cost_usd"], 3.0);
+
+        let subagents = dir.path().join("session/subagents");
+        fs::create_dir_all(&subagents).unwrap();
+        fs::write(subagents.join("agent-a.jsonl"), reply("msg_2", "Sub", 0)).unwrap();
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(reply("msg_3", "Two", 1_000_000).as_bytes())
+            .unwrap();
+        index.subagents_checked = None;
+        let page = index.page(&params).unwrap();
+        assert_eq!(page["usage"]["responses"], 3);
+        assert_eq!(page["usage"]["cost_usd"], 24.0);
+        assert_eq!(page["usage"]["output_tokens"], 1_000_000);
     }
 
     #[test]

@@ -659,6 +659,35 @@ test('a recreated session keeps its tabs where they were dragged, though Zellij 
   assert.deepEqual(after.names(),['Windows-C','Mac-0','Windows-A','Mac-1','Windows-B','Windows-D']);
 });
 
+test('chat cost shows only on the computers chosen, by mesh ID wherever the sidebar runs',async()=>{
+  const start=source.indexOf('const settingDefs={'),end=source.indexOf("for(const key in settingDefs){\n  const control=$(key);");
+  const view=(hosts,localMember)=>{
+    const stored={},posted=[],updates=[];
+    const context={posted,updates,hosts,localMember,window:{SwitchboardConversation:{update:()=>updates.push(1)}},document:{hidden:false,addEventListener(){}},
+      render(){},load:()=>({}),focusGroup:()=>'',
+      localStorage:{getItem:key=>stored[key]??null,setItem:(key,value)=>stored[key]=value},
+      fetch:(url,options)=>{posted.push(JSON.parse(options.body));return Promise.resolve({ok:true,json:()=>({updated:500})});}};
+    vm.createContext(context);vm.runInContext(source.slice(start,end)+';renderSettings=()=>{};',context);
+    return context;
+  };
+  const windowsId='a1b2c3d4e5f6a7b8c9d0',macId='0f1e2d3c4b5a69788796';
+  // Windows calls itself "windows"; the Mac knows it as "mesh-<id>".
+  const onWindows=view(new Map([['windows',{name:'Windows',local:true}],['mesh-'+macId,{name:'Mac'}]]),{id:windowsId,local:true});
+  const onMac=view(new Map([['mac',{name:'Mac',local:true}],['mesh-'+windowsId,{name:'Windows'}]]),{id:macId,local:true});
+  assert.equal(onWindows.chatCostShown('windows'),false);
+  onWindows.applySettings({settings:{}},{id:windowsId,local:true});
+  onWindows.setSetting('chat-cost',onWindows.chatCostId('windows'));
+  assert.deepEqual(onWindows.posted.at(-1),{key:'chat-cost',value:windowsId.slice(0,12)});
+  assert.equal(onWindows.updates.length,1,'an open conversation repaints');
+  assert.equal(onWindows.chatCostShown('windows'),true);
+  assert.equal(onWindows.chatCostShown('mesh-'+macId),false);
+  onMac.applySettings({settings:{'chat-cost':{value:windowsId.slice(0,12),updated:500}}},{id:macId,local:true});
+  assert.equal(onMac.chatCostShown('mesh-'+windowsId),true);
+  assert.equal(onMac.chatCostShown('mac'),false);
+  assert.equal(onMac.describeSetting('chat-cost',windowsId.slice(0,12)),'Windows');
+  assert.equal(onMac.describeSetting('chat-cost',''),'None');
+});
+
 test('settings are shared by every paired computer, and a browser can override any of them',async()=>{
   const start=source.indexOf('const settingDefs={'),end=source.indexOf("for(const key in settingDefs){\n  const control=$(key);");
   const view=stored=>{

@@ -36,6 +36,8 @@
 .conversation-subtitle:empty,.conversation-subtitle:not(:has(:not(:empty))){display:none}
 .conversation-context{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .conversation-context:empty{display:none}
+.conversation-cost{flex-shrink:0;font-variant-numeric:tabular-nums;white-space:nowrap}
+.conversation-cost:empty{display:none}
 .conversation-model{font-size:12px;line-height:1.5;color:var(--muted);overflow-wrap:anywhere}
 .conversation-activity{flex-shrink:0;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;font-weight:400;color:var(--muted)}
 .conversation-activity:empty{display:none}
