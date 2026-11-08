@@ -2351,6 +2351,8 @@ $('sidebar-toggle').onclick=()=>{
   if(mobileSidebar.matches)sidebarOpen=!sidebarOpen;
   else{sidebarCollapsed=!sidebarCollapsed;localStorage.setItem('switchboard-sidebar-collapsed',String(sidebarCollapsed));}
   updateSidebar();
+  // Blur the draft or the terminal's input so the on-screen keyboard closes while the drawer is open.
+  if(mobileSidebar.matches&&sidebarOpen&&document.activeElement!==$('sidebar-toggle')){const active=document.activeElement;try{active?.contentWindow?.__zjSoftKbdCapture?.element?.blur();}catch{}active?.blur();}
 };
 $('sidebar-backdrop').onclick=()=>{sidebarOpen=false;updateSidebar();};
 mobileSidebar.addEventListener('change',()=>{sidebarOpen=false;updateSidebar();for(const entry of sessions.values())syncTerminalConnection(entry);render();});
