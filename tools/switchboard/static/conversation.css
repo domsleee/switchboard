@@ -77,9 +77,9 @@
 .conversation-messages{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:28px var(--edge) 20px;-webkit-mask-image:linear-gradient(#0000,#000 12px,#000 calc(100% - 20px),#0000);mask-image:linear-gradient(#0000,#000 12px,#000 calc(100% - 20px),#0000);scrollbar-width:thin;scrollbar-color:transparent transparent;overflow-anchor:none}
 .conversation-messages.scrolling{scrollbar-color:#3a3b42 transparent}
 .conversation-messages.settling{visibility:hidden}
-.conversation-message{margin:0 0 28px;overflow-wrap:anywhere}
+.conversation-message{margin:0 0 16px;overflow-wrap:anywhere}
 .conversation-message.user{width:fit-content;max-width:min(80%,36rem);background:#1f2024;color:var(--text);border-radius:14px;padding:8px 14px;margin-left:auto;line-height:1.55}
-.conversation-message.user:not(:first-of-type){margin-top:24px}
+.conversation-message.user:not(:first-of-type){margin-top:16px}
 /* Speaker is clear from layout; keep the label for screen readers only. */
 .conversation-label{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 
@@ -161,7 +161,7 @@
 .conversation-panel .conversation-steps:hover{color:#f4f4f5;background:#ffffff0f;border-color:#ffffff1f}
 
 /* Rich content: one block gap between paragraphs, lists, code and tables. */
-.conversation-message p{margin:0 0 12px;white-space:pre-wrap}
+.conversation-message p{margin:0 0 10.4px;white-space:pre-wrap}
 .conversation-message p:last-child{margin:0}
 .conversation-message>strong,.conversation-message strong{font-size:inherit;font-weight:600;color:#ececef}
 .conversation-message h1,.conversation-message h2,.conversation-message h3,.conversation-message h4{line-height:1.35;margin:20px 0 6px;font-size:15px;font-weight:600;letter-spacing:-.017em;color:#f4f4f5}
@@ -171,7 +171,7 @@
 .conversation-message blockquote{margin:var(--block) 0;padding-left:14px;border-left:2px solid var(--line-2);color:var(--text-2)}
 .conversation-message a{color:#ececef;text-decoration:underline;text-decoration-color:#ececef66;text-underline-offset:3px;text-decoration-thickness:1px}
 .conversation-message a:hover{color:var(--accent);text-decoration-color:currentColor}
-.conversation-message ul,.conversation-message ol{margin:6px 0 var(--block);padding-left:22px}
+.conversation-message ul,.conversation-message ol{margin:6px 0 10.4px;padding-left:22px}
 .conversation-message li{margin:4px 0;padding-left:2px}
 .conversation-message li::marker{color:var(--faint)}
 .conversation-message ol>li::marker{font-variant-numeric:tabular-nums;font-size:.92em}
@@ -469,7 +469,7 @@
   .conversation-messages.scrolling::-webkit-scrollbar{width:3px}
   .conversation-messages.scrolling::-webkit-scrollbar-thumb{background:#2c2d33;border-radius:3px}
   /* Same size as the composer, which needs 16px so iOS does not zoom when it takes focus. */
-  .conversation-message{margin-bottom:20px;font-size:16px}
+  .conversation-message{font-size:16px}
   .conversation-message.user{max-width:88%}
   .conversation-message.commentary,.conversation-panel .conversation-working{font-size:13px}
   .conversation-message h1{font-size:20px}.conversation-message h2{font-size:18px}.conversation-message h3,.conversation-message h4{font-size:16px}
