@@ -1048,7 +1048,7 @@ document.addEventListener('mousedown',event=>{
   const target=event.target;
   if(!target.closest('#sidebar,#sidebar-toggle,#sidebar-backdrop,#status,#terminals')||target.closest('#selection-tools'))return;
   const control=target.closest('a,button,input,textarea,select,label,[contenteditable],[tabindex],[role="button"]');
-  if(control&&!control.matches('#hidden-toggle,#snoozed-toggle,#sidebar-toggle,#sidebar-backdrop,#dismiss-status,#filters [data-filter]'))return;
+  if(control&&!control.matches('#hidden-toggle,#snoozed-toggle,#sidebar-toggle,#sidebar-backdrop,#dismiss-status,#filters [data-filter],#filter-more'))return;
   event.preventDefault();
 },true);
 function focus(item,background=false) {
@@ -1108,6 +1108,16 @@ function closeSelectedTab(){
   contextItem=item;
   $('close-tab').click();
 }
+// Registered before sidebarKeydown, which otherwise takes Escape to mean leaving Conversation.
+window.addEventListener('keydown',event=>{
+  if($('filter-menu').hidden)return;
+  if(event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();closeFilterMenu(true);}
+  else if(['ArrowDown','ArrowUp','Home','End'].includes(event.key)){
+    event.preventDefault();event.stopImmediatePropagation();
+    const items=[...$('filter-menu').children],index=items.indexOf(document.activeElement);
+    items[event.key==='Home'?0:event.key==='End'?items.length-1:(index+(event.key==='ArrowDown'?1:-1)+items.length)%items.length]?.focus();
+  }else if(event.key==='Tab')closeFilterMenu();
+},true);
 window.addEventListener('keydown',sidebarKeydown,true);
 function sidebarKeydown(event){
   if((navigator.platform.startsWith('Mac')?event.metaKey&&!event.ctrlKey:event.ctrlKey&&!event.metaKey)&&!event.altKey&&!event.shiftKey&&event.code==='KeyK'&&!document.querySelector('dialog[open]')){event.preventDefault();showTabSearch();return;}
@@ -1521,16 +1531,40 @@ $('copy').onclick=async()=>{
   const result=await api.copySelection();
   setStatus(result.ok?'Copied to this browser.':result.error||'Nothing selected. Select terminal text first.',!result.ok);
 };
+// The groups a focused browser keeps out of its filter bar.
+function filterMenuGroups(){return [...$('filters').querySelectorAll('[data-filter]')].filter(b=>b.hidden);}
+let filterMenuReturn=null;
+function closeFilterMenu(restore=false){
+  if($('filter-menu').hidden)return;
+  $('filter-menu').hidden=true;$('filter-more').setAttribute('aria-expanded','false');
+  if(restore)filterMenuReturn?.focus();
+  filterMenuReturn=null;
+}
+function openFilterMenu(){
+  const menu=$('filter-menu'),trigger=$('filter-more'),tabs=allTabs(true);
+  filterMenuReturn=document.activeElement;
+  menu.replaceChildren(...filterMenuGroups().map(group=>{
+    const value=group.dataset.filter,count=tabs.filter(({entry})=>value==='all'||groups[entry.host]===value).length;
+    const item=document.createElement('button');item.setAttribute('role','menuitemradio');item.setAttribute('aria-checked',String(value===filter));
+    item.setAttribute('aria-label',`${group.textContent}, ${count} ${count===1?'tab':'tabs'}`);
+    item.innerHTML='<span class="check" aria-hidden="true"></span><span></span><span class="count"></span>';
+    item.children[1].textContent=group.textContent;item.children[2].textContent=count;
+    item.onclick=()=>{closeFilterMenu(true);setFilter(value);};
+    return item;
+  }));
+  menu.hidden=false;trigger.setAttribute('aria-expanded','true');
+  const rect=trigger.getBoundingClientRect();
+  menu.style.top=`${rect.bottom+6}px`;menu.style.left=`${Math.max(8,Math.min(rect.left,innerWidth-menu.offsetWidth-8))}px`;
+  // Focusing the menu on a phone would close the on-screen keyboard.
+  if(chromePointerType!=='touch')(menu.querySelector('[aria-checked=true]')||menu.firstElementChild)?.focus();
+}
 function renderFilter(){
   const focus=focusGroup(),more=$('filter-more');
   for(const b of $('filters').querySelectorAll('[data-filter]')){b.classList.toggle('selected',b.dataset.filter===filter);b.hidden=!!focus&&b.dataset.filter!==focus;}
-  more.hidden=!focus;
+  more.hidden=!focus;closeFilterMenu();
   if(focus){
-    const others=[...$('filters').querySelectorAll('[data-filter]')].filter(b=>b.hidden);
-    // The focused group's option only labels the closed dropdown.
-    const label=new Option('Show more',focus);label.hidden=true;
-    more.replaceChildren(label,...others.map(b=>new Option(b.textContent,b.dataset.filter)));
-    more.value=filter;more.classList.toggle('selected',filter!==focus);
+    $('filter-more-label').textContent=filterMenuGroups().find(b=>b.dataset.filter===filter)?.textContent||'Show more';
+    more.classList.toggle('selected',filter!==focus);
   }
   const url=new URL(location.href);
   if(filter===(focus||'all'))url.searchParams.delete('group');else url.searchParams.set('group',filter);
@@ -1599,7 +1633,12 @@ window.SwitchboardOpenFile=(host,path)=>{
   if(!history.state?.switchboardPreview)history.pushState({...history.state,switchboardPreview:true},'');
   $('artifact-preview').hidden=false;$('artifact-back').focus();
 };
-$('filter-more').onchange=event=>setFilter(event.target.value);
+$('filter-more').onclick=()=>{if($('filter-menu').hidden)openFilterMenu();else closeFilterMenu(true);};
+document.addEventListener('pointerdown',event=>{if(!$('filter-menu').contains(event.target)&&!$('filter-more').contains(event.target))closeFilterMenu();},true);
+// Shortcuts such as Ctrl+K move focus without a pointer event.
+document.addEventListener('focusin',event=>{if(!$('filter-menu').contains(event.target)&&!$('filter-more').contains(event.target))closeFilterMenu();});
+window.addEventListener('blur',()=>closeFilterMenu());
+window.addEventListener('resize',()=>closeFilterMenu());
 renderFilter();
 let newTabElevated=false,newTabHandover=null;
 function clearNewTabHandover(){
