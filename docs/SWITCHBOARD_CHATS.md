@@ -48,7 +48,15 @@ Use `tail=true` to read the latest page immediately, then `before=previous_curso
 to load preceding messages. Forward reads still use `cursor`. Each message has `role`, `text`,
 `timestamp` and `truncated`. Codex assistant messages also include `phase`
 (`commentary` or `final`) when present in the source; other messages return null. Text is capped at 4,000 characters per message;
-search excerpts are capped at 401 characters. Tool calls, tool output, reasoning, and provider credentials are excluded.
+search excerpts are capped at 401 characters. Tool output, reasoning, and provider credentials are excluded.
+Claude and Codex tool calls appear as one-line steps: `kind` is `tool`, `phase` is
+`commentary` (so older clients show them as progress notes), `tool` is `run`, `read`,
+`edit`, `write`, `search`, `fetch`, `agent`, `plan` or `tool`, and `detail` is the command's
+first line, a project-relative path, a pattern, URL, query, description or tool name, at most
+about 120 characters. `text` reads like "Ran cargo test". File contents, edit bodies,
+prompts, arguments and results are never included, and values that look like credentials
+are replaced with `***`. Tool steps count toward cursors and `message_count`, but search
+does not match them.
 Messages also include an inert `markdown` event stream for safe DOM rendering.
 Claude and Codex messages may include `attachments` with a media `kind`, `name`,
 and `url` or an explicit `unavailable` reason. Paths are not resolved on the relay

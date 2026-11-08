@@ -8,10 +8,11 @@ test('short handovers retain complete text, attribution and order while excludin
   {cursor:1,role:'user',text:'Original request\nUse this constraint'},
   {cursor:2,role:'assistant',text:'Complete answer '+ 'x'.repeat(6000)},
   {cursor:3,role:'assistant',phase:'commentary',text:'Unfinished work'},
-  {cursor:4,role:'assistant',text:'Clipped',truncated:true}];
- const result=plain(select({chat_id:'source'},entries,5));
+  {cursor:4,role:'assistant',text:'Clipped',truncated:true},
+  {cursor:5,role:'assistant',phase:'commentary',kind:'tool',text:'Ran cargo test'}];
+ const result=plain(select({chat_id:'source'},entries,6));
  assert.deepEqual(result.messages,entries.slice(1,4));
- assert.equal(result.coverage.omitted_messages,2);assert.equal(result.coverage.included_messages,3);
+ assert.equal(result.coverage.omitted_messages,3);assert.equal(result.coverage.included_messages,3);
 });
 
 test('long unicode handovers stay within 64 KB, favor original and recent messages, and never shorten included text',()=>{

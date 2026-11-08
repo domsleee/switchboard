@@ -25,6 +25,14 @@
     }
     out.append(code.slice(last));return out;
   }
+  // A tool call on the rail: a quiet verb and what it acted on. The live row reads it in progress.
+  const toolVerbs={run:['Ran','Running'],read:['Read','Reading'],edit:['Edited','Editing'],write:['Wrote','Writing'],search:['Searched','Searching'],fetch:['Fetched','Fetching'],agent:['Delegated','Delegating'],plan:['Updated the plan','Updating the plan'],tool:['Used','Using']};
+  const codeTools=new Set(['run','read','edit','write','search']);
+  function toolStep(article,item){
+    const tool=Object.hasOwn(toolVerbs,item.tool)?item.tool:'tool',[past,present]=toolVerbs[tool],detail=String(item.detail||''),line=el('div',undefined,'conversation-tool');
+    line.append(el('span',past,'conversation-tool-verb'));if(detail)line.append(' ',el(codeTools.has(tool)?'code':'span',detail,'conversation-tool-detail'));
+    article.dataset.tool=tool;article.dataset.live=present+(detail?' '+detail:'')+'…';article.title=past+(detail?' '+detail:'');article.append(line);
+  }
   const duration=seconds=>{seconds=Math.round(seconds);if(seconds<60)return seconds+'s';const minutes=Math.floor(seconds/60);if(minutes<60)return `${minutes}m ${seconds%60}s`;return `${Math.floor(minutes/60)}h ${minutes%60}m`;};
   function copyText(text){
     if(navigator.clipboard&&window.isSecureContext)return navigator.clipboard.writeText(text);
@@ -91,8 +99,10 @@
     const notice=el('p','Loading this terminal’s conversation…','conversation-notice');notice.setAttribute('role','status');
     const list=el('div',undefined,'conversation-messages'),older=el('button','Load older messages'),refresh=el('button','↻'),latest=el('button','↓');refresh.setAttribute('aria-label','Refresh');refresh.title='Refresh conversation';latest.setAttribute('aria-label','Scroll to bottom');latest.title='Scroll to bottom';older.hidden=true;
     // One live row: a pulsing marker, the step in progress (or "Working"), and the elapsed time.
-    const working=el('div',undefined,'conversation-working'),workingStep=el('span',undefined,'conversation-working-step'),workingTime=el('span',undefined,'conversation-working-time');
-    working.append(el('span',undefined,'conversation-working-dot'),workingStep,workingTime);working.hidden=true;workingStep.dataset.step='Working';let liveStep=null;working.setAttribute('aria-hidden','true');
+    // With earlier steps in this turn it is also their disclosure, showing them in place.
+    const working=el('button',undefined,'conversation-working'),workingStep=el('span',undefined,'conversation-working-step'),workingTime=el('span',undefined,'conversation-working-time'),workingCount=el('span',undefined,'conversation-working-count');
+    working.type='button';working.disabled=true;working.append(el('span',undefined,'conversation-working-dot'),workingStep,workingTime,workingCount);working.hidden=true;workingStep.dataset.step='Working';let liveStep=null,liveRun=null;working.setAttribute('aria-hidden','true');
+    working.onclick=()=>{if(!liveRun||!liveStep)return;const id=identity(target)+':'+liveRun.start;expandedRuns.has(id)?expandedRuns.delete(id):expandedRuns.add(id);lastPaint=null;paint();};
     const recovery=el('div',undefined,'conversation-recovery'),retryConnection=el('button','Retry connection');recovery.hidden=true;retryConnection.type='button';retryConnection.onclick=()=>{if(target)startups.delete(identity(target));status(unboundNotice());updateActivity();prepare();};recovery.append(retryConnection);
     const historyStatus=el('span',undefined,'conversation-history-status');historyStatus.hidden=true;historyStatus.setAttribute('role','status');
     const actions=el('div',undefined,'conversation-actions');actions.append(refresh,latest);list.append(older,working);latest.hidden=refresh.hidden=true;
@@ -167,12 +177,17 @@
     // and the timer read as one line instead of two indicators.
     function syncLiveStep(){
       const last=working.hidden?null:working.previousElementSibling,step=last?.classList.contains('commentary')&&!last.hidden?last:null;
-      if(step===liveStep)return;
-      liveStep?.classList.remove('live');liveStep=step;
-      // Shown through CSS content so the step's text stays in the transcript only once.
-      if(step){step.classList.add('live');workingStep.dataset.step=[...step.childNodes].filter(node=>!node.classList?.contains('conversation-label')).map(node=>node.textContent).join(' ').replace(/\s+/g,' ').trim();}
-      else workingStep.dataset.step='Working';
-      working.classList.toggle('has-step',!!step);
+      if(step!==liveStep){
+        liveStep?.classList.remove('live');liveStep=step;
+        // Shown through CSS content so the step's text stays in the transcript only once.
+        if(step){step.classList.add('live');workingStep.dataset.step=step.dataset.live||[...step.childNodes].filter(node=>!node.classList?.contains('conversation-label')).map(node=>node.textContent).join(' ').replace(/\s+/g,' ').trim();}
+        else workingStep.dataset.step='Working';
+        working.classList.toggle('has-step',!!step);
+      }
+      const run=step&&liveRun,expanded=!!run&&!run.collapsed,count=run?`· ${run.count} steps`:'';
+      working.classList.toggle('has-run',!!run);working.disabled=!run;if(workingCount.textContent!==count)workingCount.textContent=count;
+      if(run){working.removeAttribute('aria-hidden');working.setAttribute('aria-expanded',String(expanded));working.setAttribute('aria-label',`${expanded?'Hide':'Show'} ${run.count-1} earlier step${run.count===2?'':'s'}`);}
+      else{working.setAttribute('aria-hidden','true');working.removeAttribute('aria-expanded');working.removeAttribute('aria-label');}
     }
     function updateActivity(){
       const state=target?.state,label=state==='working'?'Working…':state==='approval'?'Approval needed':state==='input'?'Input needed':state==='waiting'?'Waiting on an agent':state==='ready'?'Ready':'';
@@ -246,7 +261,8 @@
           const run={start:visible[i].key,collapsed:!expandedRuns.has(identity(target)+':'+visible[i].key),label:(Number.isFinite(elapsed)&&elapsed>0?`${providerLabel()} worked for ${duration(elapsed)} · `:`${providerLabel()} · `)+`${count} steps`};
           for(let j=i;j<=end;j++)runs.set(visible[j].key,run);
         }else if(!after&&count>=2){
-          const earlier=count-1,run={start:visible[i].key,collapsed:!expandedRuns.has(identity(target)+':'+visible[i].key),label:`${earlier} earlier step${earlier===1?'':'s'}`};
+          // While the agent works, the live row is this run's disclosure and the summary is hidden.
+          const earlier=count-1,run={start:visible[i].key,count,inProgress:true,collapsed:!expandedRuns.has(identity(target)+':'+visible[i].key),label:`${earlier} earlier step${earlier===1?'':'s'}`};
           for(let j=i;j<end;j++)runs.set(visible[j].key,run);
         }
         i=end+1;
@@ -308,7 +324,7 @@
       if(!follow&&!prepend&&!initial)newOutput=true;
       older.hidden=true;
       let previous=older,previousRole=null,previousSpeaker=null;
-      const runs=activityRuns(),summaryKeys=new Set();
+      const runs=activityRuns(),summaryKeys=new Set();liveRun=[...runs.values()].find(run=>run.inProgress)||null;
       for(const [offset,item] of messages.entries()){
         if(setupMessage(item))continue;
         const notices=mailboxCount(item),key=startCursor+offset,signature=snapshot.messages[offset],speaker=notices?'Switchboard':item.role==='user'?'You':providerLabel();keys.add(key);
@@ -316,20 +332,21 @@
         if(run?.start===key){
           let summary=summaries.get(key);
           if(!summary){summary=el('button',undefined,'conversation-steps');summary.type='button';summary.onclick=()=>{const id=identity(target)+':'+key;expandedRuns.has(id)?expandedRuns.delete(id):expandedRuns.add(id);lastPaint=null;paint();};summaries.set(key,summary);}
-          if(summary.textContent!==run.label)summary.textContent=run.label;summary.setAttribute('aria-expanded',String(!run.collapsed));summaryKeys.add(key);
+          if(summary.textContent!==run.label)summary.textContent=run.label;summary.setAttribute('aria-expanded',String(!run.collapsed));summary.classList.toggle('in-progress',!!run.inProgress);summaryKeys.add(key);
           if(previous.nextSibling!==summary)previous.after(summary);previous=summary;
         }
         let entry=rendered.get(key);
         if(!entry||entry.signature!==signature){
-          const article=el(notices?'details':'article',undefined,'conversation-message '+(notices?'conversation-notification':item.role+(item.phase==='commentary'?' commentary':'')));
+          const article=el(notices?'details':'article',undefined,'conversation-message '+(notices?'conversation-notification':item.role+(item.phase==='commentary'?' commentary':'')+(item.kind==='tool'?' tool':'')));
           article.dataset.conversationEntry='message-'+key;contentResize?.observe(article);
           if(notices){
             article.append(el('summary','Switchboard · '+notices+' message'+(notices===1?'':'s')));
             const body=el('div',undefined,'conversation-notification-body');textBlocks(body,item.text||'');article.append(body);article.open=entry?.node.open||false;
           }else{
             article.append(el('div',speaker,'conversation-label'));
-            if(window.SwitchboardConversationMedia&&(item.markdown||item.attachments))window.SwitchboardConversationMedia.render(article,item,{host:target.host,project:binding()?.project});else textBlocks(article,item.text||'');
-            decorateCode(article);
+            if(item.kind==='tool')toolStep(article,item);
+            else{if(window.SwitchboardConversationMedia&&(item.markdown||item.attachments))window.SwitchboardConversationMedia.render(article,item,{host:target.host,project:binding()?.project});else textBlocks(article,item.text||'');
+              decorateCode(article);}
           }
           if(item.truncated)article.append(el('small','Message truncated by history API. Open the terminal for full context.'));
           if(entry){contentResize?.unobserve(entry.node);entry.node.remove();}entry={signature,node:article};rendered.set(key,entry);

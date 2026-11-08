@@ -5,7 +5,7 @@
   const setup=text=>/^(?:# AGENTS\.md instructions|<environment_context>|<permissions instructions>|<skills_instructions>)/.test(text.trimStart());
   function select(source,entries,total,partial=false){
     const context={version:1,kind:'switchboard-context-handover',source,coverage:{total_messages:total,included_messages:0,omitted_messages:total,partial_history:partial},messages:[]};
-    const candidates=[...entries].sort((a,b)=>a.cursor-b.cursor).filter(item=>['user','assistant'].includes(item.role)&&typeof item.text==='string'&&item.text.trim()&&!setup(item.text)&&!item.truncated);
+    const candidates=[...entries].sort((a,b)=>a.cursor-b.cursor).filter(item=>['user','assistant'].includes(item.role)&&item.kind!=='tool'&&typeof item.text==='string'&&item.text.trim()&&!setup(item.text)&&!item.truncated);
     const chosen=new Map();
     function add(item){
       if(chosen.has(item.cursor))return;
@@ -37,7 +37,7 @@
       if(data.messages.some(item=>typeof item.context_text!=='string'))throw Error('Update Switchboard on the source computer to hand over context.');
       if(entries.size&&total!==data.message_count)throw Error('The conversation changed while loading context. Reload it before switching.');
       total=data.message_count;partial||=!!data.partial;project=data.project||project;model=data.model||model;
-      for(const [offset,item] of data.messages.entries())entries.set(data.start_cursor+offset,{cursor:data.start_cursor+offset,role:item.role,text:item.context_text,truncated:item.context_truncated,phase:item.phase});
+      for(const [offset,item] of data.messages.entries())entries.set(data.start_cursor+offset,{cursor:data.start_cursor+offset,role:item.role,text:item.context_text,truncated:item.context_truncated,phase:item.phase,kind:item.kind});
       return data;
     }
     // Recent history and the original request are bounded independently of chat age.

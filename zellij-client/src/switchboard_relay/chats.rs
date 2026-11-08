@@ -26,6 +26,7 @@ struct MessageOffset {
     reasoning_effort: Option<String>,
     assistant: bool,
     commentary: bool,
+    tool: bool,
 }
 struct HistoryIndex {
     path: PathBuf,
@@ -131,6 +132,7 @@ impl HistoryIndex {
                     // providers whose envelopes contain several or deduplicated messages.
                     let mut record = Chat {
                         agent: self.chat.agent.clone(),
+                        project: self.chat.project.clone(),
                         model: self.chat.model.clone(),
                         reasoning_effort: self.chat.reasoning_effort.clone(),
                         ..Chat::default()
@@ -139,8 +141,9 @@ impl HistoryIndex {
                     self.chat.embedded_bytes = 0;
                     self.chat.record(&value, 0);
                     // Messages are drained per record, so mark the indexed one instead.
-                    if self.chat.used_tool && self.chat.messages.is_empty() {
-                        if let Some(last) = self.messages.last_mut().filter(|m| m.assistant) {
+                    if self.chat.used_tool && self.chat.messages.iter().all(is_tool) {
+                        let last = self.messages.iter_mut().rev().find(|m| !m.tool);
+                        if let Some(last) = last.filter(|m| m.assistant) {
                             last.commentary = true;
                         }
                     }
@@ -158,6 +161,7 @@ impl HistoryIndex {
                                 reasoning_effort: self.chat.reasoning_effort.clone(),
                                 assistant: message["role"] == "assistant",
                                 commentary: false,
+                                tool: is_tool(&message),
                             });
                             if !complete {
                                 self.provisional += 1;
@@ -221,6 +225,7 @@ impl HistoryIndex {
             let value: Value = serde_json::from_slice(&bytes)?;
             let mut record = Chat {
                 agent: chat.agent.clone(),
+                project: chat.project.clone(),
                 model: entry.model.clone(),
                 reasoning_effort: entry.reasoning_effort.clone(),
                 ..Chat::default()
@@ -444,6 +449,222 @@ fn codex_question_reply(text: &str) -> Option<String> {
             .join("\n\n"),
     )
 }
+fn is_tool(message: &Value) -> bool {
+    message["kind"] == "tool"
+}
+// Tool steps show what the agent ran, so blank values that look like credentials:
+// assignments and flags named like secrets, auth headers, URL passwords and known
+// token formats.
+static SECRETS: LazyLock<Vec<(regex::Regex, &'static str)>> = LazyLock::new(|| {
+    let name =
+        r"[A-Za-z0-9_.-]*(?i-u:key|token|secret|passw(?:or)?d|credential|cookie)[A-Za-z0-9_.-]*";
+    [
+        (format!(r#"({name})(\s*=\s*)(?:"[^"]*"|'[^']*'|[^\s&;|"']+)"#), "$1$2***"),
+        (format!(r#"(^|\s)(--?{name})(\s+)(?:"[^"]*"|'[^']*'|[^\s\-"'][^\s"']*)"#), "$1$2$3***"),
+        (r#"\b((?i-u:authorization|cookie|x-api-key))(\s*:\s*)[^"'\r\n]+"#.into(), "$1$2***"),
+        (r"\b((?i-u:bearer|basic))(\s+)[A-Za-z0-9._~+/=-]{8,}".into(), "$1$2***"),
+        (r"(://)[^/\s:@]+:[^/\s@]+@".into(), "$1***@"),
+        (r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|sk-[\w-]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,})".into(), "***"),
+    ]
+    .map(|(pattern, replacement)| (regex::Regex::new(&pattern).unwrap(), replacement))
+    .into()
+});
+/// The first non-empty line, redacted and clipped, marking any text left out.
+fn one_line(text: &str) -> String {
+    let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
+    let mut line: String = lines
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    for (pattern, replacement) in SECRETS.iter() {
+        line = pattern.replace_all(&line, *replacement).into_owned();
+    }
+    if line.chars().count() > 120 {
+        format!("{}…", clip(&line, 119))
+    } else if lines.next().is_some() {
+        format!("{line} …")
+    } else {
+        line
+    }
+}
+/// A path relative to the project when inside it; a long path keeps its file name.
+fn short_path(path: &str, project: &str) -> String {
+    let root = project.trim_end_matches(['/', '\\']);
+    let inside = path
+        .get(..root.len())
+        .filter(|head| {
+            !root.is_empty()
+                && head
+                    .replace('\\', "/")
+                    .eq_ignore_ascii_case(&root.replace('\\', "/"))
+        })
+        .and_then(|_| path[root.len()..].strip_prefix(['/', '\\']))
+        .filter(|rest| !rest.is_empty());
+    let line: String = inside
+        .unwrap_or(path)
+        .trim()
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect();
+    let count = line.chars().count();
+    if count > 120 {
+        format!("…{}", line.chars().skip(count - 119).collect::<String>())
+    } else {
+        line
+    }
+}
+fn tool_name(name: &str) -> String {
+    clip(
+        &name
+            .strip_prefix("mcp__")
+            .unwrap_or(name)
+            .replace("__", " "),
+        80,
+    )
+}
+fn command_line(command: &Value) -> String {
+    match command {
+        Value::String(command) => command.clone(),
+        Value::Array(argv) => {
+            let argv: Vec<&str> = argv.iter().filter_map(Value::as_str).collect();
+            // The script given to a shell wrapper is the command the agent wrote.
+            let flag = argv.iter().position(|arg| {
+                matches!(
+                    arg.to_ascii_lowercase().as_str(),
+                    "-c" | "-lc" | "-command" | "/c"
+                )
+            });
+            match flag {
+                Some(flag) if flag + 2 == argv.len() => argv[flag + 1].into(),
+                _ => argv.join(" "),
+            }
+        },
+        _ => String::new(),
+    }
+}
+/// The files a Codex patch touches, never its body.
+fn patch_files(patch: &str, project: &str) -> (&'static str, String) {
+    let (mut files, mut added) = (Vec::new(), true);
+    for line in patch.lines() {
+        for (prefix, add) in [
+            ("*** Add File: ", true),
+            ("*** Update File: ", false),
+            ("*** Delete File: ", false),
+        ] {
+            if let Some(path) = line.strip_prefix(prefix) {
+                files.push(short_path(path, project));
+                added &= add;
+            }
+        }
+    }
+    let detail = match &files[..] {
+        [] => String::new(),
+        [first] => first.clone(),
+        [first, rest @ ..] => format!("{first} (+{} more)", rest.len()),
+    };
+    (
+        if added && !files.is_empty() {
+            "write"
+        } else {
+            "edit"
+        },
+        detail,
+    )
+}
+// Codex code mode runs JavaScript that calls its tools, usually `exec_command`.
+static CODE_CALLS: LazyLock<(regex::Regex, regex::Regex)> = LazyLock::new(|| {
+    (
+        regex::Regex::new(r"\btools\.(\w+)\s*\(").unwrap(),
+        regex::Regex::new(r#"\b(?:cmd|command)\s*:\s*("(?:[^"\\\r\n]|\\.)*")"#).unwrap(),
+    )
+});
+fn code_mode(code: &str) -> (&'static str, String) {
+    let (calls, commands) = &*CODE_CALLS;
+    let commands: Vec<String> = commands
+        .captures_iter(code)
+        .filter_map(|c| serde_json::from_str(&c[1]).ok())
+        .collect();
+    if let Some(first) = commands.first() {
+        let line = one_line(first);
+        return match commands.len() {
+            1 => ("run", line),
+            n => ("run", format!("{line} (+{} more)", n - 1)),
+        };
+    }
+    let mut names: Vec<String> = calls
+        .captures_iter(code)
+        .map(|c| tool_name(&c[1]))
+        .collect();
+    names.dedup();
+    ("tool", clip(&names.join(", "), 120))
+}
+/// A short summary of a tool call: its kind and the command, path, pattern, URL or
+/// description it acts on. File contents, edit bodies, prompts beyond one line and
+/// tool results are never read.
+fn tool_step(name: &str, input: &Value, project: &str) -> (&'static str, String) {
+    let text = |key: &str| input[key].as_str().map(one_line).unwrap_or_default();
+    let path = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|key| input[*key].as_str())
+            .map(|path| short_path(path, project))
+            .unwrap_or_default()
+    };
+    let (tool, detail) = match name {
+        "Bash" | "PowerShell" | "shell" | "shell_command" | "exec_command" | "local_shell"
+        | "container.exec" => {
+            let command = if input["command"].is_null() {
+                &input["cmd"]
+            } else {
+                &input["command"]
+            };
+            ("run", one_line(&command_line(command)))
+        },
+        "Read" | "NotebookRead" | "view_image" => {
+            ("read", path(&["file_path", "notebook_path", "path"]))
+        },
+        "Edit" | "MultiEdit" | "NotebookEdit" => ("edit", path(&["file_path", "notebook_path"])),
+        "Write" => ("write", path(&["file_path"])),
+        "apply_patch" => patch_files(
+            input
+                .as_str()
+                .or(input["input"].as_str())
+                .unwrap_or_default(),
+            project,
+        ),
+        "exec" if input.is_string() => code_mode(input.as_str().unwrap_or_default()),
+        "Grep" | "Glob" => ("search", text("pattern")),
+        "WebSearch" | "web_search" | "ToolSearch" | "tool_search" => ("search", text("query")),
+        "WebFetch" => ("fetch", text("url")),
+        "web_search_call" => match input["type"].as_str() {
+            Some("open_page") => ("fetch", text("url")),
+            Some("find_in_page") => ("search", text("pattern")),
+            _ => (
+                "search",
+                Some(text("query"))
+                    .filter(|q| !q.is_empty())
+                    .unwrap_or("the web".into()),
+            ),
+        },
+        "Task" | "Agent" => ("agent", text("description")),
+        "spawn_agent" => ("agent", text("message")),
+        "TodoWrite" | "update_plan" => ("plan", String::new()),
+        "Skill" => (
+            "tool",
+            Some(text("skill"))
+                .filter(|s| !s.is_empty())
+                .map(|s| format!("skill {s}"))
+                .unwrap_or_default(),
+        ),
+        _ => ("tool", String::new()),
+    };
+    match tool {
+        "plan" => (tool, detail),
+        _ if detail.is_empty() => (tool, tool_name(name)),
+        _ => (tool, detail),
+    }
+}
 impl Chat {
     fn incomplete(&mut self, reason: &'static str) {
         self.partial = true;
@@ -474,6 +695,31 @@ impl Chat {
                 message["reasoning_effort"] = json!(effort);
             }
         }
+    }
+    /// A tool call becomes a one-line progress step. Older browsers read `phase` and show
+    /// it as a progress note; newer ones read `kind`, `tool` and `detail`.
+    fn push_tool(&mut self, name: &str, input: &Value, timestamp: Value) {
+        if self.messages.len() == 50_000 {
+            self.incomplete("message_limit");
+            return;
+        }
+        let (tool, detail) = tool_step(name, input, &self.project);
+        let verb = match tool {
+            "run" => "Ran",
+            "read" => "Read",
+            "edit" => "Edited",
+            "write" => "Wrote",
+            "search" => "Searched",
+            "fetch" => "Fetched",
+            "agent" => "Delegated",
+            "plan" => "Updated the plan",
+            _ => "Used",
+        };
+        let text = format!("{verb} {detail}").trim_end().to_owned();
+        self.messages.push(
+            json!({"role":"assistant","phase":"commentary","kind":"tool","tool":tool,
+            "detail":detail,"text":text,"timestamp":timestamp}),
+        );
     }
     // Only explicit user/assistant content parts, never tool output or reasoning.
     fn push_parts(&mut self, role: &str, parts: &Value, timestamp: Value) {
@@ -668,17 +914,25 @@ impl Chat {
                 }
                 // Claude marks no phase. Text followed by a tool call is a progress
                 // note, which Codex reports as commentary; the turn's last text is the answer.
-                self.used_tool = v["type"] == "assistant"
-                    && v["message"]["content"]
+                let calls = || {
+                    v["message"]["content"]
                         .as_array()
-                        .is_some_and(|parts| parts.iter().any(|part| part["type"] == "tool_use"));
+                        .into_iter()
+                        .flatten()
+                        .filter(|part| {
+                            matches!(part["type"].as_str(), Some("tool_use" | "server_tool_use"))
+                        })
+                };
+                self.used_tool = v["type"] == "assistant" && calls().next().is_some();
                 if self.used_tool {
-                    if let Some(last) = self
-                        .messages
-                        .last_mut()
-                        .filter(|message| message["role"] == "assistant")
-                    {
+                    let last = self.messages.iter_mut().rev().find(|m| !is_tool(m));
+                    if let Some(last) = last.filter(|message| message["role"] == "assistant") {
                         last["phase"] = json!("commentary");
+                    }
+                    for call in calls() {
+                        if let Some(name) = call["name"].as_str() {
+                            self.push_tool(name, &call["input"], v["timestamp"].clone());
+                        }
                     }
                 }
             },
@@ -705,6 +959,37 @@ impl Chat {
                 // UserMessage/AgentMessage items in paginated ones. Codex leaves injected
                 // context, compaction summaries and a fork's copied history out of both;
                 // response_item messages are model input and include all of them.
+                // Tool calls are model output, so they appear only as response items.
+                // Their outputs (function_call_output and friends) are never read.
+                if v["type"] == "response_item" {
+                    let (name, input) = match p["type"].as_str() {
+                        Some("function_call") => {
+                            let name = p["name"].as_str().unwrap_or_default();
+                            let namespace = p["namespace"].as_str().unwrap_or_default();
+                            let arguments = p["arguments"].as_str().unwrap_or_default();
+                            (
+                                if namespace.starts_with("mcp__") {
+                                    format!("{namespace}{name}")
+                                } else {
+                                    name.into()
+                                },
+                                serde_json::from_str(arguments).unwrap_or(Value::Null),
+                            )
+                        },
+                        Some("custom_tool_call") => (
+                            p["name"].as_str().unwrap_or_default().into(),
+                            p["input"].clone(),
+                        ),
+                        Some("local_shell_call") => ("local_shell".into(), p["action"].clone()),
+                        Some("web_search_call") => ("web_search_call".into(), p["action"].clone()),
+                        Some("tool_search_call") => ("tool_search".into(), p["arguments"].clone()),
+                        _ => return,
+                    };
+                    if !name.is_empty() {
+                        self.push_tool(&name, &input, v["timestamp"].clone());
+                    }
+                    return;
+                }
                 let item = &p["item"];
                 let (role, parts, phase) = match (v["type"].as_str(), p["type"].as_str()) {
                     (Some("event_msg"), Some("user_message")) => {
@@ -990,11 +1275,12 @@ fn add_result(chat: &Chat, p: &Params, results: &mut Vec<Value>) {
     }
     let q = p.q.to_lowercase();
     let matched = chat.messages.iter().enumerate().find(|(_, m)| {
-        m["text"]
-            .as_str()
-            .unwrap_or_default()
-            .to_lowercase()
-            .contains(&q)
+        !is_tool(m)
+            && m["text"]
+                .as_str()
+                .unwrap_or_default()
+                .to_lowercase()
+                .contains(&q)
     });
     if matched.is_none() && !chat.title.to_lowercase().contains(&q) {
         return;
@@ -1159,6 +1445,19 @@ fn read_page(chat: &Chat, p: &Params) -> Value {
         json!({"role":m["role"],"timestamp":m["timestamp"],"text":clip(text,4000),"truncated":text.chars().count()>4000,"phase":m["phase"],"model":m["model"],"reasoning_effort":m["reasoning_effort"],"attachments":m["attachments"],"markdown":markdown_events(&clip(text,4000))})
     }).collect();
     for (message, source) in page.iter_mut().zip(&chat.messages[start..end]) {
+        if is_tool(source) {
+            for key in ["kind", "tool", "detail"] {
+                message[key] = source[key].clone();
+            }
+            // Older browsers render this as a progress note with the detail as code.
+            let (text, detail) = (
+                source["text"].as_str().unwrap_or_default(),
+                source["detail"].as_str().unwrap_or_default(),
+            );
+            if let Some(verb) = text.strip_suffix(detail).filter(|_| !detail.is_empty()) {
+                message["markdown"] = json!([{"type":"start","tag":"p"},{"type":"text","text":verb},{"type":"code","text":detail},{"type":"end"}]);
+            }
+        }
         if p.context {
             // Portable handovers need complete attributed text, not the display
             // preview. Bound each record and explicitly mark anything too long.
@@ -2039,6 +2338,270 @@ mod tests {
         let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
         write!(file, "{}", lines(&records[3..])).unwrap();
         assert_eq!(phases(&index.page(&params).unwrap()["messages"]), expected);
+    }
+
+    /// Reads `records` whole and as live appends, checks both agree, and returns the page.
+    fn tool_page(agent: &str, records: &[Value]) -> Value {
+        let tail = Params {
+            tail: true,
+            limit: Some(50),
+            ..Params::default()
+        };
+        let whole = read_page(&chat(agent, records.to_vec()), &tail);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("live.jsonl");
+        let mut file = fs::File::create(&path).unwrap();
+        let mut index = HistoryIndex::new(agent, dir.path(), &path);
+        for record in records {
+            writeln!(file, "{record}").unwrap();
+            index.page(&tail).unwrap();
+        }
+        let live = index.page(&tail).unwrap();
+        assert_eq!(live["messages"], whole["messages"]);
+        assert_eq!(live["message_count"], whole["message_count"]);
+        // Cursors index the same list, tool steps included.
+        let page = index
+            .page(&Params {
+                cursor: 2,
+                limit: Some(2),
+                ..Params::default()
+            })
+            .unwrap();
+        assert_eq!(page["start_cursor"], 2);
+        assert_eq!(page["next_cursor"], 4);
+        assert_eq!(page["messages"][0], whole["messages"][2]);
+        whole
+    }
+    fn steps(page: &Value) -> Vec<(String, String, String)> {
+        page["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| {
+                let field = |key: &str| m[key].as_str().unwrap_or_default().to_owned();
+                (field("phase"), field("tool"), field("text"))
+            })
+            .collect()
+    }
+    fn assert_hidden(page: &Value, secrets: &[&str]) {
+        let json = page.to_string();
+        for secret in secrets {
+            assert!(!json.contains(secret), "{secret} leaked: {json}");
+        }
+    }
+
+    #[test]
+    fn switchboard_chats_show_claude_tool_calls_as_steps_without_contents() {
+        let call = |name: &str, input: Value| json!({"type":"assistant","cwd":"/repo","timestamp":"2026-11-08T10:00:00Z","message":{"content":[{"type":"tool_use","id":"t","name":name,"input":input}]}});
+        let text = |t: &str| json!({"type":"assistant","cwd":"/repo","message":{"content":[{"type":"text","text":t}]}});
+        let records = [
+            json!({"type":"user","cwd":"/repo","message":{"content":"question"}}),
+            text("Checking."),
+            call(
+                "Bash",
+                json!({"command":"API_TOKEN=abc123 cargo test -p zellij-client\necho done","description":"Run tests"}),
+            ),
+            json!({"type":"user","cwd":"/repo","message":{"content":[{"type":"tool_result","tool_use_id":"t","content":"SECRET OUTPUT"}]}}),
+            call("Read", json!({"file_path":"/repo/src/main.rs"})),
+            call(
+                "Edit",
+                json!({"file_path":"/repo/src/lib.rs","old_string":"OLD BODY","new_string":"NEW BODY"}),
+            ),
+            call(
+                "Write",
+                json!({"file_path":"/elsewhere/new.rs","content":"FILE CONTENT"}),
+            ),
+            call("Grep", json!({"pattern":"fn main","path":"/repo"})),
+            call(
+                "WebFetch",
+                json!({"url":"https://user:hunter2@example.com/x?token=t0k&page=2","prompt":"FETCH PROMPT"}),
+            ),
+            call(
+                "Agent",
+                json!({"description":"Find relay code","prompt":"AGENT PROMPT"}),
+            ),
+            call("TodoWrite", json!({"todos":[{"content":"TODO BODY"}]})),
+            call("mcp__github__create_issue", json!({"body":"MCP ARGUMENT"})),
+            text("Done."),
+        ];
+        let page = tool_page("claude", &records);
+        let step = |tool: &str, text: &str| ("commentary".into(), tool.into(), text.into());
+        assert_eq!(
+            steps(&page),
+            [
+                ("".into(), "".into(), "question".into()),
+                step("", "Checking."),
+                step("run", "Ran API_TOKEN=*** cargo test -p zellij-client …"),
+                step("read", "Read src/main.rs"),
+                step("edit", "Edited src/lib.rs"),
+                step("write", "Wrote /elsewhere/new.rs"),
+                step("search", "Searched fn main"),
+                step(
+                    "fetch",
+                    "Fetched https://***@example.com/x?token=***&page=2"
+                ),
+                step("agent", "Delegated Find relay code"),
+                step("plan", "Updated the plan"),
+                step("tool", "Used github create_issue"),
+                ("".into(), "".into(), "Done.".into()),
+            ]
+        );
+        let bash = &page["messages"][2];
+        assert_eq!(bash["kind"], "tool");
+        assert_eq!(
+            bash["detail"],
+            "API_TOKEN=*** cargo test -p zellij-client …"
+        );
+        // Older browsers render the step from markdown: a quiet note with the detail as code.
+        assert_eq!(bash["markdown"][1]["text"], "Ran ");
+        assert_eq!(bash["markdown"][2]["type"], "code");
+        assert!(page["messages"][1].get("kind").is_none());
+        assert_hidden(
+            &page,
+            &[
+                "abc123",
+                "echo done",
+                "SECRET OUTPUT",
+                "OLD BODY",
+                "NEW BODY",
+                "FILE CONTENT",
+                "hunter2",
+                "t0k",
+                "FETCH PROMPT",
+                "AGENT PROMPT",
+                "TODO BODY",
+                "MCP ARGUMENT",
+                "Run tests",
+            ],
+        );
+        // Search matches what was said, not what was run.
+        let mut results = Vec::new();
+        let params = Params {
+            q: "cargo test".into(),
+            ..Params::default()
+        };
+        add_result(&chat("claude", records.to_vec()), &params, &mut results);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn switchboard_chats_show_codex_tool_calls_as_steps_without_outputs() {
+        let item = |payload: Value| json!({"type":"response_item","timestamp":"2026-11-08T10:00:00Z","payload":payload});
+        let function = |name: &str, arguments: Value| {
+            item(
+                json!({"type":"function_call","name":name,"arguments":arguments.to_string(),"call_id":"c"}),
+            )
+        };
+        let patch = "*** Begin Patch\n*** Update File: C:\\repo\\src\\a.rs\n@@\n-OLD LINE\n+NEW LINE\n*** Add File: C:\\repo\\b.rs\n+ADDED BODY\n*** End Patch";
+        let code = "const r=await Promise.allSettled([tools.exec_command({cmd:\"cargo test --lib\",workdir:\"C:\\\\repo\"}),tools.exec_command({cmd:\"git diff\"})]);text(r);";
+        let records = [
+            json!({"type":"session_meta","payload":{"id":"x1","cwd":"C:\\repo"}}),
+            json!({"type":"event_msg","payload":{"type":"user_message","message":"question"}}),
+            json!({"type":"event_msg","payload":{"type":"agent_message","phase":"commentary","message":"Looking."}}),
+            function(
+                "shell_command",
+                json!({"command":"git status --short","workdir":"C:\\repo"}),
+            ),
+            item(json!({"type":"function_call_output","call_id":"c","output":"TOOL OUTPUT"})),
+            function("shell", json!({"command":["bash","-lc","ls -la"]})),
+            function(
+                "exec_command",
+                json!({"cmd":"rg -n needle","max_output_tokens":6000}),
+            ),
+            item(
+                json!({"type":"custom_tool_call","name":"apply_patch","input":patch,"call_id":"p"}),
+            ),
+            item(json!({"type":"custom_tool_call_output","call_id":"p","output":"PATCH OUTPUT"})),
+            item(json!({"type":"custom_tool_call","name":"exec","input":code,"call_id":"e"})),
+            function(
+                "update_plan",
+                json!({"plan":[{"step":"PLAN BODY","status":"pending"}]}),
+            ),
+            item(
+                json!({"type":"function_call","name":"read_memory","namespace":"mcp__cheatengine__","arguments":"{\"address\":\"ADDRESS ARG\"}","call_id":"m"}),
+            ),
+            item(
+                json!({"type":"web_search_call","status":"completed","action":{"type":"search","query":"zellij docs"}}),
+            ),
+            item(
+                json!({"type":"local_shell_call","action":{"type":"exec","command":["git","log","-1"]}}),
+            ),
+            item(
+                json!({"type":"reasoning","summary":[{"type":"summary_text","text":"SECRET REASONING"}]}),
+            ),
+            json!({"type":"event_msg","payload":{"type":"agent_message","phase":"final_answer","message":"Done."}}),
+        ];
+        let page = tool_page("codex", &records);
+        let step = |tool: &str, text: &str| ("commentary".into(), tool.into(), text.into());
+        assert_eq!(
+            steps(&page),
+            [
+                ("".into(), "".into(), "question".into()),
+                step("", "Looking."),
+                step("run", "Ran git status --short"),
+                step("run", "Ran ls -la"),
+                step("run", "Ran rg -n needle"),
+                step("edit", "Edited src\\a.rs (+1 more)"),
+                step("run", "Ran cargo test --lib (+1 more)"),
+                step("plan", "Updated the plan"),
+                step("tool", "Used cheatengine read_memory"),
+                step("search", "Searched zellij docs"),
+                step("run", "Ran git log -1"),
+                ("".into(), "".into(), "Done.".into()),
+            ]
+        );
+        assert_hidden(
+            &page,
+            &[
+                "TOOL OUTPUT",
+                "OLD LINE",
+                "NEW LINE",
+                "ADDED BODY",
+                "PATCH OUTPUT",
+                "PLAN BODY",
+                "ADDRESS ARG",
+                "SECRET REASONING",
+                "Begin Patch",
+            ],
+        );
+    }
+
+    #[test]
+    fn switchboard_chats_redact_credentials_in_tool_steps() {
+        for (command, expected) in [
+            (
+                "export GITHUB_TOKEN=ghp_x && gh pr list",
+                "export GITHUB_TOKEN=*** && gh pr list",
+            ),
+            (
+                "$env:OPENAI_API_KEY = \"sk-live value\"; codex",
+                "$env:OPENAI_API_KEY = ***; codex",
+            ),
+            (
+                "mysql --password hunter2 -u root",
+                "mysql --password *** -u root",
+            ),
+            (
+                "curl -H 'Authorization: Bearer abc.def.ghi' https://x",
+                "curl -H 'Authorization: ***' https://x",
+            ),
+            (
+                "curl -H \"X-Api-Key: k123\" https://x",
+                "curl -H \"X-Api-Key: ***\" https://x",
+            ),
+            (
+                "git push https://dom:pat123@github.com/a/b",
+                "git push https://***@github.com/a/b",
+            ),
+            ("echo ghp_abcdefghijklmnopqrstuvwxyz0123", "echo ***"),
+            (
+                "cd $PWD && zellij --session main",
+                "cd $PWD && zellij --session main",
+            ),
+        ] {
+            assert_eq!(one_line(command), expected);
+        }
+        assert_eq!(one_line(&"a".repeat(200)).chars().count(), 120);
     }
 
     #[test]
