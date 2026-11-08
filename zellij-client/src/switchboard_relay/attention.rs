@@ -2,7 +2,7 @@ use super::*;
 use axum::extract::Query;
 use std::process::Stdio;
 use std::sync::LazyLock;
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{collections::BTreeMap, path::PathBuf, time::Instant};
 use tokio::io::AsyncBufReadExt;
 
 fn tail(text: &str, count: usize) -> &str {
@@ -189,6 +189,64 @@ fn quiet_shell(pane: &Value) -> bool {
     ) && PATH_TITLE.is_match(pane["title"].as_str().unwrap_or(""))
 }
 
+/// The repository holding a folder, named after its main checkout so that every worktree of a
+/// repository shares one name.
+fn find_repo(cwd: &Path) -> Option<String> {
+    let root = cwd
+        .ancestors()
+        .find(|dir| std::fs::metadata(dir.join(".git")).is_ok())?;
+    let own = root.file_name()?.to_str()?.to_string();
+    let Ok(pointer) = std::fs::read_to_string(root.join(".git")) else {
+        return Some(own);
+    };
+    // A submodule's `.git` file also holds a gitdir, but outside any `worktrees` folder.
+    Some(worktree_repo(root, &pointer).unwrap_or(own))
+}
+
+fn worktree_repo(root: &Path, pointer: &str) -> Option<String> {
+    let gitdir = root
+        .join(pointer.trim().strip_prefix("gitdir:")?.trim())
+        .canonicalize()
+        .ok()?;
+    let worktrees = gitdir.parent()?;
+    if worktrees.file_name()? != "worktrees" {
+        return None;
+    }
+    let common = worktrees.parent()?;
+    let main = if common.file_name()? == ".git" {
+        common.parent()?
+    } else {
+        common
+    };
+    Some(
+        main.file_name()?
+            .to_str()?
+            .trim_end_matches(".git")
+            .to_string(),
+    )
+}
+
+/// Status snapshots repeat every few seconds, so each folder is looked up about once a minute.
+fn repo_name(cwd: &str) -> Option<String> {
+    type Cache = HashMap<String, (Instant, Option<String>)>;
+    static CACHE: LazyLock<std::sync::Mutex<Cache>> = LazyLock::new(Default::default);
+    if let Ok(cache) = CACHE.lock() {
+        if let Some((read, repo)) = cache.get(cwd) {
+            if read.elapsed() < Duration::from_secs(60) {
+                return repo.clone();
+            }
+        }
+    }
+    let repo = find_repo(Path::new(cwd));
+    if let Ok(mut cache) = CACHE.lock() {
+        if cache.len() >= 512 {
+            cache.clear();
+        }
+        cache.insert(cwd.to_string(), (Instant::now(), repo.clone()));
+    }
+    repo
+}
+
 fn snapshot(name: &str, panes: &[Value], screens: &HashMap<u64, String>, deferred: bool) -> Value {
     let mut tabs: BTreeMap<u64, Value> = BTreeMap::new();
     let mut records = Vec::new();
@@ -198,7 +256,7 @@ fn snapshot(name: &str, panes: &[Value], screens: &HashMap<u64, String>, deferre
         };
         let tab = tabs.entry(tab_id).or_insert_with(||json!({"session":name,"id":tab_id,"position":pane["tab_position"],"name":pane["tab_name"],"panes":[]}));
         if pane["is_selectable"] != false && pane["is_suppressed"] != true {
-            tab["panes"].as_array_mut().unwrap().push(json!({"pane_id":pane["id"],"is_plugin":pane["is_plugin"],"tab_position":pane["tab_position"],"title":pane["title"].as_str().unwrap_or(""),"is_floating":pane["is_floating"] == true,"cwd":pane["pane_cwd"]}));
+            tab["panes"].as_array_mut().unwrap().push(json!({"pane_id":pane["id"],"is_plugin":pane["is_plugin"],"tab_position":pane["tab_position"],"title":pane["title"].as_str().unwrap_or(""),"is_floating":pane["is_floating"] == true,"cwd":pane["pane_cwd"],"repo":pane["pane_cwd"].as_str().and_then(repo_name)}));
         }
         if pane["is_plugin"] == true || pane["is_selectable"] == false {
             continue;
@@ -1586,6 +1644,59 @@ pub(super) async fn acknowledge(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn switchboard_repo_name_gives_worktrees_their_main_checkout() {
+        let temp = tempfile::tempdir().unwrap();
+        let main = temp.path().join("sample");
+        let admin = main.join(".git/worktrees/fix");
+        std::fs::create_dir_all(&admin).unwrap();
+        std::fs::create_dir_all(main.join("src/deep")).unwrap();
+        assert_eq!(
+            super::find_repo(&main.join("src/deep")).as_deref(),
+            Some("sample")
+        );
+
+        let absolute = temp.path().join("sample-fix");
+        std::fs::create_dir_all(&absolute).unwrap();
+        std::fs::write(
+            absolute.join(".git"),
+            format!("gitdir: {}\n", admin.display()),
+        )
+        .unwrap();
+        assert_eq!(super::find_repo(&absolute).as_deref(), Some("sample"));
+
+        let relative = main.join(".claude/worktrees/fix");
+        std::fs::create_dir_all(&relative).unwrap();
+        std::fs::write(
+            relative.join(".git"),
+            "gitdir: ../../../.git/worktrees/fix\n",
+        )
+        .unwrap();
+        assert_eq!(super::find_repo(&relative).as_deref(), Some("sample"));
+
+        let bare = temp.path().join("bare.git/worktrees/fix");
+        std::fs::create_dir_all(&bare).unwrap();
+        let checkout = temp.path().join("checkout");
+        std::fs::create_dir_all(&checkout).unwrap();
+        std::fs::write(checkout.join(".git"), format!("gitdir: {}", bare.display())).unwrap();
+        assert_eq!(super::find_repo(&checkout).as_deref(), Some("bare"));
+    }
+
+    #[test]
+    fn switchboard_repo_name_keeps_submodules_and_ignores_plain_folders() {
+        let temp = tempfile::tempdir().unwrap();
+        let modules = temp.path().join("outer/.git/modules/inner");
+        std::fs::create_dir_all(&modules).unwrap();
+        let inner = temp.path().join("outer/inner");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(inner.join(".git"), "gitdir: ../.git/modules/inner\n").unwrap();
+        assert_eq!(super::find_repo(&inner).as_deref(), Some("inner"));
+
+        let plain = temp.path().join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        assert_eq!(super::find_repo(&plain), None);
+    }
+
     use super::*;
 
     #[tokio::test]
