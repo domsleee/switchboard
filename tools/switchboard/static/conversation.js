@@ -87,7 +87,7 @@
     function streamPage(data){applyPage(data,'poll',nextCursor??tailCursor);status(partialNotice(data),!data.partial);}
     function startStream(){
       if(stream||!streamSupported||!open||document.hidden||!target||!chat||!loaded)return;
-      const version=generation,source=new EventSource('/api/chats/'+encodeURIComponent(chat.id)+'/stream?'+new URLSearchParams({host:target.chatHost||target.host,cursor:nextCursor??tailCursor,limit:50}));stream=source;
+      const version=generation,source=new EventSource('/api/chats/'+encodeURIComponent(chat.id)+'/stream?'+new URLSearchParams({host:target.chatHost||target.host,context:'true',cursor:nextCursor??tailCursor,limit:50}));stream=source;
       source.addEventListener('page',event=>{
         if(version!==generation||source!==stream)return;
         try{const data=JSON.parse(event.data);if(data.error||!Array.isArray(data.messages))throw Error();streamReady=true;if(loading)streamPages.push(data);else streamPage(data);}
@@ -523,7 +523,7 @@
       if(!target||!binding()||loading||(!open&&kind!=='initial'))return;if(!loaded)kind='initial';const version=generation,chat=binding(),started=performance.now(),request=new AbortController();loadRequest=request;let timedOut=false,catchUp=false;busy(true);const timeout=setTimeout(()=>{timedOut=true;request.abort();},15000);
       const initial=kind==='initial',prepend=kind==='older',cursor=nextCursor??tailCursor;
       historyStatus.hidden=!prepend;historyStatus.textContent='Loading earlier messages…';
-      const params={host:target.chatHost||target.host,limit:initial&&(mobile||navigator.connection?.saveData)?15:50};
+      const params={host:target.chatHost||target.host,context:'true',limit:initial&&(mobile||navigator.connection?.saveData)?15:50};
       if(initial)params.tail=true;else if(prepend)params.before=startCursor;else params.cursor=cursor;
       try{const data=await get('/api/chats/'+encodeURIComponent(chat.id)+'?'+new URLSearchParams(params),request.signal);if(version!==generation)return;
         applyPage(data,kind,cursor);streamSupported=data.stream===true;startStream();const warning=partialNotice(data);status(warning,!warning);if(warning){reportLoad(kind,'partial',started);lastFailure='partial';}else if(lastFailure){reportLoad(kind,'recovered',started);lastFailure=null;}updateLatest();catchUp=nextCursor!==null&&!prepend;
