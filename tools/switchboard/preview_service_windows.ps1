@@ -132,6 +132,7 @@ while ($true) {
                 if ($owner.CommandLine -like '*dev-preview.cjs*') { Stop-Process -Id $owner.ProcessId -Force }
             }
             $arguments = @("`"$script`"", '--port', $Port, '--static', "`"$(Join-Path $root 'tools/switchboard/static')`"", '--token-file', "`"$tokenFile`"")
+            if ($root -eq $Worktree) { $arguments += @('--label', 'main') }
             $server = Start-Process -FilePath (Find-Node) -ArgumentList $arguments -PassThru -WindowStyle Hidden `
                 -RedirectStandardOutput (Join-Path $state 'server.log') -RedirectStandardError (Join-Path $state 'server-error.log')
             $serving = $key; $failures = 0
