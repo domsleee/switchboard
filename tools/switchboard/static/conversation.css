@@ -109,7 +109,16 @@
 .conversation-working-time:empty{display:none}
 @keyframes conversation-pulse{50%{opacity:.4}}
 @keyframes conversation-shimmer{from{background-position:100% 0}to{background-position:0 0}}
-@media(prefers-reduced-motion:reduce){.conversation-working-dot{animation-duration:3s}.conversation-working-step::before,.conversation-activity.working::before{animation:none}.conversation-working-step::before{color:#b4b4bd}}
+.conversation-background{display:flex;flex-direction:column;gap:12px;margin:0 0 28px}
+.conversation-background[hidden]{display:none}
+.conversation-agent{display:flex;align-items:center;gap:10px;min-width:0;font-size:13px;line-height:1.4}
+.conversation-agent-avatar{position:relative;display:inline-flex;flex-shrink:0;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--raised)}
+.conversation-agent-avatar svg{width:13px;height:13px;fill:#d97757}
+.conversation-agent-avatar::after{content:"";position:absolute;inset:-3px;border-radius:50%;border:1.5px solid #8fb4ff30;border-top-color:var(--accent);animation:conversation-spin .9s linear infinite}
+.conversation-agent-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+.conversation-agent-model{flex-shrink:0;font-size:12.5px;color:var(--muted)}
+.conversation-agent-time{flex-shrink:0;margin-left:auto;font-size:12.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+@media(prefers-reduced-motion:reduce){.conversation-working-dot,.conversation-agent-avatar::after{animation-duration:3s}.conversation-working-step::before,.conversation-activity.working::before{animation:none}.conversation-working-step::before{color:#b4b4bd}}
 
 /* Folded progress: one disclosure row in place of a finished run. */
 .conversation-panel .conversation-steps{display:flex;align-items:center;gap:7px;width:fit-content;max-width:calc(100% + 16px);min-height:32px;margin:0 0 12px;padding:4px 12px 4px 9px;border-color:#ffffff12;background:#ffffff06;font-size:13px;font-weight:500;letter-spacing:0;color:#cfcfd6;border-radius:999px;text-align:left}

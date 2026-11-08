@@ -356,6 +356,7 @@ struct BackgroundAgent {
     tool_use_id: String,
     agent_id: String,
     description: String,
+    model: Option<String>,
     started: Value,
 }
 /// The text of the first `<name>…</name>` element in `text`.
@@ -928,6 +929,10 @@ impl Chat {
                                         .as_str(),
                                     120,
                                 ),
+                                model: result["resolvedModel"]
+                                    .as_str()
+                                    .filter(|model| !model.is_empty())
+                                    .map(|model| clip(model, 128)),
                                 started: v["timestamp"].clone(),
                             });
                         }
@@ -1215,7 +1220,7 @@ impl Chat {
         json!({"id":self.id,"session_id":clip(&self.session_id,256),"agent":self.agent,"title":self.title,
             "project":clip(&self.project,4096),"model":self.model,"reasoning_effort":self.reasoning_effort,
             "timestamp":self.messages.last().map(|m| &m["timestamp"]),"partial":self.partial,"partial_reasons":self.partial_reasons,
-            "background_agents":self.background.iter().map(|a| json!({"description":a.description,"started":a.started})).collect::<Vec<_>>()})
+            "background_agents":self.background.iter().map(|a| json!({"description":a.description,"model":a.model,"started":a.started})).collect::<Vec<_>>()})
     }
 }
 fn roots() -> Vec<(&'static str, PathBuf)> {
@@ -2801,7 +2806,7 @@ mod tests {
         // Claude Code 2.1.319 records, trimmed.
         let launch = |call: &str, agent: &str, description: &str| {
             json!({"type":"user","timestamp":"2026-11-07T22:16:38.546Z",
-                "toolUseResult":{"isAsync":true,"status":"async_launched","agentId":agent,"description":description},
+                "toolUseResult":{"isAsync":true,"status":"async_launched","agentId":agent,"description":description,"resolvedModel":"claude-opus-5-5"},
                 "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":call,"content":"Async agent launched successfully."}]}})
         };
         let notice = |call: &str, agent: &str| {
@@ -2849,6 +2854,10 @@ mod tests {
             "Compaction keeps background agents running"
         );
         assert!(names(vec![one.clone(), two.clone(), start("resume")]).is_empty());
+        assert_eq!(
+            chat("claude", vec![one.clone()]).summary()["background_agents"][0]["model"],
+            "claude-opus-5-5"
+        );
         // A background shell's notification names no agent.
         assert_eq!(
             names(vec![one, queued("toolu_9", "b9")]),

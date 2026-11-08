@@ -103,9 +103,12 @@
     const working=el('button',undefined,'conversation-working'),workingStep=el('span',undefined,'conversation-working-step'),workingTime=el('span',undefined,'conversation-working-time'),workingCount=el('span',undefined,'conversation-working-count');
     working.type='button';working.disabled=true;working.append(el('span',undefined,'conversation-working-dot'),workingStep,workingTime,workingCount);working.hidden=true;workingStep.dataset.step='Working';let liveStep=null,liveRun=null;working.setAttribute('aria-hidden','true');
     working.onclick=()=>{if(!liveRun||!liveStep)return;const id=identity(target)+':'+liveRun.start;expandedRuns.has(id)?expandedRuns.delete(id):expandedRuns.add(id);lastPaint=null;paint();};
+    // Background agents that outlive the reply, one row each: the Claude mark ringed while it runs, its task, model and age.
+    const claudeMark='<svg viewBox="0 0 256 257" aria-hidden="true"><path d="m50.228 170.321 50.357-28.257.843-2.463-.843-1.361h-2.462l-8.426-.518-28.775-.778-24.952-1.037-24.175-1.296-6.092-1.297L0 125.796l.583-3.759 5.12-3.434 7.324.648 16.202 1.101 24.304 1.685 17.629 1.037 26.118 2.722h4.148l.583-1.685-1.426-1.037-1.101-1.037-25.147-17.045-27.22-18.017-14.258-10.37-7.713-5.25-3.888-4.925-1.685-10.758 7-7.713 9.397.649 2.398.648 9.527 7.323 20.35 15.75L94.817 91.9l3.889 3.24 1.555-1.102.195-.777-1.75-2.917-14.453-26.118-15.425-26.572-6.87-11.018-1.814-6.61c-.648-2.723-1.102-4.991-1.102-7.778l7.972-10.823L71.42 0 82.05 1.426l4.472 3.888 6.61 15.101 10.694 23.786 16.591 32.34 4.861 9.592 2.592 8.879.973 2.722h1.685v-1.556l1.36-18.211 2.528-22.36 2.463-28.776.843-8.1 4.018-9.722 7.971-5.25 6.222 2.981 5.12 7.324-.713 4.73-3.046 19.768-5.962 30.98-3.889 20.739h2.268l2.593-2.593 10.499-13.934 17.628-22.036 7.778-8.749 9.073-9.657 5.833-4.601h11.018l8.1 12.055-3.628 12.443-11.342 14.388-9.398 12.184-13.48 18.147-8.426 14.518.778 1.166 2.01-.194 30.46-6.481 16.462-2.982 19.637-3.37 8.88 4.148.971 4.213-3.5 8.62-20.998 5.184-24.628 4.926-36.682 8.685-.454.324.519.648 16.526 1.555 7.065.389h17.304l32.21 2.398 8.426 5.574 5.055 6.805-.843 5.184-12.962 6.611-17.498-4.148-40.83-9.721-14-3.5h-1.944v1.167l11.666 11.406 21.387 19.314 26.767 24.887 1.36 6.157-3.434 4.86-3.63-.518-23.526-17.693-9.073-7.972-20.545-17.304h-1.36v1.814l4.73 6.935 25.017 37.59 1.296 11.536-1.814 3.76-6.481 2.268-7.13-1.297-14.647-20.544-15.1-23.138-12.185-20.739-1.49.843-7.194 77.448-3.37 3.953-7.778 2.981-6.48-4.925-3.436-7.972 3.435-15.749 4.148-20.544 3.37-16.333 3.046-20.285 1.815-6.74-.13-.454-1.49.194-15.295 20.999-23.267 31.433-18.406 19.702-4.407 1.75-7.648-3.954.713-7.064 4.277-6.286 25.47-32.405 15.36-20.092 9.917-11.6-.065-1.686h-.583L44.07 198.125l-12.055 1.555-5.185-4.86.648-7.972 2.463-2.593 20.35-13.999-.064.065Z"/></svg>';
+    const background=el('div',undefined,'conversation-background');background.hidden=true;
     const recovery=el('div',undefined,'conversation-recovery'),retryConnection=el('button','Retry connection');recovery.hidden=true;retryConnection.type='button';retryConnection.onclick=()=>{if(target)startups.delete(identity(target));status(unboundNotice());updateActivity();prepare();};recovery.append(retryConnection);
     const historyStatus=el('span',undefined,'conversation-history-status');historyStatus.hidden=true;historyStatus.setAttribute('role','status');
-    const actions=el('div',undefined,'conversation-actions');actions.append(refresh,latest);list.append(older,working);latest.hidden=refresh.hidden=true;
+    const actions=el('div',undefined,'conversation-actions');actions.append(refresh,latest);list.append(older,working,background);latest.hidden=refresh.hidden=true;
     const form=el('form',undefined,'conversation-compose'),draft=el('textarea'),insert=el('button','↑');draft.rows=1;draft.maxLength=16000;draft.placeholder='Message…';draft.setAttribute('aria-label','Reply draft');insert.type='submit';insert.setAttribute('aria-label','Send');insert.title='Send message';const attach=el('button','+','conversation-attach'),picker=el('input'),files=el('div',undefined,'conversation-attachments');attach.type='button';attach.setAttribute('aria-label','Attach files');attach.title='Attach photos or files';picker.type='file';picker.multiple=true;picker.hidden=true;files.hidden=true;
     const stop=el('button',undefined,'conversation-stop');stop.type='button';stop.setAttribute('aria-label','Stop');stop.title='Interrupt the agent (sends Esc)';
     stop.onclick=async()=>{
@@ -172,16 +175,29 @@
     function agentLabel(){return modelLabel(chat)||providerLabel();}
     // The in-transcript indicator counts up from when the agent started this turn.
     let workingTimer=null;
-    // While only background agents run, it counts from when the oldest one started.
     function backgroundAgents(){return target?.state==='waiting'&&Array.isArray(chat?.background)?chat.background:[];}
+    function paintBackground(){
+      const agents=chat?backgroundAgents():[],signature=JSON.stringify(agents.map(agent=>[agent.description,agent.model,agent.started]));
+      background.hidden=!agents.length;
+      if(background.dataset.signature!==signature){
+        background.dataset.signature=signature;
+        background.replaceChildren(...agents.map(agent=>{
+          const row=el('div',undefined,'conversation-agent'),avatar=el('span',undefined,'conversation-agent-avatar'),model=modelLabel({model:agent.model}),time=el('span',undefined,'conversation-agent-time');
+          avatar.innerHTML=claudeMark;time.dataset.started=agent.started||'';
+          row.append(avatar,el('span',agent.description||'Background agent','conversation-agent-title'));if(model)row.append(el('span',model,'conversation-agent-model'));row.append(time);
+          row.setAttribute('aria-label',`Background agent running: ${agent.description||'unnamed'}${model?`, ${model}`:''}`);return row;
+        }));
+      }
+      for(const time of background.querySelectorAll('.conversation-agent-time')){const started=Date.parse(time.dataset.started)/1000,text=started>0?duration(Math.max(0,Date.now()/1000-started)):'';if(time.textContent!==text)time.textContent=text;}
+    }
     function tickWorking(){
-      clearTimeout(workingTimer);syncLiveStep();if(working.hidden||panel.hidden)return;
-      const started=Date.parse(backgroundAgents()[0]?.started)/1000,since=started>0?started:Number(target?.since),time=since>0?duration(Math.max(0,Date.now()/1000-since)):'';
+      clearTimeout(workingTimer);syncLiveStep();paintBackground();if((working.hidden&&background.hidden)||panel.hidden)return;
+      const since=Number(target?.since),time=since>0?duration(Math.max(0,Date.now()/1000-since)):'';
       if(workingTime.textContent!==time)workingTime.textContent=time;workingTimer=setTimeout(tickWorking,1000);
     }
     // The newest progress update moves into the live row, so the step in progress
     // and the timer read as one line instead of two indicators.
-    // After the reply ends, a background agent may still be running: the row stays, without a step.
+    // After the reply ends, a background agent the transcript does not name keeps the row, without a step.
     function syncLiveStep(){
       const waiting=target?.state==='waiting',last=working.hidden||waiting?null:working.previousElementSibling,step=last?.classList.contains('commentary')&&!last.hidden?last:null;
       if(step!==liveStep){
@@ -190,7 +206,7 @@
         if(step){step.classList.add('live');workingStep.dataset.step=step.dataset.live||[...step.childNodes].filter(node=>!node.classList?.contains('conversation-label')).map(node=>node.textContent).join(' ').replace(/\s+/g,' ').trim();}
         working.classList.toggle('has-step',!!step);
       }
-      if(!step){const agents=backgroundAgents().map(agent=>agent.description||'Unnamed agent');workingStep.dataset.step=!waiting?'Working':agents.length===1?`Background agent: ${agents[0]}`:agents.length?`${agents.length} background agents: ${agents.join(', ')}`:'Waiting on a background agent';}
+      if(!step)workingStep.dataset.step=waiting?'Waiting on a background agent':'Working';
       const run=step&&liveRun,expanded=!!run&&!run.collapsed,count=run?`· ${run.count} steps`:'';
       working.classList.toggle('has-run',!!run);working.disabled=!run;if(workingCount.textContent!==count)workingCount.textContent=count;
       if(run){working.removeAttribute('aria-hidden');working.setAttribute('aria-expanded',String(expanded));working.setAttribute('aria-label',`${expanded?'Hide':'Show'} ${run.count-1} earlier step${run.count===2?'':'s'}`);}
@@ -203,7 +219,7 @@
       if(switchModel)model.disabled=!target?.switchAvailable||!chat||!!pendingFor()||!!(outgoing.get(identity(target))||[]).length||!!(attachments.get(identity(target))||[]).length;
       if(activity.textContent!==label)activity.textContent=label;
       activity.classList.toggle('working',state==='working');
-      const follow=nearBottom();working.hidden=!['working','waiting'].includes(state)||!chat;tickWorking();
+      const follow=nearBottom();working.hidden=!chat||!(state==='working'||state==='waiting'&&!backgroundAgents().length);tickWorking();
       if(follow)list.scrollTop=list.scrollHeight;
       const startup=startupState(),stalled=!!startup&&(!!startup.error||Date.now()-startup.started>=30000);
       terminalAction.hidden=!['approval','input'].includes(state)&&!stalled;recovery.hidden=!stalled||!!chat;
@@ -459,7 +475,7 @@
         if(previous.nextSibling!==entry.node)previous.after(entry.node);previous=entry.node;
       }
       const outgoingIds=new Set(visibleOutgoing.map(item=>item.id));for(const [id,entry] of renderedOutgoing)if(!outgoingIds.has(id)){contentResize?.unobserve(entry.node);entry.node.remove();renderedOutgoing.delete(id);}
-      if(list.lastChild!==working)list.append(working);
+      if(list.lastChild!==background||background.previousSibling!==working)list.append(working,background);
       if(prepend)list.scrollTop=position+list.scrollHeight-height;
       else if(follow)list.scrollTop=list.scrollHeight;
       syncLiveStep();updateLatest();rememberReading();paintFiles();

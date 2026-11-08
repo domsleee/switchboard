@@ -33,7 +33,7 @@ test('Conversation shows the model, animates real work and keeps delivery receip
   assert.equal(await working.evaluate(node=>getComputedStyle(node.firstElementChild).animationName),'conversation-spin');
   assert.equal(await activity.evaluate(node=>getComputedStyle(node,'::before').animationName),'conversation-pulse');
   assert.equal(await page.getByText('Waiting for agent…',{exact:true}).count(),0);
-  assert.equal(await page.locator('.conversation-messages').evaluate(node=>node.lastElementChild.className),'conversation-working');
+  assert.equal(await page.locator('.conversation-messages').evaluate(node=>[...node.children].filter(child=>!child.hidden).pop().className),'conversation-working');
   if(process.env.MODE_SCREENSHOTS)await page.screenshot({path:process.env.MODE_SCREENSHOTS+'/conversation-working.png'});
   await page.emulateMedia({reducedMotion:'reduce'});
   assert.equal(await working.evaluate(node=>getComputedStyle(node,'::before').animationName),'none');
@@ -47,23 +47,30 @@ test('Conversation shows the model, animates real work and keeps delivery receip
    assert.equal(await working.isVisible(),false,state+' must stop the animation');
    assert.equal(await activity.evaluate(node=>getComputedStyle(node,'::before').animationName),'none');
   }
-  // A background agent outliving the reply keeps the live row, naming what it waits on.
+  // A background agent outliving the reply keeps the live row while the transcript cannot name it.
   await page.evaluate(()=>{current.state='waiting';SwitchboardConversation.update();});
   assert.equal(await working.isVisible(),true,'A running background agent shows in the transcript');
   assert.equal(await page.locator('.conversation-working-step').getAttribute('data-step'),'Waiting on a background agent');
   assert.equal(await activity.evaluate(node=>getComputedStyle(node,'::before').animationName),'none');
-  const step=()=>page.locator('.conversation-working-step').getAttribute('data-step'),refreshPage=()=>Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/')),page.evaluate(()=>intervals.forEach(fn=>fn()))]);
-  background=[{description:'Review the diff',started:new Date(Date.now()-125000).toISOString()}];await refreshPage();
-  await page.waitForFunction(()=>document.querySelector('.conversation-working-step').dataset.step==='Background agent: Review the diff');
-  assert.match(await page.locator('.conversation-working-time').textContent(),/^2m \d+s$/,'The timer counts from the agent’s launch');
-  background.push({description:'Run the e2e suite',started:new Date().toISOString()});await refreshPage();
-  await page.waitForFunction(()=>document.querySelector('.conversation-working-step').dataset.step==='2 background agents: Review the diff, Run the e2e suite');
+  const refreshPage=()=>Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/')),page.evaluate(()=>intervals.forEach(fn=>fn()))]);
+  const agents=page.locator('.conversation-agent'),rows=()=>agents.evaluateAll(nodes=>nodes.map(node=>[...node.children].map(child=>child.textContent||child.className)));
+  // Named agents get a row each, with the Claude mark, the task, its model and time since launch.
+  background=[{description:'Review the diff',model:'claude-opus-5-5',started:new Date(Date.now()-125000).toISOString()},{description:'Run the e2e suite',model:'claude-sonnet-5-5',started:new Date(Date.now()-3000).toISOString()}];await refreshPage();
+  await agents.nth(1).waitFor();
+  assert.equal(await working.isVisible(),false,'Named rows replace the generic row');
+  const [first,second]=await rows();
+  assert.deepEqual(first.slice(0,3),['conversation-agent-avatar','Review the diff','Opus 5.5']);assert.match(first[3],/^2m \d+s$/,'Each row counts from its own launch');
+  assert.deepEqual(second.slice(0,3),['conversation-agent-avatar','Run the e2e suite','Sonnet 5.5']);assert.match(second[3],/^\d+s$/);
+  assert.equal(await agents.first().locator('svg').count(),1);
+  assert.equal(await agents.first().locator('.conversation-agent-avatar').evaluate(node=>getComputedStyle(node,'::after').animationName),'conversation-spin');
+  assert.equal(await page.locator('.conversation-messages').evaluate(node=>[...node.children].filter(child=>!child.hidden).pop().className),'conversation-background');
   if(process.env.MODE_SCREENSHOTS)await page.screenshot({path:process.env.MODE_SCREENSHOTS+'/conversation-background-agents.png'});
   await page.evaluate(()=>{current.state='ready';SwitchboardConversation.update();});
-  assert.equal(await working.isVisible(),false,'The row leaves once the agent finishes');
+  assert.equal(await page.locator('.conversation-background').isVisible(),false,'The rows leave once the agents finish');
+  assert.equal(await working.isVisible(),false);
   background=[];await refreshPage();
   await page.evaluate(()=>{current.state='waiting';SwitchboardConversation.update();});
-  assert.equal(await step(),'Waiting on a background agent','Without a launch record the row stays generic');
+  assert.equal(await page.locator('.conversation-working-step').getAttribute('data-step'),'Waiting on a background agent','Without a launch record the row stays generic');
   model=null;effort=null;
   await Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/')),page.evaluate(()=>intervals.forEach(fn=>fn()))]);
   await page.waitForFunction(()=>document.querySelector('.conversation-model').textContent==='Codex');assert.equal(await activity.textContent(),'Waiting on an agent');
