@@ -1,4 +1,4 @@
-// New tab's model picker, after T3 Code's: one tab per agent, its models on the left and the model's
+// New tab's shared picker, after T3 Code's: favourites and agents in a rail, models on the left and their
 // effort docked on the right. A choice is `claude:<model>` or `codex:<model>`, plus `#<effort>` when an
 // effort is chosen; no effort leaves the agent's own setting in charge.
 (() => {
@@ -11,6 +11,11 @@
   // One scale for every model: bars filled per level, so the same word always looks the same.
   const EFFORT_BARS={none:0,minimal:0,low:1,medium:2,high:3,xhigh:4,max:5,ultra:5};
   const PROVIDERS={claude:'Claude Code',codex:'Codex'};
+  const VIEWS={favorites:'Favourites',codex:'Codex',claude:'Claude Code'};
+  const FAVORITES_KEY='switchboard-model-favorites';
+  const STAR='<svg viewBox="0 0 20 20" aria-hidden="true"><path d="m10 2 2.5 5 5.5.8-4 3.9.9 5.5L10 14.6l-4.9 2.6.9-5.5-4-3.9L7.5 7z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>';
+  function favoriteKeys(values){return [...new Set((Array.isArray(values)?values:[]).map(parse).filter(Boolean).map(({provider,model})=>format({provider,model})))];}
+  function readFavorites(){try{return favoriteKeys(JSON.parse(localStorage.getItem(FAVORITES_KEY)||'[]'));}catch{return [];}}
   // The owner's shell shortcuts, as the model and effort each one runs.
   const ALIASES={csol:'codex:gpt-6.1-sol#high',castra:'codex:gpt-6-astra#medium',c:'claude:claude-opus-5-5'};
   const DEFAULT='codex:gpt-6.1-sol#high';
@@ -91,21 +96,20 @@
     search.setAttribute('aria-label','Search all models, or type any model name');search.setAttribute('role','combobox');search.setAttribute('aria-autocomplete','list');search.setAttribute('aria-expanded','true');
     const list=el('div','model-picker-list');list.id=base+'-options';list.setAttribute('role','listbox');search.setAttribute('aria-controls',list.id);
     searchBox.innerHTML='<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';searchBox.append(search);
-    // One tab per agent, as T3 Code's rail. A search spans both and hides them.
-    const tabs=el('div','model-picker-tabs');tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','Agent');
+    // A shared favourites view and one view per agent, like T3 Code's icon rail.
+    const tabs=el('div','model-picker-tabs');tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','Model views');tabs.setAttribute('aria-orientation',compact()?'horizontal':'vertical');
     const tabButtons={};
-    for(const provider of Object.keys(PROVIDERS)){
+    for(const provider of Object.keys(VIEWS)){
       const button=el('button','model-picker-tab');button.type='button';button.setAttribute('role','tab');button.id=base+'-tab-'+provider;button.setAttribute('aria-controls',list.id);
-      // A dot marks the agent of the chosen model; the tab's name says it to screen readers.
-      const dot=el('small','model-picker-tab-count');dot.setAttribute('aria-hidden','true');
-      button.append(icon(provider),el('span',undefined,PROVIDERS[provider]),dot);
+      const mark=icon(provider);if(provider==='favorites')mark.innerHTML=STAR;
+      button.append(mark,el('span','model-picker-tab-label',VIEWS[provider]));button.title=VIEWS[provider];
       button.onmousedown=event=>{if(!compact())event.preventDefault();};
       button.onclick=()=>{showTab(provider);if(!compact())search.focus();};
       tabButtons[provider]=button;tabs.append(button);
     }
     const sheetTitle=el('h3','model-picker-title','Model and effort'),cancelButton=el('button','model-picker-cancel','Cancel'),sheetDone=el('button','model-picker-done','Done');
     sheetTitle.id=base+'-sheet-title';sheetTitle.tabIndex=-1;cancelButton.type=sheetDone.type='button';
-    head.append(cancelButton,sheetTitle,sheetDone,searchBox,tabs);
+    head.append(cancelButton,sheetTitle,sheetDone,searchBox);
     const effortHead=el('div','model-picker-effort-head'),effortTitle=el('span',undefined,'Effort'),effortModel=el('span','model-picker-effort-model');
     effortTitle.id=base+'-effort-label';effortModel.id=base+'-effort-model';effortHead.append(effortTitle,effortModel);
     const effortList=el('div','model-picker-efforts');effortList.setAttribute('role','radiogroup');effortList.setAttribute('aria-labelledby',effortTitle.id+' '+effortModel.id);
@@ -117,9 +121,11 @@
     const left=el('div','model-picker-models'),right=el('div','model-picker-effort'),effortScroll=el('div','model-picker-effort-scroll'),effortFoot=el('div','model-picker-effort-foot');
     left.append(list);effortScroll.append(effortList,effortAway);effortFoot.append(effortWarning,effortNote);right.append(effortHead,effortScroll,effortFoot);
     const body=el('div','model-picker-body');body.append(left,right);
+    const content=el('div','model-picker-content'),main=el('div','model-picker-main');content.append(head,body);main.append(tabs,content);
     const foot=el('div','model-picker-foot'),hints=el('span','model-picker-hints'),footDone=el('button','model-picker-foot-done');footDone.type='button';
     footDone.innerHTML='Done <kbd>Enter</kbd>';foot.append(hints,footDone);
-    menu.replaceChildren(head,body,foot);menu.classList.add('model-picker');menu.setAttribute('role','dialog');menu.setAttribute('aria-labelledby',sheetTitle.id);
+    const favoriteStatus=el('p','sr-only');favoriteStatus.setAttribute('role','status');
+    menu.replaceChildren(main,foot,favoriteStatus);menu.classList.add('model-picker');menu.setAttribute('role','dialog');menu.setAttribute('aria-labelledby',sheetTitle.id);
     // A press on the picker's own background keeps focus inside it, so it never reads as leaving; on a
     // desktop it leaves focus where it was, so Escape, Enter and the arrows keep working.
     menu.tabIndex=-1;
@@ -134,6 +140,7 @@
     const words=()=>query().split(/\s+/).filter(Boolean);
     const sameModel=(a,b)=>!!a&&!!b&&a.provider===b.provider&&(a.id??a.model)===(b.id??b.model);
     const keyOf=parts=>parts?parts.provider+':'+parts.model:null;
+    const isFavorite=item=>readFavorites().includes(item.provider+':'+(item.id??item.model));
     const supports=(parts,effort)=>!effort||efforts(parts,codex()).some(([id])=>id===effort);
     // A model with the effort last chosen, when it offers that effort.
     const withWanted=(provider,model)=>format({provider,model,effort:supports({provider,model},wanted)?wanted:''});
@@ -141,7 +148,7 @@
     // here. They are fixed while the picker is open, so choosing one never moves the rows.
     function recents(){
       const models=codex(),listed=item=>item.provider==='claude'||!Array.isArray(models)||models.some(model=>model.id===item.model);
-      return recent().map(parse).filter(item=>item&&format(item)!==initial&&listed(item)&&runnable(item,models))
+      return recent().map(parse).filter(item=>item&&!isFavorite(item)&&format(item)!==initial&&listed(item)&&runnable(item,models))
         .filter((item,index,all)=>all.findIndex(other=>format(other)===format(item))===index).slice(0,3)
         .map(item=>({kind:'model',key:'recent:'+format(item),group:'recent',provider:item.provider,id:item.model,name:modelName(item,models),effort:item.effort,recent:true}));
     }
@@ -155,12 +162,26 @@
       if(parts?.provider===provider&&!rows.some(item=>sameModel(item,parts)))rows.splice(provider==='claude'?CLAUDE_MODELS.length:rows.length,0,row(parts.model,modelName(parts,models)));
       return rows;
     }
+    function favoriteRows(){
+      return readFavorites().map(key=>{const parts=parse(key),listed=rowsFor(parts.provider).find(item=>sameModel(item,parts));
+        return {...(listed||{kind:'model',provider:parts.provider,id:parts.model,name:modelName(parts,codex())}),key,group:'favorites',favorite:true};});
+    }
+    function toggleFavorite(item){
+      const key=item.provider+':'+item.id,saved=readFavorites(),had=saved.includes(key);
+      try{localStorage.setItem(FAVORITES_KEY,JSON.stringify(had?saved.filter(value=>value!==key):[...saved,key]));}
+      catch{favoriteStatus.textContent='Could not save favourites in this browser.';return;}
+      paint(false);favoriteStatus.textContent=(had?'Removed ':'Added ')+item.name+(had?' from':' to')+' favourites.';
+    }
     // Rows in display order, each with the group it sits under.
     function items(){
       const text=query();
-      if(!text)return [...recents(),...rowsFor(tab)];
+      if(!text){
+        if(tab==='favorites')return favoriteRows();
+        return [...favoriteRows().filter(item=>item.provider===tab),...recents(),...rowsFor(tab).filter(item=>!isFavorite(item))];
+      }
       // Every word matches the model's name or id, or starts the agent's name ("codex astra").
-      const matches=[...rowsFor('claude'),...rowsFor('codex')].map(item=>({...item,group:item.provider}))
+      const candidates=[...rowsFor('claude'),...rowsFor('codex'),...favoriteRows()];
+      const matches=candidates.filter((item,index)=>candidates.findIndex(other=>sameModel(other,item))===index).map(item=>({...item,group:item.provider}))
         .filter(item=>words().every(word=>[item.id,item.name].some(field=>field.toLowerCase().includes(word))||PROVIDERS[item.provider].toLowerCase().split(' ').some(part=>part.startsWith(word))));
       // A name nobody lists can start either agent, offered only when nothing listed matches.
       const typed=search.value.trim();
@@ -168,7 +189,7 @@
         const agents=/^(claude|opus|sonnet|haiku|fable)/i.test(typed)?['claude','codex']:['codex','claude'];
         return agents.map(provider=>({kind:'model',key:'custom:'+provider+':'+typed,group:'other',provider,id:typed,name:typed,custom:true}));
       }
-      return matches;
+      return matches.sort((a,b)=>Number(isFavorite(b))-Number(isFavorite(a)));
     }
     const committedKey=()=>keyOf(parse(value()));
     // What a row chooses: its model with the effort last chosen, or a recent row's own effort.
@@ -179,26 +200,25 @@
     const shownValue=()=>previewing()?valueFor(highlighted()):value();
     // The effort column sets the chosen model's effort only while that model is on screen.
     const chosenShown=()=>previewing()||items().some(item=>!item.recent&&!item.custom&&sameModel(item,parse(value())));
-    const GROUP_TITLES={recent:'Recent',older:'Older models',other:'Use a model not listed'};
+    const GROUP_TITLES={favorites:'Favourites',recent:'Recent',older:'Older models',other:'Use a model not listed'};
     function paintModels(scroll){
       const parts=parse(value()),models=codex(),text=query(),shown=items();list.replaceChildren();let group=null,groupName=null,index=0,activeId=null;
       if(!shown.some(item=>item.key===active))active=text?(compact()?null:shown[0]?.key??null):committedKey();
-      tabs.hidden=!!text;
+      tabs.hidden=false;menu.classList.toggle('favorites-view',tab==='favorites'&&!text);
       for(const [provider,button] of Object.entries(tabButtons)){
         button.setAttribute('aria-selected',String(provider===tab));button.tabIndex=provider===tab?0:-1;
-        button.querySelector('.model-picker-tab-count').textContent=parts?.provider===provider?'●':'';
-        button.setAttribute('aria-label',PROVIDERS[provider]+(parts?.provider===provider?', current choice':''));
+        button.setAttribute('aria-label',VIEWS[provider]+(parts?.provider===provider?', current choice':''));
       }
-      list.setAttribute('aria-label',text?'Matching models':PROVIDERS[tab]+' models');
+      list.setAttribute('aria-label',text?'Matching models':VIEWS[tab]+' models');
       for(const item of shown){
         if(!group||item.group!==groupName){
           groupName=item.group;group=el('div','model-picker-group');group.setAttribute('role','group');
-          const title=GROUP_TITLES[item.group]||(text?PROVIDERS[item.provider]:'');
+          const title=item.group==='favorites'&&tab==='favorites'&&!text?'':GROUP_TITLES[item.group]||(text?PROVIDERS[item.provider]:'');
           if(title){
             const heading=el('div','model-picker-group-title');heading.id=list.id+'-group-'+item.group;group.setAttribute('aria-labelledby',heading.id);
             if(text&&PROVIDERS[item.group])heading.append(icon(item.provider));
             heading.append(title);group.append(heading);
-          }else group.setAttribute('aria-label',PROVIDERS[item.provider]);
+          }else group.setAttribute('aria-label',item.group==='favorites'?'Favourites':PROVIDERS[item.provider]);
           list.append(group);
         }
         const option=el('div','model-picker-option');option.id=list.id+'-'+index++;option.setAttribute('role','option');
@@ -206,7 +226,7 @@
         // The chosen model is selected in its agent's list; a recent row only repeats a pair.
         const chosen=!item.recent&&!item.custom&&sameModel(item,parts);
         option.setAttribute('aria-selected',String(chosen));option.title=item.custom?`Start ${PROVIDERS[item.provider]} with ${item.id}`:item.id;
-        if(item.recent||item.custom){option.classList.add('model-picker-tagged');option.append(icon(item.provider));}
+        option.classList.add('model-picker-tagged');option.append(icon(item.provider));
         option.append(marked(item.name,words()));
         if(item.recent)option.append(el('small',undefined,effortName(item.effort)));
         else if(item.custom)option.append(el('small',undefined,'with '+PROVIDERS[item.provider]));
@@ -218,8 +238,17 @@
         // While searching, the pointer moves the highlight, so Enter and Done take what it points at.
         option.onpointermove=event=>{if(event.pointerType==='mouse'&&query()&&active!==item.key){active=item.key;paint(false);}};
         option.onmousedown=event=>event.preventDefault();
-        group.append(option);
+        const row=el('div','model-picker-row'),star=el('button','model-picker-star');star.type='button';star.innerHTML=STAR;
+        const saved=isFavorite(item);star.classList.toggle('saved',saved);star.title=(saved?'Remove ':'Add ')+item.name+(saved?' from':' to')+' favourites';star.setAttribute('aria-label',star.title);star.setAttribute('aria-pressed',String(saved));
+        star.dataset.favoriteKey=item.provider+':'+item.id;
+        star.onmousedown=event=>event.preventDefault();star.onclick=()=>{
+          toggleFavorite(item);
+          const destination=compact()?[...list.querySelectorAll('.model-picker-star')].find(button=>button.dataset.favoriteKey===item.provider+':'+item.id)||tabButtons[tab]:search;
+          destination.focus({preventScroll:true});
+        };
+        row.append(option,star);group.append(row);
       }
+      if(!text&&tab==='favorites'&&!shown.length){const empty=el('p','model-picker-note','No favourites yet. Star a model in Codex or Claude Code to keep it here.');list.append(empty);}
       // Whether Codex's catalog is still loading or failed shows in its tab, whatever rows it has.
       if(!text&&tab==='codex'&&!Array.isArray(models)){
         const note=el('p','model-picker-note',models==='failed'?'Codex models are unavailable on this computer. ':'Loading Codex models…');
@@ -265,7 +294,8 @@
         // Focusing, or on a desktop hovering, a level shows what it does.
         row.onfocus=()=>{effortNote.textContent=description;};row.onblur=()=>{effortNote.textContent=noteFor();};
         if(hover){row.onmouseenter=row.onfocus;row.onmouseleave=row.onblur;}
-        row.onmousedown=event=>{if(!compact())event.preventDefault();};
+        // Keep a pointer press from changing the description and moving the touch target before its click.
+        row.onmousedown=event=>event.preventDefault();
         row.onclick=()=>{setEffort(id);if(!compact())focusEffort();};
         effortList.append(row);
       });
@@ -283,7 +313,7 @@
     function choose(item,scroll=false){
       if(item.recent)wanted=item.effort;
       // A recent pair from the other agent opens that agent's tab, so its effort can be set.
-      set(valueFor(item));tab=item.provider;active=item.recent?item.key:keyOf(parse(value()));
+      set(valueFor(item));tab=tab==='favorites'&&isFavorite(item)?'favorites':item.provider;active=item.recent?item.key:keyOf(parse(value()));
       if(query()&&!item.custom)search.value='';
       paint(scroll);
     }
@@ -294,6 +324,7 @@
     }
     function showTab(provider){tab=provider;search.value='';active=committedKey();paint(false);left.scrollTop=0;fade(left);}
     function place(){
+      tabs.setAttribute('aria-orientation',compact()?'horizontal':'vertical');
       if(embedded){menu.style.cssText='';body.style.height='';return;}
       if(compact()){
         // A phone's sheet sits on the visible viewport, above an on-screen keyboard.
@@ -301,7 +332,7 @@
         menu.style.cssText=`bottom:${bottom}px;height:${Math.min(700,Math.round(height*.92))}px`;body.style.height='';return;
       }
       // Fixed to the window beside the chip, on the side with more room; it covers the chip only when neither side has 150px.
-      const rect=chip.getBoundingClientRect(),width=Math.min(480,innerWidth-24),chrome=head.offsetHeight+foot.offsetHeight+2,want=330,floor=150;
+      const rect=chip.getBoundingClientRect(),width=Math.min(560,innerWidth-24),chrome=head.offsetHeight+foot.offsetHeight+2,want=330,floor=150;
       const above=rect.top-16,below=innerHeight-rect.bottom-16,room=Math.max(above,below)-chrome;
       let bodyHeight,top;
       if(room>=floor){bodyHeight=Math.min(want,room);top=above>=below?rect.top-8-bodyHeight-chrome:rect.bottom+8;}
@@ -312,7 +343,7 @@
     }
     function open(){
       if(chip.disabled||!menu.hidden)return;
-      initial=value();wanted=parse(initial)?.effort||'';search.value='';tab=parse(initial)?.provider||'codex';active=committedKey();
+      initial=value();wanted=parse(initial)?.effort||'';search.value='';tab=readFavorites().length?'favorites':parse(initial)?.provider||'codex';active=committedKey();
       menu.hidden=false;chip.setAttribute('aria-expanded','true');
       if(!embedded){scrim.classList.add('model-picker-open');menu.setAttribute('aria-modal',String(compact()));}
       paint(false);place();list.querySelector('[aria-selected=true]')?.scrollIntoView({block:'nearest'});fade(left);
@@ -349,6 +380,7 @@
       if(event.altKey||event.ctrlKey||event.metaKey||event.isComposing)return;
       if(embedded&&event.key==='Tab')return;
       if(event.key==='ArrowDown'||event.key==='ArrowUp'){event.preventDefault();step(event.key==='ArrowDown'?1:-1);}
+      else if(event.key==='ArrowLeft'&&search.selectionStart===0&&!query()){event.preventDefault();tabButtons[tab].focus();}
       // Right moves on to effort, taking a search's highlighted model with it; Tab reaches the agent tabs first.
       else if((event.key==='ArrowRight'&&search.selectionStart===search.value.length)||(event.key==='Tab'&&!event.shiftKey&&query()&&!compact())){
         event.preventDefault();if(query()&&highlighted())choose(highlighted());if(!focusEffort()&&event.key==='Tab')footDone.focus();
@@ -360,8 +392,9 @@
     tabs.addEventListener('keydown',event=>{
       if(event.altKey||event.ctrlKey||event.metaKey)return;
       if(embedded&&event.key==='Tab')return;
-      if(event.key==='ArrowLeft'||event.key==='ArrowRight'){event.preventDefault();showTab(tab==='claude'?'codex':'claude');tabButtons[tab].focus();}
-      else if(event.key==='ArrowDown'){event.preventDefault();search.focus();step(1);}
+      if(event.key==='ArrowLeft'||event.key==='ArrowRight'||event.key==='ArrowUp'||event.key==='ArrowDown'){
+        event.preventDefault();const views=Object.keys(VIEWS),direction=['ArrowLeft','ArrowUp'].includes(event.key)?-1:1;showTab(views[(views.indexOf(tab)+direction+views.length)%views.length]);tabButtons[tab].focus();
+      }
       else if(event.key==='Tab'&&!compact()){event.preventDefault();if(event.shiftKey)search.focus();else if(list.querySelector('.model-picker-retry'))list.querySelector('.model-picker-retry').focus();else if(!focusEffort())footDone.focus();}
       else if(event.key==='Enter'){event.preventDefault();confirm();}
       else if(event.key==='Escape'){event.preventDefault();event.stopPropagation();escape();}
@@ -372,21 +405,28 @@
       const across=compact()&&(event.key==='ArrowRight'||event.key==='ArrowLeft');
       if(event.key==='ArrowDown'||event.key==='ArrowUp'||across){event.preventDefault();stepEffort(event.key==='ArrowDown'||event.key==='ArrowRight'?1:-1);}
       else if(event.key==='ArrowLeft'){event.preventDefault();search.focus();}
-      else if(event.key==='Tab'&&!compact()){event.preventDefault();if(event.shiftKey)(list.querySelector('.model-picker-retry')||(tabs.hidden?search:tabButtons[tab])).focus();else footDone.focus();}
+      else if(event.key==='Tab'&&!compact()){event.preventDefault();if(event.shiftKey)(list.querySelector('.model-picker-retry')||tabButtons[tab]).focus();else (list.querySelector('.model-picker-star')||footDone).focus();}
       else if(event.key==='Enter'){event.preventDefault();finish();}
       else if(event.key===' '){event.preventDefault();setEffort(event.target.dataset.effort);focusEffort();}
       else if(event.key==='Escape'){event.preventDefault();event.stopPropagation();escape();}
     });
     footDone.addEventListener('keydown',event=>{
-      if(event.key==='Tab'){event.preventDefault();if(event.shiftKey){if(!focusEffort())tabButtons[tab].focus();}else finish();}
+      if(event.key==='Tab'){event.preventDefault();if(event.shiftKey){const stars=[...list.querySelectorAll('.model-picker-star')];if(stars.length)stars.at(-1).focus();else if(!focusEffort())tabButtons[tab].focus();}else finish();}
       else if(event.key==='Escape'){event.preventDefault();event.stopPropagation();escape();}
+    });
+    list.addEventListener('keydown',event=>{
+      if(event.key==='Escape'){event.preventDefault();event.stopPropagation();escape();return;}
+      if(embedded||compact()||event.key!=='Tab'||!event.target.matches('.model-picker-star'))return;
+      const stars=[...list.querySelectorAll('.model-picker-star')],index=stars.indexOf(event.target),next=index+(event.shiftKey?-1:1);
+      event.preventDefault();event.stopPropagation();
+      if(next<0){if(!focusEffort())tabButtons[tab].focus();}else (stars[next]||footDone).focus();
     });
     // A phone's sheet is modal: Tab cycles inside it, past Cancel, Done, search, the tabs and effort.
     menu.addEventListener('keydown',event=>{
       if(embedded||!compact()||event.defaultPrevented)return;
       if(event.key==='Escape'){event.preventDefault();event.stopPropagation();escape();return;}
       if(event.key!=='Tab')return;
-      const stops=[cancelButton,sheetDone,search,tabs.hidden?null:tabButtons[tab],list.querySelector('.model-picker-retry'),effortList.hidden?null:effortList.querySelector('[tabindex="0"]')].filter(Boolean),index=stops.indexOf(document.activeElement);
+      const stops=[cancelButton,sheetDone,search,tabButtons[tab],list.querySelector('.model-picker-retry'),...list.querySelectorAll('.model-picker-star'),effortList.hidden?null:effortList.querySelector('[tabindex="0"]')].filter(Boolean),index=stops.indexOf(document.activeElement);
       event.preventDefault();event.stopPropagation();stops[(index+(event.shiftKey?-1:1)+stops.length)%stops.length].focus();
     });
     sheetDone.onclick=footDone.onclick=confirm;cancelButton.onclick=()=>finish(false);
@@ -409,6 +449,7 @@
     },true);
     addEventListener('resize',()=>{if(!menu.hidden)place();});
     globalThis.visualViewport?.addEventListener('resize',()=>{if(!menu.hidden)place();});
+    addEventListener('storage',event=>{if(event.key===FAVORITES_KEY&&!menu.hidden)paint(false);});
     function embed(container){
       embedded=false;close();embedded=!!container;
       (container||home).append(menu);menu.classList.toggle('model-picker-embedded',embedded);
@@ -417,5 +458,5 @@
     }
     return {open,close,embed,commit,refresh(){if(!menu.hidden){paint(false);place();}},search,modal:()=>!embedded&&!menu.hidden&&compact(),isOpen:()=>!menu.hidden};
   }
-  globalThis.SwitchboardModelPicker={parse,format,normalize,fit,describe,efforts,effortName,create,DEFAULT,ALIASES,CLAUDE_MODELS,CLAUDE_OLDER};
+  globalThis.SwitchboardModelPicker={parse,format,normalize,fit,describe,efforts,effortName,create,favoriteKeys,DEFAULT,ALIASES,CLAUDE_MODELS,CLAUDE_OLDER};
 })();

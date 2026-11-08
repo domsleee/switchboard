@@ -486,7 +486,6 @@ body.sidebar-collapsed #artifact-preview header{padding-left:42px}
 .model-picker-tab[aria-selected=true]{background:#2c2e36;color:var(--mp-text)}
 @media(hover:hover){.model-picker-tab:hover{color:var(--mp-text)}}
 .model-picker-tab:focus-visible{outline:0;box-shadow:inset 0 0 0 1.5px #7a7f8c}
-.model-picker-tab-count{display:none}
 .model-picker-body{display:flex;height:330px;min-height:0}
 .model-picker-models{flex:1;min-width:0;overflow-y:auto;overscroll-behavior:contain;scroll-padding:30px 0 8px;padding:4px 6px 8px}
 .model-picker-models.more,.model-picker-effort-scroll.more{-webkit-mask:linear-gradient(#000 calc(100% - 28px),transparent);mask:linear-gradient(#000 calc(100% - 28px),transparent)}
@@ -718,4 +717,48 @@ body.mobile-terminal-viewport #terminals:has(.conversation-modes:not([hidden]))>
   .model-picker-embedded .model-picker-level small{font-size:11px}
   .model-picker-embedded .model-picker-level .model-picker-glyph{min-width:16px}
   #handover-route{font-size:12px;gap:7px}
+}
+
+/* Shared model picker: Favourites and provider icons form a rail, as in T3 Code. */
+.model-picker-main{display:flex;min-height:0;flex:1}
+.model-picker-content{display:flex;flex:1;flex-direction:column;min-width:0;min-height:0}
+.model-picker-tabs,.model-picker-embedded .model-picker-tabs{display:flex;flex:0 0 44px;flex-direction:column;align-items:center;gap:4px;width:44px;margin:0;padding:8px 4px;border-right:1px solid var(--mp-line);border-radius:0;background:#131519}
+.model-picker-tab{position:relative;display:flex;flex:none;justify-content:center;width:35px;height:38px;min-height:38px;padding:0;border-radius:6px;background:none}
+.model-picker-tab-label{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+.model-picker-tab .model-picker-icon,.model-picker-tab .model-picker-icon svg{width:21px;height:21px}
+.model-picker-tab[aria-selected=true]{background:#ffffff08}
+.model-picker-tab[aria-selected=true]::after{content:'';position:absolute;right:-3px;top:8px;bottom:8px;width:3px;border-radius:3px;background:#6e99f8}
+.model-picker-tab:first-child{margin-bottom:6px}
+.model-picker-tab:first-child::before{content:'';position:absolute;bottom:-5px;left:4px;right:4px;border-bottom:1px solid var(--mp-line)}
+.model-picker-tab:first-child svg{fill:currentColor}
+.model-picker-row{position:relative;display:flex;align-items:center}
+.model-picker-row .model-picker-option{min-width:0;padding-right:34px}
+.model-picker-star{position:absolute;right:3px;display:grid;place-items:center;flex-shrink:0;width:28px;height:28px;min-height:28px;padding:5px;border:0;border-radius:6px;background:transparent;color:#a1a7b3;opacity:0}
+.model-picker-star svg{width:15px;height:15px}
+.model-picker-star.saved{color:#e9bf71;opacity:1}
+.model-picker-star.saved svg{fill:currentColor}
+.model-picker-star:hover,.model-picker-star:focus-visible,.model-picker-row:hover .model-picker-star,.model-picker-row:focus-within .model-picker-star{opacity:1;background:#ffffff09}
+.model-picker-star:focus-visible{outline:1.5px solid #8fb4ff;outline-offset:-2px}
+.model-picker-option.active~.model-picker-star{opacity:1}
+.model-picker-effort-foot{min-height:38px}
+@media(max-width:700px),(pointer:coarse){
+ .model-picker-main,.model-picker-content{display:contents}
+ .model-picker-head{order:0}
+ .model-picker-tabs,.model-picker-embedded .model-picker-tabs{order:1;flex:0 0 auto;flex-direction:row;justify-content:flex-start;gap:5px;width:auto;margin:0 12px 8px;padding:0;border:0;border-radius:0;background:none}
+ .model-picker-tab{width:44px;height:44px;min-height:44px}
+ .model-picker-tab:first-child{margin:0 8px 0 0}
+ .model-picker-tab:first-child::before{bottom:6px;top:6px;left:auto;right:-7px;border-bottom:0;border-right:1px solid var(--mp-line)}
+ .model-picker-tab[aria-selected=true]::after{top:auto;bottom:1px;left:10px;right:10px;width:auto;height:2px}
+ .model-picker-body{order:2}
+ .model-picker-foot{order:3}
+ .model-picker-row .model-picker-option{padding-right:42px}
+ .model-picker-star{right:0;width:40px;height:40px;min-height:40px;padding:10px;opacity:1}
+ .model-picker-star svg{width:18px;height:18px}
+}
+
+.model-picker-star.saved path,.model-picker-tab:first-child path{fill:currentColor}
+.model-picker-tagged .model-picker-icon,.model-picker-tagged .model-picker-icon svg{width:15px;height:15px}
+@media(hover:hover) and (pointer:fine){
+ .favorites-view .model-picker-star.saved{opacity:0}
+ .favorites-view .model-picker-row:hover .model-picker-star,.favorites-view .model-picker-star:focus-visible{opacity:1}
 }

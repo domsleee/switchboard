@@ -6,6 +6,11 @@ const vm=require('node:vm');
 const sandbox={};vm.runInNewContext(fs.readFileSync(__dirname+'/static/model-picker.js','utf8'),sandbox);
 const {parse,normalize,describe,efforts}=sandbox.SwitchboardModelPicker;
 
+test('favourites store only valid provider and model identities, without duplicate effort presets',()=>{
+  assert.equal(JSON.stringify(sandbox.SwitchboardModelPicker.favoriteKeys(['codex:gpt-6.1-sol#high','codex:gpt-6.1-sol#xhigh','claude:claude-opus-5-5','invalid',null])),JSON.stringify(['codex:gpt-6.1-sol','claude:claude-opus-5-5']));
+  assert.equal(JSON.stringify(sandbox.SwitchboardModelPicker.favoriteKeys({models:[]})),'[]');
+});
+
 test('a choice names its agent, model and optional effort, and refuses anything else',()=>{
   assert.deepEqual({...parse('claude:claude-opus-5-5#xhigh')},{provider:'claude',model:'claude-opus-5-5',effort:'xhigh'});
   assert.deepEqual({...parse('codex:gpt-6.1-sol')},{provider:'codex',model:'gpt-6.1-sol',effort:''});

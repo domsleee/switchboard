@@ -113,7 +113,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
       assert.equal(await page.locator('#new-tab-model-menu').isVisible(),true);
       // A tab per agent opens on the chosen model's agent: here the models this computer's Codex lists.
       await page.waitForFunction(()=>Array.isArray(newTabCodexModels.get('windows'))&&document.querySelector('#new-tab-model-menu').textContent.includes('GPT-6 Luna'));
-      assert.deepEqual(await page.locator('#new-tab-model-menu [role=tab]').allTextContents(),['Claude Code','Codex●']);
+      assert.deepEqual(await page.locator('#new-tab-model-menu [role=tab]').allTextContents(),['Favourites','Codex','Claude Code']);
       assert.equal(await page.getByRole('tab',{name:/^Codex/}).getAttribute('aria-selected'),'true');
       assert.deepEqual(await page.locator('#new-tab-model-menu [role=option] .model-picker-name').allTextContents(),['GPT-6.1 Sol','GPT-6 Luna']);
       // The chosen model's levels follow Auto. Without a search, arrows choose as they move.

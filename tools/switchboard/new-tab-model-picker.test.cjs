@@ -47,6 +47,22 @@ test('New Tab shares the model and effort picker and launches and remembers the 
    assert.ok(geometry.x>=0&&geometry.x+geometry.width<=viewport.width+1&&geometry.y>=0&&geometry.y+geometry.height<=viewport.height+1,JSON.stringify(geometry));
    await page.getByRole('option',{name:/GPT-6 Astra/}).click();
    await page.getByRole('radio',{name:'Extra high',exact:true}).click();
+   await page.getByRole('button',{name:'Add GPT-6 Astra to favourites',exact:true}).click();
+   assert.equal(await page.locator('#new-tab-model-effort').textContent(),'Extra high','Starring leaves the effort alone');
+   await page.getByRole('tab',{name:/^Claude Code/}).click();
+   await page.getByRole('button',{name:'Add Opus 5.5 to favourites',exact:true}).click();
+   assert.equal(await page.locator('#new-tab-model-name').textContent(),'GPT-6 Astra','Starring does not choose a different model');
+   await page.getByRole('tab',{name:'Favourites',exact:true}).click();
+   assert.deepEqual(await page.locator('.model-picker-name').allTextContents(),['GPT-6 Astra','Opus 5.5']);
+   await page.getByRole('option',{name:'Opus 5.5',exact:true}).click();
+   await page.getByRole('radio',{name:'Max',exact:true}).click();
+   await page.getByRole('option',{name:'GPT-6 Astra',exact:true}).click();
+   assert.equal(await page.locator('#new-tab-model-effort').textContent(),'','A favourite saves the model, not an effort preset');
+   await page.getByRole('radio',{name:'Extra high',exact:true}).click();
+   assert.equal(await page.locator('#new-tab-model-effort').textContent(),'Extra high','A touch still selects the intended effort when its warning disappears');
+   await page.getByRole('button',{name:'Remove Opus 5.5 from favourites',exact:true}).click();
+   assert.deepEqual(await page.locator('.model-picker-name').allTextContents(),['GPT-6 Astra']);
+   assert.deepEqual(await page.evaluate(()=>JSON.parse(localStorage.getItem('switchboard-model-favorites'))),['codex:gpt-6-astra']);
    await page.getByRole('radio',{name:'Extra high',exact:true}).press('Enter');
    assert.equal(await prompt.inputValue(),'Run the regression tests.','Choosing a model preserves the prompt');
    assert.equal(await prompt.evaluate(n=>document.activeElement===n),true,'Confirming returns to the prompt');
@@ -67,6 +83,17 @@ test('New Tab shares the model and effort picker and launches and remembers the 
    await open();
    assert.equal(await page.locator('#new-tab-model-name').textContent(),'GPT-6 Astra','The next tab remembers the model');
    assert.equal(await page.locator('#new-tab-model-effort').textContent(),'Extra high','The next tab remembers the effort');
+   await page.locator('#new-tab-model').click();
+   assert.equal(await page.getByRole('tab',{name:'Favourites',exact:true}).getAttribute('aria-selected'),'true','Saved favourites are the initial view');
+   assert.deepEqual(await page.locator('.model-picker-name').allTextContents(),['GPT-6 Astra']);
+   if(phone)await page.getByRole('button',{name:'Remove GPT-6 Astra from favourites',exact:true}).click();
+   else{
+    await search.press('Tab');await page.keyboard.press('Tab');await page.keyboard.press('Tab');
+    assert.equal(await page.getByRole('button',{name:'Remove GPT-6 Astra from favourites',exact:true}).evaluate(n=>document.activeElement===n),true,'Stars are reachable with the keyboard');
+    await page.keyboard.press('Enter');
+   }
+   await page.getByText('No favourites yet.',{exact:false}).waitFor();
+   assert.equal(await page.locator('#new-tab-model-name').textContent(),'GPT-6 Astra','Removing the last favourite leaves the launch choice intact');
    await page.keyboard.press('Escape');
    assert.deepEqual(errors,[]);
   }catch(error){error.message+='\nPicker: '+await page.locator('#new-tab-model-menu').innerText()+'\nErrors: '+JSON.stringify(errors);throw error;}

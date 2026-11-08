@@ -43,6 +43,12 @@ test('the single switch dialog supports model and effort selection in Conversati
    assert.equal(await page.locator('.model-picker-foot-done').isVisible(),false);
    assert.equal(await page.locator('#handover-details').evaluate(n=>n.open),false);
    assert.equal(await page.locator('#handover-from').textContent(),'Opus 5.5');
+   await page.getByRole('button',{name:'Add GPT-6.1 Sol to favourites',exact:true}).click();
+   await page.getByRole('tab',{name:/^Claude Code/}).click();
+   await page.getByRole('button',{name:'Add Opus 5.5 to favourites',exact:true}).click();
+   await page.getByRole('tab',{name:'Favourites',exact:true}).click();
+   assert.deepEqual(await page.locator('.model-picker-name').allTextContents(),['GPT-6.1 Sol','Opus 5.5']);
+   assert.equal(await page.locator('#handover-to').textContent(),'GPT-6.1 Sol High','Starring does not change the handoff target');
    const geometry=await page.locator('#new-tab-dialog').evaluate(n=>{const r=n.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:innerWidth,height:innerHeight,scroll:n.scrollWidth,client:n.clientWidth};});
    assert.ok(geometry.left>=0&&geometry.right<=geometry.width&&geometry.top>=0&&geometry.bottom<=geometry.height+1,JSON.stringify(geometry));
    assert.ok(geometry.scroll<=geometry.client,'No horizontal scrolling');
@@ -76,6 +82,11 @@ test('the single switch dialog supports model and effort selection in Conversati
    assert.equal(created.length,1);assert.equal(created[0].handover.model,'codex:gpt-6-astra#high');
    assert.equal(created[0].pane_id,1);assert.equal(created[0].chat_id,'source');
    assert.equal(requests.some(p=>p.includes('close-tab')||p.endsWith('/new-tab')||p.endsWith('/escape')),false);
+   if(phone&&await page.locator('#sidebar-toggle').getAttribute('aria-expanded')!=='true')await page.locator('#sidebar-toggle').click();
+   await page.getByRole('button',{name:'New tab',exact:true}).click();await page.locator('#new-tab-model').click();
+   assert.equal(await page.getByRole('tab',{name:'Favourites',exact:true}).getAttribute('aria-selected'),'true');
+   assert.deepEqual(await page.locator('.model-picker-name').allTextContents(),['GPT-6.1 Sol','Opus 5.5'],'New Tab sees the same saved favourites as Switch model');
+   await page.keyboard.press('Escape');await page.keyboard.press('Escape');
    assert.deepEqual(errors,[]);
   }finally{await page.close();}
  });}finally{await browser.close();}
