@@ -508,7 +508,14 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
     function show(value,transient=false){if(!transient){modeRevision++;if(value)startShown();else shownProgress('left');}if(!value){costDetails.hidePopover();closeCompletions();stopStream();loadRequest?.abort();window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();}open=value;root.classList.toggle('conversation-open',open);modeChanged(transient);if(!transient)try{localStorage.setItem(modeKey,value?'conversation':'terminal');}catch{}setPanelHidden(!value);toggle.setAttribute('aria-pressed',String(value));back.setAttribute('aria-pressed',String(!value));if(value){document.getElementById('artifact-preview').hidden=true;update();if(loaded){paint(false,restorePosition===null&&lastPaint===null);if(restorePosition!==null){list.scrollTop=restorePosition.follow?list.scrollHeight:restorePosition.position;restorePosition=null;updateLatest();}}if(binding())load(loaded?'poll':'initial');startStream();focusSurface();}else if(target)terminal(target);viewport();if(shown&&shown.generation===null)shown.generation=generation;}
 
     toggle.onclick=()=>show(true);back.onclick=()=>show(false);
-    let loadRequest=null,lastFailure=null,lastDiagnostic='',lastDiagnosticAt=0,newOutput=false,scrollIdle,shown=null;
+    let loadRequest=null,lastFailure=null,lastDiagnostic='',lastDiagnosticAt=0,newOutput=false,scrollIdle,shown=null,settling=false,settleTimer,settleClears=false;
+    // A first page too short to fill the list waits for the older messages it fetches next,
+    // so it appears once, at the bottom, instead of at the top and then jumping down.
+    function settle(value,reveal=true){
+      clearTimeout(settleTimer);const was=settling;settling=value;list.classList.toggle('settling',value);
+      if(value)settleTimer=setTimeout(()=>settle(false),800);
+      else if(was&&reveal){if(settleClears)status('',true);settleClears=false;acknowledgeVisible();if(shown)requestAnimationFrame(()=>setTimeout(()=>shownProgress(),0));}
+    }
     // Times each visible chat selection or mode switch until its messages are on screen.
     function startShown(reason='mode'){
       shownProgress('superseded');
@@ -518,7 +525,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
     function shownProgress(end){
       const timing=shown;if(!timing)return;
       if(!end){
-        if(timing.paint_ms===null)return;
+        if(timing.paint_ms===null||settling)return;
         end=timing.generation!==generation?'changed':!binding()?'unbound':loaded?(timing.cached?'cached':'history'):null;
         if(!end)return;
       }
@@ -767,18 +774,20 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       loaded=true;refresh.hidden=true;syncAsyncQuestions();updateActivity();if(open)paint(prepend,initial);flushStartup();
       // Conversation has no terminal focus acknowledgement. Review only output
       // that has loaded and is visible at the end of the selected transcript.
-      if(open&&!panel.hidden&&!document.hidden&&document.hasFocus()&&nextCursor===null&&nearBottom())viewed(target);
+      if(!settling)acknowledgeVisible();
     }
+    function acknowledgeVisible(){if(open&&!panel.hidden&&!document.hidden&&document.hasFocus()&&nextCursor===null&&nearBottom())viewed(target);}
+    const firstPage=15;
     async function load(kind='poll'){
       if(!target||!binding()||loading||(!open&&kind!=='initial'))return;if(!loaded)kind='initial';const version=generation,chat=binding(),started=performance.now(),request=new AbortController();loadRequest=request;let timedOut=false,catchUp=false;busy(true);const timeout=setTimeout(()=>{timedOut=true;request.abort();},15000);
       const initial=kind==='initial',prepend=kind==='older',cursor=nextCursor??tailCursor;
       historyStatus.hidden=!prepend;historyStatus.textContent='Loading earlier messages…';
-      const params={host:target.chatHost||target.host,context:'true',limit:initial?15:50},stages={};
+      const params={host:target.chatHost||target.host,context:'true',limit:initial?firstPage:50},stages={};
       if(initial)params.tail=true;else if(prepend)params.before=startCursor;else params.cursor=cursor;
       try{const data=await get('/api/chats/'+encodeURIComponent(chat.id)+'?'+new URLSearchParams(params),request.signal,stages);if(version!==generation)return;
-        const renderStarted=performance.now();applyPage(data,kind,cursor);stages.render_ms=Math.round(performance.now()-renderStarted);if(initial&&shown&&!shown.cached)shown.stages=stages;
-        if(shown)requestAnimationFrame(()=>setTimeout(()=>shownProgress(),0));streamSupported=data.stream===true;startStream();const warning=partialNotice(data);status(warning,!warning);if(warning){reportLoad(kind,'partial',started);lastFailure='partial';}else if(lastFailure){reportLoad(kind,'recovered',started);lastFailure=null;}updateLatest();catchUp=nextCursor!==null&&!prepend;
-      }catch(error){if(version===generation&&!(!timedOut&&request.signal.aborted)){const outcome=timedOut?'timeout':error.code||'network';lastFailure=outcome;reportLoad(kind,outcome,started);if(initial)shownProgress('failed');const message=timedOut?'Loading took too long. Retrying…':error.code?error.message:'Connection interrupted. Retrying…';if(prepend){older.textContent='Retry earlier messages';older.hidden=false;}else{status(message);refresh.hidden=false;updateLatest();}}}finally{clearTimeout(timeout);if(loadRequest===request)loadRequest=null;if(version===generation){busy(false);historyStatus.hidden=true;for(const data of streamPages)streamPage(data);streamPages=[];if(catchUp)setTimeout(()=>{if(version===generation)load();},0);else if(open&&loaded&&startCursor>0&&older.hidden&&(list.scrollTop<80||list.scrollHeight<=list.clientHeight))setTimeout(()=>{if(version===generation)load('older');},0);}}
+        const renderStarted=performance.now();if(initial&&open)settle(true);applyPage(data,kind,cursor);stages.render_ms=Math.round(performance.now()-renderStarted);if(initial&&shown&&!shown.cached)shown.stages=stages;
+        if(shown)requestAnimationFrame(()=>setTimeout(()=>shownProgress(),0));streamSupported=data.stream===true;startStream();const warning=partialNotice(data);settleClears=settling&&!warning;if(!settleClears)status(warning,!warning);if(warning){reportLoad(kind,'partial',started);lastFailure='partial';}else if(lastFailure){reportLoad(kind,'recovered',started);lastFailure=null;}updateLatest();catchUp=nextCursor!==null&&!prepend;
+      }catch(error){if(version===generation&&!(!timedOut&&request.signal.aborted)){const outcome=timedOut?'timeout':error.code||'network';lastFailure=outcome;reportLoad(kind,outcome,started);if(initial)shownProgress('failed');const message=timedOut?'Loading took too long. Retrying…':error.code?error.message:'Connection interrupted. Retrying…';if(prepend){older.textContent='Retry earlier messages';older.hidden=false;}else{status(message);refresh.hidden=false;updateLatest();}}}finally{clearTimeout(timeout);if(loadRequest===request)loadRequest=null;if(version===generation){busy(false);historyStatus.hidden=true;for(const data of streamPages)streamPage(data);streamPages=[];if(catchUp)setTimeout(()=>{if(version===generation)load();},0);else if(open&&loaded&&startCursor>0&&older.hidden&&(list.scrollTop<80||list.scrollHeight<=list.clientHeight))setTimeout(()=>{if(version===generation)load('older');},0);else settle(false);}}
     }
     older.onclick=()=>load('older');refresh.onclick=()=>load(messages.length?'poll':'initial');latest.onclick=()=>{list.scrollTop=list.scrollHeight;rememberReading();updateLatest();};
     let draftSizeKey;
@@ -982,7 +991,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       if(target)drafts.set(identity(target),draft.value);
       if(target&&loaded){conversations.delete(identity(target));conversations.set(identity(target),{chat,messages,startCursor,tailCursor,nextCursor,streamSupported,position:restorePosition?.position??list.scrollTop,follow:restorePosition?.follow??nearBottom()});if(conversations.size>8)conversations.delete(conversations.keys().next().value);}
       window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();
-      costDetails.hidePopover();stopStream();streamSupported=false;restorePosition=null;target=current;loadRequest?.abort();lastFailure=null;lastDiagnostic='';newOutput=false;sendStatus('');generation++;loaded=false;lastPaint=null;busy(false);messages=[];startCursor=tailCursor=0;nextCursor=null;following=true;readingAnchor=null;for(const entry of [...rendered.values(),...renderedOutgoing.values()])contentResize?.unobserve(entry.node);rendered.clear();renderedOutgoing.clear();summaries.clear();list.replaceChildren(older,working);older.hidden=true;historyStatus.hidden=true;latest.hidden=refresh.hidden=true;
+      costDetails.hidePopover();stopStream();streamSupported=false;restorePosition=null;target=current;loadRequest?.abort();lastFailure=null;lastDiagnostic='';newOutput=false;sendStatus('');generation++;settle(false,false);settleClears=false;loaded=false;lastPaint=null;busy(false);messages=[];startCursor=tailCursor=0;nextCursor=null;following=true;readingAnchor=null;for(const entry of [...rendered.values(),...renderedOutgoing.values()])contentResize?.unobserve(entry.node);rendered.clear();renderedOutgoing.clear();summaries.clear();list.replaceChildren(older,working);older.hidden=true;historyStatus.hidden=true;latest.hidden=refresh.hidden=true;
       chat=target?.chatId?{id:target.chatId,agent:target.agent,title:target.title}:null;
       // The temporary Creating tab identity becomes a pane before it gets a chat.
       // Keep its follow-ups, draft and attachments through both transitions.
@@ -1035,6 +1044,15 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       attachments.delete(key);if(rest.length)handoverAttachments.set(next,rest);if(identity(target)===key)paintFiles();
       if(identity(target)===key)draft.value='';drafts.delete(key);
       if(original&&original!==text){if(target?.key===next&&!draft.value){draft.value=original;drafts.set(identity(target),original);}else handoverDrafts.set(next,original);}
+    };
+    // Hovering a tab reads the page its click will ask for, so the owning relay has indexed
+    // the transcript and cached that page before the selection arrives.
+    const warmed=new Map();
+    window.SwitchboardConversation.warm=tab=>{
+      const item=selection(tab);if(!open||!item?.chatId||identity(item)===identity(target)||conversations.has(identity(item)))return;
+      const key=identity(item),now=Date.now();if(now-(warmed.get(key)||0)<60000)return;
+      warmed.delete(key);warmed.set(key,now);if(warmed.size>64)warmed.delete(warmed.keys().next().value);
+      void fetch('/api/chats/'+encodeURIComponent(item.chatId)+'?'+new URLSearchParams({host:item.chatHost||item.host,context:'true',limit:firstPage,tail:true})).catch(()=>{});
     };
     window.SwitchboardConversation.wantsConversation=()=>open;window.SwitchboardConversation.update=update;window.SwitchboardConversation.isOpen=()=>open&&!panel.hidden;window.SwitchboardConversation.focus=focusSurface;window.SwitchboardConversation.showTerminal=()=>show(false);update();
   }};
