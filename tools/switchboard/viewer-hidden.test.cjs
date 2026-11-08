@@ -64,7 +64,7 @@ test('hidden viewers leave terminal sizing, and Conversation disconnects only wh
   }finally{await browser.close();}
 });
 
-test('a viewer that attached hidden rejoins sizing when Terminal is shown before its first state',
+for(const late of [false,true])test(late?'a viewer reported hidden just after its first state rejoins sizing once shown':'a viewer that attached hidden rejoins sizing when Terminal is shown before its first state',
   {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE to run the hidden viewer check'},async()=>{
   const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
   const browser=await chromium.launch({headless:true});
@@ -77,8 +77,8 @@ test('a viewer that attached hidden rejoins sizing when Terminal is shown before
       if(pathname==='/api/hosts/mac')return json({id:'mac',name:'Mac',sessions:[{name:'main',web_clients_allowed:true,hidden_attach:true}]});
       if(pathname==='/api/attention')return json({tabs:[{host:'mac',session:'main',id:1,position:0,name:'Mac',panes:[{pane_id:1,is_plugin:false,tab_position:0}]}],panes:[],errors:[]});
       if(pathname.startsWith('/hosts/'))return route.fulfill({contentType:'text/html',body:`<div id="terminal"></div><script>
-          // The engine kept the hidden report this viewer sent before it attached.
-          let hidden=true;
+          // A newer engine kept the hidden report from before the attach. On an older one the web server sends it just after.
+          let hidden=${!late};
           window.WebSocket=class extends EventTarget {constructor(){super();this.readyState=1;}send(){}};
           window.__zjSupportsTabViewport=true;
           window.__zjSendControl=message=>{(parent.controls??=[]).push(message);if(message.type==='SetViewerHidden'){hidden=message.hidden;setTimeout(()=>sendState());}};
@@ -96,6 +96,7 @@ test('a viewer that attached hidden rejoins sizing when Terminal is shown before
     });
     await page.goto('https://switchboard.test/?host=mac&session=main&tab=1');
     await page.waitForFunction(()=>[...sessions.values()][0]?.state);
+    if(late)await page.frames().find(frame=>frame.url().includes('/hosts/mac/')).evaluate('hidden=true;sendState()');
     await page.waitForFunction(()=>(window.controls||[]).some(c=>c.type==='SetViewerHidden'));
     assert.deepEqual(await page.evaluate(()=>controls.filter(c=>c.type==='SetViewerHidden').map(c=>c.hidden)),[false]);
     assert.deepEqual(errors,[]);

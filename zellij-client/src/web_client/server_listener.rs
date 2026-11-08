@@ -93,7 +93,7 @@ pub fn zellij_server_listener(
                     let palette = config
                         .theme_config(config_options.theme.as_ref())
                         .unwrap_or_else(|| os_input.load_palette().into());
-                    let client_attributes = zellij_utils::ipc::ClientAttributes {
+                    let mut client_attributes = zellij_utils::ipc::ClientAttributes {
                         size: full_screen_ws,
                         style: Style {
                             colors: palette,
@@ -108,6 +108,17 @@ pub fn zellij_server_listener(
                         .to_str()
                         .unwrap()
                         .to_owned();
+
+                    let late_hidden_attach_size = viewer_hidden
+                        .then(|| session_manager.list_sessions())
+                        .into_iter()
+                        .flatten()
+                        .find(|session| session.name == session_name)
+                        .and_then(|session| session.late_hidden_attach_size);
+                    if let Some(size) = late_hidden_attach_size {
+                        client_attributes.size = size;
+                    }
+                    let mut hidden_report_due = late_hidden_attach_size.is_some();
 
                     // Look up read-only status from connection table
                     let is_read_only = connection_table
@@ -248,6 +259,13 @@ pub fn zellij_server_listener(
                                 break;
                             },
                             Some(ServerToClientMsg::Render{content: bytes}) => {
+                                // A render proves Screen has added this client. The attach and
+                                // this report reach Screen by different threads, so sooner
+                                // could overtake the attach and be dropped.
+                                if std::mem::take(&mut hidden_report_due) {
+                                    os_input.send_to_server(ClientToServerMsg::SetViewerHidden { hidden: true });
+                                    os_input.send_to_server(ClientToServerMsg::TerminalResize { new_size: full_screen_ws });
+                                }
                                 if !sent_init_messages {
                                     client_connection_bus
                                         .send_stdout(terminal_init_messages().concat());

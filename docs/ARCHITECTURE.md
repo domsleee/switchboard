@@ -73,6 +73,9 @@ clients still constrain the layout to their available size. Ownership releases
 when the owner changes tabs or disconnects. A browser viewer the user cannot
 see (behind Conversation or another sidebar tab) reports itself hidden: Screen
 releases its ownership and leaves it out of sizing until it is shown again.
+Engines older than #388 cannot accept that report before attaching, so the web
+server attaches such a viewer at its first tab's size and sends the report after
+the first render. Engines older than #357 never connect a viewer in the background.
 
 The native web client's
 [control messages](../zellij-client/src/web_client/control_message.rs) carry

@@ -817,6 +817,23 @@ test('resumable already-focused confirmation settles the matching sidebar reques
   assert.equal(h.messages.at(-1).focus_id,8);assert.equal(h.messages.at(-1).focus_pending,false);
 });
 
+ test('Conversation blocks every message that can size the terminal, on plain and resumable sockets',()=>{
+  for(const resumable of [false,true]){
+    const h=harness();let open=true;
+    h.parent.document.getElementById=id=>id==='terminals'?{classList:{contains:()=>open}}:null;
+    const Socket=resumable?Object.getPrototypeOf(h.window.WebSocket):h.window.WebSocket;
+    const terminal=new Socket('/ws/terminal'),control=new Socket('/ws/control');
+    if(resumable){terminal.resumable=control.resumable=true;h.handlers['zellij-resumable-sockets']({detail:{terminal,control}});}
+    const message=payload=>JSON.stringify({web_client_id:1,payload});
+    const sizing=[{type:'TerminalResize',rows:30,cols:40},{type:'SetTabViewport',size:{rows:30,cols:40},tab_position:0,ownership:true},{type:'SetMobileRenderPreferences',single_pane:true,fit:false}].map(message);
+    for(const data of sizing)control.send(data);
+    assert.deepEqual(control.sent,[],'Nothing sizes the terminal while Conversation is open');
+    const hidden=message({type:'SetViewerHidden',hidden:true});
+    control.send(hidden);assert.deepEqual(control.sent,[hidden],'Hiding itself is not sizing');
+    open=false;for(const data of sizing)control.send(data);
+    assert.deepEqual(control.sent,[hidden,...sizing],'Terminal mode sizes as usual');
+  }
+});
  test('Conversation blocks resumable resize without queuing it and keeps ordinary controls',()=>{
   const h=harness();let open=true;
   h.parent.document.getElementById=id=>id==='terminals'?{classList:{contains:()=>open}}:null;
