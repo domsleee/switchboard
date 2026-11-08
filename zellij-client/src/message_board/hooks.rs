@@ -475,10 +475,64 @@ fn deliver(
     })
 }
 
-/// Whether a hook comes from an agent that a Claude Code tool started in that
-/// Claude's pane. Claude Code also sets `CLAUDECODE=1` for its own hooks, so a
-/// Claude hook belongs to the pane when it comes from an interactive session: a
-/// `claude -p` started by a tool reports the `sdk-cli` entrypoint instead.
+/// Read only this conversation's hook identity. This never registers or checks mail.
+pub(super) fn conversation_participant(
+    client: &Client,
+    agent: &str,
+    thread: &str,
+) -> Option<String> {
+    if !matches!(agent, "codex" | "claude" | "copilot") || Uuid::parse_str(thread).is_err() {
+        return None;
+    }
+    let root = std::env::var_os("SWITCHBOARD_MESSAGE_STATE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| zellij_utils::consts::ZELLIJ_CACHE_DIR.join("message-hooks"));
+    load::<Session>(
+        &root
+            .join(client.hook_namespace())
+            .join(format!("{agent}-{thread}.json")),
+    )
+    .ok()
+    .flatten()
+    .map(|session| session.participant.id)
+}
+
+pub(super) fn conversation_for_participant(
+    client: &Client,
+    participant: &str,
+) -> Option<(String, String)> {
+    Uuid::parse_str(participant).ok()?;
+    let root = std::env::var_os("SWITCHBOARD_MESSAGE_STATE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| zellij_utils::consts::ZELLIJ_CACHE_DIR.join("message-hooks"));
+    for entry in std::fs::read_dir(root.join(client.hook_namespace()))
+        .ok()?
+        .flatten()
+    {
+        let path = entry.path();
+        if path.extension().is_none_or(|ext| ext != "json") {
+            continue;
+        }
+        let stem = path.file_stem()?.to_str()?;
+        let Some((agent, thread)) = stem.split_once('-') else {
+            continue;
+        };
+        if !matches!(agent, "codex" | "claude" | "copilot") || Uuid::parse_str(thread).is_err() {
+            continue;
+        }
+        if load::<Session>(&path)
+            .ok()
+            .flatten()
+            .is_some_and(|session| session.participant.id == participant)
+        {
+            return Some((agent.into(), thread.into()));
+        }
+    }
+    None
+}
+
+/// Whether a hook comes from an agent started by a Claude tool in the same pane.
+/// Claude's own interactive hooks also set CLAUDECODE, but use the cli entrypoint.
 pub(crate) fn nested(agent: &str, env: impl Fn(&str) -> Option<String>) -> bool {
     env("CLAUDECODE").is_some()
         && !(agent == "claude" && env("CLAUDE_CODE_ENTRYPOINT").as_deref() == Some("cli"))
