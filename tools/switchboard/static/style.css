@@ -87,6 +87,9 @@ body.sidebar-collapsed #sidebar-toggle{left:8px}
 #sidebar-utilities a:hover{color:#e5e7eb}
 #sidebar-utilities button{background:transparent;border-color:transparent;color:#b5bfd0;padding:6px 0}
 #sidebar-utilities button:hover{color:#e5e7eb}
+#sidebar-utilities .sidebar-utility-icon{display:inline-flex;align-items:center;justify-content:center;min-width:32px;min-height:32px;padding:6px;flex-shrink:0;border-radius:4px}
+#sidebar-utilities .sidebar-utility-icon svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+@media(pointer:coarse),(max-width:700px){#sidebar-utilities .sidebar-utility-icon{min-width:44px;min-height:44px}}
 #selection-tools{position:absolute;top:10px;right:12px;z-index:3;display:flex;align-items:center;gap:6px;max-width:calc(100% - 56px);padding:6px;border:1px solid #465674;background:#202b3e;border-radius:7px;box-shadow:0 4px 18px #0006;font-size:12px}
 #selection-tools[hidden]{display:none}
 #selection-target{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:220px;padding:0 6px;color:#b5bfd0}
