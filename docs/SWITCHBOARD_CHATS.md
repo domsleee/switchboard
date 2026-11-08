@@ -47,7 +47,9 @@ contains `messages`, `start_cursor`, `previous_cursor` and `next_cursor`.
 Use `tail=true` to read the latest page immediately, then `before=previous_cursor`
 to load preceding messages. Forward reads still use `cursor`. Each message has `role`, `text`,
 `timestamp` and `truncated`. Codex assistant messages also include `phase`
-(`commentary` or `final`) when present in the source; other messages return null. Text is capped at 4,000 characters per message;
+(`commentary` or `final`) when present in the source; other messages return null. Text is capped at 4,000 characters per message
+unless the request sets `context=true`, which returns every message in full (Conversation
+mode uses it);
 search excerpts are capped at 401 characters. Tool output, reasoning, and provider credentials are excluded.
 Claude and Codex tool calls appear as one-line steps: `kind` is `tool`, `phase` is
 `commentary` (so older clients show them as progress notes), `tool` is `run`, `read`,

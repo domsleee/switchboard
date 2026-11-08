@@ -1596,9 +1596,12 @@ fn read_page(chat: &Chat, p: &Params) -> Value {
     } else {
         p.cursor.min(end)
     };
+    // Search and agent reads get a bounded preview. Conversation and handovers
+    // ask with `context` and receive every message in full.
+    let shown = if p.context { usize::MAX } else { 4000 };
     let mut page:Vec<_>=chat.messages[start..end].iter().take(p.limit()).map(|m| {
         let text=m["text"].as_str().unwrap_or_default();
-        json!({"role":m["role"],"timestamp":m["timestamp"],"text":clip(text,4000),"truncated":text.chars().count()>4000,"phase":m["phase"],"model":m["model"],"reasoning_effort":m["reasoning_effort"],"attachments":m["attachments"],"markdown":markdown_events(&clip(text,4000))})
+        json!({"role":m["role"],"timestamp":m["timestamp"],"text":clip(text,shown),"truncated":text.chars().count()>shown,"phase":m["phase"],"model":m["model"],"reasoning_effort":m["reasoning_effort"],"attachments":m["attachments"],"markdown":markdown_events(&clip(text,shown))})
     }).collect();
     for (message, source) in page.iter_mut().zip(&chat.messages[start..end]) {
         if is_tool(source) {
@@ -1665,7 +1668,7 @@ fn read_page(chat: &Chat, p: &Params) -> Value {
                 }
             }
             if let Some(body) = display {
-                message["markdown"] = json!(markdown_events(&clip(&body, 4000)));
+                message["markdown"] = json!(markdown_events(&clip(&body, shown)));
             }
         }
     }
@@ -3451,6 +3454,12 @@ mod tests {
             .unwrap();
         assert_eq!(context["messages"][0]["context_text"], text);
         assert_eq!(context["messages"][0]["context_truncated"], false);
+        // Conversation shows the whole message, not the 4,000-character preview.
+        assert_eq!(context["messages"][0]["text"], text);
+        assert_eq!(context["messages"][0]["truncated"], false);
+        assert!(serde_json::to_string(&context["messages"][0]["markdown"])
+            .unwrap()
+            .contains("final constraint"));
         let preview = index.page(&Params::default()).unwrap();
         assert!(preview["messages"][0].get("context_text").is_none());
 
