@@ -199,7 +199,7 @@ async fn forward(host: &Host, target: &Queue) -> Response {
                 );
                 host.request(Method::POST, path, body, "application/json")
                     .await
-            }
+            },
         }
     })
     .await;
@@ -229,7 +229,7 @@ async fn forward(host: &Host, target: &Queue) -> Response {
                 &target.send_key,
                 "Delivery is not confirmed. Retry to check or send this same message safely.",
             )
-        }
+        },
     }
 }
 
