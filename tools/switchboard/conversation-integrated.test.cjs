@@ -261,7 +261,14 @@ test('integrated Conversation journeys use production markup and preserve delive
     const row=page.locator('#tabs .tab-select.selected');
     assert.equal(await row.getAttribute('data-agent-state'),'Starting');assert.equal(await row.locator('.star.starting').count(),1);
     assert.equal(await row.locator('.tab-name').textContent(),'Fix the flaky test');
-    f.tabs=[1,2,3];f.state='working';f.history.set(3,[{role:'user',text:'Fix the flaky test'},{role:'assistant',text:'Looking at the test'}]);await f.refresh();
+    // The relay first reports the new pane with no agent yet.
+    f.tabs=[1,2,3];f.agent=null;f.state='unknown';f.bound=false;await f.refresh();
+    assert.equal(await page.evaluate(()=>SwitchboardConversation&&allTabs().find(item=>item.key===selected)?.tab.id),3,'The real tab replaced the placeholder');
+    assert.equal(await page.locator('#tabs .tab-select.selected').getAttribute('data-agent-state'),'Starting');
+    assert.equal(await page.locator('.conversation-working-step').getAttribute('data-step'),'Starting Claude…');
+    assert.equal(await page.locator('.conversation-notice').isVisible(),false);
+    f.agent='claude';f.bound=true;
+    f.state='working';f.history.set(3,[{role:'user',text:'Fix the flaky test'},{role:'assistant',text:'Looking at the test'}]);await f.refresh();
     await page.getByText('Looking at the test',{exact:true}).waitFor();
     assert.equal(await page.locator('.conversation-launch').count(),0,'The transcript replaces the stand-in');
     assert.equal(await page.locator('.conversation-message.user').count(),1);

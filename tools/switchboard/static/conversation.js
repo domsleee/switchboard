@@ -228,7 +228,7 @@
         if(step){step.classList.add('live');workingStep.dataset.step=step.dataset.live||[...step.childNodes].filter(node=>!node.classList?.contains('conversation-label')).map(node=>node.textContent).join(' ').replace(/\s+/g,' ').trim();}
         working.classList.toggle('has-step',!!step);
       }
-      if(!step)workingStep.dataset.step=waiting?'Waiting on a background agent':launchShown()&&!target.state?`Starting ${target.launch.agent==='codex'?'Codex':'Claude'}…`:'Working';
+      if(!step)workingStep.dataset.step=waiting?'Waiting on a background agent':launchShown()&&!target.agent?`Starting ${target.launch.agent==='codex'?'Codex':'Claude'}…`:'Working';
       const run=step&&liveRun,expanded=!!run&&!run.collapsed,count=run?`· ${run.count} steps`:'';
       working.classList.toggle('has-run',!!run);working.disabled=!run;if(workingCount.textContent!==count)workingCount.textContent=count;
       if(run){working.removeAttribute('aria-hidden');working.setAttribute('aria-expanded',String(expanded));working.setAttribute('aria-label',`${expanded?'Hide':'Show'} ${run.count-1} earlier step${run.count===2?'':'s'}`);}

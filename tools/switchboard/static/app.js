@@ -317,6 +317,22 @@ function tabTitle(item){
   const panes=item.tab.panes.map(p=>({...p,...live.find(current=>current.pane_id===p.pane_id&&current.is_plugin===p.is_plugin),tab_position:item.tab.position}));
   return SwitchboardTitles.tabTitle({panes,active_pane:item.entry.state?.active_pane},item.tab);
 }
+// A tab started from New tab with a prompt shows that prompt as its name, and a spinner until
+// its agent reports in, instead of a blank "New tab"; Conversation shows the prompt as sent.
+const launches=new Map();
+function launchFor(item){
+  const pane=item.tab.panes.find(p=>!p.is_plugin),key=pane&&JSON.stringify([item.entry.host,item.entry.name,pane.pane_id]);
+  const launch=item.tab.launch||key&&launches.get(key);
+  if(launch&&Date.now()-launch.at>600000){if(key)launches.delete(key);return null;}
+  return launch||null;
+}
+function launchingTab(item){const launch=launchFor(item);return launch&&!tabAgent(item)?launch:null;}
+function displayTitle(item){
+  const title=tabTitle(item),launch=launchFor(item);
+  if(!launch||!/^(?:New tab|Creating tab…|Tab #\d+|Claude(?: Code)?|Codex)$/i.test(title))return title;
+  const line=launch.text.trim().split('\n')[0].trim();
+  return line?line.length>60?line.slice(0,59)+'…':line:title;
+}
 function activeTab(entry){
   const active=entry.state?.active_pane;
   return sessionTabs(entry).find(tab=>tab.position===active?.tab_position&&tab.panes.some(p=>p.pane_id===active.pane_id&&p.is_plugin===active.is_plugin));
@@ -473,7 +489,7 @@ function systemTab(tab){return tab.name.replace(/^\*\s*/,'')==='System';}
 function isReady(item){return !systemTab(item.tab)&&!!(ready[item.key] || item.tab.name.startsWith('*') || askpassForTab(item) || statesForTab(item).some(needsAttention));}
 function matchesSearch(item){
   const query=$('tab-search').value.trim().toLowerCase();
-  return !query || `${tabTitle(item)} ${hosts.get(item.entry.host)?.name || item.entry.host} ${groups[item.entry.host]||''} ${item.entry.name} ${autoLabel(item)}`.toLowerCase().includes(query);
+  return !query || `${displayTitle(item)} ${hosts.get(item.entry.host)?.name || item.entry.host} ${groups[item.entry.host]||''} ${item.entry.name} ${autoLabel(item)}`.toLowerCase().includes(query);
 }
 // This computer as its mesh peers know it, so every computer sorts machines alike
 // instead of listing itself first or by whichever catalog answered first.
@@ -633,22 +649,6 @@ function tabAge(item,only){
   return seconds<60?'now':seconds<3600?`${Math.floor(seconds/60)}m`:seconds<86400?`${Math.floor(seconds/3600)}h`:`${Math.floor(seconds/86400)}d`;
 }
 function tabAgent(item){return statesForTab(item).find(state=>state.agent)?.agent||'';}
-// A tab started from New tab with a prompt shows that prompt as its name, and a spinner until
-// its agent reports in, instead of a blank "New tab"; Conversation shows the prompt as sent.
-const launches=new Map();
-function launchFor(item){
-  const pane=item.tab.panes.find(p=>!p.is_plugin),key=pane&&JSON.stringify([item.entry.host,item.entry.name,pane.pane_id]);
-  const launch=item.tab.launch||key&&launches.get(key);
-  if(launch&&Date.now()-launch.at>600000){if(key)launches.delete(key);return null;}
-  return launch||null;
-}
-function launchingTab(item){const launch=launchFor(item);return launch&&!tabAgent(item)?launch:null;}
-function displayTitle(item){
-  const title=tabTitle(item),launch=launchFor(item);
-  if(!launch||!/^(?:New tab|Creating tab…|Tab #\d+|Claude(?: Code)?|Codex)$/i.test(title))return title;
-  const line=launch.text.trim().split('\n')[0].trim();
-  return line?line.length>60?line.slice(0,59)+'…':line:title;
-}
 const agentIcons=window.SwitchboardConversation?.agentIcons||{};
 function updateTabTooltips(){
   // Touch users have the actions menu; avoid measuring every row during polling.
