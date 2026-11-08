@@ -132,8 +132,30 @@ impl Journal {
         if self.over_limit(data.len()) {
             // A viewer that falls far behind (a hidden browser tab, a long
             // disconnect) gets a repaint instead of every frame it missed.
-            // Control records carry state the browser waits on, so they stay.
-            self.output.retain(|o| o.channel != "terminal");
+            // Control records carry state the browser waits on, so they stay,
+            // except console logs and snapshots a later record replaces. A busy
+            // agent's title sends many MobileState snapshots a second.
+            let mut newest = std::collections::HashSet::new();
+            let keep: Vec<bool> = self
+                .output
+                .iter()
+                .rev()
+                .map(|o| {
+                    if o.channel == "terminal" {
+                        return false;
+                    }
+                    match control_type(&o.data).as_deref() {
+                        Some("Log" | "LogError") => false,
+                        Some(
+                            kind @ ("MobileState" | "SetConfig" | "SetSoftKeyboard"
+                            | "QueryTerminalSize"),
+                        ) => newest.insert(kind.to_owned()),
+                        _ => true,
+                    }
+                })
+                .collect();
+            let mut keep = keep.into_iter().rev();
+            self.output.retain(|_| keep.next().unwrap());
             for record in &mut self.output {
                 record.resync = true;
             }
@@ -162,6 +184,13 @@ impl Journal {
             resync,
         });
     }
+}
+fn control_type(data: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Tagged {
+        r#type: String,
+    }
+    serde_json::from_str::<Tagged>(data).ok().map(|t| t.r#type)
 }
 #[cfg(test)]
 mod tests {
@@ -253,6 +282,45 @@ mod tests {
         big.emit("terminal", "y".into());
         assert!(big.failure.is_none());
         assert_eq!(big.bytes, RESYNC.len() + 1);
+    }
+    #[test]
+    fn switchboard_attachment_overflow_keeps_only_latest_control_snapshots() {
+        // A busy agent changes its pane title several times a second and every
+        // change sends a full MobileState. A viewer that stops acknowledging
+        // must survive this indefinitely, not only until the record limit.
+        let mut j = Journal::default();
+        j.resume(0, "first", 0).unwrap();
+        j.emit(
+            "control",
+            r#"{"type":"SwitchedSession","new_session_name":"main"}"#.into(),
+        );
+        for i in 0..RECORD_LIMIT * 3 {
+            let state = format!(r#"{{"type":"MobileState","payload":{{"n":{i}}}}}"#);
+            j.emit("control", state);
+            j.emit("control", r#"{"type":"Log","lines":["x"]}"#.into());
+            j.emit("control", r#"{"type":"SetSoftKeyboard","on":true}"#.into());
+            j.emit("terminal", "frame".into());
+        }
+        assert!(j.failure.is_none(), "{:?}", j.failure);
+        let types: Vec<_> = j
+            .output
+            .iter()
+            .filter(|o| o.channel == "control")
+            .map(|o| control_type(&o.data).unwrap())
+            .collect();
+        assert_eq!(types.iter().filter(|t| *t == "SwitchedSession").count(), 1);
+        assert!(types.iter().filter(|t| *t == "MobileState").count() < RECORD_LIMIT / 2);
+        let last_state = j
+            .output
+            .iter()
+            .rev()
+            .find(|o| o.data.contains("MobileState"))
+            .unwrap();
+        assert!(last_state
+            .data
+            .contains(&format!("\"n\":{}", RECORD_LIMIT * 3 - 1)));
+        let seqs: Vec<_> = j.output.iter().map(|o| o.seq).collect();
+        assert!(seqs.windows(2).all(|w| w[0] < w[1]));
     }
     #[test]
     fn switchboard_attachment_overflow_fails_when_control_alone_exceeds_limit() {
