@@ -101,7 +101,7 @@
     const panel=el('section',undefined,'conversation-panel');
     // CSS keeps a hidden panel laid out (see conversation.css), so hide it from assistive technology here.
     const setPanelHidden=value=>{panel.hidden=value;panel.setAttribute('aria-hidden',String(value));};setPanelHidden(true);panel.tabIndex=-1;panel.setAttribute('aria-label','Agent conversation');
-    const header=el('header'),heading=el('div',undefined,'conversation-heading'),title=el('strong'),model=el(switchModel?'button':'span',undefined,'conversation-model'),activity=el('span',undefined,'conversation-activity'),terminalAction=el('button','Open Terminal','conversation-terminal-action');model.title=switchModel?'Switch between Claude and Codex with context':'Last reported model';if(switchModel){model.type='button';model.setAttribute('aria-label','Switch model with context');model.onclick=()=>switchModel(target);}const cancelModel=el('button','×','conversation-model-cancel');cancelModel.type='button';cancelModel.hidden=true;cancelModel.setAttribute('aria-label','Cancel model switch');cancelModel.title='Cancel model switch';cancelModel.onclick=()=>cancelSwitch(target);activity.setAttribute('role','status');terminalAction.type='button';terminalAction.hidden=true;terminalAction.onclick=()=>show(false);const context=el('span',undefined,'conversation-context'),subtitle=el('div',undefined,'conversation-subtitle');subtitle.append(context,activity);heading.append(title,subtitle);header.append(heading,terminalAction);
+    const header=el('header'),heading=el('div',undefined,'conversation-heading'),title=el('strong'),model=el(switchModel?'button':'span',undefined,'conversation-model'),activity=el('span',undefined,'conversation-activity'),terminalAction=el('button','Open Terminal','conversation-terminal-action');model.title=switchModel?'Switch between Claude and Codex with context':'Last reported model';if(switchModel){model.type='button';model.setAttribute('aria-label','Switch model with context');model.onclick=()=>switchModel(target);}const cancelModel=el('button','×','conversation-model-cancel');cancelModel.type='button';cancelModel.hidden=true;cancelModel.setAttribute('aria-label','Cancel model switch');cancelModel.title='Cancel model switch';cancelModel.onclick=()=>cancelSwitch(target);activity.setAttribute('role','status');terminalAction.type='button';terminalAction.hidden=true;terminalAction.onclick=()=>show(false);const context=el('span',undefined,'conversation-context'),cost=el('span',undefined,'conversation-cost'),subtitle=el('div',undefined,'conversation-subtitle');subtitle.append(context,activity);heading.append(title,subtitle);header.append(heading,terminalAction);
     const notice=el('p','Loading this terminal’s conversation…','conversation-notice');notice.setAttribute('role','status');
     const list=el('div',undefined,'conversation-messages'),older=el('button','Load older messages'),refresh=el('button','↻'),latest=el('button','↓');refresh.setAttribute('aria-label','Refresh');refresh.title='Refresh conversation';latest.setAttribute('aria-label','Scroll to bottom');latest.title='Scroll to bottom';older.hidden=true;
     // One live row: a pulsing marker, the step in progress (or "Working"), and the elapsed time.
@@ -123,7 +123,7 @@
       catch{if(identity(target)===identity(destination))sendStatus('Could not interrupt the agent. Open Terminal and press Esc.');}
       finally{stop.disabled=false;}
     };
-    form.append(files,attach,draft,model,cancelModel,insert,stop,picker);
+    form.append(files,attach,draft,model,cancelModel,cost,insert,stop,picker);
     const sendNotice=el('small',undefined,'conversation-send-notice');sendNotice.hidden=true;sendNotice.setAttribute('role','status');form.append(sendNotice);
     const transportNotice=el('small','Replies use Terminal briefly, then return here.','conversation-transport-notice');transportNotice.hidden=true;form.append(transportNotice);
     const completions=el('div',undefined,'conversation-completions');completions.id='conversation-completions';completions.hidden=true;completions.setAttribute('role','listbox');completions.setAttribute('aria-label','Commands and skills');form.prepend(completions);
@@ -253,10 +253,23 @@
       form.classList.toggle('can-stop',state==='working'&&!!chat&&!!target?.session&&Number.isInteger(target?.pane));
       const project=String(chat?.project||'').replace(/[\\/]+$/,'').split(/[\\/]/).pop();
       const where=[project,target?.computer].filter(Boolean).join(' · ');if(context.textContent!==where)context.textContent=where;
+      paintCost();
       const placeholder=target?.agent?`Ask ${providerLabel()} a follow-up…`:'Message…';if(draft.placeholder!==placeholder)draft.placeholder=placeholder;
       transportNotice.hidden=!chat||!(target?.terminalReady===false&&target?.agent!=='claude'&&!(target?.agent==='codex'&&/^[0-9a-f-]{36}$/.test(chat.thread||'')));
       insert.setAttribute('aria-label',transportNotice.hidden?'Send':'Send via Terminal');insert.title=transportNotice.hidden?'Send message':'Send via Terminal and return to Conversation';
       paintPrompt();void loadPrompt();idle();
+    }
+    // What the chat has cost at API rates, on computers the user marked as paying for API credits.
+    // It sits beside the model, and gives way to a pending model switch.
+    function paintCost(){
+      const usage=target?.showCost&&!target.pendingSwitch?chat?.usage:null,dollars=Number(usage?.cost_usd);
+      const known=!!usage&&Number.isFinite(dollars),text=!known?'':(usage.unpriced_tokens>0?'≥ ':'')+(dollars>0&&dollars<0.01?'<$0.01':'$'+dollars.toFixed(dollars>=100?0:2));
+      if(cost.textContent!==text)cost.textContent=text;
+      const tokens=value=>Number(value||0).toLocaleString();
+      cost.title=!known?'':`API cost of this chat and its subagents at Anthropic list prices
+Input ${tokens(usage.input_tokens)} · cache write ${tokens(usage.cache_write_tokens)} · cache read ${tokens(usage.cache_read_tokens)} · output ${tokens(usage.output_tokens)} tokens`+(usage.unpriced_tokens>0?`
+${tokens(usage.unpriced_tokens)} tokens from models without a known price are not counted`:'');
+      if(known)cost.setAttribute('aria-label','API cost '+text);else cost.removeAttribute('aria-label');
     }
     function promptTarget(){const t=target;return open&&!panel.hidden&&!document.hidden&&t?.agent==='claude'&&['approval','input'].includes(t.state)&&!!t.session&&Number.isInteger(t.pane)&&Number.isInteger(t.tab)&&!promptHosts.has(t.host)?t:null;}
     const fits=(value,limit)=>typeof value==='string'&&value.length<=limit;
@@ -517,6 +530,7 @@
       chat.project=data.project||chat.project;chat.thread=data.session_id||chat.thread;
       if('model' in data)chat.model=data.model;
       if('reasoning_effort' in data)chat.reasoning_effort=data.reasoning_effort;
+      if('usage' in data)chat.usage=data.usage;
       if(Array.isArray(data.background_agents))chat.background=data.background_agents;
       updateActivity();
       if(initial){messages=page;startCursor=start;tailCursor=start+Math.max(0,page.length-1);nextCursor=data.next_cursor??null;}

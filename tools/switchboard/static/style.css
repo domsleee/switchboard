@@ -162,6 +162,9 @@ dialog p{font-size:12px;color:#9ba7bd}
 .setting-toggle[aria-pressed="true"] .toggle-state::after{transform:translateX(14px);background:#f3f6fb}
 #machines label,#focus-row,#link-apps label{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0;padding:7px 7px 7px 14px;font-size:13px;min-width:0;overflow-wrap:anywhere}
 #machines label+label,#link-apps label+label{border-top:1px solid #222731}
+#chat-cost .setting-toggle{padding:9px 14px;font-size:13px}
+#chat-cost .setting-toggle+.setting-toggle{border-top:1px solid #222731}
+#chat-cost:empty::before{content:'No machines connected yet.';display:block;padding:12px 14px;font-size:12px;color:#9ba7bd}
 #link-apps input{width:200px;flex-shrink:0;font:inherit;font-size:12px;padding:5px 8px;background:#1c212b;color:inherit;border:1px solid #363e4d;border-radius:4px}
 #machines select,#focus-row select{width:auto;min-width:118px;flex-shrink:0;font-size:12px;padding:5px 8px;background:#1c212b}
 #machines:empty::before{content:'No machines connected yet.';display:block;padding:12px 14px;font-size:12px;color:#9ba7bd}

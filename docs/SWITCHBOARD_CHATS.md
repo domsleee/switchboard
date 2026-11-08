@@ -92,6 +92,13 @@ connects automatically when a hook arrives; it never guesses another chat. Chat 
 survives relay restarts without restoring a stale working state, and is cleared when the
 agent exits or the pane's process changes.
 
+Direct reads of a Claude transcript include `usage`: the chat's tokens and `cost_usd` at
+Anthropic's list prices (`zellij-client/src/switchboard_relay/chat_cost.rs`), counting each
+API response once and including the session's `subagents/` transcripts. Tokens from models
+without a known price are reported as `unpriced_tokens` and left out of the cost.
+Conversation shows the cost only for computers turned on under Settings → API cost, because
+subscription plans are not billed per token.
+
 ## Mobile replies and attachments
 
 The composer’s **+** button opens the phone’s photo/file picker. Up to eight files,

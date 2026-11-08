@@ -8,6 +8,7 @@ pub(crate) mod attention;
 mod skill_health;
 pub use attention::forward_hook;
 mod attachments;
+mod chat_cost;
 mod chats;
 mod control;
 mod conversation;
