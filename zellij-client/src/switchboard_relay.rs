@@ -57,7 +57,8 @@ use tokio_tungstenite::{
 };
 
 static ASSETS: Dir = include_dir!("$CARGO_MANIFEST_DIR/../tools/switchboard/static");
-const LIMIT: usize = 16 * 1024 * 1024;
+// Above the 20 MB attachment limit, so an accepted file can reach a paired computer.
+const LIMIT: usize = 21 * 1024 * 1024;
 // Leave room inside short control/attention deadlines for a changed DHCP address.
 const ROUTE_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 const ROUTE_CONNECT_TIMEOUT: Duration = Duration::from_millis(1200);

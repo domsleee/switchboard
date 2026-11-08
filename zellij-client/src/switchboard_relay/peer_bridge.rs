@@ -393,6 +393,41 @@ mod tests {
         );
     }
     #[tokio::test]
+    async fn switchboard_an_attachment_at_the_size_limit_reaches_the_paired_computer() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let gateway = Router::new()
+            .fallback(|body: axum::body::Bytes| async move { body.len().to_string() })
+            .layer(axum::extract::DefaultBodyLimit::disable());
+        tokio::spawn(async move { axum::serve(listener, gateway).await.unwrap() });
+        let temp = tempfile::tempdir().unwrap();
+        let registration = Registration {
+            id: "isolated".into(),
+            revision: "current".into(),
+            port,
+            endpoint: String::new(),
+            hostname: None,
+            certificate: String::new(),
+            key: String::new(),
+        };
+        std::fs::write(
+            temp.path().join("registration.json"),
+            serde_json::to_vec(&registration).unwrap(),
+        )
+        .unwrap();
+        let size = super::super::attachments::FILE_LIMIT;
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/switchboard/attachments?name=photo.png")
+            .header(header::AUTHORIZATION, "Bearer peer")
+            .body(Body::from(vec![0u8; size]))
+            .unwrap();
+        let response = proxy(temp.path().to_path_buf(), request).await.unwrap();
+        let body = to_bytes(response.into_body(), 64).await.unwrap();
+        assert_eq!(&body[..], size.to_string().as_bytes());
+    }
+
+    #[tokio::test]
     async fn gateway_rebind_preserves_the_tls_identity_and_rejects_nonlocal_addresses() {
         use base64::Engine;
         let temp = tempfile::tempdir().unwrap();

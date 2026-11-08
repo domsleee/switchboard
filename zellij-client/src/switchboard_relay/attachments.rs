@@ -3,7 +3,7 @@ use super::*;
 use axum::extract::Query;
 use std::{fs, io::Write, path::PathBuf};
 
-const FILE_LIMIT: usize = 20 * 1024 * 1024;
+pub(super) const FILE_LIMIT: usize = 20 * 1024 * 1024;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Upload {
