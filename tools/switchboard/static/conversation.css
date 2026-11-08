@@ -243,17 +243,106 @@
 .conversation-message.user .conversation-media .conversation-image-button{display:block;width:fit-content;max-width:24rem;background:#0a0a0c}
 .conversation-message.user a.conversation-outgoing-file{display:block}
 .conversation-media-unavailable{font-size:12px;color:#d6c08f;border:1px solid #d6c08f33;background:#d6c08f0a;padding:10px;border-radius:8px}
-.conversation-media-dialog{width:calc(100vw - 32px);height:calc(100dvh - 32px);max-width:1400px;max-height:none;background:#121315;color:#ececef;border:1px solid #ffffff1a;border-radius:12px;padding:0;color-scheme:dark}
-.conversation-media-dialog[open]{display:flex;flex-direction:column}
-.conversation-media-dialog::backdrop{background:#000c}
-.conversation-media-dialog header,.conversation-media-dialog footer{display:flex;align-items:center;gap:14px;padding:12px 16px;flex-shrink:0;font:13px "Switchboard Inter",-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif}
-.conversation-media-dialog header span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.conversation-media-dialog a{color:#8fb4ff}
-.conversation-media-dialog button{min-height:44px;background:#1c1d21;color:#ececef;border:1px solid #ffffff1a;border-radius:8px;padding:8px 12px}
-.conversation-media-dialog footer{justify-content:center}
-.conversation-media-stage{flex:1;min-height:0;overflow:auto;display:grid;place-items:center;padding:12px;background:#0a0a0c}
-.conversation-media-stage img,.conversation-media-stage video{max-width:100%;max-height:100%;object-fit:contain}
-@media(max-width:700px){.conversation-media-dialog{width:100vw;height:100dvh;border:0;border-radius:0}.conversation-media-dialog header{gap:8px;padding:8px}.conversation-media img,.conversation-media video{max-height:280px}}
+@media(max-width:700px){.conversation-media img,.conversation-media video{max-height:280px}}
+
+/* Media viewer: the image fills the screen over a blurred, dimmed page. Controls float over
+   it, so no bar or frame takes space from the image. --top and --bottom keep the fitted image
+   clear of the controls; a zoomed image may pass under them. */
+.conversation-media-dialog{--top:calc(56px + env(safe-area-inset-top));--bottom:calc(28px + env(safe-area-inset-bottom));--side:72px;--ease:cubic-bezier(.2,.8,.2,1)}
+/* This selector outranks style.css's `:root dialog` card styling, including its phone width.
+   It sets no variables, so the gallery and phone rules below can override them. */
+:root dialog.conversation-media-dialog{
+  min-width:0;position:fixed;inset:0;width:100%;height:100%;max-width:none;max-height:none;margin:0;padding:0;border:0;outline:none;overflow:hidden;
+  background:transparent;color:#f2f2f4;color-scheme:dark;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent;
+  font:500 13px/1.3 "Switchboard Inter",-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;letter-spacing:-.006em;-webkit-font-smoothing:antialiased}
+.conversation-media-dialog.gallery{--bottom:calc(92px + env(safe-area-inset-bottom))}
+.conversation-media-dialog[open]{display:block;animation:conversation-viewer-fade .2s ease-out}
+/* On desktop the conversation shows through, dimmed and softened to muted shapes, so the
+   viewer reads as an overlay on it. Phones get a solid surface (see the max-width rule). */
+.conversation-media-dialog::backdrop{background:rgb(9 9 11/.6);-webkit-backdrop-filter:blur(6px) saturate(.85);backdrop-filter:blur(6px) saturate(.85)}
+.conversation-media-dialog[open]::backdrop{animation:conversation-viewer-fade .2s ease-out}
+.conversation-media-dialog *{box-sizing:border-box}
+.conversation-media-dialog [hidden]{display:none!important}
+.conversation-viewer-scrim{position:absolute;inset:0;background:transparent;transition:opacity .2s}
+.conversation-media-stage{position:absolute;inset:0;overflow:hidden;touch-action:none}
+.conversation-media-stage>img,.conversation-media-stage>video{
+  position:absolute;inset:var(--top) var(--side) var(--bottom);margin:auto;
+  max-width:calc(100% - 2*var(--side));max-height:calc(100% - var(--top) - var(--bottom));
+  border-radius:6px;box-shadow:0 0 0 1px #ffffff1a,0 30px 90px -20px #000;transform-origin:center;will-change:transform;
+  animation:conversation-viewer-in .26s var(--ease)}
+.conversation-media-stage>img{cursor:zoom-in;-webkit-user-drag:none;transition:opacity .2s}
+.conversation-media-stage>video{background:#000;outline:none}
+.conversation-media-stage>.from-next{animation-name:conversation-viewer-from-next}
+.conversation-media-stage>.from-previous{animation-name:conversation-viewer-from-previous}
+.conversation-media-stage>.settling{transition:transform .28s var(--ease),opacity .2s}
+.conversation-media-dialog.loading .conversation-media-stage>img{opacity:0}
+.conversation-media-dialog.zoomed .conversation-media-stage>img{cursor:grab;border-radius:0;box-shadow:none}
+.conversation-media-stage.panning>img{cursor:grabbing!important}
+.conversation-viewer-failed{position:absolute;inset:0;margin:auto;height:fit-content;width:fit-content;max-width:calc(100% - 32px);padding:12px 16px;border-radius:10px;background:#ffffff0d;color:#b8b8c2;font-size:13px;text-align:center}
+/* Spinner while an image loads, delayed so a cached one never flashes it. */
+.conversation-media-dialog.loading::after{content:"";position:absolute;left:50%;top:50%;width:28px;height:28px;margin:-14px;border-radius:50%;border:2px solid #ffffff1f;border-top-color:#ffffffb3;animation:conversation-viewer-spin .7s linear infinite,conversation-viewer-fade .2s .25s backwards;pointer-events:none}
+
+.conversation-media-dialog header,.conversation-viewer-nav,.conversation-viewer-strip{transition:opacity .2s}
+.conversation-media-dialog.chrome-hidden :is(header,.conversation-viewer-nav,.conversation-viewer-strip){opacity:0;pointer-events:none}
+/* The controls sit on dark pills, so they stay legible over a bright screenshot or the
+   conversation showing through. */
+.conversation-media-dialog header{position:absolute;top:0;left:0;right:0;height:var(--top);display:flex;align-items:center;gap:12px;padding:0 10px;padding-top:env(safe-area-inset-top)}
+.conversation-media-dialog header::before{content:"";position:absolute;inset:0 0 auto;height:96px;background:linear-gradient(rgb(0 0 0/.65),transparent);pointer-events:none;z-index:-1}
+.conversation-viewer-meta{flex:0 1 auto;min-width:0;margin-right:auto;display:flex;align-items:baseline;gap:10px;white-space:nowrap;padding:8px 12px;border-radius:10px;background:rgb(15 16 18/.8)}
+.conversation-viewer-meta:empty{display:none}
+.conversation-viewer-meta strong{min-width:0;overflow:hidden;text-overflow:ellipsis;font-weight:550;color:#f2f2f4}
+.conversation-viewer-meta span{flex-shrink:0;color:#9a9aa5;font-size:12px;font-variant-numeric:tabular-nums}
+.conversation-media-dialog:not(.gallery) .conversation-viewer-meta span{display:none}
+.conversation-viewer-actions{flex-shrink:0;display:flex;align-items:center;gap:2px;padding:2px;border-radius:12px;background:rgb(15 16 18/.8)}
+.conversation-viewer-divider{width:1px;height:18px;margin:0 4px;background:#ffffff24}
+.conversation-viewer-icon{display:grid;place-items:center;width:40px;height:40px;min-height:0;padding:0;border:0;border-radius:10px;background:transparent;color:#d4d4da;cursor:pointer;transition:background .12s,color .12s}
+.conversation-viewer-icon:hover{background:#ffffff17;color:#fff}
+.conversation-viewer-icon:active{background:#ffffff24}
+.conversation-media-dialog svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.conversation-viewer-nav{position:absolute;top:calc(50% + (var(--top) - var(--bottom))/2);z-index:1;display:grid;place-items:center;width:44px;height:44px;min-height:0;margin-top:-22px;padding:0;border:1px solid rgb(255 255 255/.16);border-radius:50%;
+  background:rgb(15 16 18/.8);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);color:#fff;cursor:pointer;box-shadow:0 4px 16px #0006;transition:opacity .2s,background .12s,transform .12s}
+.conversation-viewer-nav.previous{left:16px}
+.conversation-viewer-nav.next{right:16px}
+.conversation-viewer-nav:hover{background:rgb(48 48 54/.85);color:#fff}
+.conversation-viewer-nav:active{transform:scale(.94)}
+.conversation-viewer-nav svg{width:20px;height:20px;stroke-width:1.8}
+.conversation-media-dialog.zoomed :is(.conversation-viewer-nav,.conversation-viewer-strip){opacity:0;pointer-events:none}
+/* Thumbnails sit in one compact tray, not a full-width bar. */
+.conversation-viewer-strip{position:absolute;left:50%;bottom:calc(16px + env(safe-area-inset-bottom));translate:-50% 0;width:max-content;max-width:calc(100% - 32px);display:flex;align-items:center;gap:8px;padding:8px;border-radius:14px;background:rgb(15 16 18/.7);overflow-x:auto;scrollbar-width:none}
+.conversation-viewer-strip::-webkit-scrollbar{display:none}
+.conversation-viewer-strip>button{flex-shrink:0;display:grid;place-items:center;width:60px;height:42px;min-height:0;padding:0;overflow:hidden;border:0;border-radius:7px;background:#1d1d22;color:#c8c8d0;cursor:pointer;
+  opacity:.85;transition:opacity .15s,box-shadow .15s}
+.conversation-viewer-strip>button:hover{opacity:1}
+/* A dark gap then a white ring, so the selection shows against any thumbnail. */
+.conversation-viewer-strip>button[aria-current="true"]{opacity:1;box-shadow:0 0 0 2px #0f1012,0 0 0 4px #f2f2f4}
+.conversation-viewer-strip img{width:100%;height:100%;object-fit:cover;pointer-events:none}
+.conversation-viewer-strip svg{width:16px;height:16px;fill:currentColor;stroke:none}
+.conversation-media-dialog :focus-visible{outline:2px solid #8fb4ff;outline-offset:2px}
+.conversation-media-dialog .conversation-viewer-strip>button:focus-visible{outline-color:#8fb4ff}
+
+@media(max-width:700px){
+  .conversation-media-dialog{--side:0px;--top:calc(60px + env(safe-area-inset-top))}
+  .conversation-media-dialog.gallery{--bottom:calc(84px + env(safe-area-inset-bottom))}
+  .conversation-media-dialog::backdrop{background:transparent;-webkit-backdrop-filter:none;backdrop-filter:none}
+  .conversation-viewer-scrim{background:#09090b}
+  .conversation-media-dialog header{padding:env(safe-area-inset-top) 8px 0;gap:8px}
+  .conversation-media-stage>img,.conversation-media-stage>video{border-radius:0;box-shadow:none}
+  .conversation-viewer-strip>button{width:48px;height:36px}
+}
+/* Touch screens swipe between items, so the side arrows only cover the image. */
+@media(pointer:coarse){
+  .conversation-viewer-nav{display:none}
+  .conversation-viewer-icon{width:44px;height:44px}
+}
+@media(prefers-reduced-motion:reduce){
+  .conversation-media-dialog,.conversation-media-dialog *,.conversation-media-dialog::backdrop{animation-duration:.01ms!important;transition-duration:.01ms!important}
+  .conversation-media-dialog.loading::after{animation:none}
+}
+@keyframes conversation-viewer-fade{from{opacity:0}}
+@keyframes conversation-viewer-in{from{opacity:0;transform:scale(.96)}}
+@keyframes conversation-viewer-from-next{from{opacity:0;transform:translateX(48px)}}
+@keyframes conversation-viewer-from-previous{from{opacity:0;transform:translateX(-48px)}}
+@keyframes conversation-viewer-spin{to{transform:rotate(1turn)}}
 
 @media(max-height:500px){.conversation-modes{top:8px}.conversation-messages{padding-top:16px}.conversation-compose{margin-bottom:8px}}
 
