@@ -97,12 +97,13 @@ body.sidebar-collapsed #sidebar-toggle{left:8px}
 :is(#hidden-toggle,#snoozed-toggle){position:sticky;bottom:-6px;z-index:1;flex-shrink:0;display:flex;align-items:center;gap:7px;height:34px;margin-top:auto;padding:8px 12px;border:0;border-radius:0;background:#0a0a0a;color:#a1a1a1;font-size:12px;font-weight:400;line-height:18px;text-align:left}
 #tabs:has(#hidden-toggle) #snoozed-toggle{bottom:31px}
 #snoozed-toggle~#hidden-toggle{margin-top:0}
-:is(#hidden-toggle,#snoozed-toggle):hover{background:#171717;color:#ededed}
+#hidden-toggle:hover{background:#171717;color:#ededed}
 :is(#hidden-toggle,#snoozed-toggle) .chevron{order:1;flex-shrink:0;width:5px;height:5px;margin:0 2px 0 6px;border-right:1px solid currentColor;border-bottom:1px solid currentColor;font-size:0;transform:rotate(-45deg);transition:transform .15s}
 :is(#hidden-toggle,#snoozed-toggle)[aria-expanded=true] .chevron{transform:rotate(45deg)}
 :is(#hidden-toggle,#snoozed-toggle) .star{width:6px;height:6px;border-radius:50%}
 #tabs :is(#hidden-toggle,#snoozed-toggle) .star.attention{display:block;background:#f0bc63}
 :is(#hidden-toggle,#snoozed-toggle) .count{margin-left:auto;font-variant-numeric:tabular-nums}
+:is(#hidden-toggle,#snoozed-toggle):focus-visible{outline-offset:-2px}
 #tabs .tab-row.hidden-tab .tab-select:not(.selected):not(:hover){opacity:.7}
 @media (prefers-reduced-motion:reduce){:is(#hidden-toggle,#snoozed-toggle) .chevron{transition:none}}
 #tab-empty{display:grid;grid-template-columns:8px minmax(0,1fr);column-gap:7px;row-gap:8px;align-items:center;padding:16px 16px 4px 4px;font-size:12px;line-height:1.4;color:#9ba7bd;overflow-wrap:anywhere}
@@ -588,7 +589,12 @@ body.sidebar-collapsed #artifact-preview header{padding-left:42px}
 .new-tab-where>*{flex-shrink:0}
 .new-tab-where>.new-tab-keys{flex-shrink:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
 
-@media(pointer:coarse){button,select,.sidebar-actions a{min-height:44px}}
+@media(pointer:coarse){
+  button,select,.sidebar-actions a{min-height:44px}
+  #tabs:has(:is(#hidden-toggle,#snoozed-toggle)){scroll-padding-bottom:52px}
+  #tabs:has(#hidden-toggle):has(#snoozed-toggle){scroll-padding-bottom:99px}
+  #tabs:has(#hidden-toggle) #snoozed-toggle{bottom:41px}
+}
 
 @media(max-width:700px), (pointer:coarse){
   /* A phone gets a bottom sheet: send sits under the thumb. */
