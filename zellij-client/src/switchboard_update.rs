@@ -25,6 +25,73 @@ use zellij_utils::cli::{SwitchboardCommand, SwitchboardUpdateCli};
 
 pub const RELEASE_URL: &str =
     "https://github.com/domsleee/switchboard/releases/download/latest-main/";
+const RELEASE_API: &str = "https://api.github.com/repos/domsleee/switchboard/releases";
+
+#[derive(Default)]
+struct ReleaseDownloads {
+    assets: RefCell<Option<BTreeMap<String, u64>>>,
+}
+
+impl ReleaseDownloads {
+    fn fetch(&self, url: &str, asset: &str, api: Option<&str>) -> Result<Vec<u8>> {
+        match Self::http(url, "application/octet-stream") {
+            Ok(bytes) => Ok(bytes),
+            Err(primary) => {
+                let Some(api) = api else { return Err(primary) };
+                self.from_api(api, asset)
+                    .with_context(|| format!("{primary:#}; GitHub API fallback also failed"))
+            },
+        }
+    }
+
+    fn from_api(&self, api: &str, asset: &str) -> Result<Vec<u8>> {
+        if self.assets.borrow().is_none() {
+            #[derive(Deserialize)]
+            struct Asset {
+                name: String,
+                id: u64,
+            }
+            #[derive(Deserialize)]
+            struct Release {
+                assets: Vec<Asset>,
+            }
+            let release: Release = serde_json::from_slice(&Self::http(
+                &format!("{api}/tags/latest-main"),
+                "application/vnd.github+json",
+            )?)?;
+            *self.assets.borrow_mut() =
+                Some(release.assets.into_iter().map(|a| (a.name, a.id)).collect());
+        }
+        let id = self
+            .assets
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .get(asset)
+            .copied()
+            .with_context(|| format!("Published release has no asset {asset}"))?;
+        // Construct the URL from a numeric ID, rather than following URLs from metadata.
+        // No credentials or GitHub CLI are needed for this public release.
+        Self::http(&format!("{api}/assets/{id}"), "application/octet-stream")
+    }
+
+    fn http(url: &str, accept: &str) -> Result<Vec<u8>> {
+        let request = Request::get(url)
+            .header("User-Agent", "Switchboard-Updater")
+            .header("Accept", accept)
+            .redirect_policy(RedirectPolicy::Limit(10))
+            .timeout(Duration::from_secs(300))
+            .body(())?;
+        let mut response =
+            isahc::send(request).with_context(|| format!("Cannot download {url}"))?;
+        ensure!(
+            response.status().is_success(),
+            "Download {url} returned {}",
+            response.status()
+        );
+        Ok(response.bytes()?)
+    }
+}
 
 /// Session identity and sharing as listed by the relay catalog.
 type Session = (String, String, bool);
@@ -657,6 +724,7 @@ pub struct Updater {
     helpers: PathBuf,
     source: String,
     menu_app: PathBuf,
+    downloads: ReleaseDownloads,
     ready_timeout: Duration,
     peer_watch: Duration,
     timings: RefCell<Vec<Phase>>,
@@ -724,6 +792,7 @@ impl Updater {
             viewer_lock: crate::switchboard_viewers::path(&share.join("automatic-updates")),
             helpers,
             source: cli.source.clone().unwrap_or_else(|| RELEASE_URL.to_owned()),
+            downloads: ReleaseDownloads::default(),
             menu_app: home.join("Applications/Switchboard.app/Contents/MacOS/Switchboard"),
             ready_timeout: Duration::from_secs(60),
             peer_watch: Duration::from_secs(20),
@@ -1358,18 +1427,11 @@ impl Updater {
             return fs::read(&path).with_context(|| format!("Cannot read {}", path.display()));
         }
         let url = format!("{}/{asset}", self.source.trim_end_matches('/'));
-        let request = Request::get(&url)
-            .redirect_policy(RedirectPolicy::Limit(10))
-            .timeout(Duration::from_secs(300))
-            .body(())?;
-        let mut response =
-            isahc::send(request).with_context(|| format!("Cannot download {url}"))?;
-        ensure!(
-            response.status().is_success(),
-            "Download {url} returned {}",
-            response.status()
-        );
-        Ok(response.bytes()?)
+        // A GitHub release-download edge can fail while the API asset route works.
+        // Custom sources stay self-contained, and both routes use normal bundle checksums.
+        let api = (self.source.trim_end_matches('/') == RELEASE_URL.trim_end_matches('/'))
+            .then_some(RELEASE_API);
+        self.downloads.fetch(&url, asset, api)
     }
 
     fn local_json<T: DeserializeOwned>(&self, path: &str, timeout: Duration) -> Result<T> {

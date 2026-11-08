@@ -46,7 +46,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install Protoc
-        uses: arduino/setup-protoc@v3
+        uses: ./.github/actions/install-protoc
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -58,6 +58,12 @@ jobs:
           cache-on-failure: false
 
       - uses: mozilla-actions/sccache-action@v0.0.11
+        id: sccache
+        continue-on-error: true
+      - name: Compile without sccache when its download fails
+        if: steps.sccache.outcome == 'failure'
+        shell: bash
+        run: echo 'RUSTC_WRAPPER=' >> "$GITHUB_ENV"
 
       - name: Build
         run: cargo xtask build
@@ -73,7 +79,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install Protoc
-        uses: arduino/setup-protoc@v3
+        uses: ./.github/actions/install-protoc
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -85,6 +91,12 @@ jobs:
           cache-on-failure: false
 
       - uses: mozilla-actions/sccache-action@v0.0.11
+        id: sccache
+        continue-on-error: true
+      - name: Compile without sccache when its download fails
+        if: steps.sccache.outcome == 'failure'
+        shell: bash
+        run: echo 'RUSTC_WRAPPER=' >> "$GITHUB_ENV"
 
       - name: Install NASM
         uses: ilammy/setup-nasm@v1.5.2
@@ -110,7 +122,7 @@ jobs:
         run: python3 tools/switchboard/update_lock.test.py -v
 
       - name: Install Protoc
-        uses: arduino/setup-protoc@v3
+        uses: ./.github/actions/install-protoc
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -122,6 +134,12 @@ jobs:
           cache-on-failure: false
 
       - uses: mozilla-actions/sccache-action@v0.0.11
+        id: sccache
+        continue-on-error: true
+      - name: Compile without sccache when its download fails
+        if: steps.sccache.outcome == 'failure'
+        shell: bash
+        run: echo 'RUSTC_WRAPPER=' >> "$GITHUB_ENV"
 
       - name: Test
         run: cargo xtask test
@@ -137,7 +155,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install Protoc
-        uses: arduino/setup-protoc@v3
+        uses: ./.github/actions/install-protoc
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -149,6 +167,12 @@ jobs:
           cache-on-failure: false
 
       - uses: mozilla-actions/sccache-action@v0.0.11
+        id: sccache
+        continue-on-error: true
+      - name: Compile without sccache when its download fails
+        if: steps.sccache.outcome == 'failure'
+        shell: bash
+        run: echo 'RUSTC_WRAPPER=' >> "$GITHUB_ENV"
 
       # One cargo run builds the crates they share once, not once per crate.
       - name: Test zellij-utils, zellij-server and zellij-client
@@ -180,7 +204,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install Protoc
-        uses: arduino/setup-protoc@v3
+        uses: ./.github/actions/install-protoc
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -192,6 +216,12 @@ jobs:
           cache-on-failure: false
 
       - uses: mozilla-actions/sccache-action@v0.0.11
+        id: sccache
+        continue-on-error: true
+      - name: Compile without sccache when its download fails
+        if: steps.sccache.outcome == 'failure'
+        shell: bash
+        run: echo 'RUSTC_WRAPPER=' >> "$GITHUB_ENV"
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
@@ -209,7 +239,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install Protoc
-        uses: arduino/setup-protoc@v3
+        uses: ./.github/actions/install-protoc
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -221,6 +251,12 @@ jobs:
           cache-on-failure: false
 
       - uses: mozilla-actions/sccache-action@v0.0.11
+        id: sccache
+        continue-on-error: true
+      - name: Compile without sccache when its download fails
+        if: steps.sccache.outcome == 'failure'
+        shell: bash
+        run: echo 'RUSTC_WRAPPER=' >> "$GITHUB_ENV"
 
       - name: Test without web support
         run: cargo xtask test --no-web
@@ -241,6 +277,12 @@ jobs:
           cache: false
 
       - uses: mozilla-actions/sccache-action@v0.0.11
+        id: sccache
+        continue-on-error: true
+      - name: Compile without sccache when its download fails
+        if: steps.sccache.outcome == 'failure'
+        shell: bash
+        run: echo 'RUSTC_WRAPPER=' >> "$GITHUB_ENV"
 
       - name: Test xtask
         run: cargo test -p xtask
@@ -262,6 +304,12 @@ jobs:
           cache: false
 
       - uses: mozilla-actions/sccache-action@v0.0.11
+        id: sccache
+        continue-on-error: true
+      - name: Compile without sccache when its download fails
+        if: steps.sccache.outcome == 'failure'
+        shell: bash
+        run: echo 'RUSTC_WRAPPER=' >> "$GITHUB_ENV"
 
       - name: Check Format
         run: cargo xtask format --check

@@ -153,6 +153,10 @@ and not retried; a newer build remains eligible. Failures before the handoff,
 including unavailable local services or the session catalog, remain eligible for
 the next scheduled check. Catalog requests allow 30 seconds so the relay's
 20-second peer timeout can report an offline computer without blocking updates.
+If GitHub's release download route fails, the updater tries the public GitHub
+API asset route and applies the same manifest and SHA-256 checks. It needs no
+GitHub credentials or CLI. Custom download sources do not use this fallback.
+
 Download failures leave running services untouched. A failed read of the release
 manifest shows in Health as **Couldn't check for updates**, not a failed update,
 and clears on the next successful read.
