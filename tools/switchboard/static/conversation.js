@@ -175,7 +175,7 @@
     // A tab started from New tab shows its prompt as sent, with a starting row under it, until the
     // transcript has it, instead of a run of connection notices and an empty page.
     const transitional=new Set(['Starting agent…','Connecting to this agent’s conversation…','Loading conversation…','Loading this terminal’s conversation…','No agent']);
-    const launchNode=el('article',undefined,'conversation-message user conversation-outgoing conversation-launch');launchNode.dataset.conversationEntry='launch';
+    const launchNode=el('article',undefined,'conversation-message user conversation-outgoing conversation-launch sent');launchNode.dataset.conversationEntry='launch';
     function launchShown(){return !!target?.launch&&!messages.some(item=>item.role==='user'&&!setupMessage(item));}
     function paintLaunch(){
       if(!launchShown()){launchNode.remove();return;}
@@ -214,7 +214,7 @@
     }
     function tickWorking(){
       clearTimeout(workingTimer);syncLiveStep();paintBackground();if((working.hidden&&background.hidden)||panel.hidden)return;
-      const since=Number(target?.since)||(launchShown()?target.launch.at/1000:0),time=since>0?duration(Math.max(0,Date.now()/1000-since)):'';
+      const since=launchShown()?target.launch.at/1000:Number(target?.since),time=since>0?duration(Math.max(0,Date.now()/1000-since)):'';
       if(workingTime.textContent!==time)workingTime.textContent=time;workingTimer=setTimeout(tickWorking,1000);
     }
     // The newest progress update moves into the live row, so the step in progress
