@@ -30,7 +30,11 @@ test('tab hover only expands clipped titles; context and shortcuts stay in the c
     assert.equal(await button.getAttribute('title'),null);
     assert.equal(await page.locator('#tabs').getAttribute('title'),null);
     await page.waitForFunction(()=>document.querySelector('#build-version').textContent.includes('abc123def'));
-    assert.equal(await page.locator('#settings').getAttribute('title'),null);
+    assert.equal(await page.locator('#settings').getAttribute('title'),'Settings');
+    for(const control of [page.getByRole('button',{name:'Settings',exact:true}),page.getByRole('link',{name:'Messages',exact:true})]){
+      assert.equal(await control.innerText(),'');
+      assert.equal(await control.locator('svg[aria-hidden="true"]').count(),1);
+    }
     assert.match(await page.locator('#build-version').getAttribute('title'),/Commit abc123def/);
     name='Review terminal reconnection behavior';await page.evaluate(()=>refreshAttention());
     await page.waitForFunction(title=>document.querySelector('.tab-select').title===title,name);
