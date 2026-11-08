@@ -1387,10 +1387,35 @@ fn file_id(agent: &str, root: &Path, file: &Path) -> String {
 }
 
 // Use only paths within the history roots already exposed by the read-only API.
-// The ID is computed without opening the transcript or spawning a provider process.
+// The ID is computed without reading the transcript or spawning a provider process.
 pub(super) fn hook_chat_id(agent: &str, event: &Value) -> Option<String> {
     let (_, root) = roots().into_iter().find(|(a, _)| *a == agent)?;
     let path = Path::new(event["transcript_path"].as_str()?);
+    bind_transcript(agent, root, path)
+}
+
+fn bind_transcript(agent: &str, root: PathBuf, path: &Path) -> Option<String> {
+    transcript_id(agent, &root, path)?;
+    // Windows accepts different casing for the same file. Hash the spelling
+    // discovery will see, so the ID still resolves after the hook cache is lost.
+    // Keep missing paths for new sessions, and never resolve through a symlink.
+    #[cfg(windows)]
+    let normalized = (|| {
+        for ancestor in path.ancestors().take_while(|p| *p != root) {
+            if fs::symlink_metadata(ancestor)
+                .ok()?
+                .file_type()
+                .is_symlink()
+            {
+                return None;
+            }
+        }
+        let disk_root = fs::canonicalize(&root).ok()?;
+        let disk_path = fs::canonicalize(path).ok()?;
+        Some(root.join(disk_path.strip_prefix(disk_root).ok()?))
+    })();
+    #[cfg(windows)]
+    let path = normalized.as_deref().unwrap_or(path);
     let id = transcript_id(agent, &root, path)?;
     TRANSCRIPTS
         .lock()
@@ -3275,11 +3300,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
         let path = root.join("-repo/1da2fbc0-43c6-4808-beec-63e446ce3d50.jsonl");
-        let id = file_id("claude", &root, &path);
-        TRANSCRIPTS
-            .lock()
-            .unwrap()
-            .insert(id.clone(), ("claude".into(), root.clone(), path.clone()));
+        let id = bind_transcript("claude", root.clone(), &path).unwrap();
         let p = Params {
             tail: true,
             ..Params::default()
@@ -3314,6 +3335,30 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn switchboard_chat_windows_hook_casing_survives_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let path = root.join("c--repo/session.jsonl");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let record = json!({"type":"user","message":{"content":"Hello"}});
+        fs::write(&path, format!("{record}\n")).unwrap();
+        let hook_path = root.join("C--repo/session.jsonl");
+        let id = bind_transcript("claude", root.clone(), &hook_path).unwrap();
+        let params = Params::default();
+        let before = local(vec![("claude", root.clone())], &params, Some(&id));
+        assert_eq!(before["messages"][0]["text"], "Hello");
+        assert_eq!(before["id"], id);
+
+        // A relay restart drops the hook's in-memory path. Discovery must find
+        // the same ID even when the hook used different Windows path casing.
+        TRANSCRIPTS.lock().unwrap().remove(&id);
+        let after = local(vec![("claude", root)], &params, Some(&id));
+        assert_eq!(after["messages"][0]["text"], "Hello", "{after}");
+        assert_eq!(after["id"], id);
     }
 
     #[test]
