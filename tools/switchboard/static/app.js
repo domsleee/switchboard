@@ -468,9 +468,9 @@ function acknowledgeConversation(view){
   if(!view.chatId||state?.chat_id!==view.chatId)return;
   if(acknowledgeAttention(item,view.pane))render();
 }
+function isReady(item){return !systemTab(item.tab)&&!!(ready[item.key] || item.tab.name.startsWith('*') || askpassForTab(item) || statesForTab(item).some(needsAttention));}
 // Agents open tabs named System for their own checks: hidden, and never asking for attention.
 function systemTab(tab){return tab.name.replace(/^\*\s*/,'')==='System';}
-function isReady(item){return !systemTab(item.tab)&&!!(ready[item.key] || item.tab.name.startsWith('*') || askpassForTab(item) || statesForTab(item).some(needsAttention));}
 function matchesSearch(item){
   const query=$('tab-search').value.trim().toLowerCase();
   return !query || `${tabTitle(item)} ${hosts.get(item.entry.host)?.name || item.entry.host} ${groups[item.entry.host]||''} ${item.entry.name} ${autoLabel(item)}`.toLowerCase().includes(query);
