@@ -370,8 +370,28 @@ struct State {
     ready: Option<ReadyUpdate>,
     #[serde(skip_serializing_if = "Option::is_none")]
     activation: Option<Activation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    manifest_failure: Option<ManifestFailure>,
     #[serde(flatten)]
     other: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The `error` that reports a failed manifest read. The next successful read of the
+/// same source settles it; a failed activation stays until a build installs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ManifestFailure {
+    source: String,
+    error: String,
+}
+
+/// Marks an update error as a failed read of the release manifest.
+#[derive(Debug)]
+struct ManifestUnavailable;
+
+impl std::fmt::Display for ManifestUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Release manifest unavailable")
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -782,7 +802,13 @@ impl Updater {
                 state.activation = None;
                 if let Err(error) = &result {
                     if state.error == previous_error || state.error.is_none() {
-                        state.error = Some(format!("{error:#}"));
+                        let text = format!("{error:#}");
+                        state.manifest_failure =
+                            error.is::<ManifestUnavailable>().then(|| ManifestFailure {
+                                source: self.source.clone(),
+                                error: text.clone(),
+                            });
+                        state.error = Some(text);
                     }
                 }
                 let _ = state.save(&self.state_path());
@@ -873,9 +899,21 @@ impl Updater {
 
     fn update(&self, state: &mut State) -> Result<()> {
         let asset = |name: &str| format!("switchboard-{}-{name}", self.platform);
-        let manifest: Manifest = serde_json::from_slice(&self.fetch(&asset("bundle.json"))?)
-            .context("Invalid release manifest")?;
-        validate_manifest(&manifest, &self.platform)?;
+        let manifest = self
+            .read_manifest(&asset("bundle.json"))
+            .context(ManifestUnavailable)?;
+        if !self.check
+            && state
+                .manifest_failure
+                .as_ref()
+                .is_some_and(|failure| failure.source == self.source)
+        {
+            let failure = state.manifest_failure.take();
+            if state.error == failure.map(|failure| failure.error) {
+                state.error = None;
+            }
+            state.save(&self.state_path())?;
+        }
         ensure!(
             manifest.attachment_protocol == 1
                 || crate::web_client::attachment::worker_status().is_empty(),
@@ -895,6 +933,12 @@ impl Updater {
             return Ok(());
         }
         if !self.check {
+            // This computer's own build of a newer main can be waiting for viewers
+            // while the published build catches up. It keeps its place and its wait.
+            let other_build_waiting = state
+                .ready
+                .as_ref()
+                .is_some_and(|ready| !same_commit(&ready.commit, &manifest.commit));
             if let Ok(health) = self.health() {
                 if health.relay.as_deref() == Some("rust")
                     && same_commit(health.commit.as_deref().unwrap_or(""), &manifest.commit)
@@ -903,8 +947,10 @@ impl Updater {
                     state.attempts = None;
                     state.commit = Some(manifest.commit.clone());
                     state.error = None;
-                    state.notice = None;
-                    state.ready = None;
+                    if !other_build_waiting {
+                        state.notice = None;
+                        state.ready = None;
+                    }
                     println!("Already running {}", manifest.commit);
                     return state.save(&self.state_path());
                 }
@@ -921,11 +967,13 @@ impl Updater {
                     state.run_number = Some(manifest.run_number);
                     state.attempts = None;
                     state.error = None;
-                    state.ready = None;
-                    state.notice = Some(format!(
-                        "Running {running}, which is newer than published {}",
-                        &manifest.commit[..7]
-                    ));
+                    if !other_build_waiting {
+                        state.ready = None;
+                        state.notice = Some(format!(
+                            "Running {running}, which is newer than published {}",
+                            &manifest.commit[..7]
+                        ));
+                    }
                     println!(
                         "Keeping {running}; published {} is older",
                         &manifest.commit[..7]
@@ -1295,6 +1343,13 @@ impl Updater {
             .keys()
             .map(String::as_str)
             .filter(move |name| *name != exe)
+    }
+
+    fn read_manifest(&self, asset: &str) -> Result<Manifest> {
+        let manifest: Manifest =
+            serde_json::from_slice(&self.fetch(asset)?).context("Invalid release manifest")?;
+        validate_manifest(&manifest, &self.platform)?;
+        Ok(manifest)
     }
 
     fn fetch(&self, asset: &str) -> Result<Vec<u8>> {

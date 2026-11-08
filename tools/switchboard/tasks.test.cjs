@@ -376,7 +376,12 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
     await page.waitForFunction(()=>window.__healthStatusMessages.includes('Checking for a newer build on Laptop…'));
     assert.deepEqual(updates,[{host:'mesh-laptop'}]);
     const sb=tasks.computers.find(c=>c.host==='mesh-laptop').switchboard;
-    sb.lastUpdateError=null;sb.activateUpdate=true;sb.readyUpdate={commit:'b'.repeat(40),since:Math.floor(Date.now()/1000)-120};sb.updatePhase='waiting';
+    // A failed check for new builds is not a failed update.
+    sb.lastUpdateError=null;sb.updateCheckError='Release manifest unavailable: 504';sb.updatePhase='current';
+    await page.evaluate(()=>SwitchboardTasks.load());
+    await page.waitForFunction(()=>document.querySelectorAll('#updates .switchboard-group')[3]?.textContent.includes("Couldn't check for updates"));
+    assert.equal(await laptop.locator('.task-row').first().locator('.task-tail').textContent(),'Release manifest unavailable: 504');
+    sb.updateCheckError=null;sb.activateUpdate=true;sb.readyUpdate={commit:'b'.repeat(40),since:Math.floor(Date.now()/1000)-120};sb.updatePhase='waiting';
     await page.evaluate(()=>SwitchboardTasks.load());
     await page.waitForFunction(()=>document.querySelectorAll('#updates .switchboard-group')[3]?.textContent.includes('Update ready'));
     assert.match(await laptop.textContent(),/Terminals briefly reconnect; running commands continue/);
