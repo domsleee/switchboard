@@ -701,22 +701,57 @@ function parkAction(label,icon){
   button.setAttribute('aria-label',label);button.title=label;return button;
 }
 let snoozeItem=null,snoozeTrigger=null;
+function closeSnoozeMenu(restore=false){
+  $('snooze-menu').hidden=true;snoozeTrigger?.setAttribute('aria-expanded','false');
+  if(restore&&snoozeTrigger?.isConnected)snoozeTrigger.focus();
+}
+function tomorrowMorning(){const date=new Date();date.setDate(date.getDate()+1);date.setHours(9,0,0,0);return date.getTime();}
 function openSnooze(item,trigger){
+  if(!$('snooze-menu').hidden&&snoozeItem?.key===item.key){closeSnoozeMenu(true);return;}
+  closeSnoozeMenu();
   snoozeItem=item;snoozeTrigger=trigger;closeTabMenu();
+  const menu=$('snooze-menu'),now=Date.now(),time=new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit'});
+  menu.setAttribute('aria-label',`Snooze ${tabTitle(item)}`);
+  for(const button of menu.querySelectorAll('[data-minutes]'))button.lastElementChild.textContent=time.format(new Date(now+Number(button.dataset.minutes)*60000));
+  $('snooze-tomorrow').lastElementChild.textContent=time.format(new Date(tomorrowMorning()));
+  menu.hidden=false;trigger?.setAttribute('aria-expanded','true');
+  const bounds=(trigger||tabButtons.get(item.key)).getBoundingClientRect();
+  menu.style.left=`${Math.max(8,Math.min(bounds.right-menu.offsetWidth,innerWidth-menu.offsetWidth-8))}px`;
+  const top=bounds.bottom+6;
+  menu.style.top=`${Math.max(8,Math.min(top+menu.offsetHeight>innerHeight-8?bounds.top-menu.offsetHeight-6:top,innerHeight-menu.offsetHeight-8))}px`;
+  menu.querySelector('button').focus();
+}
+$('snooze-custom').onclick=()=>{
+  closeSnoozeMenu();
+  const item=snoozeItem;if(!item)return;
   $('snooze-title').textContent=`Snooze ${tabTitle(item)}`;
   $('snooze-error').textContent='';$('snooze-until').value='';$('snooze-dialog').showModal();
-}
+};
 function snoozeUntil(until){
   if(!Number.isFinite(until)||until<=Date.now()){$('snooze-error').textContent='Choose a future date and time.';return;}
   const item=allTabs().find(item=>item.key===snoozeItem?.key);
+  closeSnoozeMenu();
   if(!item){$('snooze-dialog').close();return;}
   $('snooze-dialog').close();parkTab(item,'snoozed',until);
 }
 $('snooze-dialog').addEventListener('close',()=>{snoozeTrigger?.isConnected&&snoozeTrigger.focus();snoozeTrigger=null;});
-for(const button of $('snooze-dialog').querySelectorAll('[data-minutes]'))button.onclick=()=>snoozeUntil(Date.now()+Number(button.dataset.minutes)*60000);
-$('snooze-tomorrow').onclick=()=>{const date=new Date();date.setDate(date.getDate()+1);date.setHours(9,0,0,0);snoozeUntil(date.getTime());};
+for(const button of $('snooze-menu').querySelectorAll('[data-minutes]'))button.onclick=()=>snoozeUntil(Date.now()+Number(button.dataset.minutes)*60000);
+$('snooze-tomorrow').onclick=()=>snoozeUntil(tomorrowMorning());
 $('snooze-form').onsubmit=event=>{event.preventDefault();snoozeUntil(new Date($('snooze-until').value).getTime());};
 $('snooze-cancel').onclick=()=>$('snooze-dialog').close();
+window.addEventListener('keydown',event=>{
+  if($('snooze-menu').hidden)return;
+  if(event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();closeSnoozeMenu(true);}
+  else if(['ArrowDown','ArrowUp','Home','End'].includes(event.key)){
+    event.preventDefault();event.stopImmediatePropagation();
+    const items=[...$('snooze-menu').querySelectorAll('button')],index=items.indexOf(document.activeElement);
+    items[event.key==='Home'?0:event.key==='End'?items.length-1:(index+(event.key==='ArrowDown'?1:-1)+items.length)%items.length]?.focus();
+  }else if(event.key==='Tab')closeSnoozeMenu();
+},true);
+document.addEventListener('pointerdown',event=>{if(!$('snooze-menu').hidden&&!$('snooze-menu').contains(event.target)&&!snoozeTrigger?.contains(event.target))closeSnoozeMenu();},true);
+window.addEventListener('blur',()=>closeSnoozeMenu());
+window.addEventListener('resize',()=>closeSnoozeMenu());
+$('tabs').addEventListener('scroll',()=>closeSnoozeMenu());
 // A row's top-right corner: what the tab is doing, or how long ago its state changed.
 const statusWords={'Password needed':'Password','Approval needed':'Approve','Input needed':'Answer','Working':'Working','Waiting on an agent':'Waiting','Ready to review':'Done'};
 function tabProject(item){
@@ -784,6 +819,7 @@ function render() {
       row.append(button);button._row=row;holdTabForMenu(button);
       const actions=document.createElement('div');actions.className='tab-hover-actions';
       const snooze=parkAction('Snooze thread','clock'),settle=parkAction('Settle thread','check');
+      snooze.setAttribute('aria-haspopup','menu');snooze.setAttribute('aria-controls','snooze-menu');snooze.setAttribute('aria-expanded','false');
       snooze.onclick=()=>openSnooze(button._item,snooze);
       settle.onclick=()=>parkTab(button._item,parkedTab(button._item)?null:'settled');
       actions.append(snooze,settle);row.append(actions);button._parkActions=actions;button._snooze=snooze;button._settle=settle;

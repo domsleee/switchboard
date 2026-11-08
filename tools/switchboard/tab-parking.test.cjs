@@ -6,7 +6,8 @@ test('hover snooze and settle preserve the selected view, review state and keybo
   const panes=[1,2,3].map(id=>({pane_id:id,is_plugin:false,tab_id:id,tab_position:id-1,title:['Fix volume performance','Review the sidebar','Plan the next release'][id-1],cwd:'/home/developer/git/sample'}));
   const tabs=panes.map(pane=>({host:'desktop',session:'main',id:pane.tab_id,position:pane.tab_position,name:pane.title,panes:[pane]}));
   async function fixture(mode){
-    const page=await browser.newPage({viewport:{width:1100,height:760}}),errors=[],writes=[];
+    const page=await browser.newPage({viewport:{width:1100,height:760},timezoneId:'Australia/Sydney'}),errors=[],writes=[];
+    await page.clock.setFixedTime(new Date('2026-11-08T07:11:00Z'));
     page.setDefaultTimeout(5000);page.on('pageerror',e=>errors.push(e.message));
     await page.addInitScript(mode=>{localStorage.setItem('switchboard-view-mode',mode);window.setInterval=()=>0;},mode);
     await page.route('https://parking.test/**',route=>{
@@ -52,10 +53,15 @@ test('hover snooze and settle preserve the selected view, review state and keybo
       await first.hover();await first.getByRole('button',{name:'Un-settle thread'}).click();
       assert.equal(await page.locator('#manual-settled-toggle').count(),0);
       await first.hover();await first.getByRole('button',{name:'Snooze thread',exact:true}).click();
-      await page.locator('#snooze-dialog button[data-minutes="30"]').click();
+      assert.deepEqual(await page.locator('#snooze-menu button>span:first-child').allTextContents(),['In 1 hour','In 3 hours','Tomorrow']);
+      const expected=await page.evaluate(()=>{const time=new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit'});return ['2026-11-08T08:11:00Z','2026-11-08T10:11:00Z','2026-11-08T22:00:00Z'].map(date=>time.format(new Date(date)));});
+      assert.deepEqual(await page.locator('#snooze-menu .snooze-time').allTextContents(),expected);
+      await page.keyboard.press('End');assert.equal(await page.evaluate(()=>document.activeElement.id),'snooze-custom');
+      await page.keyboard.press('Home');assert.equal(await page.locator('#snooze-menu button').first().evaluate(el=>el===document.activeElement),true);
+      await page.locator('#snooze-menu button[data-minutes="60"]').click();
       assert.equal(await page.locator('#manual-snoozed-toggle .count').textContent(),'1');
       const parking=await page.evaluate(()=>Object.values(parkedTabs)[0]);
-      assert.ok(parking.until>Date.now()+29*60000);
+      assert.equal(parking.until,await page.evaluate(()=>Date.now()+3600000));
       await second.click();assert.equal(await first.count(),0,'collapsed snoozed shelf hides unselected tabs');
       await page.keyboard.press('Alt+1');assert.equal(await page.evaluate(()=>allTabs().find(t=>t.key===selected).tab.id),2,'number shortcuts skip collapsed shelves');
       await page.locator('#tab-search').fill('volume');await first.waitFor();
@@ -65,19 +71,38 @@ test('hover snooze and settle preserve the selected view, review state and keybo
       await page.keyboard.press('Escape');assert.equal(await page.evaluate(()=>Object.keys(parkedTabs).length),0);
       assert.equal(await first.getByRole('button',{name:'Snooze thread',exact:true}).evaluate(el=>document.activeElement===el),true);
       await first.getByRole('button',{name:'Snooze thread',exact:true}).click();
+      await page.locator('#snooze-custom').click();
       await page.locator('#snooze-until').fill('2020-01-01T12:00');await page.locator('#snooze-form button[type=submit]').click();
       assert.match(await page.locator('#snooze-error').textContent(),/future/);
       await page.keyboard.press('Escape');
       assert.equal(await page.evaluate(()=>paneAttention.get(attentionKey('desktop','main',3)).seen),false,'parking leaves other results unreviewed');
+      await first.locator('.tab-select').click();
+      for(const [selector,expected] of [['[data-minutes="180"]','2026-11-08T10:11:00Z'],['#snooze-tomorrow','2026-11-08T22:00:00Z']]){
+        await first.hover();await first.getByRole('button',{name:'Snooze thread',exact:true}).click();
+        await page.locator('#snooze-menu').locator(selector).click();
+        assert.equal(await page.evaluate(()=>Object.values(parkedTabs)[0].until),Date.parse(expected));
+        await first.hover();await first.getByRole('button',{name:'Wake thread',exact:true}).click();
+      }
+      await first.hover();await first.getByRole('button',{name:'Snooze thread',exact:true}).click();
+      await page.locator('#snooze-custom').click();await page.locator('#snooze-until').fill('2026-11-10T10:45');
+      await page.locator('#snooze-form button[type=submit]').click();
+      assert.equal(await page.evaluate(()=>Object.values(parkedTabs)[0].until),Date.parse('2026-11-09T23:45:00Z'));
+      await first.hover();await first.getByRole('button',{name:'Wake thread',exact:true}).click();
       if(mode==='conversation'){
         await first.locator('.tab-select').click();await first.hover();
         await first.getByRole('button',{name:'Snooze thread',exact:true}).click();
-        await page.locator('#snooze-dialog button[data-minutes="30"]').click();
+        await page.locator('#snooze-menu button[data-minutes="60"]').click();
         await page.getByLabel('Reply draft').fill('Continue the task');
         await page.getByLabel('Reply draft').press('Enter');
         await page.waitForFunction(()=>Object.keys(parkedTabs).length===0);
         assert.equal(await page.locator('#manual-snoozed-toggle').count(),0,'sending wakes a snoozed conversation');
       }
+      await page.setViewportSize({width:390,height:740});await page.locator('#sidebar-toggle').click();
+      await first.locator('.tab-select').click({button:'right'});await page.locator('#snooze-tab').click();
+      const bounds=await page.locator('#snooze-menu').boundingBox();
+      assert.ok(bounds.x>=0&&bounds.x+bounds.width<=390&&bounds.y>=0&&bounds.y+bounds.height<=740);
+      await page.keyboard.press('Escape');assert.equal(await page.locator('#snooze-menu').isHidden(),true);
+      assert.equal(await page.evaluate(()=>sidebarOpen),true,'Escape closes the snooze menu before the mobile drawer');
       assert.deepEqual(errors,[]);await page.close();
     }
   }finally{await browser.close();}

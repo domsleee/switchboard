@@ -77,8 +77,12 @@ body.sidebar-collapsed #sidebar-toggle{left:8px}
 #snooze-dialog p{font-size:12px;line-height:1.5;color:#a1a1a1}
 #snooze-dialog button{background:#262626;border-color:#404040}
 @media(hover:hover){#snooze-dialog button:hover{background:#333;color:#ededed}}
-.snooze-presets{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:16px 0}
-.snooze-presets button{padding:10px 6px}
+#snooze-menu{position:fixed;z-index:11;width:224px;max-width:calc(100vw - 16px);padding:7px;background:#111;border:1px solid #292929;border-radius:12px;box-shadow:0 8px 24px #0006;color:#ededed}
+#snooze-menu[hidden]{display:none}
+#snooze-menu button{display:flex;align-items:center;justify-content:space-between;gap:20px;width:100%;padding:10px 12px;border:0;background:transparent;font-size:13px;text-align:left}
+#snooze-menu button:hover,#snooze-menu button:focus-visible{background:#262626;outline:none}
+#snooze-menu .snooze-time{color:#a1a1a1;font-variant-numeric:tabular-nums;white-space:nowrap}
+#snooze-menu hr{margin:5px 12px;border:0;border-top:1px solid #292929}
 #snooze-until{display:block;width:100%;margin-top:6px;padding:8px;background:#0a0a0a;color:inherit;border:1px solid #404040;border-radius:4px;font:inherit}
 #snooze-dialog #snooze-error{color:#f0bc63}
 @media(prefers-reduced-motion:reduce){.parked-header .chevron{transition:none}}

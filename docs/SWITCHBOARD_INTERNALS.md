@@ -176,8 +176,8 @@ terminal height available. An amber dot marks tabs that
 need attention; viewing a result clears the dot without moving the tab.
 
 Hover or focus a tab to reveal **Snooze** (clock) and **Settle** (check).
-Snooze offers 30 minutes, 1 hour, 3 hours, tomorrow at 9 AM, or a custom local
-date and time. Snoozed tabs keep running and move to **Snoozed** until their wake
+Snooze opens a menu with 1 hour, 3 hours, tomorrow at 9 AM, or a custom local
+date and time. Each preset shows its wake time. Snoozed tabs keep running and move to **Snoozed** until their wake
 time. A new approval, question or password request brings them back early;
 ordinary completion and background work leave the snooze in place. **Wake thread**
 returns one early. Settle moves a tab into **Settled**; **Un-settle thread** brings
