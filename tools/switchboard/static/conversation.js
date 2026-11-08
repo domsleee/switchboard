@@ -484,7 +484,6 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       if(launchNode.isConnected&&!launchShown())updateActivity();
       const follow=initial||nearBottom(),height=list.scrollHeight,position=list.scrollTop,keys=new Set();
       if(!follow&&!prepend&&!initial)newOutput=true;
-      older.hidden=true;
       let previous=older,previousRole=null,previousSpeaker=null;
       const runs=activityRuns(),summaryKeys=new Set();liveRun=[...runs.values()].find(run=>run.inProgress)||null;
       for(const [offset,item] of messages.entries()){
@@ -544,6 +543,8 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
     }
     function applyPage(data,kind,cursor){
       const initial=kind==='initial',prepend=kind==='older',page=data.messages||[],start=data.start_cursor??(initial?0:prepend?Math.max(0,startCursor-page.length):cursor);
+      // Live output must leave a failed older read's retry available.
+      if(initial||prepend)older.hidden=true;
       chat.project=data.project||chat.project;chat.thread=data.session_id||chat.thread;
       if('model' in data)chat.model=data.model;
       if('reasoning_effort' in data)chat.reasoning_effort=data.reasoning_effort;
@@ -566,7 +567,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       if(initial)params.tail=true;else if(prepend)params.before=startCursor;else params.cursor=cursor;
       try{const data=await get('/api/chats/'+encodeURIComponent(chat.id)+'?'+new URLSearchParams(params),request.signal);if(version!==generation)return;
         applyPage(data,kind,cursor);if(shown)requestAnimationFrame(()=>setTimeout(()=>shownProgress(),0));streamSupported=data.stream===true;startStream();const warning=partialNotice(data);status(warning,!warning);if(warning){reportLoad(kind,'partial',started);lastFailure='partial';}else if(lastFailure){reportLoad(kind,'recovered',started);lastFailure=null;}updateLatest();catchUp=nextCursor!==null&&!prepend;
-      }catch(error){if(version===generation&&!(!timedOut&&request.signal.aborted)){const outcome=timedOut?'timeout':error.code||'network';lastFailure=outcome;reportLoad(kind,outcome,started);if(initial)shownProgress('failed');const message=timedOut?'Loading took too long. Retrying…':error.code?error.message:'Connection interrupted. Retrying…';if(prepend){older.textContent='Retry earlier messages';older.hidden=false;}else{status(message);refresh.hidden=false;updateLatest();}}}finally{clearTimeout(timeout);if(loadRequest===request)loadRequest=null;if(version===generation){busy(false);historyStatus.hidden=true;for(const data of streamPages)streamPage(data);streamPages=[];if(catchUp)setTimeout(()=>{if(version===generation)load();},0);else if(open&&loaded&&startCursor>0&&older.hidden&&list.scrollHeight<=list.clientHeight)setTimeout(()=>{if(version===generation)load('older');},0);}}
+      }catch(error){if(version===generation&&!(!timedOut&&request.signal.aborted)){const outcome=timedOut?'timeout':error.code||'network';lastFailure=outcome;reportLoad(kind,outcome,started);if(initial)shownProgress('failed');const message=timedOut?'Loading took too long. Retrying…':error.code?error.message:'Connection interrupted. Retrying…';if(prepend){older.textContent='Retry earlier messages';older.hidden=false;}else{status(message);refresh.hidden=false;updateLatest();}}}finally{clearTimeout(timeout);if(loadRequest===request)loadRequest=null;if(version===generation){busy(false);historyStatus.hidden=true;for(const data of streamPages)streamPage(data);streamPages=[];if(catchUp)setTimeout(()=>{if(version===generation)load();},0);else if(open&&loaded&&startCursor>0&&older.hidden&&(list.scrollTop<80||list.scrollHeight<=list.clientHeight))setTimeout(()=>{if(version===generation)load('older');},0);}}
     }
     older.onclick=()=>load('older');refresh.onclick=()=>load(messages.length?'poll':'initial');latest.onclick=()=>{list.scrollTop=list.scrollHeight;rememberReading();updateLatest();};
     let draftSizeKey;
