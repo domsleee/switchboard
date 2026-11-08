@@ -96,7 +96,7 @@ test('Update tasks show per computer, count only failures in the sidebar, and ac
       if(path==='/api/attention')return json({tabs:[],panes:[],errors:[]});
       if(path.startsWith('/api/'))return json({});
       const file=path==='/'?'index.html':path.slice(1);
-      if(!['index.html','app.js','close.js','titles.js','style.css','tasks.js'].includes(file))return route.fulfill({status:404,body:''});
+      if(!['index.html','app.js','model-picker.js','close.js','titles.js','style.css','tasks.js'].includes(file))return route.fulfill({status:404,body:''});
       return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
     });
     await page.goto('https://switchboard.test/');
@@ -219,7 +219,7 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
       if(path==='/api/attention')return json({tabs:[],panes:[],errors:[]});
       if(path.startsWith('/api/'))return json({});
       const file=path==='/'?'index.html':path.slice(1);
-      if(!['index.html','app.js','close.js','titles.js','style.css','tasks.js'].includes(file))return route.fulfill({status:404,body:''});
+      if(!['index.html','app.js','model-picker.js','close.js','titles.js','style.css','tasks.js'].includes(file))return route.fulfill({status:404,body:''});
       return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
     });
     await page.goto('https://switchboard.test/');

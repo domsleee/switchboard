@@ -183,7 +183,7 @@ test('unavailable status does not disable menu Close or Ctrl+D for live provisio
         });state();
       </script>`});
       const file=path==='/'?'index.html':path.slice(1);
-      if(!['index.html','app.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
+      if(!['index.html','app.js','model-picker.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
       return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
     });
     await page.goto('https://switchboard.test/?host=windows&session=main&pane=17');
@@ -239,7 +239,7 @@ test('middle-click closes the clicked sidebar tab without selecting it, preservi
         </script>`});
       }
       const file=path==='/'?'index.html':path.slice(1);
-      if(!['index.html','app.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
+      if(!['index.html','app.js','model-picker.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
       return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
     });
     await page.goto('https://switchboard.test/?host=mac&session=main&tab=41');

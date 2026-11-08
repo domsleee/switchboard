@@ -124,7 +124,7 @@ test('the sidebar badges a password request, asks when its tab is selected, and 
       if(path==='/api/askpass/answer'){answers.push(route.request().postDataJSON());open=[];return route.fulfill({status:204,body:''});}
       if(path.startsWith('/hosts/'))return route.fulfill({contentType:'text/html',body:'<p>terminal fixture</p>'});
       const file=path==='/'?'index.html':path.slice(1);
-      if(!['index.html','app.js','close.js','askpass.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
+      if(!['index.html','app.js','model-picker.js','close.js','askpass.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
       return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
     });
     await page.goto('https://switchboard.test/');

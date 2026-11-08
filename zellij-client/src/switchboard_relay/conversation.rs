@@ -356,12 +356,16 @@ pub(super) async fn skills_local(host: &Host, request: Skills) -> Result<Json<Va
     Ok(Json(json!({"skills":skill_choices(&result)})))
 }
 
-/// The models this computer's Codex offers, as `{id, name, default}`, in Codex's order.
-/// Empty when Codex is missing or does not answer.
+/// The models this computer's Codex offers, as `{id, name, default, efforts, default_effort}`,
+/// in Codex's order. Empty when Codex is missing or does not answer.
 pub(crate) async fn codex_models() -> Vec<Value> {
     let Some(result) = codex_app_server(None, "model/list", json!({})).await else {
         return vec![];
     };
+    model_choices(&result)
+}
+
+fn model_choices(result: &Value) -> Vec<Value> {
     result["data"]
         .as_array()
         .into_iter()
@@ -370,7 +374,21 @@ pub(crate) async fn codex_models() -> Vec<Value> {
         .filter_map(|model| {
             let id = model["model"].as_str().or_else(|| model["id"].as_str())?;
             let name = model["displayName"].as_str().unwrap_or(id);
-            Some(json!({"id":id,"name":name,"default":model["isDefault"] == true}))
+            // Each model's own effort levels, so New tab offers only what it accepts.
+            let efforts: Vec<Value> = model["supportedReasoningEfforts"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|effort| {
+                    let id = effort["reasoningEffort"].as_str()?;
+                    let description = effort["description"].as_str().unwrap_or("");
+                    Some(json!({"id":id,"description":description}))
+                })
+                .collect();
+            Some(
+                json!({"id":id,"name":name,"default":model["isDefault"] == true,
+                "efforts":efforts,"default_effort":model["defaultReasoningEffort"].as_str()}),
+            )
         })
         .collect()
 }
@@ -622,6 +640,26 @@ async fn write_keys(host: &Host, session: &str, pane: &str, key: &str) -> Result
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn switchboard_codex_model_choices_carry_each_models_effort_levels() {
+        let result = serde_json::json!({"data":[
+            {"id":"gpt-6.1-sol","model":"gpt-6.1-sol","displayName":"GPT-6.1-Sol","isDefault":true,
+             "supportedReasoningEfforts":[{"reasoningEffort":"low","description":"Fast"},{"reasoningEffort":"xhigh"}],
+             "defaultReasoningEffort":"low"},
+            {"id":"old","model":"old","hidden":true},
+            {"id":"bare"}
+        ]});
+        assert_eq!(
+            super::model_choices(&result),
+            vec![
+                serde_json::json!({"id":"gpt-6.1-sol","name":"GPT-6.1-Sol","default":true,
+                    "efforts":[{"id":"low","description":"Fast"},{"id":"xhigh","description":""}],
+                    "default_effort":"low"}),
+                serde_json::json!({"id":"bare","name":"bare","default":false,"efforts":[],"default_effort":null}),
+            ]
+        );
+    }
+
     use super::*;
     #[test]
     fn switchboard_conversation_skill_suggestions_hide_disabled_skills_and_paths() {

@@ -61,6 +61,7 @@ test('the shipped handover dialog switches providers in place and preserves cont
    const url=new URL(route.request().url()),p=url.pathname,json=value=>route.fulfill({json:value}).catch(()=>{});requests.push(p);
    if(p==='/api/hosts')return json([{id:'fixture',name:'Desktop',local:true}]);
    if(p==='/api/hosts/fixture')return json({id:'fixture',name:'Desktop',local:true,sessions:[{name:'main',web_clients_allowed:true}]});
+   if(p==='/api/attention'&&url.searchParams.has('after'))return;
    if(p==='/api/attention')return json({tabs:[{host:'fixture',session:'main',id:1,position:0,name:'Source work',panes:[{pane_id:switched?2:1,is_plugin:false,tab_position:0,cwd:'/home/fixture/git/project-worktree'}]}],panes:[{host:'fixture',session:'main',pane_id:switched?2:1,agent:switched?(agent==='codex'?'claude':'codex'):agent,state:'ready',chat_id:switched?'destination-chat':'source-chat',restart_available:true}],errors:[]});
    if(p==='/api/chats/source-chat'||p==='/api/chats/destination-chat'){
     if(url.searchParams.has('context')){
@@ -100,10 +101,10 @@ test('the shipped handover dialog switches providers in place and preserves cont
    historyFailure=false;await page.getByRole('button',{name:'Retry loading context'}).click();await page.getByText(/2 messages included/).waitFor();
    assert.equal(await page.locator('#new-tab-project').inputValue(),'/home/fixture/git/project-worktree');assert.equal(await page.locator('#new-tab-project').isVisible(),false);assert.equal(await page.getByLabel('Additional instructions',{exact:true}).inputValue(),'Unsent source draft');
    if(process.env.HANDOVER_SCREENSHOTS&&agent==='codex')await page.locator('#new-tab-dialog').screenshot({path:path.join(process.env.HANDOVER_SCREENSHOTS,'handover-dialog.png')});
-   await page.evaluate(model=>setNewTabModel(model),agent==='codex'?'c':'csol');await page.getByLabel('Additional instructions',{exact:true}).fill('Finish the tests\nKeep this exact instruction');
+   await page.evaluate(model=>setNewTabModel(model),agent==='codex'?'claude:claude-opus-5-5#max':'codex:gpt-6.1-sol#xhigh');await page.getByLabel('Additional instructions',{exact:true}).fill('Finish the tests\nKeep this exact instruction');
    await page.getByRole('button',{name:'Switch model',exact:true}).click();await page.getByText('Could not transfer context to the destination computer. Try again.').waitFor();assert.equal(created.length,0);
    uploadFailure=false;await page.getByRole('button',{name:'Switch model',exact:true}).click();await page.waitForFunction(()=>!document.querySelector('#new-tab-dialog').open);
-   assert.equal(created.length,1);assert.equal(created[0].handover.model,agent==='codex'?'c':'csol');assert.equal(created[0].pane_id,1);assert.equal(created[0].tab_id,1);assert.equal(created[0].chat_id,'source-chat');assert.equal(created[0].handover.source_messages,2);
+   assert.equal(created.length,1);assert.equal(created[0].handover.model,agent==='codex'?'claude:claude-opus-5-5#max':'codex:gpt-6.1-sol#xhigh');assert.equal(created[0].pane_id,1);assert.equal(created[0].tab_id,1);assert.equal(created[0].chat_id,'source-chat');assert.equal(created[0].handover.source_messages,2);
    assert.ok(created[0].handover.prompt.endsWith('Finish the tests\nKeep this exact instruction'));assert.ok(created[0].handover.prompt.includes('context handover.json'));
    assert.equal(uploads.at(-1).messages[1].text,sourceText);assert.deepEqual(uploads.at(-1).messages.map(m=>m.role),['user','assistant']);
    assert.equal(requests.some(p=>p.includes('close-tab')||p.includes('/new-tab')||p.includes('/reply')),false);
@@ -131,7 +132,8 @@ async function busySwitch(browser){
   if(p==='/api/hosts')return json([{id:'fixture',name:'Desktop',local:true}]);
   if(p==='/api/hosts/fixture')return json({id:'fixture',name:'Desktop',local:true,sessions:[{name:'main',web_clients_allowed:true}]});
   // Like the relay: a restartable agent reports it only while ready or working.
-  if(p==='/api/attention')return json({tabs:[{host:'fixture',session:'main',id:1,position:0,name:'Source work',panes:[{pane_id:f.switched?2:1,is_plugin:false,tab_position:0,cwd:'/home/fixture/git/project'}]},{host:'fixture',session:'main',id:3,position:1,name:'Other work',panes:[{pane_id:3,is_plugin:false,tab_position:1,cwd:'/home/fixture'}]}],panes:[{host:'fixture',session:'main',pane_id:f.switched?2:1,agent:f.switched?'codex':'claude',state:f.switched?'ready':f.state,chat_id:f.switched?'destination-chat':'source-chat',restart_available:f.switched||f.restartable&&['ready','working'].includes(f.state)}],errors:[]});
+  if(p==='/api/attention'&&url.searchParams.has('after'))return;
+   if(p==='/api/attention')return json({tabs:[{host:'fixture',session:'main',id:1,position:0,name:'Source work',panes:[{pane_id:f.switched?2:1,is_plugin:false,tab_position:0,cwd:'/home/fixture/git/project'}]},{host:'fixture',session:'main',id:3,position:1,name:'Other work',panes:[{pane_id:3,is_plugin:false,tab_position:1,cwd:'/home/fixture'}]}],panes:[{host:'fixture',session:'main',pane_id:f.switched?2:1,agent:f.switched?'codex':'claude',state:f.switched?'ready':f.state,chat_id:f.switched?'destination-chat':'source-chat',restart_available:f.switched||f.restartable&&['ready','working'].includes(f.state)}],errors:[]});
   // Pages like the relay: tail and before end a page, cursor starts one, next_cursor continues it.
   if(p==='/api/chats/source-chat'||p==='/api/chats/destination-chat'){
    const q=url.searchParams,limit=Number(q.get('limit')||10),end=q.has('before')?Math.min(Number(q.get('before')),f.history.length):f.history.length,start=q.get('tail')==='true'||q.has('before')?Math.max(0,end-limit):Math.min(Number(q.get('cursor')||0),end),page=f.history.slice(start,Math.min(end,start+limit));
@@ -185,7 +187,8 @@ test('the model switch stays available while the agent works and waits for its t
    await draft.fill('Then tidy up');
    const choose=async()=>{
     await f.open();
-    assert.match(await page.locator('#new-tab-note').textContent(),/The file attached in the composer goes with your instructions\. The agent is busy, so the switch waits for its turn to end\./);
+    assert.equal(await page.locator('#new-tab-note').textContent(),'Switches when the current turn ends.');
+    assert.match(await page.locator('#handover-timing').textContent(),/The attached file goes with your instructions/);
     assert.equal(await page.getByLabel('Additional instructions',{exact:true}).inputValue(),'Then tidy up');
     await f.confirm();
    };

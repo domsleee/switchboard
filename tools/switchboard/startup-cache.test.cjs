@@ -61,7 +61,7 @@ test('reload shows cached rows before discovery, survives empty snapshots, and d
         </script>`});
       }
       const file=pathname==='/'?'index.html':pathname.slice(1);
-      if(!['index.html','app.js','startup-cache.js','close.js','titles.js','style.css','pairing-notice.js'].includes(file))return route.fulfill({status:404,body:''});
+      if(!['index.html','app.js','model-picker.js','startup-cache.js','close.js','titles.js','style.css','pairing-notice.js'].includes(file))return route.fulfill({status:404,body:''});
       return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
     });
     await page.goto('https://switchboard.test/?host=mac&session=main&tab=1');
@@ -121,7 +121,7 @@ test('reload keeps the last agent status instead of flashing an empty or unavail
         </script>`});
       }
       const file=pathname==='/'?'index.html':pathname.slice(1);
-      if(!['index.html','app.js','startup-cache.js','close.js','titles.js','style.css','pairing-notice.js'].includes(file))return route.fulfill({status:404,body:''});
+      if(!['index.html','app.js','model-picker.js','startup-cache.js','close.js','titles.js','style.css','pairing-notice.js'].includes(file))return route.fulfill({status:404,body:''});
       return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
     });
     const status=()=>page.locator('#tabs .tab-select').first().getAttribute('data-agent-state');

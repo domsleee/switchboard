@@ -1429,52 +1429,71 @@ window.SwitchboardOpenFile=(host,path)=>{
 $('filter-more').onchange=event=>setFilter(event.target.value);
 renderFilter();
 let newTabElevated=false,newTabHandover=null;
-function clearNewTabHandover(){newTabHandover?.request?.abort();newTabHandover=null;$('handover-preview').hidden=true;$('new-tab-prompt-label').textContent='Prompt';$('new-tab-prompt').placeholder='What would you like to work on?';$('new-tab-dialog').classList.remove('handover-mode');newTabSubmitText();}
+function clearNewTabHandover(){
+  newTabHandover?.request?.abort();newTabHandover=null;newTabModelMenu.embed(null);
+  for(const id of ['handover-route','handover-picker','handover-preview','handover-actions'])$(id).hidden=true;
+  $('handover-details').open=false;
+  $('new-tab-form').querySelector('.new-tab-composer-bar').append($('new-tab-submit'));
+  $('new-tab-prompt-label').textContent='Prompt';$('new-tab-prompt-label').classList.add('sr-only');
+  $('new-tab-prompt').rows=3;
+  $('new-tab-prompt').placeholder='What would you like to work on?';$('new-tab-dialog').classList.remove('handover-mode');newTabSubmitText();
+}
 // The submit button names what it will do, and what it is doing while busy.
 let newTabRetrying=false;
 function newTabSubmitText(text,announce=true){
   const button=$('new-tab-submit'),unknown=!newTabTargetBlocked&&$('new-tab-project-field').dataset.state==='unknown'&&$('new-tab-project').getAttribute('aria-expanded')==='false';
   const label=text||(newTabHandover?'Switch model':newTabRetrying?'Retry':unknown?(newTabElevated?'Create administrator tab anyway':'Create anyway'):newTabElevated?'Create administrator tab':'Create tab');
   button.classList.toggle('busy',!!text);button.setAttribute('aria-label',label);button.title=text?label:label+' · Enter';
+  $('new-tab-submit-label').textContent=text||(newTabHandover&&!switchNow(newTabHandover.source)?'Switch after this turn':label);
   $('new-tab-status').textContent=text||(newTabRetrying?'Enter to retry':unknown?'Enter creates anyway':'');
   if(announce)$('new-tab-progress').textContent=text||'';
 }
-// The owner's shell shortcuts come first. Any other model starts `claude` or `codex`
-// directly as `claude:<model>` or `codex:<model>`, with the same bypass flags as the shortcuts.
-const NEW_TAB_MODELS=[['csol','Codex · Sol'],['castra','Codex · Astra'],['c','Claude Code']];let newTabModelValue='csol';
-const NEW_TAB_CLAUDE_MODELS=[['claude-fable-5-1','Fable 5.1'],['claude-opus-5-5','Opus 5.5'],['claude-sonnet-5-5','Sonnet 5.5'],['claude-haiku-5-5','Haiku 5.5'],['claude-fable-5','Fable 5'],['claude-opus-5','Opus 5'],['claude-sonnet-5','Sonnet 5'],['claude-opus-4-8','Opus 4.8'],['claude-opus-4-7','Opus 4.7'],['claude-opus-4-6','Opus 4.6'],['claude-sonnet-4-6','Sonnet 4.6'],['claude-haiku-4-5','Haiku 4.5']];
-const NEW_TAB_PROVIDERS={claude:'Claude Code',codex:'Codex'};
-// Codex lists its own models on each computer; until that arrives, the menu says so.
+// A model and its effort, as `claude:<model>#<effort>` or `codex:<model>#<effort>` (see model-picker.js).
+// The owner's shell shortcuts from older choices become the model and effort they run.
+const ModelPicker=globalThis.SwitchboardModelPicker;let newTabModelValue=ModelPicker.DEFAULT;
+// Codex lists its own models and their efforts on each computer; until that arrives, the picker says so.
 const newTabCodexModels=new Map();
-function newTabModelParts(value){
-  const match=/^(claude|codex):([A-Za-z0-9][A-Za-z0-9._\-[\]/:@]{0,99})$/.exec(String(value||''));
-  return match?{provider:match[1],model:match[2]}:null;
-}
-function newTabModelProvider(value){return value==='c'?'claude':NEW_TAB_MODELS.some(([alias])=>alias===value)?'codex':newTabModelParts(value)?.provider||'';}
+function newTabHostCodexModels(){const host=$('new-tab-target').value?JSON.parse($('new-tab-target').value)[0]:'';return newTabCodexModels.get(host);}
+function newTabModelProvider(value){return ModelPicker.parse(value)?.provider||'';}
 function newTabModel(){return newTabModelValue;}
 function setNewTabModel(value){
-  const parts=newTabModelParts(value),[alias,name]=parts?[parts.model,NEW_TAB_PROVIDERS[parts.provider]]:NEW_TAB_MODELS.find(([v])=>v===value)||NEW_TAB_MODELS[0];
-  newTabModelValue=parts?value:alias;
-  $('new-tab-model-alias').textContent=alias;$('new-tab-model-name').textContent=name;$('new-tab-model').setAttribute('aria-label',`Model: ${alias}, ${name}`);
+  newTabModelValue=ModelPicker.normalize(value);
+  const choice=ModelPicker.describe(newTabModelValue,newTabHostCodexModels()),icon=globalThis.SwitchboardConversation?.agentIcons?.[choice.provider];
+  $('new-tab-model-icon').innerHTML=icon||'';$('new-tab-model-icon').hidden=!icon;
+  $('new-tab-model-name').textContent=choice.name;$('new-tab-model-effort').textContent=choice.effort?choice.effortName:'';
+  const effort=choice.effort?choice.effortName+' effort':'effort from the agent setting';
+  $('new-tab-model').setAttribute('aria-label',`Model: ${choice.name}, ${choice.providerName}, ${effort}`);
+  $('new-tab-model').title=`${choice.providerName} · ${choice.model} · ${effort}`;
+  if(newTabHandover)paintHandoverRoute();
 }
-function newTabModelOptions(){
-  const host=$('new-tab-target').value?JSON.parse($('new-tab-target').value)[0]:'',codex=newTabCodexModels.get(host);
-  const options=[...NEW_TAB_MODELS.map(([alias,name])=>[alias,alias,name,false,'Shortcuts']),...NEW_TAB_CLAUDE_MODELS.map(([id,name])=>['claude:'+id,id,name,false,'Claude Code'])];
-  if(Array.isArray(codex))options.push(...codex.map(({id,name})=>['codex:'+id,id,name===id?'':name,false,'Codex']));
-  // A remembered model that is not listed stays visible, so arrows never lose it. While searching, typed names offer both agents instead.
-  if(!$('new-tab-model-search').value.trim()&&!options.some(option=>option[0]===newTabModelValue)){const parts=newTabModelParts(newTabModelValue);if(parts)options.push([newTabModelValue,parts.model,'',false,NEW_TAB_PROVIDERS[parts.provider]]);}
-  return options;
+function paintHandoverRoute(){
+  if(!newTabHandover)return;
+  const source=newTabHandover.source,context=newTabHandover.context;
+  const from=context?.source.model,choice=ModelPicker.describe(newTabModelValue,newTabHostCodexModels());
+  const fill=(id,provider,name)=>{const element=$(id),mark=document.createElement('span');mark.className='handover-agent-icon';mark.setAttribute('aria-hidden','true');mark.innerHTML=globalThis.SwitchboardConversation?.agentIcons?.[provider]||'';element.replaceChildren(mark,document.createTextNode(name));};
+  const sourceChoice=from&&ModelPicker.parse(source.agent+':'+from);
+  fill('handover-from',source.agent,sourceChoice?ModelPicker.describe(source.agent+':'+from,newTabHostCodexModels()).name:source.agent==='claude'?'Claude Code':'Codex');
+  fill('handover-to',choice.provider,choice.name+(choice.effort?' '+choice.effortName:''));
 }
-function newTabModelNote(){
-  const host=$('new-tab-target').value?JSON.parse($('new-tab-target').value)[0]:'',codex=newTabCodexModels.get(host);
-  return codex==='failed'?'Codex models unavailable on this computer. Type a model name.':!codex?'Loading Codex models…':'';
+// A remembered effort the destination's model does not offer is dropped for the agent setting, and the picker says why.
+let newTabEffortWarning='';
+function fitNewTabModel(){
+  const fitted=ModelPicker.fit(newTabModelValue,newTabHostCodexModels());if(fitted===newTabModelValue)return;
+  const before=ModelPicker.describe(newTabModelValue,newTabHostCodexModels());
+  newTabEffortWarning=`${before.effortName} isn't offered for ${before.name} on this computer, so the agent setting is used.`;
+  setNewTabModel(fitted);$('new-tab-progress').textContent=newTabEffortWarning;
 }
-// A typed name that is not listed can start with either agent.
-function newTabCustomModels(query){
-  query=query.trim();if(!newTabModelParts('codex:'+query))return [];
-  const claudeFirst=/^(claude|opus|sonnet|haiku|fable)/i.test(query);
-  const rows=[['claude:'+query,query,'Claude Code',false,'Other model'],['codex:'+query,query,'Codex',false,'Other model']];
-  return claudeFirst?rows:rows.reverse();
+// Each browser remembers its last choice per agent, so a handover offers the other agent's.
+function newTabSavedModel(provider){
+  try{const saved=localStorage.getItem('switchboard-new-tab-model');if(!provider)return saved||ModelPicker.DEFAULT;
+    const last=JSON.parse(localStorage.getItem('switchboard-new-tab-models')||'{}')[provider];if(last)return last;
+    if(saved&&newTabModelProvider(saved)===provider)return saved;}catch(_){}
+  return provider==='claude'?'claude:claude-opus-5-5':provider==='codex'?ModelPicker.DEFAULT:ModelPicker.DEFAULT;
+}
+function newTabRecentModels(){try{const recent=JSON.parse(localStorage.getItem('switchboard-new-tab-recent')||'[]');return Array.isArray(recent)?recent.filter(value=>typeof value==='string'):[];}catch(_){return [];}}
+function saveNewTabModel(value){
+  try{localStorage.setItem('switchboard-new-tab-recent',JSON.stringify([value,...newTabRecentModels().filter(other=>other!==value)].slice(0,4)));}catch(_){}
+  try{localStorage.setItem('switchboard-new-tab-model',value);const saved=JSON.parse(localStorage.getItem('switchboard-new-tab-models')||'{}');saved[newTabModelProvider(value)]=value;localStorage.setItem('switchboard-new-tab-models',JSON.stringify(saved));}catch(_){}
 }
 async function loadNewTabCodexModels(){
   const host=$('new-tab-target').value?JSON.parse($('new-tab-target').value)[0]:'';
@@ -1483,10 +1502,13 @@ async function loadNewTabCodexModels(){
   try{
     const response=await fetch('/hosts/'+encodeURIComponent(host)+'/model-list',{cache:'no-store',signal:AbortSignal.timeout(15000)});
     if(!response.ok)throw Error('Models unavailable');
-    const data=await response.json(),models=(Array.isArray(data?.codex)?data.codex:[]).filter(model=>typeof model?.id==='string'&&newTabModelParts('codex:'+model.id)).map(({id,name})=>({id,name:typeof name==='string'?name:id}));
+    const data=await response.json(),models=(Array.isArray(data?.codex)?data.codex:[]).filter(model=>typeof model?.id==='string'&&ModelPicker.parse('codex:'+model.id)).map(({id,name,default:isDefault,efforts,default_effort})=>({id,name:typeof name==='string'?name:id,default:isDefault===true,
+      // No levels from an older relay stays unknown; an empty list means the model has none.
+      efforts:Array.isArray(efforts)?efforts.filter(effort=>typeof effort?.id==='string'&&/^[a-z]+$/.test(effort.id)).map(({id,description})=>({id,description:typeof description==='string'?description:''})):undefined,
+      default_effort:typeof default_effort==='string'&&/^[a-z]+$/.test(default_effort)?default_effort:''}));
     newTabCodexModels.set(host,models.length?models:'failed');
   }catch(_){newTabCodexModels.set(host,'failed');}
-  newTabModelMenu.refresh();
+  setNewTabModel(newTabModelValue);fitNewTabModel();newTabModelMenu.refresh();
 }
 function paintNewTabMachine(){
   const name=$('new-tab-target').selectedOptions[0]?.textContent||'';
@@ -1554,7 +1576,11 @@ function newTabChipMenu(chip,menu,options,current,set,{search=null,custom=()=>[]
   if(search){search.addEventListener('keydown',keys);search.addEventListener('input',filter);search.addEventListener('blur',leave);search.addEventListener('focus',()=>{if(menu.hidden)open();});}
   return {close,refresh(){if(!menu.hidden)paint();}};
 }
-const newTabModelMenu=newTabChipMenu($('new-tab-model'),$('new-tab-model-menu'),newTabModelOptions,()=>newTabModelValue,value=>{setNewTabModel(value);$('new-tab-progress').textContent='Model: '+$('new-tab-model-alias').textContent;},{search:$('new-tab-model-search'),custom:newTabCustomModels,note:newTabModelNote});
+const newTabModelMenu=ModelPicker.create({chip:$('new-tab-model'),menu:$('new-tab-model-menu'),value:()=>newTabModelValue,codex:newTabHostCodexModels,recent:newTabRecentModels,warning:()=>newTabEffortWarning,icons:globalThis.SwitchboardConversation?.agentIcons||{},
+  set(value){newTabEffortWarning='';setNewTabModel(value);},
+  reload(){const host=$('new-tab-target').value?JSON.parse($('new-tab-target').value)[0]:'';newTabCodexModels.delete(host);loadNewTabCodexModels();},
+  // The choice is announced once, when the picker closes, not on every arrow.
+  done(){$('new-tab-progress').textContent=$('new-tab-model').getAttribute('aria-label');$('new-tab-prompt').focus();}});
 const newTabMachineMenu=newTabChipMenu($('new-tab-machine'),$('new-tab-machine-menu'),()=>[...$('new-tab-target').options].map(option=>[option.value,option.textContent.replace(/ · no session$/,''),option.disabled?'no session':'',option.disabled]),()=>$('new-tab-target').value,value=>{$('new-tab-target').value=value;$('new-tab-target').dispatchEvent(new Event('change'));$('new-tab-progress').textContent='Computer: '+$('new-tab-target').selectedOptions[0].textContent;});
 // Project: a chip that opens the folder search.
 function openNewTabProjectPicker(){
@@ -1581,19 +1607,24 @@ function newTabSavedProject(host){try{return JSON.parse(localStorage.getItem('sw
 function saveNewTabProject(host,project){try{const saved=JSON.parse(localStorage.getItem('switchboard-new-tab-projects')||'{}');saved[host]=project;localStorage.setItem('switchboard-new-tab-projects',JSON.stringify(saved));}catch(_){}}
 let newTabProjectEdited=false;
 $('new-tab-close').onclick=()=>$('new-tab-dialog').close();
+$('handover-cancel').onclick=()=>$('new-tab-dialog').close();
 // Focus order: Shift+Tab from the prompt walks back through model, project and computer;
 // Tab from any of them returns to the prompt. Tab from the prompt reaches attach, send and close.
 $('new-tab-dialog').addEventListener('keydown',event=>{
+  if(newTabHandover)return;
   if(event.key!=='Tab'||event.altKey||event.ctrlKey||event.metaKey)return;
   const picker=$('new-tab-project-popover'),inPicker=picker.contains(document.activeElement);
   // In the project search, Tab is the lookup's own (fill, then back to the prompt).
   if(inPicker&&!event.shiftKey)return;
+  const inModels=$('new-tab-model-menu').contains(document.activeElement);
+  // A phone's picker is a modal sheet that keeps Tab to itself.
+  if(inModels&&(newTabModelMenu.modal()||!(event.shiftKey&&document.activeElement===newTabModelMenu.search)))return;
   const chips=['new-tab-machine','new-tab-project-chip','new-tab-model'];
   const ring=[...chips,'new-tab-prompt','new-tab-attach','new-tab-submit','new-tab-close'].map($).filter(element=>!element.disabled&&element.getClientRects().length);
-  const from=inPicker?$('new-tab-project-chip'):document.activeElement===$('new-tab-model-search')?$('new-tab-model'):document.activeElement,index=ring.indexOf(from);if(index<0)return;
+  const from=inPicker?$('new-tab-project-chip'):inModels?$('new-tab-model'):document.activeElement,index=ring.indexOf(from);if(index<0)return;
   const next=!event.shiftKey&&chips.includes(from.id)?$('new-tab-prompt'):ring[(index+(event.shiftKey?-1:1)+ring.length)%ring.length];
   event.preventDefault();
-  if(next===$('new-tab-project-chip'))openNewTabProjectPicker();else{closeNewTabProjectPicker(false);next.focus();}
+  newTabModelMenu.close();if(next===$('new-tab-project-chip'))openNewTabProjectPicker();else{closeNewTabProjectPicker(false);next.focus();if(next===$('new-tab-model'))newTabModelMenu.open();}
 },true);
 // The prompt grows with its text, up to a limit where it scrolls.
 function fitNewTabPrompt(){const input=$('new-tab-prompt');input.style.height='';input.style.height=Math.min(input.scrollHeight+2,Math.max(innerHeight*.4,160))+'px';}
@@ -1607,9 +1638,8 @@ function openNewTabDialog(elevated){
   // A fresh dialog cancels any submission still uploading for the previous one.
   $('new-tab-form').pendingSubmission=null;newTabBusy(false);
   $('new-tab-prompt').value='';clearNewTabFiles();newTabProjectLookup.close();
-  // Each browser remembers its last model, listed or typed; Sol is the default.
-  let model='csol';try{model=localStorage.getItem('switchboard-new-tab-model')||model;}catch(_){}
-  setNewTabModel(model);newTabSubmitText();
+  // Each browser remembers its last model and effort, listed or typed; Sol at high effort is the default.
+  newTabModelMenu.close();newTabEffortWarning='';setNewTabModel(newTabSavedModel());fitNewTabModel();newTabSubmitText();
   $('new-tab-dialog').classList.toggle('elevated',elevated);
   $('new-tab-note').textContent=elevated?'Runs as administrator. Someone at that computer must approve it (UAC on Windows, sudo elsewhere).':'';
   const select=$('new-tab-target');select.replaceChildren();
@@ -1745,16 +1775,19 @@ function setHandoverProject(){
 async function loadNewTabHandover(){
   const handover=newTabHandover;if(!handover)return;
   handover.request?.abort();const request=handover.request=new AbortController();handover.context=null;
-  $('handover-summary').textContent='Loading context from '+handover.source.title+'…';$('handover-retry').hidden=true;newTabBusy(false);
+  $('handover-summary').textContent='Loading context…';$('handover-retry').hidden=true;newTabBusy(false);
   try{
     const context=await SwitchboardHandover.load(handover.source,{signal:AbortSignal.any([request.signal,AbortSignal.timeout(60000)])});
     if(newTabHandover!==handover||handover.request!==request||!$('new-tab-dialog').open)return;
     handover.context=context;setHandoverProject();
     const coverage=context.coverage;
-    $('handover-summary').textContent=`From ${handover.source.title} on ${handover.source.computer}`+(handover.source.project?` in ${handover.source.project}`:'')+` · ${coverage.included_messages} messages included`+(coverage.omitted_messages?` · ${coverage.omitted_messages} history entries omitted`:'')+(coverage.partial_history?' · Some source history is unavailable.':'.');
+    $('handover-summary').textContent=`${coverage.included_messages} messages included`+(coverage.partial_history?' · Some history unavailable':'');
+    $('handover-source').textContent=`From “${handover.source.title}” on ${handover.source.computer}`+(handover.source.project?` · ${handover.source.project}`:'');
+    $('handover-coverage').textContent=coverage.omitted_messages?`${coverage.omitted_messages} history entries excluded. The original request and recent complete messages are prioritised.`:'All complete conversation messages are included.';
+    paintHandoverRoute();
     $('handover-retry').textContent='Reload context';$('handover-retry').hidden=false;
     newTabBusy(false);
-  }catch(error){if(newTabHandover!==handover||handover.request!==request)return;$('handover-summary').textContent=error.name==='TimeoutError'?'Loading context timed out. Retry when the source computer is connected.':error.message;$('handover-retry').textContent='Retry loading context';$('handover-retry').hidden=false;}
+  }catch(error){if(newTabHandover!==handover||handover.request!==request)return;$('handover-summary').textContent=error.name==='TimeoutError'?'Loading context timed out. Retry when the source computer is connected.':error.message;$('handover-retry').textContent='Retry loading context';$('handover-retry').hidden=false;$('handover-details').open=true;}
 }
 $('handover-retry').onclick=loadNewTabHandover;
 // A click on the backdrop closes a dialog. Both press and release must land
@@ -1875,7 +1908,8 @@ globalThis.visualViewport?.addEventListener('resize',fitNewTabDialog);globalThis
 $('new-tab-dialog').addEventListener('close',()=>{if($('new-tab-dialog').open)return;$('new-tab-form').pendingSubmission?.uploads?.abort();$('new-tab-form').pendingSubmission=null;clearNewTabHandover();newTabBusy(false);clearNewTabFiles();runPendingSwitches();});
 $('new-tab-form').onsubmit=async event=>{
   event.preventDefault();const form=$('new-tab-form');if(form.pendingSubmission)return;
-  const key=$('new-tab-target').value,project=$('new-tab-project').value.trim(),command=newTabModel(),text=$('new-tab-prompt').value,files=[...newTabFiles],elevated=newTabElevated;
+  if(newTabHandover)newTabModelMenu.commit();
+  const key=$('new-tab-target').value,project=$('new-tab-project').value.trim(),command=ModelPicker.fit(newTabModel(),newTabHostCodexModels()),text=$('new-tab-prompt').value,files=[...newTabFiles],elevated=newTabElevated;
   const handover=newTabHandover?.context,source=newTabHandover?.source;if(newTabHandover&&!handover)return;
   if(/[\x00-\x08\x0b-\x1f\x7f]/.test(text)||new TextEncoder().encode(text).length>16000){$('new-tab-error').textContent='Use a prompt up to 16 KB without control characters.';return;}
   // Check the computer before spending time on uploads.
@@ -1919,13 +1953,13 @@ $('new-tab-form').onsubmit=async event=>{
       // Context reloads so a turn that ended while the dialog was open is included.
       if(!await switchAgentModel(source,command,text,null,isCurrent))return;
       pendingSwitches.delete(source.tab);
-      try{localStorage.setItem('switchboard-new-tab-model',command);}catch(_){}
+      saveNewTabModel(command);
       if(isCurrent())$('new-tab-dialog').close();
       await refreshAttention(true);setStatus('Continuing with '+(newTabModelProvider(command)==='claude'?'Claude':'Codex')+' in the same tab.');return;
     }
     const prompt=text+(others.length?'\n\nAttached files:\n'+others.join('\n'):'');
     if(new TextEncoder().encode(prompt).length>16000)throw Error('The prompt and file paths must fit within 16 KB.');
-    try{localStorage.setItem('switchboard-new-tab-model',command);}catch(_){}
+    saveNewTabModel(command);
     saveNewTabProject(host,project);
     await createNewTab(key,{project,command,prompt,images,elevated},isCurrent,text);
   }catch(error){if(isCurrent()){uploads.abort();newTabRetrying=true;newTabProblem(error.message);}}
@@ -2302,7 +2336,7 @@ function restartAgentTarget(item){
 // for its turn to end (see runPendingSwitches); an idle agent that cannot restart has none.
 const pendingSwitches=new Map();
 function switchPossible(state){return !!state?.chat_id&&(!!state.restart_available||!['ready','working'].includes(state.state));}
-function newTabModelLabel(value){return NEW_TAB_MODELS.find(([alias])=>alias===value)?.[1]||NEW_TAB_CLAUDE_MODELS.find(([id])=>'claude:'+id===value)?.[1]||[...newTabCodexModels.values()].flatMap(list=>Array.isArray(list)?list:[]).find(({id})=>'codex:'+id===value)?.name||newTabModelParts(value)?.model||value;}
+function newTabModelLabel(value){const choice=ModelPicker.describe(value,newTabHostCodexModels());return choice.name+(choice.effort?' '+choice.effortName:'');}
 function openAgentHandover(item,paneId){
   const target=agentChatTarget(item,paneId);if(!target||!switchPossible(target.state)||!globalThis.SwitchboardHandover)return;
   const queued=pendingSwitches.get(item.key);if(queued?.running){closeTabMenu();setStatus('The model switch is already running.');return;}
@@ -2314,12 +2348,18 @@ function openAgentHandover(item,paneId){
   if(!option){$('new-tab-dialog').close();setStatus('The source computer is unavailable.',true);return;}
   $('new-tab-target').value=option.value;paintNewTabMachine();loadNewTabProjects();loadNewTabCodexModels();
   const files=globalThis.SwitchboardConversation?.handoverFiles?.(source).length||0;
-  $('new-tab-title').textContent='Switch model with context';$('new-tab-note').textContent='Continue in this tab with the selected model. Recent messages carry across, as counted below; attachments and tool state stay in the original history.'+(files?` ${files===1?'The file attached in the composer goes':'The '+files+' files attached in the composer go'} with your instructions.`:'')+(target.state.state==='ready'?'':' The agent is busy, so the switch waits for its turn to end.');
-  setNewTabModel(queued?.model||(source.agent==='claude'?'csol':'c'));
+  $('new-tab-title').textContent='Switch model';$('new-tab-note').textContent=target.state.state==='ready'?'Continue this conversation in the same tab.':'Switches when the current turn ends.';
+  setNewTabModel(queued?.model||newTabSavedModel(source.agent==='claude'?'codex':'claude'));
   $('new-tab-prompt').value=queued?queued.text:globalThis.SwitchboardConversation?.handoverDraft?.(source)||'';fitNewTabPrompt();
   $('new-tab-dialog').classList.add('handover-mode');
-  $('new-tab-prompt-label').textContent='Additional instructions';$('new-tab-prompt').placeholder='Leave blank to carry on where the conversation left off';
-  newTabHandover={source};newTabSubmitText();$('handover-preview').hidden=false;loadNewTabHandover();
+  $('new-tab-prompt-label').textContent='Additional instructions';$('new-tab-prompt-label').classList.remove('sr-only');$('new-tab-prompt').rows=2;$('new-tab-prompt').placeholder='Anything the next model should know?';
+  newTabHandover={source};
+  fitNewTabModel();
+  for(const id of ['handover-route','handover-picker','handover-preview','handover-actions'])$(id).hidden=false;
+  $('handover-timing').textContent=(files?`${files===1?'The attached file goes':'The '+files+' attached files go'} with your instructions. `:'')+'The agent starts a new conversation using this context. The original conversation remains in history.';
+  $('handover-actions').append($('new-tab-submit'));
+  paintHandoverRoute();newTabSubmitText();newTabModelMenu.embed($('handover-picker'));fitNewTabPrompt();loadNewTabHandover();
+  newTabModelMenu.search.focus({preventScroll:true});
 }
 // Restarts the agent in its tab with the model, carrying recent history, the
 // instructions and the files uploaded in its composer. Context loads now unless given.

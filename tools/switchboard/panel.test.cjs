@@ -2,7 +2,7 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const tab=(host,id)=>({host,session:'main',id,position:0,name:host+' terminal',panes:[{pane_id:id,is_plugin:false,tab_position:0}]});
-const statics=['index.html','app.js','bridge.js','close.js','titles.js','pairing-notice.js','style.css','messages.html','messages.js','messages.css','computers.html','computers.js'];
+const statics=['index.html','app.js','model-picker.js','bridge.js','close.js','titles.js','pairing-notice.js','style.css','messages.html','messages.js','messages.css','computers.html','computers.js'];
 
 // Synthetic hosts and fixture terminals only; never a live relay.
 test('Panel navigation moves between sections and keeps terminals connected',

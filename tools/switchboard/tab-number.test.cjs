@@ -47,7 +47,7 @@ for(const platform of ['MacIntel','Win32','Linux x86_64'])test(`${platform}: sid
       </script>`});
       if(path.startsWith('/assets/'))return route.fulfill({contentType:'text/javascript',body:fs.readFileSync(__dirname+'/../../zellij-client'+path,'utf8')});
       const file=path==='/'?'index.html':path.slice(1);
-      if(!['index.html','app.js','bridge.js','clipboard.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
+      if(!['index.html','app.js','model-picker.js','bridge.js','clipboard.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
       return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
     });
     await page.goto('https://switchboard.test/?host=mac&session=main&tab=42');

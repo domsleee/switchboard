@@ -161,7 +161,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
         </script><script src="/clipboard.js"></script><script>new ClipboardAddon.ClipboardAddon().activate(term);state();</script>`});
       }
       const file=path==='/'?'index.html':path.slice(1);
-      if(!['index.html','app.js','close.js','titles.js','style.css','clipboard.js'].includes(file))return route.fulfill({status:404,body:''});
+      if(!['index.html','app.js','model-picker.js','close.js','titles.js','style.css','clipboard.js'].includes(file))return route.fulfill({status:404,body:''});
       return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
     });
     await page.goto('https://switchboard.test/');
@@ -585,7 +585,7 @@ test('sidebar empty states say why the list is empty and offer the fixing action
         const panes=[{pane_id:1,is_plugin:false,tab_position:0}];window.term={element:document.body,textarea:document.querySelector('input'),options:{}};
         parent.postMessage({type:'zellij-state',payload:{session_name:'main',panes,active_pane:panes[0],tab_viewport:{is_owner:true}}},location.origin);</script>`});
       const file=path==='/'?'index.html':path.slice(1);
-      if(!['index.html','app.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
+      if(!['index.html','app.js','model-picker.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
       return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
     });
     const empty=page.locator('#tab-empty');
@@ -675,7 +675,7 @@ test('group URLs restore All, Home and Work on reload, including an empty group'
         </script>`});
       }
       const file=path==='/'?'index.html':path.slice(1);
-      if(!['index.html','app.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
+      if(!['index.html','app.js','model-picker.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
       return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
     });
     async function shows(group,names){
@@ -747,7 +747,7 @@ test('Hidden and Snoozed remember independent expansion in All, Work and Home ac
         </script>`});
       }
       const file=path==='/'?'index.html':path.slice(1);
-      if(!['index.html','app.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
+      if(!['index.html','app.js','model-picker.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
       return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
     });
     async function check(hidden,snoozed){
@@ -805,7 +805,7 @@ test('settings pages never paint white while they load',
         return route.fulfill({contentType:'text/html',body:'<!doctype html><style>:root{color-scheme:dark;background:#141414}</style><h2>Computers</h2>'});
       }
       const file=path==='/'?'index.html':path.slice(1);
-      if(!['index.html','app.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
+      if(!['index.html','app.js','model-picker.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
       return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
     });
     await page.goto('https://switchboard.test/');
