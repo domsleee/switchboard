@@ -144,6 +144,8 @@ test('integrated Conversation journeys use production markup and preserve delive
      f.history.set(1,[{role:'assistant',text:'Earlier progress.'},{...q,timestamp:'2026-11-08T08:00:00Z'}]);await f.poll();
      assert.equal(await answer.inputValue(),'Blue','A custom answer matching an option is still a draft');
      assert.deepEqual(await answer.evaluate(node=>[node===questionDraftInput,document.activeElement===node,node.selectionStart,node.selectionEnd]),[true,true,1,3],'Refreshing the same question preserves its input and selection');
+     f.history.set(1,[{...q,timestamp:'2026-11-08T08:00:00Z'}]);await f.poll();
+     assert.deepEqual(await answer.evaluate(node=>[node===questionDraftInput,document.activeElement===node,node.selectionStart,node.selectionEnd]),[true,true,1,3],'Removing an earlier transcript entry also preserves the question input and focus');
      await answer.fill('Keep this answer while the agent works');
      await f.select(2);await f.select(1);assert.equal(await answer.inputValue(),'Keep this answer while the agent works');
      await page.getByRole('button',{name:'Terminal',exact:true}).click();await page.getByRole('button',{name:'Conversation',exact:true}).click();

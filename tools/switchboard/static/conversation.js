@@ -667,13 +667,16 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       lastPaint=snapshot;
       // The transcript now has the launched prompt: drop the stand-in and its starting row.
       if(launchNode.isConnected&&!launchShown())updateActivity();
-      const follow=initial||nearBottom(),height=list.scrollHeight,position=list.scrollTop,keys=new Set();
+      const follow=initial||nearBottom(),height=list.scrollHeight,position=list.scrollTop,keys=new Set(entries.filter(({item})=>!setupMessage(item)).map(({key})=>key));
       if(!follow&&!prepend&&!initial)newOutput=true;
+      // Remove vanished entries before placing retained inputs. Moving a question
+      // ahead of a stale sibling would detach its input and lose keyboard focus.
+      for(const [key,entry] of rendered)if(!keys.has(key)){contentResize?.unobserve(entry.node);entry.node.remove();rendered.delete(key);}
       let previous=launchShown()?launchNode:older,previousRole=null,previousSpeaker=null;
       const runs=activityRuns(),summaryKeys=new Set();liveRun=[...runs.values()].find(run=>run.inProgress)||null;
       for(const {key,item} of entries){
         if(setupMessage(item))continue;
-        const mail=item.kind==='message',notices=mailboxCount(item),signature=item.async_question?JSON.stringify(item.async_question):signatureOf(item),speaker=mail||notices?'Switchboard':item.role==='user'?'You':providerLabel();keys.add(key);
+        const mail=item.kind==='message',notices=mailboxCount(item),signature=item.async_question?JSON.stringify(item.async_question):signatureOf(item),speaker=mail||notices?'Switchboard':item.role==='user'?'You':providerLabel();
         const run=runs.get(key);
         if(run?.start===key){
           let summary=summaries.get(key);
@@ -704,7 +707,6 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
         if(previous.nextSibling!==entry.node)previous.after(entry.node);
         previous=entry.node;
       }
-      for(const [key,entry] of rendered)if(!keys.has(key)){contentResize?.unobserve(entry.node);entry.node.remove();rendered.delete(key);}
       for(const [key,summary] of summaries)if(!summaryKeys.has(key)){summary.remove();summaries.delete(key);}
       for(const sent of visibleOutgoing){
         const signature=JSON.stringify([sent.text,sent.files.map(file=>file.name),sent.state,sent.detail]);let entry=renderedOutgoing.get(sent.id);
