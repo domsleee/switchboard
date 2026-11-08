@@ -344,9 +344,31 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       const note=promptError||(answering?'Answering…':'');if(questionStatus.textContent!==note)questionStatus.textContent=note;questionStatus.hidden=!note;
       if(!panel.hidden&&!form.hidden)sizeDraft();if(follow){list.scrollTop=list.scrollHeight;updateLatest();}
     }
+    const asyncDraftKey=state=>'switchboard-question-draft:'+state.key;
+    function saveAsyncDraft(state){
+      try{
+        if(state.status==='answered'||state.status==='draft'&&!state.answers.some(Boolean)){
+          if(state.saved!==null)sessionStorage.removeItem(asyncDraftKey(state));state.saved=null;return;
+        }
+        const value=JSON.stringify({questions:state.questions,answers:state.answers,custom:state.custom,collapsed:state.collapsed,status:state.status==='sending'?'uncertain':state.status,payload:state.payload,sendKey:state.sendKey,error:state.error});
+        if(value!==state.saved){sessionStorage.setItem(asyncDraftKey(state),value);state.saved=value;}
+      }catch{}
+    }
     function asyncState(item){
       const key=identity(target)+':'+item.async_question.id;
-      if(!asyncQuestions.has(key))asyncQuestions.set(key,{key,status:'draft',collapsed:false,custom:item.async_question.questions.map(q=>!q.options.length),questions:item.async_question.questions,answers:item.async_question.questions.map(()=>''),destination:{host:target.host,thread:chat?.thread,chatKey:identity(target)}});
+      if(!asyncQuestions.has(key)){
+        const questions=item.async_question.questions,state={key,status:'draft',collapsed:false,custom:questions.map(q=>!q.options.length),questions,answers:questions.map(()=>''),destination:{host:target.host,thread:chat?.thread,chatKey:identity(target)}};
+        try{
+          const saved=JSON.parse(sessionStorage.getItem(asyncDraftKey(state)));
+          if(saved&&JSON.stringify(saved.questions)===JSON.stringify(questions)&&Array.isArray(saved.answers)&&saved.answers.length===questions.length&&saved.answers.every(answer=>fits(answer,4000))&&Array.isArray(saved.custom)&&saved.custom.length===questions.length&&saved.custom.every(value=>typeof value==='boolean')){
+            state.answers=saved.answers;state.custom=saved.custom;state.collapsed=saved.collapsed===true;
+            if(['queued','uncertain','failed'].includes(saved.status)&&fits(saved.payload,8192)&&fits(saved.sendKey,128)){
+              state.status=saved.status;state.payload=saved.payload;state.sendKey=saved.sendKey;state.error=fits(saved.error,4000)?saved.error:'';
+            }
+          }
+        }catch{}
+        asyncQuestions.set(key,state);
+      }
       return asyncQuestions.get(key);
     }
     function pendingAsyncQuestion(){return target?.agent==='codex'&&messages.some(item=>item.async_question&&asyncState(item).status!=='answered');}
@@ -359,6 +381,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
         }
       }
       for(const card of list.querySelectorAll('.conversation-async-question'))card.sync?.();
+      for(const state of asyncQuestions.values())saveAsyncDraft(state);
       updateAsyncShortcut();
     }
     function updateAsyncShortcut(){
@@ -417,7 +440,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
         }
         const write=el('button','Write a different answer','conversation-async-write'),other=el('form',undefined,'conversation-question-other'),input=el('input'),submit=el('button','Send');input.type='text';input.maxLength=4000;input.placeholder=question.options.length?'Your answer…':'Type your answer…';input.setAttribute('aria-label',request.questions.length===1?'Type your own answer':'Answer: '+question.title);
         write.type='button';write.onclick=()=>{state.custom[index]=true;card.sync();input.focus({preventScroll:true});};
-        input.value=question.options.includes(state.answers[index])?'':state.answers[index];
+        input.value=state.custom[index]?state.answers[index]:'';
         input.oninput=()=>{state.answers[index]=input.value;syncAsyncQuestions();};
         submit.type='submit';other.append(input);if(request.questions.length===1)other.append(submit);
         other.onsubmit=event=>{event.preventDefault();state.answers[index]=input.value;if(request.questions.length===1)void sendAsyncAnswer(item,state);};
@@ -445,7 +468,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
         send.disabled=locked||!state.answers.every(answer=>answer.trim());
         retry.hidden=!['failed','uncertain'].includes(state.status);
         card.classList.toggle('answering',['sending','queued'].includes(state.status));
-        status.textContent=state.error||'';status.hidden=!status.textContent;
+        status.textContent=state.error||'';status.hidden=!status.textContent;saveAsyncDraft(state);
       };
       card.sync();article.append(card);
     }
@@ -559,7 +582,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
           entries.push({key:startCursor+offset,item:{kind:'message',direction:'received',status:'received',text:body,peer:{label:'Agent'},timestamp:item.timestamp}});continue;
         }
         if(notice&&notice[1].split(', ').every(id=>activity.some(event=>event.id.startsWith('board:'+id+':'))))continue;
-        entries.push({key:startCursor+offset,item});
+        entries.push({key:item.async_question?'question-'+item.async_question.id:startCursor+offset,item});
       }
       for(const event of activity){
         if(startCursor>0&&!received.has(event.id)&&Number.isFinite(firstTime)&&event.timestamp<firstTime)continue;
@@ -648,7 +671,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       const runs=activityRuns(),summaryKeys=new Set();liveRun=[...runs.values()].find(run=>run.inProgress)||null;
       for(const {key,item} of entries){
         if(setupMessage(item))continue;
-        const mail=item.kind==='message',notices=mailboxCount(item),signature=signatureOf(item),speaker=mail||notices?'Switchboard':item.role==='user'?'You':providerLabel();keys.add(key);
+        const mail=item.kind==='message',notices=mailboxCount(item),signature=item.async_question?JSON.stringify(item.async_question):signatureOf(item),speaker=mail||notices?'Switchboard':item.role==='user'?'You':providerLabel();keys.add(key);
         const run=runs.get(key);
         if(run?.start===key){
           let summary=summaries.get(key);

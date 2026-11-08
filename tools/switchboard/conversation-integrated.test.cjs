@@ -131,6 +131,33 @@ test('integrated Conversation journeys use production markup and preserve delive
     }finally{await f.close();}
    }
   });
+  await t.test('question drafts keep their input, focus and text through transcript changes and reloads',async()=>{
+   for(const desktop of [true,false]){
+    const q=asyncQuestion('draft-refresh',[{title:'Which colour should I use?',options:['Blue','Green']}]);
+    const f=await fixture({desktop,viewport:desktop?{width:1100,height:800}:{width:390,height:844},messages:[q],turnState:'working'}),{page}=f;
+    try{
+     f.state='input';await f.refresh();const card=page.getByRole('region',{name:'Codex question'});
+     await card.getByRole('button',{name:'Write a different answer',exact:true}).click();
+     const answer=card.getByLabel('Type your own answer');await answer.fill('Blue');
+     await answer.evaluate(node=>{window.questionDraftInput=node;node.setSelectionRange(1,3);});
+     // The same question can acquire metadata or move when history is refreshed.
+     f.history.set(1,[{role:'assistant',text:'Earlier progress.'},{...q,timestamp:'2026-11-08T08:00:00Z'}]);await f.poll();
+     assert.equal(await answer.inputValue(),'Blue','A custom answer matching an option is still a draft');
+     assert.deepEqual(await answer.evaluate(node=>[node===questionDraftInput,document.activeElement===node,node.selectionStart,node.selectionEnd]),[true,true,1,3],'Refreshing the same question preserves its input and selection');
+     await answer.fill('Keep this answer while the agent works');
+     await f.select(2);await f.select(1);assert.equal(await answer.inputValue(),'Keep this answer while the agent works');
+     await page.getByRole('button',{name:'Terminal',exact:true}).click();await page.getByRole('button',{name:'Conversation',exact:true}).click();
+     assert.equal(await answer.inputValue(),'Keep this answer while the agent works');
+     await page.reload();await answer.waitFor();assert.equal(await answer.inputValue(),'Keep this answer while the agent works','Reload restores unsent question text');
+     assert.equal(f.requests.length,0,'Restoring a draft never sends it');
+     await answer.press('Enter');await card.getByText('Answer on its way…',{exact:true}).waitFor();
+     await page.reload();await card.getByText('Answer on its way…',{exact:true}).waitFor();
+     assert.equal(f.requests.length,1,'Reload keeps the pending receipt without resending');
+     f.history.get(1).push(questionReceipt(f.requests[0].message));await f.poll();await card.getByText('Answered',{exact:true}).waitFor();
+     assert.equal(await page.evaluate(()=>Object.keys(sessionStorage).filter(key=>key.startsWith('switchboard-question-draft:')).length),0,'Confirmed answers clear their saved draft');
+    }finally{await f.close();}
+   }
+  });
   await t.test('Codex async free-text and multiple answers remain inline and recorded answers survive a reload',async()=>{
    const questions=[{title:'Which colour?',options:['Red','Blue']},{title:'What should the label say?',options:[]}];
    const q=asyncQuestion('multi',questions),f=await fixture({messages:[q],turnState:'working'}),{page}=f;
@@ -138,7 +165,11 @@ test('integrated Conversation journeys use production markup and preserve delive
     f.state='input';await f.refresh();const card=page.getByRole('region',{name:'Codex question'}),send=card.getByRole('button',{name:'Send answers',exact:true});
     await send.waitFor();assert.equal(await send.isDisabled(),true);
     await card.getByRole('button',{name:/Blue/}).click();assert.equal(f.requests.length,0);assert.equal(await send.isDisabled(),true);
-    await card.getByLabel('Answer: What should the label say?').fill('-Awaiting review');await send.click();
+    await card.getByLabel('Answer: What should the label say?').fill('-Awaiting review');
+    await page.reload();await send.waitFor();
+    assert.equal(await card.getByRole('button',{name:/Blue/}).getAttribute('aria-pressed'),'true');
+    assert.equal(await card.getByLabel('Answer: What should the label say?').inputValue(),'-Awaiting review');
+    assert.equal(f.requests.length,0,'Reload restores both selected and typed answers without sending');await send.click();
     await card.getByText('Answer on its way…',{exact:true}).waitFor();
     const answers=JSON.parse(f.requests[0].message.split('\n')[1]);
     assert.deepEqual(answers,questions.map((question,index)=>({questionItemId:'multi',question:question.title,answer:index===0?'Blue':'-Awaiting review'})));
@@ -148,6 +179,20 @@ test('integrated Conversation journeys use production markup and preserve delive
     assert.equal(await page.getByRole('region',{name:'Codex question'}).getByRole('button',{name:/Blue/}).isDisabled(),true);
     assert.equal(await page.getByRole('region',{name:'Codex question'}).getByRole('button',{name:/Blue/}).getAttribute('aria-pressed'),'true');
     assert.deepEqual(f.connections,[]);
+   }finally{await f.close();}
+  });
+  await t.test('a question answer with an uncertain receipt survives reload and retries its original delivery',async()=>{
+   const q=asyncQuestion('uncertain-reload',[{title:'What label should I use?',options:[]}]);
+   const f=await fixture({messages:[q]}),{page}=f;
+   try{
+    const card=page.getByRole('region',{name:'Codex question'}),answer=card.getByLabel('Type your own answer');
+    await answer.fill('Keep my label');f.replyMode='lost';await answer.press('Enter');
+    await card.getByRole('button',{name:'Retry',exact:true}).waitFor();const sent=f.requests[0];
+    await page.reload();await card.getByRole('button',{name:'Retry',exact:true}).waitFor();
+    assert.equal(f.requests.length,1,'Reload never retries an uncertain answer automatically');
+    assert.equal(await answer.inputValue(),'Keep my label');
+    f.replyMode='queue';await card.getByRole('button',{name:'Retry',exact:true}).click();
+    await card.getByText('Answer on its way…',{exact:true}).waitFor();assert.deepEqual(f.requests[1],sent);
    }finally{await f.close();}
   });
   await t.test('pending questions stay discoverable without taking over the draft, and sent answers fold into a receipt',async()=>{
