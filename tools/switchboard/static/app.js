@@ -1560,8 +1560,8 @@ $('new-tab-project-popover').addEventListener('focusout',event=>{if(!$('new-tab-
 function paintNewTabProjectChip(){
   const project=$('new-tab-project').value.trim();
   const full=/^(?:[A-Za-z]:[\\/]|\/)/.test(project);
-  // A full path shows its last folder, which a narrow chip would otherwise cut off.
-  $('new-tab-project-chip-prefix').hidden=!project||full;$('new-tab-project-chip-name').textContent=full?lastFolder(project):project||'choose a folder';
+  // Keep the distinguishing folder names visible in the narrow chip too.
+  $('new-tab-project-chip-prefix').hidden=!project||full;$('new-tab-project-chip-name').textContent=full?newTabProjectLabel(project):project||'choose a folder';
   $('new-tab-project-chip').title=full?project:'Choose project';
 }
 // Each browser remembers the last project per computer; switchboard is the default.
@@ -1624,6 +1624,14 @@ function openNewTabDialog(elevated){
   $('new-tab-prompt').focus();
 }
 function lastFolder(path){return path.split(/[\\/]/).filter(Boolean).pop()||path;}
+function newTabProjectLabel(path){
+  const parts=path.replaceAll('\\','/').split('/').filter(Boolean);
+  for(let count=1;count<parts.length;count++){
+    const label=parts.slice(-count).join('/'),suffix='/'+label.toLowerCase();
+    if(!newTabProjects.some(other=>other!==path&&('/'+other.replaceAll('\\','/')).toLowerCase().endsWith(suffix)))return label;
+  }
+  return path;
+}
 function newTabLookup(inputId,listId,buttonId,items,emptyText,onChange=()=>{},next=null){
   const input=$(inputId),list=$(listId),button=$(buttonId),popup=list.parentElement;let index=-1,showAll=false;
   const status=popup.querySelector('.new-tab-options-status'),hint=popup.querySelector('.new-tab-options-hint');
@@ -1633,16 +1641,17 @@ function newTabLookup(inputId,listId,buttonId,items,emptyText,onChange=()=>{},ne
   // A tapped or clicked suggestion moves on to the next field; the keyboard keeps its place.
   function choose(value,pointer=false){input.value=value;onChange();close();if(pointer&&next)$(next).focus();else{input.focus();input.select();}}
   function open(all=false){
-    showAll=all;const query=all?'':input.value.toLowerCase();list.replaceChildren();index=-1;input.removeAttribute('aria-activedescendant');
-    const matches=items().filter(([name,detail])=>(name+' '+detail).toLowerCase().includes(query));
+    showAll=all;const query=all?'':input.value.toLowerCase().replaceAll('\\','/');list.replaceChildren();index=-1;input.removeAttribute('aria-activedescendant');
+    const matches=items().filter(([name,detail,label=''])=>(name+' '+detail+' '+label).toLowerCase().replaceAll('\\','/').includes(query));
     // A full path ranks by its last folder too, so typing a repository name finds it.
-    const rank=([name])=>Math.max(...[name,lastFolder(name)].map(text=>text.toLowerCase()===query?2:text.toLowerCase().startsWith(query)?1:0));
+    const rank=([name,,label=name])=>Math.max(...[name,lastFolder(name),label].map(text=>{text=text.toLowerCase().replaceAll('\\','/');return text===query?2:text.startsWith(query)?1:0;}));
     matches.sort((a,b)=>rank(b)-rank(a));
-    for(const [name,detail] of matches){
+    for(const [name,detail,label=name] of matches){
       const option=document.createElement('div');option.id=listId+'-'+list.children.length;option.setAttribute('role','option');option.setAttribute('aria-selected','false');
-      const text=document.createElement('span'),description=document.createElement('small');const at=query?name.toLowerCase().indexOf(query):-1;
-      if(at<0)text.textContent=name;else{const match=document.createElement('b');match.textContent=name.slice(at,at+query.length);text.append(name.slice(0,at),match,name.slice(at+query.length));}
-      description.textContent=detail;option.append(text,description);
+      option.dataset.value=name;option.title=name;
+      const text=document.createElement('span'),description=document.createElement('small');const at=query?label.toLowerCase().indexOf(query):-1;
+      if(at<0)text.textContent=label;else{const match=document.createElement('b');match.textContent=label.slice(at,at+query.length);text.append(label.slice(0,at),match,label.slice(at+query.length));}
+      description.textContent=detail;description.hidden=!detail;option.append(text,description);
       option.onmousedown=event=>event.preventDefault();option.onclick=()=>choose(name,true);list.append(option);
     }
     status.textContent=!matches.length&&emptyText?emptyText():'';
@@ -1661,7 +1670,7 @@ function newTabLookup(inputId,listId,buttonId,items,emptyText,onChange=()=>{},ne
     }else if(event.key==='Escape'&&!popup.hidden){event.preventDefault();event.stopPropagation();close();
     }else if((event.key==='Enter'||(event.key==='Tab'&&!event.shiftKey))&&!popup.hidden&&index>=0){
       // Tab fills the suggestion and moves on; Enter fills it before the form submits.
-      choose(list.querySelectorAll('[role=option]')[index].firstChild.textContent);
+      choose(list.querySelectorAll('[role=option]')[index].dataset.value);
     }
   };
   return {close,open,refresh(){if(!popup.hidden)open(showAll);}};
@@ -1678,7 +1687,7 @@ function updateNewTabProject(){
   $('new-tab-project-guess-row').hidden=!guess;$('new-tab-project-guess').textContent=guess;$('new-tab-project-guess').dataset.name=guess;
 }
 let newTabProjects=[],newTabProjectMessage='',newTabProjectRequest;
-const newTabProjectLookup=newTabLookup('new-tab-project','new-tab-projects','new-tab-project-lookup',()=>newTabProjects.map(name=>[name,'']),()=>newTabProjectMessage||'No matching folders. Type a name in ~/git or a full path.',()=>{newTabProjectEdited=true;updateNewTabProject();},'new-tab-prompt');
+const newTabProjectLookup=newTabLookup('new-tab-project','new-tab-projects','new-tab-project-lookup',()=>newTabProjects.map(name=>{const path=name.replaceAll('\\','/');return [name,path.includes('/')?path.slice(0,path.lastIndexOf('/')):'',newTabProjectLabel(name)];}),()=>newTabProjectMessage||'No matching folders. Type a name in ~/git or a full path.',()=>{newTabProjectEdited=true;updateNewTabProject();},'new-tab-prompt');
 // Registered after the lookup's own keys: Tab fills the name, then returns to the prompt.
 $('new-tab-project').addEventListener('keydown',event=>{if(event.key==='Tab'&&!event.shiftKey){event.preventDefault();closeNewTabProjectPicker(true);}});
 // The closest listed name, by containment or a small edit distance.

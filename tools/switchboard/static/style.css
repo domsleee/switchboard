@@ -413,6 +413,8 @@ body.sidebar-collapsed #artifact-preview header{padding-left:42px}
 .new-tab-options [aria-selected=true]{background:#2a2c33}
 .new-tab-options [aria-selected=true] span{color:#fff}
 #new-tab-projects{max-height:220px;overflow:auto}
+#new-tab-projects [role=option]{display:grid;grid-template-columns:minmax(0,1fr);gap:2px}
+#new-tab-projects small{overflow:hidden;text-overflow:ellipsis}
 .new-tab-options p{margin:6px 10px;color:var(--nt-muted);font-size:12px}
 .new-tab-options p:empty,.new-tab-options [hidden]{display:none}
 .new-tab-options .new-tab-options-hint{margin:6px 0 0;padding:8px 10px 2px;overflow:hidden;border-top:1px solid #26282e;color:var(--nt-faint);font-size:11.5px;text-overflow:ellipsis;white-space:nowrap}

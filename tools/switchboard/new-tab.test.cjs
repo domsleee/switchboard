@@ -40,7 +40,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
         const name=new URL(route.request().url()).searchParams.get('name');uploads.push({path,name,body:route.request().postDataBuffer()});
         return json({path:"C:/User files/attachments/it's "+name});
       }
-      if(path==='/hosts/windows/project-list'){if(delayProjects)await new Promise(resolve=>releaseProjects=resolve);return projectError?route.fulfill({status:503,body:'unavailable'}):json(['dotfiles','switchboard','switchboard-tools','C:\\work\\Org\\Sample.Tools','C:\\work\\Org\\Sample']);}
+      if(path==='/hosts/windows/project-list'){if(delayProjects)await new Promise(resolve=>releaseProjects=resolve);return projectError?route.fulfill({status:503,body:'unavailable'}):json(['dotfiles','switchboard','switchboard-tools','C:\\work\\Org\\Sample.Tools','C:\\work\\Org\\Sample','C:/work/Glow/DotNet','C:/work/Glow2/DotNet']);}
       if(path==='/hosts/other/project-list')return json(['other-project']);
       if(path==='/hosts/windows/model-list')return json({codex:[{id:'gpt-6.1-sol',name:'GPT-6.1-Sol',default:true},{id:'gpt-6-luna',name:'GPT-6-Luna',default:false}]});
       if(path.startsWith('/hosts/')){connected=true;frameBoots++;return route.fulfill({contentType:'text/html',body:`<div id="terminal"><input id="terminal-input"></div><script>
@@ -175,12 +175,21 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
         // Folders from projects.json arrive as full paths and rank by their last folder.
         await page.locator('#new-tab-project-chip').click();
         await page.locator('#new-tab-project').fill('sample');
-        await page.getByRole('option',{name:'C:\\work\\Org\\Sample',exact:true}).waitFor();
-        assert.deepEqual(await page.locator('#new-tab-projects [role=option] span').allTextContents(),['C:\\work\\Org\\Sample','C:\\work\\Org\\Sample.Tools']);
+        await page.locator('#new-tab-projects [role=option]').filter({has:page.locator('span',{hasText:/^Sample$/})}).waitFor();
+        assert.deepEqual(await page.locator('#new-tab-projects [role=option] span').allTextContents(),['Sample','Sample.Tools']);
+        assert.deepEqual(await page.locator('#new-tab-projects [role=option] small').allTextContents(),['C:/work/Org','C:/work/Org']);
         await page.keyboard.press('Tab');
         assert.equal(await page.locator('#new-tab-project-help').textContent(),'C:\\work\\Org\\Sample');
         assert.equal(await page.locator('#new-tab-project-chip-name').textContent(),'Sample');
         assert.equal(await page.locator('#new-tab-project-chip-prefix').isHidden(),true);
+        // Equal leaf names retain enough parents to distinguish each workspace.
+        await page.locator('#new-tab-project-chip').click();
+        await page.locator('#new-tab-project').fill('dotnet');
+        await page.waitForFunction(()=>document.querySelectorAll('#new-tab-projects [role=option]').length===2);
+        assert.deepEqual(await page.locator('#new-tab-projects [role=option] span').allTextContents(),['Glow/DotNet','Glow2/DotNet']);
+        await page.locator('#new-tab-projects [role=option]').filter({has:page.locator('span',{hasText:/^Glow2\/DotNet$/})}).click();
+        assert.equal(await page.locator('#new-tab-project').inputValue(),'C:/work/Glow2/DotNet');
+        assert.equal(await page.locator('#new-tab-project-chip-name').textContent(),'Glow2/DotNet');
         await page.locator('#new-tab-project-chip').click();
         await page.locator('#new-tab-project').fill('dot');
         await page.getByRole('option',{name:'dotfiles',exact:true}).waitFor();
