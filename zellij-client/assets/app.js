@@ -3593,7 +3593,11 @@ function initWebSockets(boot, term, fitAddon) {
         focusSent = false;
         let missingPaneReported = false;
         const connectionResult = new Promise(resolve => {
-            const timeout = setTimeout(() => { closeSockets(); }, 5000);
+            // Starting an attachment worker can take longer than a socket pair, notably
+            // on Windows with Defender. Giving up early used to fall back to the legacy,
+            // non-resumable sockets, which every later service update then disconnects.
+            const timeout = setTimeout(() => { closeSockets(); },
+                nextBoot.resumable?.protocol === 1 ? 30000 : 5000);
             settleConnection = (ok) => {
                 clearTimeout(timeout);
                 settleConnection = null;
@@ -3769,7 +3773,9 @@ function initWebSockets(boot, term, fitAddon) {
         if (!catalog.ok) return false;
         const { sessions } = await catalog.json();
         if (!sessions.some(session => session.name === currentSession && session.web_clients_allowed)) return false;
-        const response = await authorizedFetch(`${base}/session?session=${encodeURIComponent(currentSession)}&welcome=false`, {
+        // Ask for a resumable attachment again, so one reconnect does not leave
+        // this viewer on legacy sockets until the page reloads.
+        const response = await authorizedFetch(`${base}/session?session=${encodeURIComponent(currentSession)}&welcome=false&resumable=true`, {
             method: "POST",
         }, recovery);
         if (!response.ok || stopped) return false;

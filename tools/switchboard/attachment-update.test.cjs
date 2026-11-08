@@ -77,6 +77,21 @@ let native, relay, browser, updateController, created=false;
   await page.waitForFunction(()=>document.querySelector('#terminals>iframe.active')?.contentWindow.testPair?.terminal.readyState===1);
   await page.waitForFunction(()=>document.querySelector('#terminals>iframe.active')?.contentWindow.__zjLastMobileState?.active_pane);
   const workers=(await(await fetch(url+'/api/health')).json()).attachment_workers;assert.equal(workers.length,1);
+  {
+    // A slow first resumable hello (a worker starting under Defender) must not
+    // fall back to legacy sockets, which every service update disconnects.
+    const slowContext=await browser.newContext({viewport:{width:1200,height:800}}),slow=await slowContext.newPage(),opened=[];
+    let delayed=false;
+    await slowContext.routeWebSocket(/\/ws\/resume/,async ws=>{if(!delayed){delayed=true;await sleep(7000);}ws.connectToServer();});
+    slow.on('websocket',socket=>opened.push(new URL(socket.url()).pathname));
+    await slow.addInitScript(()=>window.addEventListener('zellij-resumable-sockets',event=>{window.testPair=event.detail;}));
+    await slow.goto(url);
+    await slow.waitForFunction(()=>document.querySelector('#terminals>iframe.active')?.contentWindow.testPair?.terminal.readyState===1,null,{timeout:30000});
+    assert.ok(delayed,'The first resumable socket was delayed');
+    assert.deepEqual(opened.filter(path=>/\/ws\/(terminal|control)/.test(path)),[],'A slow resumable attachment fell back to legacy sockets');
+    await slowContext.close();
+    console.log('PASS: a slow first resumable attachment stays resumable');
+  }
   await page.evaluate(()=>{const w=document.querySelector('#terminals>iframe.active').contentWindow;window.savedTerm=w.term;window.savedDocument=w.document;});
   fs.writeFileSync(path.join(dir,'go'),'');
   let expected='';

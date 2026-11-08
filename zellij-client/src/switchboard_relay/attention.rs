@@ -563,6 +563,8 @@ fn subscribe(
     })
 }
 
+const PEER_RESTART_GRACE: Duration = Duration::from_secs(30);
+
 #[derive(Default)]
 pub(super) struct PollState {
     cache: HashMap<String, Value>,
@@ -570,6 +572,8 @@ pub(super) struct PollState {
     scanned: HashMap<String, tokio::time::Instant>,
     sessions_scanned: HashMap<String, tokio::time::Instant>,
     refreshed: HashMap<String, tokio::time::Instant>,
+    // When each host last answered with a snapshot.
+    reached: HashMap<String, tokio::time::Instant>,
     // Rises whenever a cached snapshot changes, waking peers waiting on this computer.
     pub(super) changes: tokio::sync::watch::Sender<u64>,
     // Working panes whose latest screen could not be read.
@@ -599,6 +603,24 @@ impl PollState {
         snapshot["errors"] =
             json!([{"host":host,"message":format!("Host snapshots unavailable: {error:#}")}]);
         self.changes.send_modify(|version| *version += 1);
+    }
+
+    /// A paired computer restarts its relay on every update, which takes seconds.
+    /// Until it has been silent for `PEER_RESTART_GRACE`, keep its last status and
+    /// mark the error pending, so sidebars do not flip its tabs to Unavailable.
+    fn peer_unavailable(&mut self, host: &str, error: &anyhow::Error) {
+        let recent = self
+            .reached
+            .get(host)
+            .is_some_and(|at| at.elapsed() < PEER_RESTART_GRACE);
+        let Some(snapshot) = self.cache.get_mut(host).filter(|_| recent) else {
+            return self.unavailable(host, error);
+        };
+        let pending = json!([{"host":host,"message":format!("Host snapshots unavailable: {error:#}"),"pending":true}]);
+        if snapshot["errors"] != pending {
+            snapshot["errors"] = pending;
+            self.changes.send_modify(|version| *version += 1);
+        }
     }
 
     pub(super) fn update(&mut self, host: &str, snapshot: &mut Value) -> bool {
@@ -806,6 +828,7 @@ impl PollState {
         }
         self.cache.insert(host.into(), snapshot.clone());
         self.refreshed.insert(host.into(), now);
+        self.reached.insert(host.into(), now);
         changed
     }
     pub(super) fn restart_identity(
@@ -1161,7 +1184,7 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
                                             "Status unavailable from paired computer: {error:#}"
                                         ),
                                     );
-                                    poll.unavailable(
+                                    poll.peer_unavailable(
                                         &id,
                                         &anyhow::anyhow!(
                                             "Peer snapshots unavailable; check connection and retry"
@@ -2284,6 +2307,30 @@ esac
         assert_eq!(cold["errors"][0]["host"], "windows");
         // Browsers keep the last status shown instead of flashing "Unavailable".
         assert_eq!(cold["errors"][0]["pending"], true);
+    }
+
+    #[test]
+    fn restarting_peer_keeps_its_status_until_the_grace_period_ends() {
+        let mut poll = PollState::default();
+        let mut snapshot = json!({"panes":[{"session":"main","pane_id":1,"state":"working"}],"tabs":[{"session":"main","id":42}],"errors":[]});
+        poll.update("peer", &mut snapshot);
+        poll.peer_unavailable("peer", &anyhow::anyhow!("Connection refused"));
+        let merged = poll.merged(&["peer".into()]);
+        assert_eq!(merged["panes"][0]["state"], "working");
+        assert_eq!(merged["errors"][0]["pending"], true);
+        // Silent for longer than a restart: report it unavailable as before.
+        poll.reached.insert(
+            "peer".into(),
+            tokio::time::Instant::now() - PEER_RESTART_GRACE,
+        );
+        poll.peer_unavailable("peer", &anyhow::anyhow!("Connection refused"));
+        let merged = poll.merged(&["peer".into()]);
+        assert!(merged["panes"].as_array().unwrap().is_empty());
+        assert_eq!(merged["tabs"][0]["id"], 42);
+        assert!(merged["errors"][0]["pending"].is_null());
+        // A peer never reached is unavailable at once.
+        poll.peer_unavailable("new-peer", &anyhow::anyhow!("Connection refused"));
+        assert!(poll.cache["new-peer"]["errors"][0]["pending"].is_null());
     }
 
     #[test]
