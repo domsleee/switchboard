@@ -928,6 +928,12 @@ impl Chat {
                         .filter(|model| !model.is_empty() && *model != "<synthetic>")
                     {
                         self.model = Some(clip(model, 128));
+                        // Claude Code records the turn's effort beside the message.
+                        self.reasoning_effort = v["effort"]
+                            .as_str()
+                            .or_else(|| v["perTurnEffort"].as_str())
+                            .filter(|effort| !effort.is_empty())
+                            .map(|effort| clip(effort, 32));
                     }
                 }
                 if let Some(id) = v["sessionId"].as_str() {
@@ -2193,6 +2199,19 @@ mod tests {
         assert_eq!(claude.summary()["model"], "claude-opus-4-6");
         assert_eq!(claude.messages[0]["model"], "claude-opus-4-6");
         assert!(claude.summary()["reasoning_effort"].is_null());
+        claude.record(&json!({"type":"assistant","effort":"high","perTurnEffort":"high","message":{"model":"claude-opus-5-5","content":"Effort reply"}}), 0);
+        assert_eq!(claude.summary()["model"], "claude-opus-5-5");
+        assert_eq!(claude.summary()["reasoning_effort"], "high");
+        assert_eq!(claude.messages[1]["reasoning_effort"], "high");
+        claude.record(
+            &json!({"type":"assistant","message":{"model":"<synthetic>","content":"API error"}}),
+            0,
+        );
+        assert_eq!(
+            claude.summary()["reasoning_effort"],
+            "high",
+            "A synthetic message keeps the turn's effort"
+        );
     }
 
     #[test]
