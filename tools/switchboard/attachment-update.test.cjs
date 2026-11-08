@@ -89,6 +89,8 @@ let native, relay, browser, updateController, created=false;
     await slow.waitForFunction(()=>document.querySelector('#terminals>iframe.active')?.contentWindow.testPair?.terminal.readyState===1,null,{timeout:30000});
     assert.ok(delayed,'The first resumable socket was delayed');
     assert.deepEqual(opened.filter(path=>/\/ws\/(terminal|control)/.test(path)),[],'A slow resumable attachment fell back to legacy sockets');
+    // Retire the viewer; a closed page would keep its native client for ten minutes.
+    assert.equal(await slow.evaluate(()=>document.querySelector('#terminals>iframe.active').contentWindow.__zjSuspendTerminal()),true);
     await slowContext.close();
     console.log('PASS: a slow first resumable attachment stays resumable');
   }
