@@ -86,7 +86,7 @@ test('another open dialog or an unselected tab leaves the request on its badge',
 
 test('a tab with a password request is marked and labelled before any agent state',()=>{
   const source=fs.readFileSync(__dirname+'/static/app.js','utf8');
-  const context={ready:{},seenAttention:{},paneAttention:new Map()};
+  const context={ready:{},seenAttention:{},paneAttention:new Map(),launchingTab:()=>null};
   vm.createContext(context);
   vm.runInContext(source.slice(source.indexOf('function attentionKey('),source.indexOf('const reviewSent=')),context);
   vm.runInContext(source.slice(source.indexOf('function isReady('),source.indexOf('function matchesSearch(')),context);
@@ -138,7 +138,7 @@ test('the sidebar badges a password request, asks when its tab is selected, and 
     assert.equal(await page.locator('#askpass-command').textContent(),'sudo -A install x /etc/y');
     assert.equal(await page.locator('#askpass-computer').textContent(),'Linux PC');
     await page.keyboard.type('hunter2');
-    await page.keyboard.press('Enter');
+    await Promise.all([page.waitForResponse(response=>new URL(response.url()).pathname==='/api/askpass/answer'),page.keyboard.press('Enter')]);
     await page.locator('#askpass-dialog').waitFor({state:'hidden'});
     assert.deepEqual(answers,[{host:'linux',id:'r1',password:'hunter2'}]);
     assert.equal(await page.locator('#askpass-password').inputValue(),'');
