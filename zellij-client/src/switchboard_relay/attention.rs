@@ -1707,6 +1707,25 @@ pub(super) async fn acknowledge(
 #[cfg(test)]
 mod tests {
     #[test]
+    fn switchboard_claude_folder_trust_is_approval_before_a_conversation_exists() {
+        use super::*;
+        let screen = include_str!("fixtures/claude-folder-trust.txt");
+        for pane in [json!({"pane_command":"claude"}), json!({"title":"claude"})] {
+            let state = classify(&pane, screen);
+            assert_eq!(state["agent"], "claude");
+            assert_eq!(state["state"], "approval");
+        }
+        let ready = "\n❯ \n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n";
+        assert_eq!(
+            classify(
+                &json!({"pane_command":"claude"}),
+                &format!("{screen}{ready}")
+            )["state"],
+            "ready"
+        );
+    }
+
+    #[test]
     fn switchboard_repo_name_gives_worktrees_their_main_checkout() {
         let temp = tempfile::tempdir().unwrap();
         let main = temp.path().join("sample");

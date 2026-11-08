@@ -22,6 +22,7 @@ test('Conversation answers Claude permission prompts and questions without Termi
     if(p.endsWith('/conversation/prompt')){f.reads++;return f.promptStatus===200?route.fulfill({json:{prompt:f.prompt}}):route.fulfill({status:f.promptStatus,body:''});}
     if(p.endsWith('/conversation/answer')){f.answers.push(route.request().postDataJSON());return f.answerStatus===200?route.fulfill({json:{ok:true}}):route.fulfill({status:f.answerStatus,body:'The question changed. Check it and choose again.'});}
     if(p.startsWith('/api/chats/'))return route.fulfill({json:{session_id:'s1',messages:[{role:'assistant',text:'I need to run a command.'}],start_cursor:0,next_cursor:null}});
+    if(p.startsWith('/api/'))return route.fulfill({json:{}});
     if(p==='/')return route.fulfill({contentType:'text/html',body:`<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/conversation.css"><style>body{margin:0}#terminals{position:relative;height:100dvh}</style><main id="terminals"><iframe id="terminal"></iframe><section id="artifact-preview" hidden></section></main><script src="/conversation.js"></script><script>window.current={key:'pane7',host:'fixture',session:'main',tab:3,pane:7,title:'Switchboard',agent:'claude',state:'approval',chatId:'chat-1',frame:document.getElementById('terminal')};localStorage.setItem('switchboard-view-mode','conversation');localStorage.setItem('switchboard-mobile-view-mode','conversation');SwitchboardConversation.install({selection:()=>current,terminal(){}});</script>`});
     return route.fulfill({path:path.join(__dirname,'static',path.basename(p)),contentType:p.endsWith('.css')?'text/css':'text/javascript'});
    });
@@ -67,9 +68,30 @@ test('Conversation answers Claude permission prompts and questions without Termi
    f.prompt=permission;await poll();await card.waitFor();
    const reads=f.reads;await page.evaluate(()=>{current.state='working';SwitchboardConversation.update();});
    assert.equal(await card.isVisible(),false);await page.evaluate(()=>{skew+=2000;intervals.forEach(fn=>fn());});assert.equal(f.reads,reads,'No screen reads while the agent works');
+   // Folder trust appears before Claude has a transcript. Waiting for the user's
+   // answer must not turn an approval into a failed connection.
+   f.prompt={detail:['Accessing workspace:','C:\\git\\GitHub\\WiseTechGlobal\\Tools.QGLWrap','Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to review what\'s in this folder first.',"Claude Code'll be able to read, edit, and execute files here.",'Security guide'],question:'Do you trust this folder?',token:'trust1',choices:[{label:'No, exit',number:null,checked:null,text:false},{label:'Yes, I trust this folder',number:null,checked:null,text:false}]};
+   f.answerStatus=200;
+   await page.evaluate(()=>{current={...current,chatId:null,state:'approval'};SwitchboardConversation.update();});
+   await poll();await card.getByText('Do you trust this folder?',{exact:true}).waitFor();
+   await page.evaluate(()=>{skew+=60000;intervals.forEach(fn=>fn());});
+   assert.equal(await page.locator('.conversation-notice').textContent(),'Approval needed before the conversation can start.');
+   assert.equal(await page.getByRole('button',{name:'Retry connection',exact:true}).isVisible(),false);
+   assert.equal(await page.getByLabel('Reply draft').isVisible(),false);
+   assert.ok((await card.locator('.conversation-question-detail').textContent()).includes('Tools.QGLWrap'));
+   const trustBox=await card.boundingBox();assert.ok(trustBox.y>=0&&trustBox.y+trustBox.height<=viewport.height,'Startup approval fits the viewport');
+   if(process.env.MODE_SCREENSHOTS)await page.screenshot({path:`${process.env.MODE_SCREENSHOTS}/conversation-folder-trust-${viewport.width}.png`});
+   await card.getByRole('button',{name:'Yes, I trust this folder',exact:true}).click();
+   await page.waitForFunction(()=>document.querySelector('.conversation-question').classList.contains('answering'));
+   assert.deepEqual(f.answers.at(-1),{session:'main',tab_id:3,pane_id:7,token:'trust1',choice:1});
+   await page.evaluate(()=>{current.state='ready';SwitchboardConversation.update();});
+   assert.equal(await card.isVisible(),false);
+   assert.equal(await page.locator('.conversation-notice').textContent(),'Send a message to start the conversation.');
+   await page.evaluate(()=>{current={...current,chatId:'chat-1'};SwitchboardConversation.update();});
    // Codex panes and older relays keep the Open Terminal fallback.
+   const codexReads=f.reads;
    await page.evaluate(()=>{current.state='approval';current.agent='codex';SwitchboardConversation.update();});
-   assert.equal(await card.isVisible(),false);assert.equal(f.reads,reads);
+   assert.equal(await card.isVisible(),false);assert.equal(f.reads,codexReads);
    f.promptStatus=404;await page.evaluate(()=>{current.agent='claude';SwitchboardConversation.update();});
    await poll();
    const after=f.reads;await page.evaluate(()=>{skew+=2000;intervals.forEach(fn=>fn());});await page.waitForTimeout(100);
