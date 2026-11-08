@@ -97,7 +97,9 @@
     while(walker.nextNode()){const text=walker.currentNode;if((text.parentElement===parent||text.parentElement.matches('p,li,td,h1,h2,h3,h4,h5,h6'))&&!text.parentElement.closest('blockquote,.conversation-media')&&mediaPath.test(text.data)&&(imageExt.test(text.data.trim())||videoExt.test(text.data.trim()))&&lineEdge(text.previousSibling,true)&&lineEdge(text.nextSibling,false))paths.push(text);}
     for(const text of paths){const path=text.data.trim();text.replaceWith(media(path,path.split(/[\\/]/).pop(),videoExt.test(path)?'video':'image',context,gallery));}
     // Agents print bare URLs; markdown only links <url> and [text](url). Link the rest,
-    // leaving trailing sentence punctuation outside the link.
+    // leaving trailing sentence punctuation outside the link. The relay splits text at
+    // characters like _ and (, so join adjacent pieces first.
+    parent.normalize();
     const urls=document.createTreeWalker(parent,NodeFilter.SHOW_TEXT),bare=[];
     while(urls.nextNode()){const text=urls.currentNode;if(/https?:\/\//i.test(text.data)&&!text.parentElement.closest('a,pre,code,.conversation-media'))bare.push(text);}
     for(const text of bare){

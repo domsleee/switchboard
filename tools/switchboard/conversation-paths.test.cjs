@@ -36,7 +36,8 @@ test('Bare URLs become links, keeping sentence punctuation outside and code unto
  try{const page=await browser.newPage();await page.goto(`http://127.0.0.1:${server.address().port}`);
   await page.evaluate(()=>SwitchboardConversationMedia.render(document.getElementById('message'),{markdown:[
    {type:'start',tag:'p'},{type:'text',text:"I've opened PR #428: https://github.com/domsleee/switchboard/pull/428."},{type:'end'},
-   {type:'start',tag:'p'},{type:'text',text:'See (https://en.wikipedia.org/wiki/Tab_(interface)) and http://localhost:8199/ then '},{type:'code',text:'curl https://example.com/x'},{type:'end'}]},{host:'windows',project:'C:\\repo'}));
+   // The relay's markdown parser splits text at _ and (, as here.
+   {type:'start',tag:'p'},{type:'text',text:'See (https://en.wikipedia.org/wiki/Tab'},{type:'text',text:'_'},{type:'text',text:'(interface)) and http://localhost:8199/ then '},{type:'code',text:'curl https://example.com/x'},{type:'end'}]},{host:'windows',project:'C:\\repo'}));
   const links=await page.locator('#message a').evaluateAll(as=>as.map(a=>[a.textContent,a.href,a.target,a.rel]));
   assert.deepEqual(links,[
    ['https://github.com/domsleee/switchboard/pull/428','https://github.com/domsleee/switchboard/pull/428','_blank','noopener noreferrer'],
