@@ -6,6 +6,9 @@ test('New Tab shares the model and effort picker and launches and remembers the 
  try{for(const mode of ['conversation','terminal'])for(const phone of [false,true])await t.test(`${mode}, ${phone?'phone':'desktop'}`,async()=>{
   const viewport=phone?{width:390,height:844}:{width:1280,height:900};
   const page=await browser.newPage({viewport,hasTouch:phone,isMobile:phone}),errors=[],launches=[];
+  let modelGate=Promise.resolve(),releaseModels,modelsFail=false;
+  let modelCatalog=[{id:'gpt-6.1-sol',name:'GPT-6.1-Sol',default:true,efforts:[{id:'low'},{id:'high'}]},{id:'gpt-6-astra',name:'GPT-6-Astra',efforts:[{id:'low'},{id:'high'},{id:'xhigh'}]}];
+  let claudeCatalog=[{id:'claude-opus-5-5',name:'Opus 5.5',efforts:[{id:'low'},{id:'high'},{id:'xhigh'},{id:'max'}]}];
   page.setDefaultTimeout(7000);page.on('pageerror',e=>errors.push(e.message));
   const panes=[{pane_id:1,is_plugin:false,tab_position:0,cwd:'/home/fixture/git/project'}];
   const tabs=[{host:'fixture',session:'main',id:1,position:0,name:'Existing work',panes:[panes[0]]}];
@@ -16,14 +19,17 @@ test('New Tab shares the model and effort picker and launches and remembers the 
    if(p==='/api/hosts/fixture')return json({id:'fixture',name:'Desktop',local:true,sessions:[{name:'main',web_clients_allowed:true}]});
    if(p==='/api/attention'&&url.searchParams.has('after'))return;
    if(p==='/api/attention')return json({tabs,panes:[],errors:[]});
-   if(p==='/hosts/fixture/model-list')return json({codex:[{id:'gpt-6.1-sol',name:'GPT-6.1-Sol',default:true,efforts:[{id:'low'},{id:'high'}]},{id:'gpt-6-astra',name:'GPT-6-Astra',efforts:[{id:'low'},{id:'high'},{id:'xhigh'}]}]});
+   if(p==='/hosts/fixture/model-list'){
+    await modelGate;
+    return modelsFail?route.fulfill({status:503,body:'Unavailable'}):json({codex:modelCatalog,claude:claudeCatalog});
+   }
    if(p==='/hosts/fixture/project-list')return json(['switchboard','project']);
    if(p==='/hosts/fixture/new-tab'){
     launches.push(route.request().postDataJSON());
-    const pane={pane_id:2,is_plugin:false,tab_position:1},tab={host:'fixture',session:'main',id:2,position:1,name:'New task',panes:[pane]};panes.push(pane);tabs.push(tab);
+    const id=panes.length+1,pane={pane_id:id,is_plugin:false,tab_position:id-1},tab={host:'fixture',session:'main',id,position:id-1,name:'New task',panes:[pane]};panes.push(pane);tabs.push(tab);
     const frame=page.frames().find(f=>f.url().includes('/hosts/fixture/'));
     if(frame)await frame.evaluate(payload=>{window.payload=payload;window.report();},{session_name:'main',panes,tabs,active_pane:pane});
-    return json({pane_id:2});
+    return json({pane_id:id});
    }
    if(p.startsWith('/api/'))return json({});
    if(p.startsWith('/hosts/'))return route.fulfill({contentType:'text/html',body:`<input aria-label="Fixture terminal"><script>window.payload=${JSON.stringify({session_name:'main',panes,tabs,active_pane:panes[0]})};window.report=(focus_id)=>parent.postMessage({type:'zellij-state',focus_id,payload:window.payload},location.origin);report();addEventListener('message',e=>{if(e.data.type==='zellij-focus')report(e.data.focus_id);if(e.data.type==='zellij-new-tab')fetch('/hosts/fixture/new-tab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:'main',project:e.data.project,command:e.data.command,prompt:e.data.prompt,images:e.data.images,elevated:e.data.elevated})})});</script>`});
@@ -50,6 +56,7 @@ test('New Tab shares the model and effort picker and launches and remembers the 
    await page.getByRole('button',{name:'Add GPT-6 Astra to favourites',exact:true}).click();
    assert.equal(await page.locator('#new-tab-model-effort').textContent(),'Extra high','Starring leaves the effort alone');
    await page.getByRole('tab',{name:/^Claude Code/}).click();
+   assert.equal(await page.getByRole('option',{name:'Fable 5.1',exact:true}).count(),0,'Claude uses the computer catalog rather than a fixed list');
    await page.getByRole('button',{name:'Add Opus 5.5 to favourites',exact:true}).click();
    assert.equal(await page.locator('#new-tab-model-name').textContent(),'GPT-6 Astra','Starring does not choose a different model');
    await page.getByRole('tab',{name:'Favourites',exact:true}).click();
@@ -80,7 +87,11 @@ test('New Tab shares the model and effort picker and launches and remembers the 
    await page.getByRole('button',{name:'Create tab',exact:true}).click();
    await page.waitForFunction(()=>!document.querySelector('#new-tab-dialog').open&&document.querySelector('#tabs .selected .tab-name')?.textContent==='New task');
    assert.equal(launches.length,1);assert.equal(launches[0].command,'codex:gpt-6-astra#xhigh');assert.equal(launches[0].prompt,'Run the regression tests.');
-   await open();
+   modelCatalog=[modelCatalog[1],{id:'gpt-6.1-terra',name:'GPT-6.1 Terra',efforts:[{id:'high'},{id:'ultra'}]}];
+   claudeCatalog=[...claudeCatalog,{id:'claude-fixture-next',name:'New Claude fixture',efforts:[{id:'high'}]}];
+   modelGate=new Promise(resolve=>{releaseModels=resolve;});
+   const refreshing=page.waitForRequest(request=>new URL(request.url()).pathname==='/hosts/fixture/model-list');
+   await open();await refreshing;
    assert.equal(await page.locator('#new-tab-model-name').textContent(),'GPT-6 Astra','The next tab remembers the model');
    assert.equal(await page.locator('#new-tab-model-effort').textContent(),'Extra high','The next tab remembers the effort');
    await page.locator('#new-tab-model').click();
@@ -94,7 +105,44 @@ test('New Tab shares the model and effort picker and launches and remembers the 
    }
    await page.getByText('No favourites yet.',{exact:false}).waitFor();
    assert.equal(await page.locator('#new-tab-model-name').textContent(),'GPT-6 Astra','Removing the last favourite leaves the launch choice intact');
+   await page.getByRole('tab',{name:/^Codex/}).click();
+   await page.getByRole('option',{name:/GPT-6.1 Sol/}).waitFor();
+   assert.equal(await page.getByRole('option',{name:/GPT-6.1 Terra/}).count(),0,'The last good list stays usable while refreshing');
+   await search.fill('terra');
+   releaseModels();
+   await page.getByRole('option',{name:'GPT-6.1 Terra',exact:true}).waitFor();
+   assert.equal(await search.inputValue(),'terra','A refresh preserves the search');
+   if(!phone)assert.equal(await search.evaluate(n=>document.activeElement===n),true,'A refresh keeps keyboard focus');
+   assert.equal(await page.locator('#new-tab-model-name').textContent(),'GPT-6 Astra','Refreshing does not choose a newly listed model');
+   assert.equal(await page.locator('#new-tab-model-effort').textContent(),'Extra high');
+   await search.fill('');
+   assert.equal(await page.getByRole('option',{name:/GPT-6.1 Sol/}).count(),0,'Removed models leave the list');
+   await page.getByRole('option',{name:'GPT-6.1 Terra',exact:true}).click();
+   await page.getByRole('radio',{name:'Ultra',exact:true}).click();
    await page.keyboard.press('Escape');
+   await page.locator('#new-tab-close').click();
+   // A failed refresh keeps the last successful catalog and the next chat tries again.
+   modelsFail=true;
+   const failing=page.waitForResponse(response=>new URL(response.url()).pathname==='/hosts/fixture/model-list');
+   await open();await failing;
+   await page.locator('#new-tab-model').click();
+   await page.getByRole('option',{name:'GPT-6.1 Terra',exact:true}).waitFor();
+   await page.keyboard.press('Escape');await page.locator('#new-tab-close').click();
+   modelsFail=false;modelCatalog=[...modelCatalog,{id:'fixture-next',name:'New fixture model',efforts:[]}];
+   const recovering=page.waitForResponse(response=>new URL(response.url()).pathname==='/hosts/fixture/model-list');
+   await open();await recovering;await page.locator('#new-tab-model').click();
+   await page.getByRole('option',{name:'New fixture model',exact:true}).waitFor();
+   await page.getByRole('tab',{name:/^Claude Code/}).click();
+   await page.getByRole('option',{name:'New Claude fixture',exact:true}).click();
+   assert.equal(await page.getByRole('radio',{name:'Max',exact:true}).count(),0,'Claude efforts come from the chosen model');
+   await page.getByRole('radio',{name:'High',exact:true}).click();
+   await page.getByRole('radio',{name:'High',exact:true}).press('Enter');
+   await prompt.fill('Use the newly available Claude model.');
+   const launched=page.waitForResponse(response=>new URL(response.url()).pathname==='/hosts/fixture/new-tab');
+   await page.getByRole('button',{name:'Create tab',exact:true}).click();
+   await launched;
+   await page.waitForFunction(()=>!document.querySelector('#new-tab-dialog').open);
+   assert.equal(launches.length,2);assert.equal(launches[1].command,'claude:claude-fixture-next#high');
    assert.deepEqual(errors,[]);
   }catch(error){error.message+='\nPicker: '+await page.locator('#new-tab-model-menu').innerText()+'\nErrors: '+JSON.stringify(errors);throw error;}
   finally{await page.close();}

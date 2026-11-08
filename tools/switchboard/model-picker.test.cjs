@@ -36,3 +36,13 @@ test('names read as people say them, and each agent offers its own effort levels
   assert.equal(efforts(parse('codex:gpt-6-luna'),codex).map(([id])=>id).join(),['low','medium','high','xhigh'].join(),'An older relay without levels gets the common ones');
   assert.equal(efforts(parse('claude:claude-opus-5-5'),codex).map(([id])=>id).join(),['low','medium','high','xhigh','max'].join());
 });
+
+test('Claude names and effort levels follow the selected computer catalog',()=>{
+  const claude=[{id:'claude-fixture-new',name:'New Claude model',efforts:[{id:'high'}]},{id:'claude-fixture-fast',name:'Fast Claude model',efforts:[]}];
+  const picker=sandbox.SwitchboardModelPicker;
+  assert.equal(describe('claude:claude-fixture-new#high',undefined,claude).name,'New Claude model');
+  assert.equal(efforts(parse('claude:claude-fixture-new'),undefined,claude).map(([id])=>id).join(),'high');
+  assert.equal(efforts(parse('claude:claude-fixture-fast'),undefined,claude).length,0);
+  assert.equal(picker.fit('claude:claude-fixture-new#max',undefined,claude),'claude:claude-fixture-new');
+  assert.equal(picker.fit('claude:claude-fixture-new#high',undefined,claude),'claude:claude-fixture-new#high');
+});

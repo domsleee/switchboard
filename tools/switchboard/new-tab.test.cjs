@@ -112,7 +112,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
       await page.keyboard.press('Shift+Tab');assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-model-search');
       assert.equal(await page.locator('#new-tab-model-menu').isVisible(),true);
       // A tab per agent opens on the chosen model's agent: here the models this computer's Codex lists.
-      await page.waitForFunction(()=>Array.isArray(newTabCodexModels.get('windows'))&&document.querySelector('#new-tab-model-menu').textContent.includes('GPT-6 Luna'));
+      await page.waitForFunction(()=>Array.isArray(newTabModels.get('windows')?.codex)&&document.querySelector('#new-tab-model-menu').textContent.includes('GPT-6 Luna'));
       assert.deepEqual(await page.locator('#new-tab-model-menu [role=tab]').allTextContents(),['Favourites','Codex','Claude Code']);
       assert.equal(await page.getByRole('tab',{name:/^Codex/}).getAttribute('aria-selected'),'true');
       assert.deepEqual(await page.locator('#new-tab-model-menu [role=option] .model-picker-name').allTextContents(),['GPT-6.1 Sol','GPT-6 Luna']);

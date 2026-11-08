@@ -13,7 +13,7 @@ mod chats;
 mod control;
 mod conversation;
 pub(crate) use control::own_executable;
-pub(crate) use conversation::codex_models;
+pub(crate) use conversation::{claude_models, codex_models};
 mod hostname;
 pub(crate) mod interactive;
 mod logs;
