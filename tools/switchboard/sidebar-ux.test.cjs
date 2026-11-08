@@ -25,14 +25,13 @@ test('tab hover only expands clipped titles; context and shortcuts stay in the c
       return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file)});
     });
     await page.goto('https://switchboard.test/');
-    const button=page.locator('.tab-select'),actions=page.locator('.tab-actions');
+    const button=page.locator('.tab-select');
     await button.waitFor();await button.hover();
     assert.equal(await button.getAttribute('title'),null);
     assert.equal(await page.locator('#tabs').getAttribute('title'),null);
     await page.waitForFunction(()=>document.querySelector('#build-version').textContent.includes('abc123def'));
     assert.equal(await page.locator('#settings').getAttribute('title'),null);
     assert.match(await page.locator('#build-version').getAttribute('title'),/Commit abc123def/);
-    assert.equal(await actions.getAttribute('title'),'Tab actions');
     name='Review terminal reconnection behavior';await page.evaluate(()=>refreshAttention());
     await page.waitForFunction(title=>document.querySelector('.tab-select').title===title,name);
     await button.focus();assert.match(await button.getAttribute('aria-label'),/Review terminal reconnection behavior, Mac, main/);
@@ -53,7 +52,7 @@ test('tab hover only expands clipped titles; context and shortcuts stay in the c
     name='Short';await page.evaluate(()=>refreshAttention());
     await page.waitForFunction(()=>document.querySelector('.tab-name').textContent==='Short'&&!document.querySelector('.tab-select').hasAttribute('title'));
     await page.setViewportSize({width:390,height:740});
-    await page.locator('#sidebar-toggle').click();await actions.click();
+    await page.locator('#sidebar-toggle').click();await button.click({button:'right'});
     const bounds=await page.locator('#tab-menu').boundingBox();
     assert.ok(bounds.x>=0&&bounds.x+bounds.width<=390&&bounds.y+bounds.height<=740);
     if(proof)await page.screenshot({path:proof+'/mobile-menu.png'});
@@ -61,7 +60,7 @@ test('tab hover only expands clipped titles; context and shortcuts stay in the c
   }finally{await browser.close();}
 });
 
-test('touch screens show the tab menu button only on the selected tab',
+test('touch screens open the tab menu with a long press',
   {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
   const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch({headless:true});
   try{
@@ -88,18 +87,29 @@ test('touch screens show the tab menu button only on the selected tab',
     await page.goto('https://switchboard.test/');
     await page.locator('.tab-row.active').waitFor({state:'attached'});
     await page.locator('#sidebar-toggle').tap();
-    const selected=page.locator('.tab-row.active .tab-actions'),other=page.locator('.tab-row:not(.active)');
-    assert.equal(await selected.isVisible(),true);
-    assert.equal(await other.locator('.tab-actions').isVisible(),false);
-    // The unselected row's name gets the width the button would have taken.
+    const other=page.locator('.tab-row:not(.active) .tab-select'),menu=page.locator('#tab-menu');
+    const selectedName=()=>page.locator('#tabs .selected .tab-name').textContent();
+    assert.equal(await page.locator('.tab-actions').count(),0,'rows have no menu button');
     assert.equal(await other.locator('.tab-name').evaluate(el=>el.scrollWidth<=el.clientWidth),true);
-    // The selected row's content stops before its button.
-    assert.ok(await page.locator('.tab-row.active').evaluate(row=>{
-      const select=row.querySelector('.tab-select'),button=row.querySelector('.tab-actions').getBoundingClientRect();
-      return select.getBoundingClientRect().right-parseFloat(getComputedStyle(select).paddingRight)<=button.left;
-    }));
-    await selected.tap();
-    assert.equal(await page.locator('#tab-menu').isVisible(),true);
+    const cdp=await context.newCDPSession(page),box=await other.boundingBox();
+    const at=(dx=0)=>[{x:box.x+box.width/2+dx,y:box.y+box.height/2}];
+    const touch=(type,points)=>cdp.send('Input.dispatchTouchEvent',{type,touchPoints:points});
+    // Holding a row opens its menu without selecting it, and lifting the finger leaves the menu open.
+    await touch('touchStart',at());await page.waitForTimeout(650);
+    assert.equal(await menu.isVisible(),true);
+    assert.equal(await page.locator('#tab-menu-target').textContent(),'Online shopping research for the new desk');
+    if(process.env.SWITCHBOARD_UX_SCREENSHOTS)await page.screenshot({path:process.env.SWITCHBOARD_UX_SCREENSHOTS+'/long-press.png'});
+    await touch('touchEnd',[]);await page.waitForTimeout(100);
+    assert.equal(await menu.isVisible(),true);assert.equal(await selectedName(),'Polish the sidebar');
+    await page.keyboard.press('Escape');assert.equal(await menu.isVisible(),false);
+    // A finger that moves first is scrolling or dragging, not asking for the menu.
+    await touch('touchStart',at());await touch('touchMove',at(30));await page.waitForTimeout(650);
+    await touch('touchEnd',[]);assert.equal(await menu.isVisible(),false);
+    // A tap right after a hold, which also dismisses the menu, still selects the tab.
+    await touch('touchStart',at());await page.waitForTimeout(650);await touch('touchEnd',[]);
+    assert.equal(await menu.isVisible(),true);
+    await other.tap({position:{x:10,y:10}});await page.waitForFunction(()=>document.querySelector('#tabs .selected .tab-name')?.textContent.startsWith('Online'));
+    assert.equal(await menu.isVisible(),false);
     assert.deepEqual(errors,[]);
   }finally{await browser.close();}
 });
@@ -299,8 +309,8 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     await page.evaluate(()=>{hiddenOpen=false;render();});
     tabs[1].name=names[1];await page.evaluate(()=>refreshAttention());
     await page.waitForFunction(()=>!document.querySelector('#tabs .elevated')&&!allTabs(true).some(item=>item.hidden));
-    const action=page.locator('.tab-actions').nth(1);
-    await page.locator('.tab-row').nth(1).hover();await action.click();
+    const action=page.locator('.tab-select').nth(1),openMenu=()=>action.click({button:'right'});
+    await openMenu();
     assert.equal(await page.locator('#tab-menu-target').textContent(),'Online shopping');
     assert.match(await page.locator('#tab-menu-details').textContent(),/Mac · main/);
     assert.match(await page.locator('#hide-tab').textContent(),/^Hide/);
@@ -311,7 +321,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     await page.keyboard.press('ArrowUp');assert.equal(await page.evaluate(()=>document.activeElement.id),'select-text');
     await page.keyboard.press('Home');assert.equal(await page.evaluate(()=>document.activeElement.id),'ready');
     await page.keyboard.press('Escape');assert.equal(await action.evaluate(e=>document.activeElement===e),true);
-    await action.click();await page.locator('#copy-title').click();
+    await openMenu();await page.locator('#copy-title').click();
     assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),'Online shopping');
     assert.equal(await page.locator('#tab-menu').isVisible(),false);
     assert.equal(await action.evaluate(e=>document.activeElement===e),true);
@@ -319,17 +329,17 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     await page.evaluate(()=>Object.defineProperty(navigator.clipboard,'writeText',{configurable:true,value:async()=>{
       throw new DOMException('Write permission denied.','NotAllowedError');
     }}));
-    await action.click();await page.locator('#copy-title').click();
+    await openMenu();await page.locator('#copy-title').click();
     assert.match(await page.locator('#status').textContent(),/Could not copy the tab title: Write permission denied/);
     await page.evaluate(()=>delete navigator.clipboard.writeText);
-    await action.click();await page.locator('#ready').click();
+    await openMenu();await page.locator('#ready').click();
     assert.equal(await page.locator('#tabs .selected .tab-name').textContent(),'switchboard');
     assert.equal(await page.locator('#tabs .tab-status').nth(1).textContent(),'Review');
     assert.deepEqual(await order(),names);
     // Hide moves the tab into the collapsed Hidden group at the bottom; it still needs review.
     const toggle=page.locator('#hidden-toggle');
     assert.equal(await toggle.count(),0,'no Hidden group until a tab is hidden');
-    await action.click();await page.locator('#hide-tab').click();
+    await openMenu();await page.locator('#hide-tab').click();
     assert.deepEqual(await order(),['switchboard','ssb orchestrator']);
     assert.equal(await toggle.getAttribute('aria-expanded'),'false');
     assert.equal(await toggle.locator('.count').textContent(),'1');
@@ -346,13 +356,13 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.equal(await page.evaluate(()=>localStorage.getItem('switchboard-hidden-open:all')),'true');
     if(process.env.SWITCHBOARD_UX_SCREENSHOTS)await page.locator('#sidebar').screenshot({path:process.env.SWITCHBOARD_UX_SCREENSHOTS+'/hidden.png'});
     const hiddenRow=page.locator('.tab-row.hidden-tab');
-    await hiddenRow.hover();await hiddenRow.locator('.tab-actions').click();
+    await hiddenRow.locator('.tab-select').click({button:'right'});
     assert.match(await page.locator('#hide-tab').textContent(),/^Show in list/);
     await page.locator('#hide-tab').click();
     assert.deepEqual(await order(),names);
     assert.equal(await toggle.count(),0);
     // Copy toolbar works with the actual clipboard adapter, and Done clears it.
-    await page.locator('.tab-row.active .tab-actions').click();await page.locator('#select-text').click();
+    await page.locator('.tab-row.active .tab-select').click({button:'right'});await page.locator('#select-text').click();
     await page.waitForFunction(()=>!document.querySelector('#selection-tools').hidden);
     assert.equal(await page.locator('#copy').isDisabled(),true);
     const frame=page.frameLocator('iframe[title="Mac: main"]');

@@ -679,10 +679,7 @@ function render() {
         if(dragging||Date.now()<suppressTabClickUntil||document.querySelector('dialog[open]'))return;
         contextItem=button._item;$('close-tab').click();
       };
-      const actions=document.createElement('button');actions.className='tab-actions';actions.textContent='⋯';
-      actions.setAttribute('aria-haspopup','menu');actions.setAttribute('aria-controls','tab-menu');
-      actions.onclick=()=>{const bounds=actions.getBoundingClientRect();openTabMenu(button._item,bounds.right,bounds.top,actions);};
-      row.append(button,actions);button._row=row;
+      row.append(button);button._row=row;holdTabForMenu(button);
       button.onkeydown=event=>{if(event.key==='ContextMenu'||event.shiftKey&&event.key==='F10'){event.preventDefault();const bounds=button.getBoundingClientRect();openTabMenu(button._item,bounds.right,bounds.top,button);}};
       const where=document.createElement('small');where.className='tab-where';
       const status=document.createElement('span');status.className='tab-status';status.setAttribute('aria-hidden','true');
@@ -699,8 +696,8 @@ function render() {
         button.classList.add('dragging');$('tabs').classList.add('reordering');
       };
       button.ondragend=finishDrag;
-      button.oncontextmenu=event=>{event.preventDefault();openTabMenu(button._item,event.clientX,event.clientY,button);};
-      button.onclick=()=>{if(dragging||Date.now()<suppressTabClickUntil)return;activate(button._item);};
+      button.oncontextmenu=event=>{event.preventDefault();if(!button._held)openTabMenu(button._item,event.clientX,event.clientY,button);};
+      button.onclick=()=>{if(button._held){button._held=false;return;}if(dragging||Date.now()<suppressTabClickUntil)return;activate(button._item);};
       tabButtons.set(item.key,button);
     }
     button._item=item;
@@ -730,12 +727,9 @@ function render() {
     if(button._where.textContent!==subtitle)button._where.textContent=subtitle;
     const agentName=tabAgent(item);
     if(button._agent.dataset.agent!==agentName){button._agent.dataset.agent=agentName;button._agent.innerHTML=agentIcons[agentName]||'';}
-    const row=button._row,actions=row.lastElementChild;row._item=item;
+    const row=button._row;row._item=item;
     row.classList.toggle('active',item.key===selected);
     row.classList.toggle('hidden-tab',item.hidden);
-    actions.setAttribute('aria-label',`Actions for ${title} · ${machine}`);
-    actions.title='Tab actions';
-    actions.setAttribute('aria-expanded',String(!$('tab-menu').hidden&&contextItem?.key===item.key));
     nodes.push(row);
   }
   if(showSnoozedGroup){
@@ -2289,6 +2283,22 @@ function updateTabMenu(){
   sizeOwner.setAttribute('aria-pressed',String(!!viewport?.is_owner&&focused));
   sizeOwner.textContent=viewport?.is_owner&&focused?'Using this window’s size':'Use this window’s size';
   sizeOwner.title=!focused?'Select this tab first.':!viewport?'Available in new sessions after updating Switchboard.':viewport.constrained?'A smaller plain terminal is keeping this tab within its screen.':'The last focused browser window sets the size.';
+}
+// Touch screens open a tab's menu with a long press. Moving the finger first scrolls or drags instead.
+// The browser's own contextmenu and click events from that same press are then ignored.
+function holdTabForMenu(button){
+  let timer=0,start=null;button._held=false;
+  const cancel=()=>{clearTimeout(timer);timer=0;};
+  button.addEventListener('pointerdown',event=>{
+    cancel();button._held=false;if(event.pointerType==='mouse'||!event.isPrimary)return;
+    start={x:event.clientX,y:event.clientY};
+    timer=setTimeout(()=>{
+      timer=0;button._held=true;
+      navigator.vibrate?.(10);openTabMenu(button._item,start.x,start.y,button);
+    },500);
+  });
+  button.addEventListener('pointermove',event=>{if(timer&&Math.hypot(event.clientX-start.x,event.clientY-start.y)>10)cancel();});
+  for(const type of ['pointerup','pointercancel','dragstart'])button.addEventListener(type,cancel);
 }
 function openTabMenu(item,x,y,trigger=tabButtons.get(item.key)){
   closeTabMenu();contextItem=item;menuTrigger=trigger;

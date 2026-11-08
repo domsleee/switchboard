@@ -69,7 +69,7 @@ test('phone sidebar, actions, Settings, Computers and Messages fit without horiz
         await page.keyboard.press('Escape');
       }
       await page.keyboard.press('Escape');
-      await page.locator('.tab-actions').first().click();
+      await page.locator('.tab-select').first().click({button:'right'});
       await page.locator('#tab-menu').waitFor({state:'visible'});
       const menu=await page.locator('#tab-menu').boundingBox();assert.ok(menu.x>=0&&menu.x+menu.width<=viewport.width);
       await page.keyboard.press('Escape');
