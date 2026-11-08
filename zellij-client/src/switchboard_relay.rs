@@ -18,6 +18,7 @@ mod hostname;
 pub(crate) mod interactive;
 mod logs;
 mod mesh;
+mod message_activity;
 mod native_messages;
 mod output_diagnostics;
 pub(crate) mod peer_bridge;
@@ -1451,6 +1452,10 @@ fn app(state: RelayState) -> Router {
         .route(
             "/api/hosts/{host}/codex/queue",
             post(native_messages::handler),
+        )
+        .route(
+            "/api/hosts/{host}/codex/receipt",
+            get(native_messages::receipt_handler),
         )
         .route(
             "/api/hosts/{host}/codex/reply",

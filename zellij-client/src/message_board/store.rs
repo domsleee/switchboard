@@ -171,6 +171,24 @@ impl Store {
         message_page(&conn, ids, page.limit)
     }
 
+    /// Latest exchanges for one conversation, including its outgoing receipts.
+    pub(super) fn activity(&self, id: &str) -> Result<serde_json::Value> {
+        let conn = self.connection()?;
+        participant(&conn, id)?;
+        let mut query = conn.prepare("SELECT m.seq FROM messages m WHERE m.sender=?1 OR EXISTS (SELECT 1 FROM deliveries d WHERE d.message_seq=m.seq AND d.recipient=?1) ORDER BY m.seq DESC LIMIT 101")?;
+        let mut ids = query
+            .query_map([id], |row| row.get::<_, u64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let truncated = ids.len() > 100;
+        ids.truncate(100);
+        ids.reverse();
+        let items = ids
+            .into_iter()
+            .map(|seq| message(&conn, seq))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(json!({"items":items,"truncated":truncated}))
+    }
+
     pub(super) fn machine_ack(
         &self,
         machine: &Machine,

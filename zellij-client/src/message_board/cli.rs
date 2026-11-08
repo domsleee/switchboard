@@ -72,7 +72,7 @@ impl Client {
     ) -> anyhow::Result<(u16, serde_json::Value)> {
         self.request_path(method, &format!("api/message-board/{path}"), payload)
     }
-    fn request_path(
+    pub(crate) fn request_path(
         &self,
         method: &str,
         path: &str,
@@ -128,7 +128,7 @@ impl Client {
         );
         Ok(value)
     }
-    fn relay(origin: &str) -> anyhow::Result<Self> {
+    pub(crate) fn relay(origin: &str) -> anyhow::Result<Self> {
         let origin = url::Url::parse(origin)?;
         let loopback = match origin.host() {
             Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
@@ -155,6 +155,14 @@ impl Client {
                 .build()?,
             timeout: Duration::from_secs(15),
         })
+    }
+
+    pub(crate) fn activity_relay() -> anyhow::Result<Self> {
+        let mut client = Self::relay(&local_relay_url(
+            std::env::var("SWITCHBOARD_RELAY_URL").ok().as_deref(),
+        ))?;
+        client.timeout = Duration::from_secs(2);
+        Ok(client)
     }
 
     pub(super) fn for_hook() -> anyhow::Result<Self> {
@@ -272,10 +280,22 @@ pub fn run_cli(cli: &MessageCli) -> anyhow::Result<()> {
             .timeout(Duration::from_secs(30))
             .redirect_policy(RedirectPolicy::None)
             .build()?;
+        let mut payload = json!({"thread":thread,"message":message,"send_key":key});
+        let source = std::env::var("CODEX_THREAD_ID")
+            .ok()
+            .filter(|id| Uuid::parse_str(id).is_ok())
+            .map(|thread| ("codex".to_owned(), thread))
+            .or_else(|| {
+                let id = agent(cli).ok()?;
+                hooks::conversation_for_participant(&client, id)
+            });
+        if let Some((agent, thread)) = source {
+            payload["source"] = json!({"agent":agent,"thread":thread});
+        }
         let (status, result) = client.request_path(
             "POST",
             &format!("api/hosts/{}/codex/queue", segment(host)),
-            Some(json!({"thread":thread,"message":message,"send_key":key})),
+            Some(payload),
         )?;
         println!("{}", serde_json::to_string(&result)?);
         anyhow::ensure!(

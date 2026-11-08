@@ -326,6 +326,14 @@ impl Mesh {
             .as_ref()
             .map(|m| m.name.clone())
     }
+    pub async fn computer_host(&self) -> Option<String> {
+        self.database
+            .lock()
+            .await
+            .local
+            .as_ref()
+            .map(|m| format!("mesh-{}", m.id))
+    }
     fn save(&self, db: &Database) -> anyhow::Result<()> {
         // Immutable versioned credential files are staged before the atomic manifest switch.
         // A restarted relay reconstructs its catalog from this one committed manifest.
