@@ -394,20 +394,58 @@ fn tab_shell(default_shell: Option<PathBuf>) -> PathBuf {
 
 // Prompt text is data, never shell source. Quote on the destination computer,
 // where the configured shell and uploaded image paths are known.
-/// The agents New tab can launch with a prompt. Each name is a shell alias on
-/// the target computer. An empty name keeps older clients on Sol.
-pub(super) fn prompt_agent(command: &str) -> Option<&'static str> {
-    match command.trim() {
-        "" | "csol" => Some("csol"),
-        "castra" => Some("castra"),
-        "c" => Some("c"),
-        _ => None,
+/// What New tab and handover launch: one of the owner's shell shortcuts, or
+/// Claude Code or Codex with a chosen model (`claude:<model>`, `codex:<model>`).
+/// An empty name keeps older clients on Sol.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Agent {
+    Alias(&'static str),
+    Claude(String),
+    Codex(String),
+}
+impl Agent {
+    pub(crate) fn parse(command: &str) -> Option<Self> {
+        let command = command.trim();
+        match command {
+            "" | "csol" => return Some(Self::Alias("csol")),
+            "castra" => return Some(Self::Alias("castra")),
+            "c" => return Some(Self::Alias("c")),
+            _ => {},
+        }
+        let (provider, model) = command.split_once(':')?;
+        // A model name is data, never a flag or shell source. It is quoted as well.
+        let valid = model.len() <= 100
+            && model.starts_with(|c: char| c.is_ascii_alphanumeric())
+            && model.chars().all(|c| {
+                c.is_ascii_alphanumeric()
+                    || matches!(c, '.' | '-' | '_' | '[' | ']' | '/' | ':' | '@')
+            });
+        match provider {
+            "claude" if valid => Some(Self::Claude(model.into())),
+            "codex" if valid => Some(Self::Codex(model.into())),
+            _ => None,
+        }
     }
+    fn is_claude(&self) -> bool {
+        matches!(self, Self::Alias("c") | Self::Claude(_))
+    }
+    /// The command the terminal shell must find to start this agent.
+    pub(crate) fn program(&self) -> &str {
+        match self {
+            Self::Alias(alias) => alias,
+            Self::Claude(_) => "claude",
+            Self::Codex(_) => "codex",
+        }
+    }
+}
+
+pub(super) fn prompt_agent(command: &str) -> Option<Agent> {
+    Agent::parse(command)
 }
 
 pub(super) fn prompt_command(
     shell: Option<PathBuf>,
-    agent: &str,
+    agent: &Agent,
     prompt: &str,
     images: &[String],
 ) -> String {
@@ -433,9 +471,20 @@ pub(super) fn prompt_command(
         "fish" => format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'")),
         _ => format!("'{}'", value.replace('\'', "'\\''")),
     };
-    let mut command = agent.to_owned();
+    // A chosen model passes the same bypass flags as the owner's shortcuts.
+    let mut command = match agent {
+        Agent::Alias(alias) => (*alias).to_owned(),
+        Agent::Claude(model) => format!(
+            "claude --dangerously-skip-permissions --model {}",
+            quote(model)
+        ),
+        Agent::Codex(model) => format!(
+            "codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust -m {}",
+            quote(model)
+        ),
+    };
     let mut prompt = prompt.to_owned();
-    if agent == "c" {
+    if agent.is_claude() {
         // Claude has no image flag; it reads image paths named in the prompt.
         if !images.is_empty() {
             prompt.push_str(if prompt.is_empty() {
@@ -579,7 +628,12 @@ pub(super) fn control_payload_to_server_msg(
                         log::warn!("Ignoring a new tab for an unknown agent");
                         return None;
                     };
-                    Some(prompt_command(default_shell.clone(), agent, &text, &images))
+                    Some(prompt_command(
+                        default_shell.clone(),
+                        &agent,
+                        &text,
+                        &images,
+                    ))
                 },
                 None => command,
             };
@@ -875,11 +929,18 @@ mod tests {
         } else {
             vec!["/bin/sh", "bash", "zsh", "fish", "nu", "pwsh"]
         };
-        for (shell, agent) in shells
+        let agents = [
+            Agent::Alias("csol"),
+            Agent::Alias("c"),
+            Agent::Claude("claude-opus-5-5[1m]".into()),
+            Agent::Codex("gpt-6.1-sol".into()),
+        ];
+        for (shell, choice) in shells
             .into_iter()
-            .flat_map(|shell| ["csol", "c"].map(|agent| (shell, agent)))
+            .flat_map(|shell| agents.clone().map(|agent| (shell, agent)))
         {
-            let command = prompt_command(Some(shell.into()), agent, prompt, &images);
+            let command = prompt_command(Some(shell.into()), &choice, prompt, &images);
+            let agent = choice.program();
             let (script, flags, json) = match shell {
                 "nu" => (format!("def --wrapped {agent} [...args: string] {{ $args | to json --raw }}; {command}"), vec!["--no-config-file", "-c"], true),
                 "pwsh" | "powershell" => (format!("[Console]::OutputEncoding = [Text.UTF8Encoding]::new(); function {agent} {{ ConvertTo-Json -Compress -InputObject @($args) }}; {command}"), vec!["-NoProfile", "-Command"], true),
@@ -912,17 +973,33 @@ mod tests {
                     .collect()
             };
             let claude_prompt = format!("{prompt}\n\nAttached images:\n{}", images.join("\n"));
-            let expected = if agent == "c" {
-                vec!["--", claude_prompt.as_str()]
-            } else {
-                vec!["--image", &images[0], "--image", &images[1], "--", prompt]
+            let mut expected: Vec<&str> = match &choice {
+                Agent::Alias(_) => vec![],
+                Agent::Claude(model) => vec!["--dangerously-skip-permissions", "--model", model],
+                Agent::Codex(model) => vec![
+                    "--dangerously-bypass-approvals-and-sandbox",
+                    "--dangerously-bypass-hook-trust",
+                    "-m",
+                    model,
+                ],
             };
+            if choice.is_claude() {
+                expected.extend(["--", claude_prompt.as_str()]);
+            } else {
+                expected.extend(["--image", &images[0], "--image", &images[1], "--", prompt]);
+            }
             assert_eq!(args, expected, "{shell} {agent}");
             tested += 1;
         }
         assert!(tested > 0, "No shell available to test prompt quoting");
-        assert_eq!(prompt_command(Some("nu".into()), "csol", "", &[]), "csol");
-        assert_eq!(prompt_command(Some("nu".into()), "c", "", &[]), "c");
+        assert_eq!(
+            prompt_command(Some("nu".into()), &Agent::Alias("csol"), "", &[]),
+            "csol"
+        );
+        assert_eq!(
+            prompt_command(Some("nu".into()), &Agent::Alias("c"), "", &[]),
+            "c"
+        );
     }
 
     #[test]
@@ -982,7 +1059,30 @@ mod tests {
             launch("c").as_deref(),
             Some("c r#'--'# r#'go\n\nAttached images:\n/tmp/a.png'#")
         );
-        assert_eq!(launch("rm -rf ~"), None);
+        assert_eq!(
+            launch("claude:claude-opus-5-5").as_deref(),
+            Some(
+                "claude --dangerously-skip-permissions --model r#'claude-opus-5-5'# r#'--'# r#'go
+
+Attached images:
+/tmp/a.png'#"
+            )
+        );
+        assert_eq!(
+            launch("codex:gpt-6-luna").as_deref(),
+            Some("codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust -m r#'gpt-6-luna'# --image r#'/tmp/a.png'# r#'--'# r#'go'#")
+        );
+        for command in [
+            "rm -rf ~",
+            "claude:",
+            "claude:--help",
+            "codex:gpt 6",
+            "codex:$(id)",
+            "gemini:pro",
+            "claude:a;b",
+        ] {
+            assert_eq!(launch(command), None, "{command}");
+        }
     }
 
     #[test]

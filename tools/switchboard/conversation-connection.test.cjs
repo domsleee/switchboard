@@ -27,6 +27,7 @@ test('Conversation never attaches a terminal, including initial mobile load and 
     return json({pane_id:id,tab_id});
    }
    if(p==='/hosts/local/project-list')return json(['switchboard']);
+   if(p==='/hosts/local/model-list')return json({codex:[]});
    if(p.startsWith('/hosts/')){
     connections.push(p);
     return route.fulfill({contentType:'text/html',body:`<script>
@@ -195,6 +196,7 @@ test('Desktop Conversation follows a new tab while the connected viewer and cata
    if(p.startsWith('/api/chats/'))return json({id:p.split('/').at(-1),agent:'codex',session_id:null,messages:[{role:'assistant',text:'Reply from '+p.split('/').at(-1)}],start_cursor:0,next_cursor:null});
    if(p==='/hosts/local/new-tab'){await creationGate;return json({pane_id:created.pane_id,tab_id:created.tab_id});}
    if(p==='/hosts/local/project-list')return json(['switchboard']);
+   if(p==='/hosts/local/model-list')return json({codex:[]});
    if(p.startsWith('/hosts/'))return route.fulfill({contentType:'text/html',body:`<script>
       let panes=${JSON.stringify([pane])};
       const state=()=>parent.postMessage({type:'zellij-state',payload:{session_name:'main',active_pane:${JSON.stringify(pane)},panes,tabs:[{position:0,name:'Agent'},{position:1,name:'New agent'}]}},location.origin);

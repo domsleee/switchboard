@@ -109,22 +109,22 @@ pub(super) struct Target {
     handover: Option<Handover>,
 }
 
+/// A shortcut (`c`, `csol`, `castra`) or `claude:<model>` / `codex:<model>`, as New tab sends.
 #[derive(Clone, Deserialize, Serialize)]
-enum HandoverModel {
-    #[serde(rename = "c")]
-    Claude,
-    #[serde(rename = "csol")]
-    Sol,
-    #[serde(rename = "castra")]
-    Astra,
-}
-impl HandoverModel {
-    fn alias(&self) -> &'static str {
-        match self {
-            Self::Claude => "c",
-            Self::Sol => "csol",
-            Self::Astra => "castra",
+#[serde(try_from = "String", into = "String")]
+struct HandoverModel(String);
+impl TryFrom<String> for HandoverModel {
+    type Error = &'static str;
+    fn try_from(model: String) -> Result<Self, Self::Error> {
+        if model.trim().is_empty() || !crate::web_client::known_agent(&model) {
+            return Err("unknown handover model");
         }
+        Ok(Self(model))
+    }
+}
+impl From<HandoverModel> for String {
+    fn from(model: HandoverModel) -> Self {
+        model.0
     }
 }
 #[derive(Clone, Deserialize, Serialize)]
@@ -257,7 +257,7 @@ pub(super) async fn local(
     .map_err(|_| refused("This agent launch cannot be resumed safely"))?;
     let (executable, launch_args) = if let Some(handover) = &target.handover {
         let run = crate::web_client::handover_command(
-            handover.model.alias(),
+            &handover.model.0,
             &handover.prompt,
             identity.cwd.clone(),
         )
@@ -442,7 +442,13 @@ mod tests {
                 .is_none(),
             "Ordinary restarts remain compatible with older peers"
         );
-        for model in ["c", "csol", "castra"] {
+        for model in [
+            "c",
+            "csol",
+            "castra",
+            "claude:claude-opus-5-5",
+            "codex:gpt-6-luna",
+        ] {
             let mut value = base.clone();
             value["handover"] =
                 json!({"model":model,"prompt":"Literal $(text)\nNext request","source_messages":2});
@@ -452,8 +458,13 @@ mod tests {
                 .is_ok());
         }
         let mut value = base;
-        value["handover"] = json!({"model":"sh -c bad","prompt":"text","source_messages":2});
-        assert!(serde_json::from_value::<Target>(value.clone()).is_err());
+        for model in ["sh -c bad", "", "codex:-c", "claude:$(id)"] {
+            value["handover"] = json!({"model":model,"prompt":"text","source_messages":2});
+            assert!(
+                serde_json::from_value::<Target>(value.clone()).is_err(),
+                "{model}"
+            );
+        }
         value["handover"]["model"] = json!("c");
         for text in [
             String::new(),

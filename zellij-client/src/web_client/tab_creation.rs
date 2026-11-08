@@ -2,7 +2,7 @@
 use super::{
     authentication::IsReadOnly,
     types::AppState,
-    websocket_handlers::{prompt_agent, prompt_command, tab_command},
+    websocket_handlers::{prompt_agent, prompt_command, tab_command, Agent},
 };
 use crate::os_input_output::ClientOsApi;
 use axum::{extract::State, http::StatusCode, Extension, Json};
@@ -309,8 +309,8 @@ pub(super) async fn create(
     let command = target
         .prompt
         .map(|text| {
-            let agent = prompt_agent(&target.command).unwrap_or("csol");
-            prompt_command(shell.clone(), agent, &text, &target.images)
+            let agent = prompt_agent(&target.command).unwrap_or(Agent::Alias("csol"));
+            prompt_command(shell.clone(), &agent, &text, &target.images)
         })
         .unwrap_or(target.command);
     let run = tab_command(shell, command, Some(cwd.clone()), target.elevated);
