@@ -100,6 +100,8 @@ test('integrated Conversation journeys use production markup and preserve delive
      assert.equal(f.requests[1].message,'Continue the other changes while I decide');
      assert.equal(f.requests.length,2);assert.deepEqual(f.connections,[]);
      f.release();await card.getByText('Answer on its way…',{exact:true}).waitFor();
+     assert.equal(await card.getByRole('button',{name:'Show question and answer',exact:true}).getAttribute('aria-expanded'),'false');
+     await card.getByRole('button',{name:'Show question and answer',exact:true}).click();
      assert.equal(await card.getByRole('button',{name:/Keep the Hidden label/}).isDisabled(),true);
      f.history.get(1).push(questionReceipt(f.requests[0].message));await f.poll();
      await card.getByText('Answered',{exact:true}).waitFor();
@@ -142,10 +144,50 @@ test('integrated Conversation journeys use production markup and preserve delive
     assert.deepEqual(answers,questions.map((question,index)=>({questionItemId:'multi',question:question.title,answer:index===0?'Blue':'-Awaiting review'})));
     f.history.get(1).push(questionReceipt(f.requests[0].message));await f.poll();await card.getByText('Answered',{exact:true}).waitFor();
     await page.reload();await page.getByRole('region',{name:'Codex question'}).getByText('Answered',{exact:true}).waitFor();
+    await page.getByRole('region',{name:'Codex question'}).getByRole('button',{name:'Show question and answer',exact:true}).click();
     assert.equal(await page.getByRole('region',{name:'Codex question'}).getByRole('button',{name:/Blue/}).isDisabled(),true);
     assert.equal(await page.getByRole('region',{name:'Codex question'}).getByRole('button',{name:/Blue/}).getAttribute('aria-pressed'),'true');
     assert.deepEqual(f.connections,[]);
    }finally{await f.close();}
+  });
+  await t.test('pending questions stay discoverable without taking over the draft, and sent answers fold into a receipt',async()=>{
+   for(const desktop of [true,false]){
+    const q=asyncQuestion('ux',[{title:'Which colour should I use?',options:['Blue','Green']}]);
+    const later=Array.from({length:24},(_,i)=>({role:'assistant',text:'Progress update '+i+'. '+('The other changes can continue while you decide. '.repeat(8))}));
+    const f=await fixture({desktop,viewport:desktop?{width:1100,height:800}:{width:390,height:844},messages:[q,...later],turnState:'working'}),{page}=f;
+    try{
+     f.state='input';await f.refresh();const card=page.getByRole('region',{name:'Codex question'}),draft=page.getByLabel('Reply draft'),jump=page.getByRole('button',{name:'1 question to answer',exact:true});
+     await draft.fill('Keep this separate follow-up');await jump.waitFor();
+     if(process.env.MODE_SCREENSHOTS)await page.screenshot({path:path.join(process.env.MODE_SCREENSHOTS,`codex-question-shortcut-${desktop?'desktop':'phone'}.png`)});
+     assert.equal(await page.locator('.conversation-activity').textContent(),'Question for you');
+     assert.equal(await page.getByLabel('Type your own answer').isVisible(),false,'Custom text starts tucked away');
+     const bottom=await page.locator('.conversation-messages').evaluate(node=>node.scrollTop);
+     await jump.click();await card.getByText('Which colour should I use?',{exact:true}).waitFor();
+     assert.ok(await page.locator('.conversation-messages').evaluate(node=>node.scrollTop)<bottom);
+     await card.getByRole('button',{name:'Write a different answer',exact:true}).click();
+     const answer=card.getByLabel('Type your own answer');await answer.fill('Amber');
+     await card.getByRole('button',{name:'Hide question and answer',exact:true}).click();
+     assert.equal(await answer.isVisible(),false);await jump.click();assert.equal(await answer.inputValue(),'Amber');
+     assert.equal(await draft.inputValue(),'Keep this separate follow-up');
+     // Ordinary transcript updates must not steal the question input's focus.
+     await answer.focus();f.history.get(1).push({role:'assistant',text:'Still working on the other change.'});await f.poll();
+     assert.equal(await answer.evaluate(node=>document.activeElement===node),true);
+     assert.equal(await answer.inputValue(),'Amber');
+     if(process.env.MODE_SCREENSHOTS)await page.screenshot({path:path.join(process.env.MODE_SCREENSHOTS,`codex-question-custom-${desktop?'desktop':'phone'}.png`)});
+     f.replyMode='hold';await answer.press('Enter');await card.getByText('Sending answer…',{exact:true}).waitFor();
+     assert.equal(await card.getByRole('button',{name:'Show question and answer',exact:true}).getAttribute('aria-expanded'),'false');
+     assert.equal(await card.locator('.conversation-async-copy>span').textContent(),'Amber');
+     assert.ok((await card.boundingBox()).height<=80,'The sent answer becomes a compact receipt');
+     assert.equal(await draft.inputValue(),'Keep this separate follow-up');
+     f.release();await card.getByText('Answer on its way…',{exact:true}).waitFor();
+     f.history.get(1).push(questionReceipt(f.requests[0].message));await f.poll();await card.getByText('Answered',{exact:true}).waitFor();
+     f.state='working';await f.refresh();
+     if(process.env.MODE_SCREENSHOTS){await card.scrollIntoViewIfNeeded();await page.screenshot({path:path.join(process.env.MODE_SCREENSHOTS,`codex-question-receipt-${desktop?'desktop':'phone'}.png`)});}
+     await card.getByRole('button',{name:'Show question and answer',exact:true}).click();
+     assert.equal(await answer.inputValue(),'Amber');assert.equal(await answer.isDisabled(),true);
+     assert.deepEqual(f.connections,[]);
+    }finally{await f.close();}
+   }
   });
   await t.test('mobile model/activity layout and actionable attention survive the real toolbar and keyboard',async()=>{
    const f=await fixture(),{page}=f;try{

@@ -188,9 +188,9 @@
 .conversation-actions button:last-child{width:auto;padding:4px 12px;white-space:nowrap}
 
 /* A question or permission prompt from the agent, answered here instead of in Terminal. */
-.conversation-message .conversation-async-question{width:100%;max-height:none;box-sizing:border-box;margin:8px 0}
+.conversation-message .conversation-async-question{width:100%;max-height:none;box-sizing:border-box;margin:8px 0;padding:0;overflow:hidden;border-color:var(--line-2);background:var(--surface)}
 .conversation-async-question-group+.conversation-async-question-group{margin-top:16px}
-.conversation-async-question .conversation-question-choice[aria-pressed="true"]{border-color:#e0b25c80;background:#e0b25c1f}
+.conversation-async-question .conversation-question-choice[aria-pressed="true"]{border-color:#8fb4ff66;background:#8fb4ff0d}
 .conversation-async-question.answering .conversation-question-choices{opacity:.6}
 .conversation-question{align-self:center;width:min(var(--chat-width),calc(100% - 48px));max-height:min(60%,32rem);overflow:auto;margin:0 0 8px;padding:12px;border:1px solid #e0b25c4d;border-radius:14px;background:#1a1916;flex-shrink:0;overscroll-behavior:contain}
 .conversation-question-detail{margin:0 0 10px;padding:8px 10px;border-radius:8px;background:var(--code-bg);color:var(--text-2);font:12.5px/1.55 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
@@ -211,6 +211,37 @@
 .conversation-question-other input{flex:1;min-width:0;min-height:40px;padding:8px 10px;border:1px solid var(--line-2);border-radius:10px;background:var(--bg);color:var(--text);font:inherit}
 .conversation-panel .conversation-question-other button{min-height:40px;padding:0 14px;border:1px solid var(--line-2);border-radius:10px;background:var(--raised);color:var(--text);font:500 13px var(--sans);cursor:pointer}
 .conversation-question-status{display:block;margin:8px 2px 0;color:var(--text-2);font-size:12px}
+
+/* Async questions share the transcript's quiet surfaces; only a pending shortcut
+   uses amber. Sent answers become one small, expandable receipt. */
+.conversation-activity.question::before{background:#e0b25c}
+.conversation-panel .conversation-async-toggle{display:flex;align-items:center;gap:10px;width:100%;min-height:42px;padding:9px 12px;text-align:left;border-radius:12px;color:var(--text-2)}
+.conversation-async-mark{display:grid;place-items:center;flex:0 0 20px;height:20px;border:1px solid var(--line-2);border-radius:50%;font:500 11px var(--sans);color:var(--muted)}
+.conversation-async-copy{display:flex;align-items:baseline;gap:10px;flex:1;min-width:0;font-size:12px;line-height:1.4}
+.conversation-async-copy strong{font-weight:500;white-space:nowrap}
+.conversation-async-copy>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:12px}
+.conversation-async-chevron{flex:0 0 10px;height:10px;background:var(--muted);mask:var(--chev) center/contain no-repeat;transform:rotate(90deg)}
+.conversation-async-question.collapsed .conversation-async-chevron{transform:none}
+.conversation-async-body{padding:2px 12px 12px}
+.conversation-async-body .conversation-question-text{font-weight:500;color:var(--text);font-size:14px}
+.conversation-async-body .conversation-question-choices{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,18rem),1fr));gap:7px}
+.conversation-async-question .conversation-question-choice{min-height:42px;font-size:13px;border-color:var(--line-2);background:transparent}
+.conversation-async-question .conversation-question-choice:hover:enabled{background:#ffffff06;border-color:#ffffff30}
+.conversation-async-option-mark{display:grid;place-items:center;flex:0 0 16px;height:16px;margin-top:2px;border:1px solid #ffffff30;border-radius:50%;color:var(--accent);font-size:10px}
+.conversation-async-question [aria-pressed="true"] .conversation-async-option-mark{border-color:#8fb4ff80;background:#8fb4ff14}
+.conversation-panel .conversation-async-write{grid-column:1/-1;justify-self:start;min-height:32px;padding:3px 2px;font-size:12px;font-weight:400;color:var(--muted)}
+.conversation-async-question .conversation-question-other{grid-column:1/-1}
+.conversation-async-question .conversation-question-other input{font-size:13px}
+.conversation-async-question>.conversation-question-status{margin:0 12px 10px;color:#e0b25c}
+.conversation-async-question>button.conversation-question-choice{width:calc(100% - 24px);margin:0 12px 12px}
+.conversation-message .conversation-async-question.settled{background:transparent;border-color:transparent}
+.conversation-async-question.settled .conversation-async-copy{flex-direction:column;gap:2px}
+.conversation-async-question.settled .conversation-async-copy strong{font-size:12px;color:var(--muted)}
+.conversation-async-question.settled .conversation-async-copy>span{max-width:100%;color:var(--text-2);font-size:13px}
+.conversation-async-question.settled .conversation-async-mark{border:0}
+.conversation-panel .conversation-pending-question{align-self:flex-start;max-width:calc(100% - 2*var(--edge));min-height:30px;margin:0 var(--edge) 8px;padding:4px 9px;border:1px solid #e0b25c30;border-radius:8px;color:#e0b25c;background:#e0b25c08;font-size:12px;flex-shrink:0}
+.conversation-pending-question::before{content:"";display:inline-block;width:5px;height:5px;margin:0 7px 2px 0;border-radius:50%;background:currentColor}
+.conversation-pending-question::after{content:"↑";margin-left:16px}
 
 /* Composer: a card with the draft on top and a toolbar below. */
 .conversation-compose{position:relative;align-self:center;width:min(var(--chat-width),calc(100% - 48px));margin:0 0 max(20px,env(safe-area-inset-bottom));border:1px solid #ffffff1f;border-radius:14px;background:#17181b;padding:4px 8px 8px;display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;align-items:center;gap:0 4px;flex-shrink:0;box-shadow:0 16px 32px -16px #000;transition:border-color .15s}

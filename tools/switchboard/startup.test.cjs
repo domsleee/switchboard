@@ -7,7 +7,7 @@ const source=fs.readFileSync(__dirname+'/static/app.js','utf8');
 function workspace(initial){
   let catalog=initial;
   const mounted=[],timeouts=[],elements=new Map();
-  const context={newTabElevated:false,loading:false,hosts:new Map(),sessions:new Map(),tabCatalog:[],ready:{},hidden:{},tabOrder:[],selected:null,filter:'all',
+  const context={newTabElevated:false,loading:false,hosts:new Map(),sessions:new Map(),tabCatalog:[],ready:{},hidden:{},parkedTabs:{},saveParkedTabs(){},tabOrder:[],selected:null,filter:'all',
     catalogUnavailable:()=>false,saveReady(){},localStorage:{setItem(){}},renderMachines(){},render(){},setStatus(){},clearTimeout(){},setTimeout:fn=>timeouts.push(fn),
     document:{createElement:()=>({getAttribute(name){return this[name];},remove(){this.removed=true;},focus(){}})},$:id=>elements.get(id),
     fetch:async url=>({ok:true,json:async()=>url==='/api/hosts?summary=1'?[{id:'windows',name:'Windows'}]:catalog})};
