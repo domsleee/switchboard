@@ -284,3 +284,52 @@ test('Where viewers attach hidden, Conversation connects the selected terminal i
   assert.deepEqual(errors,[]);
  }finally{await browser.close();}
 });
+
+test('On a touch screen Conversation opens for reading and never focuses the draft until it is tapped',
+ {skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
+ const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch();
+ try{
+  const page=await browser.newPage({viewport:{width:390,height:844},isMobile:true,hasTouch:true});page.setDefaultTimeout(10000);
+  const errors=[];page.on('pageerror',e=>errors.push(e.message));
+  const pane=(id,session)=>({pane_id:id,is_plugin:false,tab_id:id,tab_position:0,tab_name:session,title:session,is_focused:true});
+  const tabs=['main','other'].map((session,i)=>({host:'local',session,id:i+1,position:0,name:session,panes:[pane(i+1,session)]}));
+  await page.route('http://conversation.test/**',async route=>{
+   const p=new URL(route.request().url()).pathname,json=value=>route.fulfill({json:value});
+   if(p==='/api/mesh')return json({members:[]});
+   if(p==='/api/hosts')return json([{id:'local',name:'Ubuntu',local:true}]);
+   if(p==='/api/hosts/local')return json({id:'local',name:'Ubuntu',local:true,sessions:['main','other'].map(name=>({name,web_clients_allowed:true,hidden_attach:true}))});
+   if(p==='/api/attention')return json({tabs,panes:tabs.map(tab=>({host:'local',session:tab.session,pane_id:tab.panes[0].pane_id,agent:'codex',state:'ready',token:'r',seen:true,chat_id:'chat-'+tab.id})),errors:[]});
+   if(p.startsWith('/api/chats/'))return json({id:p.split('/').at(-1),agent:'codex',session_id:null,messages:[{role:'assistant',text:'Reply in '+p.split('/').at(-1)}],start_cursor:0,next_cursor:null});
+   if(p.startsWith('/hosts/')){
+    const session=p.split('/').at(-1),own=pane(session==='main'?1:2,session);
+    return route.fulfill({contentType:'text/html',body:`<script>
+      const state=id=>parent.postMessage({type:'zellij-state',focus_id:id,payload:{session_name:${JSON.stringify(session)},active_pane:${JSON.stringify(own)},panes:${JSON.stringify([own])}}},location.origin);
+      addEventListener('message',event=>{if(event.data.type==='zellij-focus')state(event.data.focus_id);});state(null);
+     </script>`});
+   }
+   if(p.startsWith('/api/'))return json({});
+   const file=path.join(__dirname,'static',p==='/'?'index.html':p.slice(1));
+   if(!fs.existsSync(file))return route.fulfill({status:404,body:''});
+   return route.fulfill({path:file,contentType:p.endsWith('.js')?'text/javascript':p.endsWith('.css')?'text/css':'text/html'});
+  });
+  const draftFocused=()=>page.evaluate(()=>document.activeElement===document.querySelector('.conversation-compose textarea'));
+  await page.goto('http://conversation.test/?host=local&session=main&tab=1');
+  await page.getByText('Reply in chat-1',{exact:true}).waitFor();
+  await page.getByLabel('Reply draft').waitFor();
+  assert.equal(await draftFocused(),false,'Opening the page leaves the draft unfocused so no keyboard covers the reply');
+  assert.equal(await page.evaluate(()=>document.activeElement===document.querySelector('.conversation-panel')),true,'The conversation itself takes focus');
+  await page.evaluate(()=>activate(allTabs().find(item=>item.tab.id===2)));
+  await page.getByText('Reply in chat-2',{exact:true}).waitFor();
+  assert.equal(await draftFocused(),false,'Switching tabs leaves the draft unfocused');
+  await page.getByRole('button',{name:'Terminal',exact:true}).click();
+  await page.getByRole('button',{name:'Conversation',exact:true}).click();
+  await page.getByText('Reply in chat-2',{exact:true}).waitFor();
+  assert.equal(await draftFocused(),false,'Returning from Terminal leaves the draft unfocused');
+  await page.getByLabel('Reply draft').tap();
+  assert.equal(await draftFocused(),true,'Tapping the draft focuses it');
+  await page.evaluate(()=>activate(allTabs().find(item=>item.tab.id===1)));
+  await page.getByText('Reply in chat-1',{exact:true}).waitFor();
+  assert.equal(await draftFocused(),false,'Changing conversation while the draft is focused moves focus off the draft');
+  assert.deepEqual(errors,[]);
+ }finally{await browser.close();}
+});
