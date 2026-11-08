@@ -254,6 +254,9 @@ while it continues working or finishes its turn. Viewing the tab keeps the input
 badge until the dialog is answered; its normal turn status then resumes. The
 `[ ! ] Action Required` title also keeps it flagged when the user switches from
 the question back to Codex's main prompt.
+The snapshot keeps the hook's `turn_state` alongside that input badge, so
+Conversation can show ongoing work and accept async answers without blocking
+ordinary replies. It reads the question's native choices from the transcript.
 
 Claude tabs use live spinners and active background-agent rows to indicate work.
 A background-shell count alone does not keep a finished reply working: that shell

@@ -20,12 +20,13 @@ test('integrated Conversation journeys use production markup and preserve delive
    if(p==='/api/mesh')return json({members:[]});
    if(p==='/api/hosts')return json([{id:'fixture',name:'Fixture desktop',local:true}]);
    if(p==='/api/hosts/fixture')return json({id:'fixture',name:'Fixture desktop',local:true,sessions:[{name:'main',web_clients_allowed:true}]});
-   if(p==='/api/attention')return json({tabs:f.tabs.map(id=>({host:'fixture',session:'main',id,position:id-1,name:'Conversation '+id,panes:[pane(id)]})),panes:f.tabs.map(id=>({host:'fixture',session:'main',pane_id:id,...(f.agent?{agent:f.agent}:{}),state:f.state,...(f.bound?{chat_id:'chat-'+id}:{})})),errors:[]});
+   if(p==='/api/attention'){if(url.searchParams.has('after'))return;return json({tabs:f.tabs.map(id=>({host:'fixture',session:'main',id,position:id-1,name:'Conversation '+id,panes:[pane(id)]})),panes:f.tabs.map(id=>({host:'fixture',session:'main',pane_id:id,...(f.agent?{agent:f.agent}:{}),state:f.state,turn_state:options.turnState,...(f.bound?{chat_id:'chat-'+id}:{})})),errors:[]});}
    if(p.startsWith('/api/chats/')){const id=Number(p.split('-').at(-1));return json({id:'chat-'+id,model:f.model,reasoning_effort:f.effort,session_id:f.agent==='codex'?thread(id):null,messages:f.history.get(id)||[],start_cursor:0,next_cursor:null});}
    if(p.endsWith('/conversation/reply')){f.claudeReplies.push(route.request().postDataJSON());return route.fulfill({status:f.claudeReplyStatus,json:{ok:true}});}
    if(p.endsWith('/conversation/prepare')){f.preparations.push(route.request().postDataJSON());return route.fulfill({status:f.prepareStatus,json:{trusted:false}});}
    if(p.endsWith('/codex/reply')){
     const data=route.request().postDataJSON(),id=Number(data.thread.slice(-12));f.requests.push(data);
+    if(f.replyMode==='failed')return route.fulfill({status:503,json:{status:'failed',detail:'Codex could not accept this answer.'}});
     if(f.autoHistory)f.history.get(id).push(f.receipt(data.message));
     if(f.replyMode==='hold')await new Promise(resolve=>f.releaseReplies.push(resolve));
     if(f.replyMode==='lost')return route.abort();
@@ -54,6 +55,79 @@ test('integrated Conversation journeys use production markup and preserve delive
   return f;
  }
  try{
+  const asyncQuestion=(id,questions)=>({role:'assistant',text:questions.map(q=>q.title).join('\n'),phase:'final',async_question:{id,questions}});
+  const questionReceipt=payload=>{const replies=JSON.parse(payload.split('\n')[1]);return {role:'user',text:replies.map(reply=>'> '+reply.question+'\n\n'+reply.answer).join('\n\n'),question_replies:replies.map(reply=>({id:reply.questionItemId,question:reply.question,answer:reply.answer}))};};
+  await t.test('Codex async answers and ordinary follow-ups queue independently without opening Terminal',async()=>{
+   for(const viewport of [{width:1100,height:800},{width:390,height:844}]){
+    const q=asyncQuestion('q1',[{title:'Should I rename “Hidden” to “Settled”?',options:['Yes, use Settled','Keep the Hidden label']}]);
+    const f=await fixture({viewport,messages:[q],turnState:'working'}),{page}=f;try{
+     f.state='input';await f.refresh();
+     const card=page.getByRole('region',{name:'Codex question'});
+     await card.getByText(q.async_question.questions[0].title,{exact:true}).waitFor();
+     assert.equal(await page.getByRole('button',{name:'Open Terminal',exact:true}).isVisible(),false);
+     assert.equal(await page.locator('.conversation-working').isVisible(),true,'A question does not hide ongoing work');
+     const draft=page.getByLabel('Reply draft');await draft.fill('Continue the other changes while I decide');
+     if(process.env.MODE_SCREENSHOTS)await page.screenshot({path:path.join(process.env.MODE_SCREENSHOTS,`codex-async-question-${viewport.width}.png`)});
+     f.replyMode='hold';const keep=card.getByRole('button',{name:/Keep the Hidden label/});
+     if(viewport.width>700){await keep.focus();await page.keyboard.press('Enter');}else await keep.click();
+     await page.waitForFunction(()=>document.querySelector('.conversation-async-question').textContent.includes('Sending answer…'));
+     assert.equal(await draft.inputValue(),'Continue the other changes while I decide');
+     assert.equal(f.requests.length,1);
+     const answers=JSON.parse(f.requests[0].message.split('\n')[1]);
+     assert.deepEqual(answers,[{questionItemId:'q1',question:q.async_question.questions[0].title,answer:'Keep the Hidden label'}]);
+     // A slow answer acknowledgement cannot hold the ordinary composer.
+     f.replyMode='queue';f.autoHistory=true;await page.locator('.conversation-compose button[type=submit]').click();
+     await page.waitForFunction(()=>!document.querySelector('.conversation-compose textarea').value);
+     assert.equal(f.requests[1].message,'Continue the other changes while I decide');
+     assert.equal(f.requests.length,2);assert.deepEqual(f.connections,[]);
+     f.release();await card.getByText('Answer on its way…',{exact:true}).waitFor();
+     assert.equal(await card.getByRole('button',{name:/Keep the Hidden label/}).isDisabled(),true);
+     f.history.get(1).push(questionReceipt(f.requests[0].message));await f.poll();
+     await card.getByText('Answered',{exact:true}).waitFor();
+     assert.equal(await page.getByRole('button',{name:'Conversation',exact:true}).getAttribute('aria-pressed'),'true');
+
+     // A lost response retries the exact payload and receipt key.
+     const q2=asyncQuestion('q2',[{title:'Which colour?',options:['Red','Blue']}]);
+     f.history.get(1).push(q2);await f.poll();const second=card.filter({hasText:'Which colour?'});
+     f.autoHistory=false;f.replyMode='lost';await second.getByRole('button',{name:/Blue/}).click();
+     await second.getByRole('button',{name:'Retry',exact:true}).waitFor();
+     const uncertain=f.requests.at(-1);f.replyMode='failed';await second.getByRole('button',{name:'Retry',exact:true}).click();
+     await second.getByText('Codex could not accept this answer.',{exact:true}).waitFor();
+     assert.deepEqual(f.requests.at(-1),uncertain,'An uncertain delivery keeps its receipt key');
+     f.replyMode='queue';await second.getByRole('button',{name:'Retry',exact:true}).click();
+     await second.getByText('Answer on its way…',{exact:true}).waitFor();
+     assert.equal(f.requests.at(-1).message,uncertain.message);assert.notEqual(f.requests.at(-1).send_key,uncertain.send_key,'A confirmed rejection permits a fresh attempt');assert.deepEqual(f.connections,[]);
+     // Navigating to another chat and back preserves the pending answer and draft.
+     await draft.fill('Keep my draft');await f.select(2);await f.select(1);
+     assert.equal(await draft.inputValue(),'Keep my draft');
+     await second.getByText('Answer on its way…',{exact:true}).waitFor();
+     await page.getByRole('button',{name:'Terminal',exact:true}).click();
+     await page.waitForFunction(()=>[...sessions.values()].some(entry=>!entry.suspended));
+     assert.equal(await page.locator('.tab-select.selected.needs-attention').count(),1);
+     await page.getByRole('button',{name:'Conversation',exact:true}).click();
+     await second.getByText('Answer on its way…',{exact:true}).waitFor();
+     assert.equal(await draft.inputValue(),'Keep my draft');
+    }finally{await f.close();}
+   }
+  });
+  await t.test('Codex async free-text and multiple answers remain inline and recorded answers survive a reload',async()=>{
+   const questions=[{title:'Which colour?',options:['Red','Blue']},{title:'What should the label say?',options:[]}];
+   const q=asyncQuestion('multi',questions),f=await fixture({messages:[q],turnState:'working'}),{page}=f;
+   try{
+    f.state='input';await f.refresh();const card=page.getByRole('region',{name:'Codex question'}),send=card.getByRole('button',{name:'Send answers',exact:true});
+    await send.waitFor();assert.equal(await send.isDisabled(),true);
+    await card.getByRole('button',{name:/Blue/}).click();assert.equal(f.requests.length,0);assert.equal(await send.isDisabled(),true);
+    await card.getByLabel('Answer: What should the label say?').fill('-Awaiting review');await send.click();
+    await card.getByText('Answer on its way…',{exact:true}).waitFor();
+    const answers=JSON.parse(f.requests[0].message.split('\n')[1]);
+    assert.deepEqual(answers,questions.map((question,index)=>({questionItemId:'multi',question:question.title,answer:index===0?'Blue':'-Awaiting review'})));
+    f.history.get(1).push(questionReceipt(f.requests[0].message));await f.poll();await card.getByText('Answered',{exact:true}).waitFor();
+    await page.reload();await page.getByRole('region',{name:'Codex question'}).getByText('Answered',{exact:true}).waitFor();
+    assert.equal(await page.getByRole('region',{name:'Codex question'}).getByRole('button',{name:/Blue/}).isDisabled(),true);
+    assert.equal(await page.getByRole('region',{name:'Codex question'}).getByRole('button',{name:/Blue/}).getAttribute('aria-pressed'),'true');
+    assert.deepEqual(f.connections,[]);
+   }finally{await f.close();}
+  });
   await t.test('mobile model/activity layout and actionable attention survive the real toolbar and keyboard',async()=>{
    const f=await fixture(),{page}=f;try{
     await page.getByText('Review response',{exact:true}).waitFor();await page.getByLabel('Reply draft').fill('Keep this draft');

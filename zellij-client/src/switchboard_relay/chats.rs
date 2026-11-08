@@ -541,6 +541,68 @@ fn codex_question_reply(text: &str) -> Option<String> {
             .join("\n\n"),
     )
 }
+
+// These are native AgentMessage questions, not guesses from assistant prose.
+fn codex_async_question(item: &Value) -> Option<Value> {
+    let id = item["id"]
+        .as_str()
+        .filter(|id| !id.is_empty() && id.len() <= 256)?;
+    let questions = item["questions"].as_array()?;
+    if item["delivery"] != "async" || questions.is_empty() || questions.len() > 20 {
+        return None;
+    }
+    let questions = questions
+        .iter()
+        .map(|question| {
+            let title = question["title"]
+                .as_str()
+                .filter(|title| !title.trim().is_empty() && title.len() <= 4000)?;
+            let options = match question.get("options").filter(|value| !value.is_null()) {
+                None => Vec::new(),
+                Some(value) => {
+                    let options = value.as_array().filter(|options| options.len() <= 20)?;
+                    options
+                        .iter()
+                        .map(|option| {
+                            option
+                                .as_str()
+                                .filter(|option| !option.trim().is_empty() && option.len() <= 4000)
+                                .map(str::to_owned)
+                        })
+                        .collect::<Option<Vec<_>>>()?
+                },
+            };
+            Some(json!({"title":title,"options":options}))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(json!({"id":id,"questions":questions}))
+}
+
+fn codex_question_replies(text: &str) -> Option<Value> {
+    let [("send_user_message_question_reply", inner)] = tags(text)?[..] else {
+        return None;
+    };
+    let answers = serde_json::from_str::<Vec<Value>>(inner).ok()?;
+    if answers.is_empty() || answers.len() > 20 {
+        return None;
+    }
+    let answers = answers
+        .iter()
+        .map(|answer| {
+            let id = answer["questionItemId"]
+                .as_str()
+                .filter(|id| !id.is_empty() && id.len() <= 256)?;
+            let question = answer["question"]
+                .as_str()
+                .filter(|text| text.len() <= 4000)?;
+            let text = answer["answer"]
+                .as_str()
+                .filter(|text| !text.trim().is_empty() && text.len() <= 4000)?;
+            Some(json!({"id":id,"question":question,"answer":text}))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(json!(answers))
+}
 fn is_tool(message: &Value) -> bool {
     message["kind"] == "tool"
 }
@@ -1261,6 +1323,13 @@ impl Chat {
                     },
                     _ => return,
                 };
+                let question_replies: Vec<_> = parts
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|part| part["text"].as_str().and_then(codex_question_replies))
+                    .flat_map(|answers| answers.as_array().cloned().unwrap_or_default())
+                    .collect();
                 let parts = match parts.as_array() {
                     Some(list) if role == "user" => list
                         .iter()
@@ -1275,6 +1344,16 @@ impl Chat {
                 };
                 let before = self.messages.len();
                 self.push_parts(role, &parts, v["timestamp"].clone());
+                if self.messages.len() > before {
+                    let message = self.messages.last_mut().unwrap();
+                    if role == "assistant" {
+                        if let Some(question) = codex_async_question(item) {
+                            message["async_question"] = question;
+                        }
+                    } else if !question_replies.is_empty() {
+                        message["question_replies"] = json!(question_replies);
+                    }
+                }
                 if self.messages.len() > before && phase == "commentary" {
                     self.messages.last_mut().unwrap()["phase"] = json!("commentary");
                 }
@@ -1680,6 +1759,11 @@ fn read_page(chat: &Chat, p: &Params) -> Value {
         json!({"role":m["role"],"timestamp":m["timestamp"],"text":clip(text,shown),"truncated":text.chars().count()>shown,"phase":m["phase"],"model":m["model"],"reasoning_effort":m["reasoning_effort"],"attachments":m["attachments"],"markdown":markdown_events(&clip(text,shown))})
     }).collect();
     for (message, source) in page.iter_mut().zip(&chat.messages[start..end]) {
+        for key in ["async_question", "question_replies"] {
+            if let Some(value) = source.get(key) {
+                message[key] = value.clone();
+            }
+        }
         if is_tool(source) {
             for key in ["kind", "tool", "detail"] {
                 message[key] = source[key].clone();
@@ -3184,6 +3268,63 @@ mod tests {
         let whole = read_page(&chat("codex", records), &tail);
         assert_eq!(index.page(&tail).unwrap()["messages"], whole["messages"]);
         assert_eq!(whole["message_count"], 7);
+    }
+
+    #[test]
+    fn switchboard_chats_codex_async_questions_and_answers_survive_paging() {
+        // Native AgentMessage shape captured from Codex's async question on 2026-11-08.
+        let question = json!({"type":"event_msg","payload":{"type":"item_completed","item":{
+            "type":"AgentMessage","id":"q1","phase":"final_answer","delivery":"async",
+            "content":[{"type":"Text","text":"Which colour?\n- Red\n- Blue"}],
+            "questions":[{"title":"Which colour?","options":["Red","Blue"]}]
+        }}});
+        let reply = "<send_user_message_question_reply>\n[{\"questionItemId\":\"q1\",\"question\":\"Which colour?\",\"answer\":\"Blue\"}]\n</send_user_message_question_reply>";
+        let answer = json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":reply}]}}});
+        let records = vec![question.clone(), answer.clone()];
+        let whole = read_page(&chat("codex", records.clone()), &Params::default());
+        assert_eq!(
+            whole["messages"][0]["async_question"],
+            json!({"id":"q1","questions":[{"title":"Which colour?","options":["Red","Blue"]}]})
+        );
+        assert_eq!(
+            whole["messages"][1]["question_replies"],
+            json!([{"id":"q1","question":"Which colour?","answer":"Blue"}])
+        );
+        assert_eq!(whole["messages"][1]["text"], "> Which colour?\n\nBlue");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("async.jsonl");
+        let mut file = fs::File::create(&path).unwrap();
+        let mut index = HistoryIndex::new("codex", dir.path(), &path);
+        for record in records {
+            writeln!(file, "{record}").unwrap();
+            index.page(&Params::default()).unwrap();
+        }
+        assert_eq!(
+            index.page(&Params::default()).unwrap()["messages"],
+            whole["messages"]
+        );
+        let legacy = json!({"type":"event_msg","payload":{"type":"user_message","message":reply}});
+        assert_eq!(
+            chat("codex", vec![legacy]).messages[0]["question_replies"],
+            whole["messages"][1]["question_replies"]
+        );
+        let mut plain = question.clone();
+        plain["payload"]["item"]["delivery"] = json!("normal");
+        assert!(chat("codex", vec![plain]).messages[0]
+            .get("async_question")
+            .is_none());
+        let mut bad = question.clone();
+        bad["payload"]["item"]["questions"][0]["options"] =
+            json!([{"label":"not a native option"}]);
+        assert!(chat("codex", vec![bad]).messages[0]
+            .get("async_question")
+            .is_none());
+        let mut free = question;
+        free["payload"]["item"]["questions"] = json!([{"title":"What should I change?"}]);
+        assert_eq!(
+            chat("codex", vec![free]).messages[0]["async_question"]["questions"][0]["options"],
+            json!([])
+        );
     }
 
     #[test]

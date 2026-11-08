@@ -109,6 +109,14 @@ under `~/.local/share/switchboard/attachments`; uploads older than seven days ar
 cleaned up during later uploads. Replies include the stored file paths so the agent
 can read the files on its own computer.
 
+Codex asynchronous questions retain their native item ID and choices in the
+transcript API's `async_question` field. Conversation renders choices and a free-text
+answer inline. Answers use Codex's question-reply message format through its native
+queue, without opening Terminal or interrupting the turn. The ordinary composer
+stays available while a question or its answer is pending. Recorded `question_replies`
+settle the matching card on every browser, including after a reload; an uncertain
+delivery retries the same message and send key.
+
 Codex replies use `/api/hosts/HOST/codex/reply` and its native queue, whether idle
 or working. The transcript supplies the native session ID. A retry keeps the same
 send key, and the destination stores a receipt to prevent a duplicate submission.
@@ -117,8 +125,9 @@ replies retain user text; the separate agent-to-agent `/codex/queue` route keeps
 forwarded-message annotation. Claude replies use `/api/hosts/HOST/conversation/reply`,
 including while working: the relay pastes the reply into the pane and presses Enter
 only when Claude's prompt box is empty, so Conversation stays on screen. Relays
-without that route answer 404 and the browser falls back to pasting through Terminal. Approval and interactive prompts still require
-Terminal. In Conversation, Codex's exact startup **Hooks need review** menu is
+without that route answer 404 and the browser falls back to pasting through Terminal.
+Codex approvals and synchronous terminal prompts still require Terminal. In
+Conversation, Codex's exact startup **Hooks need review** menu is
 completed automatically by choosing **Trust all and continue**. Codex records its
 own trust hashes. This applies only to the selected shared Codex pane and never
 answers other approval or input dialogs. A selected **Continue without trusting**

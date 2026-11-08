@@ -923,6 +923,7 @@ impl PollState {
             && row["agent"] == "codex"
             && matches!(row["state"].as_str(), Some("approval" | "input"))
         {
+            row["turn_state"] = json!(hooked.state);
             return;
         }
         // Claude's next PostToolUse arrives when the approved tool finishes. Its
@@ -2436,6 +2437,10 @@ esac
                 poll.update("windows", &mut dialog);
                 assert_eq!(dialog["panes"][0]["state"], state, "{event}");
                 assert_eq!(dialog["panes"][0]["token"], token);
+                assert_eq!(
+                    dialog["panes"][0]["turn_state"],
+                    if event == "Stop" { "ready" } else { "working" }
+                );
                 poll.acknowledge("windows", "main", 7, token);
                 let mut still_open = scan(screen);
                 poll.update("windows", &mut still_open);
