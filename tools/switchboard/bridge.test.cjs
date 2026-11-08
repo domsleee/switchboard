@@ -722,7 +722,7 @@ test('Claude Send types over dim hints and sets a typed draft aside in Claude\'s
   let box=[row('❯ ok waiting',2)],footer=row('  ⏵⏵ auto mode on'),stash,restore;
   h.window.term.buffer.active={baseY:0,viewportY:0,getLine:i=>[row('● Done.'),row(rule),...box,row(rule),footer][i]};
   h.window.term.modes={bracketedPasteMode:true};h.window.term.paste=text=>writes.push(['paste',text]);
-  h.window.term.input=text=>{writes.push(['input',text]);if(text==='\x13'&&stash)[box,footer]=stash;if(text==='\r'&&restore)[box,footer]=restore;};
+  let chat;h.window.term.input=text=>{writes.push(['input',text]);if(text==='\x13'&&stash)[box,footer]=stash;if(text==='\x7f'&&chat)[box,footer]=chat;if(text==='\r'&&restore)[box,footer]=restore;};
   const stashed=[[row('❯ ')],row('  ⏵⏵ auto mode on   › stashed')];
   const resize=()=>h.window.term.rows=box.length+4;
   h.state({active_pane:{pane_id:7,is_plugin:false}});
@@ -744,6 +744,13 @@ test('Claude Send types over dim hints and sets a typed draft aside in Claude\'s
   // A stash that does not happen leaves the draft alone and types nothing.
   box=draft;footer=row('  ⏵⏵ auto mode on');stash=null;send();for(let i=0;i<35;i++)tick();
   assert.deepEqual(writes,[['input','\x13']]);assert.equal(h.messages.at(-1).error,'Claude did not set the terminal draft aside. Open Terminal to send.');
+  // An empty shell-mode box (captured: `! ` and a dim placeholder) would run the
+  // reply as a command: Backspace returns it to chat mode, and nothing is typed if it stays.
+  const shell=[[row('! Try "write a test for <filepath>"',2)],row('  ! for shell mode')];
+  [box,footer]=shell;restore=null;send();for(let i=0;i<35;i++)tick();
+  assert.deepEqual(writes,[['input','\x7f']]);assert.equal(h.messages.at(-1).error,'Claude stayed in shell mode. Open Terminal to send.');
+  [box,footer]=shell;chat=[[row('❯ Try "write a test for <filepath>"',2)],row('  ⏵⏵ auto mode on')];send();tick();
+  assert.deepEqual(writes,[['input','\x7f'],['paste','hello'],['input','\r']]);assert.equal(h.messages.at(-1).ok,true);
   // A dialog in place of the input box is never typed into.
   h.window.term.buffer.active={baseY:0,viewportY:0,getLine:i=>[row(rule+' Bash command'),row(' Do you want to proceed?'),row(' ❯ 1. Yes'),row('   2. No')][i]};
   writes.length=0;h.window.term.rows=4;h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-conversation-paste',id:'claude',pane_id:7,agent:'claude',submit:true,text:'hello'}});

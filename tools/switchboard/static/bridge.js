@@ -582,7 +582,7 @@
       const end=rows.findIndex((row,i)=>i>start&&rule(row));if(end<0)continue;
       const first=rows[start].bright.slice(rows[start].text.indexOf(marker)+1);
       const draft=[first,...rows.slice(start+1,end).map(row=>row.bright)].map(line=>line.trim()).join('\n').trim();
-      return {draft,stashed:rows.slice(end+1).some(row=>row.text.includes('› stashed'))};
+      return {draft,stashed:rows.slice(end+1).some(row=>row.text.includes('› stashed')),shell:marker==='!'};
     }
     return null;
   }
@@ -597,11 +597,22 @@
     const send=()=>{
       try{window.term.paste(message.text);window.term.input('\r');}catch{return reply(false,'Could not send the reply. Check the terminal before retrying.');}
       if(!box.draft)return reply(true);
-      wait(now=>!now.stashed&&now.draft===box.draft,20,restored=>reply(true,'',restored?'':"Your terminal draft is in Claude's stash. Press Ctrl+S on its empty prompt to bring it back."));
+      wait(now=>!now.stashed&&now.draft===box.draft&&now.shell===box.shell,20,restored=>reply(true,'',restored?'':"Your terminal draft is in Claude's stash. Press Ctrl+S on its empty prompt to bring it back."));
     };
+    // An empty shell-mode box would run the reply as a command. Ctrl+S has nothing
+    // to stash there; Backspace returns it to chat mode.
+    if(!box.draft&&box.shell){
+      try{window.term.input('\x7f');}catch{return reply(false,'Could not send the reply. Check the terminal before retrying.');}
+      return wait(now=>!now.draft&&!now.shell,30,chat=>{
+        if(!chat)return reply(false,'Claude stayed in shell mode. Open Terminal to send.');
+        if(!unchanged()||terminalSocket?.readyState!==1)return reply(false,'The terminal pane changed. Open the intended terminal before replying.');
+        send();
+      });
+    }
     if(!box.draft)return send();
     try{window.term.input('\x13');}catch{return reply(false,'Could not send the reply. Check the terminal before retrying.');}
-    wait(now=>!now.draft&&now.stashed,30,stashed=>{
+    // Stashing also leaves shell mode.
+    wait(now=>!now.draft&&now.stashed&&!now.shell,30,stashed=>{
       if(!stashed)return reply(false,'Claude did not set the terminal draft aside. Open Terminal to send.');
       if(!unchanged()||terminalSocket?.readyState!==1)return reply(false,'The terminal pane changed. Your terminal draft is in Claude\'s stash; press Ctrl+S on its empty prompt to bring it back.');
       send();

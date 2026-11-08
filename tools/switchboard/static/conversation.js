@@ -548,7 +548,10 @@
     }
     function returnToConversation(sent){if(sent.returnHere&&!open&&modeRevision===sent.modeRevision&&navigationRevision===sent.navigationRevision&&identity(selection())===sent.key)show(true,true);}
     function complete(sent,ok,message,uncertain=false){
-      if(pendingFor(sent.key)!==sent)return;pendingSends.delete(sent.key);
+      // The transcript can acknowledge a send before the relay answers; still say
+      // where a terminal draft set aside for it went.
+      if(pendingFor(sent.key)!==sent){if(ok&&message&&!pendingFor(sent.key)&&identity(target)===sent.key)sendStatus(message,sent);return;}
+      pendingSends.delete(sent.key);
       if(ok){clearSentDraft(sent);if(sent.command){outgoing.set(sent.key,(outgoing.get(sent.key)||[]).filter(item=>item!==sent));if(identity(target)===sent.key)paint();}else sendItem(sent,sent.native||sent.relay?'queued':'sent');}
       else sendItem(sent,uncertain?'uncertain':'failed',message);
       returnToConversation(sent);

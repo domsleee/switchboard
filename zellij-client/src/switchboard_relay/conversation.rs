@@ -205,6 +205,8 @@ struct ClaudePrompt {
     draft: String,
     /// Claude holds a stashed prompt: its footer says `› stashed`.
     stashed: bool,
+    /// Shell mode (`!`): Enter runs the input as a command.
+    shell: bool,
 }
 
 /// The last input box on screen: a rule, a row starting with `❯` (or `!` in
@@ -245,7 +247,12 @@ fn claude_prompt(screen: &str) -> Option<ClaudePrompt> {
                 .collect::<String>()
                 .contains("› stashed")
         });
-        return Some(ClaudePrompt { draft, stashed });
+        let shell = rows[start][marker].0 == '!';
+        return Some(ClaudePrompt {
+            draft,
+            stashed,
+            shell,
+        });
     }
     None
 }
@@ -485,13 +492,11 @@ pub(super) async fn reply_local(host: &Host, reply: Reply) -> Result<Json<Value>
     }
     let id = reply.pane_id.to_string();
     let session = &reply.session;
-    let prompt = read_prompt(host, session, &id)
-        .await
-        .or_else(|| claude_prompt(&screen))
-        .ok_or((
-            StatusCode::CONFLICT,
-            "Claude is not at its prompt. Open Terminal to see what it needs.",
-        ))?;
+    // Only a fresh read counts: a dialog may have replaced the box since `screen`.
+    let prompt = read_prompt(host, session, &id).await?.ok_or((
+        StatusCode::CONFLICT,
+        "Claude is not at its prompt. Open Terminal to see what it needs.",
+    ))?;
     // A draft typed in Terminal goes into Claude's stash (Ctrl+S), which keeps its
     // cursor, shell mode and pasted blocks; Claude puts it back once the reply is
     // submitted, whether it runs now or waits in the queue. Ctrl+S never
@@ -506,14 +511,25 @@ pub(super) async fn reply_local(host: &Host, reply: Reply) -> Result<Json<Value>
             ));
         }
         write_keys(host, session, &id, "19").await?;
+        // Stashing also leaves shell mode.
         wait_for_prompt(host, session, &id, |now| {
-            now.draft.is_empty() && now.stashed
+            now.draft.is_empty() && now.stashed && !now.shell
         })
         .await
         .ok_or((
             StatusCode::CONFLICT,
             "Claude did not set the terminal draft aside. Open Terminal to send.",
         ))?;
+    } else if prompt.shell {
+        // An empty shell-mode box would run the reply as a command. Ctrl+S has
+        // nothing to stash there; Backspace returns it to chat mode.
+        write_keys(host, session, &id, "127").await?;
+        wait_for_prompt(host, session, &id, |now| now.draft.is_empty() && !now.shell)
+            .await
+            .ok_or((
+                StatusCode::CONFLICT,
+                "Claude stayed in shell mode. Open Terminal to send.",
+            ))?;
     }
     // `--` keeps a reply that starts with `-` from reading as an option.
     control::run_local(
@@ -529,7 +545,7 @@ pub(super) async fn reply_local(host: &Host, reply: Reply) -> Result<Json<Value>
         return Ok(Json(json!({"ok":true})));
     }
     let restored = wait_for_prompt(host, session, &id, |now| {
-        !now.stashed && now.draft == prompt.draft
+        !now.stashed && now.draft == prompt.draft && now.shell == prompt.shell
     })
     .await
     .is_some();
@@ -541,7 +557,11 @@ pub(super) async fn reply_local(host: &Host, reply: Reply) -> Result<Json<Value>
 }
 
 /// Reads Claude's input box with styling, which tells hints from typed text.
-async fn read_prompt(host: &Host, session: &str, pane: &str) -> Option<ClaudePrompt> {
+async fn read_prompt(
+    host: &Host,
+    session: &str,
+    pane: &str,
+) -> Result<Option<ClaudePrompt>, Error> {
     let screen = control::run_local(
         host,
         session,
@@ -549,8 +569,8 @@ async fn read_prompt(host: &Host, session: &str, pane: &str) -> Option<ClaudePro
         Duration::from_secs(5),
     )
     .await
-    .ok()?;
-    claude_prompt(&screen)
+    .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot read the selected pane"))?;
+    Ok(claude_prompt(&screen))
 }
 
 /// Rereads the input box until `done` holds, for up to two seconds.
@@ -563,7 +583,7 @@ async fn wait_for_prompt(
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     while tokio::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(100)).await;
-        if let Some(prompt) = read_prompt(host, session, pane).await {
+        if let Ok(Some(prompt)) = read_prompt(host, session, pane).await {
             if done(&prompt) {
                 return Some(prompt);
             }
@@ -655,6 +675,11 @@ mod tests {
             draft("before [Pasted text #1 +5 lines]")
         );
         assert_eq!(read(capture("shell-mode draft")), draft("echo hi"));
+        // Shell mode runs whatever Enter submits, even from an empty box.
+        let shell = |name: &str| claude_prompt(capture(name)).map(|p| (p.draft, p.shell));
+        assert_eq!(shell("shell mode, empty"), Some((String::new(), true)));
+        assert_eq!(shell("shell-mode draft"), Some(("echo hi".into(), true)));
+        assert_eq!(shell("idle placeholder"), Some((String::new(), false)));
         assert_eq!(read(capture("stashed, empty")), Some((String::new(), true)));
         assert_eq!(
             read(capture("stashed, with a new draft")),
@@ -750,7 +775,7 @@ mod tests {
         )
         .unwrap();
         // Input clears the fake screen, unless `after-<first key>` holds the screen
-        // that key leads to.
+        // that key leads to. `ansi`, when present, is what a styled dump reads.
         #[cfg(windows)]
         std::fs::write(
             &cli,
@@ -765,6 +790,7 @@ exit /b 1
 type "{catalog}"
 exit /b 0
 :screen
+if "%~5"=="--ansi" if exist "{dir}\ansi" (type "{dir}\ansi" & exit /b 0)
 type "{screen}"
 exit /b 0
 :write
@@ -787,7 +813,7 @@ if exist "{dir}\after-%~7" (copy /y "{dir}\after-%~7" "{screen}" >nul) else (typ
                     r#"#!/bin/sh
 case "$4" in
 list-panes) cat '{catalog}' ;;
-dump-screen) cat '{screen}' ;;
+dump-screen) if [ "$5" = --ansi ] && [ -f '{dir}/ansi' ]; then cat '{dir}/ansi'; else cat '{screen}'; fi ;;
 write|paste) printf '%s\n' "$*" >> '{actions}'
   if [ -f '{dir}/after-'"$7" ]; then cp '{dir}/after-'"$7" '{screen}'; else : > '{screen}'; fi ;;
 *) exit 1 ;;
@@ -986,6 +1012,44 @@ esac
             StatusCode::CONFLICT
         );
         assert_eq!(recorded(), ["-s fixture action write -p 7 19"]);
+        // An empty shell-mode box would run the reply as a command: Backspace
+        // returns it to chat mode first, and nothing is typed if it stays.
+        let shell = format!("{RULE}\n! \n{RULE}\n  ! for shell mode\n");
+        std::fs::write(&screen, &shell).unwrap();
+        assert_eq!(
+            reply_local(&host, reply("hi")).await.unwrap_err().0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(recorded(), ["-s fixture action write -p 7 127"]);
+        std::fs::write(after("127"), CLAUDE_IDLE).unwrap();
+        std::fs::write(&screen, &shell).unwrap();
+        assert_eq!(
+            reply_local(&host, reply("hi")).await.unwrap().0,
+            json!({"ok":true})
+        );
+        assert_eq!(
+            recorded(),
+            [
+                "-s fixture action write -p 7 127",
+                "-s fixture action paste -p 7 -- hi",
+                "-s fixture action write -p 7 13"
+            ]
+        );
+        std::fs::remove_file(after("127")).unwrap();
+        // The fresh styled read decides: a dialog that replaced the box since the
+        // first read is never typed into.
+        std::fs::write(&screen, CLAUDE_IDLE).unwrap();
+        std::fs::write(
+            dir.path().join("ansi"),
+            format!("{RULE} Bash command\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            reply_local(&host, reply("hi")).await.unwrap_err().0,
+            StatusCode::CONFLICT
+        );
+        assert!(!actions.exists());
+        std::fs::remove_file(dir.path().join("ansi")).unwrap();
 
         // Claude's menus are answered only while the menu the browser showed is on screen.
         let permission = format!("● Bash(echo hi)\n{RULE} Bash command\n echo hi\n\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n\n Esc to cancel · Tab to amend\n");
