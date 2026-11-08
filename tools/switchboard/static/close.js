@@ -29,6 +29,7 @@ function closeTabTarget(item){
       if(!response.ok)throw new Error((await response.text()).slice(0,240)||`HTTP ${response.status}`);
       closing.pending=false;
       delete ready[closing.key];saveReady();
+      delete parkedTabs[canonKey(closing.key)];saveParkedTabs();
       if(isHidden(closing.key)){delete hidden[closing.key];delete hidden[canonKey(closing.key)];saveHidden();}
       render();
     }catch(failure){

@@ -4,6 +4,7 @@ function fixture(){
   let now=0,timer;
   const tab={key:'a',tab:{},entry:{host:'mac',name:'main'},working:true,attention:false};
   const context={Date:{now:()=>now},allTabs:()=>[tab],settingValue:()=> 'true',isReady:item=>item.attention,
+    parkedTabs:{},parkedTab:item=>context.parkedTabs[item.key],canonKey:key=>key,urgentTokens:()=>[],askpassForTab:()=>null,saveParkedTabs(){},sectionExpanded:()=>false,
     isPinned:key=>!!tab.pinned,autoLabel:item=>item.label??(item.working?'Working':''),attentionErrors:[],statusUnavailable:(host,session)=>context.attentionErrors.some(e=>e.host===host&&e.session===session),setTimeout:fn=>(timer=fn),clearTimeout:()=>{timer=null;},
     render:()=>context.sidebarTabs(),selected:'a',hiddenOpen:false,snoozedOpen:false,$:()=>({value:''}),matchesSearch:()=>true};
   vm.createContext(context);
@@ -46,6 +47,39 @@ test('pinning prevents snoozing and unpinning resumes it immediately',()=>{
   tab.working=true;assert.equal(snoozed(),false);
   tab.pinned=false;assert.equal(snoozed(),true);
   tab.pinned=true;assert.equal(snoozed(),false);
+});
+
+test('manual snooze survives completion and background work until its deadline',()=>{
+  const {context,tab,advance}=fixture();
+  context.parkedTabs.a={state:'snoozed',until:60000,urgent:[]};
+  assert.equal(context.sidebarTabs()[0].shelf,'snoozed');
+  assert.equal(context.sidebarTabs()[0].snoozed,false,'manual snooze is separate from Working');
+  tab.working=false;tab.attention=true;advance(30000);
+  assert.equal(context.sidebarTabs()[0].shelf,'snoozed');
+  tab.working=true;advance(29999);assert.equal(context.sidebarTabs()[0].shelf,'snoozed');
+  advance(1);assert.equal(context.sidebarTabs()[0].shelf,undefined);
+  assert.deepEqual(context.parkedTabs,{});
+});
+
+test('snoozing an existing question holds it, and a new question wakes it',()=>{
+  const {context}=fixture();
+  context.urgentTokens=()=>['question:1'];
+  context.parkedTabs.a={state:'snoozed',until:60000,urgent:['question:1']};
+  assert.equal(context.sidebarTabs()[0].shelf,'snoozed');
+  context.urgentTokens=()=>['approval:2'];
+  assert.equal(context.sidebarTabs()[0].shelf,undefined);
+});
+
+test('manual shelves obey collapse, search and selection without changing tab order',()=>{
+  const {context,tab}=fixture();tab.working=false;
+  context.parkedTabs.a={state:'settled'};
+  context.selected='other';assert.equal(context.listedTabs().length,0);
+  context.selected='a';assert.equal(context.listedTabs()[0].shelf,'settled');
+  context.selected='other';context.$=()=>({value:'find me'});
+  assert.equal(context.listedTabs()[0].shelf,'settled');
+  context.$=()=>({value:''});context.sectionExpanded=()=>true;
+  assert.equal(context.listedTabs()[0].key,'a');
+  tab.hidden=true;assert.equal(context.sidebarTabs()[0].shelf,false,'Hidden takes precedence');
 });
 
 test('pins survive a fresh browser state and can be removed',()=>{

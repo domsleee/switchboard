@@ -57,6 +57,27 @@ body.sidebar-collapsed #sidebar-toggle{left:8px}
 #tabs .tab-status[data-tone=done] .star{display:block;position:relative;border:1.5px solid currentColor}
 #tabs .tab-status[data-tone=done] .star::after{content:'';position:absolute;left:3.2px;top:1.2px;width:2.5px;height:5px;border:solid currentColor;border-width:0 1.5px 1.5px 0;transform:rotate(45deg)}
 .tab-row{position:relative;flex-shrink:0}
+.tab-hover-actions{position:absolute;top:5px;right:9px;display:flex;align-items:center;gap:3px;visibility:hidden;background:#1b1f27;border-radius:4px}
+.tab-hover-actions button{display:flex;align-items:center;gap:4px;height:24px;padding:3px 5px;background:transparent;border:0;color:#a3aec0;font-size:11px}
+.tab-hover-actions button:hover{color:#e5e7eb;background:#303949}
+.tab-hover-actions svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+#tabs .tab-row:focus-within .tab-hover-actions{visibility:visible}
+#tabs .tab-row:focus-within .tab-status{visibility:hidden}
+#tabs .tab-row.active .tab-hover-actions{background:#202630}
+@media(hover:hover){#tabs .tab-row:hover .tab-hover-actions{visibility:visible}#tabs .tab-row:hover .tab-status{visibility:hidden}#tabs .tab-row:hover .tab-select{background:#1b1f27}}
+#tabs.reordering .tab-hover-actions{display:none}
+.parked-header{display:flex;align-items:center;gap:7px;flex-shrink:0;margin-top:8px;padding:8px 12px;border:0;background:#151820;color:#a1a1a1;font-size:12px;font-weight:400;line-height:18px;text-align:left}
+.parked-header .chevron{order:1;flex-shrink:0;width:5px;height:5px;margin:0 2px 0 6px;border-right:1px solid currentColor;border-bottom:1px solid currentColor;font-size:0;transform:rotate(-45deg);transition:transform .15s}
+.parked-header[aria-expanded=true] .chevron{transform:rotate(45deg)}
+.parked-header .count{margin-left:auto;font-variant-numeric:tabular-nums}
+#snooze-dialog{width:350px;max-width:calc(100vw - 24px)}
+#snooze-dialog h2{overflow-wrap:anywhere}
+#snooze-dialog p{font-size:12px;line-height:1.5;color:#a3aec0}
+.snooze-presets{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:16px 0}
+.snooze-presets button{padding:10px 6px}
+#snooze-until{display:block;width:100%;margin-top:6px;padding:8px;background:#111318;color:inherit;border:1px solid #363e4d;border-radius:4px;font:inherit}
+#snooze-dialog #snooze-error{color:#f0bc63}
+@media(prefers-reduced-motion:reduce){.parked-header .chevron{transition:none}}
 #tabs .dragging{opacity:.4}
 #tabs.reordering,#tabs.reordering button{cursor:grabbing}
 #tabs.drop-target::after{content:'';position:absolute;top:var(--drop-top);left:6px;right:6px;height:2px;background:#9dc2fa;border-radius:2px;pointer-events:none;z-index:1;box-shadow:0 0 4px #9dc2fa}

@@ -43,6 +43,7 @@ try{
   if(!commands[suite])throw Error('Unknown suite. Use --list.');
   if(!['browser','sharing','switching','keys','update','windows-browser'].includes(suite)&&args.length)throw Error('This suite takes no arguments.');
   for(const command of commands[suite]()){
+    if(suite==='ui')command.push(...['snoozed','tab-parking'].map(name=>'tools/switchboard/'+name+'.test.cjs'));
     console.log('\nRunning '+command.slice(0,3).join(' '));
     const result=spawnSync(command[0],command.slice(1),{cwd:root,env,stdio:'inherit',windowsHide:true});
     if(result.error)throw result.error;

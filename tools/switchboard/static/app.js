@@ -87,6 +87,26 @@ function sectionExpanded(section){
 let snoozedOpen = sectionExpanded('snoozed');
 let hiddenOpen = sectionExpanded('hidden');
 const seenAttention = load('switchboard-attention-seen');
+// Manual parking is a browser preference, like pins. Keep it separate from the
+// automatic Working shelf and from Hidden tabs.
+let parkedTabs=load('switchboard-parked-tabs');
+function parkedTab(item){return parkedTabs[canonKey(item.key)];}
+function saveParkedTabs(){localStorage.setItem('switchboard-parked-tabs',JSON.stringify(parkedTabs));}
+function urgentTokens(item){return statesForTab(item).filter(s=>['approval','input'].includes(s.state)).map(s=>JSON.stringify([s.key,s.state,s.token]));}
+function parkTab(item,state,until){
+  if(state)parkedTabs[canonKey(item.key)]={state,until,urgent:urgentTokens(item)};
+  else delete parkedTabs[canonKey(item.key)];
+  saveParkedTabs();
+  if(state){setPinned(item,false);if(item.hidden)setHidden(item,false);}
+  render();
+  // Moving the selected row keeps its conversation open. Return keyboard focus
+  // to that view, including when the action removed the focused button.
+  if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.focus();
+  else allTabs().find(t=>t.key===selected)?.entry.frame.focus();
+}
+window.addEventListener('storage',event=>{
+  if(event.key==='switchboard-parked-tabs'){parkedTabs=load('switchboard-parked-tabs');render();}
+});
 let attentionLoaded=false,paneAttention=keyedAttention(globalThis.SwitchboardStartup?.snapshot.attention||[]),tabCatalog=[],attentionErrors=[],attentionLoading=false,attentionRefreshPending=false,attentionVersion=0;
 let contextItem = null, menuTrigger = null;
 let tabOrder=load('switchboard-tab-order');
@@ -173,6 +193,15 @@ function firstSessionName(host){
   for(let i=1;;i++){const name=i===1?'main':`main-${i}`;if(!taken.has(name))return name;}
 }
 function tabKey(entry, tab) { return JSON.stringify([entry.host, entry.name, tab.pending?'pane':'tab', tab.id]); }
+function remapParkedTabs(remap){
+  const next={};let changed=false;
+  for(const [old,value] of Object.entries(parkedTabs)){
+    const key=remap(canonKey(old));
+    if(key)next[key]=value;
+    if(key!==old)changed=true;
+  }
+  if(changed){parkedTabs=next;saveParkedTabs();}
+}
 // Tabs created after this browser first saw their session go last, oldest first.
 // Native tab IDs only grow within a session, so a higher ID is a newer tab.
 let newTabState;
@@ -398,6 +427,11 @@ function followRestart(entry,tabs){
       const [,,kind,id]=JSON.parse(key);
       return kind==='tab'&&moved.get(id)!==undefined?[JSON.stringify([host,name,'tab',moved.get(id)])]:[];
     }));
+    remapParkedTabs(key=>{
+      if(!mine(key))return key;
+      const [,,kind,id]=JSON.parse(key);
+      return kind==='tab'&&moved.get(id)!==undefined?JSON.stringify([host,name,'tab',moved.get(id)]):null;
+    });
   }
   const key=JSON.stringify([host,name,'layout',created,ids]);
   if(key.length>512)return;
@@ -420,6 +454,7 @@ function setCatalog(entry,tabs){
   if(pinnedMoved)savePinned();
   if(migrations.has(selected)){selected=migrations.get(selected);changed=true;}
   const order=tabOrder.map(canonKey),moved=new Map([...migrations].map(([old,key])=>[canonKey(old),canonKey(key)]));
+  remapParkedTabs(key=>moved.get(key)||key);
   if(order.some(key=>moved.has(key))){tabOrder=[...new Set(order.map(key=>moved.get(key)||key))];changed=true;}
   if(changed){saveReady();localStorage.setItem('switchboard-tab-order',JSON.stringify(tabOrder));}
   followRestart(entry,tabs);markNewTabs(entry,tabs);
@@ -545,6 +580,14 @@ function sidebarTabs(){
   const now=Date.now(),tabs=allTabs(),present=new Set(tabs.map(item=>item.key));
   clearTimeout(snoozedExitTimer);
   let next=Infinity;
+  for(const item of allTabs(true)){
+    const parked=parkedTab(item);if(parked?.state!=='snoozed')continue;
+    // Completion and background work do not cancel an explicit snooze. A new
+    // question does; an existing question can be snoozed until later.
+    if(parked.until<=now||urgentTokens(item).some(token=>!parked.urgent?.includes(token))||askpassForTab(item)){
+      delete parkedTabs[canonKey(item.key)];saveParkedTabs();
+    }else next=Math.min(next,parked.until);
+  }
   for(const key of snoozedPlacement.keys())if(!present.has(key))snoozedPlacement.delete(key);
   const result=tabs.map(item=>{
     const eligible=settingValue('move-working-to-snoozed')==='true'&&!item.hidden&&!isPinned(item.key)&&!isReady(item)
@@ -559,15 +602,18 @@ function sidebarTabs(){
       if(placement.deadline>now){snoozed=true;next=Math.min(next,placement.deadline);}
       else snoozedPlacement.delete(item.key);
     }else snoozedPlacement.delete(item.key);
-    return {...item,snoozed};
+    const parked=parkedTab(item);
+    const shelf=!item.hidden&&parked?.state;
+    return {...item,snoozed:snoozed&&!shelf,shelf};
   });
-  if(next!==Infinity)snoozedExitTimer=setTimeout(()=>render(),next-now);
-  return result.sort((a,b)=>(a.hidden?2:a.snoozed?1:0)-(b.hidden?2:b.snoozed?1:0));
+  if(next!==Infinity)snoozedExitTimer=setTimeout(()=>render(),Math.min(next-now,2147483647));
+  const rank=item=>item.hidden?4:item.shelf==='settled'?3:item.shelf==='snoozed'?2:item.snoozed?1:0;
+  return result.sort((a,b)=>rank(a)-rank(b));
 }
 // Search includes collapsed groups; keyboard navigation follows the visible rows.
 function listedTabs(){
   const searching=!!$('tab-search').value.trim();
-  return sidebarTabs().filter(item=>matchesSearch(item)&&(!item.hidden||hiddenOpen||searching)&&(!item.snoozed||snoozedOpen||searching||item.key===selected));
+  return sidebarTabs().filter(item=>matchesSearch(item)&&(!item.hidden||hiddenOpen||searching)&&(!item.snoozed||snoozedOpen||searching||item.key===selected)&&(!item.shelf||sectionExpanded('manual-'+item.shelf)||searching||item.key===selected));
 }
 function moveTab(key,targetKey,after=false) {
   if(key===targetKey)return;
@@ -642,6 +688,35 @@ snoozedHeader.onclick=()=>{
   if(dragging||Date.now()<suppressTabClickUntil)return;
   snoozedOpen=!snoozedOpen;localStorage.setItem(`switchboard-snoozed-open:${filter}`,String(snoozedOpen));render();
 };
+const parkedHeaders=new Map(['snoozed','settled'].map(shelf=>{
+  const header=document.createElement('button');header.id=`manual-${shelf}-toggle`;header.className='parked-header';
+  header.innerHTML=`<span class="chevron" aria-hidden="true">›</span><span>${shelf==='snoozed'?'Snoozed':'Settled'}</span><span class="count"></span>`;
+  header.onclick=()=>{localStorage.setItem(`switchboard-manual-${shelf}-open:${filter}`,String(!sectionExpanded('manual-'+shelf)));render();};
+  return [shelf,header];
+}));
+const parkIcons={clock:'<circle cx="8" cy="8" r="6"/><path d="M8 4v4l3 2"/>',check:'<path d="m3 8 3 3 7-7"/>',wake:'<path d="M3 7a5 5 0 1 1 0 4M3 3v4h4"/>'};
+function parkAction(label,icon){
+  const button=document.createElement('button');button.type='button';
+  button.innerHTML=`<svg viewBox="0 0 16 16" aria-hidden="true">${parkIcons[icon]}</svg>`;
+  button.setAttribute('aria-label',label);button.title=label;return button;
+}
+let snoozeItem=null,snoozeTrigger=null;
+function openSnooze(item,trigger){
+  snoozeItem=item;snoozeTrigger=trigger;closeTabMenu();
+  $('snooze-title').textContent=`Snooze ${tabTitle(item)}`;
+  $('snooze-error').textContent='';$('snooze-until').value='';$('snooze-dialog').showModal();
+}
+function snoozeUntil(until){
+  if(!Number.isFinite(until)||until<=Date.now()){$('snooze-error').textContent='Choose a future date and time.';return;}
+  const item=allTabs().find(item=>item.key===snoozeItem?.key);
+  if(!item){$('snooze-dialog').close();return;}
+  $('snooze-dialog').close();parkTab(item,'snoozed',until);
+}
+$('snooze-dialog').addEventListener('close',()=>{snoozeTrigger?.isConnected&&snoozeTrigger.focus();snoozeTrigger=null;});
+for(const button of $('snooze-dialog').querySelectorAll('[data-minutes]'))button.onclick=()=>snoozeUntil(Date.now()+Number(button.dataset.minutes)*60000);
+$('snooze-tomorrow').onclick=()=>{const date=new Date();date.setDate(date.getDate()+1);date.setHours(9,0,0,0);snoozeUntil(date.getTime());};
+$('snooze-form').onsubmit=event=>{event.preventDefault();snoozeUntil(new Date($('snooze-until').value).getTime());};
+$('snooze-cancel').onclick=()=>$('snooze-dialog').close();
 // A row's top-right corner: what the tab is doing, or how long ago its state changed.
 const statusWords={'Password needed':'Password','Approval needed':'Approve','Input needed':'Answer','Working':'Working','Waiting on an agent':'Waiting','Ready to review':'Done'};
 function tabProject(item){
@@ -685,11 +760,16 @@ function render() {
   const snoozedTabs=tabs.filter(item=>item.snoozed),snoozedShown=shown.filter(item=>item.snoozed);
   const showSnoozedGroup=snoozedTabs.length>0&&(!searching||snoozedShown.length>0);
   const showHiddenGroup=hiddenTabs.length>0&&(!searching||hiddenShown.length>0);
+  const parkedGroups=[...parkedHeaders].map(([shelf,header])=>({shelf,header,tabs:tabs.filter(item=>item.shelf===shelf),shown:shown.filter(item=>item.shelf===shelf)}));
+  const ensureHeaders=rank=>{
+    if(rank>=1&&showSnoozedGroup&&!nodes.includes(snoozedHeader))nodes.push(snoozedHeader);
+    for(const [index,group] of parkedGroups.entries())if(rank>=index+2&&group.tabs.length&&(!searching||group.shown.length)&&!nodes.includes(group.header))nodes.push(group.header);
+    if(rank>=4&&showHiddenGroup&&!nodes.includes(hiddenHeader))nodes.push(hiddenHeader);
+  };
   const titles=new Map(tabs.map(item=>[item.key,displayTitle(item)])),titleCounts=new Map();
   for(const item of tabs){const key=JSON.stringify([item.entry.host,titles.get(item.key)]);titleCounts.set(key,(titleCounts.get(key)||0)+1);}
   for (const item of listed) {
-    if((item.snoozed||item.hidden)&&showSnoozedGroup&&!nodes.includes(snoozedHeader))nodes.push(snoozedHeader);
-    if(item.hidden&&!nodes.includes(hiddenHeader))nodes.push(hiddenHeader);
+    ensureHeaders(item.hidden?4:item.shelf==='settled'?3:item.shelf==='snoozed'?2:item.snoozed?1:0);
     let button=tabButtons.get(item.key);
     if(!button){
       button=document.createElement('button');button.draggable=true;
@@ -702,6 +782,11 @@ function render() {
         contextItem=button._item;$('close-tab').click();
       };
       row.append(button);button._row=row;holdTabForMenu(button);
+      const actions=document.createElement('div');actions.className='tab-hover-actions';
+      const snooze=parkAction('Snooze thread','clock'),settle=parkAction('Settle thread','check');
+      snooze.onclick=()=>openSnooze(button._item,snooze);
+      settle.onclick=()=>parkTab(button._item,parkedTab(button._item)?null:'settled');
+      actions.append(snooze,settle);row.append(actions);button._parkActions=actions;button._snooze=snooze;button._settle=settle;
       button.onkeydown=event=>{if(event.key==='ContextMenu'||event.shiftKey&&event.key==='F10'){event.preventDefault();const bounds=button.getBoundingClientRect();openTabMenu(button._item,bounds.right,bounds.top,button);}};
       const where=document.createElement('small');where.className='tab-where';
       const status=document.createElement('span');status.className='tab-status';status.setAttribute('aria-hidden','true');
@@ -723,6 +808,11 @@ function render() {
       tabButtons.set(item.key,button);
     }
     button._item=item;
+    const parking=parkedTab(item),restoreLabel=parking?.state==='snoozed'?'Wake thread':parking?'Un-settle thread':'Settle thread';
+    button._parkActions.hidden=systemTab(item.tab)||!!item.tab.pending;
+    button._snooze.hidden=!!parking;
+    button._settle.setAttribute('aria-label',restoreLabel);button._settle.title=restoreLabel;
+    button._settle.innerHTML=`<svg viewBox="0 0 16 16" aria-hidden="true">${parkIcons[parking?'wake':'check']}</svg><span>${parking?'': 'Settle'}</span>`;
     button.draggable=!item.tab.pending||Number.isInteger(item.tab.id);
     const title=titles.get(item.key);
     const machine=hosts.get(item.entry.host)?.name || item.entry.host;
@@ -760,6 +850,12 @@ function render() {
     snoozedHeader.setAttribute('aria-label',`Working tabs, ${snoozedTabs.length}`);
     snoozedHeader.lastElementChild.textContent=searching?`${snoozedShown.length} / ${snoozedTabs.length}`:String(snoozedTabs.length);
   }else snoozedHeader.remove();
+  ensureHeaders(3);
+  for(const group of parkedGroups){
+    if(!group.tabs.length||(searching&&!group.shown.length)){group.header.remove();continue;}
+    group.header.setAttribute('aria-expanded',String(sectionExpanded('manual-'+group.shelf)||searching));
+    group.header.lastElementChild.textContent=String(group.tabs.length);
+  }
   if(showHiddenGroup&&!nodes.includes(hiddenHeader))nodes.push(hiddenHeader);
   if(showHiddenGroup)renderHiddenHeader(hiddenTabs,hiddenShown,searching);else hiddenHeader.remove();
   for(const button of tabButtons.values())if(!shownKeys.has(button._item.key))button._row.remove();
@@ -772,12 +868,12 @@ function render() {
 
   const current=tabs.find(t=>t.key===selected);
   updateTabUrl(current);
-  const notifications=allTabs(true).filter(isReady).length;
+  const notifications=allTabs(true).filter(item=>!parkedTab(item)&&isReady(item)).length;
   $('notifications').textContent=`${notifications} notification${notifications===1?'':'s'}`;
   $('notifications').classList.toggle('has-notifications',notifications>0);
   $('notifications').hidden=notifications===0;
   document.title=`${notifications?'('+notifications+') ':''}`+(current?`${tabTitle(current)} · ${hosts.get(current.entry.host)?.name} · Switchboard`:'Switchboard');
-  globalThis.SwitchboardNotifications?.check(allTabs(true).filter(isReady));
+  globalThis.SwitchboardNotifications?.check(allTabs(true).filter(item=>!parkedTab(item)&&isReady(item)));
   const startingEntry=[...sessions.values()].find(entry=>entry.starting&&(filter==='all'||groups[entry.host]===filter));
   const currentEntry=current?.entry||(waitingForRequestedTab()?sessions.get(sessionKey(...JSON.parse(selected).slice(0,2))):startingEntry);
   for (const entry of sessions.values()) entry.frame.classList.toggle('active',entry===currentEntry);
@@ -2443,6 +2539,11 @@ function updateTabMenu(){
   pin.textContent=isPin?'Unpin':'Pin';
   pin.title=isPin?'Allow automatic grouping':'Keep in the list while working';
   const hide=$('hide-tab');
+  const parking=parkedTab(item);
+  $('snooze-tab').hidden=!!parking;
+  $('snooze-tab').disabled=!!item.tab.pending||systemTab(item.tab);
+  $('settle-tab').textContent=parking?.state==='snoozed'?'Wake thread':parking?'Un-settle thread':'Settle thread';
+  $('settle-tab').disabled=!!item.tab.pending||systemTab(item.tab);
   hide.disabled=!!item.tab.pending&&!Number.isInteger(item.tab.id);
   hide.textContent=item.hidden?'Show in list':'Hide';
   hide.title=item.hidden?'Move back among your tabs':'Move to Hidden; keep processes running';
@@ -2497,6 +2598,7 @@ $('tab-menu').onkeydown=event=>{
 };
 $('pin-tab').onclick=()=>{
   const item=contextItem;if(!item)return;
+  if(parkedTab(item)){delete parkedTabs[canonKey(item.key)];saveParkedTabs();}
   setPinned(item,!isPinned(item.key));
   closeTabMenu();render();
   tabButtons.get(item.key)?.scrollIntoView({block:'nearest',inline:'nearest'});
@@ -2504,11 +2606,14 @@ $('pin-tab').onclick=()=>{
 };
 $('hide-tab').onclick=()=>{
   const item=contextItem;if(!item)return;
+  if(parkedTab(item)){delete parkedTabs[canonKey(item.key)];saveParkedTabs();}
   setHidden(item,!item.hidden);
   closeTabMenu();render();
   tabButtons.get(item.key)?.scrollIntoView({block:'nearest',inline:'nearest'});
   if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.focus();else allTabs().find(t=>t.key===selected)?.entry.frame.focus();
 };
+$('snooze-tab').onclick=()=>{if(contextItem)openSnooze(contextItem,menuTrigger);};
+$('settle-tab').onclick=()=>{const item=contextItem;if(!item)return;closeTabMenu();parkTab(item,parkedTab(item)?null:'settled');};
 document.addEventListener('pointerdown',event=>{if(!$('tab-menu').contains(event.target))closeTabMenu();},true);
 window.addEventListener('blur',closeTabMenu);
 $('tabs').addEventListener('scroll',closeTabMenu);
@@ -2645,6 +2750,10 @@ const browserDiagnostics=window.SwitchboardBrowserDiagnostics?.(diagnostic=>{
 let conversationSince=null;
 window.SwitchboardConversation?.install({
   viewed:acknowledgeConversation,
+  sending(view){
+    const item=allTabs(true).find(item=>item.entry.host===view.host&&item.entry.name===view.session&&item.tab.panes.some(p=>!p.is_plugin&&p.pane_id===view.pane));
+    if(item&&parkedTab(item)){delete parkedTabs[canonKey(item.key)];saveParkedTabs();render();}
+  },
   switchModel(view){openAgentHandover(allTabs().find(item=>item.key===selected),view?.pane);},
   cancelSwitch(){cancelSwitch(selected);},
   idle(){if(pendingSwitches.size)queueMicrotask(runPendingSwitches);},

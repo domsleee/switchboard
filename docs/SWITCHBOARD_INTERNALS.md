@@ -175,6 +175,18 @@ Tabs and controls live in one stable, resizable left sidebar, leaving the full
 terminal height available. An amber dot marks tabs that
 need attention; viewing a result clears the dot without moving the tab.
 
+Hover or focus a tab to reveal **Snooze** (clock) and **Settle** (check).
+Snooze offers 30 minutes, 1 hour, 3 hours, tomorrow at 9 AM, or a custom local
+date and time. Snoozed tabs keep running and move to **Snoozed** until their wake
+time. A new approval, question or password request brings them back early;
+ordinary completion and background work leave the snooze in place. **Wake thread**
+returns one early. Settle moves a tab into **Settled**; **Un-settle thread** brings
+it back. Both actions also appear in the right-click or long-press menu.
+Sending a Conversation message wakes a parked tab. These choices persist in this
+browser, like pins, and do not stop terminal processes. They are separate from
+the automatic **Working** shelf and the shared **Hidden** group. Parked tabs
+are omitted from this browser's notification count; relay push alerts are unchanged.
+
 Machine names stay beneath each tab, and work/home remain optional filters. Search names and
 machines with **Cmd+K** (Mac) / **Ctrl+K** (Windows, Linux), including from inside the terminal; Enter opens the
 first result. Searching does not change the current terminal until you choose a
