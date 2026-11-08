@@ -278,7 +278,7 @@ pub(in crate::switchboard_relay) async fn local(
     host: &Host,
     target: Target,
 ) -> Result<Json<Value>, Error> {
-    let (pane, screen) = checked_screen(host, &target).await?;
+    let (pane, screen) = checked_screen(host, &target, tokio::time::Instant::now()).await?;
     let menu = (attention::classify(&pane, &screen)["agent"] == "claude")
         .then(|| claude_menu(&screen))
         .flatten();
@@ -333,7 +333,7 @@ pub(in crate::switchboard_relay) async fn answer_local(
         pane_id: answer.pane_id,
         tab_id: answer.tab_id,
     };
-    let (pane, screen) = checked_screen(host, &target).await?;
+    let (pane, screen) = checked_screen(host, &target, tokio::time::Instant::now()).await?;
     let changed = (
         StatusCode::CONFLICT,
         "The question changed. Check it and choose again.",

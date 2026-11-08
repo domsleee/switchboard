@@ -83,7 +83,12 @@ pub(super) async fn run_local(
         .args(args)
         .kill_on_drop(true);
     let output = tokio::time::timeout(timeout, command.output()).await??;
-    anyhow::ensure!(output.status.success(), "Terminal command failed");
+    anyhow::ensure!(
+        output.status.success(),
+        "Terminal command failed ({}): {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 

@@ -65,8 +65,46 @@ pub(super) async fn handler(
     local(&host, target).await.map(IntoResponse::into_response)
 }
 
+const READ_ATTEMPT: Duration = Duration::from_secs(5);
+/// How long a reply keeps retrying failed reads.
+const REPLY_RETRY_WINDOW: Duration = Duration::from_secs(9);
+/// A paired computer's gateway stops waiting after 15 seconds and the browser
+/// after 20, so a reply must not be typed once the shorter of those is close.
+const TYPE_WITHIN: Duration = Duration::from_secs(13);
+const NOT_RESPONDING: &str = "The terminal did not respond, so nothing was sent. Try again.";
+
+/// Repeats a read that failed. Reading changes nothing, and a busy computer can
+/// time out or fail one `zellij action` that works moments later. The cause
+/// goes to the Logs view because the browser only gets a plain message.
+async fn retry_read<T, F>(
+    what: &str,
+    retry_until: tokio::time::Instant,
+    mut read: impl FnMut() -> F,
+) -> anyhow::Result<T>
+where
+    F: std::future::Future<Output = anyhow::Result<T>>,
+{
+    loop {
+        match read().await {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                logs::record("Conversation", &format!("{what} failed: {error:#}"));
+                if tokio::time::Instant::now() >= retry_until {
+                    return Err(error);
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            },
+        }
+    }
+}
+
 /// Reads the selected pane after checking it is still the one the browser chose.
-async fn checked_screen(host: &Host, target: &Target) -> Result<(Value, String), Error> {
+/// Failed reads are repeated until `retry_until`; each is tried at least once.
+async fn checked_screen(
+    host: &Host,
+    target: &Target,
+    retry_until: tokio::time::Instant,
+) -> Result<(Value, String), Error> {
     control::validate_session(&target.session)?;
     if !control::sessions(host)
         .await
@@ -76,9 +114,11 @@ async fn checked_screen(host: &Host, target: &Target) -> Result<(Value, String),
         return Err((StatusCode::CONFLICT, "Session is not shared"));
     }
     control::require_writable_host(host).await?;
-    let panes = control::list_panes(host, &target.session, true, Duration::from_secs(5))
-        .await
-        .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot read terminal panes"))?;
+    let panes = retry_read("list-panes", retry_until, || {
+        control::list_panes(host, &target.session, true, READ_ATTEMPT)
+    })
+    .await
+    .map_err(|_| (StatusCode::BAD_GATEWAY, NOT_RESPONDING))?;
     let pane = panes
         .into_iter()
         .find(|pane| {
@@ -89,14 +129,13 @@ async fn checked_screen(host: &Host, target: &Target) -> Result<(Value, String),
                 && pane["is_held"] != true
         })
         .ok_or((StatusCode::CONFLICT, "The selected pane changed"))?;
-    let screen = control::run_local(
-        host,
-        &target.session,
-        &["dump-screen", "-p", &target.pane_id.to_string()],
-        Duration::from_secs(5),
-    )
+    let pane_id = target.pane_id.to_string();
+    let args = ["dump-screen", "-p", &pane_id];
+    let screen = retry_read("dump-screen", retry_until, || {
+        control::run_local(host, &target.session, &args, READ_ATTEMPT)
+    })
     .await
-    .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot read the selected pane"))?;
+    .map_err(|_| (StatusCode::BAD_GATEWAY, NOT_RESPONDING))?;
     Ok((pane, screen))
 }
 
@@ -105,7 +144,7 @@ static ACTING: Mutex<()> = Mutex::const_new(());
 
 pub(super) async fn local(host: &Host, target: Target) -> Result<Json<Value>, Error> {
     let _guard = ACTING.lock().await;
-    let (pane, screen) = checked_screen(host, &target).await?;
+    let (pane, screen) = checked_screen(host, &target, tokio::time::Instant::now()).await?;
     if attention::classify(&pane, &screen)["agent"] != "codex" {
         return Ok(Json(json!({"trusted":false})));
     }
@@ -648,20 +687,22 @@ pub(super) async fn reply_local(host: &Host, reply: Reply) -> Result<Json<Value>
     {
         return Err((StatusCode::BAD_REQUEST, "Invalid reply"));
     }
+    let started = tokio::time::Instant::now();
+    let retry_until = started + REPLY_RETRY_WINDOW;
     let _guard = ACTING.lock().await;
     let target = Target {
         session: reply.session.clone(),
         pane_id: reply.pane_id,
         tab_id: reply.tab_id,
     };
-    let (pane, screen) = checked_screen(host, &target).await?;
+    let (pane, screen) = checked_screen(host, &target, retry_until).await?;
     if attention::classify(&pane, &screen)["agent"] != "claude" {
         return Err((StatusCode::CONFLICT, "The selected pane is not Claude"));
     }
     let id = reply.pane_id.to_string();
     let session = &reply.session;
     // Only a fresh read counts: a dialog may have replaced the box since `screen`.
-    let prompt = read_prompt(host, session, &id).await?.ok_or((
+    let prompt = read_prompt(host, session, &id, retry_until).await?.ok_or((
         StatusCode::CONFLICT,
         "Claude is not at its prompt. Open Terminal to see what it needs.",
     ))?;
@@ -699,6 +740,16 @@ pub(super) async fn reply_local(host: &Host, reply: Reply) -> Result<Json<Value>
                 "Claude stayed in shell mode. Open Terminal to send.",
             ))?;
     }
+    if started.elapsed() > TYPE_WITHIN {
+        return Err((
+            StatusCode::GATEWAY_TIMEOUT,
+            if stashed {
+                "The terminal did not respond, so nothing was sent. Your terminal draft is in Claude's stash: press Ctrl+S on its empty prompt to bring it back."
+            } else {
+                NOT_RESPONDING
+            },
+        ));
+    }
     // `--` keeps a reply that starts with `-` from reading as an option.
     control::run_local(
         host,
@@ -729,15 +780,14 @@ async fn read_prompt(
     host: &Host,
     session: &str,
     pane: &str,
+    retry_until: tokio::time::Instant,
 ) -> Result<Option<ClaudePrompt>, Error> {
-    let screen = control::run_local(
-        host,
-        session,
-        &["dump-screen", "--ansi", "-p", pane],
-        Duration::from_secs(5),
-    )
+    let args = ["dump-screen", "--ansi", "-p", pane];
+    let screen = retry_read("dump-screen --ansi", retry_until, || {
+        control::run_local(host, session, &args, READ_ATTEMPT)
+    })
     .await
-    .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot read the selected pane"))?;
+    .map_err(|_| (StatusCode::BAD_GATEWAY, NOT_RESPONDING))?;
     Ok(claude_prompt(&screen))
 }
 
@@ -751,7 +801,9 @@ async fn wait_for_prompt(
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     while tokio::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(100)).await;
-        if let Ok(Some(prompt)) = read_prompt(host, session, pane).await {
+        if let Ok(Some(prompt)) =
+            read_prompt(host, session, pane, tokio::time::Instant::now()).await
+        {
             if done(&prompt) {
                 return Some(prompt);
             }
@@ -1004,6 +1056,7 @@ mod tests {
         .unwrap();
         // Input clears the fake screen, unless `after-<first key>` holds the screen
         // that key leads to. `ansi`, when present, is what a styled dump reads.
+        // `fail-list`, `fail-plain` and `fail-ansi` each fail that read once.
         #[cfg(windows)]
         std::fs::write(
             &cli,
@@ -1015,9 +1068,12 @@ if "%~4"=="write" goto write
 if "%~4"=="paste" goto write
 exit /b 1
 :catalog
+if exist "{dir}\fail-list" (del "{dir}\fail-list" & exit /b 2)
 type "{catalog}"
 exit /b 0
 :screen
+if "%~5"=="--ansi" if exist "{dir}\fail-ansi" (del "{dir}\fail-ansi" & exit /b 2)
+if not "%~5"=="--ansi" if exist "{dir}\fail-plain" (del "{dir}\fail-plain" & exit /b 2)
 if "%~5"=="--ansi" if exist "{dir}\ansi" (type "{dir}\ansi" & exit /b 0)
 type "{screen}"
 exit /b 0
@@ -1040,8 +1096,10 @@ if exist "{dir}\after-%~7" (copy /y "{dir}\after-%~7" "{screen}" >nul) else (typ
                 format!(
                     r#"#!/bin/sh
 case "$4" in
-list-panes) cat '{catalog}' ;;
-dump-screen) if [ "$5" = --ansi ] && [ -f '{dir}/ansi' ]; then cat '{dir}/ansi'; else cat '{screen}'; fi ;;
+list-panes) if [ -f '{dir}/fail-list' ]; then rm '{dir}/fail-list'; exit 2; fi; cat '{catalog}' ;;
+dump-screen) if [ "$5" = --ansi ]; then fail='{dir}/fail-ansi'; else fail='{dir}/fail-plain'; fi
+  if [ -f "$fail" ]; then rm "$fail"; exit 2; fi
+  if [ "$5" = --ansi ] && [ -f '{dir}/ansi' ]; then cat '{dir}/ansi'; else cat '{screen}'; fi ;;
 write|paste) printf '%s\n' "$*" >> '{actions}'
   if [ -f '{dir}/after-'"$7" ]; then cp '{dir}/after-'"$7" '{screen}'; else : > '{screen}'; fi ;;
 *) exit 1 ;;
@@ -1284,6 +1342,26 @@ esac
         );
         assert!(!actions.exists());
         std::fs::remove_file(dir.path().join("ansi")).unwrap();
+
+        // A read that fails once is repeated, and the reply is still typed once.
+        for fail in ["fail-list", "fail-plain", "fail-ansi"] {
+            std::fs::write(&screen, CLAUDE_IDLE).unwrap();
+            std::fs::write(dir.path().join(fail), "").unwrap();
+            assert_eq!(
+                reply_local(&host, reply("hi")).await.unwrap().0,
+                json!({"ok":true}),
+                "{fail}"
+            );
+            assert!(!dir.path().join(fail).exists(), "{fail}");
+            assert_eq!(
+                recorded(),
+                [
+                    "-s fixture action paste -p 7 -- hi",
+                    "-s fixture action write -p 7 13"
+                ],
+                "{fail}"
+            );
+        }
 
         // Claude's menus are answered only while the menu the browser showed is on screen.
         let permission = format!("● Bash(echo hi)\n{RULE} Bash command\n echo hi\n\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n\n Esc to cancel · Tab to amend\n");
