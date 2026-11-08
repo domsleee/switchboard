@@ -71,7 +71,7 @@
     let savedMode;try{savedMode=localStorage.getItem(modeKey);}catch{}
     let target=null,open=savedMode? savedMode==='conversation':mobile,generation=0,startCursor=0,tailCursor=0,nextCursor=null,messages=[],loading=false,loaded=false,lastPaint=null,modeRevision=0,navigationRevision=0;
     const outgoing=new Map(),consumedTranscript=new Map(),pendingSends=new Map(),bridgeSends=new Map(),startups=new Map(),draftVersions=new Map(),firstSends=new Set();
-    const conversations=new Map(),handoverDrafts=new Map(),handoverAttachments=new Map();
+    const conversations=new Map(),handoverDrafts=new Map(),handoverAttachments=new Map(),launchKeys=new WeakMap();
     let stream=null,streamReady=false,streamSupported=false,streamPages=[],restorePosition=null;
     async function prepare(){
       if(!open||document.hidden||!target||target.agent!=='codex'||!target.session||!Number.isInteger(target.tab))return;
@@ -180,7 +180,7 @@
     function paintLaunch(){
       if(!launchShown()){launchNode.remove();return;}
       const text=target.launch.text;if(launchNode.dataset.text!==text){launchNode.dataset.text=text;launchNode.replaceChildren(el('div','You','conversation-label'));textBlocks(launchNode,text);}
-      if(launchNode.nextSibling!==working)working.before(launchNode);
+      if(older.nextSibling!==launchNode)older.after(launchNode);
     }
 
     function modelName(value){
@@ -248,7 +248,7 @@
       if(follow)list.scrollTop=list.scrollHeight;
       const startup=startupState(),stalled=!!startup&&(!!startup.error||Date.now()-startup.started>=30000);
       terminalAction.hidden=!['approval','input'].includes(state)&&!stalled;recovery.hidden=!stalled||!!chat;
-      const noComposer=!chat&&!firstMessage();if(form.hidden!==noComposer){form.hidden=noComposer;sizeDraft();}
+      const noComposer=!chat&&!firstMessage()&&!target?.launch&&!firstSends.has(target?.key);if(form.hidden!==noComposer){form.hidden=noComposer;sizeDraft();}
       insert.disabled=!!pendingFor();
       // While the agent works, an empty composer offers Stop in the send button's place.
       form.classList.toggle('can-stop',state==='working'&&!!chat&&!!target?.session&&Number.isInteger(target?.pane));
@@ -341,8 +341,8 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
     }
     // A new Claude at its empty prompt has no transcript until its first message, which
     // the relay types into the prompt. Its connection timer starts after that message.
-    // A launched prompt is the first message; offer the composer if it has not shown up within 30s.
-    function firstMessage(){return !chat&&!(launchShown()&&Date.now()-target.launch.at<30000)&&target?.agent==='claude'&&target.state==='ready'&&!!target.session&&Number.isInteger(target.pane)&&!firstSends.has(target.key);}
+    // A launched prompt is already the first message; follow-ups wait for its transcript.
+    function firstMessage(){return !chat&&!target?.launch&&target?.agent==='claude'&&target.state==='ready'&&!!target.session&&Number.isInteger(target.pane)&&!firstSends.has(target.key);}
     function startupState(){if(!target||chat||!target.agent&&!target.starting)return null;const key=identity(target);if(firstMessage()){startups.delete(key);return null;}if(!startups.has(key)&&open&&!document.hidden)startups.set(key,{started:Date.now()});return startups.get(key);}
     function unboundNotice(){if(firstMessage())return 'Send a message to start the conversation.';const startup=startupState();return startup?.error||(startup&&Date.now()-startup.started>=30000?'The agent has not connected. Retry or open Terminal.':target?.starting?'Starting agent…':target?.agent?'Connecting to this agent’s conversation…':'No agent');}
     function busy(value){loading=value;older.disabled=refresh.disabled=value;}
@@ -463,7 +463,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
     function acknowledge(key,messages,startCursor){
       const sentItems=outgoing.get(key)||[],used=consumedTranscript.get(key)||new Set();
       for(const sent of sentItems){
-        if(sent.transcriptCursor!==undefined)continue;
+        if(sent.transcriptCursor!==undefined||sent.waitingForAgent)continue;
         // Cursors can shift down when the relay hides records that settle (interrupts, local
         // command output), so an entry written after the send also counts by its timestamp.
         const after=(item,offset)=>startCursor+offset>sent.baseline||Date.parse(item.timestamp)>=sent.at-30000&&!sent.earlier.has(item.timestamp);
@@ -484,7 +484,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       if(launchNode.isConnected&&!launchShown())updateActivity();
       const follow=initial||nearBottom(),height=list.scrollHeight,position=list.scrollTop,keys=new Set();
       if(!follow&&!prepend&&!initial)newOutput=true;
-      let previous=older,previousRole=null,previousSpeaker=null;
+      let previous=launchShown()?launchNode:older,previousRole=null,previousSpeaker=null;
       const runs=activityRuns(),summaryKeys=new Set();liveRun=[...runs.values()].find(run=>run.inProgress)||null;
       for(const [offset,item] of messages.entries()){
         if(setupMessage(item))continue;
@@ -554,7 +554,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       if(initial){messages=page;startCursor=start;tailCursor=start+Math.max(0,page.length-1);nextCursor=data.next_cursor??null;}
       else if(prepend){messages=page.concat(messages);startCursor=start;}
       else{if(start<startCursor){messages=page;startCursor=start;}else messages=messages.slice(0,Math.max(0,start-startCursor)).concat(page);tailCursor=start+Math.max(0,page.length-1);nextCursor=data.next_cursor??null;}
-      loaded=true;refresh.hidden=true;if(open)paint(prepend,initial);
+      loaded=true;refresh.hidden=true;if(open)paint(prepend,initial);flushStartup();
       // Conversation has no terminal focus acknowledgement. Review only output
       // that has loaded and is visible at the end of the selected transcript.
       if(open&&!panel.hidden&&!document.hidden&&document.hasFocus()&&nextCursor===null&&nearBottom())viewed(target);
@@ -659,12 +659,12 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       // The transcript can acknowledge a send before the relay answers; still say
       // where a terminal draft set aside for it went.
       if(pendingFor(sent.key)!==sent){if(ok&&message&&!pendingFor(sent.key)&&identity(target)===sent.key)sendStatus(message,sent);return;}
-      pendingSends.delete(sent.key);if(!ok)restoreDraft(sent);
+      pendingSends.delete(sent.key);if(!ok){restoreDraft(sent);if(sent.detachedFiles)attachments.set(sent.key,[...sent.files,...fileList(sent.key).filter(item=>!sent.files.includes(item))]);}
       sendQueued(sent.key,ok);
       if(ok){clearSentDraft(sent);if(sent.command){outgoing.set(sent.key,(outgoing.get(sent.key)||[]).filter(item=>item!==sent));if(identity(target)===sent.key)paint();}else sendItem(sent,sent.native||sent.relay?'queued':'sent');}
       else sendItem(sent,uncertain?'uncertain':'failed',message);
       returnToConversation(sent);
-      if(identity(target)===sent.key){sendStatus(message,sent);if(ok)load();}paintFiles();
+      if(identity(target)===sent.key){sendStatus(message,sent);if(ok)load();}paintFiles();if(ok)flushStartup();
     }
     async function sendNative(sent){
       const request=new AbortController();sent.request=request;
@@ -684,26 +684,45 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       await sendNative(sent);
     }
     form.onsubmit=async event=>{
-      event.preventDefault();const current=selection();if(!target||identity(current)!==identity(target)||!binding()&&!firstMessage()||(!draft.value.trim()&&!fileList().length))return;
+      event.preventDefault();const current=selection(),waiting=!chat&&!!(target?.launch||firstSends.has(target?.key))||(outgoing.get(identity(target))||[]).some(item=>item.waitingForAgent);
+      if(!target||identity(current)!==identity(target)||!binding()&&!firstMessage()&&!waiting||(!draft.value.trim()&&!fileList().length))return;
       if(pendingFor()){if(draft.value.trim())queuedSubmit=identity(target);return;}
       // Waiting: the turn ended while background work runs; the prompt still takes input.
-      if(!['ready','waiting','working'].includes(current.state)){sendStatus(question.hidden?'The agent needs attention in Terminal. Your draft is kept.':'Answer the agent’s question first. Your draft is kept.');return;}
+      if(!waiting&&!['ready','waiting','working'].includes(current.state)){sendStatus(question.hidden?'The agent needs attention in Terminal. Your draft is kept.':'Answer the agent’s question first. Your draft is kept.');return;}
       const selected=fileList();if(selected.some(item=>!item.path)){sendStatus(selected.some(item=>item.error)?'Remove failed attachments before sending.':'Wait for attachments to finish uploading.');return;}
       const text=draft.value,payload=text+(selected.length?'\n\nAttached files:\n'+selected.map(item=>item.path).join('\n'):'');
       if(/[\x00-\x08\x0b-\x1f\x7f]/.test(payload)){sendStatus('The draft contains terminal control characters. Remove them first.');return;}
       const command=/^\/[a-z][\w:.-]*(?:\s|$)/i.test(text),native=!command&&current.agent==='codex'&&/^[0-9a-f-]{36}$/.test(chat?.thread||'');
       if(command&&selected.length){sendStatus('Send commands without attachments. Your draft is kept.');return;}
       // Claude queues a command typed while it works; Codex refuses most of them.
-      if(command&&current.agent!=='claude'&&!['ready','waiting'].includes(current.state)){sendStatus('Wait for the agent to finish before sending a command. Your draft is kept.');return;}
-      if(current.state==='working'&&!native&&current.agent!=='claude'){sendStatus('Still connecting to this conversation. Try sending again in a moment.');return;}
-      if(new TextEncoder().encode(payload).length>(native?8192:16000)){sendStatus('This message is too long. Shorten it before sending.');return;}
+      if(!waiting&&command&&current.agent!=='claude'&&!['ready','waiting'].includes(current.state)){sendStatus('Wait for the agent to finish before sending a command. Your draft is kept.');return;}
+      if(!waiting&&current.state==='working'&&!native&&current.agent!=='claude'){sendStatus('Still connecting to this conversation. Try sending again in a moment.');return;}
+      if(new TextEncoder().encode(payload).length>(native||waiting&&(current.agent||current.launch?.agent)==='codex'?8192:16000)){sendStatus('This message is too long. Shorten it before sending.');return;}
       const retry=native&&(outgoing.get(identity(target))||[]).find(item=>['failed','uncertain'].includes(item.state)&&item.native&&sameMessage(item.payload,payload));
       if(retry){retrySend(retry,true);return;}
       const key=identity(target),id='conversation-'+Array.from(crypto.getRandomValues(new Uint32Array(4)),n=>n.toString(16)).join('-');
       const items=outgoing.get(key)||[],failedBridge=!native&&items.find(item=>item.state==='failed'&&!item.native&&sameMessage(item.payload,payload));
       const sent={id,key,pane:target.key,unbound:!chat,frame:target.frame,text,payload,files:[...selected],native,command,host:target.host,thread:chat?.thread,draftRevision:draftVersions.get(key)||0,baseline:failedBridge?failedBridge.baseline:startCursor+messages.length-1,at:failedBridge?failedBridge.at:Date.now(),earlier:failedBridge?failedBridge.earlier:new Set(messages.filter(item=>item.role==='user'&&item.timestamp).map(item=>item.timestamp)),sendKey:id,state:'sending'};
       if(failedBridge)items[items.indexOf(failedBridge)]=sent;else items.push(sent);
+      if(waiting){
+        sent.waitingForAgent=true;sent.detachedFiles=true;sent.state='queued';outgoing.set(key,items);takeDraft(sent);
+        attachments.delete(key);paintFiles();sendStatus('');paint();flushStartup();return;
+      }
       outgoing.set(key,items);pendingSends.set(key,sent);insert.disabled=true;takeDraft(sent);paintFiles();sendStatus('');paint();
+      await deliver(sent,current);
+    };
+    // Startup follow-ups wait for the real pane and transcript, then use the same
+    // delivery and acknowledgement path as any other reply, one at a time.
+    function flushStartup(){
+      if(!target||!chat||!loaded||nextCursor!==null||pendingFor()||identity(selection())!==identity(target)||!['ready','waiting','working'].includes(target.state))return;
+      const sent=(outgoing.get(identity(target))||[]).find(item=>item.waitingForAgent);if(!sent)return;
+      const native=!sent.command&&target.agent==='codex'&&/^[0-9a-f-]{36}$/.test(chat.thread||'');
+      if(target.state==='working'&&!native&&target.agent!=='claude')return;
+      sent.waitingForAgent=false;Object.assign(sent,{native,thread:chat.thread,frame:target.frame,pane:target.key,unbound:false,at:Date.now(),baseline:startCursor+messages.length-1,earlier:new Set(messages.filter(item=>item.role==='user'&&item.timestamp).map(item=>item.timestamp)),state:'sending'});
+      pendingSends.set(sent.key,sent);paintFiles();paint();void deliver(sent,target);
+    }
+    async function deliver(sent,current){
+      const {native,key,id,payload,command}=sent;
       if(native){
         const prior=retryKeys.get(key),sendKey=prior?.payload===payload?prior.id:id;sent.sendKey=sendKey;retryKeys.set(key,{payload,id:sendKey});
         await sendNative(sent);return;
@@ -732,7 +751,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       bridgeSends.set(id,sent);
       sent.frame.contentWindow.postMessage({type:'zellij-conversation-paste',id,pane_id:current.pane,agent:current.agent,submit:true,text:payload},location.origin);
       setTimeout(()=>complete(sent,false,'No confirmation from the terminal. Check it before trying again; your draft is kept.'),4000);
-    };
+    }
     window.addEventListener('message',event=>{
       if(event.origin!==location.origin||event.data?.type!=='zellij-conversation-paste-result')return;
       const sent=bridgeSends.get(event.data.id);if(!sent||event.source!==sent.frame?.contentWindow)return;bridgeSends.delete(sent.id);
@@ -742,17 +761,18 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       root.classList.toggle('conversation-open',open);
       const current=selection();modes.hidden=!current;
       title.textContent=current?.title||'Conversation';
-      if(identity(current)===identity(target)){target=current;updateActivity();if(!chat)status(unboundNotice());prepare();return;}
+      if(identity(current)===identity(target)){target=current;updateActivity();if(!chat)status(unboundNotice());prepare();flushStartup();return;}
       closeCompletions();navigationRevision++;
       if(target)drafts.set(identity(target),draft.value);
       if(target&&loaded){conversations.delete(identity(target));conversations.set(identity(target),{chat,messages,startCursor,tailCursor,nextCursor,streamSupported,position:restorePosition?.position??list.scrollTop,follow:restorePosition?.follow??nearBottom()});if(conversations.size>8)conversations.delete(conversations.keys().next().value);}
       window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();
       stopStream();streamSupported=false;restorePosition=null;target=current;loadRequest?.abort();lastFailure=null;lastDiagnostic='';newOutput=false;sendStatus('');generation++;shownProgress();loaded=false;lastPaint=null;busy(false);messages=[];startCursor=tailCursor=0;nextCursor=null;following=true;readingAnchor=null;for(const entry of [...rendered.values(),...renderedOutgoing.values()])contentResize?.unobserve(entry.node);rendered.clear();renderedOutgoing.clear();summaries.clear();list.replaceChildren(older,working);older.hidden=true;historyStatus.hidden=true;latest.hidden=refresh.hidden=true;
       chat=target?.chatId?{id:target.chatId,agent:target.agent,title:target.title}:null;
+      // The temporary Creating tab identity becomes a pane before it gets a chat.
+      // Keep its follow-ups, draft and attachments through both transitions.
+      if(target?.launch){const previous=launchKeys.get(target.launch);if(previous)moveStartup(previous,identity(target));launchKeys.set(target.launch,identity(target));}
       // A first message sent before the pane had a chat moves to the chat it started.
-      if(chat){const unbound=JSON.stringify([target.key,null]),bound=identity(target);
-        for(const map of [outgoing,pendingSends,drafts,draftVersions,consumedTranscript,attachments])if(map.has(unbound)&&!map.has(bound)){map.set(bound,map.get(unbound));map.delete(unbound);}
-        for(const item of outgoing.get(bound)||[])item.key=bound;}
+      if(chat)moveStartup(JSON.stringify([target.key,null]),identity(target));
       if(target&&chat&&handoverDrafts.has(target.key)){drafts.set(identity(target),handoverDrafts.get(target.key));handoverDrafts.delete(target.key);}
       if(target&&chat&&handoverAttachments.has(target.key)){attachments.set(identity(target),[...fileList(),...handoverAttachments.get(target.key)]);handoverAttachments.delete(target.key);}
       const cached=conversations.get(identity(target));if(cached){({chat,messages,startCursor,tailCursor,nextCursor,streamSupported}=cached);loaded=true;}
@@ -760,7 +780,13 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       if(!target){setPanelHidden(true);viewport();return;}draft.value=drafts.get(identity(target))||'';
       setPanelHidden(!open);paintFiles();viewport();
       status(chat?'Loading conversation…':unboundNotice(),loaded);
-      if(cached){if(open){paint();list.scrollTop=cached.follow?list.scrollHeight:cached.position;updateLatest();}else restorePosition=cached;}if(open)focusSurface(true);if(chat){load(loaded?'poll':'initial');startStream();}prepare();
+      if(cached){if(open){paint();list.scrollTop=cached.follow?list.scrollHeight:cached.position;updateLatest();}else restorePosition=cached;}else if((outgoing.get(identity(target))||[]).length&&open)paint();if(open)focusSurface(true);if(chat){load(loaded?'poll':'initial');startStream();}prepare();flushStartup();
+    }
+    function moveStartup(from,to){
+      if(from===to)return;
+      for(const map of [outgoing,pendingSends,drafts,draftVersions,consumedTranscript,attachments])if(map.has(from)&&!map.has(to)){map.set(to,map.get(from));map.delete(from);}
+      for(const item of outgoing.get(to)||[])item.key=to;
+      if(queuedSubmit===from)queuedSubmit=to;
     }
     // Open at the latest messages; older history is fetched only on request.
     setInterval(()=>{if(open&&!document.hidden){if(!chat){status(unboundNotice());updateActivity();}prepare();void loadPrompt();if(!streamReady)load();}},2000);

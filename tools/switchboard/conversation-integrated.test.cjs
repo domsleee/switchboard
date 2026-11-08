@@ -7,7 +7,7 @@ test('integrated Conversation journeys use production markup and preserve delive
  const uploadRoot='/home/fixture/.local/share/switchboard/attachments/11111111-2222-4333-8444-555555555555/';
  const portrait='<svg xmlns="http://www.w3.org/2000/svg" width="240" height="640"><rect width="240" height="640" fill="#426180"/></svg>';
  async function fixture(options={}){
-  const page=await browser.newPage({viewport:options.viewport||{width:390,height:844},isMobile:true,hasTouch:true});page.setDefaultTimeout(7000);
+  const page=await browser.newPage({viewport:options.viewport||{width:390,height:844},isMobile:!options.desktop,hasTouch:!options.desktop});page.setDefaultTimeout(7000);
   if(options.clock)await page.clock.install();
   const f={page,errors:[],connections:[],requests:[],preparations:[],claudeReplies:[],claudeReplyStatus:404,history:new Map([[1,options.messages||[{role:'assistant',text:'Review response',model:'gpt-6.1-sol',reasoning_effort:'medium'}]],[2,[{role:'assistant',text:'Second conversation'}]]]),agent:options.agent||'codex',state:'ready',bound:options.bound!==false,model:'gpt-6.1-sol',effort:'medium',replyMode:'queue',autoHistory:false,prepareStatus:200,tabs:[1,2],newTabs:[],releaseReplies:[],releaseImages:[],delayImages:!!options.delayImages};
   await page.addInitScript(()=>{localStorage.setItem('switchboard-mobile-view-mode','conversation');localStorage.setItem('switchboard-view-mode','conversation');window.reviewIntervals=[];window.setInterval=fn=>reviewIntervals.push(fn);window.reviewOffset=0;const now=Date.now.bind(Date);Date.now=()=>now()+reviewOffset;window.reviewPastes=[];window.reviewHoldBridge=false;});
@@ -20,7 +20,7 @@ test('integrated Conversation journeys use production markup and preserve delive
    if(p==='/api/mesh')return json({members:[]});
    if(p==='/api/hosts')return json([{id:'fixture',name:'Fixture desktop',local:true}]);
    if(p==='/api/hosts/fixture')return json({id:'fixture',name:'Fixture desktop',local:true,sessions:[{name:'main',web_clients_allowed:true}]});
-   if(p==='/api/attention')return json({tabs:f.tabs.map(id=>({host:'fixture',session:'main',id,position:id-1,name:'Conversation '+id,panes:[pane(id)]})),panes:f.tabs.map(id=>({host:'fixture',session:'main',pane_id:id,...(f.agent?{agent:f.agent}:{}),state:f.state,...(f.bound?{chat_id:'chat-'+id}:{})})),errors:[]});
+   if(p==='/api/attention'){if(url.searchParams.has('after'))return new Promise(()=>{});return json({tabs:f.tabs.map(id=>({host:'fixture',session:'main',id,position:id-1,name:'Conversation '+id,panes:[pane(id)]})),panes:f.tabs.map(id=>({host:'fixture',session:'main',pane_id:id,...(f.agent?{agent:f.agent}:{}),state:f.state,...(f.bound?{chat_id:'chat-'+id}:{})})),errors:[]});}
    if(p.startsWith('/api/chats/')){const id=Number(p.split('-').at(-1));return json({id:'chat-'+id,model:f.model,reasoning_effort:f.effort,session_id:f.agent==='codex'?thread(id):null,messages:f.history.get(id)||[],start_cursor:0,next_cursor:null});}
    if(p.endsWith('/conversation/reply')){f.claudeReplies.push(route.request().postDataJSON());return route.fulfill({status:f.claudeReplyStatus,json:{ok:true}});}
    if(p.endsWith('/conversation/prepare')){f.preparations.push(route.request().postDataJSON());return route.fulfill({status:f.prepareStatus,json:{trusted:false}});}
@@ -33,10 +33,10 @@ test('integrated Conversation journeys use production markup and preserve delive
    }
    if(p.endsWith('/attachments'))return json({path:uploadRoot+url.searchParams.get('name')});
    if(p.endsWith('/file')){if(f.delayImages)await new Promise(resolve=>f.releaseImages.push(resolve));return route.fulfill({contentType:'image/svg+xml',body:portrait}).catch(()=>{});}
-   if(p.endsWith('/new-tab')&&route.request().method()==='POST'){f.newTabs.push(route.request().postDataJSON());return json({pane_id:3,tab_id:3});}
+   if(p.endsWith('/new-tab')&&route.request().method()==='POST'){f.newTabs.push(route.request().postDataJSON());if(f.holdCreation)await new Promise(resolve=>f.releaseCreation=resolve);return json({pane_id:3,tab_id:3});}
    if(p.startsWith('/hosts/')){
     f.connections.push(p);
-    return route.fulfill({contentType:'text/html',body:`<script>let active=${JSON.stringify(pane(1))};const state=id=>parent.postMessage({type:'zellij-state',focus_id:id,payload:{session_name:'main',active_pane:active,panes:${JSON.stringify([pane(1),pane(2)])}}},location.origin);addEventListener('message',event=>{const data=event.data;if(data.type==='zellij-focus'){active=${JSON.stringify([pane(1),pane(2)])}.find(p=>p.pane_id===data.pane_id);state(data.focus_id);}else if(data.type==='zellij-conversation-paste'){parent.reviewPastes.push(data);if(!parent.reviewHoldBridge)parent.postMessage({type:'zellij-conversation-paste-result',id:data.id,ok:true},location.origin);}});state();</script>`});
+    return route.fulfill({contentType:'text/html',body:`<script>let active=${JSON.stringify(pane(1))};const state=id=>parent.postMessage({type:'zellij-state',focus_id:id,payload:{session_name:'main',active_pane:active,panes:${JSON.stringify(f.tabs.map(pane))}}},location.origin);addEventListener('message',event=>{const data=event.data;if(data.type==='zellij-focus'){active=${JSON.stringify(f.tabs.map(pane))}.find(p=>p.pane_id===data.pane_id);state(data.focus_id);}else if(data.type==='zellij-conversation-paste'){parent.reviewPastes.push(data);if(!parent.reviewHoldBridge)parent.postMessage({type:'zellij-conversation-paste-result',id:data.id,ok:true},location.origin);}});state();</script>`});
    }
    if(p.startsWith('/api/'))return json({});
    const file=path.join(__dirname,'static',p==='/'?'index.html':p.slice(1));
@@ -46,7 +46,7 @@ test('integrated Conversation journeys use production markup and preserve delive
   f.poll=async()=>{await page.waitForFunction(()=>!document.querySelector('[aria-label="Refresh"]').disabled);await Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/')),page.evaluate(()=>reviewIntervals.forEach(fn=>fn()))]);await page.waitForFunction(()=>!document.querySelector('[aria-label="Refresh"]').disabled);};
   f.select=id=>page.evaluate(id=>activate(allTabs().find(item=>item.tab.id===id)),id);
   f.upload=async()=>{const choosing=page.waitForEvent('filechooser');await page.getByRole('button',{name:'Attach files',exact:true}).click();await(await choosing).setFiles({name:'portrait.svg',mimeType:'image/svg+xml',buffer:Buffer.from(portrait)});await page.locator('.conversation-attachment').getByText('Ready',{exact:true}).waitFor();};
-  f.release=()=>{f.releaseReplies.splice(0).forEach(fn=>fn());f.releaseImages.splice(0).forEach(fn=>fn());};
+  f.release=()=>{f.releaseCreation?.();f.releaseReplies.splice(0).forEach(fn=>fn());f.releaseImages.splice(0).forEach(fn=>fn());};
   f.close=async()=>{f.release();assert.deepEqual(f.errors,[]);await page.close();};
   page.on('pageerror',error=>f.errors.push(error.message));
   await page.goto('http://conversation-review.test/?host=fixture&session=main&tab=1',{waitUntil:'domcontentloaded'});
@@ -240,14 +240,66 @@ test('integrated Conversation journeys use production markup and preserve delive
     await draft.fill('First task');await page.getByRole('button',{name:'Send',exact:true}).click();
     await page.locator('.conversation-outgoing').getByText('Queued',{exact:true}).waitFor();
     assert.deepEqual(f.claudeReplies,[{session:'main',tab_id:1,pane_id:1,text:'First task'}]);assert.equal(await page.evaluate(()=>reviewPastes.length),0);
+    await draft.fill('One more detail');await page.getByRole('button',{name:'Send',exact:true}).click();
+    assert.equal(await draft.inputValue(),'','A follow-up can be submitted before the first transcript exists');
+    assert.equal(f.claudeReplies.length,1,'The follow-up waits for the first conversation');
     // Still reading ready afterwards, the pane keeps the timer the first message started.
     await f.refresh();
     assert.match(await page.locator('.conversation-notice').textContent(),/Connecting/,'The connection timer starts with the first message');
     await page.evaluate(()=>{reviewOffset=240000;reviewIntervals.forEach(fn=>fn());});
     await page.getByRole('button',{name:'Retry connection',exact:true}).waitFor();
     f.state='working';f.history.get(1).push({role:'user',text:'First task'});f.bound=true;await f.refresh();
-    await page.locator('.conversation-message.user').getByText('First task',{exact:true}).waitFor();assert.equal(await page.locator('.conversation-outgoing').count(),0);
+    await page.locator('.conversation-message.user').getByText('First task',{exact:true}).waitFor();
+    await page.waitForFunction(()=>document.querySelector('.conversation-outgoing.queued'));
+    assert.equal(f.claudeReplies[1].text,'One more detail');
+    f.history.get(1).push({role:'user',text:'One more detail'});await f.poll();
+    assert.equal(await page.locator('.conversation-outgoing').count(),0);
     assert.equal(await page.evaluate(()=>SwitchboardConversation.hasUnsentWork()),false,'The first send moves to the chat it started');
+   }finally{await f.close();}
+  });
+  for(const agent of ['claude','codex'])for(const desktop of [false,true])await t.test(`${agent} startup keeps the bottom composer and delivers follow-ups across creation, navigation and view modes (${desktop?'desktop':'phone'})`,async()=>{
+   const f=await fixture({agent,desktop,viewport:desktop?{width:1280,height:844}:undefined}),{page}=f;f.holdCreation=true;f.claudeReplyStatus=200;try{
+    await page.evaluate(agent=>{void createNewTab(sessionKey('fixture','main'),{project:'switchboard',command:agent==='codex'?'codex:gpt-6.1-sol':'claude:claude-haiku-5-5',prompt:'First task'});},agent);
+    await page.locator('.conversation-launch').getByText('First task',{exact:true}).waitFor();
+    const draft=page.getByLabel('Reply draft'),send=page.getByRole('button',{name:'Send',exact:true});await draft.waitFor();
+    const box=await page.locator('.conversation-compose').boundingBox();assert.ok(box.y>600&&box.y+box.height<=844,'The composer stays at the bottom');
+    assert.equal(await draft.evaluate(node=>document.activeElement===node),desktop,'Only desktop startup focuses the draft');
+    if(process.env.MODE_SCREENSHOTS)await page.screenshot({path:path.join(process.env.MODE_SCREENSHOTS,`startup-composer-${agent}-${desktop?'desktop':'phone'}.png`)});
+    // An identical follow-up must not be acknowledged by the launched prompt.
+    await draft.fill('First task');await send.click();assert.equal(await draft.inputValue(),'');
+    await f.upload();await draft.fill('Also check the logs');await send.click();assert.equal(await draft.inputValue(),'');
+    assert.equal(await page.locator('.conversation-attachment').count(),0,'Queued attachments leave the composer');
+    await draft.fill('Keep typing');
+    assert.deepEqual(await page.locator('.conversation-message.user p').allTextContents(),['First task','First task','Also check the logs'],'Follow-ups appear after the initial prompt');
+    assert.equal(f.requests.length+f.claudeReplies.length,0,'No send can target the temporary tab');
+    f.releaseCreation();
+    await page.waitForFunction(()=>allTabs().find(item=>item.key===selected)?.tab.panes[0]?.pane_id===3);
+    assert.equal(await draft.inputValue(),'Keep typing','Draft survives the temporary tab becoming a pane');
+    assert.equal(await page.locator('.conversation-outgoing.queued').count(),2);
+    // Leave before the transcript connects; neither message may go to the other tab.
+    await f.select(1);f.tabs=[1,2,3];f.history.set(3,[{role:'user',text:'First task'}]);await f.refresh();
+    assert.equal(f.requests.length+f.claudeReplies.length,0);
+    const delivered=page.waitForResponse(response=>response.url().endsWith(agent==='codex'?'/codex/reply':'/conversation/reply')&&String(response.request().postDataJSON().message||response.request().postDataJSON().text).startsWith('Also check the logs'));
+    f.replyMode='hold';await f.select(3);
+    const replies=agent==='codex'?f.requests:f.claudeReplies;
+    if(agent==='codex'){
+     await page.waitForFunction(()=>document.querySelector('.conversation-outgoing.sending')&&document.querySelector('.conversation-outgoing.queued'));
+     assert.equal(replies.length,1,'The second follow-up waits for confirmation of the first');
+     f.replyMode='queue';f.release();
+    }
+    await delivered;
+    await page.waitForFunction(()=>document.querySelectorAll('.conversation-outgoing.queued').length===2&&!document.querySelector('.conversation-outgoing.sending'));
+    assert.equal(replies.length,2,'Both follow-ups are delivered exactly once');
+    assert.deepEqual(replies.map(reply=>reply.message||reply.text),['First task','Also check the logs\n\nAttached files:\n'+uploadRoot+'portrait.svg']);
+    if(agent==='codex')assert.ok(replies.every(reply=>reply.thread.endsWith('000000000003')));
+    else assert.ok(replies.every(reply=>reply.pane_id===3&&reply.tab_id===3));
+    assert.equal(await draft.inputValue(),'Keep typing','Connecting preserves the next unsent draft');
+    await page.getByRole('button',{name:'Terminal',exact:true}).click();assert.equal(await draft.isVisible(),false);
+    await page.getByRole('button',{name:'Conversation',exact:true}).click();await draft.waitFor();
+    assert.equal(await draft.inputValue(),'Keep typing','View modes preserve the draft');
+    assert.equal(replies.length,2,'Changing view modes never resends a follow-up');
+    f.history.get(3).push(...replies.map(reply=>f.receipt(reply.message||reply.text)));await f.poll();
+    assert.equal(await page.locator('.conversation-outgoing').count(),0,'Receipts replace each queued follow-up');
    }finally{await f.close();}
   });
   await t.test('a tab started from New tab shows its prompt and a starting spinner until the transcript has it',async()=>{
