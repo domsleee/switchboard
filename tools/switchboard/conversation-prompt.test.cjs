@@ -62,7 +62,7 @@ test('Conversation answers Claude permission prompts and questions without Termi
    await page.getByText('Answer the agent’s question first. Your draft is kept.',{exact:true}).waitFor();
 
    // The card goes once the menu leaves the screen or the agent is busy again.
-   f.prompt=null;await poll();assert.equal(await card.isVisible(),false);
+   f.prompt=null;await poll();await card.waitFor({state:'hidden'});
    f.prompt=permission;await poll();await card.waitFor();
    const reads=f.reads;await page.evaluate(()=>{current.state='working';SwitchboardConversation.update();});
    assert.equal(await card.isVisible(),false);await page.evaluate(()=>{skew+=2000;intervals.forEach(fn=>fn());});assert.equal(f.reads,reads,'No screen reads while the agent works');
