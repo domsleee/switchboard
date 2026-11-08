@@ -177,13 +177,59 @@ async fn dispatch(state: RelayState, id: String, request: Request, user_message:
 }
 
 async fn forward(host: &Host, target: &Queue) -> Response {
-    match tokio::time::timeout(
-        Duration::from_secs(20),
-        host.request(Method::POST, if target.user_message {"/switchboard/codex/reply"} else {"/switchboard/codex/queue"}, serde_json::to_vec(target).unwrap().into(), "application/json"),
-    ).await {
-        Ok(Ok(response)) => (response.status, [(header::CONTENT_TYPE, "application/json")], response.body).into_response(),
-        _ => answer(StatusCode::BAD_GATEWAY, "unknown", &target.send_key,
-            "No destination confirmation; retry only with the same host, send_key, thread and message"),
+    let path = if target.user_message {
+        "/switchboard/codex/reply"
+    } else {
+        "/switchboard/codex/queue"
+    };
+    let body: Bytes = serde_json::to_vec(target).unwrap().into();
+    // A connection can disappear after the destination has queued the message.
+    // Its durable receipt makes this exact request safe to repeat. Keep both
+    // attempts inside the original deadline, below the browser's send timeout.
+    let result = tokio::time::timeout(Duration::from_secs(20), async {
+        match host
+            .request(Method::POST, path, body.clone(), "application/json")
+            .await
+        {
+            Ok(response) => Ok(response),
+            Err(error) => {
+                logs::record(
+                    &host.config.name,
+                    &format!("Message confirmation lost; retrying the same delivery: {error:#}"),
+                );
+                host.request(Method::POST, path, body, "application/json")
+                    .await
+            },
+        }
+    })
+    .await;
+    match result {
+        Ok(Ok(response)) => (
+            response.status,
+            [(header::CONTENT_TYPE, "application/json")],
+            response.body,
+        )
+            .into_response(),
+        result => {
+            let reason = match result {
+                Ok(Err(error)) => format!("{error:#}"),
+                Err(_) => "Timed out after 20 seconds".into(),
+                Ok(Ok(_)) => unreachable!(),
+            };
+            logs::record(
+                &host.config.name,
+                &format!(
+                    "Message delivery unconfirmed ({}): {reason}",
+                    target.send_key
+                ),
+            );
+            answer(
+                StatusCode::BAD_GATEWAY,
+                "unknown",
+                &target.send_key,
+                "Delivery is not confirmed. Retry to check or send this same message safely.",
+            )
+        },
     }
 }
 
@@ -778,6 +824,93 @@ mod tests {
             .body(Body::from(vec![b'x'; REQUEST_BYTES + 1]))
             .unwrap();
         assert_eq!(gateway(request).await.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn switchboard_native_messages_recovers_lost_reply_without_duplicate_delivery() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        for user_message in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let db = dir.path().join("receipts.sqlite3");
+            let calls = Arc::new(AtomicUsize::new(0));
+            let deliveries = Arc::new(AtomicUsize::new(0));
+            let (requests, submitted) = (calls.clone(), deliveries.clone());
+            let expected = Queue {
+                user_message,
+                ..target()
+            };
+            let original = expected.clone();
+            let path = if user_message {
+                "/switchboard/codex/reply"
+            } else {
+                "/switchboard/codex/queue"
+            };
+            let app = Router::new().route(
+                path,
+                post(move |Json(mut actual): Json<Queue>| {
+                    let (db, calls, deliveries, expected) = (
+                        db.clone(),
+                        calls.clone(),
+                        deliveries.clone(),
+                        expected.clone(),
+                    );
+                    async move {
+                        actual.user_message = user_message;
+                        assert_eq!(
+                            serde_json::to_value(&actual).unwrap(),
+                            serde_json::to_value(&expected).unwrap()
+                        );
+                        let status = reserve(&db, &actual).unwrap();
+                        if status.is_none() {
+                            deliveries.fetch_add(1, Ordering::SeqCst);
+                            Connection::open(&db)
+                                .unwrap()
+                                .execute(
+                                    "UPDATE receipts SET status='queued' WHERE send_key=?1",
+                                    [&actual.send_key],
+                                )
+                                .unwrap();
+                        }
+                        if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                            // The destination accepted the message, but its HTTP response is lost.
+                            Body::from_stream(futures_util::stream::once(async {
+                                Err::<Bytes, _>(std::io::Error::other("lost confirmation"))
+                            }))
+                            .into_response()
+                        } else {
+                            receipt(status.as_deref().unwrap(), &actual.send_key)
+                        }
+                    }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+            let host = Host::new(HostConfig {
+                id: "peer".into(),
+                name: "Fixture".into(),
+                url: format!("http://{address}"),
+                token_file: "unused".into(),
+                gateway_token_file: None,
+                tls_fingerprint: None,
+                artifact_urls: Value::Null,
+                escape_transport: Some("gateway".into()),
+                zellij_binary: None,
+                hostname: None,
+                address: None,
+            })
+            .unwrap();
+            *host.cookie.lock().await = Some("session_token=fixture".into());
+            let response = forward(&host, &original).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(value(response).await["status"], "queued");
+            assert_eq!(requests.load(Ordering::SeqCst), 2);
+            assert_eq!(submitted.load(Ordering::SeqCst), 1);
+            server.abort();
+        }
     }
 
     #[tokio::test]

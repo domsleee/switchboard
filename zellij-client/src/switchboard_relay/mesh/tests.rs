@@ -1,6 +1,56 @@
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[tokio::test]
+async fn switchboard_native_receipt_query_reaches_the_paired_gateway_handler() {
+    use tower::ServiceExt;
+    let temp = tempfile::tempdir().unwrap();
+    let owner = machine(
+        &temp.path().join("owner"),
+        "Windows",
+        "https://192.0.2.1:8091",
+    )
+    .await;
+    let viewer = machine(
+        &temp.path().join("viewer"),
+        "Viewer",
+        "https://192.0.2.2:8091",
+    )
+    .await;
+    let invite = invitation(&owner, 1000).await;
+    let (_, approval) = approved(&owner, &viewer, &invite, 1000).await;
+    owner
+        .complete(viewer.install(approval, &invite).await.unwrap())
+        .await
+        .unwrap();
+    let viewer_id = viewer
+        .database
+        .lock()
+        .await
+        .local
+        .as_ref()
+        .unwrap()
+        .id
+        .clone();
+    let bearer = owner.database.lock().await.outgoing[&viewer_id]
+        .gateway
+        .clone();
+    // Invalid query values should reach receipt validation (400), rather than
+    // being forwarded to the native terminal server as an unknown route.
+    let response = transport::gateway_router(owner)
+        .oneshot(
+            Request::builder()
+                .uri("/switchboard/codex/receipt?thread=invalid&send_key=fixture")
+                .header(header::HOST, "192.0.2.1:8091")
+                .header(header::AUTHORIZATION, format!("Bearer {bearer}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
 async fn board_call(mesh: &Mesh, method: Method, path: &str, body: Value) -> (StatusCode, Value) {
     let response = mesh
         .board(
