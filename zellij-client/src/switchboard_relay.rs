@@ -1350,6 +1350,17 @@ async fn message_board(State(state): State<RelayState>, request: Request) -> Res
     }
 }
 
+/// Runs a user's message to its end even if the browser disconnects. A closed connection
+/// drops its handler at the next await, which would lose the message or leave it typed
+/// into the terminal but never submitted.
+async fn detached<T: Send + 'static>(
+    work: impl std::future::Future<Output = T> + Send + 'static,
+) -> T {
+    tokio::spawn(work)
+        .await
+        .unwrap_or_else(|error| std::panic::resume_unwind(error.into_panic()))
+}
+
 fn app(state: RelayState) -> Router {
     let peer = state.mesh.as_ref().and_then(|mesh| {
         mesh.bridge
@@ -1664,6 +1675,39 @@ async fn shutdown() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn switchboard_detached_work_finishes_after_the_browser_disconnects() {
+        use tokio::io::AsyncWriteExt;
+        let (events, mut seen) = tokio::sync::mpsc::unbounded_channel();
+        let app = Router::new().route(
+            "/",
+            post(move || {
+                let events = events.clone();
+                async move {
+                    detached(async move {
+                        events.send("started").unwrap();
+                        tokio::time::sleep(Duration::from_millis(300)).await;
+                        events.send("finished").unwrap();
+                    })
+                    .await
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut browser = tokio::net::TcpStream::connect(address).await.unwrap();
+        browser
+            .write_all(b"POST / HTTP/1.1\r\nHost: relay\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .unwrap();
+        assert_eq!(seen.recv().await, Some("started"));
+        drop(browser);
+        let finished = tokio::time::timeout(Duration::from_secs(5), seen.recv()).await;
+        server.abort();
+        assert_eq!(finished.unwrap(), Some("finished"));
+    }
 
     #[test]
     fn switchboard_browser_origin_is_explicit_https_and_does_not_allow_other_origins() {

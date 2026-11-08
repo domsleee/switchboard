@@ -282,21 +282,24 @@ pub(super) async fn reply_handler(
     let host = state
         .host(&id)
         .ok_or((StatusCode::NOT_FOUND, "Unknown computer"))?;
-    if host.config.escape_transport.as_deref() == Some("gateway") {
-        let response = host
-            .request(
-                Method::POST,
-                "/switchboard/conversation/reply",
-                serde_json::to_vec(&reply).unwrap().into(),
-                "application/json",
-            )
+    super::detached(async move {
+        if host.config.escape_transport.as_deref() == Some("gateway") {
+            let response = host
+                .request(
+                    Method::POST,
+                    "/switchboard/conversation/reply",
+                    serde_json::to_vec(&reply).unwrap().into(),
+                    "application/json",
+                )
+                .await
+                .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot reach the other computer"))?;
+            return Ok((response.status, response.body).into_response());
+        }
+        reply_local(&host, reply)
             .await
-            .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot reach the other computer"))?;
-        return Ok((response.status, response.body).into_response());
-    }
-    reply_local(&host, reply)
-        .await
-        .map(IntoResponse::into_response)
+            .map(IntoResponse::into_response)
+    })
+    .await
 }
 
 pub(super) const REPLY_LIMIT: usize = 16000;

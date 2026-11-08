@@ -70,7 +70,7 @@ pub(super) async fn reply_handler(
     RoutePath(id): RoutePath<String>,
     request: Request,
 ) -> Response {
-    dispatch(state, id, request, true).await
+    super::detached(dispatch(state, id, request, true)).await
 }
 
 async fn dispatch(state: RelayState, id: String, request: Request, user_message: bool) -> Response {

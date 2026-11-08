@@ -866,7 +866,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       const request=new AbortController();sent.request=request;
       const timeout=setTimeout(()=>request.abort(),30000);
       try{
-        const response=await fetch('/api/hosts/'+encodeURIComponent(sent.host)+'/codex/reply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({thread:sent.thread,message:sent.payload,send_key:sent.sendKey}),signal:request.signal});
+        const response=await fetch('/api/hosts/'+encodeURIComponent(sent.host)+'/codex/reply',{method:'POST',keepalive:true,headers:{'Content-Type':'application/json'},body:JSON.stringify({thread:sent.thread,message:sent.payload,send_key:sent.sendKey}),signal:request.signal});
         const result=await response.json(),ok=response.ok&&result.status==='queued';
         complete(sent,ok,ok?'':result.detail||'Could not confirm sending. Retry to check its status.',result.status!=='failed');
       }catch{complete(sent,false,request.signal.aborted?'Sending timed out. Delivery is not confirmed. Retry to check its status.':'Could not confirm sending. Retry to check its status.',true);}
@@ -929,7 +929,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       // Older relays answer 404 and use the terminal below.
       if(current.agent==='claude'&&!command){
         try{
-          const response=await fetch('/api/hosts/'+encodeURIComponent(sent.host)+'/conversation/reply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:current.session,tab_id:current.tab,pane_id:current.pane,text:payload}),signal:AbortSignal.timeout(20000)});
+          const response=await fetch('/api/hosts/'+encodeURIComponent(sent.host)+'/conversation/reply',{method:'POST',keepalive:true,headers:{'Content-Type':'application/json'},body:JSON.stringify({session:current.session,tab_id:current.tab,pane_id:current.pane,text:payload}),signal:AbortSignal.timeout(20000)});
           // An accepted first message starts the connection timer, whatever the pane reads next.
           if(response.ok&&sent.unbound){firstSends.add(sent.pane);if(identity(selection())===sent.key){updateActivity();status(unboundNotice(),loaded);}}
           // A draft typed in Terminal is set aside and restored; the relay says if it was not.
