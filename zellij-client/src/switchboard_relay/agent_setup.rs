@@ -181,9 +181,20 @@ pub(crate) fn find_program(name: &str, folders: &[PathBuf]) -> Option<PathBuf> {
 
 /// Queue text as argv, never through Windows batch-file shell interpretation.
 pub(super) fn codex_queue_program() -> Option<(PathBuf, std::ffi::OsString)> {
+    agent_program("codex")
+}
+
+pub(super) fn agent_program(agent: &str) -> Option<(PathBuf, std::ffi::OsString)> {
     let folders = search_path();
-    let name = if cfg!(windows) { "codex.exe" } else { "codex" };
-    let program = folders.iter().map(|p| p.join(name)).find(|p| p.is_file())?;
+    let name = if cfg!(windows) {
+        format!("{agent}.exe")
+    } else {
+        agent.to_owned()
+    };
+    let program = folders
+        .iter()
+        .map(|p| p.join(&name))
+        .find(|p| p.is_file())?;
     Some((program, std::env::join_paths(folders).ok()?))
 }
 

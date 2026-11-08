@@ -393,6 +393,99 @@ fn model_choices(result: &Value) -> Vec<Value> {
         .collect()
 }
 
+/// Claude's SDK initialization reports the current catalog without submitting a prompt.
+/// Disable hooks, MCP servers and transcript persistence for this short-lived query.
+/// ModelInfo: https://code.claude.com/docs/en/agent-sdk/typescript#modelinfo
+pub(crate) async fn claude_models() -> Vec<Value> {
+    let Some((program, path)) = agent_setup::agent_program("claude") else {
+        return vec![];
+    };
+    let mut command = tokio::process::Command::new(program);
+    command
+        .args([
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--no-session-persistence",
+            "--strict-mcp-config",
+            "--mcp-config",
+            r#"{"mcpServers":{}}"#,
+            "--settings",
+            r#"{"disableAllHooks":true}"#,
+        ])
+        .env("PATH", path)
+        .env_remove("CLAUDECODE")
+        .env_remove("ZELLIJ_SESSION_NAME")
+        .env_remove("ZELLIJ_PANE_ID")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    if let Some(home) = std::env::home_dir() {
+        command.current_dir(home);
+    }
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let Ok(mut child) = command.spawn() else {
+        return vec![];
+    };
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let mut input = child.stdin.take()?;
+        let mut output = BufReader::new(child.stdout.take()?).lines();
+        input.write_all(b"{\"type\":\"control_request\",\"request_id\":\"models\",\"request\":{\"subtype\":\"initialize\"}}\n").await.ok()?;
+        while let Some(line) = output.next_line().await.ok()? {
+            let Ok(message) = serde_json::from_str::<Value>(&line) else { continue; };
+            if message["type"] == "control_response" && message["response"]["request_id"] == "models" {
+                return (message["response"]["subtype"] == "success")
+                    .then(|| claude_model_choices(&message["response"]["response"]));
+            }
+        }
+        None
+    }).await;
+    let _ = child.kill().await;
+    result.ok().flatten().unwrap_or_default()
+}
+
+fn claude_model_choices(result: &Value) -> Vec<Value> {
+    let mut seen = std::collections::HashSet::new();
+    result["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|model| {
+            // The default row duplicates an alias with the useful model name. Pin aliases to
+            // their resolved ID so a saved favourite keeps naming the model it launches.
+            if model["value"] == "default" {
+                return None;
+            }
+            let id = model["resolvedModel"]
+                .as_str()
+                .or_else(|| model["value"].as_str())?;
+            if !seen.insert(id) {
+                return None;
+            }
+            let efforts = model["supportedEffortLevels"].as_array().map(|levels| {
+                levels
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(|id| json!({"id":id}))
+                    .collect::<Vec<_>>()
+            });
+            let mut choice = json!({"id":id,"name":model["displayName"].as_str().unwrap_or(id)});
+            if let Some(efforts) = efforts {
+                choice["efforts"] = json!(efforts);
+            } else if model["supportsEffort"] == false {
+                choice["efforts"] = json!([]);
+            }
+            Some(choice)
+        })
+        .collect()
+}
+
 /// Ask a short-lived `codex app-server` one question, in `cwd` or the home folder.
 async fn codex_app_server(cwd: Option<&Path>, method: &str, params: Value) -> Option<Value> {
     let (program, path) = agent_setup::codex_queue_program()?;
@@ -640,6 +733,40 @@ async fn write_keys(host: &Host, session: &str, pane: &str, key: &str) -> Result
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    #[ignore = "Requires an installed Claude Code; queries its catalog without sending a prompt"]
+    async fn switchboard_claude_models_from_installed_cli() {
+        let models = super::claude_models().await;
+        assert!(
+            !models.is_empty(),
+            "Claude initialization returned no models"
+        );
+        assert!(models
+            .iter()
+            .all(|model| model["id"].is_string() && model["name"].is_string()));
+    }
+
+    #[test]
+    fn switchboard_claude_model_choices_resolve_aliases_and_keep_model_efforts() {
+        let result = serde_json::json!({"models":[
+            {"value":"default","resolvedModel":"claude-current","displayName":"Default"},
+            {"value":"opus","resolvedModel":"claude-current","displayName":"Current model",
+             "supportsEffort":true,"supportedEffortLevels":["high","max"]},
+            {"value":"claude-current","displayName":"Duplicate"},
+            {"value":"claude-quick","displayName":"Quick model","supportsEffort":false},
+            {"value":"custom","supportsEffort":true},
+            {"displayName":"Invalid"}
+        ]});
+        assert_eq!(
+            super::claude_model_choices(&result),
+            vec![
+                serde_json::json!({"id":"claude-current","name":"Current model","efforts":[{"id":"high"},{"id":"max"}]}),
+                serde_json::json!({"id":"claude-quick","name":"Quick model","efforts":[]}),
+                serde_json::json!({"id":"custom","name":"custom"}),
+            ]
+        );
+    }
+
     #[test]
     fn switchboard_codex_model_choices_carry_each_models_effort_levels() {
         let result = serde_json::json!({"data":[

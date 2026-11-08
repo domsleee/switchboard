@@ -34,29 +34,28 @@
   // "GPT-6.1-Sol" reads as "GPT-6.1 Sol".
   const codexName=name=>String(name).replace(/^(GPT-[\d.]+)-(?=[A-Za-z])/i,'$1 ');
   const listedCodex=(parts,codex)=>Array.isArray(codex)&&codex.find(item=>item.id===parts.model);
-  function modelName(parts,codex){
+  function modelName(parts,codex,claude){
     if(!parts)return '';
-    if(parts.provider==='claude')return [...CLAUDE_MODELS,...CLAUDE_OLDER].find(([id])=>id===parts.model)?.[1]||parts.model;
+    if(parts.provider==='claude')return (Array.isArray(claude)?claude.find(item=>item.id===parts.model)?.name:null)||[...CLAUDE_MODELS,...CLAUDE_OLDER].find(([id])=>id===parts.model)?.[1]||parts.model;
     const listed=listedCodex(parts,codex);
     return listed?codexName(listed.name):/^gpt-[\d.]+-[a-z]+$/i.test(parts.model)?codexName(parts.model.replace(/^gpt/i,'GPT').replace(/-([a-z])([a-z]*)$/,(_,a,b)=>'-'+a.toUpperCase()+b)):parts.model;
   }
-  // The levels a model accepts, as [id, description]. Codex reports its own per model; a model that
+  // The levels a model accepts, as [id, description]. Agents report their own per model; a model that
   // reports none offers only the agent setting, and an older relay that reports nothing gets the common levels.
-  function efforts(parts,codex){
+  function efforts(parts,codex,claude){
     if(!parts)return [];
-    if(parts.provider==='claude')return CLAUDE_EFFORTS;
-    const listed=listedCodex(parts,codex);
-    return listed&&Array.isArray(listed.efforts)?listed.efforts.map(item=>[item.id,item.description||'']):CODEX_FALLBACK_EFFORTS;
+    const listed=parts.provider==='claude'?Array.isArray(claude)&&claude.find(item=>item.id===parts.model):listedCodex(parts,codex);
+    return listed&&Array.isArray(listed.efforts)?listed.efforts.map(item=>[item.id,item.description||'']):parts.provider==='claude'?CLAUDE_EFFORTS:CODEX_FALLBACK_EFFORTS;
   }
   // Levels are known once Claude is chosen or this computer's Codex has answered.
   const effortsKnown=(parts,codex)=>parts?.provider==='claude'||Array.isArray(codex);
   // A choice this computer can run as asked: its effort is one the model offers, when that is known.
-  const runnable=(parts,codex)=>!!parts&&(!parts.effort||!effortsKnown(parts,codex)||efforts(parts,codex).some(([id])=>id===parts.effort));
+  const runnable=(parts,codex,claude)=>!!parts&&(!parts.effort||!effortsKnown(parts,codex)||efforts(parts,codex,claude).some(([id])=>id===parts.effort));
   // The choice with an effort the model does not offer replaced by the agent setting.
-  function fit(value,codex){const parts=parse(value);return parts&&!runnable(parts,codex)?format({...parts,effort:''}):value;}
-  function describe(value,codex){
+  function fit(value,codex,claude){const parts=parse(value);return parts&&!runnable(parts,codex,claude)?format({...parts,effort:''}):value;}
+  function describe(value,codex,claude){
     const parts=parse(value)||parse(DEFAULT);
-    return {...parts,name:modelName(parts,codex),effortName:effortName(parts.effort),providerName:PROVIDERS[parts.provider]};
+    return {...parts,name:modelName(parts,codex,claude),effortName:effortName(parts.effort),providerName:PROVIDERS[parts.provider]};
   }
 
   const el=(tag,cls,text)=>{const node=document.createElement(tag);if(cls)node.className=cls;if(text!==undefined)node.textContent=text;return node;};
@@ -86,8 +85,9 @@
   // chip: the button that names the choice. menu: an empty element the picker fills.
   // value()/set(value): the chosen model and effort. codex(): this computer's Codex models, undefined while
   // loading or 'failed'. reload(): asks for them again. recent(): earlier choices, newest first.
+  // claude(): this computer's Claude models, or undefined to use the older-relay fallback.
   // done(): the picker closed; focus returns to the prompt. warning(): why a remembered effort was dropped.
-  function create({chip,menu,value,set,codex=()=>undefined,reload=()=>{},recent=()=>[],done=()=>{},warning=()=>'',icons={},compact=()=>matchMedia('(max-width:700px),(pointer:coarse)').matches}){
+  function create({chip,menu,value,set,codex=()=>undefined,claude=()=>undefined,reload=()=>{},recent=()=>[],done=()=>{},warning=()=>'',icons={},compact=()=>matchMedia('(max-width:700px),(pointer:coarse)').matches}){
     const base=menu.id.replace(/-menu$/,''),scrim=menu.closest('dialog')||document.body;
     const home=menu.parentNode;let embedded=false;
     const icon=provider=>{const node=el('span','model-picker-icon');node.setAttribute('aria-hidden','true');if(icons[provider])node.innerHTML=icons[provider];return node;};
@@ -141,30 +141,30 @@
     const sameModel=(a,b)=>!!a&&!!b&&a.provider===b.provider&&(a.id??a.model)===(b.id??b.model);
     const keyOf=parts=>parts?parts.provider+':'+parts.model:null;
     const isFavorite=item=>readFavorites().includes(item.provider+':'+(item.id??item.model));
-    const supports=(parts,effort)=>!effort||efforts(parts,codex()).some(([id])=>id===effort);
+    const supports=(parts,effort)=>!effort||efforts(parts,codex(),claude()).some(([id])=>id===effort);
     // A model with the effort last chosen, when it offers that effort.
     const withWanted=(provider,model)=>format({provider,model,effort:supports({provider,model},wanted)?wanted:''});
     // Up to three earlier pairs from either agent, other than the one the picker opened with and runnable
     // here. They are fixed while the picker is open, so choosing one never moves the rows.
     function recents(){
-      const models=codex(),listed=item=>item.provider==='claude'||!Array.isArray(models)||models.some(model=>model.id===item.model);
-      return recent().map(parse).filter(item=>item&&!isFavorite(item)&&format(item)!==initial&&listed(item)&&runnable(item,models))
+      const models=codex(),listed=item=>{const catalog=item.provider==='claude'?claude():models;return !Array.isArray(catalog)||catalog.some(model=>model.id===item.model);};
+      return recent().map(parse).filter(item=>item&&!isFavorite(item)&&format(item)!==initial&&listed(item)&&runnable(item,models,claude()))
         .filter((item,index,all)=>all.findIndex(other=>format(other)===format(item))===index).slice(0,3)
-        .map(item=>({kind:'model',key:'recent:'+format(item),group:'recent',provider:item.provider,id:item.model,name:modelName(item,models),effort:item.effort,recent:true}));
+        .map(item=>({kind:'model',key:'recent:'+format(item),group:'recent',provider:item.provider,id:item.model,name:modelName(item,models,claude()),effort:item.effort,recent:true}));
     }
     function rowsFor(provider){
       const parts=parse(value()),models=codex();
       const row=(id,name,extra={})=>({kind:'model',key:provider+':'+id,group:provider,provider,id,name,...extra});
       let rows;
-      if(provider==='claude')rows=[...CLAUDE_MODELS.map(([id,name])=>row(id,name)),...CLAUDE_OLDER.map(([id,name])=>row(id,name,{older:true,group:'older'}))];
+      if(provider==='claude')rows=Array.isArray(claude())?claude().map(item=>row(item.id,item.name)):[...CLAUDE_MODELS.map(([id,name])=>row(id,name)),...CLAUDE_OLDER.map(([id,name])=>row(id,name,{older:true,group:'older'}))];
       else rows=Array.isArray(models)?models.map(item=>row(item.id,codexName(item.name),{isDefault:!!item.default})):[];
       // A chosen model nobody lists stays visible, so it can always be seen and kept.
-      if(parts?.provider===provider&&!rows.some(item=>sameModel(item,parts)))rows.splice(provider==='claude'?CLAUDE_MODELS.length:rows.length,0,row(parts.model,modelName(parts,models)));
+      if(parts?.provider===provider&&!rows.some(item=>sameModel(item,parts)))rows.splice(provider==='claude'?CLAUDE_MODELS.length:rows.length,0,row(parts.model,modelName(parts,models,claude())));
       return rows;
     }
     function favoriteRows(){
       return readFavorites().map(key=>{const parts=parse(key),listed=rowsFor(parts.provider).find(item=>sameModel(item,parts));
-        return {...(listed||{kind:'model',provider:parts.provider,id:parts.model,name:modelName(parts,codex())}),key,group:'favorites',favorite:true};});
+        return {...(listed||{kind:'model',provider:parts.provider,id:parts.model,name:modelName(parts,codex(),claude())}),key,group:'favorites',favorite:true};});
     }
     function toggleFavorite(item){
       const key=item.provider+':'+item.id,saved=readFavorites(),had=saved.includes(key);
@@ -267,16 +267,16 @@
       fade(left);
     }
     function paintEfforts(){
-      const parts=parse(shownValue()),models=codex(),levels=efforts(parts,models),focused=effortList.contains(document.activeElement),current=parts?.effort||'';
+      const parts=parse(shownValue()),models=codex(),levels=efforts(parts,models,claude()),focused=effortList.contains(document.activeElement),current=parts?.effort||'';
       const listed=parts&&listedCodex(parts,models),modelDefault=listed?.default_effort||'',away=!chosenShown();
-      effortModel.textContent=modelName(parts,models);right.classList.toggle('previewing',previewing());right.classList.toggle('away',away);
+      effortModel.textContent=modelName(parts,models,claude());right.classList.toggle('previewing',previewing());right.classList.toggle('away',away);
       // Browsing another agent's tab, or a phone's search, leaves the chosen model off screen: say what is chosen.
       effortList.hidden=away;effortAway.hidden=!away;
-      effortAway.textContent=away?`${modelName(parts,models)} at ${current?effortName(current)+' effort':'its agent setting'} is chosen. Choose a model here to set its effort.`:'';
+      effortAway.textContent=away?`${modelName(parts,models,claude())} at ${current?effortName(current)+' effort':'its agent setting'} is chosen. Choose a model here to set its effort.`:'';
       effortList.replaceChildren();
       const agentNote=parts?.provider==='codex'?`Uses your Codex config${modelDefault?`, else this model's default (${effortName(modelDefault)})`:''}.`:'Uses your Claude Code effort setting (/effort).';
       // The effort asked for stays wanted; a model without it uses the agent setting, and says so.
-      const missing=wanted&&!supports(parts,wanted)&&effortsKnown(parts,models)?`${effortName(wanted)} isn't offered for ${modelName(parts,models)}, so the agent setting is used.`:previewing()?'':warning();
+      const missing=wanted&&!supports(parts,wanted)&&effortsKnown(parts,models)?`${effortName(wanted)} isn't offered for ${modelName(parts,models,claude())}, so the agent setting is used.`:previewing()?'':warning();
       effortWarning.textContent=away?'':missing||'';
       const choices=[['',agentNote],...levels],noteFor=()=>away?'':choices.find(([id])=>id===current)?.[1]||'';
       const hover=matchMedia('(hover:hover)').matches;
@@ -355,7 +355,7 @@
       if(embedded)return;
       if(menu.hidden)return;
       // Cancel restores the opening choice, minus an effort this computer has since said the model lacks.
-      if(!keep&&initial!==null&&value()!==fit(initial,codex()))set(fit(initial,codex()));
+      if(!keep&&initial!==null&&value()!==fit(initial,codex(),claude()))set(fit(initial,codex(),claude()));
       menu.hidden=true;chip.setAttribute('aria-expanded','false');scrim.classList.remove('model-picker-open');search.value='';initial=null;
     }
     function finish(keep=true){close(keep);done();}
