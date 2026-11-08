@@ -18,6 +18,8 @@
     else if(/^[a-z][\w+.-]*:/i.test(reference)&&!(/^[A-Za-z]:[\\/]/.test(reference)))return null;
     try{if(!/^file:/i.test(originalReference))reference=decodeURIComponent(reference);}catch{return null;}
     reference=reference.replace(/\\/g,'/');
+    // Markdown file links can spell a Windows absolute path as /C:/... .
+    reference=reference.replace(/^\/([A-Za-z]:\/)/,'$1');
     if(!/^(?:\/|~\/|[A-Za-z]:\/)/.test(reference)){
       if(!project||! /^(?:\/|~[\\/]|[A-Za-z]:[\\/])/.test(project))return null;
       reference=project.replace(/\\/g,'/').replace(/\/$/,'')+'/'+reference;
