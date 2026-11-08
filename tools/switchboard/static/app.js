@@ -525,7 +525,8 @@ function sidebarTabs(){
     const eligible=settingValue('move-working-to-snoozed')==='true'&&!item.hidden&&!isPinned(item.key)&&!isReady(item)
       &&!statusUnavailable(item.entry.host,item.entry.name);
     let snoozed=false;
-    if(eligible&&autoLabel(item)==='Working'){
+    // A tab waiting on a background agent resumes on its own, so it folds in too.
+    if(eligible&&['Working','Waiting on an agent'].includes(autoLabel(item))){
       snoozedPlacement.set(item.key,{deadline:null});snoozed=true;
     }else if(eligible&&snoozedPlacement.has(item.key)){
       const placement=snoozedPlacement.get(item.key);
