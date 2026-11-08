@@ -128,11 +128,11 @@ pub(super) struct Reply {
     text: String,
 }
 
-/// Splits a `dump-screen --ansi` capture into lines of plain text, each paired
-/// with the same text minus anything drawn dim (SGR 2). Other escapes are dropped.
-fn screen_lines(screen: &str) -> Vec<(String, String)> {
-    let mut lines = Vec::new();
-    let (mut plain, mut bright, mut dim) = (String::new(), String::new(), false);
+/// Rows of a `dump-screen --ansi` capture as cells, each flagged when Claude
+/// drew it dim (SGR 2). A run of `─` is its own row: `dump-screen` joins a
+/// full-width rule with the row after it, and sometimes with the row before.
+fn styled_rows(screen: &str) -> Vec<Vec<(char, bool)>> {
+    let (mut rows, mut row, mut dim) = (Vec::new(), Vec::new(), false);
     let mut chars = screen.chars().peekable();
     while let Some(c) = chars.next() {
         match c {
@@ -142,12 +142,24 @@ fn screen_lines(screen: &str) -> Vec<(String, String)> {
                 for c in chars.by_ref() {
                     if ('\x40'..='\x7e').contains(&c) {
                         if c == 'm' {
-                            for code in params.split(';') {
-                                match code {
+                            let codes: Vec<&str> = params.split(';').collect();
+                            let mut i = 0;
+                            while i < codes.len() {
+                                match codes[i] {
                                     "" | "0" | "22" => dim = false,
                                     "2" => dim = true,
+                                    // Colours carry their own parameters, such as
+                                    // 38;2;136;136;136, whose 2 is not dim.
+                                    "38" | "48" | "58" => {
+                                        i += match codes.get(i + 1) {
+                                            Some(&"5") => 2,
+                                            Some(&"2") => 4,
+                                            _ => 0,
+                                        }
+                                    },
                                     _ => {},
                                 }
+                                i += 1;
                             }
                         }
                         break;
@@ -155,55 +167,87 @@ fn screen_lines(screen: &str) -> Vec<(String, String)> {
                     params.push(c);
                 }
             },
-            '\n' => lines.push((std::mem::take(&mut plain), std::mem::take(&mut bright))),
+            '\n' => rows.push(std::mem::take(&mut row)),
             '\r' => {},
-            c => {
-                plain.push(c);
-                if !dim {
-                    bright.push(c);
-                }
-            },
+            c => row.push((c, dim)),
         }
     }
-    if !plain.is_empty() {
-        lines.push((plain, bright));
+    rows.push(row);
+    let rule = |c: char| matches!(c, '─' | '━');
+    let mut split = Vec::new();
+    for row in rows {
+        let mut start = 0;
+        let mut i = 0;
+        while i < row.len() {
+            let run = row[i..].iter().take_while(|cell| rule(cell.0)).count();
+            if run >= 8 {
+                if row[start..i].iter().any(|cell| !cell.0.is_whitespace()) {
+                    split.push(row[start..i].to_vec());
+                }
+                split.push(row[i..i + run].to_vec());
+                start = i + run;
+            }
+            i += run.max(1);
+        }
+        if start == 0 || row[start..].iter().any(|cell| !cell.0.is_whitespace()) {
+            split.push(row[start..].to_vec());
+        }
     }
-    lines
+    split
 }
 
-/// Claude's prompt box is empty: the last `❯` line holds nothing but its
-/// placeholder or a dim suggested prompt, and only blank lines sit between it
-/// and the box's lower rule. `screen` may carry ANSI styling, which is how a
-/// suggestion (drawn dim) is told apart from a typed draft.
-/// The same check the terminal bridge makes before pasting a reply.
-fn claude_prompt_empty(screen: &str) -> bool {
-    let lines = screen_lines(screen);
-    let Some(index) = lines
-        .iter()
-        .rposition(|(line, _)| line.trim_start().starts_with('❯'))
-    else {
-        return false;
-    };
-    let bright = lines[index].1.trim_start();
-    let prompt = bright.strip_prefix('❯').unwrap_or("").trim();
-    // Narrow panes cut the placeholder short with an ellipsis. While a reply sent
-    // mid-turn waits in Claude's queue, the empty prompt says how to edit it.
-    let placeholder = prompt.len() > 5
-        && prompt.starts_with("Try \"")
-        && (prompt.ends_with('"') || prompt.ends_with('…'))
-        || prompt.len() > 5
-            && "Press up to edit queued messages".starts_with(prompt.trim_end_matches('…'));
-    if !prompt.is_empty() && !placeholder {
-        return false;
-    }
-    for (line, _) in &lines[index + 1..] {
-        let text = line.trim();
-        if text.is_empty() {
+/// Claude Code's input box as it appears on screen.
+#[derive(Debug, PartialEq)]
+struct ClaudePrompt {
+    /// What the input holds. Claude draws its placeholder, a suggested next
+    /// prompt and the queued-message hint dim, and typed text never, so only
+    /// undimmed cells count.
+    draft: String,
+    /// Claude holds a stashed prompt: its footer says `› stashed`.
+    stashed: bool,
+}
+
+/// The last input box on screen: a rule, a row starting with `❯` (or `!` in
+/// shell mode), any continuation rows, and a closing rule. `None` when Claude
+/// shows no input, such as while a permission dialog replaces it.
+/// The terminal bridge reads its xterm buffer the same way.
+fn claude_prompt(screen: &str) -> Option<ClaudePrompt> {
+    let rows = styled_rows(screen);
+    let is_rule =
+        |row: &Vec<(char, bool)>| !row.is_empty() && row.iter().all(|c| matches!(c.0, '─' | '━'));
+    for start in (1..rows.len()).rev() {
+        let Some(marker) = rows[start].iter().position(|c| !c.0.is_whitespace()) else {
+            continue;
+        };
+        if !matches!(rows[start][marker].0, '❯' | '!') || !is_rule(&rows[start - 1]) {
             continue;
         }
-        return text.chars().all(|c| matches!(c, '─' | '━' | ' '));
+        let Some(end) = rows[start + 1..].iter().position(is_rule) else {
+            continue;
+        };
+        let end = start + 1 + end;
+        let draft = std::iter::once(&rows[start][marker + 1..])
+            .chain(rows[start + 1..end].iter().map(Vec::as_slice))
+            .map(|row| {
+                row.iter()
+                    .map(|&(c, dim)| if dim { ' ' } else { c })
+                    .collect::<String>()
+                    .trim()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim()
+            .to_owned();
+        let stashed = rows[end + 1..].iter().any(|row| {
+            row.iter()
+                .map(|c| c.0)
+                .collect::<String>()
+                .contains("› stashed")
+        });
+        return Some(ClaudePrompt { draft, stashed });
     }
-    true
+    None
 }
 
 pub(super) async fn reply_handler(
@@ -439,23 +483,38 @@ pub(super) async fn reply_local(host: &Host, reply: Reply) -> Result<Json<Value>
     if attention::classify(&pane, &screen)["agent"] != "claude" {
         return Err((StatusCode::CONFLICT, "The selected pane is not Claude"));
     }
-    // Styling tells a dim suggested prompt from a typed draft.
-    let styled = control::run_local(
-        host,
-        &target.session,
-        &["dump-screen", "--ansi", "-p", &target.pane_id.to_string()],
-        Duration::from_secs(5),
-    )
-    .await
-    .unwrap_or(screen);
-    if !claude_prompt_empty(&styled) {
-        return Err((
-            StatusCode::CONFLICT,
-            "Clear the terminal prompt before sending.",
-        ));
-    }
     let id = reply.pane_id.to_string();
     let session = &reply.session;
+    let prompt = read_prompt(host, session, &id)
+        .await
+        .or_else(|| claude_prompt(&screen))
+        .ok_or((
+            StatusCode::CONFLICT,
+            "Claude is not at its prompt. Open Terminal to see what it needs.",
+        ))?;
+    // A draft typed in Terminal goes into Claude's stash (Ctrl+S), which keeps its
+    // cursor, shell mode and pasted blocks; Claude puts it back once the reply is
+    // submitted, whether it runs now or waits in the queue. Ctrl+S never
+    // interrupts a turn, unlike Escape.
+    let stashed = !prompt.draft.is_empty();
+    if stashed {
+        // Stashing again would replace the prompt the user stashed earlier.
+        if prompt.stashed {
+            return Err((
+                StatusCode::CONFLICT,
+                "Claude already holds a stashed prompt and a new draft in Terminal. Send or clear the draft there first.",
+            ));
+        }
+        write_keys(host, session, &id, "19").await?;
+        wait_for_prompt(host, session, &id, |now| {
+            now.draft.is_empty() && now.stashed
+        })
+        .await
+        .ok_or((
+            StatusCode::CONFLICT,
+            "Claude did not set the terminal draft aside. Open Terminal to send.",
+        ))?;
+    }
     // `--` keeps a reply that starts with `-` from reading as an option.
     control::run_local(
         host,
@@ -465,15 +524,64 @@ pub(super) async fn reply_local(host: &Host, reply: Reply) -> Result<Json<Value>
     )
     .await
     .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot type the reply"))?;
-    control::run_local(
+    write_keys(host, session, &id, "13").await?;
+    if !stashed {
+        return Ok(Json(json!({"ok":true})));
+    }
+    let restored = wait_for_prompt(host, session, &id, |now| {
+        !now.stashed && now.draft == prompt.draft
+    })
+    .await
+    .is_some();
+    Ok(Json(if restored {
+        json!({"ok":true,"draft":"restored"})
+    } else {
+        json!({"ok":true,"draft":"stashed","notice":"Your terminal draft is in Claude's stash. Press Ctrl+S on its empty prompt to bring it back."})
+    }))
+}
+
+/// Reads Claude's input box with styling, which tells hints from typed text.
+async fn read_prompt(host: &Host, session: &str, pane: &str) -> Option<ClaudePrompt> {
+    let screen = control::run_local(
         host,
         session,
-        &["write", "-p", &id, "13"],
+        &["dump-screen", "--ansi", "-p", pane],
         Duration::from_secs(5),
     )
     .await
-    .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot submit the reply"))?;
-    Ok(Json(json!({"ok":true})))
+    .ok()?;
+    claude_prompt(&screen)
+}
+
+/// Rereads the input box until `done` holds, for up to two seconds.
+async fn wait_for_prompt(
+    host: &Host,
+    session: &str,
+    pane: &str,
+    done: impl Fn(&ClaudePrompt) -> bool,
+) -> Option<ClaudePrompt> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if let Some(prompt) = read_prompt(host, session, pane).await {
+            if done(&prompt) {
+                return Some(prompt);
+            }
+        }
+    }
+    None
+}
+
+async fn write_keys(host: &Host, session: &str, pane: &str, key: &str) -> Result<(), Error> {
+    control::run_local(
+        host,
+        session,
+        &["write", "-p", pane, key],
+        Duration::from_secs(5),
+    )
+    .await
+    .map(|_| ())
+    .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot type into the terminal"))
 }
 
 #[cfg(test)]
@@ -506,45 +614,83 @@ mod tests {
     const CLAUDE_IDLE: &str = "● Done.\n\n────────────────────────────────────────\n❯\u{a0}\n────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n";
 
     #[test]
-    fn switchboard_conversation_types_only_into_an_empty_claude_prompt() {
-        assert!(claude_prompt_empty(CLAUDE_IDLE));
-        assert!(claude_prompt_empty(
-            &CLAUDE_IDLE.replace("❯\u{a0}", "❯ Try \"fix lint errors\"")
-        ));
-        // Captured from a 25-column Claude Code 2.1.319 pane.
-        assert!(claude_prompt_empty(
-            &CLAUDE_IDLE.replace("❯\u{a0}", "❯ Try \"write a test for …")
-        ));
-        // Captured from a working Claude Code 2.1.319 pane with a reply in its queue.
-        for queued in ["Press up to edit queued messages", "Press up to edit queu…"] {
-            assert!(claude_prompt_empty(
-                &CLAUDE_IDLE.replace("❯\u{a0}", &format!("❯\u{a0}{queued}"))
-            ));
+    fn switchboard_conversation_reads_only_typed_text_as_a_claude_draft() {
+        // Claude Code 2.1.319 captured with `dump-screen --ansi`; see the fixture's headers.
+        let captures = include_str!("conversation/claude_prompt.ansi");
+        let capture = |name: &str| {
+            let start = captures.find(&format!("## {name}\n")).unwrap() + name.len() + 4;
+            let end = captures[start..]
+                .find("\n## ")
+                .map_or(captures.len(), |end| start + end);
+            &captures[start..end]
+        };
+        let read = |screen: &str| claude_prompt(screen).map(|p| (p.draft, p.stashed));
+        let draft = |text: &str| Some((text.to_string(), false));
+        // Claude draws its placeholder, a queued-message hint and a suggested next
+        // prompt dim; none of them is a draft.
+        for name in [
+            "idle placeholder",
+            "queued hint while working",
+            "working, empty",
+        ] {
+            assert_eq!(read(capture(name)), draft(""), "{name}");
         }
-        assert!(!claude_prompt_empty(&CLAUDE_IDLE.replace(
-            "❯\u{a0}",
-            "❯\u{a0}Press up to edit queued messages now"
-        )));
-        // Claude Code 2.1.319 suggests a next prompt in dim text once a turn ends;
-        // captured with `dump-screen --ansi` (styling trimmed to what it sets).
         let suggested = "\x1b[m❯\u{a0}\x1b[39m\x1b[49m\x1b[22m\x1b[24m\x1b[2m\x1b[23mok waiting";
-        assert!(claude_prompt_empty(
-            &CLAUDE_IDLE.replace("❯\u{a0}", suggested)
-        ));
-        assert!(claude_prompt_empty(&format!(
-            "\x1b[38;2;136;136;136m{RULE}\r\n{suggested}\x1b[m\r\n\x1b[38;2;136;136;136m{RULE}\r\n"
-        )));
+        assert_eq!(
+            read(&format!(
+                "\x1b[38;2;136;136;136m{RULE}\r\n{suggested}\x1b[m\r\n\x1b[38;2;136;136;136m{RULE}\r\n"
+            )),
+            draft("")
+        );
+        assert_eq!(read(CLAUDE_IDLE), draft(""));
+        // Typed text is drawn without styling.
+        assert_eq!(read(capture("typed draft")), draft("hello draft words"));
+        assert_eq!(
+            read(capture("multi-line draft")),
+            draft("line one\nline two")
+        );
+        assert_eq!(
+            read(capture("pasted block in draft")),
+            draft("before [Pasted text #1 +5 lines]")
+        );
+        assert_eq!(read(capture("shell-mode draft")), draft("echo hi"));
+        assert_eq!(read(capture("stashed, empty")), Some((String::new(), true)));
+        assert_eq!(
+            read(capture("stashed, with a new draft")),
+            Some(("second draft".into(), true))
+        );
+        // Only dim cells are hints; a true-colour foreground's 2 is not dim.
+        for (screen, text) in [
+            ("\x1b[m❯\u{a0}\x1b[2mok \x1b[0mwaiting", "waiting"),
+            ("\x1b[m❯\u{a0}\x1b[38;2;200;200;200mtyped", "typed"),
+            ("\x1b[m❯\u{a0}\x1b[38;5;2mtyped", "typed"),
+        ] {
+            assert_eq!(
+                read(&format!("{RULE}\n{screen}\x1b[m\n{RULE}\n")),
+                draft(text),
+                "{screen}"
+            );
+        }
+        // `dump-screen` can join a rule to the rows on either side.
+        assert_eq!(
+            read(&format!(
+                "{RULE}❯ line one\n  line two{RULE}  ⏵⏵ auto mode on   › stashed\n"
+            )),
+            Some(("line one\nline two".into(), true))
+        );
+        // A transcript line after the box is not the footer.
+        assert_eq!(
+            read(&format!("› stashed\n{RULE}\n❯ x\n{RULE}\n")),
+            draft("x")
+        );
+        // No input box: a dialog, a transcript line, a shell.
         for screen in [
-            CLAUDE_IDLE.replace("❯\u{a0}", "\x1b[m❯\u{a0}\x1b[39m\x1b[22mok waiting"),
-            CLAUDE_IDLE.replace("❯\u{a0}", "\x1b[m❯\u{a0}\x1b[2mok \x1b[0mwaiting"),
-            CLAUDE_IDLE.replace("❯\u{a0}", "❯\u{a0}[Pasted text #1 +3 lines]"),
-            CLAUDE_IDLE.replace("❯\u{a0}", "❯ draft"),
-            CLAUDE_IDLE.replace("❯\u{a0}\n", "❯\u{a0}first line\n  second line\n"),
-            CLAUDE_IDLE.replace("❯\u{a0}\n", "❯\u{a0}\n  second line\n"),
-            "Do you want to proceed?\n❯ 1. Yes\n  2. No\n".into(),
+            format!("{RULE} Bash command\n echo hi\n\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n\n Esc to cancel\n"),
+            "❯ an earlier message\n● Done.\n".into(),
+            format!("{RULE}\n❯ unfinished box\n"),
             "dom@mac ~ %".into(),
         ] {
-            assert!(!claude_prompt_empty(&screen), "{screen}");
+            assert_eq!(read(&screen), None, "{screen}");
         }
     }
 
@@ -602,6 +748,8 @@ mod tests {
             r#"[{"id":7,"tab_id":8,"pane_command":"codex","is_plugin":false}]"#,
         )
         .unwrap();
+        // Input clears the fake screen, unless `after-<first key>` holds the screen
+        // that key leads to.
         #[cfg(windows)]
         std::fs::write(
             &cli,
@@ -613,19 +761,19 @@ if "%~4"=="write" goto write
 if "%~4"=="paste" goto write
 exit /b 1
 :catalog
-type "{}"
+type "{catalog}"
 exit /b 0
 :screen
-type "{}"
+type "{screen}"
 exit /b 0
 :write
-echo %*>>"{}"
-type nul >"{}"
+echo %*>>"{actions}"
+if exist "{dir}\after-%~7" (copy /y "{dir}\after-%~7" "{screen}" >nul) else (type nul >"{screen}")
 "#,
-                catalog.display(),
-                screen.display(),
-                actions.display(),
-                screen.display()
+                catalog = catalog.display(),
+                screen = screen.display(),
+                actions = actions.display(),
+                dir = dir.path().display(),
             ),
         )
         .unwrap();
@@ -637,16 +785,17 @@ type nul >"{}"
                 format!(
                     r#"#!/bin/sh
 case "$4" in
-list-panes) cat '{}' ;;
-dump-screen) cat '{}' ;;
-write|paste) printf '%s\n' "$*" >> '{}'; : > '{}' ;;
+list-panes) cat '{catalog}' ;;
+dump-screen) cat '{screen}' ;;
+write|paste) printf '%s\n' "$*" >> '{actions}'
+  if [ -f '{dir}/after-'"$7" ]; then cp '{dir}/after-'"$7" '{screen}'; else : > '{screen}'; fi ;;
 *) exit 1 ;;
 esac
 "#,
-                    catalog.display(),
-                    screen.display(),
-                    actions.display(),
-                    screen.display()
+                    catalog = catalog.display(),
+                    screen = screen.display(),
+                    actions = actions.display(),
+                    dir = dir.path().display(),
                 ),
             )
             .unwrap();
@@ -748,7 +897,14 @@ esac
             tab_id: 8,
             text: text.into(),
         };
-        std::fs::write(&screen, format!("{RULE}\n❯ half typed\n{RULE}\n")).unwrap();
+        // A dialog in place of the input box is never typed into.
+        std::fs::write(
+            &screen,
+            format!(
+                "{RULE} Bash command\n echo hi\n\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n"
+            ),
+        )
+        .unwrap();
         assert_eq!(
             reply_local(&host, reply("hi")).await.unwrap_err().0,
             StatusCode::CONFLICT
@@ -774,8 +930,63 @@ esac
             ]
         );
 
+        // A draft typed in Terminal goes into Claude's stash while the reply is sent,
+        // and Claude puts it back.
+        let typed = format!("{RULE}\n❯ half typed\n{RULE}\n");
+        let after = |key: &str| dir.path().join(format!("after-{key}"));
+        let recorded = || {
+            let recorded = std::fs::read_to_string(&actions).unwrap();
+            std::fs::remove_file(&actions).unwrap();
+            recorded.lines().map(str::to_owned).collect::<Vec<_>>()
+        };
+        recorded();
+        std::fs::write(&screen, &typed).unwrap();
+        std::fs::write(
+            after("19"),
+            format!("{RULE}\n❯\u{a0}\n{RULE}\n  ⏵⏵ auto mode on   › stashed\n"),
+        )
+        .unwrap();
+        std::fs::write(after("13"), &typed).unwrap();
+        assert_eq!(
+            reply_local(&host, reply("hi")).await.unwrap().0,
+            json!({"ok":true,"draft":"restored"})
+        );
+        assert_eq!(
+            recorded(),
+            [
+                "-s fixture action write -p 7 19",
+                "-s fixture action paste -p 7 -- hi",
+                "-s fixture action write -p 7 13"
+            ]
+        );
+        // If the draft does not come back, the browser says where it is.
+        std::fs::remove_file(after("13")).unwrap();
+        std::fs::write(&screen, &typed).unwrap();
+        let sent = reply_local(&host, reply("hi")).await.unwrap().0;
+        assert_eq!(sent["draft"], "stashed");
+        assert!(sent["notice"].as_str().unwrap().contains("Ctrl+S"));
+        assert_eq!(recorded().len(), 3);
+        // Stashing over the user's own stash would lose it.
+        std::fs::write(
+            &screen,
+            format!("{RULE}\n❯ new draft\n{RULE}\n  ⏵⏵ auto mode on   › stashed\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            reply_local(&host, reply("hi")).await.unwrap_err().0,
+            StatusCode::CONFLICT
+        );
+        assert!(!actions.exists());
+        // A stash that does not happen leaves the draft alone and types nothing.
+        std::fs::remove_file(after("19")).unwrap();
+        std::fs::write(&screen, &typed).unwrap();
+        assert_eq!(
+            reply_local(&host, reply("hi")).await.unwrap_err().0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(recorded(), ["-s fixture action write -p 7 19"]);
+
         // Claude's menus are answered only while the menu the browser showed is on screen.
-        std::fs::remove_file(&actions).unwrap();
         let permission = format!("● Bash(echo hi)\n{RULE} Bash command\n echo hi\n\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n\n Esc to cancel · Tab to amend\n");
         std::fs::write(&screen, &permission).unwrap();
         let shown = prompt::local(&host, target()).await.unwrap().0;

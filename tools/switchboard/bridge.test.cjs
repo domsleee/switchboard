@@ -713,18 +713,42 @@ test('conversation Send submits once and rejects unsent multiline input or a she
   lines=['$ '];h.window.term.rows=1;send();assert.equal(writes.length,2);assert.equal(h.messages.at(-1).ok,false);
 });
 
-test('Claude Send types over a dim suggested prompt but not over a typed draft',()=>{
+test('Claude Send types over dim hints and sets a typed draft aside in Claude\'s stash',()=>{
   const h=harness(),writes=[],rule='─'.repeat(20);
   new h.window.WebSocket('ws://localhost:8090/hosts/windows/ws/terminal');
-  // Cells as xterm reports them: Claude Code draws its suggested next prompt dim.
-  const row=(text,dimFrom)=>({translateToString:()=>text,length:text.length,getCell:x=>({getChars:()=>text[x]||'',isDim:()=>x>=dimFrom})});
-  let prompt=row('❯ ok waiting',2);
-  h.window.term.rows=3;h.window.term.buffer.active={baseY:0,viewportY:0,getLine:i=>i===1?prompt:row(rule,99)};
-  h.window.term.modes={bracketedPasteMode:true};h.window.term.paste=text=>writes.push(['paste',text]);h.window.term.input=text=>writes.push(['input',text]);
+  // Cells as xterm reports them. Claude Code 2.1.319 draws its placeholder, the
+  // queued-message hint and a suggested next prompt dim, and typed text plain.
+  const row=(text,dimFrom=99)=>({translateToString:()=>text,length:text.length,getCell:x=>({getChars:()=>text[x]||'',isDim:()=>x>=dimFrom})});
+  let box=[row('❯ ok waiting',2)],footer=row('  ⏵⏵ auto mode on'),stash,restore;
+  h.window.term.buffer.active={baseY:0,viewportY:0,getLine:i=>[row('● Done.'),row(rule),...box,row(rule),footer][i]};
+  h.window.term.modes={bracketedPasteMode:true};h.window.term.paste=text=>writes.push(['paste',text]);
+  h.window.term.input=text=>{writes.push(['input',text]);if(text==='\x13'&&stash)[box,footer]=stash;if(text==='\r'&&restore)[box,footer]=restore;};
+  const stashed=[[row('❯ ')],row('  ⏵⏵ auto mode on   › stashed')];
+  const resize=()=>h.window.term.rows=box.length+4;
   h.state({active_pane:{pane_id:7,is_plugin:false}});
-  const send=()=>h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-conversation-paste',id:'claude',pane_id:7,agent:'claude',submit:true,text:'hello'}});
-  send();assert.deepEqual(writes,[['paste','hello'],['input','\r']]);
-  prompt=row('❯ ok waiting',99);send();assert.equal(writes.length,2);assert.equal(h.messages.at(-1).error,'Clear the terminal prompt before sending.');
+  const send=()=>{writes.length=0;resize();h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-conversation-paste',id:'claude',pane_id:7,agent:'claude',submit:true,text:'hello'}});};
+  const tick=()=>{for(const [id,fn] of [...h.timers]){h.timers.delete(id);resize();fn();}};
+  for(const hint of [row('❯ ok waiting',2),row('❯ Try "fix lint errors"',2),row('❯ Press up to edit queued messages',2)]){
+    box=[hint];send();assert.deepEqual(writes,[['paste','hello'],['input','\r']]);assert.equal(h.messages.at(-1).ok,true);
+  }
+  // A typed draft, including one over several rows, goes to the stash and comes back.
+  const draft=[row('❯ line one'),row('  line two')];
+  box=draft;stash=stashed;restore=[draft,row('  ⏵⏵ auto mode on')];send();tick();
+  assert.deepEqual(writes,[['input','\x13'],['paste','hello'],['input','\r']]);
+  assert.deepEqual({...h.messages.at(-1)},{type:'zellij-conversation-paste-result',id:'claude',ok:true,error:''},'A restored draft needs no notice');
+  // If it does not come back, Conversation says where it is.
+  box=draft;footer=row('  ⏵⏵ auto mode on');restore=stashed;send();for(let i=0;i<25;i++)tick();
+  assert.equal(writes.length,3);assert.equal(h.messages.at(-1).ok,true);assert.match(h.messages.at(-1).notice,/Ctrl\+S/);
+  // Never stash over the user's own stash.
+  box=[row('❯ second draft')];footer=stashed[1];send();assert.deepEqual(writes,[]);assert.match(h.messages.at(-1).error,/stashed prompt/);
+  // A stash that does not happen leaves the draft alone and types nothing.
+  box=draft;footer=row('  ⏵⏵ auto mode on');stash=null;send();for(let i=0;i<35;i++)tick();
+  assert.deepEqual(writes,[['input','\x13']]);assert.equal(h.messages.at(-1).error,'Claude did not set the terminal draft aside. Open Terminal to send.');
+  // A dialog in place of the input box is never typed into.
+  h.window.term.buffer.active={baseY:0,viewportY:0,getLine:i=>[row(rule+' Bash command'),row(' Do you want to proceed?'),row(' ❯ 1. Yes'),row('   2. No')][i]};
+  writes.length=0;h.window.term.rows=4;h.handlers.message({origin:'http://localhost:8090',source:h.parent,data:{type:'zellij-conversation-paste',id:'claude',pane_id:7,agent:'claude',submit:true,text:'hello'}});
+  assert.deepEqual(writes,[]);assert.equal(h.messages.at(-1).ok,false);
+  assert.ok(h.messages.every(message=>message.error!=='Clear the terminal prompt before sending.'));
 });
 
 test('Copilot Send checks the live boxed composer, including multiline drafts',()=>{

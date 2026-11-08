@@ -2,14 +2,14 @@ const test=require('node:test'),assert=require('node:assert/strict'),path=requir
 test('outgoing replies stay visible through queue acknowledgement and reconcile one-for-one',{skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
  const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch();
  const history=[{role:'user',text:'Same message'},{role:'assistant',text:'Earlier answer'}],requests=[];
- let held,hold=true,fail=false,relay=404;const replies=[];
+ let held,hold=true,fail=false,relay=404,relayNotice;const replies=[];
  try{
   const page=await browser.newPage({viewport:{width:390,height:844},hasTouch:true,isMobile:true});page.setDefaultTimeout(5000);
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.addInitScript(()=>{window.intervals=[];window.setInterval=fn=>intervals.push(fn);});
   await page.route('http://send.test/**',async route=>{
    const url=new URL(route.request().url());
-   if(url.pathname.endsWith('/conversation/reply')){replies.push(route.request().postDataJSON());return relay===200?route.fulfill({json:{ok:true}}):route.fulfill({status:relay,body:relay===409?'Clear the terminal prompt before sending.':''});}
+   if(url.pathname.endsWith('/conversation/reply')){replies.push(route.request().postDataJSON());return relay===200?route.fulfill({json:{ok:true,...relayNotice&&{draft:'stashed',notice:relayNotice}}}):route.fulfill({status:relay,body:relay===409?'Claude is not at its prompt. Open Terminal to see what it needs.':''});}
    if(url.pathname.endsWith('/codex/reply')){requests.push(route.request().postDataJSON());if(fail)return route.abort();if(hold)await new Promise(resolve=>held=resolve);return route.fulfill({json:{status:'queued'}});}
    if(url.pathname.startsWith('/api/chats/'))return route.fulfill({json:{session_id:'00000000-0000-4000-8000-000000000001',messages:history,start_cursor:0,next_cursor:null}});
    if(url.pathname==='/')return route.fulfill({contentType:'text/html',body:`<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/conversation.css"><main id="terminals"><iframe id="terminal"></iframe><section id="artifact-preview" hidden></section></main><script src="/conversation.js"></script><script>window.current={key:'pane1',host:'fixture',pane:1,agent:'codex',state:'working',chatId:'codex-chat',frame:document.getElementById('terminal')};SwitchboardConversation.install({selection:()=>current,terminal:()=>{}});</script>`});
@@ -56,11 +56,15 @@ test('outgoing replies stay visible through queue acknowledgement and reconcile 
   await page.waitForFunction(()=>document.querySelectorAll('.conversation-outgoing').length===0);
   // A current relay types Claude replies itself; the terminal is never used.
   relay=409;await draft.fill('Relay reply');await send.click();
-  await outgoing.getByText('Clear the terminal prompt before sending.',{exact:true}).waitFor();
+  await outgoing.getByText('Claude is not at its prompt. Open Terminal to see what it needs.',{exact:true}).waitFor();
   relay=200;await send.click();await outgoing.getByText('Queued',{exact:true}).waitFor();
   assert.equal(await page.evaluate(()=>pastes.length),2);
   assert.deepEqual(replies.at(-1),{pane_id:1,text:'Relay reply'});
   assert.equal(await draft.inputValue(),'');
+  // The relay sets a terminal draft aside; if Claude did not restore it, say where it is.
+  relayNotice="Your terminal draft is in Claude's stash. Press Ctrl+S on its empty prompt to bring it back.";
+  await draft.fill('Over a draft');await send.click();await page.getByText(relayNotice,{exact:true}).waitFor();
+  assert.equal(await draft.inputValue(),'');relayNotice=undefined;
   // A turn that ended with background work still running takes replies.
   await page.evaluate(()=>{current.state='waiting';SwitchboardConversation.update();});
   await draft.fill('While waiting');await send.click();await page.waitForFunction(()=>document.querySelector('.conversation-compose textarea').value==='');

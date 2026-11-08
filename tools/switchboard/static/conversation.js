@@ -552,7 +552,7 @@
       if(ok){clearSentDraft(sent);if(sent.command){outgoing.set(sent.key,(outgoing.get(sent.key)||[]).filter(item=>item!==sent));if(identity(target)===sent.key)paint();}else sendItem(sent,sent.native||sent.relay?'queued':'sent');}
       else sendItem(sent,uncertain?'uncertain':'failed',message);
       returnToConversation(sent);
-      if(identity(target)===sent.key){sendStatus(ok?'':message,sent);if(ok)load();}paintFiles();
+      if(identity(target)===sent.key){sendStatus(message,sent);if(ok)load();}paintFiles();
     }
     async function sendNative(sent){
       const request=new AbortController();sent.request=request;
@@ -601,7 +601,8 @@
           const response=await fetch('/api/hosts/'+encodeURIComponent(sent.host)+'/conversation/reply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:current.session,tab_id:current.tab,pane_id:current.pane,text:payload}),signal:AbortSignal.timeout(20000)});
           // An accepted first message starts the connection timer, whatever the pane reads next.
           if(response.ok&&sent.unbound){firstSends.add(sent.pane);if(identity(selection())===sent.key){updateActivity();status(unboundNotice(),loaded);}}
-          if(response.status!==404){sent.relay=true;complete(sent,response.ok,response.ok?'':(await response.text())||'Could not send the reply. Your draft is kept.');return;}
+          // A draft typed in Terminal is set aside and restored; the relay says if it was not.
+          if(response.status!==404){sent.relay=true;complete(sent,response.ok,response.ok?(await response.json().catch(()=>({}))).notice||'':(await response.text())||'Could not send the reply. Your draft is kept.');return;}
         }catch(error){const timeout=error.name==='TimeoutError';complete(sent,false,timeout?'No confirmation from the terminal. Check it before trying again; your draft is kept.':'Could not reach this computer. Your draft is kept.',timeout);return;}
       }
       // Agents without a native reply API need the visible terminal connection.
@@ -619,7 +620,7 @@
     window.addEventListener('message',event=>{
       if(event.origin!==location.origin||event.data?.type!=='zellij-conversation-paste-result')return;
       const sent=[...pendingSends.values()].find(sent=>!sent.native&&event.source===sent.frame?.contentWindow&&event.data.id===sent.id);if(!sent)return;
-      complete(sent,event.data.ok,event.data.ok?'':event.data.error||'Open the terminal and try again.');
+      complete(sent,event.data.ok,event.data.ok?event.data.notice||'':event.data.error||'Open the terminal and try again.');
     });
     function update(){
       root.classList.toggle('conversation-open',open);
