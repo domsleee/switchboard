@@ -139,11 +139,25 @@ async fn checked_screen(
     Ok((pane, screen))
 }
 
-// Two viewers must not both act on the same screen.
-static ACTING: Mutex<()> = Mutex::const_new(());
+// Two viewers must not both act on the same screen, but one slow pane must not hold
+// up another.
+static ACTING: std::sync::LazyLock<std::sync::Mutex<HashMap<(String, u32), Arc<Mutex<()>>>>> =
+    std::sync::LazyLock::new(Default::default);
+
+async fn acting_on(session: &str, pane_id: u32) -> tokio::sync::OwnedMutexGuard<()> {
+    let pane = {
+        let mut panes = ACTING.lock().unwrap();
+        panes.retain(|_, lock| Arc::strong_count(lock) > 1);
+        panes
+            .entry((session.to_owned(), pane_id))
+            .or_default()
+            .clone()
+    };
+    pane.lock_owned().await
+}
 
 pub(super) async fn local(host: &Host, target: Target) -> Result<Json<Value>, Error> {
-    let _guard = ACTING.lock().await;
+    let _guard = acting_on(&target.session, target.pane_id).await;
     let (pane, screen) = checked_screen(host, &target, tokio::time::Instant::now()).await?;
     if attention::classify(&pane, &screen)["agent"] != "codex" {
         return Ok(Json(json!({"trusted":false})));
@@ -689,7 +703,7 @@ pub(super) async fn reply_local(host: &Host, reply: Reply) -> Result<Json<Value>
     }
     let started = tokio::time::Instant::now();
     let retry_until = started + REPLY_RETRY_WINDOW;
-    let _guard = ACTING.lock().await;
+    let _guard = acting_on(&reply.session, reply.pane_id).await;
     let target = Target {
         session: reply.session.clone(),
         pane_id: reply.pane_id,
@@ -826,6 +840,34 @@ async fn write_keys(host: &Host, session: &str, pane: &str, key: &str) -> Result
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn switchboard_acting_on_a_pane_only_waits_for_that_pane() {
+        let wait = Duration::from_millis(100);
+        let held = acting_on("lock-test", 1).await;
+        assert!(
+            tokio::time::timeout(wait, acting_on("lock-test", 2))
+                .await
+                .is_ok(),
+            "another pane proceeds"
+        );
+        assert!(
+            tokio::time::timeout(wait, acting_on("other-session", 1))
+                .await
+                .is_ok(),
+            "the same pane number in another session proceeds"
+        );
+        assert!(
+            tokio::time::timeout(wait, acting_on("lock-test", 1))
+                .await
+                .is_err(),
+            "the same pane waits"
+        );
+        drop(held);
+        assert!(tokio::time::timeout(wait, acting_on("lock-test", 1))
+            .await
+            .is_ok());
+    }
     #[tokio::test]
     #[ignore = "Requires an installed Claude Code; queries its catalog without sending a prompt"]
     async fn switchboard_claude_models_from_installed_cli() {
