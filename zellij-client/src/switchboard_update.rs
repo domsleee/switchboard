@@ -214,7 +214,49 @@ pub struct Manifest {
     pub platform: String,
     #[serde(default)]
     pub run_number: u64,
+    /// When `commit` was committed (`%cI`), so a computer running a newer build it
+    /// made itself never goes back to an older published one. Absent in older bundles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_timestamp: Option<String>,
     pub files: BTreeMap<String, String>,
+}
+
+/// Seconds since the epoch of a `%cI` timestamp such as `2026-11-08T15:11:53+11:00`.
+fn commit_seconds(timestamp: &str) -> Option<i64> {
+    let b = timestamp.as_bytes();
+    let number = |range: std::ops::Range<usize>| -> Option<i64> {
+        std::str::from_utf8(b.get(range)?).ok()?.parse().ok()
+    };
+    if b.len() != 25 || b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || b[22] != b':' {
+        return None;
+    }
+    let (year, month, day) = (number(0..4)?, number(5..7)?, number(8..10)?);
+    let (hour, minute, second) = (number(11..13)?, number(14..16)?, number(17..19)?);
+    let offset = (number(20..22)? * 60 + number(23..25)?) * 60;
+    let offset = match b[19] {
+        b'+' => offset,
+        b'-' => -offset,
+        _ => return None,
+    };
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    // Days from the civil date (Howard Hinnant's algorithm).
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
+    let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
+    Some(days * 86_400 + hour * 3_600 + minute * 60 + second - offset)
+}
+
+/// Whether the running build was committed after the published one, as when this
+/// computer built a newer main itself.
+fn running_is_newer(running: Option<&str>, published: Option<&str>) -> bool {
+    matches!(
+        (running.and_then(commit_seconds), published.and_then(commit_seconds)),
+        (Some(running), Some(published)) if running > published
+    )
 }
 
 fn is_hex(value: &str, length: usize) -> bool {
@@ -279,12 +321,19 @@ pub fn package(
         fs::copy(&source, &target).with_context(|| format!("Cannot stage {}", source.display()))?;
         files.insert(name.to_string(), sha256_file(&target)?);
     }
+    // The packaging executable is the build being packaged, so its own commit
+    // time describes `commit`.
+    let own = env!("SWITCHBOARD_COMMIT");
+    let commit_timestamp = (own != "unknown" && same_commit(own, commit))
+        .then(|| env!("SWITCHBOARD_COMMIT_TIMESTAMP").to_owned())
+        .filter(|timestamp| commit_seconds(timestamp).is_some());
     let manifest = Manifest {
         attachment_protocol: 1,
         schema: 1,
         commit: commit.to_owned(),
         platform: platform.to_owned(),
         run_number,
+        commit_timestamp,
         files,
     };
     validate_manifest(&manifest, platform)?;
@@ -521,6 +570,8 @@ impl State {
 struct Health {
     relay: Option<String>,
     commit: Option<String>,
+    #[serde(default)]
+    commit_timestamp: Option<String>,
 }
 
 /// Short relay commits match full manifest commits by prefix.
@@ -855,6 +906,30 @@ impl Updater {
                     state.notice = None;
                     state.ready = None;
                     println!("Already running {}", manifest.commit);
+                    return state.save(&self.state_path());
+                }
+                // A build this computer made from a newer main stays until a newer
+                // one is published. Update now still installs the chosen build.
+                if health.relay.as_deref() == Some("rust")
+                    && !self.activating(&manifest.commit)
+                    && running_is_newer(
+                        health.commit_timestamp.as_deref(),
+                        manifest.commit_timestamp.as_deref(),
+                    )
+                {
+                    let running = health.commit.unwrap_or_default();
+                    state.run_number = Some(manifest.run_number);
+                    state.attempts = None;
+                    state.error = None;
+                    state.ready = None;
+                    state.notice = Some(format!(
+                        "Running {running}, which is newer than published {}",
+                        &manifest.commit[..7]
+                    ));
+                    println!(
+                        "Keeping {running}; published {} is older",
+                        &manifest.commit[..7]
+                    );
                     return state.save(&self.state_path());
                 }
             }

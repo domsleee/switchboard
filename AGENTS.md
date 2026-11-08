@@ -96,6 +96,8 @@ new endpoints. See the [internals](docs/SWITCHBOARD_INTERNALS.md) for transport 
   minute; `tools/switchboard/preview_service_windows.ps1` sets it up. To let them try an
   unmerged sidebar change, write its worktree path to `~/.config/switchboard/preview/target`
   and tell them to tap Reload. The preview returns to `main` once that branch's PR merges.
+  The same service builds each new `main` on that computer and installs it within about a
+  minute; its logs are in that folder.
 - A browser viewer the user cannot see (behind Conversation or another sidebar tab) must never size
   the terminal on other screens; the bridge reports it hidden and the engine leaves it out of
   sizing. Conversation still disconnects viewers on phones, which can force-resize the shared

@@ -86,7 +86,16 @@ fn respond(mut stream: TcpStream, root: &Path) {
         ("/api/health", Some(binary)) => {
             let start = binary.find("commit=").unwrap() + "commit=".len();
             let commit = &binary[start..start + 7];
-            let body = serde_json::json!({"relay": "rust", "commit": commit});
+            // A fake built at a known time says so with time=<%cI>.
+            let time = binary.find("time=").map(|at| {
+                binary[at + "time=".len()..]
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_owned()
+            });
+            let body =
+                serde_json::json!({"relay": "rust", "commit": commit, "commit_timestamp": time});
             (200, body.to_string().into_bytes())
         },
         ("/api/hosts", Some(binary)) => {
@@ -372,6 +381,7 @@ fn healthy(commit: &str) -> Option<Health> {
     Some(Health {
         relay: Some("rust".into()),
         commit: Some(commit.into()),
+        commit_timestamp: None,
     })
 }
 
@@ -402,6 +412,7 @@ fn interrupted_update_is_recovered_only_when_services_are_unhealthy() {
     let python = Health {
         relay: Some("python".into()),
         commit: Some(OLD.into()),
+        commit_timestamp: None,
     };
     assert_eq!(resolve(Some(python), Some(&intact)), Resolution::Recover);
     assert_eq!(resolve(healthy(OLD), None), Resolution::Recover);
@@ -450,6 +461,71 @@ fn bundles_are_checked_for_provenance_platform_contents_and_checksums() {
     fs::write(bundle.join("zellij"), "corrupted download").unwrap();
     let error = verify_files(&bundle, &manifest).unwrap_err();
     assert!(error.to_string().contains("checksum"), "{error}");
+}
+
+#[test]
+fn commit_times_order_builds_across_time_zones() {
+    assert_eq!(commit_seconds("1970-01-01T00:00:00+00:00"), Some(0));
+    assert_eq!(
+        commit_seconds("2026-11-08T15:11:53+11:00"),
+        Some(1_794_111_113)
+    );
+    assert_eq!(
+        commit_seconds("2026-11-08T04:11:53+00:00"),
+        commit_seconds("2026-11-07T23:11:53-05:00")
+    );
+    for invalid in [
+        "",
+        "unknown",
+        "2026-11-08",
+        "2026-13-08T15:11:53+11:00",
+        "2026-11-08T15:11:53Z",
+    ] {
+        assert_eq!(commit_seconds(invalid), None, "{invalid}");
+    }
+    let (earlier, later) = (
+        Some("2026-11-08T15:00:00+11:00"),
+        Some("2026-11-08T15:05:00+11:00"),
+    );
+    assert!(running_is_newer(later, earlier));
+    assert!(!running_is_newer(earlier, later));
+    assert!(
+        !running_is_newer(later, later),
+        "the same time is not newer"
+    );
+    assert!(
+        !running_is_newer(later, None),
+        "bundles without a time install as before"
+    );
+    assert!(!running_is_newer(None, earlier));
+}
+
+#[test]
+fn a_published_build_older_than_the_running_one_is_not_installed() {
+    let harness = Harness::new(true);
+    // This computer built and runs a newer main than the one just published.
+    write_executable(
+        &harness.root.join("running"),
+        &fake_binary(&harness.root, "ddddddd", "time=2026-11-08T15:05:00+11:00"),
+    );
+    harness.publish(&full('c'), 5, "");
+    let manifest = harness.root.join("release/switchboard-windows-bundle.json");
+    let mut published: serde_json::Value =
+        serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    published["commit_timestamp"] = "2026-11-08T15:00:00+11:00".into();
+    fs::write(&manifest, published.to_string()).unwrap();
+    harness.updater.run().unwrap();
+    let state = harness.state();
+    assert_eq!(state["run_number"], 5, "the older build is not retried");
+    assert!(state["notice"]
+        .as_str()
+        .unwrap()
+        .contains("newer than published ccccccc"));
+    assert!(
+        harness.calls().is_empty(),
+        "an older build replaced a newer one"
+    );
+    assert!(state.get("ready").is_none());
 }
 
 #[test]
