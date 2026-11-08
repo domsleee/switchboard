@@ -1556,7 +1556,10 @@ $('new-tab-project-chip').onclick=()=>$('new-tab-project-popover').hidden?openNe
 $('new-tab-project-popover').addEventListener('focusout',event=>{if(!$('new-tab-project-popover').contains(event.relatedTarget)&&event.relatedTarget!==$('new-tab-project-chip'))closeNewTabProjectPicker(false);});
 function paintNewTabProjectChip(){
   const project=$('new-tab-project').value.trim();
-  $('new-tab-project-chip-prefix').hidden=!project||/^(?:[A-Za-z]:[\\/]|\/)/.test(project);$('new-tab-project-chip-name').textContent=project||'choose a folder';
+  const full=/^(?:[A-Za-z]:[\\/]|\/)/.test(project);
+  // A full path shows its last folder, which a narrow chip would otherwise cut off.
+  $('new-tab-project-chip-prefix').hidden=!project||full;$('new-tab-project-chip-name').textContent=full?lastFolder(project):project||'choose a folder';
+  $('new-tab-project-chip').title=full?project:'Choose project';
 }
 // Each browser remembers the last project per computer; switchboard is the default.
 function newTabSavedProject(host){try{return JSON.parse(localStorage.getItem('switchboard-new-tab-projects')||'{}')[host]||'switchboard';}catch(_){return 'switchboard';}}
@@ -1617,6 +1620,7 @@ function openNewTabDialog(elevated){
   $('new-tab-dialog').showModal();fitNewTabPrompt();fitNewTabDialog();
   $('new-tab-prompt').focus();
 }
+function lastFolder(path){return path.split(/[\\/]/).filter(Boolean).pop()||path;}
 function newTabLookup(inputId,listId,buttonId,items,emptyText,onChange=()=>{},next=null){
   const input=$(inputId),list=$(listId),button=$(buttonId),popup=list.parentElement;let index=-1,showAll=false;
   const status=popup.querySelector('.new-tab-options-status'),hint=popup.querySelector('.new-tab-options-hint');
@@ -1628,7 +1632,8 @@ function newTabLookup(inputId,listId,buttonId,items,emptyText,onChange=()=>{},ne
   function open(all=false){
     showAll=all;const query=all?'':input.value.toLowerCase();list.replaceChildren();index=-1;input.removeAttribute('aria-activedescendant');
     const matches=items().filter(([name,detail])=>(name+' '+detail).toLowerCase().includes(query));
-    const rank=([name])=>name.toLowerCase()===query?2:name.toLowerCase().startsWith(query)?1:0;
+    // A full path ranks by its last folder too, so typing a repository name finds it.
+    const rank=([name])=>Math.max(...[name,lastFolder(name)].map(text=>text.toLowerCase()===query?2:text.toLowerCase().startsWith(query)?1:0));
     matches.sort((a,b)=>rank(b)-rank(a));
     for(const [name,detail] of matches){
       const option=document.createElement('div');option.id=listId+'-'+list.children.length;option.setAttribute('role','option');option.setAttribute('aria-selected','false');
@@ -1670,14 +1675,14 @@ function updateNewTabProject(){
   $('new-tab-project-guess-row').hidden=!guess;$('new-tab-project-guess').textContent=guess;$('new-tab-project-guess').dataset.name=guess;
 }
 let newTabProjects=[],newTabProjectMessage='',newTabProjectRequest;
-const newTabProjectLookup=newTabLookup('new-tab-project','new-tab-projects','new-tab-project-lookup',()=>newTabProjects.map(name=>[name,'']),()=>newTabProjectMessage||'No matching folders in ~/git. Type a name or a full path.',()=>{newTabProjectEdited=true;updateNewTabProject();},'new-tab-prompt');
+const newTabProjectLookup=newTabLookup('new-tab-project','new-tab-projects','new-tab-project-lookup',()=>newTabProjects.map(name=>[name,'']),()=>newTabProjectMessage||'No matching folders. Type a name in ~/git or a full path.',()=>{newTabProjectEdited=true;updateNewTabProject();},'new-tab-prompt');
 // Registered after the lookup's own keys: Tab fills the name, then returns to the prompt.
 $('new-tab-project').addEventListener('keydown',event=>{if(event.key==='Tab'&&!event.shiftKey){event.preventDefault();closeNewTabProjectPicker(true);}});
 // The closest listed name, by containment or a small edit distance.
 function closestNewTabProject(project){
   const query=project.toLowerCase();let best='',bestScore=Infinity;
-  for(const name of newTabProjects){
-    const lower=name.toLowerCase();let score;
+  for(const name of newTabProjects)for(const lower of new Set([name.toLowerCase(),lastFolder(name).toLowerCase()])){
+    let score;
     if(lower.includes(query)||query.includes(lower))score=Math.abs(lower.length-query.length)/10;
     else{let row=Array.from({length:lower.length+1},(_,i)=>i);for(let i=1;i<=query.length;i++){let previous=row[0];row[0]=i;for(let j=1;j<=lower.length;j++){const current=row[j];row[j]=Math.min(row[j]+1,row[j-1]+1,previous+(query[i-1]===lower[j-1]?0:1));previous=current;}}score=row[lower.length];}
     if(score<bestScore){best=name;bestScore=score;}
