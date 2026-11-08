@@ -19,7 +19,7 @@ test('outgoing replies stay visible through queue acknowledgement and reconcile 
   const draft=page.getByLabel('Reply draft'),send=page.getByRole('button',{name:'Send',exact:true}),outgoing=page.locator('.conversation-outgoing');
   const poll=async()=>{await page.waitForFunction(()=>!document.querySelector('button[aria-label=Refresh]').disabled);await Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/')),page.evaluate(()=>intervals.forEach(fn=>fn()))]);await page.waitForFunction(()=>!document.querySelector('button[aria-label=Refresh]').disabled);};
   await draft.fill('Same message');await send.click();await outgoing.getByText('Sending…',{exact:true}).waitFor();
-  assert.equal(await outgoing.count(),1);assert.equal(await draft.inputValue(),'Same message');
+  assert.equal(await outgoing.count(),1);assert.equal(await draft.inputValue(),'','Enter empties the draft before the send is confirmed');
   await poll();assert.equal(await outgoing.count(),1,'Old matching transcript must not acknowledge a new send');
   hold=false;held();await outgoing.getByText('Queued',{exact:true}).waitFor();
   assert.equal(await draft.inputValue(),'');assert.equal(await page.locator('.conversation-send-notice').isVisible(),false);assert.equal(await page.evaluate(()=>SwitchboardConversation.hasUnsentWork()),true);
@@ -64,6 +64,7 @@ test('outgoing replies stay visible through queue acknowledgement and reconcile 
   // A current relay types Claude replies itself; the terminal is never used.
   relay=409;await draft.fill('Relay reply');await send.click();
   await outgoing.getByText('Claude is not at its prompt. Open Terminal to see what it needs.',{exact:true}).waitFor();
+  assert.equal(await draft.inputValue(),'Relay reply','A failed send puts its text back in the draft');
   relay=200;await send.click();await outgoing.getByText('Queued',{exact:true}).waitFor();
   assert.equal(await page.evaluate(()=>pastes.length),3);
   assert.deepEqual(replies.at(-1),{pane_id:1,text:'Relay reply'});
@@ -80,6 +81,15 @@ test('outgoing replies stay visible through queue acknowledgement and reconcile 
   await page.waitForFunction(()=>![...document.querySelectorAll('.conversation-outgoing')].some(item=>item.textContent.includes('Acknowledged first')));
   release();await page.getByText(relayNotice,{exact:true}).waitFor();
   relayHold=null;relayNotice=undefined;
+  // Messages typed while one is sending go out in order once it is confirmed.
+  relayHold=new Promise(resolve=>release=resolve);const before=replies.length;
+  await draft.fill('First quick one');await send.click();assert.equal(await draft.inputValue(),'');
+  await draft.fill('Second quick one');await page.evaluate(()=>document.querySelector('.conversation-compose').requestSubmit());
+  await new Promise(r=>setTimeout(r,200));assert.equal(replies.length,before+1,'One send at a time');
+  assert.equal(await draft.inputValue(),'Second quick one','Kept until the first send is confirmed');
+  release();relayHold=null;await page.waitForFunction(()=>document.querySelector('.conversation-compose textarea').value==='');
+  for(let i=0;i<50&&replies.length<before+2;i++)await new Promise(r=>setTimeout(r,20));
+  assert.deepEqual(replies.slice(before).map(reply=>reply.text),['First quick one','Second quick one']);
   // A turn that ended with background work still running takes replies.
   await page.evaluate(()=>{current.state='waiting';SwitchboardConversation.update();});
   await draft.fill('While waiting');await send.click();await page.waitForFunction(()=>document.querySelector('.conversation-compose textarea').value==='');

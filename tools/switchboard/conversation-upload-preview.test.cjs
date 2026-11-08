@@ -34,7 +34,8 @@ test('uploaded images remain expandable previews while sending, after acknowledg
   await page.waitForFunction(()=>document.querySelector('.conversation-media-stage img')?.naturalWidth===640);
   assert.match(await page.getByRole('link',{name:'Open original',exact:true}).getAttribute('href'),/hosts\/peer\/file/);
   await page.getByRole('button',{name:'Close',exact:true}).click();
-  hold=false;held();await page.waitForFunction(()=>document.querySelector('.conversation-compose textarea').value==='');
+  assert.equal(await page.getByLabel('Reply draft').inputValue(),'','The draft empties as soon as it is sent');
+  hold=false;held();await page.waitForFunction(blob=>revoked.includes(blob),blob);
   assert.equal(await page.evaluate(blob=>revoked.includes(blob),blob),true,'The composer releases its local object URL');
   assert.equal(await preview.locator('img').evaluate(img=>img.naturalWidth),640,'The sent preview survives that release');
   for(const width of [360,1280]){await page.setViewportSize({width,height:844});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);const outer=await outgoing.boundingBox(),inner=await preview.boundingBox();assert.ok(inner.x>=outer.x&&inner.x+inner.width<=outer.x+outer.width);}
