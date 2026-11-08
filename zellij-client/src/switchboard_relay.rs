@@ -10,6 +10,7 @@ pub use attention::forward_hook;
 mod attachments;
 mod chat_cost;
 mod chats;
+mod codex_cost;
 mod control;
 mod conversation;
 pub(crate) use control::own_executable;

@@ -279,7 +279,7 @@
       const known=!!usage&&Number.isFinite(dollars),text=!known?'':(usage.unpriced_tokens>0?'≥ ':'')+(dollars>0&&dollars<0.01?'<$0.01':'$'+dollars.toFixed(dollars>=100?0:2));
       if(cost.textContent!==text)cost.textContent=text;
       const tokens=value=>Number(value||0).toLocaleString();
-      cost.title=!known?'':`API cost of this chat and its subagents at Anthropic list prices
+      cost.title=!known?'':`Estimated API-equivalent cost ${target?.agent==='codex'?'of this Codex chat at OpenAI list prices':'of this chat and its subagents at Anthropic list prices'}
 Input ${tokens(usage.input_tokens)} · cache write ${tokens(usage.cache_write_tokens)} · cache read ${tokens(usage.cache_read_tokens)} · output ${tokens(usage.output_tokens)} tokens`+(usage.unpriced_tokens>0?`
 ${tokens(usage.unpriced_tokens)} tokens from models without a known price are not counted`:'');
       if(known){

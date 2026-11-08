@@ -1,6 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict'),path=require('node:path');
 
-test('Conversation shows the chat’s API cost only on computers chosen in Settings',
+for(const agent of ['claude','codex'])test(`Conversation shows ${agent} cost only on computers chosen in Settings`,
  {skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
  const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch();
  let usage={cost_usd:1.2345,input_tokens:12,cache_write_tokens:3400,cache_read_tokens:56000,output_tokens:780,responses:3,unpriced_tokens:0};
@@ -12,16 +12,19 @@ test('Conversation shows the chat’s API cost only on computers chosen in Setti
    const p=new URL(route.request().url()).pathname;
    if(p.startsWith('/api/diagnostics/'))return route.fulfill({status:204});
    if(p.endsWith('/stream'))return route.fulfill({status:404});
-   if(p.startsWith('/api/chats/'))return route.fulfill({json:{model:'claude-opus-5-5',project:'/work/switchboard',usage,messages:[{role:'assistant',text:'Done'}],start_cursor:0,next_cursor:null}});
-   if(p==='/')return route.fulfill({contentType:'text/html',body:`<meta charset="utf-8"><link rel="stylesheet" href="/conversation.css"><style>body{margin:0}#terminals{position:relative;height:100vh}</style><main id="terminals"><iframe id="terminal"></iframe><section id="artifact-preview" hidden></section></main><script src="/conversation.js"></script><script>window.current={key:'pane1',host:'fixture',pane:1,title:'Switchboard',agent:'claude',state:'ready',chatId:'chat-1',showCost:false,frame:document.getElementById('terminal')};SwitchboardConversation.install({selection:()=>current,terminal(){}});</script>`});
+   if(p.startsWith('/api/chats/'))return route.fulfill({json:{model:agent==='codex'?'gpt-6.1-sol':'claude-opus-5-5',project:'/work/switchboard',usage,messages:[{role:'assistant',text:'Done'}],start_cursor:0,next_cursor:null}});
+   if(p==='/')return route.fulfill({contentType:'text/html',body:`<meta charset="utf-8"><link rel="stylesheet" href="/conversation.css"><style>body{margin:0}#terminals{position:relative;height:100vh}</style><main id="terminals"><iframe id="terminal"></iframe><section id="artifact-preview" hidden></section></main><script src="/conversation.js"></script><script>window.current={key:'pane1',host:'fixture',pane:1,title:'Switchboard',agent:'${agent}',state:'ready',chatId:'chat-1',showCost:false,frame:document.getElementById('terminal')};SwitchboardConversation.install({selection:()=>current,terminal(){}});</script>`});
    return route.fulfill({path:path.join(__dirname,'static',path.basename(p)),contentType:p.endsWith('.css')?'text/css':'text/javascript'});
   });
   await page.goto('http://cost.test/');await page.getByText('Done',{exact:true}).waitFor();
   const cost=page.locator('.conversation-cost');
   assert.equal(await cost.isVisible(),false,'A subscription computer shows no cost');
+  if(process.env.COST_SCREENSHOT_DIR)await page.locator('.conversation-compose').screenshot({path:path.join(process.env.COST_SCREENSHOT_DIR,agent+'-before.png')});
   await page.evaluate(()=>{current.showCost=true;SwitchboardConversation.update();});
   assert.equal(await cost.textContent(),'$1.23');
   assert.match(await cost.getAttribute('title'),/cache read 56,000/);
+  assert.match(await cost.getAttribute('title'),agent==='codex'?/Codex chat at OpenAI/:/subagents at Anthropic/);
+  if(process.env.COST_SCREENSHOT_DIR)await page.locator('.conversation-compose').screenshot({path:path.join(process.env.COST_SCREENSHOT_DIR,agent+'-cost.png')});
   const [model,dollars]=await Promise.all([page.locator('.conversation-compose .conversation-model').boundingBox(),cost.boundingBox()]);
   assert.ok(Math.abs(model.y+model.height/2-(dollars.y+dollars.height/2))<3&&dollars.x>=model.x+model.width,'The cost follows the model in the composer');
   const breakdown=page.getByRole('dialog',{name:'API cost breakdown'});
