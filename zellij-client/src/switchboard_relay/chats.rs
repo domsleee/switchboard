@@ -2200,20 +2200,12 @@ pub(super) fn user_reply_received(thread: &str, text: &str, after: Option<usize>
                 if codex_question_replies(&envelope[start..]).is_some_and(|actual| {
                     let (expected, actual) =
                         (expected.as_array().unwrap(), actual.as_array().unwrap());
-                    let signature = |answers: &[Value]| {
-                        let mut pairs = answers
-                            .iter()
-                            .map(|answer| {
-                                (
-                                    answer["id"].as_str().unwrap().to_owned(),
-                                    answer["answer"].as_str().unwrap().to_owned(),
-                                )
-                            })
-                            .collect::<Vec<_>>();
-                        pairs.sort();
-                        pairs
-                    };
-                    signature(expected) == signature(actual)
+                    // Multiple questions share one native item ID. Preserve
+                    // their array positions so swapped answers cannot match.
+                    expected.len() == actual.len()
+                        && expected.iter().zip(actual).all(|(answer, received)| {
+                            answer["id"] == received["id"] && answer["answer"] == received["answer"]
+                        })
                 }) {
                     return true;
                 }
@@ -2292,6 +2284,22 @@ mod user_receipt_tests {
             &reply("question-1", "Shouldnt we proceed?", "No"),
         );
         assert!(!user_reply_received(&thread, &expected, None));
+        let multi = |answers: [&str; 2]| {
+            format!(
+                "<send_user_message_question_reply>\n{}\n</send_user_message_question_reply>",
+                json!([
+                    {"questionItemId":"multi","question":"First question?","answer":answers[0]},
+                    {"questionItemId":"multi","question":"Second question?","answer":answers[1]}
+                ])
+            )
+        };
+        append(&mut file, &multi(["No", "Yes"]));
+        assert!(
+            !user_reply_received(&thread, &multi(["Yes", "No"]), None),
+            "Questions in one native item share an ID, but their answers cannot swap positions"
+        );
+        append(&mut file, &multi(["Yes", "No"]));
+        assert!(user_reply_received(&thread, &multi(["Yes", "No"]), None));
         let accepted = reply("question-1", "Shouldnt we proceed?", "Yes");
         append(
             &mut file,
