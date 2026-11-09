@@ -531,11 +531,14 @@ pub(super) fn conversation_for_participant(
     None
 }
 
-/// Whether a hook comes from an agent started by a Claude tool in the same pane.
+/// Whether a hook comes from an agent started by another agent in the same pane.
 /// Claude's own interactive hooks also set CLAUDECODE, but use the cli entrypoint.
 pub(crate) fn nested(agent: &str, env: impl Fn(&str) -> Option<String>) -> bool {
-    env("CLAUDECODE").is_some()
-        && !(agent == "claude" && env("CLAUDE_CODE_ENTRYPOINT").as_deref() == Some("cli"))
+    // A CLI review started by Codex inherits its thread and pane, but its own
+    // lifecycle must not replace the terminal agent's status or message inbox.
+    (env("CODEX_THREAD_ID").is_some() && agent != "codex")
+        || (env("CLAUDECODE").is_some()
+            && !(agent == "claude" && env("CLAUDE_CODE_ENTRYPOINT").as_deref() == Some("cli")))
 }
 
 /// Native HTTP hooks share the CLI/watcher's delivery cursor and identity, but
@@ -698,6 +701,28 @@ pub(crate) fn run(agent: &str, input: &[u8], wait: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switchboard_codex_tool_agents_do_not_own_the_parent_pane() {
+        // Codex exports its thread ID to tool processes. A Claude CLI review
+        // inherits it, along with ZELLIJ_PANE_ID, but owns no terminal pane.
+        let env = |name: &str| match name {
+            "CODEX_THREAD_ID" => Some("00000000-0000-4000-8000-000000000001".into()),
+            "CLAUDECODE" => Some("1".into()),
+            "CLAUDE_CODE_ENTRYPOINT" => Some("cli".into()),
+            _ => None,
+        };
+        assert!(nested("claude", env));
+        assert!(nested("copilot", env));
+        assert!(!nested("codex", |name| {
+            (name == "CODEX_THREAD_ID").then(|| "parent-thread".into())
+        }));
+        assert!(!nested("claude", |name| match name {
+            "CLAUDECODE" => Some("1".into()),
+            "CLAUDE_CODE_ENTRYPOINT" => Some("cli".into()),
+            _ => None,
+        }));
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn switchboard_http_hooks_share_message_delivery_with_commands() {

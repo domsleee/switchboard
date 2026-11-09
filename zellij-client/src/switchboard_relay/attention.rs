@@ -123,7 +123,23 @@ pub(crate) fn classify(pane: &Value, screen: &str) -> Value {
     // ponytail: agent UI markers, replace with public status events if the CLIs expose them.
     let Some(rules) = AGENTS
         .iter()
-        .find(|a| any(&a.command, &command) || any(&a.title, &title) || any(&a.input_title, &title))
+        // The executable (or its launcher script) precedes the prompt arguments.
+        // Agent names in those arguments must not win by AGENTS' list order.
+        .filter_map(|a| {
+            a.command
+                .iter()
+                .filter_map(|pattern| pattern.find(&command))
+                .map(|found| found.start())
+                .min()
+                .map(|position| (position, a))
+        })
+        .min_by_key(|(position, _)| *position)
+        .map(|(_, a)| a)
+        .or_else(|| {
+            AGENTS
+                .iter()
+                .find(|a| any(&a.title, &title) || any(&a.input_title, &title))
+        })
         .or_else(|| AGENTS.iter().find(|a| all_of_one(&a.screen, text)))
     else {
         return json!({"state":"unknown"});
@@ -1959,7 +1975,7 @@ fn hook_status(agent: &'static str, event: &Value) -> Option<Hooked> {
 /// Receives events through `zellij agent-hook` (and older Claude HTTP hooks).
 /// Command hooks name the agent in `X-Agent`; both name their session and pane in headers. Events
 /// from outside Zellij carry neither and are ignored. `zellij agent-hook` drops
-/// events from an agent that a Claude tool started in the same pane, so it can't
+/// events from an agent that another agent's tool started in the same pane, so it can't
 /// overwrite the pane's own status.
 pub(super) async fn hook(
     State(state): State<RelayState>,
@@ -2060,6 +2076,7 @@ pub(super) async fn claude_http_hook(
             match name {
                 "CLAUDECODE" => header("x-claudecode"),
                 "CLAUDE_CODE_ENTRYPOINT" => header("x-claude-entrypoint"),
+                "CODEX_THREAD_ID" => header("x-codex-thread-id"),
                 _ => None,
             }
             .filter(|s| !s.is_empty())
@@ -2114,7 +2131,7 @@ fn hook_request(
 ) -> Option<isahc::Request<Vec<u8>>> {
     use isahc::config::Configurable;
     use std::io::Read;
-    // An agent started from a Claude Code tool shares the pane with that Claude.
+    // A nested CLI shares its caller's pane, not ownership of its conversation.
     if crate::message_board::hooks::nested(agent, &env) {
         return None;
     }
@@ -3324,13 +3341,15 @@ esac
             push: None,
             browser_origin: None,
         };
-        for (pane, nested, entrypoint, accepted) in [
-            ("", "", "", false),
-            ("bad", "", "", false),
-            ("3", "1", "sdk-cli", false),
-            ("3", "1", "", false),
-            ("3", "1", "cli", true),
-            ("4", "", "", true),
+        for (pane, nested, entrypoint, codex_thread, accepted) in [
+            ("", "", "", "", false),
+            ("bad", "", "", "", false),
+            ("3", "1", "sdk-cli", "", false),
+            ("3", "1", "", "", false),
+            ("3", "1", "cli", "", true),
+            ("4", "", "", "", true),
+            ("3", "1", "cli", "parent-codex-thread", false),
+            ("4", "", "", "parent-codex-thread", false),
         ] {
             let mut headers = HeaderMap::new();
             for (key, value) in [
@@ -3338,6 +3357,7 @@ esac
                 ("x-zellij-pane", pane),
                 ("x-claudecode", nested),
                 ("x-claude-entrypoint", entrypoint),
+                ("x-codex-thread-id", codex_thread),
             ] {
                 headers.insert(key, value.parse().unwrap());
             }
@@ -3352,9 +3372,43 @@ esac
             assert_eq!(
                 !poll.hooks.is_empty(),
                 accepted,
-                "{pane}/{nested}/{entrypoint}"
+                "{pane}/{nested}/{entrypoint}/{codex_thread}"
             );
             poll.hooks.clear();
+        }
+        let mut parent = hook_status("codex", &json!({"hook_event_name":"PostToolUse"})).unwrap();
+        parent.chat_id = Some("codex-parent".into());
+        let key = ("main".into(), 3);
+        state
+            .poll
+            .lock()
+            .await
+            .hooks
+            .insert(key.clone(), parent.clone());
+        let root = std::env::var_os("CLAUDE_CONFIG_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::home_dir().unwrap().join(".claude"));
+        for event in ["UserPromptSubmit", "PostToolUse", "Stop", "SessionEnd"] {
+            let mut headers = HeaderMap::new();
+            for (name, value) in [
+                ("x-zellij-session", "main"),
+                ("x-zellij-pane", "3"),
+                ("x-claudecode", "1"),
+                ("x-claude-entrypoint", "cli"),
+                ("x-codex-thread-id", "parent-codex-thread"),
+            ] {
+                headers.insert(name, value.parse().unwrap());
+            }
+            claude_http_hook(
+                State(state.clone()),
+                headers,
+                Json(json!({"hook_event_name":event,
+                    "session_id":"00000000-0000-4000-8000-000000000002",
+                    "transcript_path":root.join("projects/example/child-review.jsonl"),
+                    "prompt":"Review the integrated readiness design"})),
+            )
+            .await;
+            assert_eq!(state.poll.lock().await.hooks[&key], parent, "{event}");
         }
     }
 
@@ -3571,6 +3625,50 @@ esac
         poll.apply_hook(&mut pane, &json!("zsh"));
         assert!(pane["chat_id"].is_null());
         assert!(poll.hooks.is_empty(), "exited agents lose their binding");
+    }
+
+    #[test]
+    fn switchboard_subagent_completion_prose_does_not_finish_the_parent() {
+        // Captured from a Codex pane while its council reviews were running.
+        let prose = "• Completed `/root/ui_council_sol`\n\
+            • Sol says the main screens are ready for your review.\n\
+            Opus is still reviewing the new screens.\n";
+        for title in ["Example task", "⠼ Example task"] {
+            let screen = format!(
+                "{prose}• Working (7m 05s • esc to interrupt)\n\n\
+                 › Ask Codex to do anything\n\n\
+                 GPT-6.1-Sol high · project · Example task\n\
+                 ← for agents · ? for shortcuts"
+            );
+            assert_eq!(
+                classify(&json!({"pane_command":"codex","title":title}), &screen),
+                json!({"state":"working","agent":"codex"})
+            );
+        }
+    }
+
+    #[test]
+    fn switchboard_agent_identity_ignores_other_agents_in_launch_prompt() {
+        // Bottom of a working Codex 0.167 pane captured with dump-screen.
+        // Its launch prompt mentions Copilot; that is not its executable.
+        let screen = "• Working (11m 27s • esc to interrupt)\n\n\
+            › Ask Codex to do anything\n\n\
+            GPT-6.1-Sol high · C:\\project · Example task\n\
+            ← for agents · ? for shortcuts";
+        for command in [
+            r"C:\Users\example\OpenAI\Codex\bin\codex.exe -- launch a copilot session and ask claude",
+            "codex -- ask copilot and claude",
+            "node /opt/codex/bin/codex.js -- ask copilot",
+        ] {
+            assert_eq!(
+                classify(
+                    &json!({"pane_command":command,"title":"⠋ Example task"}),
+                    screen
+                ),
+                json!({"state":"working","agent":"codex"}),
+                "{command}"
+            );
+        }
     }
 
     #[test]

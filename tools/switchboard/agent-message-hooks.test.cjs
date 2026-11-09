@@ -42,7 +42,7 @@ test('agent hooks deliver and reply across machines, suppress duplicates, preser
     board=run(['message','serve','--board-config',config],process.env).child;
     await waitFor(async()=>{try{return(await fetch(origin+'/api/message-board/health',{headers:{Authorization:'Bearer '+tokens.mac},signal:AbortSignal.timeout(500)})).ok;}catch{return false;}},'private board startup');
     const base={...process.env,SWITCHBOARD_RELAY_URL:origin,SWITCHBOARD_MESSAGE_STATE_DIR:path.join(root,'state'),SWITCHBOARD_MESSAGE_PROJECT:'switchboard',ZELLIJ_SESSION_NAME:'fixture',ZELLIJ_PANE_ID:'17'};
-    delete base.CLAUDECODE;delete base.SWITCHBOARD_AGENT_SESSION;
+    delete base.CLAUDECODE;delete base.CODEX_THREAD_ID;delete base.SWITCHBOARD_AGENT_SESSION;
     const ids={claude:crypto.randomUUID(),codex:crypto.randomUUID()};
     function hook(agent,event='PostToolUse',wait=false,override={}){
       const {session=ids[agent],machine=agent==='claude'?'windows':'mac',...extra}=override;
