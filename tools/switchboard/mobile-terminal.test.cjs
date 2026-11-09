@@ -25,7 +25,7 @@ test('phone terminal fits above the keyboard with a compact font and keeps manua
    return route.fulfill({contentType:file.endsWith('.js')?'application/javascript':file.endsWith('.css')?'text/css':file.endsWith('.woff2')?'font/woff2':'text/html',path:file});
   });
   await page.goto('http://terminal.test/');await page.locator('.conversation-modes:not([hidden])').waitFor();
-  const frame=page.frames().find(f=>f.url().includes('/hosts/')),iframe=page.locator('#terminals>iframe.active');
+  let frame=page.frames().find(f=>f.url().includes('/hosts/'));const iframe=page.locator('#terminals>iframe.active');
   await frame.waitForFunction(()=>window.term?.cols>40);
   assert.equal(await frame.evaluate(()=>term.options.fontSize),14);assert.ok(await frame.evaluate(()=>term.cols)>=43);
   const fullRows=await frame.evaluate(()=>term.rows);
@@ -42,6 +42,7 @@ test('phone terminal fits above the keyboard with a compact font and keeps manua
   await page.getByRole('button',{name:'Terminal',exact:true}).click();await page.waitForFunction(()=>document.body.classList.contains('mobile-terminal-viewport'));
   // Conversation disconnects the viewer. A new Terminal connection starts with
   // its configured font; manual zoom must still survive subsequent resizing.
+  frame=await (await iframe.elementHandle()).contentFrame();
   await frame.waitForFunction(()=>window.term?.cols>40);
   await frame.evaluate(()=>setFont(18));
   await page.setViewportSize({width:844,height:390});await keyboard(240);bounds=await iframe.boundingBox();assert.ok(bounds.y+bounds.height<=241);assert.equal(await frame.evaluate(()=>term.options.fontSize),18);

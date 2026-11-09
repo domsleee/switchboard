@@ -188,13 +188,25 @@ function statusUnavailable(host,session){return attentionError(host,session,fals
 function attentionError(host,session,pending){
   return attentionErrors.some(error=>(error.host==='Switchboard'||error.host===host)&&(!error.session||error.session===session)&&(pending===undefined||!!error.pending===pending));
 }
+// A chat the viewer picks adds a browser history entry, so Back returns to the
+// last one. Selections the page makes itself only rewrite the current entry.
+let pushTabHistory=false,leavingNewTabEntry=false;
+function tabHistoryIndex(){return history.state?.switchboardTabIndex||0;}
+let tabHistoryPosition=0;
 function updateTabUrl(item){
   if(!item&&(restoringTab||waitingForRequestedTab()))return;
   if(item?.tab.pending&&!Number.isInteger(item.tab.id))return;
   const url=new URL(location.href);
   for(const key of ['host','session','tab','pane'])url.searchParams.delete(key);
   if(item){url.searchParams.set('host',item.entry.host);url.searchParams.set('session',item.entry.name);url.searchParams.set(item.tab.pending?'pane':'tab',item.tab.id);}
-  if(url.href!==location.href)history.replaceState(history.state,'',url);
+  if(url.href===location.href){if(item)pushTabHistory=false;return;}
+  if(item&&pushTabHistory){
+    pushTabHistory=false;
+    // An open preview or new-chat dialog already holds an entry; the chat takes it over.
+    const {switchboardPreview,switchboardNewTab,...rest}=history.state||{},state={...rest,switchboardMedia:false,switchboardTabIndex:++tabHistoryPosition};
+    if(switchboardPreview||switchboardNewTab)history.replaceState(state,'',url);
+    else history.pushState(state,'',url);
+  }else history.replaceState(history.state,'',url);
 }
 function sessionKey(host, name) { return JSON.stringify([host, name]); }
 // The session + starts on a computer with no shared session, or null when it has one.
@@ -314,7 +326,7 @@ function updateCreatedTabs(entry){
   let paneId;
   if(entry.starting&&active&&!active.is_plugin){
     paneId=active.pane_id;entry.starting=false;clearTimeout(entry.startTimeout);
-    if(entry.selectOnStart){selected=JSON.stringify([entry.host,entry.name,'pane',paneId]);restoringTab=false;entry.needsFocus=true;}
+    if(entry.selectOnStart){selected=JSON.stringify([entry.host,entry.name,'pane',paneId]);pushTabHistory=true;restoringTab=false;entry.needsFocus=true;}
   }
   // Conversation creates tabs without moving the viewer's focus, so its active pane is never the new one.
   else if(creating&&active&&!active.is_plugin&&!entry.pendingNewTab?.api&&!entry.pendingNewTab?.paneIds?.has(active.pane_id))paneId=active.pane_id;
@@ -1086,7 +1098,8 @@ function focus(item,background=false) {
   item.entry.focusInitialized=true;
   item.entry.frame.contentWindow.postMessage({type:'zellij-focus',pane_id:pane.pane_id,is_plugin:pane.is_plugin,focus_id:focusId,preserve_focus:preserveFocus},location.origin);
 }
-function activate(item, clear=true) {
+function activate(item, clear=true, addHistory=true) {
+  if(addHistory&&item.key!==selected)pushTabHistory=true;
   selected=item.key;restoringTab=false;item.entry.followActiveTab=false;
   if(mobileSidebar.matches){sidebarOpen=false;updateSidebar();}
   if(clear){delete ready[item.key];saveReady();}
@@ -1211,7 +1224,15 @@ function syncTerminalConnection(entry) {
   entry.state=null;entry.disconnected=false;entry.requestedPane=null;entry.focusPending=false;entry.needsFocus=true;
   // Stay disconnected once an engine fails to confirm hidden, rather than retrying the attach.
   if(!suspended)entry.hideUnsupported=false;
-  entry.frame.src=src;
+  replaceFrameSrc(entry.frame,src);
+}
+// Assigning a loaded iframe's src adds a browser history entry, which Back would
+// spend undoing it. A frame inserted with its src replaces that entry instead.
+function replaceFrameSrc(frame,src){
+  const parent=frame.isConnected&&frame.parentNode,next=frame.nextSibling;
+  if(parent)frame.remove();
+  frame.src=src;
+  if(parent)parent.insertBefore(frame,next);
 }
 function terminalTransition(entry,busy) {
   entry.frame.inert=busy;
@@ -1255,7 +1276,7 @@ function retireTerminal(entry,retire) {
     entry.suspending=false;
     if(retired){
       entry.state=null;entry.disconnected=false;entry.requestedPane=null;entry.focusPending=false;entry.needsFocus=true;
-      entry.frame.src='about:blank';
+      replaceFrameSrc(entry.frame,'about:blank');
     }else restoreRetainedTerminal(entry);
     if($('status-message').textContent==='Finishing terminal input before disconnecting the hidden viewer…')setStatus('');
     syncTerminalConnection(entry);render();
@@ -1481,11 +1502,44 @@ window.addEventListener('message',event=>{
 });
 $('artifact-back').onclick=()=>{const current=allTabs().find(item=>item.key===selected);if(current)focus(current);else $('artifact-preview').hidden=true;};
 // The open preview owns one history entry. Back closes the preview; closing it any other way drops the entry.
-window.addEventListener('popstate',()=>{if(!$('artifact-preview').hidden&&!history.state?.switchboardPreview)$('artifact-back').click();});
+window.addEventListener('popstate',()=>{
+  if($('artifact-preview').hidden||history.state?.switchboardPreview)return;
+  // The dialog's own Back landed after this preview opened; the preview keeps an entry.
+  if(leavingNewTabEntry)history.pushState({...history.state,switchboardPreview:true},'');
+  else $('artifact-back').click();
+});
+window.addEventListener('popstate',()=>{
+  const direction=Math.sign(tabHistoryIndex()-tabHistoryPosition),dialog=$('new-tab-dialog');
+  leavingNewTabEntry=false;
+  tabHistoryPosition=tabHistoryIndex();
+  if(dialog.open&&!history.state?.switchboardNewTab)dialog.close();
+  // A chat still being created owns the next entry; this one only closed an overlay.
+  if(pushTabHistory)return;
+  if(!dialog.open&&history.state?.switchboardNewTab)history.replaceState({...history.state,switchboardNewTab:false},'');
+  if(requestedFilter()!==filter)renderFilter();
+  const key=requestedTab();
+  if(!key||key===selected)return;
+  const [host,session,kind,id]=JSON.parse(key),tabs=allTabs(true);
+  // An entry saved while a new chat was pending names its pane, not its finished tab.
+  const item=tabs.find(item=>item.key===key)||kind==='pane'&&tabs.find(item=>item.entry.host===host&&item.entry.name===session&&item.tab.panes?.some(pane=>!pane.is_plugin&&pane.pane_id===id));
+  if(item){
+    if(!allTabs().some(tab=>tab.key===item.key))setFilter('all');
+    activate(item,true,false);
+    return;
+  }
+  const previous=selected,wasRestoring=restoringTab;
+  selected=key;restoringTab=false;
+  if(waitingForRequestedTab()){render();return;}
+  selected=previous;restoringTab=wasRestoring;
+  // The chat has closed: step over it, but never back out of Switchboard.
+  if(direction>0||direction<0&&tabHistoryPosition>0)history.go(direction);else render();
+});
 new MutationObserver(()=>{if($('artifact-preview').hidden&&history.state?.switchboardPreview)history.back();})
   .observe($('artifact-preview'),{attributes:true,attributeFilter:['hidden']});
 // A reload starts with the preview closed, so its entry no longer has a preview to close.
 if(history.state?.switchboardPreview)history.replaceState({...history.state,switchboardPreview:false},'');
+tabHistoryPosition=tabHistoryIndex();
+if(history.state?.switchboardNewTab)history.replaceState({...history.state,switchboardNewTab:false},'');
 function updateSelectionTools(current=allTabs().find(item=>item.key===selected)){
   const api=current?.entry.frame.contentWindow.SwitchboardClipboard;
   const visible=!!current&&$('artifact-preview').hidden&&!!(api?.selectionMode||api?.getSelectionText?.());
@@ -1888,6 +1942,7 @@ function openNewTabDialog(elevated){
   newTabRetrying=false;newTabSubmitText();paintNewTabMachine();closeNewTabProjectPicker(false);
   newTabProjectEdited=false;clearNewTabFieldProblem();$('new-tab-project').value=newTabSavedProject(JSON.parse(select.value)[0]);updateNewTabProject();
   loadNewTabProjects();loadNewTabModels();
+  if(!history.state?.switchboardNewTab)history.pushState({...history.state,switchboardNewTab:true},'');
   attachNewTabCompletions();$('new-tab-dialog').showModal();fitNewTabPrompt();fitNewTabDialog();
   $('new-tab-prompt').focus();
 }
@@ -2035,7 +2090,7 @@ async function createConversationTab(key,launch,typed=launch.prompt){
   // A command's output stays in the terminal, so no message waits for it in Conversation.
   const command=newTabCommand(typed),started=command?null:promptLaunch(launch,typed);
   entry.creatingTab={id:'creating',pending:true,name:'Creating tab…',position:Infinity,panes:[],project:launch.project,launch:started};
-  const placeholder=selected=tabKey(entry,entry.creatingTab);restoringTab=false;entry.followActiveTab=false;
+  const placeholder=selected=tabKey(entry,entry.creatingTab);pushTabHistory=true;restoringTab=false;entry.followActiveTab=false;
   if(filter!=='all'&&groups[hostId]!==filter)setFilter('all');$('tab-search').value='';
   sidebarOpen=false;updateSidebar();$('new-tab-dialog').close();render();globalThis.SwitchboardConversation.focus();
   try{
@@ -2131,7 +2186,7 @@ function fitNewTabDialog(){
 }
 addEventListener('resize',fitNewTabDialog);globalThis.visualViewport?.addEventListener('resize',fitNewTabDialog);globalThis.visualViewport?.addEventListener('scroll',fitNewTabDialog);
 // The close event is queued; a reopen before it arrives owns the dialog, so leave its draft alone.
-$('new-tab-dialog').addEventListener('close',()=>{if($('new-tab-dialog').open)return;$('new-tab-form').pendingSubmission?.uploads?.abort();$('new-tab-form').pendingSubmission=null;clearNewTabHandover();newTabBusy(false);clearNewTabFiles();runPendingSwitches();});
+$('new-tab-dialog').addEventListener('close',()=>{if($('new-tab-dialog').open)return;$('new-tab-form').pendingSubmission?.uploads?.abort();$('new-tab-form').pendingSubmission=null;clearNewTabHandover();newTabBusy(false);clearNewTabFiles();runPendingSwitches();if(history.state?.switchboardNewTab&&!pushTabHistory){leavingNewTabEntry=true;history.back();}});
 $('new-tab-form').onsubmit=async event=>{
   event.preventDefault();const form=$('new-tab-form');if(form.pendingSubmission)return;
   if(newTabHandover)newTabModelMenu.commit();
@@ -2221,7 +2276,7 @@ async function createNewTab(key,launch,isCurrent=()=>true,typed){
   pending.paneIds=new Set((entry.state.panes||[]).filter(p=>!p.is_plugin).map(p=>p.pane_id));
   if(entry.state.active_pane&&!entry.state.active_pane.is_plugin)pending.paneIds.add(entry.state.active_pane.pane_id);
   entry.creatingTab={id:'creating',pending:true,name:'Creating tab…',position:Infinity,panes:[],project:launch.project,launch:promptLaunch(launch,typed??launch.prompt)};
-  selected=tabKey(entry,entry.creatingTab);
+  selected=tabKey(entry,entry.creatingTab);pushTabHistory=true;
   restoringTab=false;entry.followActiveTab=true;
   if(filter!=='all'&&groups[entry.host]!==filter)setFilter('all');$('tab-search').value='';
   sidebarOpen=false;updateSidebar();$('artifact-preview').hidden=true;$('artifact-frame').contentWindow?.location.replace('about:blank');
@@ -2287,7 +2342,7 @@ function showSection(name,focusTab=false){
     if(!on)continue;
     $('panel-title').textContent=tab.textContent;
     const frame=section.querySelector('iframe');
-    if(frame&&frame.getAttribute('src')!==frame.dataset.src)frame.src=frame.dataset.src;
+    if(frame&&frame.getAttribute('src')!==frame.dataset.src)replaceFrameSrc(frame,frame.dataset.src);
     if(focusTab)tab.focus();
   }
   if(name==='logs')loadLogs();
@@ -2317,7 +2372,7 @@ for(const frame of panel.querySelectorAll('iframe'))frame.onload=()=>{
 };
 $('close-panel').onclick=()=>panel.close();
 panel.onclose=()=>{
-  for(const frame of panel.querySelectorAll('iframe'))frame.src='about:blank';
+  for(const frame of panel.querySelectorAll('iframe'))replaceFrameSrc(frame,'about:blank');
   const item=allTabs().find(item=>item.key===selected);
   if(item&&$('artifact-preview').hidden&&!document.querySelector('dialog[open]'))focus(item);
 };

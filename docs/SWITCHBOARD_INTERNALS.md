@@ -391,8 +391,16 @@ Cmd/Ctrl/Shift-click on an absolute, `~/` or `C:\` file path (or a `file://`
 link) opens it. A file on the browser's own computer opens in its default app.
 A paired computer's file streams into the preview pane through
 `/api/hosts/<id>/file`, which reaches that computer's `/switchboard/files` with
-the same credential as its terminals. The open preview holds one browser history
-entry, so Back (or a mouse's back button) closes it. The frame's pages replace
+the same credential as its terminals. Choosing a chat or submitting a new one adds
+one browser history entry, so Back (or a mouse's back button) returns to the last
+chat and steps over chats that have closed. Selections the page makes itself, such
+as following a closed tab to its neighbour, rewrite the current entry instead. Loaded
+terminal and Settings frames are reinserted to change page, because assigning their
+`src` would add entries that Back spends undoing.
+
+The open preview holds one browser history
+entry, so Back (or a mouse's back button) closes it; the new-chat dialog does the
+same. A chat chosen while either is open takes over that entry. The frame's pages replace
 each other rather than adding entries, and closing the preview any other way
 drops its entry. Files that could run scripts, such as HTML
 and SVG, are served with `Content-Security-Policy: sandbox`; Chrome will not
