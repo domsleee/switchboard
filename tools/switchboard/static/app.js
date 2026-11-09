@@ -45,6 +45,7 @@ function humanTime(date,now=Date.now()){
   setInterval(check,30000);void check();
 })();
 const hosts = new Map(), sessions = new Map();
+let terminalInputTransient=false;
 const tabButtons=new Map();
 const mobileSidebar=matchMedia("(max-width:700px), (pointer:coarse) and (max-width:1000px)");
 // An iframe's visual viewport does not report the keyboard covering its parent.
@@ -1141,7 +1142,7 @@ function focus(item,background=false) {
 function restoreTerminalKeyboard(entry,unlocked=false){
   if(!entry.keyboardIntent&&!unlocked)return;
   if(entry.suspending||entry.retirementUnresolved||entry.suspended||entry.frame.inert||entry.needsFocus||entry.requestedPane||entry.focusPending||
-    !entry.frame.classList.contains('active')||globalThis.SwitchboardConversation?.isOpen?.()||document.hidden||!document.hasFocus()||!$('artifact-preview').hidden||document.querySelector('dialog[open]'))return;
+    !entry.frame.classList.contains('active')||globalThis.SwitchboardConversation?.isOpen?.()||mobileSidebar.matches&&sidebarOpen||document.hidden||!document.hasFocus()||!$('artifact-preview').hidden||document.querySelector('dialog[open]'))return;
   const active=document.activeElement;
   if(active!==document.body&&active!==entry.frame&&active!==entry.keyboardIntent)return;
   entry.keyboardIntent=null;
@@ -1304,9 +1305,9 @@ function showRetirementStatus() {
   const entries=[...sessions.values()];
   const connecting=entries.find(entry=>entry.frame.classList.contains('active')&&!entry.suspended&&!entry.suspending&&!entry.retirementUnresolved&&entry.frame.inert&&!globalThis.SwitchboardConversation?.isOpen?.());
   for(const entry of entries){
-    if(entry.inputTiming&&entry!==connecting){entry.inputTiming.end('left');entry.inputTiming=null;}
+    if(entry.inputTiming&&(entry!==connecting||terminalInputTransient)){entry.inputTiming.end('left');entry.inputTiming=null;}
   }
-  if(connecting&&!connecting.inputTiming){
+  if(connecting&&!connecting.inputTiming&&!terminalInputTransient){
     connecting.inputStarted=performance.now();connecting.inputMetadata=connecting.state?0:null;
     connecting.inputTiming=window.SwitchboardTiming?.begin('terminal_input_ready',{host:connecting.host,timeoutStages:()=>terminalInputStages(connecting)})||null;
   }
@@ -2969,7 +2970,7 @@ $('sidebar-toggle').onclick=()=>{
 $('sidebar-backdrop').onclick=()=>{sidebarOpen=false;updateSidebar();};
 mobileSidebar.addEventListener('change',()=>{sidebarOpen=false;updateSidebar();for(const entry of sessions.values())syncTerminalConnection(entry);render();});
 $('tab-search').oninput=render;
-$('tab-search').onkeydown=event=>{if(event.key==='Enter'){const item=listedTabs()[0];if(item){event.preventDefault();activate(item);if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.focus();else item.entry.frame.focus();}}};
+$('tab-search').onkeydown=event=>{if(event.key==='Enter'){const item=listedTabs()[0];if(item){event.preventDefault();activate(item);if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.focus();else{if(item.entry.frame.inert)$('tab-search').blur();item.entry.frame.focus();}}}};
 let sidebarWidth=Number(localStorage.getItem('switchboard-sidebar-width'))||242;
 function setSidebarWidth(width){
   sidebarWidth=Math.max(180,Math.min(420,width,Math.max(180,innerWidth-320)));
@@ -3133,6 +3134,7 @@ window.SwitchboardConversation?.install({
   idle(){if(pendingSwitches.size)queueMicrotask(runPendingSwitches);},
   modeChanged(transient){
     const wants=globalThis.SwitchboardConversation.wantsConversation(),shown=allTabs().find(item=>item.key===selected);
+    terminalInputTransient=!!transient&&!wants;
     // Terminal either shows the viewer kept through Conversation or loads a new one.
     // Time both, except the brief automatic visit that sends a reply.
     const timed=!wants&&conversationSince!==null&&!!shown&&!transient,blank=shown?.entry.frame.getAttribute('src')==='about:blank';

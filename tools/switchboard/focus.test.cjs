@@ -570,7 +570,7 @@ test('returning from a retired Conversation viewer restores typing after the Ter
   }finally{await browser.close();}
 });
 
-for(const deferred of ['search','dialog','preview','window'])test(`a retired viewer confirms its pane without taking focus from ${deferred}`,
+for(const deferred of ['search','dialog','preview','window','drawer'])test(`a retired viewer confirms its pane without taking focus from ${deferred}`,
   {skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
   const {browser,page,input,pageErrors}=await browserFocusFixture({conversation:true});
   try{
@@ -578,7 +578,7 @@ for(const deferred of ['search','dialog','preview','window'])test(`a retired vie
     await input.evaluate(()=>{window.__zjSuspendTerminal=async()=>true;});
     await page.getByRole('button',{name:'Conversation',exact:true}).click();
     await page.waitForFunction(()=>[...sessions.values()][0].frame.getAttribute('src')==='about:blank');
-    await page.setViewportSize({width:1280,height:900});
+    if(deferred!=='drawer')await page.setViewportSize({width:1280,height:900});
     await page.evaluate(()=>{window.holdTerminalState=true;});
     await page.getByRole('button',{name:'Terminal',exact:true}).click();
     await page.waitForFunction(()=>typeof document.querySelector('iframe.active').contentWindow.sendState==='function'&&![...sessions.values()][0].state);
@@ -589,6 +589,7 @@ for(const deferred of ['search','dialog','preview','window'])test(`a retired vie
       }
       if(deferred==='preview')document.querySelector('#artifact-preview').hidden=false;
       if(deferred==='window')Object.defineProperty(document,'hasFocus',{configurable:true,value:()=>false});
+      if(deferred==='drawer'){sidebarOpen=true;updateSidebar();document.activeElement.blur();}
       document.querySelector('iframe.active').contentWindow.sendState(7);
     },deferred);
     await page.waitForFunction(()=>![...sessions.values()][0].frame.inert);
@@ -602,10 +603,34 @@ for(const deferred of ['search','dialog','preview','window'])test(`a retired vie
       await page.evaluate(()=>{document.querySelector('#artifact-preview').hidden=true;dispatchEvent(new Event('focus'));});
     }
     if(deferred==='window')await page.evaluate(()=>{delete document.hasFocus;dispatchEvent(new Event('focus'));});
+    if(deferred==='drawer'){
+      assert.equal(await page.evaluate(()=>document.activeElement===document.body),true,'The open drawer keeps the terminal blurred');
+      await page.evaluate(()=>{sidebarOpen=false;updateSidebar();dispatchEvent(new Event('focus'));});
+    }
     if(deferred!=='search'){
       await page.waitForFunction(()=>document.querySelector('iframe.active').contentDocument.activeElement.id==='terminal-input');
       await page.keyboard.type('deferred');assert.equal(await input.inputValue(),'deferred');
     }
+    assert.deepEqual(pageErrors,[]);
+  }finally{await browser.close();}
+});
+
+test('an automatic Terminal visit to deliver a Conversation reply is not a typing wait',
+  {skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
+  const {browser,page,input,pageErrors,timings}=await browserFocusFixture({conversation:true});
+  try{
+    await page.setViewportSize({width:390,height:844});
+    await input.evaluate(()=>{window.__zjSuspendTerminal=async()=>true;});
+    await page.getByRole('button',{name:'Conversation',exact:true}).click();
+    await page.waitForFunction(()=>[...sessions.values()][0].frame.getAttribute('src')==='about:blank');
+    await page.evaluate(()=>{window.holdTerminalState=true;});
+    await page.getByLabel('Reply draft').fill('Fallback reply');
+    await page.getByRole('button',{name:'Send via Terminal',exact:true}).click();
+    await page.waitForFunction(()=>terminalInputTransient&&document.querySelector('iframe.active').contentWindow.sendState);
+    assert.equal(await page.evaluate(()=>[...sessions.values()][0].inputTiming??null),null);
+    await page.evaluate(()=>document.querySelector('iframe.active').contentWindow.sendState(7));
+    await page.waitForFunction(()=>![...sessions.values()][0].frame.inert);
+    assert.equal(timings.some(sample=>sample.journey==='terminal_input_ready'),false);
     assert.deepEqual(pageErrors,[]);
   }finally{await browser.close();}
 });
@@ -623,6 +648,20 @@ test('search opened again during a shortcut-driven reconnect keeps subsequent ke
     assert.equal(await page.evaluate(()=>document.activeElement.id),'tab-search');
     await page.keyboard.type('inal');assert.equal(await page.locator('#tab-search').inputValue(),'Terminal');
     assert.equal(await input.inputValue(),'');assert.deepEqual(pageErrors,[]);
+  }finally{await browser.close();}
+});
+
+test('Enter in search explicitly returns typing to the selected reconnecting terminal',
+  {skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
+  const {browser,page,input,pageErrors}=await browserFocusFixture({acknowledge:false});
+  try{
+    await page.evaluate(()=>{const entry=[...sessions.values()][0];terminalTransition(entry,true);entry.needsFocus=true;});
+    await page.keyboard.press('Control+k');await page.keyboard.type('Terminal 42');await page.keyboard.press('Enter');
+    await page.waitForFunction(()=>[...sessions.values()][0].requestedPane?.pane_id===8);
+    await page.evaluate(()=>[...sessions.values()][0].frame.contentWindow.sendState(8));
+    await page.waitForFunction(()=>document.querySelector('iframe.active').contentDocument.activeElement.id==='terminal-input');
+    await page.keyboard.type('selected');assert.equal(await input.inputValue(),'selected');
+    assert.deepEqual(pageErrors,[]);
   }finally{await browser.close();}
 });
 
