@@ -11,6 +11,7 @@ use std::{
 };
 
 const CAPACITY: usize = 200;
+const SAMPLE_SLOTS: usize = 50;
 static LOG: Log = Log(
     std::sync::Mutex::new(VecDeque::new()),
     AtomicBool::new(false),
@@ -36,6 +37,25 @@ fn rank(message: &str) -> u8 {
     }
 }
 
+/// Index to drop from an oversized log ordered oldest first. Failures past their
+/// share go first, because an unreachable peer can otherwise fill the log and
+/// discard every timing sample the moment it arrives.
+fn eviction(entries: &[Value]) -> usize {
+    let rank_of = |e: &Value| rank(e["message"].as_str().unwrap_or(""));
+    let failures = entries.iter().filter(|e| rank_of(e) == 2).count();
+    let lowest = if failures > CAPACITY - SAMPLE_SLOTS {
+        2
+    } else {
+        0
+    };
+    entries
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| rank_of(e) >= lowest)
+        .min_by_key(|(i, e)| (rank_of(e), *i))
+        .map_or(0, |(i, _)| i)
+}
+
 impl Log {
     /// Returns true when the entry is new rather than a repeat of a known failure.
     fn push(&self, source: &str, message: &str, time: u64) -> bool {
@@ -51,12 +71,8 @@ impl Log {
         // Routine samples give way first, then slow ones, so a busy terminal
         // pushes out neither failures nor the slow moments worth investigating.
         while entries.len() > CAPACITY {
-            let oldest = entries
-                .iter()
-                .enumerate()
-                .min_by_key(|(i, e)| (rank(e["message"].as_str().unwrap_or("")), *i))
-                .map_or(0, |(i, _)| i);
-            entries.remove(oldest);
+            let evicted = eviction(entries.make_contiguous());
+            entries.remove(evicted);
         }
         self.1.store(true, Ordering::Relaxed);
         count == 1
@@ -167,14 +183,11 @@ pub(super) fn local() -> Value {
 fn recent_entries(mut entries: Vec<Value>) -> Vec<Value> {
     // Keep the peer reply bounded without allowing newer performance samples to
     // displace durable fatal reports from the independently bounded worker store.
-    entries.sort_by_key(|e| {
-        (
-            std::cmp::Reverse(rank(e["message"].as_str().unwrap_or(""))),
-            std::cmp::Reverse(e["time"].as_u64().unwrap_or(0)),
-        )
-    });
-    entries.truncate(CAPACITY);
-    entries.sort_by_key(|e| std::cmp::Reverse(e["time"].as_u64().unwrap_or(0)));
+    entries.sort_by_key(|e| e["time"].as_u64().unwrap_or(0));
+    while entries.len() > CAPACITY {
+        entries.remove(eviction(&entries));
+    }
+    entries.reverse();
     entries
 }
 
@@ -1007,6 +1020,55 @@ mod tests {
             .iter()
             .any(|e| e["message"].as_str().unwrap().contains("ref=0123456789ab")));
         assert_eq!(entries[0]["time"], 200);
+    }
+
+    const SLOW_LOAD: &str = "Conversation shown slow t=2400ms paint=20ms end=history";
+
+    #[test]
+    fn switchboard_timing_sample_survives_a_log_full_of_failures() {
+        let log = Log(Default::default(), Default::default());
+        for i in 0..CAPACITY {
+            log.push("windows", &format!("failure {i}"), i as u64);
+        }
+        log.push("Conversation", SLOW_LOAD, 1000);
+        for i in 0..CAPACITY {
+            log.push("windows", &format!("later failure {i}"), 2000 + i as u64);
+        }
+        let entries = log.newest_first();
+        assert_eq!(entries.len(), CAPACITY);
+        assert!(entries.iter().any(|e| e["message"] == SLOW_LOAD));
+    }
+
+    #[test]
+    fn switchboard_timing_samples_leave_failures_most_of_the_log() {
+        let log = Log(Default::default(), Default::default());
+        for i in 0..CAPACITY {
+            log.push("windows", &format!("failure {i}"), i as u64);
+        }
+        for i in 0..CAPACITY {
+            let sample = format!("Conversation shown slow t={i}ms paint=20ms end=history");
+            log.push("Conversation", &sample, 1000 + i as u64);
+        }
+        let entries = log.newest_first();
+        let failures = entries
+            .iter()
+            .filter(|e| e["source"] == "windows")
+            .collect::<Vec<_>>();
+        assert_eq!(entries.len(), CAPACITY);
+        assert_eq!(failures.len(), CAPACITY - SAMPLE_SLOTS);
+        assert_eq!(failures[0]["message"], format!("failure {}", CAPACITY - 1));
+    }
+
+    #[test]
+    fn switchboard_timing_sample_survives_bounded_peer_log_full_of_failures() {
+        let mut entries: Vec<_> = (1..=CAPACITY as u64 * 2)
+            .map(|time| json!({"time":time,"message":format!("Terminal failure ref={time}")}))
+            .collect();
+        entries.push(json!({"time":100,"message":SLOW_LOAD}));
+        let entries = recent_entries(entries);
+        assert_eq!(entries.len(), CAPACITY);
+        assert!(entries.iter().any(|e| e["message"] == SLOW_LOAD));
+        assert_eq!(entries[0]["time"], CAPACITY as u64 * 2);
     }
     #[tokio::test]
     async fn switchboard_terminal_failure_requires_known_host_origin_and_content_free_metadata() {

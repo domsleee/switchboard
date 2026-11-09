@@ -106,7 +106,8 @@ selection, including the initial page, and each switch from Terminal to Conversa
 `reason` distinguishes `selection` from `mode`; `end` says whether messages came from
 memory (`cached`), a read (`history`), or an unavailable binding (`unbound`). Times
 above 500 ms and failed or timed-out loads are marked `slow`. These are bounded
-recent samples, not a persistent latency dashboard.
+recent samples, not a persistent latency dashboard. Failures leave 50 of each
+computer's 200 rows for timing samples.
 
 `t` measures the visible wait through the browser's next paint. `paint` is the first
 panel paint, which may still show the loading notice. Fetched chats also report
