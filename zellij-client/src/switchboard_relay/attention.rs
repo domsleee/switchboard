@@ -1084,6 +1084,8 @@ impl PollState {
         }
         if let Some(id) = &hooked.chat_id {
             row["chat_id"] = json!(id);
+            // The screen reading can name another agent, so the chat's owner goes with its id.
+            row["agent"] = json!(hooked.agent);
             row["restart_available"] =
                 json!(hooked.restart.is_some() && matches!(hooked.state, "ready" | "working"));
         }
@@ -2360,6 +2362,29 @@ esac
         let classified = classify(&pane, stopped);
         assert_eq!(classified["state"], "ready");
         assert!(classified.get("footer_tasks").is_none());
+    }
+
+    #[test]
+    fn switchboard_chat_id_carries_the_agent_that_owns_the_chat() {
+        let mut poll = PollState::default();
+        poll.hooks.insert(
+            ("main".to_owned(), 3),
+            Hooked {
+                state: "working",
+                shell_hold: false,
+                ..shell_wait()
+            },
+        );
+        let mut restarted = PollState::default();
+        restarted.restore_hooks(&poll.persisted()["hooks"]);
+        // The launch prompt is part of the command, and it can name the other agent.
+        let command = json!("claude --model claude-opus-5-5 -- continue the codex chat");
+        let mut row = classify(&json!({"pane_command":command}), "");
+        row["session"] = json!("main");
+        row["pane_id"] = json!(3);
+        restarted.apply_hook(&mut row, &command);
+        assert_eq!(row["chat_id"], "chat");
+        assert_eq!(row["agent"], "claude");
     }
 
     #[tokio::test(start_paused = true)]
