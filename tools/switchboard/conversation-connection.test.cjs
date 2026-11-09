@@ -155,7 +155,10 @@ test('Desktop keeps a connected terminal through Conversation so switching back 
     connections.push(p);
     return route.fulfill({contentType:'text/html',body:`<script>
       const state=()=>parent.postMessage({type:'zellij-state',payload:{session_name:'main',active_pane:${JSON.stringify(pane)},panes:${JSON.stringify([pane])}}},location.origin);
-      addEventListener('message',event=>{if(event.data.type==='zellij-focus')state();});state();
+      addEventListener('message',event=>{
+       if(event.data.type==='zellij-focus')state();
+       if(event.data.type==='zellij-browser-resume'&&!parent.terminalStalled){const at=performance.timeOrigin+performance.now();parent.postMessage({type:'zellij-browser-resume-diagnostic',diagnostic:{id:event.data.id,phase:'animation',received_at:at,animation_at:at,render_cycle_ms:1}},location.origin);}
+      });state();
       parent.postMessage({type:'zellij-load-diagnostic',diagnostic:{outcome:'ready',elapsed_ms:700,page_ms:100,socket_ms:200,frame_ms:300,render_ms:700,visible:true}},location.origin);
      </script>`});
    }
@@ -203,6 +206,31 @@ test('Desktop keeps a connected terminal through Conversation so switching back 
   await until(()=>timings.filter(t=>t.type==='terminal-load').length===2,'The reconnect reports its load');
   assert.deepEqual(timings.filter(t=>t.type==='terminal-load').map(t=>t.after),[undefined,'conversation'],'A viewer reloaded on leaving Conversation reports that load as the switch time');
   assert.equal(swaps().length,4,'A reconnect is timed by its load; probing the blank frame would have ended the open timing');
+  const journeys=name=>timings.filter(t=>t.type==='timing'&&t.journey===name);
+  await until(()=>journeys('conversation_to_terminal').at(-1)?.outcome==='ready','A reconnect ends its journey when the load reports');
+  assert.equal(journeys('conversation_load')[0].outcome,'history','A fetched chat is timed as a load');
+  assert.ok(journeys('conversation_load')[0].elapsed_ms>=200,'The journey covers the wait for the transcript');
+  assert.equal(journeys('terminal_to_conversation')[0].outcome,'cached','A chat already in memory is timed apart from loads');
+  const returns=journeys('conversation_to_terminal').length;
+  await page.getByRole('button',{name:'Conversation',exact:true}).click();
+  await page.getByText('Ready for a reply',{exact:true}).waitFor();
+  const leftWith=await page.evaluate(()=>[...sessions.values()][0].frame.getAttribute('src')!=='about:blank');
+  assert.equal(leftWith,true,'The viewer stays connected behind Conversation');
+  const started=Date.now();
+  await page.getByRole('button',{name:'Terminal',exact:true}).click();
+  await until(()=>journeys('conversation_to_terminal').length>returns,'A kept viewer reports its return');
+  assert.ok(Date.now()-started<4000,'The journey ends at the first paint, not after the five-second sample');
+  const kept=journeys('conversation_to_terminal').at(-1);
+  assert.equal(kept.outcome,'ready');assert.equal(kept.hidden,false);
+  assert.ok(kept.stages.some(([name])=>name==='terminal_message'),'The wait is split into stages');
+  await page.evaluate(()=>{window.terminalStalled=true;});
+  await page.getByRole('button',{name:'Conversation',exact:true}).click();
+  await page.getByRole('button',{name:'Terminal',exact:true}).click();
+  const stalled=journeys('conversation_to_terminal').length;
+  for(let i=0;i<350&&journeys('conversation_to_terminal').length===stalled;i++)await page.waitForTimeout(20);
+  const never=journeys('conversation_to_terminal').at(-1);
+  assert.equal(never.outcome,'timeout','A terminal that never paints is a stalled wait, not a fast one');
+  assert.ok(never.elapsed_ms>=4900);
   await page.getByRole('button',{name:'Conversation',exact:true}).click();
   await page.setViewportSize({width:390,height:844});
   await page.waitForFunction(()=>[...sessions.values()].every(e=>e.suspended&&e.frame.getAttribute('src')==='about:blank'));

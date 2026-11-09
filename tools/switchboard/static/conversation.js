@@ -310,8 +310,23 @@
     const pendingFor=(key=identity(target))=>pendingSends.get(key);let queuedSubmit=null;
     let loadingStarted=0,loadingTimer=null;
     function tickLoading(){clearTimeout(loadingTimer);const seconds=Math.floor((performance.now()-loadingStarted)/1000);loadingTime.textContent=seconds?duration(seconds):'';loadingTimer=setTimeout(tickLoading,1000);}
+    // Times the wait for a running agent to report its chat, which ends before any transcript loads.
+    let connecting=null;
+    function endConnecting(outcome){connecting?.timing?.end(outcome);connecting=null;}
+    function trackConnecting(text,quiet){
+      if(text==='Connecting to this agent’s conversation…'&&open&&!quiet){
+        if(connecting&&connecting.key!==target?.key)endConnecting('left');
+        connecting??={key:target?.key,timing:window.SwitchboardTiming?.begin('conversation_connect',{host:target?.host,deadline:120000})};
+      }else if(connecting)endConnecting(connectOutcome(text));
+    }
+    function connectOutcome(text){
+      if(target?.key!==connecting.key)return 'left';
+      if(chat)return 'ready';
+      if(/timed out|has not connected/.test(text))return 'timeout';
+      return text===startupState()?.error?'failed':'left';
+    }
     function status(text,quiet=false){
-      if(launchShown()&&transitional.has(text))quiet=true;if(noticeText.textContent!==text)noticeText.textContent=text;notice.hidden=quiet;
+      if(launchShown()&&transitional.has(text))quiet=true;if(noticeText.textContent!==text)noticeText.textContent=text;notice.hidden=quiet;trackConnecting(text,quiet);
       if(text==='Loading conversation…'&&!quiet){if(loadingTimer===null){loadingStarted=performance.now();tickLoading();}}
       else{clearTimeout(loadingTimer);loadingTimer=null;loadingTime.textContent='';}
     }
@@ -783,7 +798,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
     // there navigation focuses the panel for reading and only a tap on the draft starts a reply. A
     // draft already in use keeps focus unless the selected conversation changes.
     function focusSurface(navigated=false){if(panel.hidden||!navigated&&document.activeElement===draft)return;(form.hidden||matchMedia('(pointer:coarse)').matches?panel:draft).focus({preventScroll:true});}
-    function show(value,transient=false){if(!transient){modeRevision++;if(value)startShown();else shownProgress('left');}if(!value){window.SwitchboardConversationGithub?.close(false);costDetails.hidePopover();completions.close();stopStream();loadRequest?.abort();window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();}open=value;root.classList.toggle('conversation-open',open);modeChanged(transient);if(!transient)try{localStorage.setItem(modeKey,value?'conversation':'terminal');}catch{}setPanelHidden(!value);toggle.setAttribute('aria-pressed',String(value));back.setAttribute('aria-pressed',String(!value));if(value){document.getElementById('artifact-preview').hidden=true;update();if(loaded){paint(false,restorePosition===null&&lastPaint===null);if(restorePosition!==null){list.scrollTop=restorePosition.follow?list.scrollHeight:restorePosition.position;restorePosition=null;updateLatest();}}if(binding())load(loaded?'poll':'initial');startStream();focusSurface();}else if(target)terminal(target);viewport();if(shown&&shown.generation===null)shown.generation=generation;}
+    function show(value,transient=false){if(!transient){modeRevision++;if(value)startShown();else shownProgress('left');}if(!value){endConnecting('left');window.SwitchboardConversationGithub?.close(false);costDetails.hidePopover();completions.close();stopStream();loadRequest?.abort();window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();}open=value;root.classList.toggle('conversation-open',open);modeChanged(transient);if(!transient)try{localStorage.setItem(modeKey,value?'conversation':'terminal');}catch{}setPanelHidden(!value);toggle.setAttribute('aria-pressed',String(value));back.setAttribute('aria-pressed',String(!value));if(value){document.getElementById('artifact-preview').hidden=true;update();if(loaded){paint(false,restorePosition===null&&lastPaint===null);if(restorePosition!==null){list.scrollTop=restorePosition.follow?list.scrollHeight:restorePosition.position;restorePosition=null;updateLatest();}}if(binding())load(loaded?'poll':'initial');startStream();focusSurface();}else if(target)terminal(target);viewport();if(shown&&shown.generation===null)shown.generation=generation;}
 
     toggle.onclick=()=>show(true);back.onclick=()=>show(false);
     let loadRequest=null,lastFailure=null,lastDiagnostic='',lastDiagnosticAt=0,newOutput=false,scrollIdle,shown=null,settling=false,settleTimer,settleClears=false;
@@ -809,6 +824,8 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       }
       shown=null;clearTimeout(timing.deadline);
       void fetch('/api/diagnostics/conversation-shown',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({end,elapsed_ms:Math.min(120000,Math.round(performance.now()-timing.started)),paint_ms:timing.paint_ms,reason:timing.reason,remote:timing.remote,host:timing.host,...timing.stages})}).catch(()=>{});
+      // A chat shown from memory and one fetched from its computer are very different waits.
+      window.SwitchboardTiming?.report(!timing.cached?'conversation_load':timing.reason==='selection'?'conversation_select':'terminal_to_conversation',timing.started,end,{host:timing.host,stages:{...timing.stages,paint_ms:timing.paint_ms}});
     }
     function reportLoad(phase,outcome,started){
       const now=Date.now(),key=phase+':'+outcome;

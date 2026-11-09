@@ -668,6 +668,17 @@ into bash, clears each line with Ctrl+Backspace, and fails if any guess goes unc
 
 ## Diagnostics
 
+Settings → Performance shows how long user-visible waits took, for each computer whose browser
+measured them, split by build and by the computer being viewed. The browser runs the clock
+(`static/timing.js`) and the relay keeps every sample as a histogram in `timings.json`, so builds
+can be compared; the last 12 builds are retained, with the five slowest samples and their stages
+for each. Journeys are `terminal_to_conversation` and `conversation_select` (a chat shown from
+memory), `conversation_load` (a chat fetched before it appeared), `conversation_connect` (waiting for
+a running agent to report its chat) and `conversation_to_terminal`. A journey during which the page was hidden, or that the user abandoned,
+is counted by outcome but left out of the percentiles; timeouts and failures stay in them. `/api/timings`
+returns the same data. The same journeys appear on a Switchboard track in Chrome's Performance panel.
+To add a journey, name it in `JOURNEYS` in `timings.rs` and call `SwitchboardTiming.begin`.
+
 Settings → Logs records each new-tab request's time to reach the terminal iframe,
 time to send on its control connection, and total time until the new pane becomes
 active. Slow creations and failures stay visible; fast creations are folded under

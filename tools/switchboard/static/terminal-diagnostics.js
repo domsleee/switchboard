@@ -251,7 +251,8 @@ window.SwitchboardTerminalDiagnostics = function (report, dimensions) {
 window.SwitchboardBrowserDiagnostics = function (report, probe) {
   const now=()=>performance.now(),rounded=value=>Math.max(0,Math.round(value));
   const rendering=window.SwitchboardRenderingDiagnostics();
-  let hiddenAt=document.hidden?now():null,span,sequence=0,deadline,animation,frozen=false;
+  let hiddenAt=document.hidden?now():null,span,sequence=0,deadline,animation,frozen=false,painted=null;
+  const notifyPainted=()=>{const listener=painted;painted=null;listener?.({...span});};
   function tasks(entries) {
     if(!span)return;
     for(const entry of entries)if(entry.startTime+entry.duration>span.started){
@@ -286,7 +287,7 @@ window.SwitchboardBrowserDiagnostics = function (report, probe) {
     hiddenAt=null;frozen=false;
     const tracked=span;
     span.terminal_probe=probe(span.id,performance.timeOrigin+started);
-    animation=requestAnimationFrame(()=>{if(span===tracked)span.first_animation_ms=rounded(now()-started);});
+    animation=requestAnimationFrame(()=>{if(span===tracked){span.first_animation_ms=rounded(now()-started);if(!span.terminal_probe)notifyPainted();}});
     deadline=setTimeout(()=>finish('sampled'),5000);
   }
   document.addEventListener('visibilitychange',event=>{
@@ -302,7 +303,8 @@ window.SwitchboardBrowserDiagnostics = function (report, probe) {
   if(document.wasDiscarded&&!document.hidden)start('discarded');
   return {
     // Times a switch back to Terminal from Conversation; hidden_ms is the time spent in Conversation.
-    measure(reason,since) {if(!document.hidden)start(reason,undefined,since);},
+    // onPainted hears as soon as the terminal paints, before the sample's observation ends.
+    measure(reason,since,onPainted) {if(!document.hidden){start(reason,undefined,since);painted=onPainted||null;}},
     terminal(sample) {
       if(!span||sample?.id!==span.id||span.terminal_animation_ms!==null)return;
       const receivedOnly=sample.phase==='received';
@@ -330,6 +332,7 @@ window.SwitchboardBrowserDiagnostics = function (report, probe) {
         span.terminal_animation_ms=rounded(now()-span.started);
         if(Number.isInteger(sample.writes_pending)&&sample.writes_pending>=0)span.writes_pending=sample.writes_pending;
         if(typeof sample.render_pending==='boolean')span.render_pending=sample.render_pending;
+        notifyPainted();
       }
     },
   };
