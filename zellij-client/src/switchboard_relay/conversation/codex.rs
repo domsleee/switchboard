@@ -26,14 +26,39 @@ fn prompt(screen: &str) -> Option<String> {
     let footer = rows.iter().rposition(|row| {
         let text = plain(row);
         let text = text.trim();
-        (text.starts_with("GPT-") || text.starts_with("gpt-"))
-            && (text.contains("for shortcuts") || text.contains("tab to queue"))
+        text.starts_with("GPT-") || text.starts_with("gpt-")
     })?;
-    if rows[footer + 1..]
-        .iter()
-        .any(|row| !plain(row).trim().is_empty())
-    {
-        return None; // A shell prompt below a historical Codex footer is not its composer.
+    let model = plain(&rows[footer]);
+    let mut hints = model.contains("for shortcuts") || model.contains("tab to queue");
+    let mut tip = false;
+    for row in &rows[footer + 1..] {
+        let text = plain(row);
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        // Codex can put its keyboard hints below the model, with warnings on
+        // the same row. Other content below the footer (a shell or dialog)
+        // must still keep delivery paused.
+        if !hints
+            && ((text.starts_with("← for agents")
+                && (text.contains("for shortcuts") || text.contains("tab to queue")))
+                || text.starts_with("? for shortcuts")
+                || text.starts_with("tab to queue"))
+        {
+            hints = true;
+        } else if hints && !tip && text.starts_with("└ Tip:") {
+            tip = true;
+        } else if !(hints
+            && text.starts_with('⚠')
+            && text.contains("warning")
+            && text.ends_with("f2 to view"))
+        {
+            return None;
+        }
+    }
+    if !hints {
+        return None;
     }
     let start = rows[..footer]
         .iter()
@@ -231,6 +256,31 @@ async fn wait_input(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switchboard_codex_reply_recognizes_the_captured_multiline_footer() {
+        // Codex 0.167, captured with dump-screen --ansi. Its model and keyboard
+        // hints occupy different rows; the placeholder is dim, not a draft.
+        let screen = include_str!("../fixtures/codex-multiline-composer.ansi");
+        assert_eq!(prompt(screen), Some(String::new()));
+        assert_eq!(
+            prompt(&format!(
+                "{screen}  └ Tip: Use /fork to branch the current chat.\n"
+            )),
+            Some(String::new())
+        );
+        assert!(prompt(&format!("{screen}PS C:\\project> ")).is_none());
+        assert!(prompt(&format!("{screen}› 1. Yes\n2. No\nEsc to cancel")).is_none());
+        for draft in [
+            "Keep my draft",
+            "Ask Codex to do anything",
+            "First line\nsecond line",
+        ] {
+            let typed = screen.replace("Ask Codex to do anything", &format!("\x1b[m{draft}"));
+            assert_eq!(prompt(&typed), Some(draft.into()));
+        }
+        assert!(prompt("› Message\nGPT-6.1-Sol high · Example task\n").is_none());
+    }
 
     #[test]
     fn switchboard_codex_reply_matches_only_the_exact_live_chat() {
