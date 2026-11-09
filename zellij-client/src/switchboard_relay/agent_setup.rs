@@ -386,6 +386,17 @@ fn path_copy_damaged(path: &Path) -> bool {
         .is_ok_and(|mut file| file.read_exact(&mut header).is_err() || header != *b"MZ")
 }
 
+/// A damaged copy replaces a check that has no list of missing pieces to add it to.
+fn with_path_copy_damage(check: Check, path: Option<&Path>) -> Check {
+    let mut missing = Vec::new();
+    note_damaged_path_copy(path, &mut missing);
+    if missing.is_empty() {
+        check
+    } else {
+        Check::from_missing(missing)
+    }
+}
+
 fn note_damaged_path_copy(path: Option<&Path>, missing: &mut Vec<&str>) {
     if path.is_some_and(path_copy_damaged) {
         missing.push("zellij on PATH is damaged, so session-start hooks and messages fail");
@@ -1508,7 +1519,10 @@ fn describe(agent: Agent) -> Value {
         match agent {
             Agent::Claude => check_claude(&dir),
             Agent::Copilot => check_copilot(&dir),
-            Agent::Codex => check_codex(&dir, &codex_launcher(&home())),
+            Agent::Codex => with_path_copy_damage(
+                check_codex(&dir, &codex_launcher(&home())),
+                path_copy().as_deref(),
+            ),
         }
     };
     json!({
@@ -1699,6 +1713,23 @@ pub(super) fn set_up_locally(request: &SetupRequest) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switchboard_health_reports_a_damaged_path_copy_for_codex() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("zellij.exe");
+        let ready = || Check {
+            state: "ready",
+            detail: "Plugin hooks installed and trusted".into(),
+        };
+        std::fs::write(&path, b"MZ working").unwrap();
+        assert_eq!(with_path_copy_damage(ready(), Some(&path)).state, "ready");
+        assert_eq!(with_path_copy_damage(ready(), None).state, "ready");
+        std::fs::write(&path, b"new").unwrap();
+        let check = with_path_copy_damage(ready(), Some(&path));
+        assert_eq!(check.state, "setup");
+        assert!(check.detail.contains("zellij on PATH is damaged"));
+    }
 
     #[test]
     fn switchboard_health_finds_and_repairs_a_damaged_path_copy() {
