@@ -238,7 +238,7 @@ test('headless browser keeps iframe, selection, URL and input focus through fail
     const focusRequests=await input.evaluate(()=>window.focusRequests);
     attentionError=true;await page.evaluate(()=>refreshAttention());await unchanged();
     assert.equal(await input.evaluate(()=>window.focusRequests),focusRequests);
-    assert.match(await page.locator('#status').textContent(),/Windows: attention status unavailable/);
+    await page.waitForFunction(()=>document.querySelector('#status').textContent.includes('Windows: attention status unavailable'),null,{timeout:10000});
     discoveryError=true;await page.evaluate(()=>refresh());await unchanged();
     httpError=true;await page.evaluate(()=>refreshAttention());await unchanged();
     discoveryError=false;attentionError=false;httpError=false;
@@ -264,7 +264,7 @@ test('headless browser keeps iframe, selection, URL and input focus through fail
     await page.keyboard.type(' still typing');assert.equal(await input.inputValue(),'typed before failure still typing');
     // A requested unavailable terminal does not automatically select a healthy Mac tab on reload.
     discoveryError=true;attentionError=true;await page.reload();
-    await page.waitForFunction(()=>document.querySelector('#status').textContent.includes('attention status unavailable')&&document.querySelector('#tabs .tab-select'));
+    await page.waitForFunction(()=>document.querySelector('#tabs .tab-select')&&attentionErrors.some(error=>error.host==='windows'));
     assert.equal(page.url(),requested);
     assert.equal(await page.locator('iframe.active').count(),0);
     assert.equal(await page.locator('#tabs .selected').count(),0);

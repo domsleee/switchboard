@@ -133,6 +133,26 @@ function saveReady() { localStorage.setItem('switchboard-ready', JSON.stringify(
 const dismissedStatus=new Set();
 const dismissedOffline=load('switchboard-dismissed-offline');
 let statusErrors=[];
+const ATTENTION_WARNING_GRACE_MS=5000,attentionWarningSince=new Map();
+let attentionWarningTimer;
+function attentionWarnings(){
+  const now=performance.now(),active=new Set(),warnings=[];
+  let next=Infinity;
+  for(const error of attentionErrors){
+    if(error.pending)continue;
+    const key=JSON.stringify([error.host,error.session]);active.add(key);
+    if(!attentionWarningSince.has(key))attentionWarningSince.set(key,now);
+    const remaining=ATTENTION_WARNING_GRACE_MS-(now-attentionWarningSince.get(key));
+    if(remaining<=0)warnings.push({host:hosts.has(error.host)?error.host:null,message:`${hosts.get(error.host)?.name||error.host}: attention status unavailable`});
+    else next=Math.min(next,remaining);
+  }
+  for(const key of attentionWarningSince.keys())if(!active.has(key))attentionWarningSince.delete(key);
+  clearTimeout(attentionWarningTimer);
+  // A watch can remain pending throughout an outage; show a persistent warning even
+  // when no further snapshot arrives. Redraws must not count as failed checks.
+  attentionWarningTimer=Number.isFinite(next)?setTimeout(()=>render(),next):null;
+  return warnings;
+}
 function setStatus(message,isError=false,errors=null) {
   // Only the full error list can confirm that a dismissed outage ended.
   if(errors)for(const message of dismissedStatus)if(!errors.some(error=>error.message===message))dismissedStatus.delete(message);
@@ -985,7 +1005,7 @@ function render() {
   }
   const errors=[...hosts.values()].filter(h=>h.error).map(h=>({host:h.id,message:`${h.name}: ${h.error}`}));
   for(const entry of sessions.values())if(entry.closeError)errors.push({message:entry.closeError});
-  for(const error of attentionErrors)if(!error.pending)errors.push({host:hosts.has(error.host)?error.host:null,message:`${hosts.get(error.host)?.name||error.host}: attention status unavailable`});
+  errors.push(...attentionWarnings());
   if(currentEntry?.disconnected)errors.push({message:`${hosts.get(currentEntry.host)?.name||currentEntry.host}: reconnecting…`});
   setStatus(errors.length?errors.map(error=>error.message).join(' · '):`${hosts.size} machines · ${tabs.length} tabs${current?' · '+hosts.get(current.entry.host)?.name:''}`,errors.length>0,errors);
   showRetirementStatus();
