@@ -481,6 +481,32 @@ test('integrated Conversation journeys use production markup and preserve delive
     assert.ok(await list.evaluate(node=>node.scrollHeight-node.scrollTop-node.clientHeight)<2,'Returning keeps following the latest message');
    }finally{await f.close();}
   });
+  await t.test('Claude folder trust is prepared automatically before its first conversation',async()=>{
+   const f=await fixture({agent:'claude',bound:false}),{page}=f;try{
+    assert.deepEqual(f.preparations,[],'An empty ready prompt does not need trust');
+    f.state='approval';await Promise.all([page.waitForResponse(response=>response.url().endsWith('/conversation/prepare')),f.refresh()]);
+    await page.waitForFunction(()=>document.querySelector('.conversation-activity').textContent==='Approval needed');
+    assert.deepEqual(f.preparations,[{session:'main',tab_id:1,pane_id:1}]);
+    await f.refresh();assert.equal(f.preparations.length,1,'Repeated attention polls do not repeat preparation immediately');
+    f.state='ready';await f.refresh();
+    assert.equal(await page.locator('.conversation-notice').textContent(),'Send a message to start the conversation.');
+    assert.equal(await page.getByLabel('Reply draft').isVisible(),true);
+    assert.deepEqual(f.connections,[]);
+   }finally{await f.close();}
+  });
+  await t.test('a failed Claude folder trust preparation retries, and Codex keeps its error',async()=>{
+   const prepared=response=>response.url().endsWith('/conversation/prepare');
+   let f=await fixture({agent:'claude',bound:false}),{page}=f;try{
+    f.prepareStatus=502;f.state='approval';await Promise.all([page.waitForResponse(prepared),f.refresh()]);
+    f.prepareStatus=200;await page.evaluate(()=>{window.reviewOffset+=5100;});await Promise.all([page.waitForResponse(prepared),f.refresh()]);
+    assert.equal(f.preparations.length,2,'One failure does not end automatic preparation');
+    assert.equal(await page.locator('.conversation-notice').textContent(),'Approval needed before the conversation can start.');
+   }finally{await f.close();}
+   f=await fixture({bound:false});({page}=f);try{
+    f.prepareStatus=502;f.state='approval';await page.evaluate(()=>{window.reviewOffset+=5100;});await Promise.all([page.waitForResponse(prepared),f.refresh()]);
+    await page.waitForFunction(()=>document.querySelector('.conversation-notice').textContent.includes('Could not prepare'));
+   }finally{await f.close();}
+  });
   await t.test('unbound startup fails visibly, retries explicitly, and leaves shell tabs at No agent',async()=>{
    const f=await fixture({bound:false}),{page}=f;try{
     await page.waitForFunction(()=>document.querySelector('.conversation-notice').textContent.includes('Connecting'));

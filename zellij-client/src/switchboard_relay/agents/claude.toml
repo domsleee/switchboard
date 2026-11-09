@@ -13,7 +13,10 @@ version = "2026-11-08"
 
 # Which panes are Claude: the running command, or its prompt footer on screen.
 command = ['\bclaude(?:\.exe)?\b']
-screen = [['(?:bypass permissions|accept edits|auto mode|plan mode) on|shift\+tab to cycle']]
+screen = [
+  ['(?:bypass permissions|accept edits|auto mode|plan mode) on|shift\+tab to cycle'],
+  ['accessing workspace:', 'yes, i trust this folder', 'enter to confirm'],
+]
 
 # Under the idle prompt box (❯). Without it the screen is a dialog or unknown.
 footer = ['(?:bypass permissions|accept edits|auto mode|plan mode) on|shift\+tab to cycle', 'for shortcuts']
@@ -29,6 +32,10 @@ completion = ['(?:worked for|[✻✽✶✳] \S+ for)\s+(?:\d+\s*[hms]\s*)+(?:[�
 approval = [[
   'esc(?:ape)? to cancel|enter to (?:submit|select|confirm)|press enter to confirm',
   '(?:^|\s)[12][.)]\s+(?:yes|no|allow|approve|deny)',
+], [
+  'enter to confirm',
+  '(?m)^\s*❯?\s*no, exit\s*$',
+  '(?m)^\s*❯?\s*yes, i trust this folder\s*$',
 ]]
 input = [
   ['esc(?:ape)? to cancel|enter to (?:submit|select|confirm)|press enter to confirm', '[❯›]\s*\d+[.)]'],

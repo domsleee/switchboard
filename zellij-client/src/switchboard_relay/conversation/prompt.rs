@@ -248,12 +248,98 @@ const ROW_LIMIT: usize = 2000;
 
 pub(super) fn claude_menu(screen: &str) -> Option<Menu> {
     let rows = rows(screen);
+    if let Some(menu) = folder_trust(&rows) {
+        return Some(menu);
+    }
     (0..rows.len()).rev().find_map(|start| match rows[start] {
         Row::Text(text) if OPTION.captures(text).is_some_and(|o| &o[2] == "1") => {
             menu_from(&rows, start)
         },
         _ => None,
     })
+}
+
+/// Startup has no transcript yet and uses an unnumbered menu. Keep the complete
+/// workspace and warning visible, and use arrows only after an explicit answer.
+fn folder_trust(rows: &[Row]) -> Option<Menu> {
+    let start = rows
+        .iter()
+        .rposition(|row| matches!(row, Row::Rule { solid: true }))?;
+    let text: Vec<_> = rows[start + 1..]
+        .iter()
+        .filter_map(|row| match row {
+            Row::Blank => None,
+            Row::Text(text) => Some(text.trim()),
+            Row::Rule { .. } => Some(""),
+        })
+        .collect();
+    let end = text.len().checked_sub(3)?;
+    if text.first().copied() != Some("Accessing workspace:")
+        || end < 4
+        || !text[2..end]
+            .iter()
+            .any(|line| line.starts_with("Quick safety check:"))
+        || text[end + 2] != "Enter to confirm · Esc to cancel"
+    {
+        return None;
+    }
+    let labels = ["No, exit", "Yes, I trust this folder"];
+    let mut cursor = None;
+    let mut choices = Vec::new();
+    for (index, label) in labels.iter().enumerate() {
+        let line = text[end + index];
+        if let Some(selected) = line.strip_prefix('❯') {
+            if selected.trim() != *label || cursor.is_some() {
+                return None;
+            }
+            cursor = Some(index);
+        } else if line != *label {
+            return None;
+        }
+        choices.push(Choice {
+            label: (*label).into(),
+            description: String::new(),
+            number: None,
+            checked: None,
+            text: false,
+        });
+    }
+    let detail: Vec<String> = text[..end].iter().map(|line| (*line).into()).collect();
+    if detail.len() > DETAIL_ROWS
+        || detail
+            .iter()
+            .any(|line| line.is_empty() || line.len() > ROW_LIMIT)
+    {
+        return None;
+    }
+    let question = "Do you trust this folder?".to_string();
+    // Without whitespace, so that a resize rewrapping the text is still the same dialog.
+    let words: String = detail.concat().split_whitespace().collect();
+    let token = Sha256::digest(serde_json::to_vec(&json!([words, question, choices])).unwrap())
+        [..12]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    Some(Menu {
+        detail,
+        question,
+        choices,
+        cursor: cursor?,
+        preview: false,
+        token,
+    })
+}
+
+pub(super) fn folder_trust_token(screen: &str) -> Option<String> {
+    folder_trust(&rows(screen)).map(|menu| menu.token)
+}
+
+pub(super) fn folder_trust_keys(screen: &str) -> Option<Vec<String>> {
+    let menu = folder_trust(&rows(screen))?;
+    match keys(&menu, 1, None)?.pop()? {
+        Key::Bytes(bytes) => Some(bytes),
+        Key::Paste(_) => None,
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -393,6 +479,16 @@ pub(in crate::switchboard_relay) async fn answer_local(
         .ok_or(changed)?;
     let keys = keys(&menu, answer.choice, answer.text.as_deref())
         .ok_or((StatusCode::BAD_REQUEST, "Invalid answer"))?;
+    if folder_trust_token(&screen).is_some_and(|token| {
+        !claim_trust_answer(
+            &answer.session,
+            answer.pane_id,
+            &token,
+            Some(TRUST_MANUAL_WAIT),
+        )
+    }) {
+        return Err(changed);
+    }
     let id = answer.pane_id.to_string();
     for key in keys {
         let mut args = vec!["write".to_string(), "-p".into(), id.clone()];
@@ -414,6 +510,69 @@ pub(in crate::switchboard_relay) async fn answer_local(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switchboard_conversation_folder_trust_shows_workspace_and_answers_with_arrows() {
+        let screen = include_str!("../fixtures/claude-folder-trust.txt");
+        let menu = claude_menu(screen).unwrap();
+        assert_eq!(
+            folder_trust_keys(screen),
+            Some(["27", "91", "66", "13"].map(String::from).into())
+        );
+        assert_eq!(labels(&menu), ["No, exit", "Yes, I trust this folder"]);
+        assert!(menu
+            .detail
+            .iter()
+            .any(|line| line == r"C:\git\GitHub\acme\sample-project"));
+        assert!(menu
+            .detail
+            .iter()
+            .any(|line| line.contains("read, edit, and execute")));
+        assert_eq!(
+            keys(&menu, 1, None),
+            Some(vec![Key::Bytes(
+                ["27", "91", "66", "13"].map(String::from).into()
+            )])
+        );
+        assert_eq!(
+            keys(&menu, 0, None),
+            Some(vec![Key::Bytes(vec!["13".into()])])
+        );
+        let moved = screen
+            .replace("❯ No, exit", "No, exit")
+            .replace("   Yes, I trust", " ❯ Yes, I trust");
+        let moved = claude_menu(&moved).unwrap();
+        assert_eq!(moved.token, menu.token);
+        assert_eq!(
+            keys(&moved, 0, None),
+            Some(vec![Key::Bytes(
+                ["27", "91", "65", "13"].map(String::from).into()
+            )])
+        );
+        assert_ne!(
+            claude_menu(&screen.replace("sample-project", "OtherProject"))
+                .unwrap()
+                .token,
+            menu.token
+        );
+        assert_eq!(
+            folder_trust_token(&screen.replace("check: Is this", "check:\n Is this")),
+            Some(menu.token.clone()),
+            "rewrapping after a resize is the same dialog"
+        );
+        for invalid in [
+            format!("{screen}\n❯ \n  bypass permissions on (shift+tab to cycle)"),
+            screen.replace("❯ No, exit", "No, exit"),
+            screen.replace("   Yes, I trust", " ❯ Yes, I trust"),
+            screen.replace("Enter to confirm · Esc to cancel", ""),
+            screen.replace("Accessing workspace:", ""),
+        ] {
+            assert_eq!(claude_menu(&invalid), None);
+            assert_eq!(folder_trust_keys(&invalid), None);
+        }
+        assert_eq!(folder_trust_keys(&permission()), None);
+        assert_eq!(folder_trust_keys(&question()), None);
+    }
 
     const RULE: &str = "─────────────────────────────────────────────────────────────";
     const DASH: &str = "╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌";

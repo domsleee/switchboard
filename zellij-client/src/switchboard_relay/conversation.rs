@@ -1,5 +1,5 @@
 //! What Conversation does to a pane without opening a terminal viewer: complete
-//! Codex's startup hooks review, type a reply into Claude's empty prompt, and
+//! Codex's startup hooks review and Claude's folder trust, type a reply into Claude's empty prompt, and
 //! answer Claude's numbered menus (see `prompt`).
 use super::*;
 use serde::Serialize;
@@ -156,21 +156,60 @@ async fn acting_on(session: &str, pane_id: u32) -> tokio::sync::OwnedMutexGuard<
     pane.lock_owned().await
 }
 
+// Zellij accepts input before the agent redraws, and a write that times out may still
+// arrive. While an answered dialog is on screen, answering again would send its keys to
+// whatever dialog comes next. So automatic acceptance gets one send per dialog; if those
+// keys were lost, the person answers the card, once the first send has had time to land.
+// A relay restart clears these; a pane only ever answers a handful of dialogs.
+pub(super) const TRUST_MANUAL_WAIT: Duration = Duration::from_secs(10);
+static TRUST_SENT: std::sync::LazyLock<
+    std::sync::Mutex<HashMap<(String, u32, String), std::time::Instant>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Call under `acting_on`, before writing. False if this dialog was already answered:
+/// within `within` when given, otherwise at any time.
+pub(super) fn claim_trust_answer(
+    session: &str,
+    pane_id: u32,
+    token: &str,
+    within: Option<Duration>,
+) -> bool {
+    let mut sent = TRUST_SENT.lock().unwrap();
+    let dialog = (session.to_owned(), pane_id, token.to_owned());
+    if sent
+        .get(&dialog)
+        .is_some_and(|at| within.is_none_or(|w| at.elapsed() < w))
+    {
+        return false;
+    }
+    sent.insert(dialog, std::time::Instant::now());
+    true
+}
+
 pub(super) async fn local(host: &Host, target: Target) -> Result<Json<Value>, Error> {
     let _guard = acting_on(&target.session, target.pane_id).await;
     let (pane, screen) = checked_screen(host, &target, tokio::time::Instant::now()).await?;
-    if attention::classify(&pane, &screen)["agent"] != "codex" {
-        return Ok(Json(json!({"trusted":false})));
-    }
-    let Some(keys) = trust_keys(&screen) else {
+    let keys = match attention::classify(&pane, &screen)["agent"].as_str() {
+        Some("codex") => {
+            trust_keys(&screen).map(|keys| keys.iter().map(|key| (*key).to_string()).collect())
+        },
+        Some("claude") if attention::may_be_claude(&pane) => prompt::folder_trust_keys(&screen),
+        _ => None,
+    };
+    let Some(keys) = keys else {
         return Ok(Json(json!({"trusted":false})));
     };
+    if prompt::folder_trust_token(&screen)
+        .is_some_and(|token| !claim_trust_answer(&target.session, target.pane_id, &token, None))
+    {
+        return Ok(Json(json!({"trusted":true})));
+    }
     let id = target.pane_id.to_string();
     let mut args = vec!["write", "-p", &id];
-    args.extend_from_slice(keys);
+    args.extend(keys.iter().map(String::as_str));
     control::run_local(host, &target.session, &args, Duration::from_secs(5))
         .await
-        .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot confirm hook trust"))?;
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot confirm startup trust"))?;
     Ok(Json(json!({"trusted":true})))
 }
 
@@ -841,6 +880,20 @@ async fn write_keys(host: &Host, session: &str, pane: &str, key: &str) -> Result
 #[cfg(test)]
 mod tests {
 
+    #[test]
+    fn switchboard_folder_trust_claim_remembers_every_dialog_without_expiry() {
+        let claim = |token, within| claim_trust_answer("claim-test", 1, token, within);
+        assert!(claim("folder-a", None));
+        assert!(claim("folder-b", None));
+        assert!(!claim("folder-a", None), "a later dialog does not erase it");
+        assert!(!claim("folder-a", Some(Duration::from_secs(60))));
+        assert!(
+            claim("folder-a", Some(Duration::ZERO)),
+            "a manual answer may follow once its wait has passed"
+        );
+        assert!(!claim("folder-a", None), "only a manual wait can end");
+    }
+
     #[tokio::test]
     async fn switchboard_acting_on_a_pane_only_waits_for_that_pane() {
         let wait = Duration::from_millis(100);
@@ -1245,13 +1298,50 @@ esac
             "-s fixture action write -p 7 27 91 66 13"
         );
 
-        // Claude replies type into an empty prompt only.
+        // Claude's startup trust uses the same checked pane and writable host.
         std::fs::remove_file(&actions).unwrap();
+        std::fs::write(&screen, include_str!("fixtures/claude-folder-trust.txt")).unwrap();
+        for command in ["vim", "tail -f claude-folder-trust.txt"] {
+            std::fs::write(
+                &catalog,
+                json!([{"id":7,"tab_id":8,"pane_command":command,"is_plugin":false}]).to_string(),
+            )
+            .unwrap();
+            assert_eq!(local(&host, target()).await.unwrap().0["trusted"], false);
+            assert!(!actions.exists(), "another program's dialog gets no keys");
+        }
         std::fs::write(
             &catalog,
             r#"[{"id":7,"tab_id":8,"pane_command":"claude","is_plugin":false}]"#,
         )
         .unwrap();
+        // The dialog stays on screen after the keys are accepted, as it does until
+        // Claude redraws.
+        let retained = dir.path().join("after-27");
+        std::fs::write(&retained, include_str!("fixtures/claude-folder-trust.txt")).unwrap();
+        assert_eq!(local(&host, target()).await.unwrap().0["trusted"], true);
+        assert_eq!(local(&host, target()).await.unwrap().0["trusted"], true);
+        let token =
+            prompt::folder_trust_token(include_str!("fixtures/claude-folder-trust.txt")).unwrap();
+        let answer: prompt::Answer = serde_json::from_value(
+            json!({"session":"fixture","pane_id":7,"tab_id":8,"token":token,"choice":1}),
+        )
+        .unwrap();
+        assert_eq!(
+            prompt::answer_local(&host, answer).await.unwrap_err().0,
+            StatusCode::CONFLICT,
+            "a card answered just after automatic acceptance sends nothing more"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&actions).unwrap().trim(),
+            "-s fixture action write -p 7 27 91 66 13"
+        );
+        std::fs::remove_file(&retained).unwrap();
+        std::fs::write(&screen, "").unwrap();
+        assert_eq!(local(&host, target()).await.unwrap().0["trusted"], false);
+        std::fs::remove_file(&actions).unwrap();
+
+        // Claude replies type into an empty prompt only.
         let reply = |text: &str| Reply {
             session: "fixture".into(),
             pane_id: 7,
