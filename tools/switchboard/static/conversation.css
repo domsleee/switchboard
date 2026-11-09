@@ -189,7 +189,7 @@
 .conversation-task-output{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.5 var(--mono,ui-monospace,monospace);color:var(--text-2)}
 .conversation-task-output.command{padding:8px 10px;border-radius:8px;background:var(--raised);color:var(--text)}
 @media(max-width:640px){:root dialog.conversation-task{width:100vw;height:100dvh;border:0;border-radius:0}}
-@media(prefers-reduced-motion:reduce){.conversation-agent-avatar::after{animation-duration:3s}.conversation-activity.working::before{animation:none}.conversation-working-label{animation:none;-webkit-mask:none;mask:none;color:var(--muted)}}
+@media(prefers-reduced-motion:reduce){.conversation-agent-avatar::after{animation-duration:3s}.conversation-activity.working::before{animation:none}}
 
 /* Folded progress: one disclosure row in place of a finished run. */
 .conversation-panel .conversation-steps{display:flex;align-items:center;gap:7px;width:fit-content;max-width:calc(100% + 16px);min-height:32px;margin:0 0 12px;padding:4px 12px 4px 9px;border-color:#ffffff12;background:#ffffff06;font-size:13px;font-weight:500;letter-spacing:0;color:#cfcfd6;border-radius:999px;text-align:left}
