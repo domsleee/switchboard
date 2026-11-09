@@ -20,7 +20,7 @@ function closeTabTarget(item){
     closing.entry.closeError=null;
     closing.entry.closingTabs??=new Map();
     closing.entry.closingTabs.set(closing.key,closing);
-    if(wasSelected&&next)activate(next,false);else render();
+    if(wasSelected&&next)activate(next,false,false);else render();
     try{
       const {host,session}=closing;
       const response=await fetch(`/api/hosts/${encodeURIComponent(host)}/close-tab`,{
