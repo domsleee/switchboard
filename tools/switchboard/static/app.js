@@ -3088,8 +3088,9 @@ window.SwitchboardConversation?.install({
   viewed:acknowledgeConversation,
   newTabHere:place=>openNewTabDialog(false,place),
   notSent(key){if(submittedTurns.delete(key))refreshAttention();},
-  sending(view,command){
-    if(!command)submittedTurn(view.host,view.session,view.pane);
+  sending(view,command,native){
+    // Native input can wait in Codex's queue without starting a turn.
+    if(!command&&!native)submittedTurn(view.host,view.session,view.pane);
     const item=allTabs(true).find(item=>item.entry.host===view.host&&item.entry.name===view.session&&item.tab.panes.some(p=>!p.is_plugin&&p.pane_id===view.pane));
     if(item&&parkedTab(item)){delete parkedTabs[canonKey(item.key)];saveParkedTabs();render();}
   },
