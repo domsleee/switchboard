@@ -1,10 +1,13 @@
 //! A per-session process that owns terminals so an engine can be replaced
 //! without losing them. See docs/SWITCHBOARD_TERMINAL_HOST.md.
+mod boundary;
 mod buffer;
 mod client;
 pub mod host;
 mod protocol;
 
+#[allow(unused_imports)] // Used once engines can hand a session over.
+pub(crate) use boundary::SequenceTracker;
 pub(crate) use client::HostedPtyBackend;
 
 use interprocess::local_socket::{prelude::*, Listener, ListenerOptions, Stream};

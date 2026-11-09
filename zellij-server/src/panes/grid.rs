@@ -889,9 +889,14 @@ pub struct Grid {
     osc133_command_selection: bool,
     command_output_flash: Option<Selection>,
     word_separators: String,
+    /// Honours the private sequences of a handoff snapshot.
+    restoring_handoff: bool,
 }
 
 impl Grid {
+    pub fn set_restoring_handoff(&mut self, restoring: bool) {
+        self.restoring_handoff = restoring;
+    }
     pub fn set_pane_default_colors(&mut self, fg: Option<String>, bg: Option<String>) {
         // Parse inputs; anything that isn't literal RGB (palette
         // index / named colour / parse failure) is silently dropped so
@@ -1262,6 +1267,7 @@ impl Grid {
             osc133_command_selection: true,
             command_output_flash: None,
             word_separators: DEFAULT_WORD_SEPARATORS.to_owned(),
+            restoring_handoff: false,
         }
     }
     pub fn set_selection_options(&mut self, osc133_command_selection: bool, word_separators: &str) {
@@ -4576,6 +4582,22 @@ impl Perform for Grid {
             return;
         }
 
+        if self.restoring_handoff && params[0] == handoff::RESTORE_OSC {
+            let column = params
+                .get(1)
+                .and_then(|column| std::str::from_utf8(column).ok())
+                .and_then(|column| column.parse().ok());
+            match column {
+                Some(column) => self.cursor.x = column,
+                None => {
+                    if let Some(row) = self.viewport.get_mut(self.cursor.y) {
+                        row.is_canonical = false;
+                    }
+                },
+            }
+            return;
+        }
+
         match params[0] {
             // Set window title.
             b"0" | b"2" => {
@@ -6239,6 +6261,9 @@ impl Row {
 fn is_selection_boundary_character(character: char, word_separators: &str) -> bool {
     character.is_ascii_whitespace() || word_separators.contains(character)
 }
+
+#[path = "./grid_handoff.rs"]
+mod handoff;
 
 #[cfg(test)]
 #[path = "./unit/grid_tests.rs"]
