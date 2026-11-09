@@ -2200,6 +2200,7 @@ $('new-tab-form').onsubmit=async event=>{
   if(newTabHandover)newTabModelMenu.commit();
   const key=$('new-tab-target').value,project=$('new-tab-project').value.trim(),command=ModelPicker.fit(newTabModel(),newTabHostCodexModels(),newTabHostClaudeModels()),text=newTabHandover?newTabHandover.text:newTabCompletions?.expand($('new-tab-prompt').value)??$('new-tab-prompt').value,files=[...newTabFiles],elevated=newTabElevated;
   const handover=newTabHandover?.context,source=newTabHandover?.source;if(newTabHandover&&!handover)return;
+  if(!newTabHandover&&!text.trim()&&!files.length){$('new-tab-error').textContent='Type a prompt to start this chat.';$('new-tab-prompt').focus();return;}
   if(/[\x00-\x08\x0b-\x1f\x7f]/.test(text)||new TextEncoder().encode(text).length>16000){$('new-tab-error').textContent='Use a prompt up to 16 KB without control characters.';return;}
   if(!newTabHandover&&files.length&&newTabAgent(command)!=='claude'&&newTabCommand(text)){$('new-tab-error').textContent='Send commands without attachments.';return;}
   // Check the computer before spending time on uploads.

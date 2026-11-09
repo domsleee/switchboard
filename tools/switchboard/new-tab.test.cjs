@@ -73,11 +73,11 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
       assert.equal(frameBoots,0);assert.equal(await page.locator('#terminals>iframe').count(),0);
       // The + dialog offers the empty machine and creates its session.
       await page.locator('#new-tab').click();assert.equal(await page.locator('#new-tab-target option').count(),1);
+      await page.locator('#new-tab-prompt').fill('Start here');
       await page.locator('#new-tab-form button[type="submit"]').click();
       await page.waitForFunction(()=>document.querySelector('iframe.active')?.contentWindow.creationRequested);
       const input=page.frameLocator('iframe[title="Windows: main"]').locator('#terminal-input');
-      assert.deepEqual(await input.evaluate(()=>window.creationLaunch),{project:'switchboard',command:'codex:gpt-6.1-sol#high',prompt:'',images:[]});
-      assert.notEqual(await page.locator('#tabs .tab-select.selected').getAttribute('data-agent-state'),'Working','A blank agent tab has no submitted task');
+      assert.deepEqual(await input.evaluate(()=>window.creationLaunch),{project:'switchboard',command:'codex:gpt-6.1-sol#high',prompt:'Start here',images:[]});
       await input.evaluate(()=>window.confirmCreation());
       await page.waitForFunction(()=>document.querySelector('#tabs .selected .tab-name')?.textContent==='New shell 1');
       assert.equal(frameBoots,1);
@@ -424,6 +424,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
     assert.equal(await page.locator('#tab-search').inputValue(),'keep searching');
     await page.locator('#tab-search').fill('');
     await page.locator('#new-tab').click();
+    await page.locator('#new-tab-prompt').fill('Start here');
     await page.locator('#new-tab-form button[type="submit"]').click();
     await page.waitForFunction(()=>document.querySelector('iframe.active')?.contentWindow.creationRequested);
     const failureReport=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/diagnostics/new-tab'&&response.request().postDataJSON().outcome==='disconnected');
