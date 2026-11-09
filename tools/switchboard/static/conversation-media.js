@@ -41,13 +41,14 @@
   const icon=name=>{const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 20 20');svg.setAttribute('aria-hidden','true');svg.innerHTML=ICONS[name];return svg;};
   const control=(tag,label,name,className='conversation-viewer-icon')=>{const n=node(tag);if(tag==='button')n.type='button';n.className=className;n.setAttribute('aria-label',label);n.title=label;n.append(icon(name));return n;};
   let dialog,scrim,stage,header,meta,title,count,original,download,zoomButton,previous,next,strip,items=[],index=0,focusBefore,focusRoot,focusUrl;
-  let view={scale:1,x:0,y:0},gesture=null,suppressClick=false,lastTap=null,tapTimer,pointerKind='mouse';
+  let view={scale:1,x:0,y:0},gesture=null,suppressClick=false,lastTap=null,tapTimer,pointerKind='mouse',avifBlob;
   const pointers=new Map();
   const image=()=>stage?.querySelector(':scope>img');
   const shown=()=>stage?.querySelector(':scope>img,:scope>video');
   function pause(root){for(const video of root?.querySelectorAll('video')||[])video.pause();}
+  function releaseAvif(){if(avifBlob){URL.revokeObjectURL(avifBlob);avifBlob=null;}}
   function close(){
-    if(!dialog?.open)return;pause(dialog);dialog.close();stage.replaceChildren();items=[];pointers.clear();gesture=null;clearTimeout(tapTimer);
+    if(!dialog?.open)return;pause(dialog);dialog.close();stage.replaceChildren();releaseAvif();items=[];pointers.clear();gesture=null;clearTimeout(tapTimer);
     dialog.classList.remove('chrome-hidden','zoomed','loading');scrim.style.opacity='';
     const available=node=>node?.isConnected&&!node.disabled&&node.getClientRects().length>0;
     const replacement=[...(focusRoot?.querySelectorAll('[data-conversation-media-url]')||[])].find(node=>node.dataset.conversationMediaUrl===focusUrl&&available(node));
@@ -79,9 +80,25 @@
     if(view.scale>1.001)return zoomTo(1,null,null,true);
     zoomTo(Math.min(6,Math.max(2,img.naturalWidth/Math.max(1,img.offsetWidth))),clientX,clientY,true);
   }
+  // The image comes back if the player fails at any point, which can be after it has started,
+  // so an AVIF this browser cannot play remains the animated image it was. Only the relay's own files are fetched:
+  // a URL in a transcript is untrusted and an image request is all it has ever received.
+  async function playAvif(item,still){
+    if(!item.url.startsWith('/api/hosts/')||!/\.avif$/i.test(item.url))return;
+    const blob=await window.SwitchboardAvifVideo?.(item.url);
+    if(!blob)return;
+    if(still.parentNode!==stage)return URL.revokeObjectURL(blob);
+    const video=node('video');video.className='conversation-viewer-media';video.controls=video.loop=video.muted=video.playsInline=true;video.preload='metadata';video.setAttribute('aria-label',item.label);
+    video.onerror=()=>{if(video.parentNode===stage){video.replaceWith(still);zoomButton.hidden=false;avifBlob=null;}URL.revokeObjectURL(blob);};
+    video.onloadeddata=()=>{
+      if(still.parentNode!==stage)return URL.revokeObjectURL(blob);
+      avifBlob=blob;still.replaceWith(video);view={scale:1,x:0,y:0};gesture=null;zoomButton.hidden=true;dialog.classList.remove('loading');apply();video.play().catch(()=>{});
+    };
+    video.src=blob;
+  }
   function show(direction){
     // A video's taps go to its controls, so a new item always shows the viewer's controls.
-    pause(stage);stage.replaceChildren();view={scale:1,x:0,y:0};gesture=null;scrim.style.opacity='';clearTimeout(tapTimer);dialog.classList.remove('chrome-hidden');
+    pause(stage);stage.replaceChildren();releaseAvif();view={scale:1,x:0,y:0};gesture=null;scrim.style.opacity='';clearTimeout(tapTimer);dialog.classList.remove('chrome-hidden');
     const item=items[index],media=node(item.kind==='video'?'video':'img');
     title.textContent=item.label;count.textContent=`${index+1} / ${items.length}`;
     original.href=download.href=item.url;download.download=item.file||item.label.split(/[\\/]/).pop()||'media';original.hidden=!!item.aspect;
@@ -92,6 +109,7 @@
     else{media.alt=item.label;media.draggable=false;media.decoding='async';media.onload=loaded;}
     media.onerror=()=>{if(media.parentNode!==stage)return;dialog.classList.remove('loading');const failed=node('p','Preview unavailable. Try Open original.');failed.className='conversation-viewer-failed';stage.replaceChildren(failed);};
     media.src=item.url;stage.append(media);apply();
+    if(item.kind!=='video')playAvif(item,media);
     for(const [position,thumb] of [...strip.children].entries()){thumb.setAttribute('aria-current',String(position===index));if(position===index&&dialog.open)thumb.scrollIntoView({block:'nearest',inline:'nearest'});}
     if(items.length>1)for(const neighbour of [items[(index+1)%items.length],items[(index-1+items.length)%items.length]])if(neighbour.kind!=='video')new Image().src=neighbour.url;
   }

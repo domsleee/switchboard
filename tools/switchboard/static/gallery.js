@@ -1,9 +1,33 @@
 // One floating carousel for media from the current terminal. Opening it never
 // navigates the terminal frame or changes the terminal's dimensions.
 (() => {
-  let dialog,items=[],index=0,version=0,previousFocus,displayedUrl,pendingBack;
+  let dialog,items=[],index=0,version=0,previousFocus,displayedUrl,pendingBack,avifBlob,avifLoad=0;
   const fileUrl=(host,path)=>`/api/hosts/${encodeURIComponent(host)}/file?path=${encodeURIComponent(path)}`;
   const isVideo=path=>/\.(?:mp4|webm|mov|m4v)$/i.test(path);
+  // An animated AVIF is an MP4-style track beside a cover image. Given the file itself, a
+  // <video> reports the track's duration but shows only the cover, so seeking does nothing.
+  // Hiding the cover plays the track. Same-length edits keep the file's offsets valid.
+  // Returns a blob URL the caller revokes, or null for a still image or an unreadable file.
+  window.SwitchboardAvifVideo=async url=>{
+    try{
+      const response=await fetch(url);if(!response.ok)return null;
+      const bytes=new Uint8Array(await response.arrayBuffer()),view=new DataView(bytes.buffer);
+      const tag=at=>String.fromCharCode(...bytes.subarray(at,at+4));
+      const put=(at,name)=>bytes.set([...name].map(letter=>letter.charCodeAt(0)),at);
+      if(tag(4)!=='ftyp')return null;
+      // The brands are the first word and every word after the minor version.
+      const brands=[8];for(let at=16;at+4<=view.getUint32(0);at+=4)brands.push(at);
+      if(!brands.some(at=>tag(at)==='avis'))return null;
+      for(const at of brands)if(['avis','avif'].includes(tag(at)))put(at,'isom');
+      for(let at=0;at+8<=bytes.length;){
+        const short=view.getUint32(at),size=short===1?Number(view.getBigUint64(at+8)):short||bytes.length-at;
+        if(tag(at+4)==='meta')put(at+4,'free');
+        if(size<8)return null;
+        at+=size;
+      }
+      return URL.createObjectURL(new Blob([bytes],{type:'video/mp4'}));
+    }catch{return null;}
+  };
   function create(){
     dialog=document.createElement('dialog');dialog.id='image-gallery';
     dialog.setAttribute('aria-label','Media carousel');
@@ -30,11 +54,31 @@
     },{passive:true});
   }
   function unload(){
-    displayedUrl=null;
+    displayedUrl=null;avifLoad++;
     const image=dialog.querySelector('img'),video=dialog.querySelector('video');
-    image.onload=image.onerror=video.onloadedmetadata=video.onerror=null;
+    image.onload=image.onerror=video.onloadedmetadata=video.onloadeddata=video.onerror=null;
     image.removeAttribute('src');image.hidden=true;
-    video.pause();video.removeAttribute('src');video.load();video.hidden=true;
+    video.pause();video.removeAttribute('src');video.load();video.hidden=true;video.loop=video.muted=false;
+    if(avifBlob){URL.revokeObjectURL(avifBlob);avifBlob=null;}
+  }
+  // The image comes back if the player fails at any point, which can be after it has started,
+  // so an AVIF this browser cannot play remains the animated image it was. It loops unprompted,
+  // as that image did.
+  async function playAvif(item){
+    const load=++avifLoad,blob=await window.SwitchboardAvifVideo(item.url);
+    if(!blob)return;
+    if(load!==avifLoad)return URL.revokeObjectURL(blob);
+    const image=dialog.querySelector('img'),video=dialog.querySelector('video');
+    avifBlob=blob;video.loop=video.muted=true;video.setAttribute('aria-label',item.path);
+    video.onloadeddata=()=>{
+      image.onload=image.onerror=null;image.hidden=true;
+      dialog.querySelector('[role="status"]').hidden=true;video.hidden=false;video.play().catch(()=>{});
+    };
+    video.onerror=()=>{
+      video.onloadeddata=video.onerror=null;video.removeAttribute('src');video.load();video.hidden=true;video.loop=video.muted=false;image.hidden=false;
+      URL.revokeObjectURL(blob);avifBlob=null;
+    };
+    video.src=blob;
   }
   function finishClose(){
     version++;unload();items=[];
@@ -75,6 +119,7 @@
     else{img.onload=loaded;img.alt=item.path;}
     media.onerror=()=>{media.hidden=true;status.hidden=false;status.textContent=`Could not load this ${playingVideo?'video':'image'}. Try Open original.`;};
     media.src=item.url;
+    if(/\.avif$/i.test(item.path))playAvif(item);
   }
   window.SwitchboardOpenMedia=async(host,path,paths=[{path}],locate=async path=>path)=>{
     if(!dialog)create();
