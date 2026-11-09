@@ -116,7 +116,6 @@ body.sidebar-collapsed #sidebar-toggle{left:8px}
 #tabs :is(#hidden-toggle,#snoozed-toggle) .star.attention{display:block;background:#f0bc63}
 :is(#hidden-toggle,#snoozed-toggle) .count{margin-left:auto;font-variant-numeric:tabular-nums}
 :is(#hidden-toggle,#snoozed-toggle):focus-visible{outline-offset:-2px}
-#tabs .tab-row.hidden-tab .tab-select:not(.selected):not(:hover){opacity:.7}
 @media (prefers-reduced-motion:reduce){:is(#hidden-toggle,#snoozed-toggle) .chevron{transition:none}}
 #tab-empty{display:grid;grid-template-columns:8px minmax(0,1fr);column-gap:7px;row-gap:8px;align-items:center;padding:16px 16px 4px 4px;font-size:12px;line-height:1.4;color:#9ba7bd;overflow-wrap:anywhere}
 #tab-empty[hidden]{display:none}
