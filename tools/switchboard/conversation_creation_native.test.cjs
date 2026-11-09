@@ -71,7 +71,26 @@ let browser,web,passed=false;const tokens=[];
   assert.equal(first.status(),200,await first.text());
   await waitFor(()=>fs.readFileSync(marker,'utf8').trim()==='created','First tab beside unshared sessions did not run command');
   const firstResult=await first.json();assert.ok(panes(empty).some(p=>p.id===firstResult.pane_id));
+
+  // Hold an attachment bootstrap while its target is still alive, then connect
+  // it only after the session ends. The retained worker must not start a shell.
+  const bootstrap=await writable.request.post(url+'/session?resumable=true&session='+encodeURIComponent(empty));
+  assert.equal(bootstrap.status(),200,await bootstrap.text());
+  const boot=await bootstrap.json();
+  run('kill-session',empty);
+  await waitFor(async()=>!(await catalog()).some(s=>s.name===empty),'Ended session remains in catalog');
+  const delayed=await writable.newPage();
+  await delayed.route('**/session?*',route=>route.fulfill({json:boot}));
+  await delayed.goto(url+'/'+empty);
+  await waitFor(async()=>await delayed.evaluate(()=>!!window.__zjResumeFailure)||(await catalog()).some(s=>s.name===empty),'Delayed attachment did not settle');
+  assert.ok(!(await catalog()).some(s=>s.name===empty),'Delayed viewer recreated the ended session');
+  await delayed.close();
+  for(const resumable of [false,true]){
+    const stale=await writable.request.post(url+`/session?session=${encodeURIComponent(empty)}&resumable=${resumable}`);
+    assert.equal(stale.status(),410,'A stale named URL cannot bootstrap a new session');
+  }
   passed=true;console.log('PASS: authenticated Conversation creates tabs without attaching viewers, resizing the desktop or changing its focus; read-only/unshared access is rejected; a computer without a shared session can start its first one.');
+  console.log('PASS: stale URLs and delayed retained viewers cannot recreate an ended session.');
 }finally{
   if(!passed)try{const current=panes(session);fs.writeFileSync(path.join(dir,'panes.json'),JSON.stringify(current,null,2));for(const pane of current.filter(p=>!p.is_plugin))fs.writeFileSync(path.join(dir,`pane-${pane.id}.txt`),action(session,'dump-screen','-p',String(pane.id)));console.error('Fixture logs:',dir);}catch{}
   if(browser)await browser.close();

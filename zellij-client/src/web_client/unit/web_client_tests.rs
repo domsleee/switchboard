@@ -3190,6 +3190,73 @@ mod web_client_tests {
             "welcome=false must not record a pending welcome session"
         );
     }
+
+    #[tokio::test]
+    #[serial]
+    async fn switchboard_stale_named_viewer_cannot_start_a_session() {
+        let _ = delete_db();
+        let (token, _) = create_token(Some("fixture".into()), false).unwrap();
+        let manager = Arc::new(MockSessionManager::new());
+        let (port, server) = spawn_test_server_with_session_manager(manager.clone()).await;
+        let cookie = login_and_get_session_token(port, &token).await;
+
+        for resumable in [false, true] {
+            let url = format!("http://127.0.0.1:{port}/session?session=ended-fixture&welcome=false&resumable={resumable}");
+            let cookie = cookie.clone();
+            let response = tokio::task::spawn_blocking(move || {
+                isahc::Request::post(url)
+                    .header("Cookie", format!("session_token={cookie}"))
+                    .body(())
+                    .unwrap()
+                    .send()
+                    .unwrap()
+            })
+            .await
+            .unwrap();
+            assert_eq!(response.status(), 410);
+        }
+        assert!(manager.sessions_created.lock().unwrap().is_empty());
+        assert!(manager.first_messages_sent.lock().unwrap().is_empty());
+        server.abort();
+        let _ = delete_db();
+    }
+
+    #[tokio::test]
+    async fn switchboard_viewer_cannot_recreate_a_session_closed_after_bootstrap() {
+        use crate::web_client::{server_listener::zellij_server_listener, types::ConnectionTable};
+
+        let manager = Arc::new(MockSessionManager::new());
+        let os = Box::new(MockClientOsApi::new());
+        let mut table = ConnectionTable::default();
+        table.add_new_client("fixture".into(), os.clone(), false, "owner".into());
+        let stopped = table.get_should_not_reconnect_flag("fixture").unwrap();
+        let (attached, result) = tokio::sync::oneshot::channel();
+        zellij_server_listener(
+            os,
+            Arc::new(Mutex::new(table)),
+            Some("ended-fixture".into()),
+            Config::default(),
+            Options::default(),
+            None,
+            "fixture".into(),
+            manager.clone(),
+            Some(attached),
+            None,
+            None,
+            Default::default(),
+            None,
+            false,
+        );
+
+        // The listener drops its completion sender when it refuses the attachment.
+        assert!(timeout(Duration::from_secs(5), result)
+            .await
+            .unwrap()
+            .is_err());
+        assert!(stopped.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(manager.sessions_created.lock().unwrap().is_empty());
+        assert!(manager.first_messages_sent.lock().unwrap().is_empty());
+    }
 }
 
 #[derive(Debug, Clone)]

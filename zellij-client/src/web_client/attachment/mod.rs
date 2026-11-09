@@ -59,6 +59,8 @@ pub(super) struct ResumeInfo {
 pub(super) struct Attach {
     token: String,
     welcome: bool,
+    #[serde(default)]
+    may_create_session: bool,
 }
 #[derive(Clone)]
 struct Worker {
@@ -72,6 +74,7 @@ struct Viewer {
     input: mpsc::Sender<Delivery>,
     owner: String,
     read_only: bool,
+    may_create_session: bool,
     touched: Mutex<Instant>,
     incoming: Mutex<Option<mpsc::Receiver<Delivery>>>,
     retired: watch::Sender<bool>,
@@ -152,6 +155,7 @@ async fn create(State(worker): State<Worker>, Json(attach): Json<Attach>) -> Res
         input: tx,
         owner,
         read_only,
+        may_create_session: attach.may_create_session,
         touched: Mutex::new(Instant::now()),
         incoming: Mutex::new(Some(rx)),
         retired: watch::channel(false).0,
@@ -470,6 +474,11 @@ async fn attachment(
             viewer.read_only,
             viewer.owner.clone(),
         );
+        table
+            .client_id_to_channels
+            .get_mut(&id)
+            .unwrap()
+            .may_create_session = viewer.may_create_session;
         table.add_client_terminal_tx(&id, stdout);
         table.add_client_control_tx(&id, control);
     }
@@ -817,6 +826,7 @@ mod tests {
             input,
             owner: String::new(),
             read_only: false,
+            may_create_session: false,
             touched: Mutex::new(Instant::now()),
             incoming: Mutex::new(Some(incoming)),
             retired: watch::channel(true).0,

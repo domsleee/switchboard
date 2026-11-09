@@ -226,6 +226,8 @@ const MAX_PENDING_CONTROL_MESSAGES: usize = 64;
 #[derive(Debug, Clone)]
 pub struct ClientChannels {
     pub os_api: Box<dyn ClientOsApi>,
+    /// Only an explicit new-session request may start an engine during attachment.
+    pub may_create_session: bool,
     pub control_channel_tx: Option<UnboundedSender<Message>>,
     pub terminal_channel_tx: Option<UnboundedSender<String>>,
     terminal_channel_cancellation_token: Option<CancellationToken>,
@@ -239,6 +241,7 @@ impl ClientChannels {
     pub fn new(os_api: Box<dyn ClientOsApi>) -> Self {
         ClientChannels {
             os_api,
+            may_create_session: false,
             control_channel_tx: None,
             terminal_channel_tx: None,
             terminal_channel_cancellation_token: None,
