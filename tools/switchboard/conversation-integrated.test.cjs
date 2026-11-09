@@ -29,7 +29,7 @@ test('integrated Conversation journeys use production markup and preserve delive
    if(p==='/api/diagnostics/timing'){f.timings.push(route.request().postDataJSON());return route.fulfill({status:204});}
    if(p.endsWith('/conversation/prepare')){f.preparations.push(route.request().postDataJSON());return route.fulfill({status:f.prepareStatus,json:{trusted:false}});}
    if(p.endsWith('/codex/reply')){
-    const data=route.request().postDataJSON(),id=Number(data.thread.slice(-12));f.requests.push(data);
+    const data=route.request().postDataJSON(),id=Number(data.thread.slice(-12));f.requests.push(data);f.replyStarted?.();
     if(f.replyMode==='failed')return route.fulfill({status:503,json:{status:'failed',detail:'Codex could not accept this answer.'}});
     if(f.replyMode==='unknown')return route.fulfill({status:409,json:{status:'unknown',detail:'Queue outcome is uncertain; this key will not submit again.'}});
     if(f.autoHistory)f.history.get(id).push(f.receipt(data.message));
@@ -819,10 +819,12 @@ test('integrated Conversation journeys use production markup and preserve delive
     await f.select(1);f.tabs=[1,2,3];f.history.set(3,[{role:'user',text:'First task'}]);await f.refresh();
     assert.equal(f.requests.length+f.claudeReplies.length,0);
     const delivered=page.waitForResponse(response=>response.url().endsWith(agent==='codex'?'/codex/reply':'/conversation/reply')&&String(response.request().postDataJSON().message||response.request().postDataJSON().text).startsWith('Also check the logs'));
+    const started=new Promise(resolve=>f.replyStarted=resolve);
     f.replyMode='hold';await f.select(3);
     const replies=agent==='codex'?f.requests:f.claudeReplies;
     if(agent==='codex'){
      await page.waitForFunction(()=>document.querySelector('.conversation-outgoing.sending')&&document.querySelector('.conversation-outgoing.queued'));
+     await started;
      assert.equal(replies.length,1,'The second follow-up waits for confirmation of the first');
      f.replyMode='queue';f.release();
     }
