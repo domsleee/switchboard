@@ -868,12 +868,25 @@ async fn terminal_response(
             target: Option<u32>,
             pane_id: Option<u32>,
             close: bool,
+            #[serde(default)]
+            settle: bool,
         }
         let bytes = to_bytes(request.into_body(), 2048)
             .await
             .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid peer control request"))?;
         let target: Control = serde_json::from_slice(&bytes)
             .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid peer control request"))?;
+        if target.settle {
+            let (Some(pane), None, false) = (target.target, target.pane_id, target.close) else {
+                return Err((StatusCode::BAD_REQUEST, "Invalid peer control target"));
+            };
+            let poll = mesh
+                .attention
+                .get()
+                .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Attention unavailable"))?;
+            control::settle_host(host.clone(), poll.clone(), target.session, pane).await?;
+            return Ok(Json(json!({"ok":true})).into_response());
+        }
         let action = match (target.target, target.pane_id, target.close) {
             (Some(id), None, false) => control::ControlAction::Escape(id),
             (Some(id), None, true) => control::ControlAction::CloseTab(id),

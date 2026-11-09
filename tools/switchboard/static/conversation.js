@@ -245,9 +245,26 @@
     const actions=el('div',undefined,'conversation-actions');actions.append(refresh,latest);list.append(older,working,background);latest.hidden=refresh.hidden=true;
     const form=el('form',undefined,'conversation-compose'),draft=el('textarea'),insert=el('button');draft.rows=1;draft.maxLength=16000;draft.placeholder='Message…';draft.setAttribute('aria-label','Reply draft');insert.type='submit';insert.setAttribute('aria-label','Send');insert.title='Send message';const attach=el('button',undefined,'conversation-attach'),picker=el('input'),files=el('div',undefined,'conversation-attachments');attach.type='button';attach.setAttribute('aria-label','Attach files');attach.title='Attach photos or files';picker.type='file';picker.multiple=true;picker.hidden=true;files.hidden=true;
     const stop=el('button',undefined,'conversation-stop');stop.type='button';stop.setAttribute('aria-label','Stop');stop.title='Interrupt the agent (sends Esc)';
+    // The open terminal socket skips the relay's CLI round trips. Without a live viewer on
+    // that pane the relay sends Esc. The bridge refuses a request past its expiry, well before
+    // this page gives up waiting, so a slow answer cannot lead to a second Esc.
+    const typedEscapes=new Map();let typedEscapeId=0;
+    function typeEscape(destination){
+      const frame=destination.frame?.contentWindow;if(!frame||destination.terminalReady===false)return Promise.resolve(false);
+      return new Promise(resolve=>{
+        const id=++typedEscapeId;typedEscapes.set(id,{frame,resolve});
+        frame.postMessage({type:'zellij-interrupt',id,session:destination.session,pane_id:destination.pane,expires:Date.now()+200},location.origin);
+        setTimeout(()=>{if(typedEscapes.delete(id))resolve(false);},1000);
+      });
+    }
+    window.addEventListener('message',event=>{
+      if(event.origin!==location.origin||event.data?.type!=='zellij-interrupt-result')return;
+      const typed=typedEscapes.get(event.data.id);if(!typed||event.source!==typed.frame)return;
+      typedEscapes.delete(event.data.id);typed.resolve(event.data.ok===true);
+    });
     stop.onclick=async()=>{
       const destination=target;if(!destination?.session||!Number.isInteger(destination.pane))return;stop.disabled=true;
-      try{const response=await fetch('/api/hosts/'+encodeURIComponent(destination.host)+'/escape',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:destination.session,pane_id:destination.pane}),signal:AbortSignal.timeout(10000)});if(!response.ok)throw Error();}
+      try{if(await typeEscape(destination))return;const response=await fetch('/api/hosts/'+encodeURIComponent(destination.host)+'/escape',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:destination.session,pane_id:destination.pane}),signal:AbortSignal.timeout(10000)});if(!response.ok)throw Error();}
       catch{if(identity(target)===identity(destination))sendStatus('Could not interrupt the agent. Open Terminal and press Esc.');}
       finally{stop.disabled=false;}
     };
@@ -965,6 +982,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
     draft.onkeydown=event=>{
       if(event.isComposing)return;
       if(completions.key(event))return;
+      if(event.key==='Escape'&&!event.altKey&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey&&stop.offsetParent&&!stop.disabled){event.preventDefault();stop.click();return;}
       if(event.key==='Enter'&&!event.shiftKey&&!matchMedia('(pointer:coarse)').matches){event.preventDefault();form.requestSubmit();}
     };
     // Enter empties the draft at once so the next message can be typed while this one sends.
@@ -1194,6 +1212,6 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       warmed.delete(key);warmed.set(key,now);if(warmed.size>64)warmed.delete(warmed.keys().next().value);
       void fetch('/api/chats/'+encodeURIComponent(item.chatId)+'?'+new URLSearchParams({host:item.chatHost||item.host,context:'true',limit:firstPage,tail:true})).catch(()=>{});
     };
-    window.SwitchboardConversation.wantsConversation=()=>open;window.SwitchboardConversation.update=update;window.SwitchboardConversation.isOpen=()=>open&&!panel.hidden;window.SwitchboardConversation.focus=focusSurface;window.SwitchboardConversation.showTerminal=()=>show(false);update();
+    window.SwitchboardConversation.wantsConversation=()=>open;window.SwitchboardConversation.update=update;window.SwitchboardConversation.isOpen=()=>open&&!panel.hidden;window.SwitchboardConversation.focus=focusSurface;window.SwitchboardConversation.showTerminal=()=>show(false);window.SwitchboardConversation.interrupt=()=>{if(!stop.offsetParent||stop.disabled)return false;stop.click();return true;};update();
   }};
 })();

@@ -9,7 +9,7 @@ test('integrated Conversation journeys use production markup and preserve delive
  async function fixture(options={}){
   const page=await browser.newPage({viewport:options.viewport||{width:390,height:844},isMobile:!options.desktop,hasTouch:!options.desktop});page.setDefaultTimeout(7000);
   if(options.clock)await page.clock.install();
-  const f={page,errors:[],connections:[],requests:[],preparations:[],claudeReplies:[],claudeReplyStatus:404,history:new Map([[1,options.messages||[{role:'assistant',text:'Review response',model:'gpt-6.1-sol',reasoning_effort:'medium'}]],[2,[{role:'assistant',text:'Second conversation'}]]]),agent:options.agent||'codex',state:'ready',bound:options.bound!==false,model:'gpt-6.1-sol',effort:'medium',replyMode:'queue',autoHistory:false,prepareStatus:200,tabs:[1,2],newTabs:[],releaseReplies:[],releaseImages:[],delayImages:!!options.delayImages};
+  const f={page,escapes:[],settles:[],errors:[],connections:[],requests:[],preparations:[],claudeReplies:[],claudeReplyStatus:404,history:new Map([[1,options.messages||[{role:'assistant',text:'Review response',model:'gpt-6.1-sol',reasoning_effort:'medium'}]],[2,[{role:'assistant',text:'Second conversation'}]]]),agent:options.agent||'codex',state:'ready',bound:options.bound!==false,model:'gpt-6.1-sol',effort:'medium',replyMode:'queue',autoHistory:false,prepareStatus:200,tabs:[1,2],newTabs:[],releaseReplies:[],releaseImages:[],delayImages:!!options.delayImages};
   await page.addInitScript(()=>{localStorage.setItem('switchboard-mobile-view-mode','conversation');localStorage.setItem('switchboard-view-mode','conversation');window.reviewIntervals=[];window.setInterval=fn=>reviewIntervals.push(fn);window.reviewOffset=0;const now=Date.now.bind(Date);Date.now=()=>now()+reviewOffset;window.reviewPastes=[];window.reviewHoldBridge=false;});
   const pane=id=>({pane_id:id,is_plugin:false,tab_id:id,tab_position:id-1,title:'Conversation '+id,is_focused:true,...(f.paneCwd?{cwd:f.paneCwd}:{})});
   const thread=id=>'00000000-0000-4000-8000-'+String(id).padStart(12,'0');
@@ -20,6 +20,8 @@ test('integrated Conversation journeys use production markup and preserve delive
    if(p==='/api/mesh')return json({members:[]});
    if(p==='/api/hosts')return json([{id:'fixture',name:'Fixture desktop',local:true}]);
    if(p==='/api/hosts/fixture')return json({id:'fixture',name:'Fixture desktop',local:true,sessions:[{name:'main',web_clients_allowed:true}]});
+   if(p==='/api/hosts/fixture/escape'){f.escapes.push(route.request().postDataJSON());return json({ok:true});}
+   if(p==='/api/hosts/fixture/settle-interrupt'){f.settles.push(route.request().postDataJSON());return json({ok:true});}
    if(p==='/api/attention'){if(url.searchParams.has('after'))return new Promise(()=>{});return json({tabs:f.tabs.map(id=>({host:'fixture',session:'main',id,position:id-1,name:'Conversation '+id,panes:[pane(id)]})),panes:f.tabs.map(id=>({host:'fixture',session:'main',pane_id:id,...(f.agent?{agent:f.agent}:{}),state:f.state,turn_state:options.turnState,...(f.bound?{chat_id:(f.chatPrefix||'chat-')+id}:{})})),errors:[]});}
    if(p.startsWith('/api/chats/')){const id=Number(p.split('-').at(-1));return json({id:'chat-'+id,...(f.project?{project:f.project}:{}),model:f.model,reasoning_effort:f.effort,session_id:f.agent==='codex'?thread(id):null,messages:f.history.get(id)||[],message_activity:f.activities?.get(id)||[],start_cursor:0,next_cursor:null});}
    if(p.endsWith('/conversation/reply')){f.claudeReplies.push(route.request().postDataJSON());if(f.holdClaudeReply)await new Promise(resolve=>f.releaseReplies.push(resolve));return route.fulfill({status:f.claudeReplyStatus,json:{ok:true}});}
@@ -38,7 +40,7 @@ test('integrated Conversation journeys use production markup and preserve delive
    if(p.endsWith('/new-tab')&&route.request().method()==='POST'){f.newTabs.push(route.request().postDataJSON());if(f.holdCreation)await new Promise(resolve=>f.releaseCreation=resolve);return json({pane_id:3,tab_id:3});}
    if(p.startsWith('/hosts/')){
     f.connections.push(p);
-    return route.fulfill({contentType:'text/html',body:`<script>let active=${JSON.stringify(pane(1))};const state=id=>parent.postMessage({type:'zellij-state',focus_id:id,payload:{session_name:'main',active_pane:active,panes:${JSON.stringify(f.tabs.map(pane))}}},location.origin);addEventListener('message',event=>{const data=event.data;if(data.type==='zellij-focus'){active=${JSON.stringify(f.tabs.map(pane))}.find(p=>p.pane_id===data.pane_id);state(data.focus_id);}else if(data.type==='zellij-conversation-paste'){parent.reviewPastes.push(data);if(!parent.reviewHoldBridge)parent.postMessage({type:'zellij-conversation-paste-result',id:data.id,ok:true},location.origin);}});state();</script>`});
+    return route.fulfill({contentType:'text/html',body:`<script>let active=${JSON.stringify(pane(1))};const state=id=>parent.postMessage({type:'zellij-state',focus_id:id,payload:{session_name:'main',active_pane:active,panes:${JSON.stringify(f.tabs.map(pane))}}},location.origin);addEventListener('message',event=>{const data=event.data;if(data.type==='zellij-focus'){active=${JSON.stringify(f.tabs.map(pane))}.find(p=>p.pane_id===data.pane_id);state(data.focus_id);}else if(data.type==='zellij-conversation-paste'){parent.reviewPastes.push(data);if(!parent.reviewHoldBridge)parent.postMessage({type:'zellij-conversation-paste-result',id:data.id,ok:true},location.origin);}else if(data.type==='zellij-interrupt'){(parent.reviewInterrupts||=[]).push(data);parent.postMessage({type:'zellij-interrupt-result',id:data.id,ok:!parent.reviewRefuseInterrupt},location.origin);}});state();</script>`});
    }
    if(p.startsWith('/api/'))return json({});
    const file=path.join(__dirname,'static',p==='/'?'index.html':p.slice(1));
@@ -549,6 +551,45 @@ test('integrated Conversation journeys use production markup and preserve delive
     await f.select(2);await page.getByText('Second conversation',{exact:true}).waitFor();await f.select(1);await page.getByText(answer,{exact:true}).waitFor();
     assert.equal(await page.locator('.conversation-message.user').count(),3);assert.equal(await notices.count(),3);assert.equal(await first.evaluate(node=>node.open),false);
    }finally{await f.close();}
+  });
+  await t.test('Esc stops a working Claude through its open terminal and leaves Conversation once it is idle',async()=>{
+   const f=await fixture({agent:'claude',desktop:true,viewport:{width:1280,height:900}}),{page}=f;try{
+    await page.getByText('Review response',{exact:true}).waitFor();f.state='working';await f.refresh();
+    const stop=page.getByRole('button',{name:'Stop',exact:true});await stop.waitFor();
+    // Visiting Terminal loads its viewer, which a desktop keeps connected behind Conversation.
+    await page.getByRole('button',{name:'Terminal',exact:true}).click();await page.waitForFunction(()=>document.querySelector('#terminals>iframe.active')?.contentWindow?.location.href.includes('/hosts/'));
+    await page.getByRole('button',{name:'Conversation',exact:true}).click();await stop.waitFor();
+    const interrupts=()=>page.evaluate(()=>(window.reviewInterrupts||[]).length);
+    // From the empty draft and from the page, Esc does what Stop does.
+    await page.getByLabel('Reply draft').focus();await page.keyboard.press('Escape');await page.waitForFunction(()=>window.reviewInterrupts?.length===1);
+    await page.waitForFunction(()=>!document.querySelector('.conversation-stop').disabled);
+    await page.evaluate(()=>document.activeElement.blur());await page.keyboard.press('Escape');await page.waitForFunction(()=>window.reviewInterrupts?.length===2);
+    assert.equal(await page.evaluate(()=>SwitchboardConversation.isOpen()),true);
+    await page.waitForFunction(()=>!document.querySelector('.conversation-stop').disabled);assert.deepEqual(f.escapes,[]);
+    // Without a live viewer on the pane, the relay sends Esc instead.
+    await page.evaluate(()=>{window.reviewRefuseInterrupt=true;});await stop.click();
+    await page.waitForFunction(()=>window.reviewInterrupts?.length===3);
+    await page.waitForFunction(()=>!document.querySelector('.conversation-stop').disabled);
+    assert.deepEqual(f.escapes,[{session:'main',pane_id:1}]);assert.equal(await interrupts(),3);
+    // Esc typed in the terminal asks the relay to read the pane, once per burst.
+    const frame=await (await page.locator('#terminals>iframe.active').elementHandle()).contentFrame();
+    await frame.evaluate(()=>{for(let i=0;i<3;i++)parent.postMessage({type:'zellij-escape-sent',pane_id:1},parent.location.origin);});
+    await page.waitForResponse(response=>response.url().endsWith('/settle-interrupt'));await page.waitForTimeout(50);
+    assert.deepEqual(f.settles,[{session:'main',pane_id:1}]);
+    // Only a burst is merged: interrupting the next turn moments later still asks.
+    await page.waitForTimeout(1050);
+    await frame.evaluate(()=>parent.postMessage({type:'zellij-escape-sent',pane_id:1},parent.location.origin));
+    await page.waitForResponse(response=>response.url().endsWith('/settle-interrupt'));
+    assert.equal(f.settles.length,2);
+   }finally{await f.close();}
+   const idle=await fixture({agent:'claude',desktop:true,viewport:{width:1280,height:900}});try{
+    await idle.page.getByText('Review response',{exact:true}).waitFor();await idle.page.evaluate(()=>document.activeElement.blur());await idle.page.keyboard.press('Escape');
+    await idle.page.waitForFunction(()=>!SwitchboardConversation.isOpen());
+    assert.equal(await idle.page.evaluate(()=>(window.reviewInterrupts||[]).length),0);assert.deepEqual(idle.escapes,[]);
+    const frame=await (await idle.page.locator('#terminals>iframe.active').elementHandle()).contentFrame();
+    await frame.evaluate(()=>parent.postMessage({type:'zellij-escape-sent',pane_id:1},parent.location.origin));await idle.page.waitForTimeout(100);
+    assert.deepEqual(idle.settles,[]);
+   }finally{await idle.close();}
   });
   await t.test('Claude replies go through the relay without leaving Conversation',async()=>{
    const f=await fixture({agent:'claude'}),{page}=f;f.claudeReplyStatus=200;try{

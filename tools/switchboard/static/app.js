@@ -1157,7 +1157,7 @@ function sidebarKeydown(event){
   if(event.key==='Escape'&&!event.altKey&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey){
     if(mobileSidebar.matches&&sidebarOpen){event.preventDefault();sidebarOpen=false;updateSidebar();$('sidebar-toggle').focus();return;}
     if(!$('artifact-preview').hidden){event.preventDefault();$('artifact-back').click();return;}
-    if(globalThis.SwitchboardConversation?.isOpen?.()){event.preventDefault();event.stopImmediatePropagation();globalThis.SwitchboardConversation.showTerminal();return;}
+    if(globalThis.SwitchboardConversation?.isOpen?.()){event.preventDefault();event.stopImmediatePropagation();if(!globalThis.SwitchboardConversation.interrupt())globalThis.SwitchboardConversation.showTerminal();return;}
     const current=allTabs().find(item=>item.key===selected);
     if(current){event.preventDefault();event.stopImmediatePropagation();current.entry.frame.contentWindow.postMessage({type:'zellij-escape'},location.origin);current.entry.frame.focus();}
     return;
@@ -1454,6 +1454,8 @@ window.addEventListener('message',event=>{
     recordTerminalDiagnostic(entry,'terminal-switch',event.data.diagnostic);
   }else if(event.data?.type==='zellij-prompt-submit'){
     submittedTurn(entry.host,entry.name,event.data.pane_id);
+  }else if(event.data?.type==='zellij-escape-sent'){
+    settleInterrupt(entry.host,entry.name,event.data.pane_id);
   }else if(event.data?.type==='zellij-key-diagnostic'){
     recordTerminalDiagnostic(entry,'modified-enter',event.data.diagnostic);
   }else if(event.data?.type==='zellij-browser-resume-diagnostic'||event.data?.type==='zellij-browser-resume-received'){
@@ -2936,6 +2938,15 @@ function showSubmittedTurns(){
     if(!state||Date.now()>=turn.at+SUBMITTED_TURN_MS||state.state!==turn.state||state.token!==turn.token){submittedTurns.delete(key);continue;}
     paneAttention.set(key,{...state,state:'working',since:turn.at/1000});
   }
+}
+// Esc goes straight to the terminal and Claude sends no hook for it, so the relay is asked
+// to read the pane. Only for a working Claude pane: Esc is a common key and this spawns reads.
+const settlingInterrupts=new Set();
+function settleInterrupt(host,session,pane){
+  const key=attentionKey(host,session,pane),state=paneAttention.get(key);
+  if(state?.agent!=='claude'||state.state!=='working'||settlingInterrupts.has(key))return;
+  settlingInterrupts.add(key);setTimeout(()=>settlingInterrupts.delete(key),1000);
+  fetch(`/api/hosts/${encodeURIComponent(host)}/settle-interrupt`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session,pane_id:pane})}).catch(()=>{});
 }
 function submittedTurn(host,session,pane){
   const key=attentionKey(host,session,pane),state=paneAttention.get(key);
