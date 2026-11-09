@@ -1101,6 +1101,21 @@ impl PollState {
             .get(&(session.to_string(), pane.into()))
             .map(|hook| hook.agent)
     }
+    pub(super) fn hooked_chat(&self, session: &str, pane: u32, agent: &str, chat: &str) -> bool {
+        self.hooks
+            .get(&(session.to_owned(), pane.into()))
+            .is_some_and(|hook| hook.agent == agent && hook.chat_id.as_deref() == Some(chat))
+    }
+    #[cfg(test)]
+    pub(super) fn hook_codex_for_test(&mut self, session: &str, pane: u32, chat: &str) {
+        self.hook_claude_for_test(session, pane);
+        let hook = self
+            .hooks
+            .get_mut(&(session.to_owned(), pane.into()))
+            .unwrap();
+        hook.agent = "codex";
+        hook.chat_id = Some(chat.into());
+    }
     #[cfg(test)]
     pub(super) fn hook_claude_for_test(&mut self, session: &str, pane: u32) {
         self.hooks.insert(

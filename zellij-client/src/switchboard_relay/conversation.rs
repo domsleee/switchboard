@@ -6,6 +6,7 @@ use serde::Serialize;
 use std::path::PathBuf;
 pub(super) mod background;
 mod claude_skills;
+pub(super) mod codex;
 pub(super) mod github;
 pub(super) mod prompt;
 
@@ -1711,6 +1712,80 @@ esac
             prompt::local(&host, target()).await.unwrap().0["prompt"],
             Value::Null
         );
+        // Codex replies must reach the actual TUI, including embedded servers
+        // that the shared daemon reports as not loaded.
+        if actions.exists() {
+            recorded();
+        }
+        let chat = "codex-fixture";
+        poll.lock().await.hook_codex_for_test("fixture", 7, chat);
+        std::fs::write(
+            &catalog,
+            r#"[{"id":7,"tab_id":8,"pane_command":"powershell -Command build","is_plugin":false}]"#,
+        )
+        .unwrap();
+        let footer = "\n\n  GPT-6.1-Sol medium · project · ? for shortcuts\n";
+        let codex_empty = format!(
+            "Working (1s • esc to interrupt)\n\n› \x1b[2mAsk Codex to do anything\x1b[m{footer}"
+        );
+        std::fs::write(&screen, &codex_empty).unwrap();
+        std::fs::write(
+            dir.path().join("after---"),
+            format!("› followup\n\n  GPT-6.1-Sol medium · project · tab to queue message\n"),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("after-13"), &codex_empty).unwrap();
+        codex::send(&host, &poll, &target(), chat, "followup", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            recorded(),
+            [
+                "-s fixture action paste -p 7 -- followup",
+                "-s fixture action write -p 7 13"
+            ]
+        );
+        std::fs::write(&screen, &codex_empty).unwrap();
+        assert!(
+            codex::send(&host, &poll, &target(), "codex-other", "wrong thread", None)
+                .await
+                .is_err()
+        );
+        assert!(!actions.exists());
+        for draft in ["Keep this draft", "Ask Codex to do anything", "hi"] {
+            std::fs::write(&screen, format!("› {draft}{footer}")).unwrap();
+            assert!(codex::send(&host, &poll, &target(), chat, "hi", None)
+                .await
+                .is_err());
+            assert!(!actions.exists(), "A terminal draft must not receive Enter");
+        }
+        std::fs::write(&screen, REVIEW).unwrap();
+        assert!(codex::send(&host, &poll, &target(), chat, "hi", None)
+            .await
+            .is_err());
+        assert!(!actions.exists(), "A dialog must not receive a reply");
+        // An input owned before a restart can finish with Enter alone.
+        let key = "resumed-input";
+        assert!(
+            native_messages::outbox::input_ownership(dir.path(), key, "fixture", 7, chat, true)
+                .await
+        );
+        assert!(
+            !native_messages::outbox::input_ownership(dir.path(), key, "fixture", 9, chat, false)
+                .await
+        );
+        std::fs::write(&screen, format!("› followup{footer}")).unwrap();
+        codex::send(
+            &host,
+            &poll,
+            &target(),
+            chat,
+            "followup",
+            Some((dir.path(), key)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(recorded(), ["-s fixture action write -p 7 13"]);
         server.abort();
     }
 }

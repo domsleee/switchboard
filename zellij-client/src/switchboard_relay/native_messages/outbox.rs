@@ -22,6 +22,8 @@ fn open(home: &Path) -> anyhow::Result<Connection> {
     db.execute_batch("CREATE TABLE IF NOT EXISTS receipts (send_key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, status TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS user_outbox (send_key TEXT PRIMARY KEY, thread TEXT NOT NULL, message TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, next_attempt INTEGER NOT NULL DEFAULT 0);
         CREATE INDEX IF NOT EXISTS user_outbox_thread ON user_outbox(thread);
+        CREATE TABLE IF NOT EXISTS user_outbox_input (send_key TEXT PRIMARY KEY, session TEXT NOT NULL, pane INTEGER NOT NULL, chat TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS user_outbox_chat (send_key TEXT PRIMARY KEY, chat TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS user_outbox_completed (send_key TEXT PRIMARY KEY, completed INTEGER NOT NULL)")?;
     Ok(db)
 }
@@ -53,12 +55,33 @@ fn save(home: &Path, target: &Queue) -> anyhow::Result<bool> {
         }
     }
     tx.execute("INSERT INTO user_outbox (send_key,thread,message) VALUES (?1,?2,?3) ON CONFLICT(send_key) DO NOTHING", params![target.send_key,target.thread,target.message])?;
+    // Preserve the exact pane binding before a restart clears the history registry.
+    if let Some(chat) =
+        super::super::chats::thread_info("codex", &target.thread)["chat_id"].as_str()
+    {
+        tx.execute(
+            "INSERT OR REPLACE INTO user_outbox_chat VALUES (?1,?2)",
+            params![target.send_key, chat],
+        )?;
+    }
     tx.execute("INSERT INTO receipts VALUES (?1,?2,'pending') ON CONFLICT(send_key) DO UPDATE SET status='pending'", params![target.send_key,target.fingerprint()])?;
     tx.commit()?;
     Ok(true)
 }
 
 pub(super) async fn accept(home: &Path, target: Queue) -> Response {
+    if target
+        .message
+        .chars()
+        .any(|c| c.is_control() && c != '\n' && c != '\t')
+    {
+        return answer(
+            StatusCode::BAD_REQUEST,
+            "failed",
+            &target.send_key,
+            "Invalid control character in reply; your draft is kept",
+        );
+    }
     let key = target.send_key.clone();
     let home = home.to_owned();
     match tokio::task::spawn_blocking(move || save(&home, &target)).await {
@@ -87,18 +110,20 @@ struct Pending {
     thread: String,
     message: String,
     attempts: u32,
+    chat: Option<String>,
 }
 
 fn pending(home: &Path) -> anyhow::Result<Vec<Pending>> {
     let db = open(home)?;
     // Keep FIFO order within a thread, including while its first message backs off.
-    let mut query = db.prepare("SELECT send_key,thread,message,attempts FROM user_outbox a WHERE next_attempt<=?1 AND NOT EXISTS (SELECT 1 FROM user_outbox b WHERE b.thread=a.thread AND b.rowid<a.rowid) ORDER BY rowid LIMIT 8")?;
+    let mut query = db.prepare("SELECT a.send_key,thread,message,attempts,c.chat FROM user_outbox a LEFT JOIN user_outbox_chat c ON c.send_key=a.send_key WHERE next_attempt<=?1 AND NOT EXISTS (SELECT 1 FROM user_outbox b WHERE b.thread=a.thread AND b.rowid<a.rowid) ORDER BY a.rowid LIMIT 8")?;
     let rows = query.query_map([now()], |row| {
         Ok(Pending {
             key: row.get(0)?,
             thread: row.get(1)?,
             message: row.get(2)?,
             attempts: row.get(3)?,
+            chat: row.get(4)?,
         })
     })?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -113,6 +138,14 @@ fn finish(home: &Path, item: &Pending, delivered: bool) -> anyhow::Result<()> {
             [&item.key],
         )?;
         tx.execute("DELETE FROM user_outbox WHERE send_key=?1", [&item.key])?;
+        tx.execute(
+            "DELETE FROM user_outbox_chat WHERE send_key=?1",
+            [&item.key],
+        )?;
+        tx.execute(
+            "DELETE FROM user_outbox_input WHERE send_key=?1",
+            [&item.key],
+        )?;
         tx.execute(
             "INSERT OR REPLACE INTO user_outbox_completed VALUES (?1,?2)",
             params![item.key, now()],
@@ -134,59 +167,49 @@ fn finish(home: &Path, item: &Pending, delivered: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn submit(home: &Path, item: &Pending) -> bool {
-    let Some((program, path)) = agent_setup::codex_queue_program() else {
-        return false;
-    };
-    let mut command = tokio::process::Command::new(program);
-    command
-        .args([
-            "queue",
-            "--thread",
-            &item.thread,
-            &format!("--message={}", item.message),
-        ])
-        .env("PATH", path)
-        .current_dir(home)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    for key in [
-        "CODEX_THREAD_ID",
-        "ZELLIJ_SESSION_NAME",
-        "ZELLIJ_PANE_ID",
-        "CLAUDECODE",
-    ] {
-        command.env_remove(key);
-    }
-    #[cfg(windows)]
-    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    let started = std::time::Instant::now();
-    let result = match command.spawn() {
-        Ok(mut child) => tokio::time::timeout(Duration::from_secs(60), child.wait())
+pub(in crate::switchboard_relay) fn start(
+    home: PathBuf,
+    state: RelayState,
+) -> tokio::task::JoinHandle<()> {
+    start_worker(home, move |home, item| {
+        let state = state.clone();
+        async move {
+            super::super::conversation::codex::reply(
+                &state,
+                &item.thread,
+                &item.message,
+                item.chat.as_deref(),
+                &home,
+                &item.key,
+            )
             .await
-            .ok()
-            .and_then(Result::ok),
-        Err(_) => None,
-    };
-    let delivered = result.is_some_and(|exit| exit.success());
-    if !delivered {
-        logs::record(
-            "Messages",
-            &format!(
-                "Codex reply retained for retry: attempt={} elapsed_ms={} exit={:?}",
-                item.attempts + 1,
-                started.elapsed().as_millis(),
-                result.and_then(|exit| exit.code())
-            ),
-        );
-    }
-    delivered
+        }
+    })
 }
 
-pub(in crate::switchboard_relay) fn start(home: PathBuf) -> tokio::task::JoinHandle<()> {
-    start_worker(home, |home, item| async move { submit(&home, &item).await })
+/// Ownership survives a failed Enter or restart; it never applies to another pane.
+pub(in crate::switchboard_relay) async fn input_ownership(
+    home: &Path,
+    key: &str,
+    session: &str,
+    pane: u32,
+    chat: &str,
+    claim: bool,
+) -> bool {
+    let (home, key, session, chat) = (
+        home.to_owned(),
+        key.to_owned(),
+        session.to_owned(),
+        chat.to_owned(),
+    );
+    tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
+        let db = open(&home)?;
+        if claim {
+            db.execute("INSERT OR REPLACE INTO user_outbox_input VALUES (?1,?2,?3,?4)", params![key,session,pane,chat])?;
+            return Ok(true);
+        }
+        Ok(db.query_row("SELECT count(*) FROM user_outbox_input WHERE send_key=?1 AND session=?2 AND pane=?3 AND chat=?4", params![key,session,pane,chat], |row| row.get::<_,u32>(0))? == 1)
+    }).await.ok().and_then(Result::ok).unwrap_or(false)
 }
 
 fn start_worker<F, R>(home: PathBuf, submit: F) -> tokio::task::JoinHandle<()>
@@ -420,7 +443,20 @@ mod tests {
         // Reopen after a failed attempt: the first message still precedes the second.
         let items = pending(dir.path()).unwrap();
         assert_eq!(items[0].attempts, 1);
+        db.execute(
+            "INSERT INTO user_outbox_chat VALUES (?1,'codex-fixture')",
+            [&first.send_key],
+        )
+        .unwrap();
+        let items = pending(dir.path()).unwrap();
+        assert_eq!(items[0].chat.as_deref(), Some("codex-fixture"));
         finish(dir.path(), &items[0], true).unwrap();
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM user_outbox_chat", [], |r| r
+                .get::<_, u32>(0))
+                .unwrap(),
+            0
+        );
         assert!(save(dir.path(), &first).unwrap());
         let items = pending(dir.path()).unwrap();
         assert_eq!(items.len(), 1);
