@@ -171,6 +171,27 @@ try {
     $candidate = New-Fixture 'new' 'no-sessions'
     Invoke-SwitchboardWindowsUpdate -Candidate $candidate -Directory $fixture.Directory | Out-Null
     Assert ((Get-SwitchboardReleaseState $fixture.Directory).sha256 -ceq $fixture.NewHash) 'No-session installation failed'
+    # A store other than the installed one must never reach the real PATH copy.
+    $countSyncs = {
+        param($Candidate, $Directory, $Installed)
+        $sync = ${function:Sync-SwitchboardPathBinary}
+        $store = ${function:Get-SwitchboardReleaseDirectory}
+        $script:pathSyncs = 0
+        Set-Item function:script:Sync-SwitchboardPathBinary { $script:pathSyncs++; $false }
+        if ($Installed) { Set-Item function:script:Get-SwitchboardReleaseDirectory ([scriptblock]::Create("'$Directory'")) }
+        try {
+            Invoke-SwitchboardWindowsUpdate -Candidate $Candidate -Directory ($Directory + $(if ($Installed) { '\' } else { '' })) | Out-Null
+            $script:pathSyncs
+        } finally {
+            Set-Item function:script:Sync-SwitchboardPathBinary $sync
+            Set-Item function:script:Get-SwitchboardReleaseDirectory $store
+        }
+    }
+    $candidate = New-Fixture 'new' 'normal'
+    Assert ((& $module $countSyncs $candidate $fixture.Directory $false) -eq 0) 'A fixture store updated the PATH copy'
+    $candidate = New-Fixture 'new' 'normal'
+    Assert ((& $module $countSyncs $candidate $fixture.Directory $true) -eq 1) 'The installed store did not update the PATH copy'
+
     & $module {
         $baseline = @([pscustomobject]@{id=10; started='original'})
         function script:Get-SwitchboardWindowsProcesses { @() }

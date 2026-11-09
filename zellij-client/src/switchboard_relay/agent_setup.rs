@@ -372,6 +372,45 @@ fn claude_hooks_complete(plugin: &Path) -> bool {
     })
 }
 
+/// The `zellij` that command hooks and agents run. Tests never read or replace the real one.
+fn path_copy() -> Option<PathBuf> {
+    (cfg!(windows) && !cfg!(test)).then(|| home().join(".cargo/bin/zellij.exe"))
+}
+
+/// A file that cannot start at all. Reads the header instead of running it: this happens
+/// on every status request, and starting a process can be slow under Defender.
+fn path_copy_damaged(path: &Path) -> bool {
+    use std::io::Read;
+    let mut header = [0; 2];
+    std::fs::File::open(path)
+        .is_ok_and(|mut file| file.read_exact(&mut header).is_err() || header != *b"MZ")
+}
+
+fn note_damaged_path_copy(path: Option<&Path>, missing: &mut Vec<&str>) {
+    if path.is_some_and(path_copy_damaged) {
+        missing.push("zellij on PATH is damaged, so session-start hooks and messages fail");
+    }
+}
+
+/// Swaps in a working copy. The damaged file is retired, as the updater's PATH sync does.
+fn replace_path_copy(path: &Path, binary: &Path) -> Result<(), String> {
+    let directory = path.parent().ok_or("zellij on PATH has no folder")?;
+    let id = format!("{}-{}", std::process::id(), now());
+    let staged = directory.join(format!(".zellij-{id}.exe"));
+    let retired = directory.join(format!("zellij.retired-{id}.exe"));
+    let result = std::fs::copy(binary, &staged)
+        .and_then(|_| std::fs::rename(path, &retired))
+        .and_then(|()| {
+            std::fs::rename(&staged, path).inspect_err(|_| {
+                let _ = std::fs::rename(&retired, path);
+            })
+        });
+    if result.is_err() {
+        let _ = std::fs::remove_file(&staged);
+    }
+    result.map_err(|error| format!("Could not repair zellij on PATH: {error}"))
+}
+
 fn check_claude(dir: &Path) -> Check {
     let records = read_json(&dir.join("plugins/installed_plugins.json"))
         .and_then(|v| v["plugins"][PLUGIN].as_array().cloned())
@@ -410,6 +449,7 @@ fn check_claude(dir: &Path) -> Check {
     if has_prompt_recovery(&settings) {
         missing.push("Slow recovery command runs on every prompt");
     }
+    note_damaged_path_copy(path_copy().as_deref(), &mut missing);
     Check::from_missing(missing)
 }
 
@@ -442,6 +482,7 @@ fn check_copilot(dir: &Path) -> Check {
     if settings["extraKnownMarketplaces"]["switchboard"]["autoUpdate"] != true {
         missing.push("Auto-update off");
     }
+    note_damaged_path_copy(path_copy().as_deref(), &mut missing);
     Check::from_missing(missing)
 }
 
@@ -1162,6 +1203,10 @@ fn verify_plugin_setup(check: Check) -> Result<(), String> {
 }
 
 async fn set_up(agent: Agent) -> Result<(), String> {
+    if let Some(path) = path_copy().filter(|path| path_copy_damaged(path)) {
+        let binary = std::env::current_exe().map_err(|error| error.to_string())?;
+        replace_path_copy(&path, &binary)?;
+    }
     let folders = search_path();
     let dir = agent.home();
     match agent {
@@ -1650,6 +1695,37 @@ pub(super) fn set_up_locally(request: &SetupRequest) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switchboard_health_finds_and_repairs_a_damaged_path_copy() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("zellij.exe");
+        let release = directory.path().join("release.exe");
+        std::fs::write(&release, b"MZ release").unwrap();
+        // What a test's fixture release left on a real computer.
+        std::fs::write(&path, b"new").unwrap();
+        assert!(path_copy_damaged(&path));
+        let mut missing = Vec::new();
+        note_damaged_path_copy(Some(&path), &mut missing);
+        assert_eq!(missing.len(), 1);
+        assert_eq!(Check::from_missing(missing).state, "setup");
+
+        replace_path_copy(&path, &release).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"MZ release");
+        assert!(!path_copy_damaged(&path));
+        let names: Vec<_> = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert!(names.iter().any(|name| name.starts_with("zellij.retired-")));
+        assert!(!names.iter().any(|name| name.starts_with(".zellij-")));
+
+        // A computer without a PATH copy, or one unreadable right now, is not reported.
+        let mut missing = Vec::new();
+        note_damaged_path_copy(Some(&directory.path().join("absent.exe")), &mut missing);
+        note_damaged_path_copy(None, &mut missing);
+        assert!(missing.is_empty());
+    }
 
     #[test]
     fn switchboard_health_advertises_activation_with_a_scheduled_updater() {
