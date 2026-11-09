@@ -131,7 +131,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
       assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-prompt');
       assert.equal(await page.locator('#new-tab-model-menu').isVisible(),false);
       // Escape cancels back to the choice from when the picker opened.
-      await page.keyboard.press('Shift+Tab');await page.keyboard.press('ArrowUp');await page.keyboard.press('Tab');
+      await page.keyboard.press('Shift+Tab');await page.keyboard.press('ArrowUp');
       assert.equal(await page.evaluate(()=>newTabModel()),'codex:gpt-6.1-sol#high');
       await page.keyboard.press('Escape');assert.equal(await page.evaluate(()=>newTabModel()),'codex:gpt-6-luna#high');
       assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-prompt');
@@ -152,21 +152,32 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
       assert.equal(await page.locator('#new-tab-model-menu [role=option]').count(),0);
       await page.keyboard.press('Enter');
       assert.equal(await page.evaluate(()=>newTabModel()),'claude:my-model[1m]#high','An invalid name keeps the earlier choice');
-      // Tab moves to the agent tabs, then effort; arrows change it and Enter keeps it.
-      await page.keyboard.press('Shift+Tab');await page.keyboard.press('Tab');
+      // Left reaches the agent tabs and Tab moves on to effort; arrows change it and Enter keeps it.
+      await page.keyboard.press('Shift+Tab');await page.keyboard.press('ArrowLeft');
       assert.equal(await page.evaluate(()=>document.activeElement.getAttribute('role')),'tab');
       await page.keyboard.press('Tab');
       assert.equal(await page.evaluate(()=>document.activeElement.getAttribute('role')),'radio');
       await page.keyboard.press('ArrowDown');await page.keyboard.press('Enter');
       assert.equal(await page.evaluate(()=>newTabModel()),'claude:my-model[1m]#xhigh');
       assert.equal(await page.locator('#new-tab-model-effort').textContent(),'Extra high');
+      // Tab from the model search takes its highlighted model on to the prompt.
+      await page.keyboard.press('Shift+Tab');await page.keyboard.type('opus 4.6');await page.keyboard.press('Tab');
+      assert.match(await page.evaluate(()=>newTabModel()),/^claude:claude-opus-4-6#/);
+      assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-prompt');
+      assert.equal(await page.locator('#new-tab-model-menu').isVisible(),false);
       await page.evaluate(()=>setNewTabModel('codex:gpt-6.1-sol#high'));
-      // Shift+Tab twice more walks to project, then computer; Tab returns to the prompt.
+      // Shift+Tab walks chat, model, project, computer; Tab walks computer, project, model, chat.
       await page.keyboard.press('Shift+Tab');await page.keyboard.press('Shift+Tab');
       assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-project');
       await page.keyboard.press('Shift+Tab');assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-machine');
       assert.equal(await page.locator('#new-tab-project-popover').isVisible(),false);
+      await page.keyboard.press('Tab');assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-project');
+      assert.equal(await page.locator('#new-tab-project-popover').isVisible(),true);
+      await page.keyboard.press('Tab');assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-model-search');
+      assert.equal(await page.locator('#new-tab-project-popover').isVisible(),false);
+      assert.equal(await page.locator('#new-tab-model-menu').isVisible(),true);
       await page.keyboard.press('Tab');assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-prompt');
+      assert.equal(await page.locator('#new-tab-model-menu').isVisible(),false);
       assert.equal(await page.evaluate(()=>newTabModel()),'codex:gpt-6.1-sol#high','Sol is the default model');
       assert.equal(await page.locator('#new-tab-machine-name').textContent(),'Windows');
       assert.equal(await page.locator('#new-tab-target option').count(),1,'One option per computer even with multiple sessions');
@@ -202,7 +213,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
         await page.locator('#new-tab-projects [role=option]').filter({has:page.locator('span',{hasText:/^Sample$/})}).waitFor();
         assert.deepEqual(await page.locator('#new-tab-projects [role=option] span').allTextContents(),['Sample','Sample.Tools']);
         assert.deepEqual(await page.locator('#new-tab-projects [role=option] small').allTextContents(),['C:/work/Org','C:/work/Org']);
-        await page.keyboard.press('Tab');
+        await page.keyboard.press('Tab');await page.keyboard.press('Escape');
         assert.equal(await page.locator('#new-tab-project-help').textContent(),'C:\\work\\Org\\Sample');
         assert.equal(await page.locator('#new-tab-project-chip-name').textContent(),'Sample');
         assert.equal(await page.locator('#new-tab-project-chip-prefix').isHidden(),true);
@@ -221,7 +232,8 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
         assert.equal(await page.locator('#new-tab-project').inputValue(),'dotfiles');
         assert.equal(await page.locator('#new-tab-project-help').textContent(),'~/git/dotfiles');
         assert.equal(await page.locator('#new-tab-project-chip-name').textContent(),'dotfiles');
-        assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-prompt','Tab returns to the prompt');
+        assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-model-search','Tab moves on to the model');
+        await page.keyboard.press('Tab');assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-prompt','Tab from the model reaches the prompt');
       }
       await page.keyboard.press('Enter');
       await page.waitForFunction(()=>allTabs().find(item=>item.key===selected)?.tab.id==='creating');
@@ -296,6 +308,13 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
     await page.keyboard.press('Escape');
     assert.equal(await page.locator('#new-tab-machine-name').textContent(),'1fern');
     assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-prompt');
+    await page.keyboard.press('Shift+Tab');await page.keyboard.press('Shift+Tab');await page.keyboard.press('Shift+Tab');
+    // Tab from a computer search keeps its match and moves on to the project.
+    await page.keyboard.type('other');await page.keyboard.press('Tab');
+    assert.equal(await page.locator('#new-tab-machine-name').textContent(),'Other');
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-project');
+    assert.equal(await page.locator('#new-tab-machine-menu').isVisible(),false);
+    await page.keyboard.press('Tab');await page.keyboard.press('Tab');assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-prompt');
     await page.keyboard.press('Shift+Tab');await page.keyboard.press('Shift+Tab');await page.keyboard.press('Shift+Tab');
     await page.keyboard.press('2');assert.equal(await page.locator('#new-tab-machine-name').textContent(),'Other');
     await page.keyboard.press('Enter');

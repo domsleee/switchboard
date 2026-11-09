@@ -1824,25 +1824,28 @@ function saveNewTabProject(host,project){try{const saved=JSON.parse(localStorage
 let newTabProjectEdited=false;
 $('new-tab-close').onclick=()=>$('new-tab-dialog').close();
 $('handover-cancel').onclick=()=>$('new-tab-dialog').close();
-// Focus order: Shift+Tab from the prompt walks back through model, project and computer;
-// Tab from any of them returns to the prompt. Tab from the prompt reaches attach, send and close.
+function focusNewTabField(next){newTabModelMenu.close();if(next===$('new-tab-project-chip'))openNewTabProjectPicker();else{closeNewTabProjectPicker(false);next.focus();if(next===$('new-tab-model'))newTabModelMenu.open();}}
+// Focus order: Tab walks computer, project, model and prompt, then attach, send and close;
+// Shift+Tab walks the same order backwards.
 $('new-tab-dialog').addEventListener('keydown',event=>{
   if(newTabHandover)return;
   if(event.key!=='Tab'||event.altKey||event.ctrlKey||event.metaKey)return;
   // This runs before the prompt's own handler, so an open menu claims Tab here.
   if(document.activeElement===$('new-tab-prompt')&&newTabCompletions?.key(event))return;
   const picker=$('new-tab-project-popover'),inPicker=picker.contains(document.activeElement);
-  // In the project search, Tab is the lookup's own (fill, then back to the prompt).
+  // In the project search, Tab is the lookup's own (fill, then on to the model).
   if(inPicker&&!event.shiftKey)return;
   const inModels=$('new-tab-model-menu').contains(document.activeElement);
   // A phone's picker is a modal sheet that keeps Tab to itself.
-  if(inModels&&(newTabModelMenu.modal()||!(event.shiftKey&&document.activeElement===newTabModelMenu.search)))return;
-  const chips=['new-tab-machine','new-tab-project-chip','new-tab-model'];
-  const ring=[...chips,'new-tab-prompt','new-tab-attach','new-tab-submit','new-tab-close'].map($).filter(element=>!element.disabled&&element.getClientRects().length);
-  const from=inPicker?$('new-tab-project-chip'):inModels?$('new-tab-model'):document.activeElement,index=ring.indexOf(from);if(index<0)return;
-  const next=!event.shiftKey&&chips.includes(from.id)?$('new-tab-prompt'):ring[(index+(event.shiftKey?-1:1)+ring.length)%ring.length];
-  event.preventDefault();
-  newTabModelMenu.close();if(next===$('new-tab-project-chip'))openNewTabProjectPicker();else{closeNewTabProjectPicker(false);next.focus();if(next===$('new-tab-model'))newTabModelMenu.open();}
+  if(inModels&&(newTabModelMenu.modal()||document.activeElement!==newTabModelMenu.search))return;
+  const inMachines=$('new-tab-machine-menu').contains(document.activeElement);
+  const ring=['new-tab-machine','new-tab-project-chip','new-tab-model','new-tab-prompt','new-tab-attach','new-tab-submit','new-tab-close'].map($).filter(element=>!element.disabled&&element.getClientRects().length);
+  const from=inPicker?$('new-tab-project-chip'):inModels?$('new-tab-model'):inMachines?$('new-tab-machine'):document.activeElement,index=ring.indexOf(from);if(index<0)return;
+  const next=ring[(index+(event.shiftKey?-1:1)+ring.length)%ring.length];
+  // The picker's search has its own Tab, which must not run after this move.
+  event.preventDefault();event.stopPropagation();
+  if(inModels&&!event.shiftKey)newTabModelMenu.commit();
+  focusNewTabField(next);
 },true);
 // The prompt grows with its text, up to a limit where it scrolls.
 function fitNewTabPrompt(){const input=$('new-tab-prompt');input.style.height='';input.style.height=Math.min(input.scrollHeight+2,Math.max(innerHeight*.4,160))+'px';}
@@ -1954,8 +1957,8 @@ function updateNewTabProject(){
 }
 let newTabProjects=[],newTabProjectMessage='',newTabProjectRequest;
 const newTabProjectLookup=newTabLookup('new-tab-project','new-tab-projects','new-tab-project-lookup',()=>newTabProjects.map(name=>{const path=name.replaceAll('\\','/');return [name,path.includes('/')?path.slice(0,path.lastIndexOf('/')):'',newTabProjectLabel(name)];}),()=>newTabProjectMessage||'No matching folders. Type a name in ~/git or a full path.',()=>{newTabProjectEdited=true;updateNewTabProject();},'new-tab-prompt');
-// Registered after the lookup's own keys: Tab fills the name, then returns to the prompt.
-$('new-tab-project').addEventListener('keydown',event=>{if(event.key==='Tab'&&!event.shiftKey){event.preventDefault();closeNewTabProjectPicker(true);}});
+// Registered after the lookup's own keys: Tab fills the name, then moves on to the model.
+$('new-tab-project').addEventListener('keydown',event=>{if(event.key==='Tab'&&!event.shiftKey){event.preventDefault();focusNewTabField($('new-tab-model'));}});
 // The closest listed name, by containment or a small edit distance.
 function closestNewTabProject(project){
   const query=project.toLowerCase();let best='',bestScore=Infinity;
