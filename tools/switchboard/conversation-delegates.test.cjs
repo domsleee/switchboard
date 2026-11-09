@@ -54,7 +54,7 @@ test('Conversation draws delegated agents as cards that report and open their wo
   assert.match(await view.locator('.conversation-subagent-chip').textContent(),/^Subagent of· Switchboard$/);
   assert.match(await view.locator('.conversation-subagent-prompt summary').textContent(),/Act as the reviewer for this task\.$/);
   assert.equal(await body.getByText('Read the relay closely.').count(),0,'The prompt stays folded to its first line');
-  assert.equal(await view.locator('.conversation-task-status').textContent(),'Worked for 1m 5s');
+  assert.equal(await view.locator('.conversation-task-status').textContent(),'Haiku 5.5 · Worked for 1m 5s');
   await page.setViewportSize({width:1000,height:640});
   const lefts=await Promise.all(['.conversation-subagent-of','.conversation-task-status'].map(selector=>bounds(selector).then(box=>box[0])));assert.equal(lefts[0],lefts[1],'The status sits in the centred column');
   await page.setViewportSize({width:390,height:844});
@@ -69,7 +69,7 @@ test('Conversation draws delegated agents as cards that report and open their wo
   assert.equal(await meta('Council: Sol'),'6.1 Sol · Extra High · Finished');
   await card('Council: Sol').click();await view.locator('.conversation-task-output').waitFor();
   assert.equal(await view.locator('.conversation-task-output').textContent(),'VERDICT: <b>APPROVE</b>\n','Output is text, never markup');
-  assert.equal(await view.locator('.conversation-task-status').textContent(),'Worked for 2m 0s');
+  assert.equal(await view.locator('.conversation-task-status').textContent(),'6.1 Sol · Extra High · Worked for 2m 0s');
   assert.match(await view.locator('.conversation-subagent-prompt summary').textContent(),/codex exec/);assert.equal(await view.locator('.conversation-subagent-chip').count(),1);
   await view.locator('.conversation-task-parent').click();
 

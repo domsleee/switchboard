@@ -433,7 +433,8 @@
     }
     function subagentStatus(view,running){
       const delegate=(chat?.delegates||[]).find(item=>item.id===view.agent.id),started=Date.parse(view.agent.started||delegate?.started)/1000,ended=running?Date.now()/1000:Date.parse(delegate?.ended)/1000,time=started>0&&ended>0?duration(Math.max(0,ended-started)):'';
-      return running?(time?'Working for '+time:'Working'):(time?'Worked for '+time:'Finished');
+      const source=delegate||view.agent,state=running?(time?'Working for '+time:'Working'):(time?'Worked for '+time:'Finished');
+      return [modelName(source),effortName(source.effort),state].filter(Boolean).join(' · ');
     }
     const stepNouns={run:['command','commands'],read:['file','files'],edit:['file','files'],write:['file','files'],search:['time','times'],fetch:['page','pages'],agent:['task','tasks'],tool:['tool','tools']};
     function stepsLabel(steps){
@@ -476,7 +477,7 @@
       const model=delegate?.model?(modelName({model:delegate.model})||delegate.model):'',meta=[model,effortName(delegate?.effort||''),status].filter(Boolean).join(' · ');
       const started=Date.parse(delegate?.started)/1000,ended=running?Date.now()/1000:Date.parse(delegate?.ended)/1000,time=started>0&&ended>0?duration(Math.max(0,ended-started)):'';
       row.classList.toggle('running',running);row.dataset.status=status.toLowerCase();row.disabled=!delegate?.id;
-      row.onclick=delegate?.id?()=>openTask({id:delegate.id,kind:delegate.provider==='codex'?'shell':'agent',delegate:true,description:title,model:delegate.model,started:delegate.started}):null;
+      row.onclick=delegate?.id?()=>openTask({id:delegate.id,kind:delegate.provider==='codex'?'shell':'agent',delegate:true,description:title,model:delegate.model,effort:delegate.effort,started:delegate.started}):null;
       const metaNode=row.querySelector('.conversation-delegate-meta'),timeNode=row.querySelector('.conversation-agent-time');
       if(metaNode.textContent!==meta)metaNode.textContent=meta;if(timeNode.textContent!==time)timeNode.textContent=time;
       row.title=delegate?.id?'See what this agent did':'';row.setAttribute('aria-label',`Delegated agent: ${title}. ${meta}${time?', '+time:''}`);
@@ -1346,7 +1347,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       if(target)drafts.set(identity(target),draft.value);
       if(target&&loaded){conversations.delete(identity(target));conversations.set(identity(target),{chat,messages,startCursor,tailCursor,nextCursor,streamSupported,position:restorePosition?.position??list.scrollTop,follow:restorePosition?.follow??nearBottom()});if(conversations.size>8)conversations.delete(conversations.keys().next().value);}
       window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();
-      costDetails.hidePopover();stopStream();streamSupported=false;restorePosition=null;target=current;liveRun=null;loadRequest?.abort();lastFailure=null;lastDiagnostic='';newOutput=false;sendStatus('');generation++;settle(false,false);settleClears=false;loaded=false;lastPaint=null;busy(false);messages=[];startCursor=tailCursor=0;nextCursor=null;following=true;readingAnchor=null;readingPosition=0;for(const entry of [...rendered.values(),...renderedOutgoing.values()])contentResize?.unobserve(entry.node);rendered.clear();renderedOutgoing.clear();summaries.clear();list.replaceChildren(older,working);older.hidden=true;historyStatus.hidden=true;latest.hidden=refresh.hidden=true;
+      taskDialog.close();costDetails.hidePopover();stopStream();streamSupported=false;restorePosition=null;target=current;liveRun=null;loadRequest?.abort();lastFailure=null;lastDiagnostic='';newOutput=false;sendStatus('');generation++;settle(false,false);settleClears=false;loaded=false;lastPaint=null;busy(false);messages=[];startCursor=tailCursor=0;nextCursor=null;following=true;readingAnchor=null;readingPosition=0;for(const entry of [...rendered.values(),...renderedOutgoing.values()])contentResize?.unobserve(entry.node);rendered.clear();renderedOutgoing.clear();summaries.clear();list.replaceChildren(older,working);older.hidden=true;historyStatus.hidden=true;latest.hidden=refresh.hidden=true;
       chat=target?.chatId?{id:target.chatId,agent:target.agent,title:target.title}:null;
       // The temporary Creating tab identity becomes a pane before it gets a chat.
       // Keep its follow-ups, draft and attachments through both transitions.
