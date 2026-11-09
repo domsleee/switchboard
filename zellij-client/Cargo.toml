@@ -77,7 +77,6 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
-rcgen = "0.14"
 serial_test = "3.0"
 tempfile = "3"
 # `test-util` enables `tokio::time::pause` / `advance`, used by the
