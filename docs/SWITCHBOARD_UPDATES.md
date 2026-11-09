@@ -329,8 +329,8 @@ re-selects the previous release and restarts services on it.
 
 An exclusive file handle prevents concurrent updates. The retained `update.lock`
 file alone does not block future operations. If interruption or a failed pointer
-restore leaves `pending.json`, another update is refused; `-Rollback` restores
-the verified previous selection. A corrupt or missing retained executable fails
+restore leaves `pending.json`, the next update restores the previous selection
+before continuing, and `-Rollback` restores it and stops. A corrupt or missing retained executable fails
 closed and requires manual recovery from a trusted copy. No release cleanup is
 automatic.
 

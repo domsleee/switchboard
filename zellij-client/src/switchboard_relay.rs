@@ -1005,8 +1005,14 @@ fn upstream_path(raw: &str) -> Result<&str, Error> {
     let raw_path = path.split('?').next().unwrap_or(path);
     let decoded = urlencoding::decode(raw_path)
         .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid upstream path"))?;
-    if decoded.trim_start_matches('/').trim_end_matches('/') == "command/login" {
+    let target = decoded.trim_start_matches('/').trim_end_matches('/');
+    if target == "command/login" {
         return Err((StatusCode::FORBIDDEN, "Use the host token file"));
+    }
+    // Relay-to-relay routes. A peer's file served through this proxy would run on the
+    // relay's origin with no sandbox, and so reach every computer's terminals.
+    if target.starts_with("switchboard/") || target.starts_with("mesh/") {
+        return Err((StatusCode::FORBIDDEN, "Not a browser route"));
     }
     if path.starts_with('/') {
         return Err((StatusCode::BAD_REQUEST, "Invalid upstream path"));
@@ -2986,8 +2992,17 @@ mod tests {
             "/hosts/mac/command/login",
             "/hosts/mac/%63ommand/login?x=1",
             "/hosts/mac//evil",
+            "/hosts/mac/switchboard/artifacts/a/page.html",
+            "/hosts/mac/switchboard/files?path=page.html",
+            "/hosts/mac/%73witchboard/html-file?path=page.html",
+            "/hosts/mac/switchboard%2Ffiles?path=page.html",
+            "/hosts/mac/mesh/sync",
         ] {
-            assert!(upstream_path(path).is_err());
+            assert!(upstream_path(path).is_err(), "{path}");
+        }
+        // A session may have either name; its page has no path below the name.
+        for session in ["/hosts/mac/switchboard", "/hosts/mac/mesh?rows=40"] {
+            assert!(upstream_path(session).is_ok(), "{session}");
         }
     }
 

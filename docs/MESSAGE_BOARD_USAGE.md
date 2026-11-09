@@ -29,7 +29,7 @@ The destination uses its relay's `CODEX_HOME` and program search paths, includin
 `tasks.json` PATH and usual installation folders. Custom per-session profiles,
 remote Codex app servers and alternate Codex homes are not selected by requests.
 
-The receiver runs `codex queue --thread UUID --message TEXT` with literal arguments
+The receiver runs `codex queue --thread UUID --message=TEXT` with literal arguments
 and a fixed agent-message preamble distinguishing it from user authorization.
 It neither resumes the thread nor types into a terminal. An inactive thread may
 retain the message until resumed by its owner. Success reports `status: queued`,

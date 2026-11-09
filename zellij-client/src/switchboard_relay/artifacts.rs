@@ -424,7 +424,15 @@ main{{max-width:60rem;margin:0 auto;padding:.75rem 1rem 4rem}}h1{{font-size:1rem
 ul{{list-style:none;padding:0}}a{{color:var(--link);text-decoration:none}}a:hover{{text-decoration:underline}}
 </style></head><body><main><h1>{title}</h1><ul>{rows}</ul></main></body></html>"#
     );
-    ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], page).into_response()
+    (
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            // Scripts stay off. Same-origin keeps its links from being refused as cross-site.
+            (header::CONTENT_SECURITY_POLICY, FILE_MARKDOWN),
+        ],
+        page,
+    )
+        .into_response()
 }
 
 #[derive(Deserialize)]
@@ -584,6 +592,17 @@ async fn remote(
         if let Some(value) = response.headers().get(&name) {
             headers.insert(name, value.clone());
         }
+    }
+    // Only the no-scripts policy of a folder page; any other from a peer is not honoured.
+    if response
+        .headers()
+        .get(header::CONTENT_SECURITY_POLICY)
+        .is_some_and(|policy| policy == FILE_MARKDOWN)
+    {
+        headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(FILE_MARKDOWN),
+        );
     }
     Ok((response.status(), headers, stream(response.into_body())).into_response())
 }
@@ -751,7 +770,12 @@ pub(super) async fn file(
         .any(|prefix| kind.starts_with(prefix))
         || kind.starts_with("image/") && !kind.contains("svg");
     if !inert {
-        let policy = if rendered_markdown {
+        let policy = if rendered_markdown
+            || response
+                .headers()
+                .get(header::CONTENT_SECURITY_POLICY)
+                .is_some_and(|policy| policy == FILE_MARKDOWN)
+        {
             FILE_MARKDOWN
         } else {
             "sandbox"
@@ -1215,7 +1239,18 @@ mod tests {
         let folder = temp.path().join("artifacts/clip");
         let (status, headers, body) = send(folder.to_str().unwrap(), &[]).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(headers[header::CONTENT_SECURITY_POLICY], "sandbox");
+        // Its links reach the viewer only from a same-origin page, as in rendered Markdown.
+        assert_eq!(headers[header::CONTENT_SECURITY_POLICY], FILE_MARKDOWN);
+        // A peer's native HTTPS listener passes that policy on and adds its own to the rest.
+        let mut through_listener = headers.clone();
+        crate::web_client::default_content_security_policy(&mut through_listener);
+        assert_eq!(
+            through_listener[header::CONTENT_SECURITY_POLICY],
+            FILE_MARKDOWN
+        );
+        let mut other = HeaderMap::new();
+        crate::web_client::default_content_security_policy(&mut other);
+        assert!(other.contains_key(header::CONTENT_SECURITY_POLICY));
         let listing = String::from_utf8_lossy(&body);
         let href = |path: &Path| format!("?path={}", urlencoding::encode(path.to_str().unwrap()));
         let images = listing.find(">images/<").unwrap();

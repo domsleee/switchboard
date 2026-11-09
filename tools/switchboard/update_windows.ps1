@@ -48,7 +48,9 @@ if (Test-Path -LiteralPath $handoff) {
 [IO.Directory]::CreateDirectory((Split-Path $handoff)) | Out-Null
 [IO.File]::WriteAllText($handoff, (ConvertTo-Json @{pid=$PID}))
 try {
-    $before = (Get-SwitchboardReleaseState $ReleaseDirectory).sha256
+    # An interrupted update is undone first, so its journal names the real baseline.
+    $journal = Join-Path $ReleaseDirectory 'pending.json'
+    $before = if (Test-Path -LiteralPath $journal) { (Get-Content -LiteralPath $journal -Raw | ConvertFrom-Json).sha256 } else { (Get-SwitchboardReleaseState $ReleaseDirectory).sha256 }
     $result = Invoke-SwitchboardWindowsUpdate -Candidate $Candidate -Directory $ReleaseDirectory -Config $Config -TimeoutSeconds $TimeoutSeconds -Rollback:$Rollback
     try { Restart-Services }
     catch {
