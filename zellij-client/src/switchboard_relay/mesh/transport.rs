@@ -881,6 +881,9 @@ async fn terminal_response(
             _ => return Err((StatusCode::BAD_REQUEST, "Invalid peer control target")),
         };
         control::execute_host(&host, &target.session, action).await?;
+        if let (control::ControlAction::Escape(pane), Some(poll)) = (action, mesh.attention.get()) {
+            control::settle_interrupt(host.clone(), poll.clone(), target.session.clone(), pane);
+        }
         return Ok(Json(json!({"ok":true})).into_response());
     }
     // Login replies contain only native session cookies. Native peer tokens never leave storage.

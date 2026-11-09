@@ -1110,11 +1110,6 @@ impl PollState {
             row["turn_state"] = json!(hooked.state);
             return;
         }
-        // Claude sends no hook when Esc ends a turn, so its last "working" would stand
-        // forever. The hook stays: the next prompt's screen no longer matches.
-        if hooked.agent == "claude" && hooked.state == "working" && row["interrupted"] == true {
-            return;
-        }
         // Claude's next PostToolUse arrives when the approved tool finishes. Its
         // working screen can show that approval was given before that hook arrives.
         // Codex can compact a follow-up before UserPromptSubmit replaces the old Stop.
@@ -1136,6 +1131,20 @@ impl PollState {
             Some(token) => row.insert("token".into(), json!(token)),
             None => row.remove("token"),
         };
+    }
+    /// Ends a Claude turn that Esc interrupted, which no hook reports. The next prompt's
+    /// hook replaces this. "idle" because stopping a turn is not a new result to review.
+    pub(super) fn settle_interrupted(&mut self, session: &str, pane: u64) {
+        if let Some(hook) = self
+            .hooks
+            .get_mut(&(session.to_owned(), pane))
+            .filter(|hook| hook.agent == "claude" && hook.state == "working")
+        {
+            hook.state = "ready";
+            hook.token = Some("idle".to_owned());
+            self.dirty = true;
+            self.hooked.notify_one();
+        }
     }
     /// Records that a viewer reviewed this exact ready result.
     pub(super) fn acknowledge(&mut self, host: &str, session: &str, pane: u64, token: &str) {
@@ -2405,17 +2414,37 @@ esac
     fn claude_turn_ended_by_esc_is_ready_despite_its_last_working_hook() {
         let pane = json!({"pane_command":"claude.exe","title":"✳ Claude Code"});
         let footer = "  ⏵⏵ auto mode on (shift+tab to cycle) · ← 1 agent\n";
-        let state = |screen: String| {
+        let working = || {
             let mut poll = PollState::default();
-            let working = json!({"hook_event_name":"UserPromptSubmit"});
+            let event = json!({"hook_event_name":"UserPromptSubmit"});
             poll.hooks
-                .insert(("main".into(), 3), hook_status("claude", &working).unwrap());
-            let mut row = classify(&pane, &screen);
+                .insert(("main".into(), 3), hook_status("claude", &event).unwrap());
+            poll
+        };
+        let applied = |poll: &mut PollState, mut row: Value| {
             row["session"] = json!("main");
             row["pane_id"] = json!(3);
             poll.apply_hook(&mut row, &json!("claude.exe"));
             row["state"].clone()
         };
+        // What Stop does with the pane's own screen once Esc has been sent.
+        let state = |screen: String| {
+            let mut poll = working();
+            let row = classify(&pane, &screen);
+            if row["interrupted"] == true {
+                poll.settle_interrupted("main", 3);
+            }
+            applied(&mut poll, row)
+        };
+        // An unwatched pane's feed can be arbitrarily old in either direction.
+        let old_marker =
+            json!({"state":"ready","agent":"claude","token":"idle","interrupted":true});
+        assert_eq!(applied(&mut working(), old_marker), "working");
+        let mut stopped = working();
+        stopped.settle_interrupted("main", 3);
+        let old_frame = json!({"state":"working","agent":"claude"});
+        assert_eq!(applied(&mut stopped, old_frame), "ready");
+
         // Claude Code 2.1.319 after Esc, during a tool and while thinking; neither sends a hook.
         let mid_tool = "❯ run ping\n● Bash(ping -n 90 127.0.0.1)\n  ⎿\u{a0} Interrupted · What should Claude do instead?\n\n";
         let thinking = "❯ run sleep\n● The sleep didn't run.\n  ⎿\u{a0} Interrupted · What should Claude do instead?\n\n";
