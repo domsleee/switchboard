@@ -309,8 +309,10 @@ in headers. The relay returns message context in the HTTP response, sharing the
 command hook's identity and delivery cursors. `SessionStart` and background
 message watchers still run `zellij agent-hook --agent claude`, because Claude
 does not support HTTP session-start hooks or HTTP `asyncRewake`. That status replaces
-the screen reading for the pane while it still runs Claude. A `Stop` that lists a
-running background agent or workflow, or a shell started since the previous `Stop`, is
+the screen reading for the pane while it still runs Claude, except that a visible
+approval or question takes priority, including one raised by a background agent.
+A `Stop` that lists a running background agent or workflow, or a shell started since
+the previous `Stop`, is
 `waiting`; Claude starts a new turn when the task ends. Stopping a shell from Claude's
 task list starts no turn and fires no hook, so a shell wait also ends once Claude's idle
 footer has counted no running task for 30 seconds. The relay saves the shells it has
