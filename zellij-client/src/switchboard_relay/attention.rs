@@ -1799,6 +1799,22 @@ struct Hooked {
     idle_since: Option<tokio::time::Instant>,
 }
 
+impl Hooked {
+    fn inherit_process(&mut self, old: &Self) {
+        self.restart = old.restart.clone();
+        self.capturing = old.capturing;
+        self.at = old.at;
+    }
+
+    fn begin_capture(&mut self) -> Option<Self> {
+        if self.restart.is_some() || self.capturing.is_some() || self.chat_id.is_none() {
+            return None;
+        }
+        self.capturing = Some(uuid::Uuid::new_v4());
+        Some(self.clone())
+    }
+}
+
 /// How long, in seconds, a closed pane's saved state is kept.
 const CLOSED_PANE_SECONDS: u64 = 30 * 24 * 3600;
 
@@ -1920,8 +1936,7 @@ pub(super) async fn hook(
             .get(&key)
             .filter(|old| old.chat_id == hook.chat_id && old.agent == agent)
         {
-            hook.restart = old.restart.clone();
-            hook.at = old.at;
+            hook.inherit_process(old);
         }
         // Claude resumes the turn when a background shell exits. One started this turn
         // is a wait (CI, a build, a review); one already running at the previous Stop is
@@ -1943,17 +1958,7 @@ pub(super) async fn hook(
             }
         }
     }
-    if let Some(hook) = &mut next {
-        hook.capturing = (hook.restart.is_none()
-            && matches!(hook.state, "ready" | "working")
-            && hook.chat_id.is_some())
-        .then(uuid::Uuid::new_v4);
-    }
-    let capture = next.clone().filter(|hook| {
-        hook.restart.is_none()
-            && matches!(hook.state, "ready" | "working")
-            && hook.chat_id.is_some()
-    });
+    let capture = next.as_mut().and_then(Hooked::begin_capture);
     // An interrupted Codex turn has no Stop; the screen shows what it left.
     if matches!(event["hook_event_name"].as_str(), Some("SessionEnd")) {
         poll.stop_shells.remove(&key);
@@ -3396,6 +3401,41 @@ esac
         // A late capture cannot resurrect a hook deleted by SessionEnd.
         poll.captured(&("main".into(), 65), &hook, None);
         assert!(poll.hooks.is_empty());
+    }
+
+    #[test]
+    fn switchboard_conversation_capture_survives_a_newer_approval_hook() {
+        let mut working = hook_status("claude", &json!({"hook_event_name":"PostToolUse"})).unwrap();
+        working.chat_id = Some("claude-test-transcript".into());
+        let expected = working.begin_capture().unwrap();
+        assert!(
+            working.begin_capture().is_none(),
+            "Only one capture per conversation"
+        );
+        let mut approval =
+            hook_status("claude", &json!({"hook_event_name":"PermissionRequest"})).unwrap();
+        approval.chat_id = working.chat_id.clone();
+        approval.inherit_process(&working);
+        assert!(
+            approval.begin_capture().is_none(),
+            "Newer state keeps the pending capture"
+        );
+        let key = ("main".into(), 65);
+        let mut poll = PollState::default();
+        poll.hooks.insert(key.clone(), approval);
+        let mut pane = json!({"session":"main","pane_id":65,"state":"unknown"});
+        poll.apply_hook(&mut pane, &json!("cargo test"));
+        assert_eq!(pane["chat_id"], "claude-test-transcript");
+        assert_eq!(pane["state"], "approval");
+        // Even a failed capture must clear the original pending token, without
+        // overwriting the newer approval or leaving the binding immortal.
+        poll.captured(&key, &expected, None);
+        assert!(poll.hooks[&key].capturing.is_none());
+        assert_eq!(poll.hooks[&key].state, "approval");
+        assert!(
+            poll.hooks.get_mut(&key).unwrap().begin_capture().is_some(),
+            "Approval events can recover a missing identity too"
+        );
     }
 
     #[test]
