@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 pub const MAX_OUTPUT_CHUNK: usize = 64 * 1024;
 const MAX_FRAME: usize = 1024 * 1024;
 
@@ -34,6 +34,7 @@ pub struct Hello {
     pub channel: Channel,
 }
 
+#[allow(dead_code)] // The handoff requests are sent once engines can hand over.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Request {
@@ -72,6 +73,21 @@ pub enum Request {
         terminal_id: u32,
         sequence: u64,
     },
+    PauseOutput,
+    ResumeOutput,
+    /// Keeps each terminal's output from its snapshot position until the
+    /// handoff ends. Losing this connection no longer stops anything.
+    BeginHandoff {
+        handoff_id: String,
+        retain_from: Vec<(u32, u64)>,
+    },
+    CommitAdoption {
+        handoff_id: String,
+    },
+    AbortHandoff {
+        handoff_id: String,
+    },
+    Shutdown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,6 +114,11 @@ pub enum Event {
     Welcome {
         protocol: u32,
         host_pid: u32,
+        generation: u64,
+    },
+    /// Follows the last `Output`, with where each terminal's output stopped.
+    OutputPaused {
+        ends: Vec<(u32, u64)>,
     },
     Reply {
         id: u64,
