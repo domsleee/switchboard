@@ -53,47 +53,109 @@ test('A journey that starts after the tab returns is not marked hidden',()=>{
 });
 
 // All HTTP is local fixture data; never attach to user sessions.
-test('The Performance section shows each wait per build with its slowest stages',
+test('Performance dashboard separates browser, destination and build, preserves inspection and stops polling',
   {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
-  const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
+  const {chromium}=require(process.env.PLAYWRIGHT_MODULE),path=require('node:path');
   const browser=await chromium.launch({headless:true});
   try{
     const page=await browser.newPage({viewport:{width:1280,height:900}}),errors=[];page.setDefaultTimeout(5000);
     page.on('pageerror',e=>errors.push(e.message));
-    const series=(over)=>({journey:'conversation_to_terminal',build:'abc12345',target:'Fixture PC',first_seen:2,count:40,p50_ms:120,p95_ms:1800,max_ms:3400,outcomes:{ready:38,left:2},hidden:0,slowest:[],...over});
+    const series=over=>({journey:'conversation_to_terminal',build:'abc12345',target:'Fixture PC',first_seen:2,count:40,p50_ms:120,p95_ms:1800,max_ms:3400,outcomes:{ready:40},hidden:0,slowest:[],...over});
+    let requests=0,fail=false,held;
     let timings={computers:[
-      {name:'Mac',local:true,series:[series({hidden:3,slowest:[{time:Date.now(),elapsed_ms:3400,outcome:'ready',stages:[['socket',3000],['render',400]]}]}),series({journey:'conversation_select',build:'old00000',count:5,p95_ms:900})]},
-      {name:'Windows',series:[]},
+      {name:'Windows',local:true,series:[]},
+      {name:'Mac',series:[series({hidden:3,slowest:[{time:Date.now(),elapsed_ms:3400,outcome:'ready',stages:[['socket',3000],['render',400]]}]}),
+        series({journey:'conversation_select',count:5,p50_ms:16,p95_ms:32,max_ms:32}),
+        series({journey:'conversation_select',target:'Studio',count:2,p50_ms:25,max_ms:30}),
+        series({journey:'conversation_select',build:'old00000',first_seen:1,count:50,p50_ms:900,p95_ms:1000,max_ms:1200})]},
       {name:'Old PC',error:"Timings unavailable on this computer's version"}]};
-    await page.addInitScript(()=>{window.setInterval=()=>0;});
+    await page.addInitScript(()=>{window.setInterval=()=>0;localStorage.setItem('switchboard-performance-computer','Removed PC');});
+    await page.clock.install();
     await page.route('**/*',async route=>{
-      const path=new URL(route.request().url()).pathname;
-      const json=value=>route.fulfill({contentType:'application/json',body:JSON.stringify(value)});
-      if(path==='/api/timings')return timings?json(timings):route.fulfill({status:500,body:''});
-      if(path==='/api/hosts')return json([]);
-      if(path==='/api/attention')return json({tabs:[],panes:[],errors:[]});
-      if(path.startsWith('/api/'))return json({});
-      const file=path==='/'?'index.html':path.slice(1);
-      if(!['index.html','app.js','model-picker.js','close.js','titles.js','style.css','timing.js'].includes(file))return route.fulfill({status:404,body:''});
-      return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
+      const url=new URL(route.request().url()),p=url.pathname;
+      const json=value=>route.fulfill({json:value});
+      if(p==='/api/timings'){requests++;if(held)await new Promise(resolve=>held=resolve);return fail?route.fulfill({status:500,body:''}).catch(()=>{}):json(timings).catch(()=>{});}
+      if(p==='/api/hosts')return json([]);
+      if(p==='/api/attention'){if(url.searchParams.has('after'))return;return json({version:1,tabs:[],panes:[],errors:[]});}
+      if(p.startsWith('/api/'))return json({});
+      const file=p==='/'?'index.html':p.slice(1);
+      if(!['index.html','app.js','model-picker.js','close.js','titles.js','style.css','timing.js','performance.js'].includes(file))return route.fulfill({status:404,body:''});
+      return route.fulfill({path:path.join(__dirname,'static',file),contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html'});
     });
     await page.goto('https://switchboard.test/');
-    await page.locator('#settings').click();await page.getByRole('tab',{name:'Performance'}).click();
-    await page.waitForFunction(()=>document.querySelectorAll('#timings .log-computer').length===3);
-    const rows=page.locator('#timings .timing-series');
-    assert.equal(await rows.count(),2);
-    assert.match(await rows.nth(0).locator('summary').textContent(),/Conversation → Terminal.*Fixture PC · abc12345.*n 40.*p50 120 ms.*p95 1\.8 s.*max 3\.4 s/);
-    assert.match(await rows.nth(1).locator('summary').textContent(),/p95 —/,'Five samples are too few for a p95');
-    await rows.nth(0).locator('summary').click();
-    assert.match(await rows.nth(0).locator('.log-note').textContent(),/ready 38 · left 2 · 3 left out because the page was hidden/);
-    assert.deepEqual(await rows.nth(0).locator('.timing-stage > span:first-child').allTextContents(),['socket','render']);
-    const widths=await rows.nth(0).locator('.timing-track i').evaluateAll(bars=>bars.map(bar=>bar.style.width));
-    assert.equal(Math.round(parseFloat(widths[0])),88,'Each bar is its share of the whole wait');
-    const notes=await page.locator('#timings .log-computer > .log-note').allTextContents();
-    assert.deepEqual(notes,['No timings yet',"Timings unavailable on this computer's version"]);
-    timings=null;
-    await page.locator('#refresh-timings').click();
-    await page.waitForFunction(()=>document.querySelector('#timings .log-note')?.textContent.startsWith('Timings unavailable;'));
+    assert.equal(requests,0,'No dashboard traffic until opened');
+    assert.match(await page.locator('.perf-method').textContent(),/histogram estimates, accurate to about 10%; Worst is exact/);
+    assert.equal(await page.locator('#performance + #settings').count(),1,'Icon sits beside Settings');
+    await page.getByRole('button',{name:'Performance dashboard',exact:true}).click();
+    await page.waitForFunction(()=>document.querySelectorAll('#timing-series details').length===3);
+    assert.equal(await page.locator('#timing-computer').inputValue(),'Mac','Defaults to the computer with measurements when this relay has none');
+    assert.equal(await page.locator('#timing-build').inputValue(),'abc12345');
+    const cached=page.locator('.perf-card[data-journey=conversation_select]');
+    assert.equal(await cached.locator('.perf-value').textContent(),'16 ms – 25 ms','Shows a range of destination medians, never an invented aggregate percentile');
+    assert.match(await cached.locator('.perf-card-meta').textContent(),/7 samples/);
+    assert.match(await page.locator('.perf-card[data-journey=conversation_load]').textContent(),/No samples/);
+    assert.match(await page.locator('#timing-scale').textContent(),/0 – 3\.4 s/);
+    const medianPosition=await cached.locator('.perf-range-median').evaluate(node=>parseFloat(node.style.left));
+    assert.ok(Math.abs(medianPosition-25/3400*100)<0.001,'All comparison marks use the same measured maximum');
+    assert.equal(await page.locator('.perf-card[data-journey=conversation_load] .perf-range').evaluate(node=>node.children.length),0,'Missing samples have no plotted marks');
+    const rows=page.locator('#timing-series details'),terminal=rows.filter({hasText:'Return to terminal'});
+    assert.ok((await page.locator('#timings').boundingBox()).width>640,'Dashboard uses the available desktop width');
+    const medianColumns=await rows.locator('summary').evaluateAll(summaries=>summaries.map(summary=>summary.querySelectorAll('.timing-stat')[1].getBoundingClientRect().x));
+    assert.equal(new Set(medianColumns).size,1,'Desktop median values share one column');
+    assert.match(await terminal.locator('summary').textContent(),/Samples 40.*Median 120 ms.*p95 1\.8 s.*Worst 3\.4 s/);
+    assert.match(await rows.filter({hasText:'Switch conversation'}).first().locator('summary').textContent(),/p95 —/);
+    await terminal.locator('summary').click();
+    assert.match(await terminal.textContent(),/3 excluded because the page was hidden/);
+    assert.deepEqual(await terminal.locator('.timing-stage > span:first-child').allTextContents(),['socket','render']);
+    assert.equal(Math.round(await terminal.locator('.timing-track i').first().evaluate(bar=>parseFloat(bar.style.width))),88);
+    await terminal.locator('summary').focus();
+    const before=requests;await page.clock.runFor(10050);
+    await page.waitForFunction(()=>document.querySelector('#timings').getAttribute('aria-busy')==='false');
+    assert.equal(requests,before+1);assert.equal(await terminal.getAttribute('open'),'');
+    assert.equal(await page.locator('#timing-announcement').textContent(),'','Routine refresh timestamps do not interrupt screen-reader users');
+    assert.equal(await terminal.locator('summary').evaluate(node=>node===document.activeElement),true,'Unchanged refresh preserves keyboard inspection');
+    timings.computers[1].series[0].count++;
+    await page.clock.runFor(10050);await page.waitForFunction(()=>document.querySelector('#timing-series').textContent.includes('Samples 41'));
+    assert.equal(await terminal.getAttribute('open'),'','Changed data preserves expanded rows');
+    assert.equal(await terminal.locator('summary').evaluate(node=>node===document.activeElement),true,'Changed data preserves keyboard focus');
+    await terminal.evaluate(node=>{window.inspectedTimingRow=node;const range=document.createRange();range.selectNodeContents(node.querySelector('.timing-sample small'));getSelection().removeAllRanges();getSelection().addRange(range);window.inspectedTimingText=getSelection().toString();});
+    timings.computers[0].series=[series({count:1})];await page.clock.runFor(10050);
+    await page.waitForFunction(()=>document.querySelector('#timings').getAttribute('aria-busy')==='false');
+    assert.equal(await terminal.evaluate(node=>node===inspectedTimingRow&&getSelection().toString()===inspectedTimingText),true,'Another computer updating cannot replace inspected rows or clear a text selection');
+    timings.computers[0].series=[];await page.locator('#refresh-timings').click();
+    await page.waitForFunction(()=>document.querySelector('#timings').getAttribute('aria-busy')==='false');
+    await page.locator('#refresh-timings').focus();await page.clock.runFor(10050);
+    await page.waitForFunction(()=>document.querySelector('#timings').getAttribute('aria-busy')==='false');
+    assert.equal(await page.locator('#refresh-timings').evaluate(node=>node===document.activeElement),true,'Automatic refresh never disables or blurs Refresh');
+    if(process.env.PERF_SCREENSHOTS){fs.mkdirSync(process.env.PERF_SCREENSHOTS,{recursive:true});await page.locator('#panel').screenshot({path:path.join(process.env.PERF_SCREENSHOTS,'dashboard.png')});}
+    await page.locator('#timing-target').selectOption('Studio');assert.equal(await rows.count(),1);assert.equal(await cached.locator('.perf-value').textContent(),'25 ms');
+    await page.locator('#timing-build').selectOption('old00000');assert.equal(await page.locator('#timing-target').inputValue(),'','Missing destinations reset safely');assert.equal(await cached.locator('.perf-value').textContent(),'900 ms');
+    await page.locator('#timing-computer').selectOption('Windows');assert.match(await page.locator('#timing-series').textContent(),/No timings yet/);
+    await page.locator('#timing-computer').selectOption('Old PC');assert.match(await page.locator('#timing-series').textContent(),/Timings unavailable on this computer/);
+    await page.locator('#timing-computer').selectOption('Mac');assert.equal(await page.locator('#timing-build').inputValue(),'abc12345');
+    fail=true;await page.locator('#refresh-timings').click();await page.locator('#timing-status').filter({hasText:/Refresh failed\. Showing the last measurements/}).waitFor();assert.equal(await rows.count(),3);
+    await page.locator('#timing-target').selectOption('Studio');assert.match(await page.locator('#timing-status').textContent(),/Refresh failed/,'Filtering cannot make stale measurements appear current');
+    await page.locator('#timing-target').selectOption('');
+    fail=false;await page.locator('#refresh-timings').click();await page.waitForFunction(()=>!document.querySelector('#timing-status').classList.contains('perf-stale'));
+    assert.doesNotMatch(await page.locator('#timing-status').textContent(),/failed/,'An unchanged successful refresh clears the stale warning');
+    await page.evaluate(()=>{window.perfHidden=true;Object.defineProperty(document,'hidden',{configurable:true,get:()=>perfHidden});document.dispatchEvent(new Event('visibilitychange'));});
+    const hidden=requests;await page.clock.runFor(20000);assert.equal(requests,hidden,'A background browser tab stops dashboard polling');
+    await page.evaluate(()=>{perfHidden=false;document.dispatchEvent(new Event('visibilitychange'));});
+    await page.waitForFunction(()=>document.querySelector('#timings').getAttribute('aria-busy')==='false');assert.equal(requests,hidden+1,'Returning to the browser refreshes immediately');
+    await page.getByRole('tab',{name:'Settings',exact:true}).click();const stopped=requests;await page.clock.runFor(20000);assert.equal(requests,stopped,'No polling in other sections');
+    await page.getByRole('tab',{name:'Performance',exact:true}).click();await page.waitForFunction(()=>document.querySelector('#timings').getAttribute('aria-busy')==='false');
+    await page.setViewportSize({width:390,height:844});
+    await page.locator('#close-panel').click();await page.evaluate(()=>document.querySelector('#performance').click());
+    await page.waitForFunction(()=>document.querySelector('#timings').getAttribute('aria-busy')==='false');
+    assert.equal(await page.locator('#panel-performance').evaluate(node=>node.scrollWidth<=node.clientWidth),true,'Phone dashboard fits without horizontal scrolling');
+    const selectedTab=await page.locator('#panel-tab-performance').boundingBox();
+    assert.ok(selectedTab.x>=0&&selectedTab.x+selectedTab.width<=390,'The selected phone tab scrolls fully into view');
+    assert.equal(await page.locator('#timing-build').evaluate(node=>getComputedStyle(node).fontSize),'16px','Phone controls avoid focus zoom');
+    const cardRows=await page.locator('.perf-card').evaluateAll(cards=>cards.map(card=>card.getBoundingClientRect().left));
+    assert.equal(new Set(cardRows).size,1,'Phone summaries use readable single-column rows');
+    if(process.env.PERF_SCREENSHOTS)await page.locator('#panel').screenshot({path:path.join(process.env.PERF_SCREENSHOTS,'dashboard-mobile.png')});
+    held=true;await page.locator('#refresh-timings').click();await page.waitForFunction(()=>document.querySelector('#timings').getAttribute('aria-busy')==='true');
+    await page.keyboard.press('Escape');held();held=null;const closed=requests;await page.clock.runFor(20000);assert.equal(requests,closed,'Closing cancels in-flight work and polling');
     assert.deepEqual(errors,[]);
   }finally{await browser.close();}
 });

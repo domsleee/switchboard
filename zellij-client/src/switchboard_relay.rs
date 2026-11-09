@@ -1288,6 +1288,7 @@ async fn asset(request: Request) -> Response {
         | "messages.js"
         | "terminal-diagnostics.js"
         | "timing.js"
+        | "performance.js"
         | "tasks.js"
         | "notifications.js"
         | "sw.js"
@@ -3004,6 +3005,7 @@ mod tests {
             ("/messages.css", "text/css; charset=utf-8"),
             ("/terminal-diagnostics.js", "application/javascript"),
             ("/timing.js", "application/javascript"),
+            ("/performance.js", "application/javascript"),
             ("/predict.js", "application/javascript"),
             ("/thumbnails.js", "application/javascript"),
             ("/conversation.js", "application/javascript"),
