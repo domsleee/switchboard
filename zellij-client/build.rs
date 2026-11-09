@@ -17,7 +17,11 @@ fn main() {
         .chain(git(&["symbolic-ref", "-q", "HEAD"]))
     {
         if let Some(path) = git(&["rev-parse", "--git-path", &name]) {
-            println!("cargo:rerun-if-changed={path}");
+            // A missing watched file makes Cargo rerun this script on every
+            // invocation. Fresh CI clones often have no packed-refs file.
+            if std::path::Path::new(&path).exists() {
+                println!("cargo:rerun-if-changed={path}");
+            }
         }
     }
     for (key, format) in [
