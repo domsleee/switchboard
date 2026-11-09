@@ -1094,7 +1094,10 @@ document.addEventListener('mousedown',event=>{
   event.preventDefault();
 },true);
 function focus(item,background=false) {
-  if(!background)item.entry.keyboardIntent=document.activeElement;
+  if(!background){
+    const origin=document.activeElement;
+    item.entry.keyboardIntent=origin?.closest('input,textarea,select,[contenteditable]')?null:origin;
+  }
   if(item.entry.suspending||item.entry.retirementUnresolved){item.entry.needsFocus=true;return;}
   const conversationOpen=globalThis.SwitchboardConversation?.isOpen?.()||false;
   if(conversationOpen&&!background)globalThis.SwitchboardConversation.focus();
@@ -1131,7 +1134,7 @@ function focus(item,background=false) {
   if(active?.pane_id!==pane.pane_id||active?.is_plugin!==pane.is_plugin)item.entry.frame.contentWindow.SwitchboardClipboard?.clearSelection();
   const focusId=item.entry.focusId=(item.entry.focusId||0)+1;
   if(item.entry.frame.inert || item.entry.requestedPane || active?.pane_id!==pane.pane_id||active?.is_plugin!==pane.is_plugin)item.entry.requestedPane={pane_id:pane.pane_id,is_plugin:pane.is_plugin,focus_id:focusId};
-  const preserveFocus=!!deferKeyboardFocus||conversationOpen||(background&&!!item.entry.focusInitialized&&!fromTabButton);
+  const preserveFocus=item.entry.frame.inert||!!deferKeyboardFocus||conversationOpen||(background&&!!item.entry.focusInitialized&&!fromTabButton);
   item.entry.focusInitialized=true;
   item.entry.frame.contentWindow.postMessage({type:'zellij-focus',pane_id:pane.pane_id,is_plugin:pane.is_plugin,focus_id:focusId,preserve_focus:preserveFocus},location.origin);
 }

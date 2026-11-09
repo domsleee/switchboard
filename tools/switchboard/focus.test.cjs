@@ -610,6 +610,22 @@ for(const deferred of ['search','dialog','preview','window'])test(`a retired vie
   }finally{await browser.close();}
 });
 
+test('search opened again during a shortcut-driven reconnect keeps subsequent keystrokes',
+  {skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
+  const {browser,page,input,pageErrors}=await browserFocusFixture({acknowledge:false});
+  try{
+    await page.evaluate(()=>{const entry=[...sessions.values()][0];terminalTransition(entry,true);entry.needsFocus=true;});
+    await page.keyboard.press('Control+k');await page.keyboard.press('Alt+Digit2');
+    await page.waitForFunction(()=>[...sessions.values()][0].requestedPane?.pane_id===8);
+    await page.keyboard.press('Control+k');await page.keyboard.type('Term');
+    await page.evaluate(()=>[...sessions.values()][0].frame.contentWindow.sendState(8));
+    await page.waitForFunction(()=>![...sessions.values()][0].frame.inert);
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'tab-search');
+    await page.keyboard.type('inal');assert.equal(await page.locator('#tab-search').inputValue(),'Terminal');
+    assert.equal(await input.inputValue(),'');assert.deepEqual(pageErrors,[]);
+  }finally{await browser.close();}
+});
+
 test('restoring typing after reconnect preserves the original switch diagnostic span',
   {skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
   const {browser,page,input,pageErrors}=await browserFocusFixture({diagnostics:true});
