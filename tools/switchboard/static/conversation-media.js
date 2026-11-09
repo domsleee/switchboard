@@ -142,6 +142,8 @@
     zoomButton=control('button','Zoom in','zoomIn');zoomButton.onclick=()=>toggleZoom();
     // Browsers ignore `download` on another origin's file; the new tab keeps Switchboard open.
     download=control('a','Download','download');download.target='_blank';download.rel='noopener noreferrer';original=control('a','Open original','open');original.target='_blank';original.rel='noopener noreferrer';
+    // Chromium can save a dragged DownloadURL as a file. Keep external media's normal link drag.
+    download.ondragstart=event=>{if(new URL(download.href).origin===location.origin)event.dataTransfer.setData('DownloadURL',`application/octet-stream:${download.download.replace(/:/g,'_')}:${download.href}`);};
     const dismiss=control('button','Close','close');dismiss.onclick=close;
     const divider=node('i');divider.className='conversation-viewer-divider';actions.append(zoomButton,download,original,divider,dismiss);header.append(meta,actions);
     previous=control('button','Previous','previous','conversation-viewer-nav previous');next=control('button','Next','next','conversation-viewer-nav next');

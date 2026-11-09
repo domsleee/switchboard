@@ -33,6 +33,9 @@
     dialog.setAttribute('aria-label','Media carousel');
     dialog.innerHTML='<button type="button" class="gallery-close" aria-label="Close media carousel" title="Close · Escape" autofocus>✕</button><div class="gallery-stage"><button type="button" class="gallery-prev" aria-label="Previous media">‹</button><div class="gallery-image"><img alt="" hidden><video controls playsinline preload="metadata" hidden></video><p role="status"></p><footer><span class="gallery-path"></span><span class="gallery-count" aria-live="polite"></span><a target="_blank" rel="noopener noreferrer">Open original</a></footer></div><button type="button" class="gallery-next" aria-label="Next media">›</button></div>';
     document.body.append(dialog);
+    // Chromium can save a dragged DownloadURL as a file, using the current item's original URL.
+    const original=dialog.querySelector('footer a');
+    original.ondragstart=event=>event.dataTransfer.setData('DownloadURL',`application/octet-stream:${items[index].path.split(/[\\/]/).pop().replace(/:/g,'_')}:${original.href}`);
     dialog.querySelector('.gallery-close').onclick=close;
     dialog.querySelector('.gallery-prev').onclick=()=>step(-1);
     dialog.querySelector('.gallery-next').onclick=()=>step(1);
