@@ -163,8 +163,14 @@ returns to an offscreen or folded question, and a submitted answer becomes a
 compact receipt that reopens for review.
 
 Codex replies use `/api/hosts/HOST/codex/reply`, whether idle or working. The destination
-saves the reply in a durable outbox before acknowledging it, then attempts its native
-queue immediately. Failed attempts retry with backoff capped at 15 seconds, and relay
+saves the reply in a durable outbox before acknowledging it, then delivers to the
+exact live Codex pane reported by its transcript hook. It waits for an empty composer,
+checks that the pasted reply has appeared, presses Enter, and confirms submission.
+Enter steers a working turn and submits a new turn at idle. No viewer is attached or
+focused. A terminal draft or dialog keeps the reply saved until the composer is ready;
+recorded input ownership allows an unfinished paste to resume after a relay restart.
+This works with embedded Codex servers, which a separate daemon's `codex queue` cannot
+reach. Failed attempts retry with backoff capped at 15 seconds, and relay
 startup resumes saved replies. Messages to the same thread retain their send order.
 The transcript supplies the native session ID. A retry keeps the same send key;
 repeating it reuses the saved delivery. Old unconfirmed receipts can be recovered by
