@@ -454,7 +454,8 @@ and video paths use the same route for previews. Hovering one in a terminal
 shows it in a popup, and a message on the Messages page shows it inline, read from
 the sender's computer. A media path ends at its extension, so it may contain
 spaces, and drive, UNC, `~/` and `/` roots all match; a space followed by another
-root starts a new path.
+root starts a new path. The file route refuses UNC and device paths, even for a
+click, so text on screen cannot make Windows contact another host.
 
 In a terminal, a relative media path without spaces, such as `out/shot.png`, also
 previews and opens. The page cannot tell which pane printed it, so it asks

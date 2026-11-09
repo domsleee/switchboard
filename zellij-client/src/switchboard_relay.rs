@@ -2741,6 +2741,70 @@ mod tests {
         server.abort();
     }
 
+    #[tokio::test]
+    async fn paired_host_control_gives_up_on_a_peer_that_never_answers() {
+        let upstream = Router::new()
+            .route(
+                "/command/login",
+                post(|| async {
+                    (
+                        [(header::SET_COOKIE, "session_token=peer; Path=/")],
+                        Json(json!({})),
+                    )
+                }),
+            )
+            .route(
+                "/switchboard/control",
+                post(std::future::pending::<Json<Value>>),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+        let token = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(token.path(), "peer-token").unwrap();
+        let mut peer = config(&url);
+        peer.id = "mesh-peer".into();
+        peer.token_file = token.path().to_str().unwrap().into();
+        peer.escape_transport = Some("gateway".into());
+        let mut relay = state(
+            &RelayConfig {
+                browser_origin: None,
+                hosts: vec![],
+                artifact_proxy: None,
+            },
+            8090,
+        )
+        .await
+        .unwrap();
+        relay.hosts = Arc::new([("mesh-peer".into(), Arc::new(Host::new(peer).unwrap()))].into());
+        let id = || RoutePath::<String>("mesh-peer".into());
+        let (escape, close, settle) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(
+                control::escape(
+                    State(relay.clone()),
+                    id(),
+                    Json(serde_json::from_value(json!({"session":"main","pane_id":9})).unwrap()),
+                ),
+                control::close_tab(
+                    State(relay.clone()),
+                    id(),
+                    Json(serde_json::from_value(json!({"session":"main","tab_id":7})).unwrap()),
+                ),
+                control::settle_escape(
+                    State(relay.clone()),
+                    id(),
+                    Json(serde_json::from_value(json!({"session":"main","pane_id":9})).unwrap()),
+                ),
+            )
+        })
+        .await
+        .expect("a silent peer must not hold control requests open");
+        for result in [escape, close, settle] {
+            assert_eq!(result.unwrap_err().0, StatusCode::BAD_GATEWAY);
+        }
+        server.abort();
+    }
+
     #[test]
     fn local_engine_accepts_pinned_local_interfaces_without_trusting_remote_or_dns_hosts() {
         let route = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();

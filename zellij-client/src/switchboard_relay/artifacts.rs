@@ -306,11 +306,22 @@ pub(super) async fn serve_file(root: &Path, path: &str, range: Option<&HeaderVal
     }
 }
 
+/// Any Windows root other than a drive can reach a network share, and merely checking
+/// such a path sends this account's credentials to the host a terminal line named.
+fn leaves_this_computer(path: &Path) -> bool {
+    use std::path::{Component, Prefix};
+    matches!(
+        path.components().next(),
+        Some(Component::Prefix(prefix))
+            if !matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
+    )
+}
+
 /// Any regular file this account can read, by absolute or `~/` path, for the file viewer.
 pub(super) async fn serve_path(path: &str, range: Option<&HeaderValue>) -> Response {
     let Some(expanded) = control::expand_path(path)
         .ok()
-        .filter(|path| path.is_absolute())
+        .filter(|path| path.is_absolute() && !leaves_this_computer(path))
     else {
         return (StatusCode::NOT_FOUND, "File not found").into_response();
     };
@@ -1166,6 +1177,34 @@ mod tests {
             r#"href="?raw""#,
         ] {
             assert!(page.contains(expected), "{expected}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn file_viewer_refuses_paths_that_can_leave_this_computer() {
+        // The device namespace reaches this same local file without any network.
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("shot.png");
+        std::fs::write(&file, "png").unwrap();
+        let file = file.to_str().unwrap();
+        assert_eq!(serve_path(file, None).await.status(), StatusCode::OK);
+        assert_eq!(
+            serve_path(&format!(r"\\.\{file}"), None).await.status(),
+            StatusCode::NOT_FOUND
+        );
+        // Checked without touching the filesystem, so the test never contacts a host.
+        for path in [
+            r"\\attacker.invalid\share\a.png",
+            "//attacker.invalid/share/a.png",
+            r"\\?\UNC\attacker.invalid\share\a.png",
+            r"\\.\UNC\attacker.invalid\share\a.png",
+            r"\\?\GLOBALROOT\Device\Mup\attacker.invalid\share\a.png",
+        ] {
+            assert!(leaves_this_computer(Path::new(path)), "{path}");
+        }
+        for path in [r"C:\out\a.png", "C:/out/a.png", r"\\?\C:\out\a.png"] {
+            assert!(!leaves_this_computer(Path::new(path)), "{path}");
         }
     }
 
