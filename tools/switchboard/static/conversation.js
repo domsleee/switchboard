@@ -102,6 +102,19 @@
   // The / and $ menu shared by the Conversation draft and the New tab prompt. surface() names what
   // the draft talks to: {agent, host, cwd, owner}, or null while it should stay closed.
   const agentCommands={codex:[['rename','Rename this conversation'],['compact','Compact conversation context'],['model','Choose a model'],['permissions','Change permissions'],['status','Show session status'],['skills','Browse skills'],['diff','Show changes'],['review','Review changes'],['resume','Resume a conversation'],['fork','Fork this conversation'],['new','Start a new conversation']],claude:[['rename','Rename this conversation'],['compact','Compact conversation context'],['model','Choose a model'],['permissions','Change permissions'],['status','Show session status'],['help','Show commands'],['clear','Clear conversation context'],['resume','Resume a conversation']]};
+  // As in T3 Code, a command is an ordinary message unless it needs another screen.
+  // Claude draws these as dialogs only its terminal can answer. A name not listed here,
+  // such as a skill the list has not loaded or a bundled one it cannot see, starts a turn.
+  const claudeDialogs=new Set(['add-dir','agents','bashes','bug','config','context','cost','doctor','effort','exit','export','fast','feedback','help','hooks','ide','install-github-app','login','logout','mcp','memory','model','permissions','plugin','privacy-settings','quit','release-notes','resume','rewind','sandbox','stats','status','statusline','tasks','terminal-setup','theme','todos','upgrade','usage','vim']);
+  // These change the session without a reply, so no message or Working state waits for them.
+  const claudeQuiet=new Set(['clear','compact','rename']);
+  function commandRoute(agent,text){
+    const [,command,argument]=/^\s*\/([a-z][\w:.-]*)(?:\s+([\s\S]*))?$/i.exec(text)||[],name=command?.toLowerCase();if(!name)return null;
+    if(agent!=='claude')return 'terminal';
+    // Naming a model sets it directly; only a bare /model opens the picker.
+    if(name==='model'&&argument)return 'quiet';
+    return claudeDialogs.has(name)?'terminal':claudeQuiet.has(name)?'quiet':'turn';
+  }
   function attachCompletions({draft,parent,id,surface,changed}){
     const completions=el('div',undefined,'conversation-completions');completions.id=id;completions.hidden=true;completions.setAttribute('role','listbox');completions.setAttribute('aria-label','Commands and skills');parent.prepend(completions);
     draft.setAttribute('aria-autocomplete','list');draft.setAttribute('aria-controls',id);draft.setAttribute('aria-expanded','false');
@@ -171,17 +184,12 @@
       const current=surface(),items=current?.agent==='claude'?skillLists.get(skillKey(current))?.items:null;if(!items?.length)return text;
       return text.replace(/(^|\s)\$([\w:.-]+)(?=\s|$)/g,(match,space,name)=>{const short=items.filter(item=>item.name.split(':').pop()===name),item=items.find(item=>item.name===name)||(short.length===1?short[0]:null);return item?space+'/'+item.name:match;});
     }
-    // A skill starts an ordinary turn; a built-in command may open a picker in Terminal.
-    function isSkill(text){
-      const current=surface(),name=/^\/([\w:.-]+)/.exec(text)?.[1];if(current?.agent!=='claude'||!name||agentCommands.claude.some(([builtIn])=>builtIn===name))return false;
-      return !!skillLists.get(skillKey(current))?.items?.some(item=>item.name===name);
-    }
     // Claude's list is needed even without the menu: a pasted $skill is still rewritten on send.
     function refreshSkills(){const current=surface();if(current?.agent==='claude'&&document.activeElement===draft)ensureSkills(current);}
     draft.addEventListener('focus',()=>{refreshSkills();paintCompletions();});draft.addEventListener('click',()=>paintCompletions());draft.addEventListener('blur',closeCompletions);
-    return {paint:paintCompletions,close:closeCompletions,key:completionKey,expand:expandSkills,isSkill,refresh:refreshSkills,decorate};
+    return {paint:paintCompletions,close:closeCompletions,key:completionKey,expand:expandSkills,refresh:refreshSkills,decorate};
   }
-  window.SwitchboardConversation={agentIcons,attachCompletions,install({selection,terminal,openConversation=()=>false,modeChanged=()=>{},viewed=()=>{},sending=()=>{},notSent=()=>{},switchModel=null,cancelSwitch=()=>{},idle=()=>{},newTabHere=()=>{}}){
+  window.SwitchboardConversation={agentIcons,attachCompletions,commandRoute,install({selection,terminal,openConversation=()=>false,modeChanged=()=>{},viewed=()=>{},sending=()=>{},notSent=()=>{},switchModel=null,cancelSwitch=()=>{},idle=()=>{},newTabHere=()=>{}}){
     const root=document.getElementById('terminals'),drafts=new Map(),attachments=new Map(),retryKeys=new Map();
     const mobile=matchMedia('(max-width:700px), (pointer:coarse) and (max-width:1000px)').matches;
     const modeKey=mobile?'switchboard-mobile-view-mode':'switchboard-view-mode';
@@ -1228,7 +1236,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       if(retry){retrySend(retry,true);return;}
       const key=identity(target),id='conversation-'+Array.from(crypto.getRandomValues(new Uint32Array(4)),n=>n.toString(16)).join('-');
       const items=outgoing.get(key)||[],failedBridge=!native&&!uploading&&items.find(item=>item.state==='failed'&&!item.native&&sameMessage(item.payload,payload));
-      const sent={id,key,pane:target.key,unbound:!chat,frame:target.frame,text,payload,uploading,byteLimit,files:[...selected],native,command,skill:command&&completions.isSkill(text),host:target.host,thread:chat?.thread,draftRevision:draftVersions.get(key)||0,baseline:failedBridge?failedBridge.baseline:startCursor+messages.length-1,at:failedBridge?failedBridge.at:Date.now(),earlier:failedBridge?failedBridge.earlier:new Set(messages.filter(item=>item.role==='user'&&item.timestamp).map(item=>item.timestamp)),sendKey:id,state:'sending'};
+      const sent={id,key,pane:target.key,unbound:!chat,frame:target.frame,text,payload,uploading,byteLimit,files:[...selected],native,command,route:command?commandRoute(current.agent,text):null,skill:command&&commandRoute(current.agent,text)==='turn',host:target.host,thread:chat?.thread,draftRevision:draftVersions.get(key)||0,baseline:failedBridge?failedBridge.baseline:startCursor+messages.length-1,at:failedBridge?failedBridge.at:Date.now(),earlier:failedBridge?failedBridge.earlier:new Set(messages.filter(item=>item.role==='user'&&item.timestamp).map(item=>item.timestamp)),sendKey:id,state:'sending'};
       if(failedBridge)items[items.indexOf(failedBridge)]=sent;else items.push(sent);
       if(waiting){
         sent.waitingForAgent=true;sent.detachedFiles=true;sent.state='queued';outgoing.set(key,items);takeDraft(sent);
@@ -1283,7 +1291,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       setTimeout(()=>{if(pendingFor(sent.key)===sent)void deliver(sent,sent.target);},delay);
     }
     async function deliver(sent,current){
-      const {native,key,id,payload,skill}=sent,command=sent.command&&!skill;
+      const {native,key,id,payload,skill}=sent,command=sent.command&&!skill,terminal=sent.route==='terminal';
       sent.target=current;
       if(!sent.holds)sending(current,command);
       if(native){
@@ -1292,7 +1300,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       }
       // The relay types Claude replies into the pane, so Conversation stays on screen.
       // Older relays answer 404 and use the terminal below.
-      if(current.agent==='claude'&&!command){
+      if(current.agent==='claude'&&!terminal){
         try{
           const response=await fetch('/api/hosts/'+encodeURIComponent(sent.host)+'/conversation/reply',{method:'POST',keepalive:true,headers:{'Content-Type':'application/json'},body:JSON.stringify({session:current.session,tab_id:current.tab,pane_id:current.pane,text:payload}),signal:AbortSignal.timeout(20000)});
           // An accepted first message starts the connection timer, whatever the pane reads next.
@@ -1308,8 +1316,8 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       }
       // Agents without a native reply API need the visible terminal connection.
       // Attach only after leaving Conversation, then wait for the selected pane.
-      if(!sent.holds&&(command||current.terminalReady===false)){
-        sent.returnHere=!command;sent.modeRevision=modeRevision;sent.navigationRevision=navigationRevision;show(false,true);
+      if(!sent.holds&&(terminal||current.terminalReady===false)){
+        sent.returnHere=!terminal;sent.modeRevision=modeRevision;sent.navigationRevision=navigationRevision;show(false,true);
         const deadline=Date.now()+10000;
         while(pendingFor(key)===sent&&identity(selection())===key&&!selection()?.terminalReady&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,50));
         if(pendingFor(key)!==sent)return;
