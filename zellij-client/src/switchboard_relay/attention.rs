@@ -123,7 +123,23 @@ pub(crate) fn classify(pane: &Value, screen: &str) -> Value {
     // ponytail: agent UI markers, replace with public status events if the CLIs expose them.
     let Some(rules) = AGENTS
         .iter()
-        .find(|a| any(&a.command, &command) || any(&a.title, &title) || any(&a.input_title, &title))
+        // The executable (or its launcher script) precedes the prompt arguments.
+        // Agent names in those arguments must not win by AGENTS' list order.
+        .filter_map(|a| {
+            a.command
+                .iter()
+                .filter_map(|pattern| pattern.find(&command))
+                .map(|found| found.start())
+                .min()
+                .map(|position| (position, a))
+        })
+        .min_by_key(|(position, _)| *position)
+        .map(|(_, a)| a)
+        .or_else(|| {
+            AGENTS
+                .iter()
+                .find(|a| any(&a.title, &title) || any(&a.input_title, &title))
+        })
         .or_else(|| AGENTS.iter().find(|a| all_of_one(&a.screen, text)))
     else {
         return json!({"state":"unknown"});
@@ -1959,7 +1975,7 @@ fn hook_status(agent: &'static str, event: &Value) -> Option<Hooked> {
 /// Receives events through `zellij agent-hook` (and older Claude HTTP hooks).
 /// Command hooks name the agent in `X-Agent`; both name their session and pane in headers. Events
 /// from outside Zellij carry neither and are ignored. `zellij agent-hook` drops
-/// events from an agent that a Claude tool started in the same pane, so it can't
+/// events from an agent that another agent's tool started in the same pane, so it can't
 /// overwrite the pane's own status.
 pub(super) async fn hook(
     State(state): State<RelayState>,
@@ -2114,7 +2130,7 @@ fn hook_request(
 ) -> Option<isahc::Request<Vec<u8>>> {
     use isahc::config::Configurable;
     use std::io::Read;
-    // An agent started from a Claude Code tool shares the pane with that Claude.
+    // A nested CLI shares its caller's pane, not ownership of its conversation.
     if crate::message_board::hooks::nested(agent, &env) {
         return None;
     }
@@ -3571,6 +3587,30 @@ esac
         poll.apply_hook(&mut pane, &json!("zsh"));
         assert!(pane["chat_id"].is_null());
         assert!(poll.hooks.is_empty(), "exited agents lose their binding");
+    }
+
+    #[test]
+    fn switchboard_agent_identity_ignores_other_agents_in_launch_prompt() {
+        // Bottom of a working Codex 0.167 pane captured with dump-screen.
+        // Its launch prompt mentions Copilot; that is not its executable.
+        let screen = "• Working (11m 27s • esc to interrupt)\n\n\
+            › Ask Codex to do anything\n\n\
+            GPT-6.1-Sol high · C:\\project · Example task\n\
+            ← for agents · ? for shortcuts";
+        for command in [
+            r"C:\Users\example\OpenAI\Codex\bin\codex.exe -- launch a copilot session and ask claude",
+            "codex -- ask copilot and claude",
+            "node /opt/codex/bin/codex.js -- ask copilot",
+        ] {
+            assert_eq!(
+                classify(
+                    &json!({"pane_command":command,"title":"⠋ Example task"}),
+                    screen
+                ),
+                json!({"state":"working","agent":"codex"}),
+                "{command}"
+            );
+        }
     }
 
     #[test]
