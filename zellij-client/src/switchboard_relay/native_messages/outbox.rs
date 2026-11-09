@@ -24,7 +24,9 @@ fn open(home: &Path) -> anyhow::Result<Connection> {
         CREATE INDEX IF NOT EXISTS user_outbox_thread ON user_outbox(thread);
         CREATE TABLE IF NOT EXISTS user_outbox_input (send_key TEXT PRIMARY KEY, session TEXT NOT NULL, pane INTEGER NOT NULL, chat TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS user_outbox_chat (send_key TEXT PRIMARY KEY, chat TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS user_outbox_completed (send_key TEXT PRIMARY KEY, completed INTEGER NOT NULL)")?;
+        CREATE TABLE IF NOT EXISTS user_outbox_completed (send_key TEXT PRIMARY KEY, completed INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS user_outbox_native (send_key TEXT PRIMARY KEY, after_message INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS user_outbox_review (send_key TEXT PRIMARY KEY, reason TEXT NOT NULL)")?;
     Ok(db)
 }
 
@@ -83,18 +85,27 @@ pub(super) async fn accept(home: &Path, target: Queue) -> Response {
         );
     }
     let key = target.send_key.clone();
+    let thread = target.thread.clone();
     let home = home.to_owned();
-    match tokio::task::spawn_blocking(move || save(&home, &target)).await {
-        Ok(Ok(true)) => {
+    match tokio::task::spawn_blocking(move || {
+        let saved = save(&home, &target)?;
+        Ok::<_, anyhow::Error>((saved, status(&home, &thread, &target.send_key)))
+    })
+    .await
+    {
+        Ok(Ok((true, Some(review)))) if review["status"] == "review" => {
+            Json(review).into_response()
+        },
+        Ok(Ok((true, _))) => {
             WAKE.notify_one();
             answer(
                 StatusCode::OK,
                 "queued",
                 &key,
-                "Saved for delivery; Switchboard will keep trying until Codex accepts it",
+                "Saved for delivery; acceptance will be checked without replaying an uncertain submission",
             )
         },
-        Ok(Ok(false)) => receipt("conflict", &key),
+        Ok(Ok((false, _))) => receipt("conflict", &key),
         _ => answer(
             StatusCode::SERVICE_UNAVAILABLE,
             "failed",
@@ -102,6 +113,34 @@ pub(super) async fn accept(home: &Path, target: Queue) -> Response {
             "Could not save your message. Your draft is kept; retry sending.",
         ),
     }
+}
+
+pub(super) fn status(home: &Path, thread: &str, key: &str) -> Option<Value> {
+    let db = open(home).ok()?;
+    let detail: Option<String> = db.query_row("SELECT r.reason FROM user_outbox a JOIN user_outbox b ON b.thread=a.thread AND b.rowid<=a.rowid JOIN user_outbox_review r ON r.send_key=b.send_key WHERE a.thread=?1 AND a.send_key=?2 ORDER BY b.rowid LIMIT 1", params![thread,key], |row| row.get(0)).optional().ok()?;
+    if let Some(detail) = detail {
+        return Some(json!({"status":"review","send_key":key,"detail":detail}));
+    }
+    let state: String = db.query_row("SELECT r.status FROM receipts r JOIN user_outbox a ON a.send_key=r.send_key WHERE r.send_key=?1 AND a.thread=?2", params![key,thread], |row| row.get(0)).ok()?;
+    Some(json!({"status":state,"send_key":key}))
+}
+
+async fn review(home: &Path, item: &Pending, legacy: bool) {
+    let (home, key) = (home.to_owned(), item.key.clone());
+    let reason = if legacy {
+        "Saved. An earlier terminal submission is unconfirmed; check the conversation before resending. Later messages remain in order."
+    } else {
+        "Saved. Codex may have accepted this message; waiting for its receipt. It will not be resent automatically. Later messages remain in order."
+    };
+    let _ = tokio::task::spawn_blocking(move || {
+        open(&home)?
+            .execute(
+                "INSERT OR REPLACE INTO user_outbox_review VALUES (?1,?2)",
+                params![key, reason],
+            )
+            .map_err(anyhow::Error::from)
+    })
+    .await;
 }
 
 #[derive(Clone)]
@@ -151,6 +190,14 @@ fn finish(home: &Path, item: &Pending, delivered: bool) -> anyhow::Result<()> {
             [&item.key],
         )?;
         tx.execute(
+            "DELETE FROM user_outbox_native WHERE send_key=?1",
+            [&item.key],
+        )?;
+        tx.execute(
+            "DELETE FROM user_outbox_review WHERE send_key=?1",
+            [&item.key],
+        )?;
+        tx.execute(
             "INSERT OR REPLACE INTO user_outbox_completed VALUES (?1,?2)",
             params![item.key, now()],
         )?;
@@ -175,45 +222,165 @@ pub(in crate::switchboard_relay) fn start(
     home: PathBuf,
     state: RelayState,
 ) -> tokio::task::JoinHandle<()> {
+    let sender = Arc::new(super::codex_queue::Sender::default());
     start_worker(home, move |home, item| {
+        let sender = sender.clone();
         let state = state.clone();
         async move {
-            super::super::conversation::codex::reply(
-                &state,
-                &item.thread,
-                &item.message,
-                item.chat.as_deref(),
-                &home,
-                &item.key,
-            )
-            .await
+            let Some(host) = state
+                .all_hosts()
+                .into_iter()
+                .find(|host| host.is_local_engine())
+            else {
+                return false;
+            };
+            if super::super::control::require_writable_host(&host)
+                .await
+                .is_err()
+            {
+                delivery_log(
+                    &item,
+                    "writable-authentication-required; original message remains saved",
+                );
+                return false;
+            }
+            submit_native(&sender, &home, &item).await
         }
     })
 }
 
-/// Ownership survives a failed Enter or restart; it never applies to another pane.
-pub(in crate::switchboard_relay) async fn input_ownership(
-    home: &Path,
-    key: &str,
-    session: &str,
-    pane: u32,
-    chat: &str,
-    claim: bool,
-) -> bool {
-    let (home, key, session, chat) = (
-        home.to_owned(),
-        key.to_owned(),
-        session.to_owned(),
-        chat.to_owned(),
-    );
-    tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
-        let db = open(&home)?;
-        if claim {
-            db.execute("INSERT OR REPLACE INTO user_outbox_input VALUES (?1,?2,?3,?4)", params![key,session,pane,chat])?;
-            return Ok(true);
+async fn submit_native(sender: &super::codex_queue::Sender, home: &Path, item: &Pending) -> bool {
+    let (directory, key) = (home.to_owned(), item.key.clone());
+    let attempt = tokio::task::spawn_blocking(move || -> anyhow::Result<(Option<usize>, bool)> {
+        let db = open(&directory)?;
+        let after = db
+            .query_row(
+                "SELECT after_message FROM user_outbox_native WHERE send_key=?1",
+                [&key],
+                |row| row.get::<_, usize>(0),
+            )
+            .optional()?;
+        let legacy = db.query_row(
+            "SELECT count(*) FROM user_outbox_input WHERE send_key=?1",
+            [&key],
+            |row| row.get::<_, u32>(0),
+        )? != 0;
+        Ok((after, legacy))
+    })
+    .await;
+    let Ok(Ok((after, legacy))) = attempt else {
+        return false;
+    };
+    if legacy
+        && item.chat.as_deref().is_some_and(|chat| {
+            chats::thread_info("codex", &item.thread)["chat_id"].as_str() != Some(chat)
+        })
+    {
+        return false;
+    }
+    // Retrying a question can create another browser key without old paste
+    // ownership. Its native question-ID/answer set still identifies the answer.
+    // Ordinary input without a checkpoint deliberately never matches here.
+    {
+        let (thread, text) = (item.thread.clone(), item.message.clone());
+        if tokio::task::spawn_blocking(move || chats::user_reply_received(&thread, &text, after))
+            .await
+            .unwrap_or(false)
+        {
+            return true;
         }
-        Ok(db.query_row("SELECT count(*) FROM user_outbox_input WHERE send_key=?1 AND session=?2 AND pane=?3 AND chat=?4", params![key,session,pane,chat], |row| row.get::<_,u32>(0))? == 1)
-    }).await.ok().and_then(Result::ok).unwrap_or(false)
+        if after.is_some() || legacy {
+            review(home, item, legacy).await;
+        }
+    }
+    let key = format!("switchboard:{}", item.key);
+    match sender.queued(&item.thread, &key, &item.message).await {
+        Ok(true) => return true,
+        Ok(false) => {},
+        Err(error) => {
+            delivery_log(
+                item,
+                &format!("native-queue-unavailable ({error:?}); reply remains saved"),
+            );
+            return false;
+        },
+    }
+    // An uncertain add may already be between the native queue and transcript.
+    // Keep reconciling it; never append another copy or press Enter in a draft.
+    if after.is_some() || legacy {
+        review(home, item, legacy).await;
+        delivery_log(
+            item,
+            if legacy {
+                "legacy-paste-unconfirmed; original input remains saved"
+            } else {
+                "native-add-unconfirmed; awaiting queue/transcript receipt"
+            },
+        );
+        return false;
+    }
+    let thread = item.thread.clone();
+    let Some(checkpoint) =
+        tokio::task::spawn_blocking(move || chats::user_reply_checkpoint(&thread))
+            .await
+            .ok()
+            .flatten()
+    else {
+        return false;
+    };
+    let (directory, receipt) = (home.to_owned(), item.key.clone());
+    if !tokio::task::spawn_blocking(move || {
+        open(&directory)?
+            .execute(
+                "INSERT INTO user_outbox_native VALUES (?1,?2)",
+                params![receipt, checkpoint],
+            )
+            .map_err(anyhow::Error::from)
+    })
+    .await
+    .is_ok_and(|result| result.is_ok())
+    {
+        return false;
+    }
+    match sender.add(&item.thread, &key, &item.message).await {
+        Ok(()) => true,
+        Err(super::codex_queue::Failure::BeforeSend | super::codex_queue::Failure::Rejected) => {
+            let (directory, receipt) = (home.to_owned(), item.key.clone());
+            let _ = tokio::task::spawn_blocking(move || {
+                open(&directory)?
+                    .execute(
+                        "DELETE FROM user_outbox_native WHERE send_key=?1",
+                        [receipt],
+                    )
+                    .map_err(anyhow::Error::from)
+            })
+            .await;
+            delivery_log(item, "native-add-rejected; original message remains saved");
+            false
+        },
+        Err(super::codex_queue::Failure::Unconfirmed) => {
+            review(home, item, false).await;
+            delivery_log(
+                item,
+                "native-add-unconfirmed; original message remains saved for receipt verification",
+            );
+            false
+        },
+    }
+}
+
+fn delivery_log(item: &Pending, stage: &str) {
+    let reference = Sha256::digest(format!("{}\0{}", item.thread, item.key).as_bytes())[..6]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    logs::record(
+        "Messages",
+        &format!(
+            "Codex reply ref={reference} build={} {stage}",
+            env!("SWITCHBOARD_COMMIT")
+        ),
+    );
 }
 
 fn start_worker<F, R>(home: PathBuf, submit: F) -> tokio::task::JoinHandle<()>
@@ -296,6 +463,144 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn switchboard_user_outbox_reconciles_accepted_question_under_two_browser_keys() {
+        use std::io::Write;
+        use tokio::io::AsyncReadExt;
+        let dir = tempfile::tempdir().unwrap();
+        let mut target = super::super::tests::target();
+        target.thread = uuid::Uuid::new_v4().to_string();
+        target.user_message = true;
+        target.message = format!(
+            "<send_user_message_question_reply>\n{}\n</send_user_message_question_reply>",
+            json!([{"questionItemId":"question-1","question":"Shouldn’t this work?","answer":"Yes"}])
+        );
+        let sessions = dir.path().join("sessions");
+        std::fs::create_dir(&sessions).unwrap();
+        let path = sessions.join(format!("rollout-{}.jsonl", target.thread));
+        let mut transcript = std::fs::File::create(&path).unwrap();
+        writeln!(transcript, "{}", json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":target.message.replace('’', "")}]}}})).unwrap();
+        transcript.flush().unwrap();
+        chats::bind_receipt_fixture(dir.path().into(), &path);
+        save(dir.path(), &target).unwrap();
+        let second = Queue {
+            send_key: "second-question-key".into(),
+            ..target.clone()
+        };
+        save(dir.path(), &second).unwrap();
+        let (sender, mut provider) = super::super::codex_queue::Sender::fixture();
+        for key in [&target.send_key, &second.send_key] {
+            let item = pending(dir.path()).unwrap().remove(0);
+            assert_eq!(&item.key, key);
+            assert!(submit_native(&sender, dir.path(), &item).await);
+            finish(dir.path(), &item, true).unwrap();
+        }
+        assert!(pending(dir.path()).unwrap().is_empty());
+        drop(sender);
+        let mut bytes = Vec::new();
+        provider.read_to_end(&mut bytes).await.unwrap();
+        assert!(
+            bytes.is_empty(),
+            "Accepted question answers must never be added again, even with a second key"
+        );
+    }
+
+    #[tokio::test]
+    async fn switchboard_user_outbox_never_readds_after_lost_ack_and_restart() {
+        use std::io::Write;
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let dir = tempfile::tempdir().unwrap();
+        let mut target = super::super::tests::target();
+        target.thread = uuid::Uuid::new_v4().to_string();
+        target.user_message = true;
+        let sessions = dir.path().join("sessions");
+        std::fs::create_dir(&sessions).unwrap();
+        let path = sessions.join(format!("rollout-{}.jsonl", target.thread));
+        let mut transcript = std::fs::File::create(&path).unwrap();
+        chats::bind_receipt_fixture(dir.path().into(), &path);
+        save(dir.path(), &target).unwrap();
+        let first = pending(dir.path()).unwrap().remove(0);
+        let (sender, provider) = super::super::codex_queue::Sender::fixture();
+        let task = tokio::spawn(async move {
+            let mut provider = BufReader::new(provider);
+            for method in ["thread/queue/list", "thread/queue/add"] {
+                let mut line = String::new();
+                provider.read_line(&mut line).await.unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(request["method"], method);
+                if method.ends_with("list") {
+                    provider
+                        .get_mut()
+                        .write_all(
+                            format!(
+                                "{}\n",
+                                json!({"id":request["id"],"result":{"data":[],"nextCursor":null}})
+                            )
+                            .as_bytes(),
+                        )
+                        .await
+                        .unwrap();
+                }
+                // Consume add, then lose its acknowledgement and the connection.
+            }
+        });
+        assert!(!submit_native(&sender, dir.path(), &first).await);
+        assert_eq!(
+            status(dir.path(), &first.thread, &first.key).unwrap()["status"],
+            "review"
+        );
+        assert!(status(dir.path(), &uuid::Uuid::new_v4().to_string(), &first.key).is_none());
+        task.await.unwrap();
+        drop(sender);
+        // Reopen both SQLite and native transport before the transcript is visible.
+        let (sender, provider) = super::super::codex_queue::Sender::fixture();
+        let task = tokio::spawn(async move {
+            let mut provider = BufReader::new(provider);
+            let mut line = String::new();
+            provider.read_line(&mut line).await.unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["method"], "thread/queue/list");
+            provider
+                .get_mut()
+                .write_all(
+                    format!(
+                        "{}\n",
+                        json!({"id":request["id"],"result":{"data":[],"nextCursor":null}})
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            line.clear();
+            // No second add may follow an empty queue, even after a restart.
+            assert_eq!(provider.read_line(&mut line).await.unwrap(), 0);
+        });
+        let first = pending(dir.path()).unwrap().remove(0);
+        let second = Queue {
+            send_key: "follower".into(),
+            message: "Later input".into(),
+            ..target.clone()
+        };
+        save(dir.path(), &second).unwrap();
+        assert_eq!(
+            status(dir.path(), &second.thread, &second.send_key).unwrap()["status"],
+            "review"
+        );
+        assert!(!submit_native(&sender, dir.path(), &first).await);
+        writeln!(transcript, "{}", json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":target.message}]}}})).unwrap();
+        transcript.flush().unwrap();
+        assert!(submit_native(&sender, dir.path(), &first).await);
+        finish(dir.path(), &first, true).unwrap();
+        assert!(save(dir.path(), &target).unwrap());
+        assert_eq!(pending(dir.path()).unwrap()[0].key, "follower");
+        assert_ne!(
+            status(dir.path(), &second.thread, &second.send_key).unwrap()["status"],
+            "review"
+        );
+        drop(sender);
+        task.await.unwrap();
+    }
 
     #[tokio::test]
     async fn switchboard_user_outbox_only_one_relay_drains_the_account() {

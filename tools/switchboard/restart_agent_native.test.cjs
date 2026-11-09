@@ -24,13 +24,15 @@ let native,relay,browser,tokenName,created=false;
   try{
     fs.copyFileSync(binary,installed);fs.chmodSync(installed,0o755);
     fs.writeFileSync(config,'web_sharing "off"\ndefault_shell "/bin/bash"\nshow_startup_tips false\nsession_serialization false\ndisable_session_metadata false\n');
-    const fixture=path.join(dir,'codex'),c=path.join(dir,'agent.c');
+    const fixture=path.join(dir,'codex'),c=path.join(dir,'agent.c'),queue=path.join(dir,'queue.cjs');
+    fs.writeFileSync(queue,`const fs=require('node:fs'),readline=require('node:readline');readline.createInterface({input:process.stdin}).on('line',line=>{const request=JSON.parse(line);if(request.id===undefined)return;let result={};if(request.method==='thread/queue/list')result={data:[],nextCursor:null};if(request.method==='thread/queue/add'){const p=request.params;fs.writeFileSync(${JSON.stringify(path.join(dir,'queued'))},['--thread',p.threadId,'--message='+p.input[0].text].join('\\n')+'\\n');result={queuedSubmission:{id:'fixture-item',clientUserMessageId:p.clientUserMessageId,input:p.input}};}process.stdout.write(JSON.stringify({id:request.id,result})+'\\n');});`);
     fs.writeFileSync(c,`#include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
 #include <fcntl.h>
 int main(int argc,char**argv){if(argc>1&&strcmp(argv[1],"queue")==0){if(argc!=5)return 2;FILE*q=fopen(${JSON.stringify(path.join('/PLACEHOLDER','queued'))},"a");if(!q)return 3;for(int i=2;i<argc;i++)fprintf(q,"%s\\n",argv[i]);fclose(q);return 0;}fcntl(0,F_SETFL,O_NONBLOCK);FILE*f=fopen(${JSON.stringify(path.join('/PLACEHOLDER','launches'))},"a");fprintf(f,"%d",getpid());for(int i=1;i<argc;i++)fprintf(f,"|%s",argv[i]);fprintf(f,"\\n");fclose(f);char previous[64]="";for(;;){char input[4096];int count=read(0,input,sizeof(input));if(count>0){f=fopen(${JSON.stringify(path.join('/PLACEHOLDER','input'))},"a");fwrite(input,1,count,f);fclose(f);previous[0]=0;}char mode[64]="ready";f=fopen(${JSON.stringify(path.join('/PLACEHOLDER','mode'))},"r");if(f){fgets(mode,64,f);fclose(f);}if(strcmp(mode,previous)){printf("\\033[2J\\033[H\\033]0;codex - Restart fixture\\007Worked for 1s\\r\\n\\r\\n› %s\\r\\nGPT-6 · ? for shortcuts\\r\\n",strcmp(mode,"draft")==0?"unsent draft":strcmp(mode,"multiline")==0?"\\r\\n  unsent draft":"Ask Codex to do anything");fflush(stdout);strcpy(previous,mode);}usleep(100000);}}`.replaceAll('/PLACEHOLDER',dir));
+    fs.writeFileSync(c,fs.readFileSync(c,'utf8').replace('if(argc>1&&strcmp(argv[1],"queue")==0)',`if(argc>1&&strcmp(argv[1],"app-server")==0){execl(${JSON.stringify(process.execPath)},${JSON.stringify(process.execPath)},${JSON.stringify(queue)},(char*)NULL);return 3;}if(argc>1&&strcmp(argv[1],"queue")==0)`));
     execFileSync(process.platform==='darwin'?'xcrun':'cc',process.platform==='darwin'?['clang','-isysroot',execFileSync('xcrun',['--sdk','macosx','--show-sdk-path'],{encoding:'utf8'}).trim(),c,'-o',fixture]:[c,'-o',fixture]);
     cli('attach','--create-background',name,'--','/bin/bash','--noprofile','--norc','-c','exec codex --model fixture "initial prompt"');created=true;
     let first;
@@ -104,6 +106,7 @@ int main(int argc,char**argv){if(argc>1&&strcmp(argv[1],"queue")==0){if(argc!=5)
     const replyResponse=page.waitForResponse(r=>r.url().endsWith('/codex/reply'));
     await page.getByLabel('Reply draft').press('Enter');
     const reply=await replyResponse;assert.equal(reply.status(),200);assert.equal((await reply.json()).status,'queued');
+    await until(()=>fs.existsSync(path.join(dir,'queued')),'Saved reply did not reach the structured native queue');
     assert.deepEqual(fs.readFileSync(path.join(dir,'queued'),'utf8').trimEnd().split('\n'),['--thread',sid,'--message=native conversation reply']);
     assert.equal(launches().length,2,'Queueing must not start another interactive agent');
     assert.equal(fs.existsSync(path.join(dir,'input')),false,'Native replies must not type into the terminal');

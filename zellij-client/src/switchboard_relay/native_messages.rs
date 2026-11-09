@@ -4,6 +4,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::{ffi::OsStr, path::PathBuf, process::Stdio};
 
+mod codex_queue;
 pub(super) mod outbox;
 
 const MESSAGE_BYTES: usize = 8192;
@@ -258,6 +259,9 @@ async fn receipt_status(query: ReceiptQuery) -> Response {
     }
     let result = tokio::task::spawn_blocking(move || {
         let home = std::env::home_dir()?;
+        if let Some(status) = outbox::status(&home, &query.thread, &query.send_key) {
+            return Some(status);
+        }
         let status = super::message_activity::incoming_status(&home,&query.thread,&query.send_key)?;
         Some(json!({"status":if matches!(status.as_str(),"queued"|"unknown") && super::chats::native_message_received(&query.thread,&query.send_key) {"received"} else {&status}}))
     }).await.ok().flatten().unwrap_or_else(||json!({"status":"unknown"}));

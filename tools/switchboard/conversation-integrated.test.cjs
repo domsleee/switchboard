@@ -1058,6 +1058,7 @@ test('agent exchanges stay visible, expand safely, update receipts and follow th
    const url=new URL(route.request().url()),p=url.pathname;
    if(p.startsWith('/api/diagnostics/'))return route.fulfill({status:204});
    if(p==='/conversation.js'&&baseline)return route.fulfill({path:process.env.MESSAGE_BASELINE_SCRIPT,contentType:'text/javascript'});
+   if(p.endsWith('/codex/receipt'))return route.fulfill({json:{status:'pending'}});
    if(p.endsWith('/codex/reply')){replies.push(route.request().postDataJSON());return route.fulfill({json:{status:'queued'}});}
    if(p.startsWith('/api/chats/')){
     const id=p.split('/').pop();return route.fulfill({json:{...data[id],session_id:'00000000-0000-4000-8000-000000000001',start_cursor:0,next_cursor:null}});

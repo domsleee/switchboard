@@ -150,6 +150,8 @@ jobs:
         env:
           SWITCHBOARD_TEST_BINARY: target/dev-opt/zellij${{ runner.os == 'Windows' && '.exe' || '' }}
         run: node tools/switchboard/codex-plugin-hooks.test.cjs
+      - name: Prove Codex user replies preserve drafts and survive relay restart
+        run: node tools/switchboard/codex-user-queue.test.cjs target/dev-opt/zellij${{ runner.os == 'Windows' && '.exe' || '' }}
       - name: Prove bridge replacement and rollback with a real terminal
         env:
           # CI checks recovery and integrity with scheduling headroom. Local proof stays at 250 ms.
