@@ -59,6 +59,22 @@ Test UI changes against local fixtures (see the browser-sizing rules in
 [architecture](docs/ARCHITECTURE.md)), never the live sidebar at `switchboard.localhost:8090`:
 a focused browser viewer claims the terminal size of the user's real sessions.
 
+## Performance
+
+Switchboard aims for world-class performance and has a long way to go. Hold every change to
+these goals:
+
+- Sending a message feels instant.
+- Every message is delivered, including across restarts and reconnects.
+- Changing terminals feels instant.
+- Switchboard uses little RAM and CPU, on every computer.
+- Switchboard stays small on disk: everything it keeps, such as releases, rollbacks, logs and
+  uploads, has a retention limit.
+
+When a change touches one of these paths, measure it before and after and report the numbers.
+Full disks have taken paired computers offline, and old agent worktrees have held over 100 GB of
+build output. Remove your worktree and its Cargo `target` folder once its PR merges.
+
 ## Windows process startup and transport
 
 Some paired Windows machines run Defender, which can make `CreateProcessA` slow.
