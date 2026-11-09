@@ -1015,6 +1015,28 @@ impl PollState {
         }
         Some((hook.restart.clone()?, hook.state == "working"))
     }
+    /// The agent whose hooks last reported for this pane, until it ends.
+    pub(super) fn hooked_agent(&self, session: &str, pane: u32) -> Option<&'static str> {
+        self.hooks
+            .get(&(session.to_string(), pane.into()))
+            .map(|hook| hook.agent)
+    }
+    #[cfg(test)]
+    pub(super) fn hook_claude_for_test(&mut self, session: &str, pane: u32) {
+        self.hooks.insert(
+            (session.to_string(), pane.into()),
+            Hooked {
+                agent: "claude",
+                state: "ready",
+                token: None,
+                chat_id: None,
+                restart: None,
+                at: 0,
+                shell_hold: false,
+                idle_since: None,
+            },
+        );
+    }
     /// A local pane started or finished waiting on `zellij switchboard run`.
     pub(super) fn run_waiting(&mut self, session: &str, pane: u64, waiting: bool) {
         let key = (session.to_owned(), pane);

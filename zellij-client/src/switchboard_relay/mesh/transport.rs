@@ -809,7 +809,7 @@ async fn terminal_response(
             .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid conversation request"))?;
         let reply = serde_json::from_slice::<conversation::Reply>(&bytes)
             .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid conversation reply"))?;
-        return conversation::reply_local(&host, reply)
+        return conversation::reply_local(&host, mesh.attention.get(), reply)
             .await
             .map(IntoResponse::into_response);
     }
