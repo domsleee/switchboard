@@ -608,6 +608,7 @@
   .conversation-panel>header{min-height:58px;padding:8px 92px 8px 58px;box-shadow:0 1px 0 var(--line)}
   .conversation-heading strong{font-size:15px}
   .conversation-subtitle{font-size:12px;gap:8px}
+  .conversation-panel .conversation-context{min-height:0;padding:0;border:0;font:inherit}
   .conversation-panel .conversation-terminal-action{min-height:40px}
   body.conversation-open #sidebar-toggle{position:fixed;top:calc(var(--chat-top,0px) + 8px);border-color:transparent;background:transparent}
   /* Icon-only modes so the title keeps the row; the text stays the accessible name. */

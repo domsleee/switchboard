@@ -494,6 +494,33 @@ test('integrated Conversation journeys use production markup and preserve delive
     await page.getByRole('button',{name:'Conversation',exact:true}).click();assert.deepEqual(await box('.conversation-modes'),before);
    }finally{await f.close();}
   });
+  await t.test('mobile header keeps its two text lines compact and aligned with the controls',async()=>{
+   for(const width of [320,390,844]){
+    const f=await fixture({viewport:{width,height:844}}),{page}=f;try{
+     await page.getByText('Review response',{exact:true}).waitFor();
+     const box=selector=>page.locator(selector).boundingBox(),middle=rect=>rect.y+rect.height/2;
+     for(const state of ['ready','working']){
+      f.state=state;await f.refresh();
+      const header=await box('.conversation-panel>header'),title=await box('.conversation-heading strong'),context=await box('.conversation-context'),modes=await box('.conversation-modes'),toggle=await box('#sidebar-toggle');
+      if(process.env.MODE_SCREENSHOTS&&width===390&&state==='ready')await page.screenshot({path:path.join(process.env.MODE_SCREENSHOTS,'mobile-titlebar.png'),clip:{x:0,y:0,width,height:90}});
+      assert.equal(Math.round(header.height),58,'Context button padding must not stretch the header');
+      assert.equal(context.x,title.x,'Both text lines share their left edge');
+      assert.ok(context.y-title.y-title.height<=3,'The subtitle sits directly below the title');
+      assert.ok(context.x+context.width<=modes.x,'Text clears the view controls');
+      assert.ok(Math.abs(middle(modes)-middle(header))<=1,'View controls are centred in the header');
+      assert.ok(Math.abs(middle(toggle)-middle(header))<=1,'Sidebar toggle is centred in the header');
+     }
+     await page.locator('.conversation-heading strong').evaluate(node=>node.textContent='A long conversation title that must fit on a narrow phone screen');
+     assert.equal(Math.round((await box('.conversation-panel>header')).height),58);
+     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+     const before=await box('.conversation-modes');
+     await page.getByRole('button',{name:'Terminal',exact:true}).click();
+     const terminal=await box('.conversation-modes');
+     assert.equal(terminal.x,before.x);assert.equal(terminal.width,before.width);assert.equal(terminal.height,before.height);assert.ok(Math.abs(terminal.y-before.y)<=1);
+     await page.getByRole('button',{name:'Conversation',exact:true}).click();assert.deepEqual(await box('.conversation-modes'),before);
+    }finally{await f.close();}
+   }
+  });
   await t.test('a phone Conversation has no sideways scroll with its steps folded or unfolded',async()=>{
    const messages=[{role:'user',text:'Fix the flicker'},{role:'assistant',phase:'commentary',text:'Reading app.js'},{role:'assistant',phase:'commentary',kind:'tool',tool:'read',detail:'tools/switchboard/static/app.js',text:'Read tools/switchboard/static/app.js'},{role:'assistant',text:'Fixed.'}];
    for(const viewport of [{width:360,height:800},{width:390,height:844},{width:844,height:390}]){
