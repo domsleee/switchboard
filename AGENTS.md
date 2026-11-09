@@ -106,10 +106,11 @@ new endpoints. See the [internals](docs/SWITCHBOARD_INTERNALS.md) for transport 
   state before changing detection: the relay logs each change as `Switchboard pane … (screen …,
   hook …)`. For a screen-classification change, capture the actual pane with `dump-screen` and
   add it as a `classify` test before changing the rule.
-- [T3 Code](https://github.com/pingdotgg/t3code) is the reference for what an agent's state
-  should be. It reads structured agent events, treats a turn ending and its background work
-  settling as separate milestones, and keeps a thread active while the agent awaits a task.
-  Check what it does before choosing a new state rule.
+- [T3 Code](https://github.com/pingdotgg/t3code) is the reference for Conversation and
+  agent-state behaviour. Before designing or changing a use case, read how T3 Code handles it
+  and match that unless the terminal or multi-computer model needs otherwise. For agent state,
+  it reads structured agent events, treats a turn ending and its background work settling as
+  separate milestones, and keeps a thread active while the agent awaits a task.
 
 ## Privacy
 
