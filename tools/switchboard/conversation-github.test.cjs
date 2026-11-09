@@ -31,6 +31,18 @@ test('repository references and PR previews stay alongside Conversation and pres
   const boxes=await page.evaluate(()=>{const a=document.querySelector('.conversation-panel').getBoundingClientRect(),b=document.querySelector('.conversation-github-panel').getBoundingClientRect();return {chat:a.right,preview:b.left};});assert.equal(boxes.chat,boxes.preview);
   await page.keyboard.press('Escape');assert.equal(await preview.isVisible(),false);assert.equal(await ref.evaluate(n=>n===document.activeElement),true);
   assert.equal(reads.filter(r=>r.cwd).length,1,'repo lookup is shared');
+  // Both modifiers retain the browser default on references and explicit PR links.
+  // Meta's native new-tab gesture is macOS-specific; this fixture runs on Windows too.
+  for(const label of ['#42','PR details'])for(const modifier of ['metaKey','ctrlKey']){
+   const prevented=await page.getByRole('link',{name:label,exact:true}).evaluate((link,modifier)=>{
+    const event=new MouseEvent('click',{button:0,[modifier]:true,bubbles:true,cancelable:true});
+    let intercepted;
+    link.addEventListener('click',event=>{intercepted=event.defaultPrevented;event.preventDefault();},{once:true});
+    link.dispatchEvent(event);return intercepted;
+   },modifier);
+   assert.equal(prevented,false,modifier+' leaves '+label+' to the browser');
+   assert.equal(await preview.isVisible(),false);
+  }
   await page.route('https://github.com/**',r=>r.fulfill({body:'GitHub'}));
   const popupPromise=page.context().waitForEvent('page');await ref.click({modifiers:['Control']});const popup=await popupPromise;await popup.close();assert.equal(await preview.isVisible(),false,'modified click stays a browser gesture');
   await page.getByRole('link',{name:'PR details',exact:true}).click();await preview.getByRole('heading',{name:'Keep references in context'}).waitFor();
