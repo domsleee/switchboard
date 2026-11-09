@@ -59,6 +59,20 @@ test('integrated Conversation journeys use production markup and preserve delive
   return f;
  }
  try{
+  await t.test('GitHub preview owns Escape, keeps drafts, and closes on navigation',async()=>{
+   const f=await fixture({desktop:true,viewport:{width:1400,height:900},messages:[{role:'assistant',text:'Review https://github.com/example/project/pull/42'}]}),{page}=f;
+   try{
+    await page.route('**/conversation/github',route=>route.fulfill({json:{__typename:'PullRequest',title:'Review change',state:'OPEN',body:'Description',author:{login:'reviewer'},headRefName:'feature',baseRefName:'main',additions:1,deletions:0,changedFiles:1}}));
+    const link=page.getByRole('link',{name:'https://github.com/example/project/pull/42',exact:true}),preview=page.getByRole('complementary',{name:'GitHub preview'});
+    await page.getByLabel('Reply draft').fill('Keep this draft');await link.click();await preview.getByRole('heading',{name:'Review change'}).waitFor();
+    await page.keyboard.press('Escape');assert.equal(await preview.isVisible(),false);assert.equal(await page.getByRole('button',{name:'Conversation',exact:true}).getAttribute('aria-pressed'),'true');assert.equal(f.escapes.length,0);
+    assert.equal(await link.evaluate(n=>n===document.activeElement),true);assert.equal(await page.getByLabel('Reply draft').inputValue(),'Keep this draft');
+    await link.click();await preview.getByRole('heading',{name:'Review change'}).waitFor();await page.keyboard.press('Alt+l');assert.equal(await preview.isVisible(),false);await page.getByText('Second conversation',{exact:true}).waitFor();
+    await page.getByRole('button',{name:'Terminal',exact:true}).click();assert.equal(await preview.isVisible(),false);await page.keyboard.press('Alt+h');
+    await page.getByRole('button',{name:'Conversation',exact:true}).click();assert.equal(await page.getByLabel('Reply draft').inputValue(),'Keep this draft');
+    assert.equal(await page.locator('#terminals').evaluate(n=>n.classList.contains('github-open')),false);
+   }finally{await f.close();}
+  });
   await t.test('Claude background-agent dialogs retain attention in Conversation and Terminal',async()=>{
    const f=await fixture({agent:'claude',desktop:true,viewport:{width:1100,height:800}}),{page}=f;
    try{

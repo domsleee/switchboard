@@ -2,6 +2,29 @@
 @font-face{font-family:"Switchboard Inter";src:url(/inter.woff2) format("woff2");font-weight:400 700;font-style:normal;font-display:swap;unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
 #terminals{isolation:isolate}
 #terminals.conversation-open>iframe{display:none}
+#terminals.github-open.conversation-open>.conversation-panel{right:min(460px,44%)}
+#terminals.github-open.conversation-open>.conversation-modes{right:calc(min(460px,44%) + 16px)}
+.conversation-github-panel{position:absolute;inset:0 0 0 auto;width:min(460px,44%);z-index:7;display:flex;flex-direction:column;background:#141518;color:#dcdce1;border-left:1px solid #ffffff1a;font:13px/1.6 "Switchboard Inter",system-ui,sans-serif;overflow:auto;box-sizing:border-box;outline:none}
+.conversation-github-panel[hidden]{display:none}
+.conversation-github-panel header{display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid #ffffff12;min-height:34px}
+.conversation-github-panel header strong{margin-right:auto}
+.conversation-github-panel a{color:#8fb4ff;font-size:12px;text-decoration:none}
+.conversation-github-panel button{color:#c2c2ca;background:#ffffff09;border:1px solid #ffffff1a;border-radius:6px;padding:4px 10px;cursor:pointer;font:inherit}
+.conversation-github-panel :is(a,button):focus-visible{outline:2px solid #8fb4ff;outline-offset:3px}
+.conversation-github-panel h2{font-size:19px;line-height:1.4;margin:22px 22px 8px;overflow-wrap:anywhere}
+.conversation-github-content{padding:0 22px 28px;overflow-wrap:anywhere}
+.github-summary{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;color:#a1a1ab}
+.github-state{padding:2px 8px;border-radius:20px;background:#23863633;color:#7ee787;font-size:11px;font-weight:600}
+.github-state[data-state="MERGED"]{background:#a371f733;color:#d2a8ff}
+.github-state[data-state="CLOSED"]{background:#f8514933;color:#ff7b72}
+.github-branches{font:12px/1.6 ui-monospace,Consolas,monospace;color:#b8c5e0}
+.github-stats{display:flex;gap:12px;font-size:12px}.github-additions{color:#7ee787}.github-deletions{color:#ff7b72}
+.github-muted{color:#a1a1ab}.github-description{white-space:pre-wrap;border-top:1px solid #ffffff12;margin-top:22px;padding-top:20px}
+@media(max-width:900px){
+  #terminals.github-open.conversation-open>.conversation-panel{right:0}
+  #terminals.github-open.conversation-open>.conversation-modes{right:16px}
+  .conversation-github-panel{width:min(460px,100%);box-shadow:-12px 0 36px #0006}
+}
 
 /* Mode switch: a quiet segmented control at the header's right edge. */
 .conversation-modes{position:absolute;right:16px;top:12px;z-index:6;display:flex;gap:2px;padding:3px;border:1px solid #ffffff12;border-radius:10px;background:#141518;font-family:"Switchboard Inter",-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif}

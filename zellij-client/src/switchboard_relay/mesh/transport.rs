@@ -880,6 +880,16 @@ async fn terminal_response(
             .await
             .map(IntoResponse::into_response);
     }
+    if path == "/switchboard/conversation/github" && request.method() == Method::POST {
+        let bytes = to_bytes(request.into_body(), 8192)
+            .await
+            .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid GitHub request"))?;
+        let target = serde_json::from_slice::<conversation::github::Request>(&bytes)
+            .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid GitHub request"))?;
+        return conversation::github::local(&host, target)
+            .await
+            .map(IntoResponse::into_response);
+    }
     if path == "/switchboard/conversation/skills" && request.method() == Method::POST {
         let bytes = to_bytes(request.into_body(), 32768)
             .await

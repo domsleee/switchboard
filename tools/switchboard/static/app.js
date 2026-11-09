@@ -1159,6 +1159,7 @@ function sidebarKeydown(event){
   }
   if(!$('tab-menu').hidden && event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();closeTabMenu(true);return;}
   if(event.key==='Escape'&&!event.altKey&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey){
+    if(globalThis.SwitchboardConversationGithub?.isOpen()){event.preventDefault();event.stopImmediatePropagation();globalThis.SwitchboardConversationGithub.close();return;}
     if(mobileSidebar.matches&&sidebarOpen){event.preventDefault();sidebarOpen=false;updateSidebar();$('sidebar-toggle').focus();return;}
     if(!$('artifact-preview').hidden){event.preventDefault();$('artifact-back').click();return;}
     if(globalThis.SwitchboardConversation?.isOpen?.()){event.preventDefault();event.stopImmediatePropagation();if(!globalThis.SwitchboardConversation.interrupt())globalThis.SwitchboardConversation.showTerminal();return;}
