@@ -3537,6 +3537,22 @@ mod tests {
     }
 
     #[test]
+    fn switchboard_chats_published_html_paths_stay_one_markdown_text() {
+        for path in [
+            "/Users/me/.switchboard/artifacts/arch-v2/page.html",
+            "C:/Users/me/.switchboard/artifacts/arch-v2/page.html",
+        ] {
+            let events = markdown_events(&format!("Here it is:\n\n{path}\n\nDone."));
+            assert!(
+                events
+                    .iter()
+                    .any(|e| e["type"] == "text" && e["text"] == path),
+                "{events:?}"
+            );
+        }
+    }
+
+    #[test]
     fn switchboard_chats_index_reads_beyond_file_and_message_limits() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("long.jsonl");

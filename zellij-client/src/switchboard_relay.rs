@@ -1285,6 +1285,7 @@ async fn asset(request: Request) -> Response {
         | "sw.js"
         | "conversation-media.js"
         | "conversation-mermaid.js"
+        | "conversation-html.js"
         | MERMAID_LIBRARY
         | "conversation.js"
         | "skill-editor.js"
@@ -2922,6 +2923,7 @@ mod tests {
             ("/model-picker.js", "application/javascript"),
             ("/conversation-media.js", "application/javascript"),
             ("/conversation-mermaid.js", "application/javascript"),
+            ("/conversation-html.js", "application/javascript"),
             ("/mermaid-12.2.0.min.js", "application/javascript"),
             ("/conversation.css", "text/css; charset=utf-8"),
         ] {
