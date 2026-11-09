@@ -109,8 +109,10 @@
   // These change the session without a reply, so no message or Working state waits for them.
   const claudeQuiet=new Set(['clear','compact','rename']);
   function commandRoute(agent,text){
-    const name=/^\s*\/([a-z][\w:.-]*)(?:\s|$)/i.exec(text)?.[1]?.toLowerCase();if(!name)return null;
+    const [,command,argument]=/^\s*\/([a-z][\w:.-]*)(?:\s+([\s\S]*))?$/i.exec(text)||[],name=command?.toLowerCase();if(!name)return null;
     if(agent!=='claude')return 'terminal';
+    // Naming a model sets it directly; only a bare /model opens the picker.
+    if(name==='model'&&argument)return 'quiet';
     return claudeDialogs.has(name)?'terminal':claudeQuiet.has(name)?'quiet':'turn';
   }
   function attachCompletions({draft,parent,id,surface,changed}){

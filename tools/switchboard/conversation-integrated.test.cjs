@@ -877,7 +877,7 @@ test('integrated Conversation journeys use production markup and preserve delive
      const draft=page.getByLabel('Reply draft');await draft.fill('/ren');await draft.press('Enter');
      assert.equal(await draft.inputValue(),'/rename ');assert.equal(f.connections.length,0);
      // Claude renames without a dialog, so its case is a command that draws one.
-     const command=agent==='claude'?'/model opus':'/rename Example';
+     const command=agent==='claude'?'/model':'/rename Example';
      await draft.fill(command);await page.getByRole('button',{name:'Send',exact:true}).click();
      await page.waitForFunction(()=>reviewPastes.length===1&&!SwitchboardConversation.isOpen());
      assert.equal(await page.evaluate(()=>reviewPastes[0].text),command);
