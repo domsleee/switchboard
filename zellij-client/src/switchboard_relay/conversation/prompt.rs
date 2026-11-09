@@ -429,6 +429,11 @@ pub(in crate::switchboard_relay) async fn answer_local(
         .ok_or(changed)?;
     let keys = keys(&menu, answer.choice, answer.text.as_deref())
         .ok_or((StatusCode::BAD_REQUEST, "Invalid answer"))?;
+    if folder_trust_token(&screen).is_some_and(|token| {
+        !claim_trust_answer(&answer.session, answer.pane_id, &token, TRUST_MANUAL_WAIT)
+    }) {
+        return Err(changed);
+    }
     let id = answer.pane_id.to_string();
     for key in keys {
         let mut args = vec!["write".to_string(), "-p".into(), id.clone()];

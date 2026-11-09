@@ -195,18 +195,26 @@ fn quiet_shell(pane: &Value) -> bool {
     ) && PATH_TITLE.is_match(pane["title"].as_str().unwrap_or(""))
 }
 
-/// False when the pane's command names some other program. A shell or no command
-/// says nothing, because Claude started from a shell is reported that way.
+/// False when the pane's program is some other program, judged by the program rather
+/// than its arguments. A shell or no command says nothing, because Claude started from
+/// a shell is reported that way; a script runner counts only if it runs Claude.
 pub(super) fn may_be_claude(pane: &Value) -> bool {
+    static RUNNER: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"(?:^|[\\/])(?:node|bun|cmd)(?:\.exe)?$").unwrap());
     let command = pane["pane_command"]
         .as_str()
         .unwrap_or("")
         .to_ascii_lowercase();
-    command.is_empty()
-        || SHELL.is_match(&command)
-        || AGENTS
+    let program = command.split_whitespace().next().unwrap_or("");
+    let names_claude = |text: &str| {
+        AGENTS
             .iter()
-            .any(|agent| agent.name == "claude" && any(&agent.command, &command))
+            .any(|agent| agent.name == "claude" && any(&agent.command, text))
+    };
+    command.is_empty()
+        || SHELL.is_match(program)
+        || names_claude(program)
+        || RUNNER.is_match(program) && names_claude(&command)
 }
 
 /// The repository holding a folder, named after its main checkout so that every worktree of a

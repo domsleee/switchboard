@@ -151,7 +151,7 @@
       if(!startup||startup.pending||startup.error||Date.now()-startup.started>=30000||Date.now()-(startup.at||0)<5000)return;
       startup.at=Date.now();startup.pending=true;
       try{const response=await fetch('/api/hosts/'+encodeURIComponent(destination.host)+'/conversation/prepare',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:destination.session,tab_id:destination.tab,pane_id:destination.pane}),signal:AbortSignal.timeout(20000)});if(!response.ok)throw Error(response.status===404?'Update Switchboard on this computer to prepare the agent.':'Could not prepare this agent. Retry or open Terminal.');}
-      catch(error){if(!folderTrust)startup.error=error.name==='TimeoutError'?'Agent preparation timed out. Retry or open Terminal.':error.message||'Could not reach this agent. Retry or open Terminal.';}
+      catch(error){if(folderTrust)startup.started=Date.now();else startup.error=error.name==='TimeoutError'?'Agent preparation timed out. Retry or open Terminal.':error.message||'Could not reach this agent. Retry or open Terminal.';}
       finally{startup.pending=false;if(identity(target)===key&&!chat){status(unboundNotice());updateActivity();}}
     }
     function stopStream(){stream?.close();stream=null;streamReady=false;streamPages=[];}
