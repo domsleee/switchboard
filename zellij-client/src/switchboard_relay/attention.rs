@@ -1146,6 +1146,20 @@ impl PollState {
             self.hooked.notify_one();
         }
     }
+    /// Ends a wait on background shells that Switchboard has just stopped.
+    pub(super) fn end_shell_wait(&mut self, session: &str, pane: u64) {
+        if let Some(hook) = self
+            .hooks
+            .get_mut(&(session.to_owned(), pane))
+            .filter(|hook| hook.state == "waiting" && hook.shell_hold)
+        {
+            hook.state = "unknown";
+            hook.shell_hold = false;
+            hook.idle_since = None;
+            self.dirty = true;
+            self.hooked.notify_one();
+        }
+    }
     /// Records that a viewer reviewed this exact ready result.
     pub(super) fn acknowledge(&mut self, host: &str, session: &str, pane: u64, token: &str) {
         if let Some(observed) = self
@@ -2467,6 +2481,16 @@ esac
             )),
             "working"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn claude_shell_wait_ends_when_switchboard_stops_its_tasks() {
+        let mut poll = PollState::default();
+        poll.hooks.insert(("main".into(), 6), shell_wait());
+        poll.end_shell_wait("main", 6);
+        let hook = &poll.hooks[&("main".to_owned(), 6)];
+        assert_eq!(hook.state, "unknown");
+        assert!(!hook.shell_hold);
     }
 
     #[tokio::test(start_paused = true)]

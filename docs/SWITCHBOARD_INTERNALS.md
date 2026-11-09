@@ -300,6 +300,9 @@ running background agent or workflow, or a shell started since the previous `Sto
 task list starts no turn and fires no hook, so a shell wait also ends once Claude's idle
 footer has counted no running task for 30 seconds. The relay saves the shells it has
 seen across restarts, so a shell that was already running does not look new.
+Conversation's Stop on a waiting Claude tab stops every task in Claude's Background
+dialog, because Esc does nothing once the turn has ended. The relay reads the pane before
+each key. On Windows, Claude ends the task's shell but can leave its child processes running.
 Noninteractive agents started inside Claude are ignored using the entrypoint header.
 The same CLI delivers message-board mail as hook context for Claude and Codex.
 Their `SessionStart` and `Stop` hooks start one background `--wait` watcher per

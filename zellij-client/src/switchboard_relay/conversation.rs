@@ -4,6 +4,7 @@
 use super::*;
 use serde::Serialize;
 use std::path::PathBuf;
+pub(super) mod background;
 mod claude_skills;
 pub(super) mod prompt;
 

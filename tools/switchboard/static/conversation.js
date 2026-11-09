@@ -264,8 +264,10 @@
     });
     stop.onclick=async()=>{
       const destination=target;if(!destination?.session||!Number.isInteger(destination.pane))return;stop.disabled=true;
-      try{if(await typeEscape(destination))return;const response=await fetch('/api/hosts/'+encodeURIComponent(destination.host)+'/escape',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:destination.session,pane_id:destination.pane}),signal:AbortSignal.timeout(10000)});if(!response.ok)throw Error();}
-      catch{if(identity(target)===identity(destination))sendStatus('Could not interrupt the agent. Open Terminal and press Esc.');}
+      // Esc does nothing once a turn has ended, so a waiting tab stops the tasks it waits on.
+      const background=destination.state==='waiting',route=background?'/conversation/stop-background':'/escape',body=background?{session:destination.session,tab_id:destination.tab,pane_id:destination.pane}:{session:destination.session,pane_id:destination.pane};
+      try{if(!background&&await typeEscape(destination))return;const response=await fetch('/api/hosts/'+encodeURIComponent(destination.host)+route,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(background?60000:10000)});if(!response.ok)throw Error();}
+      catch{if(identity(target)===identity(destination))sendStatus(background?'Could not stop the background tasks. Open Terminal to stop them.':'Could not interrupt the agent. Open Terminal and press Esc.');}
       finally{stop.disabled=false;}
     };
     form.append(files,attach,draft,cost,cancelModel,model,insert,stop,picker);
@@ -374,7 +376,7 @@
       const noComposer=!chat&&!firstMessage()&&!target?.launch&&!firstSends.has(target?.key)&&!pendingFor();if(form.hidden!==noComposer){form.hidden=noComposer;sizeDraft();}
       insert.disabled=!!pendingFor();
       // While the agent works, an empty composer offers Stop in the send button's place.
-      form.classList.toggle('can-stop',(state==='working'||state==='input'&&target.turnState==='working'&&pendingAsyncQuestion())&&!!target?.session&&Number.isInteger(target?.pane));
+      form.classList.toggle('can-stop',(state==='working'||state==='waiting'&&target.agent==='claude'||state==='input'&&target.turnState==='working'&&pendingAsyncQuestion())&&!!target?.session&&Number.isInteger(target?.pane));stop.title=state==='waiting'?'Stop background tasks':'Interrupt the agent (sends Esc)';
       const project=String(chat?.project||target?.project||'').replace(/[\\/]+$/,'').split(/[\\/]/).pop();
       const where=[project,target?.computer].filter(Boolean).join(' · ');if(context.textContent!==where)context.textContent=where;
       paintCost();
@@ -982,7 +984,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
     draft.onkeydown=event=>{
       if(event.isComposing)return;
       if(completions.key(event))return;
-      if(event.key==='Escape'&&!event.altKey&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey&&stop.offsetParent&&!stop.disabled){event.preventDefault();stop.click();return;}
+      if(event.key==='Escape'&&!event.altKey&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey&&stop.offsetParent&&!stop.disabled&&target?.state!=='waiting'){event.preventDefault();stop.click();return;}
       if(event.key==='Enter'&&!event.shiftKey&&!matchMedia('(pointer:coarse)').matches){event.preventDefault();form.requestSubmit();}
     };
     // Enter empties the draft at once so the next message can be typed while this one sends.
@@ -1212,6 +1214,6 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       warmed.delete(key);warmed.set(key,now);if(warmed.size>64)warmed.delete(warmed.keys().next().value);
       void fetch('/api/chats/'+encodeURIComponent(item.chatId)+'?'+new URLSearchParams({host:item.chatHost||item.host,context:'true',limit:firstPage,tail:true})).catch(()=>{});
     };
-    window.SwitchboardConversation.wantsConversation=()=>open;window.SwitchboardConversation.update=update;window.SwitchboardConversation.isOpen=()=>open&&!panel.hidden;window.SwitchboardConversation.focus=focusSurface;window.SwitchboardConversation.showTerminal=()=>show(false);window.SwitchboardConversation.interrupt=()=>{if(!stop.offsetParent||stop.disabled)return false;stop.click();return true;};update();
+    window.SwitchboardConversation.wantsConversation=()=>open;window.SwitchboardConversation.update=update;window.SwitchboardConversation.isOpen=()=>open&&!panel.hidden;window.SwitchboardConversation.focus=focusSurface;window.SwitchboardConversation.showTerminal=()=>show(false);window.SwitchboardConversation.interrupt=()=>{if(!stop.offsetParent||stop.disabled||target?.state==='waiting')return false;stop.click();return true;};update();
   }};
 })();

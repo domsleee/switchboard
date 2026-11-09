@@ -378,7 +378,7 @@ fn keys(menu: &Menu, choice: usize, text: Option<&str>) -> Option<Vec<Key>> {
     }
 }
 
-async fn forward(host: &Host, path: &str, body: Vec<u8>) -> Result<Response, Error> {
+pub(super) async fn forward(host: &Host, path: &str, body: Vec<u8>) -> Result<Response, Error> {
     let response = host
         .request(Method::POST, path, body.into(), "application/json")
         .await

@@ -15,7 +15,7 @@ test('Conversation folds finished progress, keeps the live step, and gives code 
    {type:'start',tag:'pre',lang:'js'},{type:'text',text:'const a = "<b>";\n'},{type:'end'}]},
   {role:'user',text:'And Windows?',timestamp:at(80)},
   step('Checking Windows',85),tool('run','cargo test -p zellij-client','Ran cargo test -p zellij-client',90),
- ],escapes=[];
+ ],escapes=[],backgroundStops=[];
  try{
   const page=await browser.newPage({viewport:{width:1280,height:900}});page.setDefaultTimeout(5000);
   const errors=[];page.on('pageerror',error=>errors.push(error.message));
@@ -23,10 +23,11 @@ test('Conversation folds finished progress, keeps the live step, and gives code 
   await page.route('http://layout.test/**',route=>{
    const p=new URL(route.request().url()).pathname;
    if(p.endsWith('/stream'))return route.fulfill({status:404,body:''});
+   if(p==='/api/hosts/fixture/conversation/stop-background'){backgroundStops.push(route.request().postDataJSON());return route.fulfill({json:{ok:true}});}
    if(p.startsWith('/api/')&&p!=='/api/hosts/fixture/escape'&&!p.startsWith('/api/chats/'))return route.fulfill({status:404,body:''});
    if(p==='/api/hosts/fixture/escape'){escapes.push(route.request().postDataJSON());return route.fulfill({json:{ok:true}});}
    if(p.startsWith('/api/chats/'))return route.fulfill({json:{messages,start_cursor:0,next_cursor:null}});
-   if(p==='/')return route.fulfill({contentType:'text/html',body:`<meta charset="utf-8"><link rel="stylesheet" href="/conversation.css"><style>body{margin:0}#terminals{position:relative;height:100dvh}</style><main id="terminals"><iframe id="terminal"></iframe><section id="artifact-preview" hidden></section></main><script src="/conversation-media.js"></script><script src="/conversation.js"></script><script>window.current={key:'pane1',host:'fixture',session:'main',pane:1,title:'Fix',agent:'claude',state:'working',since:Math.floor(Date.now()/1000)-65,chatId:'chat-1',frame:document.getElementById('terminal')};SwitchboardConversation.install({selection:()=>current,terminal(){}});</script>`});
+   if(p==='/')return route.fulfill({contentType:'text/html',body:`<meta charset="utf-8"><link rel="stylesheet" href="/conversation.css"><style>body{margin:0}#terminals{position:relative;height:100dvh}</style><main id="terminals"><iframe id="terminal"></iframe><section id="artifact-preview" hidden></section></main><script src="/conversation-media.js"></script><script src="/conversation.js"></script><script>window.current={key:'pane1',host:'fixture',session:'main',tab:7,pane:1,title:'Fix',agent:'claude',state:'working',since:Math.floor(Date.now()/1000)-65,chatId:'chat-1',frame:document.getElementById('terminal')};SwitchboardConversation.install({selection:()=>current,terminal(){}});</script>`});
    return route.fulfill({path:path.join(__dirname,'static',path.basename(p)),contentType:p.endsWith('.css')?'text/css':'text/javascript'});
   });
   await page.goto('http://layout.test/');await page.locator('.conversation-steps').first().waitFor();
@@ -88,6 +89,13 @@ test('Conversation folds finished progress, keeps the live step, and gives code 
   await page.getByLabel('Reply draft').fill('More context');
   assert.equal(await stop.isVisible(),false);assert.equal(await send.isVisible(),true);
   await page.getByLabel('Reply draft').fill('');
+  // A finished turn still waiting on background work offers Stop too, which ends those tasks.
+  await page.evaluate(()=>{current.state='waiting';SwitchboardConversation.update();});
+  assert.equal(await stop.isVisible(),true);assert.equal(await stop.getAttribute('title'),'Stop background tasks');
+  // The Esc key interrupts a turn, and must never end background tasks.
+  await page.getByLabel('Reply draft').press('Escape');await page.waitForTimeout(100);assert.deepEqual(backgroundStops,[]);
+  await stop.click();await page.waitForFunction(()=>!document.querySelector('.conversation-stop').disabled);
+  assert.deepEqual(backgroundStops,[{session:'main',tab_id:7,pane_id:1}]);assert.equal(escapes.length,1);
   await page.evaluate(()=>{current.state='ready';SwitchboardConversation.update();});
   assert.equal(await stop.isVisible(),false);assert.equal(await send.isVisible(),true);
   // When the answer lands, the run folds into its summary and stays open as the reader left it.

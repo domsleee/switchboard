@@ -836,6 +836,16 @@ async fn terminal_response(
             .await
             .map(IntoResponse::into_response);
     }
+    if path == "/switchboard/conversation/stop-background" && request.method() == Method::POST {
+        let bytes = to_bytes(request.into_body(), 2048)
+            .await
+            .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid conversation request"))?;
+        let target = serde_json::from_slice::<conversation::Target>(&bytes)
+            .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid conversation target"))?;
+        return conversation::background::local(&host, target, mesh.attention.get())
+            .await
+            .map(IntoResponse::into_response);
+    }
     if path == "/switchboard/conversation/skills" && request.method() == Method::POST {
         let bytes = to_bytes(request.into_body(), 32768)
             .await
