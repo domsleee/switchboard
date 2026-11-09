@@ -60,6 +60,7 @@ test('Conversation shows the model, animates real work and keeps delivery receip
   await page.evaluate(()=>{current.state='waiting';SwitchboardConversation.update();});
   assert.equal(await working.isVisible(),true,'A running background agent shows in the transcript');
   assert.equal(await page.locator('.conversation-working-step').getAttribute('data-step'),'Waiting on a background task');
+  assert.equal(await working.evaluate(node=>getComputedStyle(node.firstElementChild).animationName),'none','Only Thinking sweeps');
   assert.equal(await activity.evaluate(node=>getComputedStyle(node,'::before').animationName),'none');
   const refreshPage=()=>Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/')),page.evaluate(()=>intervals.forEach(fn=>fn()))]);
   const agents=page.locator('.conversation-agent'),rows=()=>agents.evaluateAll(nodes=>nodes.map(node=>[...node.children].map(child=>child.textContent||child.className)));

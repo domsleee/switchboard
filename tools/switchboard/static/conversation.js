@@ -507,6 +507,7 @@
         working.classList.toggle('has-step',!!step);
       }
       if(!step)workingStep.dataset.step=waiting?'Waiting on a background task':'Thinking…';
+      workingLabel.classList.toggle('thinking',!step&&!waiting);
       const run=step&&liveRun,expanded=!!run&&!run.collapsed,count=run?`· ${run.count} steps`:'';
       working.classList.toggle('has-run',!!run);working.disabled=!run;if(workingCount.textContent!==count)workingCount.textContent=count;
       if(run){working.removeAttribute('aria-hidden');working.setAttribute('aria-expanded',String(expanded));working.setAttribute('aria-label',`${expanded?'Hide':'Show'} ${run.count-1} earlier step${run.count===2?'':'s'}`);}
