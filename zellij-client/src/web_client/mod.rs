@@ -66,7 +66,6 @@ use websocket_handlers::{ws_handler_control, ws_handler_terminal};
 #[allow(dead_code)] // used in #[cfg(not(unix))] code path
 const DEFAULT_SERVER_STARTUP_TIMEOUT_SECS: u64 = 10;
 
-/// Whether New tab and handover can launch this model choice.
 /// A response that set its own policy keeps it: Switchboard's file viewer pages allow no scripts.
 pub(crate) fn default_content_security_policy(headers: &mut axum::http::HeaderMap) {
     if !headers.contains_key("Content-Security-Policy") {
@@ -77,6 +76,7 @@ pub(crate) fn default_content_security_policy(headers: &mut axum::http::HeaderMa
     }
 }
 
+/// Whether New tab and handover can launch this model choice.
 pub(crate) fn known_agent(model: &str) -> bool {
     websocket_handlers::Agent::parse(model).is_some()
 }
