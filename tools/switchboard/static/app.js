@@ -968,7 +968,8 @@ function render() {
   const currentEntry=current?.entry||(waitingForRequestedTab()?sessions.get(sessionKey(...JSON.parse(selected).slice(0,2))):startingEntry);
   for (const entry of sessions.values()) entry.frame.classList.toggle('active',entry===currentEntry);
   // Selecting another computer's tab in Conversation connects its terminal in the background.
-  if(globalThis.SwitchboardConversation?.wantsConversation?.())for(const entry of sessions.values())syncTerminalConnection(entry);
+  // A viewer whose engine cannot be hidden follows the selection in Terminal too.
+  for(const entry of sessions.values())if(entry.hideUnsupported||globalThis.SwitchboardConversation?.wantsConversation?.())syncTerminalConnection(entry);
   updateSelectionTools(current);
   window.SwitchboardConversation?.update?.();
   updateMobileTerminalViewport();
@@ -1208,10 +1209,11 @@ function renderMachines() {
 // viewers and attaches no viewer on those engines. A desktop viewer that is already
 // connected stays connected (its resizes are suppressed). Where viewers attach hidden,
 // the selected terminal also connects (or reconnects) behind Conversation, so
-// switching back never reloads it.
+// switching back never reloads it. A viewer whose engine never confirmed hidden would
+// keep sizing the tab from behind another sidebar tab too, so it disconnects until selected.
 function syncTerminalConnection(entry) {
   const live=`/hosts/${encodeURIComponent(entry.host)}/${encodeURIComponent(entry.name)}`;
-  const suspended=!!globalThis.SwitchboardConversation?.wantsConversation?.()&&
+  const suspended=!!entry.hideUnsupported&&!entry.frame.classList.contains('active')||!!globalThis.SwitchboardConversation?.wantsConversation?.()&&
     !(!mobileSidebar.matches&&!entry.hideUnsupported&&!entry.cached&&!entry.suspending&&
       (!!entry.state&&entry.frame.getAttribute('src')===live||
         entry.frame.classList.contains('active')&&!!hosts.get(entry.host)?.sessions?.find(session=>session.name===entry.name)?.hidden_attach));
@@ -1491,7 +1493,7 @@ window.addEventListener('message',event=>{
   }else if(event.data?.type==='zellij-clipboard'){
     setStatus(event.data.ok?'Copied to this browser.':event.data.error||'Copy failed; use the terminal’s clipboard panel.',!event.data.ok);
   }else if(event.data?.type==='zellij-hide-unsupported'){
-    // This engine still sizes tabs for hidden viewers. Disconnect it during Conversation.
+    // This engine still sizes tabs for hidden viewers. Disconnect it while it is out of view.
     entry.hideUnsupported=true;syncTerminalConnection(entry);render();
   }else if(event.data?.type==='zellij-terminal-failed'){
     // Frame identity selects the host; never accept a host supplied by the frame.

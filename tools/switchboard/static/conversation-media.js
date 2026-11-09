@@ -3,10 +3,11 @@
   const node=(tag,text)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;return n;};
   const imageExt=/\.(?:png|jpe?g|gif|webp|avif|svg)(?:[?#].*)?$/i,videoExt=/\.(?:mp4|webm|mov|m4v)(?:[?#].*)?$/i;
   const mediaPath=/^\s*(?:[A-Za-z]:[\\/]|\/|~[\\/])[^\n]*[^\s]\s*$/;
-  function resolve(reference,{host,project},embedded=false){
+  // A literal reference is a path as written, not a URL, so a % in it is part of the name.
+  function resolve(reference,{host,project},literal=false){
     const originalReference=reference;
     if(typeof reference!=='string'||!reference||/[\x00-\x1f\x7f]/.test(reference))return null;
-    if(embedded&&/^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(reference))return reference;
+    if(literal&&/^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(reference))return reference;
     if(/^https?:\/\//i.test(reference)){
       try{const url=new URL(reference);if(url.username||url.password)return null;
         // A loopback URL in a remote transcript is not a URL on the viewing phone.
@@ -16,7 +17,7 @@
     if(reference.startsWith('//')||reference.startsWith('\\\\'))return null;
     if(/^file:\/\//i.test(reference)){try{const url=new URL(reference);if(url.hostname&&url.hostname!=='localhost')return null;reference=decodeURIComponent(url.pathname).replace(/^\/([A-Za-z]:)/,'$1');}catch{return null;}}
     else if(/^[a-z][\w+.-]*:/i.test(reference)&&!(/^[A-Za-z]:[\\/]/.test(reference)))return null;
-    try{if(!/^file:/i.test(originalReference))reference=decodeURIComponent(reference);}catch{return null;}
+    try{if(!literal&&!/^file:/i.test(originalReference))reference=decodeURIComponent(reference);}catch{return null;}
     reference=reference.replace(/\\/g,'/');
     // Markdown file links can spell a Windows absolute path as /C:/... .
     reference=reference.replace(/^\/([A-Za-z]:\/)/,'$1');
@@ -205,8 +206,8 @@
     if(!dialog.open){dialog.showModal();dialog.focus({preventScroll:true});}
     show();
   }
-  function media(reference,label,kind,context,gallery,embedded=false){
-    const url=resolve(reference,context,embedded),wrapper=node('span');wrapper.className='conversation-media';
+  function media(reference,label,kind,context,gallery,literal=false){
+    const url=resolve(reference,context,literal),wrapper=node('span');wrapper.className='conversation-media';
     if(!url){wrapper.append(node('span',`${label}: preview unavailable`));return wrapper;}
     const item={url,label,kind},position=gallery.push(item)-1;
     const caption=node('span',label);caption.className='conversation-media-caption';
@@ -270,7 +271,7 @@
     const lineEdge=(sibling,start)=>!sibling||sibling.nodeName==='BR'||sibling.nodeType===3&&(start?sibling.data.endsWith('\n'):sibling.data.startsWith('\n'));
     const walker=document.createTreeWalker(parent,NodeFilter.SHOW_TEXT),paths=[];
     while(walker.nextNode()){const text=walker.currentNode;if((text.parentElement===parent||text.parentElement.matches('p,li,td,h1,h2,h3,h4,h5,h6'))&&!text.parentElement.closest('blockquote,.conversation-media')&&mediaPath.test(text.data)&&(imageExt.test(text.data.trim())||videoExt.test(text.data.trim())||html()?.isPath(text.data.trim()))&&lineEdge(text.previousSibling,true)&&lineEdge(text.nextSibling,false))paths.push(text);}
-    for(const text of paths){const path=text.data.trim();if(html()?.isPath(path)){const url=resolve(path,context);if(url)text.replaceWith(html().card(url,path,context.host));continue;}text.replaceWith(media(path,path.split(/[\\/]/).pop(),videoExt.test(path)?'video':'image',context,gallery));}
+    for(const text of paths){const path=text.data.trim();if(html()?.isPath(path)){const url=resolve(path,context,true);if(url)text.replaceWith(html().card(url,path,context.host));continue;}text.replaceWith(media(path,path.split(/[\\/]/).pop(),videoExt.test(path)?'video':'image',context,gallery,true));}
     linkify(parent,context);
     for(const attachment of message.attachments||[]){
       if(attachment.unavailable){const unavailable=node('p',`${attachment.name||'Attachment'} · ${attachment.unavailable}`);unavailable.className='conversation-media-unavailable';parent.append(unavailable);}
