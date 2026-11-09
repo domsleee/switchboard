@@ -48,7 +48,7 @@ try {
             $script:fixture.ProcessReads++
             $shellStarted = [DateTime]::Parse('2026-10-04T12:00:00.001Z').ToUniversalTime()
             if ($script:fixture.Mode -eq 'pid-reuse' -and $script:fixture.ProcessReads -ge 3) { $shellStarted = $shellStarted.AddMilliseconds(1) }
-            $engineStarted = if ($script:fixture.Mode -eq 'engine-restart' -and $script:fixture.ProcessReads -ge 3) { 'engine-restarted' } else { 'engine-start' }
+            $engineStarted = if ($script:fixture.Mode -in @('engine-restart','restore-failure') -and $script:fixture.ProcessReads -ge 3) { 'engine-restarted' } else { 'engine-start' }
             @(
                 [pscustomobject]@{ProcessId=10; ParentProcessId=1; Name='zellij.exe'; CreationDate=$engineStarted; CommandLine=$(if ($script:fixture.Mode -eq 'mismatched-engine') { 'zellij.exe --server C:\private\other' } else { '"C:\old\zellij.exe" --server "C:\private\work session"' })},
                 [pscustomobject]@{ProcessId=20; ParentProcessId=10; Name='powershell.exe'; CreationDate=$shellStarted; CommandLine='powershell.exe'},
@@ -77,9 +77,9 @@ try {
                 elseif ($kind -eq 'duplicate') { $output = '[{"is_plugin":false,"id":1,"tab_id":2,"tab_name":"A"},{"is_plugin":false,"id":1,"tab_id":2,"tab_name":"A"}]' }
                 else {
                     $name = if ($kind -eq 'renamed') { 'Lost name' } else { 'Agent work' }
-                    if ($kind -eq 'post-failure' -or $script:fixture.Mode -eq 'restore-failure') {
+                    if ($kind -eq 'tab-changed') {
                         $state = Get-SwitchboardReleaseState $script:fixture.Directory
-                        if ($state.sha256 -eq $script:fixture.NewHash) { $name = 'Lost name' }
+                        if ($state.sha256 -eq $script:fixture.NewHash) { $name = 'Renamed during update' }
                     }
                     $a = [ordered]@{is_plugin=$false; id=5; tab_id=7; tab_name=$name; tab_position=0}
                     $b = [ordered]@{is_plugin=$false; id=8; tab_id=9; tab_name='Shell'; tab_position=1}
@@ -141,12 +141,14 @@ try {
         Assert ($result.sha256 -ceq $fixture.NewHash) "$mode of a non-engine process blocked the update"
         Invoke-SwitchboardWindowsUpdate -Directory $fixture.Directory -Rollback | Out-Null
     }
-    foreach ($mode in @('normal','engine-restart')) {
-        $candidate = New-Fixture $(if ($mode -eq 'normal') { 'post-failure' } else { 'new' }) $mode
-        Reject { Invoke-SwitchboardWindowsUpdate -Candidate $candidate -Directory $fixture.Directory } 'changed'
-        Assert ((Get-SwitchboardReleaseState $fixture.Directory).sha256 -ceq $fixture.OldHash) "$mode failure did not restore the pointer"
-        Assert (!(Test-Path (Join-Path $fixture.Directory 'pending.json'))) 'Completed rollback left an interruption journal'
-    }
+    # Tabs open, close and get renamed at any time; only the engines must be untouched.
+    $candidate = New-Fixture 'tab-changed'
+    $result = Invoke-SwitchboardWindowsUpdate -Candidate $candidate -Directory $fixture.Directory
+    Assert ($result.sha256 -ceq $fixture.NewHash) 'A tab changing during the update blocked it'
+    $candidate = New-Fixture 'new' 'engine-restart'
+    Reject { Invoke-SwitchboardWindowsUpdate -Candidate $candidate -Directory $fixture.Directory } 'changed'
+    Assert ((Get-SwitchboardReleaseState $fixture.Directory).sha256 -ceq $fixture.OldHash) 'Engine restart did not restore the pointer'
+    Assert (!(Test-Path (Join-Path $fixture.Directory 'pending.json'))) 'Completed rollback left an interruption journal'
     $candidate = New-Fixture 'new' 'restore-failure'
     Reject { Invoke-SwitchboardWindowsUpdate -Candidate $candidate -Directory $fixture.Directory } 'automatic pointer restore failed'
     Assert ((Get-SwitchboardReleaseState $fixture.Directory).sha256 -ceq $fixture.NewHash) 'Failed restore must leave a complete selected release'
@@ -164,7 +166,7 @@ try {
     finally { $lock.Dispose() }
     $config = Join-Path $root 'config with spaces.kdl'; [IO.File]::WriteAllText($config,'web_sharing "on"')
     Invoke-SwitchboardWindowsUpdate -Candidate $candidate -Directory $fixture.Directory -Config $config | Out-Null
-    Assert (@($fixture.Calls | Where-Object { $_ -contains 'list-panes' -and $_[0] -eq '--config' -and $_[1] -eq $config -and $_ -contains 'work session' }).Count -ge 3) 'Configured private session probes lost literal paths/session names'
+    Assert (@($fixture.Calls | Where-Object { $_ -contains 'list-panes' -and $_[0] -eq '--config' -and $_[1] -eq $config -and $_ -contains 'work session' }).Count -ge 2) 'Configured private session probes lost literal paths/session names'
     $retained = Get-SwitchboardCurrentBinary $fixture.Directory
     [IO.File]::WriteAllText($retained,'corrupted')
     Reject { Get-SwitchboardCurrentBinary $fixture.Directory } 'checksum mismatch'

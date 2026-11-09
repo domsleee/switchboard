@@ -148,7 +148,9 @@ once and rolls back if that does not help.
 
 A failed handoff restores the retained executable and helpers and restarts
 services on it. Rollback is local: the previous executable and helpers are kept
-in `automatic-updates/rollback-*`. A build that fails during a handoff is recorded
+in `automatic-updates/rollback-*`. A successful handoff deletes every older
+`rollback-*` directory once the journal is cleared, keeping only its own; a directory
+that cannot be deleted is left for the next success. A build that fails during a handoff is recorded
 and not retried; a newer build remains eligible. Failures before the handoff,
 including unavailable local services or the session catalog, remain eligible for
 the next scheduled check. Catalog requests allow 30 seconds so the relay's
@@ -158,8 +160,10 @@ API asset route and applies the same manifest and SHA-256 checks. It needs no
 GitHub credentials or CLI. Custom download sources do not use this fallback.
 
 Download failures leave running services untouched. A failed read of the release
-manifest shows in Health as **Couldn't check for updates**, not a failed update,
-and clears on the next successful read.
+manifest or a failed download or write of its assets shows in Health as **Couldn't
+check for updates**, not a failed update, and clears on the next successful read.
+Assets that do not match the manifest's checksums are an upload in progress and are
+retried quietly on the next run.
 
 The Windows tray retains the updater's native process handle until it exits.
 An unrelated process reusing its PID cannot suppress later checks. Timestamped
@@ -179,6 +183,10 @@ before checking for builds:
 - A failed recovery is recorded in `error` and the journal is dropped, leaving
   services as they are. It never blocks a later build. `--check` refuses only
   while recovery is needed.
+
+`state.json` is flushed to disk before it replaces the previous file. A `state.json`
+that cannot be parsed is renamed to `state.json.corrupt` and the run continues from
+empty state, so a computer already on the published build records that as usual.
 
 The retired `auto_update.py` is now a shim that forwards to
 `zellij switchboard update`, so computers still scheduling the Python updater
@@ -235,7 +243,7 @@ This is a full local update. Terminal processes stay running; browsers reconnect
    this installation's `zellij serve`.
 2. Retain both binaries under `~/.local/share/switchboard/releases` and replace
    `~/.cargo/bin/zellij` with a checksum-verified atomic rename.
-3. Check that session server PIDs/start times and pane identities are unchanged.
+3. Check that session server PIDs and start times are unchanged.
 4. Run `zellij web --stop`, wait for the old web server to exit, then
    `launchctl kickstart -k` the job, which starts `zellij web --daemonize` and
    `zellij serve` on the new binary. Session servers are separate processes.
@@ -245,10 +253,10 @@ This is a full local update. Terminal processes stay running; browsers reconnect
    Halfway through, a plain `zellij web --daemonize` is started if web is still
    down: a job pinned to `SWITCHBOARD_RECOVER_UNSHARED_SESSION` for a replaced
    socket daemonizes and then exits, so its own fallback never runs.
-6. Recheck session server PIDs and pane identities.
+6. Recheck session server PIDs and start times.
 
-Shells and agents inside sessions may exit on their own; only session servers
-must survive. Any failure after step 2 restores the previous executable and, if
+Shells and agents inside sessions may exit, and tabs may open or close, on their
+own; only session servers must survive. Any failure after step 2 restores the previous executable and, if
 services were already restarted, restarts and rechecks them on it. If rollback
 cannot copy the retained executable, it leaves the complete installed executable
 in place and reports the retained path. Each read-only CLI probe has a 15-second
@@ -319,12 +327,12 @@ old pointer. Both executables remain available locally.
 
 By default it then performs the same service handoff as the automatic updater.
 Before selecting, it captures this installation's relay (listening on
-`-RelayPort`, default 80, with `-HostConfig`) and `web --start` process, engine
-identities and pane snapshots; it refuses if they cannot be identified. While it
+`-RelayPort`, default 80, with `-HostConfig`) and `web --start` process and engine
+identities; it refuses if they cannot be identified. While it
 holds `handoff.json` the tray does not restart services. It stops only the
 captured service PIDs (identity rechecked, never a `--server` engine), starts both
 from the selected release, and requires both to stay up and listen, the relay to
-answer `/api/health`, and engines and panes to be unchanged. On failure it
+answer `/api/health`, and engines to be unchanged. On failure it
 re-selects the previous release and restarts services on it.
 
 An exclusive file handle prevents concurrent updates. The retained `update.lock`
