@@ -290,9 +290,9 @@
 .conversation-compose>button[type=submit]::before{content:"";width:16px;height:16px;background:currentColor;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 13V3.5M4 7.5l4-4 4 4'/%3E%3C/svg%3E") center/contain no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 13V3.5M4 7.5l4-4 4 4'/%3E%3C/svg%3E") center/contain no-repeat}
 .conversation-compose>button[type=submit]:hover{background:#fff;color:#000}
 .conversation-compose:has(textarea:placeholder-shown):not(:has(.conversation-attachment))>button[type=submit]{background:#2a2b30;color:#8b8b96}
-.conversation-compose .conversation-stop{display:none;background:#ececef;color:#0f1012}
+.conversation-compose .conversation-stop{display:none;background:#fb414ae6;color:#fff}
 .conversation-compose .conversation-stop::before{content:"";width:9px;height:9px;border-radius:2px;background:currentColor}
-.conversation-compose .conversation-stop:hover{background:#fff;color:#000}
+.conversation-compose .conversation-stop:hover{background:#fb414a;color:#fff}
 .conversation-compose.can-stop:has(textarea:placeholder-shown):not(:has(.conversation-attachment))>button[type=submit]{display:none}
 .conversation-compose.can-stop:has(textarea:placeholder-shown):not(:has(.conversation-attachment)) .conversation-stop{display:grid}
 .conversation-compose .conversation-attach{grid-column:1;grid-row:3;width:34px;height:34px;min-height:34px;border-radius:10px;color:var(--muted);font-size:0}

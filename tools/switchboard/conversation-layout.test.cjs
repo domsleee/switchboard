@@ -23,6 +23,7 @@ test('Conversation folds finished progress, keeps the live step, and gives code 
   await page.route('http://layout.test/**',route=>{
    const p=new URL(route.request().url()).pathname;
    if(p.endsWith('/stream'))return route.fulfill({status:404,body:''});
+   if(p.startsWith('/api/')&&p!=='/api/hosts/fixture/escape'&&!p.startsWith('/api/chats/'))return route.fulfill({status:404,body:''});
    if(p==='/api/hosts/fixture/escape'){escapes.push(route.request().postDataJSON());return route.fulfill({json:{ok:true}});}
    if(p.startsWith('/api/chats/'))return route.fulfill({json:{messages,start_cursor:0,next_cursor:null}});
    if(p==='/')return route.fulfill({contentType:'text/html',body:`<meta charset="utf-8"><link rel="stylesheet" href="/conversation.css"><style>body{margin:0}#terminals{position:relative;height:100dvh}</style><main id="terminals"><iframe id="terminal"></iframe><section id="artifact-preview" hidden></section></main><script src="/conversation-media.js"></script><script src="/conversation.js"></script><script>window.current={key:'pane1',host:'fixture',session:'main',pane:1,title:'Fix',agent:'claude',state:'working',since:Math.floor(Date.now()/1000)-65,chatId:'chat-1',frame:document.getElementById('terminal')};SwitchboardConversation.install({selection:()=>current,terminal(){}});</script>`});
@@ -81,6 +82,7 @@ test('Conversation folds finished progress, keeps the live step, and gives code 
   // While the agent works, an empty composer offers Stop, which sends Esc to that pane.
   const stop=page.getByRole('button',{name:'Stop',exact:true}),send=page.getByRole('button',{name:'Send',exact:true});
   assert.equal(await stop.isVisible(),true);assert.equal(await send.isVisible(),false);
+  assert.equal(await stop.evaluate(button=>getComputedStyle(button).backgroundColor),'rgba(251, 65, 74, 0.9)');
   await stop.click();await page.waitForFunction(()=>!document.querySelector('.conversation-stop').disabled);
   assert.deepEqual(escapes,[{session:'main',pane_id:1}]);
   await page.getByLabel('Reply draft').fill('More context');
