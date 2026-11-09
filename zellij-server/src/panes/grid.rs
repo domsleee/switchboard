@@ -4583,17 +4583,18 @@ impl Perform for Grid {
         }
 
         if self.restoring_handoff && params[0] == handoff::RESTORE_OSC {
-            let column = params
-                .get(1)
-                .and_then(|column| std::str::from_utf8(column).ok())
-                .and_then(|column| column.parse().ok());
-            match column {
-                Some(column) => self.cursor.x = column,
-                None => {
-                    if let Some(row) = self.viewport.get_mut(self.cursor.y) {
-                        row.is_canonical = false;
+            let background = self.cursor.pending_styles.background;
+            let row = self.viewport.get_mut(self.cursor.y);
+            match (params.get(1).copied(), row) {
+                (Some([b'b']), Some(row)) => row.bg_color = background,
+                (Some(column), _) => {
+                    let column = std::str::from_utf8(column).ok();
+                    if let Some(column) = column.and_then(|column| column.parse().ok()) {
+                        self.cursor.x = column;
                     }
                 },
+                (None, Some(row)) => row.is_canonical = false,
+                (None, None) => {},
             }
             return;
         }

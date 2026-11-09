@@ -13,11 +13,12 @@ use std::fmt::Write;
 const ESC: &str = "\u{1b}";
 const CLOSE_LINK: &str = "\u{1b}]8;;\u{1b}\\";
 /// Sets what text and cursor movement cannot: alone it marks the cursor's row
-/// as continuing the line above, and with a number it sets the cursor's
-/// column. A grid honours it only while restoring, so a program's output
-/// cannot use it.
+/// as continuing the line above, with a number it sets the cursor's column,
+/// and with `b` it gives the cursor's row the current background. A grid
+/// honours it only while restoring, so a program's output cannot use it.
 pub(super) const RESTORE_OSC: &[u8] = b"7719";
 const MARK_WRAPPED: &str = "\u{1b}]7719\u{7}";
+const MARK_BACKGROUND: &str = "\u{1b}]7719;b\u{7}";
 
 /// Moves the cursor without changing any row: an ordinary move pads a short
 /// row with blanks, and it cannot reach the waiting-to-wrap position.
@@ -66,6 +67,15 @@ impl Grid {
     }
 
     fn write_styles(&self, tracked: &mut CharacterStyles, new: CharacterStyles, out: &mut String) {
+        if *tracked == new {
+            return;
+        }
+        // Start from a reset: attributes such as bold and dim share one reset
+        // code, so a diff can clear one that did not change.
+        let _ = write!(out, "{ESC}[m");
+        let link = tracked.link_anchor;
+        *tracked = RESET_STYLES.enable_styled_underlines(self.styled_underlines);
+        tracked.link_anchor = link;
         if let Some(changed) = tracked.update_and_return_diff(&new, None) {
             let _ = write!(out, "{changed}");
             if self.osc8_hyperlinks {
@@ -96,20 +106,18 @@ impl Grid {
                 out.push_str(MARK_WRAPPED);
             }
             let mut tracked = default;
-            let mut width = 0;
             for character in &row.columns {
                 self.write_styles(&mut tracked, *character.styles, out);
                 out.push(character.character);
-                width += character.width();
             }
             let in_link = matches!(tracked.link_anchor, Some(LinkAnchor::Start(_)));
             if let Some(background) = row
                 .bg_color
-                .filter(|color| width < self.width && !matches!(color, AnsiCode::Reset))
+                .filter(|color| !matches!(color, AnsiCode::Reset))
             {
                 let mut styles = default;
                 styles.background = Some(background);
-                let _ = write!(out, "{ESC}[m{styles}{ESC}[K");
+                let _ = write!(out, "{ESC}[m{styles}{MARK_BACKGROUND}");
             }
             // A background left on would colour the row a line break creates.
             let _ = write!(out, "{ESC}[m");
@@ -195,6 +203,11 @@ impl Grid {
     }
 
     fn write_palette(&self, out: &mut String) {
+        for (code, color) in [(10, self.pane_default_fg), (11, self.pane_default_bg)] {
+            if let Some((r, g, b)) = color {
+                let _ = write!(out, "{ESC}]{code};rgb:{r:02x}/{g:02x}/{b:02x}\u{7}");
+            }
+        }
         let Some(colors) = &self.changed_colors else {
             return;
         };
@@ -218,10 +231,7 @@ impl Grid {
             CursorShape::BlinkingBeam => 5,
             CursorShape::Beam => 6,
         };
-        if shape != 0 {
-            let _ = write!(out, "{ESC}[{shape} q");
-        }
-        let _ = write!(out, "{ESC}[m{}", *cursor.pending_styles);
+        let _ = write!(out, "{ESC}[{shape} q{ESC}[m{}", *cursor.pending_styles);
         if self.osc8_hyperlinks {
             match self
                 .link_handler
@@ -432,6 +442,10 @@ mod tests {
             grid.title, grid.title_stack
         ));
         out.push(format!(
+            "defaults {:?} {:?}",
+            grid.pane_default_fg, grid.pane_default_bg
+        ));
+        out.push(format!(
             "palette {:?}",
             grid.changed_colors.map(|colors| colors
                 .iter()
@@ -612,6 +626,26 @@ mod tests {
             5,
             40,
         );
+    }
+
+    #[test]
+    fn bold_survives_a_neighbour_losing_dim() {
+        assert_restores(b"\x1b[1;2mA\x1b[22;1mB", 5, 40);
+    }
+
+    #[test]
+    fn a_coloured_line_break_keeps_the_rows_colour() {
+        assert_restores(b"a\r\nb\r\nc\x1b[44m\r\n\x1b[m", 3, 40);
+    }
+
+    #[test]
+    fn default_colours_set_by_a_program() {
+        assert_restores(b"\x1b]10;rgb:11/22/33\x07\x1b]11;rgb:44/55/66\x07x", 5, 40);
+    }
+
+    #[test]
+    fn a_saved_cursor_shape_does_not_leak_into_the_active_cursor() {
+        assert_restores(b"\x1b[6 q\x1b7\x1b[0 q", 5, 40);
     }
 
     #[test]
