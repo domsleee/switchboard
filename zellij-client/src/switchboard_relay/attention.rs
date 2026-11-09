@@ -1279,10 +1279,13 @@ impl PollState {
                 .is_some_and(|hook| hook.capturing == expected.capturing)
         {
             let hook = self.hooks.get_mut(key).unwrap();
+            let changed = hook.restart != identity;
             hook.restart = identity;
             hook.capturing = None;
-            self.dirty = true;
-            self.hooked.notify_one();
+            if changed {
+                self.dirty = true;
+                self.hooked.notify_one();
+            }
         }
     }
     /// Denying a Claude approval sends no hook, only the Interrupted marker. A scan's
@@ -1782,7 +1785,19 @@ async fn check_processes(
     checks
 }
 
-#[derive(Clone, Debug, PartialEq)]
+fn spawn_capture(
+    poll: Arc<tokio::sync::Mutex<PollState>>,
+    key: (String, u64),
+    expected: Hooked,
+    capture: impl std::future::Future<Output = Option<super::restart::Identity>> + Send + 'static,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let identity = capture.await;
+        poll.lock().await.captured(&key, &expected, identity);
+    })
+}
+
+#[derive(Clone, Debug)]
 struct Hooked {
     agent: &'static str,
     state: &'static str,
@@ -1797,6 +1812,31 @@ struct Hooked {
     shell_hold: bool,
     // When the idle screen first stopped counting running tasks during that wait.
     idle_since: Option<tokio::time::Instant>,
+}
+
+impl PartialEq for Hooked {
+    fn eq(&self, other: &Self) -> bool {
+        // Capture tokens are transient and never written to the attention file.
+        (
+            self.agent,
+            self.state,
+            &self.token,
+            &self.chat_id,
+            &self.restart,
+            self.at,
+            self.shell_hold,
+            self.idle_since,
+        ) == (
+            other.agent,
+            other.state,
+            &other.token,
+            &other.chat_id,
+            &other.restart,
+            other.at,
+            other.shell_hold,
+            other.idle_since,
+        )
+    }
 }
 
 impl Hooked {
@@ -1977,15 +2017,15 @@ pub(super) async fn hook(
     drop(poll);
     if let Some(expected) = capture {
         let session = session.to_string();
-        let identity = tokio::task::spawn_blocking(move || {
-            super::restart::capture(agent, &event, &session, pane)
-        })
-        .await
-        .ok()
-        .flatten();
-        let mut poll = state.poll.lock().await;
-        // Process inspection may be slow. Never overwrite a newer busy/end event.
-        poll.captured(&key, &expected, identity);
+        // The capture must finish even if the HTTP client times out or disconnects.
+        spawn_capture(state.poll.clone(), key, expected, async move {
+            tokio::task::spawn_blocking(move || {
+                super::restart::capture(agent, &event, &session, pane)
+            })
+            .await
+            .ok()
+            .flatten()
+        });
     }
     StatusCode::NO_CONTENT
 }
@@ -3435,6 +3475,38 @@ esac
         assert!(
             poll.hooks.get_mut(&key).unwrap().begin_capture().is_some(),
             "Approval events can recover a missing identity too"
+        );
+    }
+
+    #[tokio::test]
+    async fn switchboard_conversation_capture_outlives_its_request() {
+        let mut hook = hook_status("claude", &json!({"hook_event_name":"PostToolUse"})).unwrap();
+        hook.chat_id = Some("claude-test-transcript".into());
+        let expected = hook.begin_capture().unwrap();
+        let key = ("main".into(), 65);
+        let poll = Arc::new(tokio::sync::Mutex::new(PollState::default()));
+        poll.lock().await.hooks.insert(key.clone(), hook);
+        let (finish, captured) = tokio::sync::oneshot::channel();
+        let (started, job) = tokio::sync::oneshot::channel();
+        let request_poll = poll.clone();
+        let request_key = key.clone();
+        let request = tokio::spawn(async move {
+            let capture = spawn_capture(request_poll, request_key, expected, async move {
+                captured.await.unwrap()
+            });
+            started.send(capture).unwrap();
+            std::future::pending::<()>().await;
+        });
+        let job = job.await.unwrap();
+        request.abort();
+        let _ = request.await;
+        finish.send(None).unwrap();
+        job.await.unwrap();
+        let poll = poll.lock().await;
+        assert!(poll.hooks[&key].capturing.is_none());
+        assert!(
+            !poll.dirty,
+            "Failed capture must not rewrite unchanged persisted state"
         );
     }
 

@@ -3,7 +3,7 @@ use super::*;
 use serde::Serialize;
 use std::path::PathBuf;
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
-use zellij_utils::agent_resumption::{invocation, resume_command, AgentKind};
+use zellij_utils::agent_resumption::{interactive_invocation, resume_command, AgentKind};
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub(super) struct Identity {
@@ -59,7 +59,7 @@ pub(super) fn capture(agent: &str, event: &Value, session: &str, pane: u64) -> O
     let system = processes();
     let mut candidates = system.processes().iter().filter_map(|(pid, p)| {
         let command = command(p);
-        if !owns(p, session, pane) || invocation(&command).is_none_or(|(kind, _)| kind != agent) {
+        if !owns(p, session, pane) || !interactive_invocation(&command, agent) {
             return None;
         }
         Some(Identity {
@@ -80,13 +80,14 @@ pub(super) fn capture(agent: &str, event: &Value, session: &str, pane: u64) -> O
 }
 impl Identity {
     pub(super) fn resumable(&self) -> bool {
-        resume_command(
-            &self.command,
-            self.agent,
-            &self.session_id,
-            self.cwd.clone(),
-        )
-        .is_ok()
+        self.agent != AgentKind::Copilot
+            && resume_command(
+                &self.command,
+                self.agent,
+                &self.session_id,
+                self.cwd.clone(),
+            )
+            .is_ok()
     }
 
     fn live(&self, session: &str, pane: u32) -> bool {
@@ -453,18 +454,50 @@ mod tests {
             !identity.resumable(),
             "Liveness must not enable an unsafe restart"
         );
+        let mut copilot = identity.clone();
+        copilot.agent = AgentKind::Copilot;
+        copilot.command = vec!["copilot".into()];
+        assert!(
+            !copilot.resumable(),
+            "Liveness must not enable Copilot restart controls"
+        );
         let mut wrong_exe = identity.clone();
         wrong_exe.executable = identity.cwd.join("different-program");
         assert_eq!(running(&[wrong_exe]), [false]);
-        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-            .arg("--list")
+        #[cfg(windows)]
+        let mut command = {
+            let mut c = std::process::Command::new("cmd.exe");
+            c.args(["/d", "/q", "/c", "set /p switchboard_test_wait="]);
+            c
+        };
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut c = std::process::Command::new("sh");
+            c.args(["-c", "read token"]);
+            c
+        };
+        let mut child = command
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .spawn()
             .unwrap();
-        let dead_pid = child.id();
-        child.wait().unwrap();
+        let pid = Pid::from_u32(child.id());
+        let mut processes = System::new();
+        processes.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            true,
+            ProcessRefreshKind::nothing().with_exe(UpdateKind::Always),
+        );
+        let process = processes.process(pid).unwrap();
         let mut dead = identity;
-        dead.pid = dead_pid;
+        dead.pid = child.id();
+        dead.started = process.start_time();
+        dead.executable = process.exe().unwrap().into();
+        assert_eq!(running(&[dead.clone()]), [true]);
+        drop(child.stdin.take());
+        child.wait().unwrap();
+        drop(child);
+        drop(processes);
         assert_eq!(running(&[dead]), [false]);
     }
 

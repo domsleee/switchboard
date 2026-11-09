@@ -71,6 +71,63 @@ pub fn invocation(command: &[String]) -> Option<(AgentKind, usize)> {
     }
 }
 
+fn noninteractive_option(agent: AgentKind, flag: &str) -> bool {
+    matches!(
+        flag,
+        "--help" | "-h" | "--version" | "-V" | "--print" | "--prompt" | "--connect" | "--remote"
+    ) || agent != AgentKind::Codex && flag == "-p"
+        || agent == AgentKind::Claude && flag == "--no-session-persistence"
+}
+
+fn codex_subcommand(agent: AgentKind, flag: &str) -> bool {
+    agent == AgentKind::Codex
+        && matches!(
+            flag,
+            "exec"
+                | "e"
+                | "review"
+                | "app-server"
+                | "exec-server"
+                | "agents"
+                | "mcp"
+                | "login"
+                | "logout"
+                | "debug"
+                | "app"
+                | "help"
+        )
+}
+
+/// Process liveness accepts interactive launches even when unknown flags make
+/// automatic recovery unsafe. Exclude nested print/exec helpers before choosing
+/// the pane's agent, using the same noninteractive checks as recovery.
+pub fn interactive_invocation(launch: &[String], agent: AgentKind) -> bool {
+    let Some((actual, index)) = invocation(launch) else {
+        return false;
+    };
+    if actual != agent {
+        return false;
+    }
+    let mut args = launch[index + 1..].iter();
+    while let Some(arg) = args.next() {
+        let (flag, value) = arg
+            .split_once('=')
+            .map_or((arg.as_str(), None), |(f, v)| (f, Some(v)));
+        if flag == "--" {
+            break;
+        }
+        if noninteractive_option(agent, flag) || codex_subcommand(agent, flag) {
+            return false;
+        }
+        if value.is_none()
+            && (takes_value(agent, flag) || matches!(flag, "--resume" | "--session-id" | "-r"))
+        {
+            args.next();
+        }
+    }
+    true
+}
+
 pub fn resume_command(
     launch: &[String],
     agent: AgentKind,
@@ -90,30 +147,10 @@ pub fn resume_command(
         let (flag, inline_value) = arg
             .split_once('=')
             .map_or((arg.as_str(), None), |(flag, value)| (flag, Some(value)));
-        if matches!(flag, "--help" | "-h" | "--version" | "-V")
-            || matches!(flag, "--print" | "--prompt" | "--connect" | "--remote")
-            || agent != AgentKind::Codex && flag == "-p"
-            || agent == AgentKind::Claude && flag == "--no-session-persistence"
-        {
+        if noninteractive_option(agent, flag) {
             return Err(format!("Cannot automatically resume {flag} invocations"));
         }
-        if agent == AgentKind::Codex
-            && matches!(
-                flag,
-                "exec"
-                    | "e"
-                    | "review"
-                    | "app-server"
-                    | "exec-server"
-                    | "agents"
-                    | "mcp"
-                    | "login"
-                    | "logout"
-                    | "debug"
-                    | "app"
-                    | "help"
-            )
-        {
+        if codex_subcommand(agent, flag) {
             return Err("Only interactive Codex conversations can be resumed".into());
         }
         if agent == AgentKind::Codex && matches!(flag, "resume" | "fork") {
@@ -403,6 +440,33 @@ fn switch(agent: AgentKind, flag: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn interactive_process_identity_excludes_nested_print_and_exec_helpers() {
+        for (agent, args, expected) in [
+            (AgentKind::Claude, vec!["claude", "--debug"], true),
+            (
+                AgentKind::Claude,
+                vec!["claude", "--worktree", "demo"],
+                true,
+            ),
+            (AgentKind::Claude, vec!["claude", "-p", "prompt"], false),
+            (AgentKind::Claude, vec!["claude", "--print=json"], false),
+            (AgentKind::Codex, vec!["codex", "exec", "prompt"], false),
+            (
+                AgentKind::Codex,
+                vec!["codex", "--model", "demo", "exec"],
+                false,
+            ),
+            (AgentKind::Codex, vec!["codex", "--model", "debug"], true),
+            (AgentKind::Codex, vec!["codex", "--", "exec"], true),
+            (AgentKind::Copilot, vec!["copilot"], true),
+            (AgentKind::Copilot, vec!["copilot", "-p", "prompt"], false),
+        ] {
+            let args: Vec<_> = args.into_iter().map(str::to_owned).collect();
+            assert_eq!(interactive_invocation(&args, agent), expected, "{args:?}");
+        }
+    }
+
     use super::*;
 
     const ID: &str = "11111111-2222-4333-8444-555555555555";
