@@ -4,6 +4,7 @@ const source=name=>fs.readFileSync(__dirname+'/static/'+name,'utf8');
 const htmlPath='out/vh-20261106-162703/chart/index.html';
 const rows=[`Interactive graph (${htmlPath})`,'/tmp/first.png','out/second.png','/tmp/first.png','/tmp/loop.gif'];
 const video=Buffer.from('GkXfo59ChoEBQveBAULygQRC84EIQoKEd2VibUKHgQJChYECGFOAZwEAAAAAAAS6EU2bdLpNu4tTq4QVSalmU6yBoU27i1OrhBZUrmtTrIHWTbuMU6uEElTDZ1OsggEzTbuMU6uEHFO7a1OsggSk7AEAAAAAAABZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVSalmsCrXsYMPQkBNgIxMYXZmNjMuMS4xMDJXQYxMYXZmNjMuMS4xMDJEiYhAn0AAAAAAABZUrmvYrgEAAAAAAABP14EBc8WIJNZgsXWLel2cgQAitZyDdW5kiIEAhoVWX1ZQOIOBASPjg4QF9eEA4JGwggFAuoG0moECVbCEVbmBAVXugQDsAQAAAAAAAAIAABJUw2f6c3OfY8CAZ8iZRaOHRU5DT0RFUkSHjExhdmY2My4xLjEwMnNz1WPAi2PFiCTWYLF1i3pdZ8igRaOHRU5DT0RFUkSHk0xhdmM2My4xLjEwMiBsaWJ2cHhnyKFFo4hEVVJBVElPTkSHkzAwOjAwOjAyLjAwMDAwMDAwMAAfQ7Z1QuzngQCjQJuBAACAUA8AnQEqQAG0AABHCIWFiIWEiAICAnWqAgZmZWl9r25snOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnN4A/v7iaX/xvHgV5Lsr//Ys5bAsQKOdgQBkALECAAUQrAAYABhYL/QACIAEM1+tck+VgACjnYEAyACxAgAFEKwAGAAYWC/0AAiABDNfrXJPlYAAo52BASwAsQIABRCsABgAGFgv9AAIgAQzX61yT5WAAKOdgQGQALECAAUQrAAYABhYL/QACIAEM1+tck+VgACjnYEB9ACxAgAFEKwAGAAYWC/0AAiABDNfrXJPlYAAo52BAlgAsQIABRCsABgAGFgv9AAIgAQzX61yT5WAAKOcgQK8AJECAAUQEBRgAGFgv9AAIgAQzX61yT5WAKOdgQMgALECAAUQrAAYABhYL/QACIAEM1+tck+VgACjnYEDhACxAgAFEKwAGAAYWC/0AAiABDNfrXJPlYAAo52BA+gAsQIABRCsABgAGFgv9AAIgAQzX61yT5WAAKOdgQRMALECAAUQrAAYABhYL/QACIAEM1+tck+VgACjnYEEsACxAgAFEKwAGAAYWC/0AAiABDNfrXJPlYAAo52BBRQAsQIABRCsABgAGFgv9AAIgAQzX61yT5WAAKOdgQV4ALECAAUQrAAYABhYL/QACIAEM1+tck+VgACjnYEF3ACxAgAFEKwAGAAYWC/0AAiABDNfrXJPlYAAo52BBkAAsQIABRCsABgAGFgv9AAIgAQzX61yT5WAAKOdgQakALECAAUQrAAYABhYL/QACIAEM1+tck+VgACjnIEHCACRAgAFEBAUYABhYL/QACIAEM1+tck+VgCjnYEHbACxAgAFEKwAGAAYWC/0AAiABDNfrXJPlYAAHFO7a5G7j7OBALeK94EB8YIBsvCBAw==','base64');
+const avif=require('./avif-fixtures.cjs');
 const art='http://127.0.0.1:8091/html/test-ticket/';
 async function fixture(run){
   const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch({headless:true});
@@ -22,6 +23,8 @@ async function fixture(run){
         return json({url:art+'index.html'});
       }
       if(path.endsWith('/file')){
+        const clip=/([a-z]+)\.avif$/.exec(url.searchParams.get('path'))?.[1];
+        if(clip)return route.fulfill({contentType:'image/avif',body:avif[clip]});
         if(/\.(?:webm|mp4|mov|m4v)$/i.test(url.searchParams.get('path')))return route.fulfill({contentType:'video/webm',body:video});
         return route.fulfill({contentType:'image/svg+xml',body:`<svg xmlns="http://www.w3.org/2000/svg" width="900" height="500"><rect width="900" height="500" fill="#1d3348"/><circle cx="450" cy="220" r="120" fill="#53c0b1"/><text x="450" y="410" fill="white" text-anchor="middle" font-size="26">${url.searchParams.get('path')}</text></svg>`});
       }
@@ -184,4 +187,36 @@ test('Forward to a closed preview cannot strand a reopened carousel on Back', {s
   await page.goBack();
   await page.waitForFunction(()=>!document.querySelector('#image-gallery').open);
   assert.equal(page.url(),'http://switchboard.test/');
+}));
+
+test('an animated AVIF plays in the video player, with seeking and looping', {skip:!enabled},()=>fixture(async({page})=>{
+  await page.evaluate(()=>window.SwitchboardOpenMedia('linux','/tmp/animated.avif'));
+  const gallery=page.locator('#image-gallery'),video=gallery.locator('video');
+  await video.waitFor({state:'visible'});
+  assert.equal(await gallery.locator('img').isVisible(),false,'The player replaces the image');
+  assert.equal(await video.evaluate(video=>video.controls&&video.loop&&video.muted),true);
+  assert.equal(await gallery.locator('a').getAttribute('href'),'/api/hosts/linux/file?path=%2Ftmp%2Fanimated.avif','Open original stays the file');
+  // A <video> given the file itself reports a duration but only ever shows the cover image.
+  await page.waitForFunction(()=>{const video=document.querySelector('#image-gallery video');return !video.paused&&video.getVideoPlaybackQuality().totalVideoFrames>4;});
+  const seeked=await video.evaluate(video=>new Promise(resolve=>{video.pause();video.onseeked=()=>resolve(video.currentTime);video.currentTime=.5;}));
+  assert.ok(Math.abs(seeked-.5)<.11,`Seeked to ${seeked}`);
+  const blob=await video.getAttribute('src');assert.match(blob,/^blob:/);
+  await page.keyboard.press('Escape');await gallery.waitFor({state:'hidden'});
+  assert.deepEqual(await video.evaluate(video=>({src:video.getAttribute('src'),loop:video.loop,muted:video.muted})),{src:null,loop:false,muted:false},'Closing leaves the player ready for ordinary videos');
+  assert.equal(await page.evaluate(url=>fetch(url).then(()=>'alive',()=>'revoked'),blob),'revoked');
+}));
+test('a still AVIF, or one the browser cannot play, stays an image', {skip:!enabled},()=>fixture(async({page})=>{
+  await page.evaluate(()=>{window.videoFailed=false;document.addEventListener('error',event=>{if(event.target.tagName==='VIDEO')window.videoFailed=true;},true);});
+  const gallery=page.locator('#image-gallery'),image=gallery.locator('img'),video=gallery.locator('video');
+  await page.evaluate(()=>window.SwitchboardOpenMedia('linux','/tmp/still.avif'));
+  await image.waitFor({state:'visible'});
+  assert.equal(await page.evaluate(()=>window.SwitchboardAvifVideo('/api/hosts/linux/file?path=%2Ftmp%2Fstill.avif')),null);
+  assert.equal(await video.isVisible(),false);
+  await page.keyboard.press('Escape');await gallery.waitFor({state:'hidden'});
+  await page.waitForFunction(()=>!history.state?.switchboardMedia);
+  await page.evaluate(()=>window.SwitchboardOpenMedia('linux','/tmp/undecodable.avif'));
+  await page.waitForFunction(()=>window.videoFailed);
+  assert.equal(await video.isVisible(),false);
+  assert.equal(await video.getAttribute('src'),null,'The failed player is cleared');
+  assert.deepEqual(await image.evaluate(image=>({src:image.getAttribute('src'),hidden:image.hidden})),{src:'/api/hosts/linux/file?path=%2Ftmp%2Fundecodable.avif',hidden:false},'The image comes back');
 }));

@@ -136,3 +136,39 @@ test('the media viewer swipes between items, zooms on double-tap, and closes on 
   await swipe([195,420],[200,700]);assert.equal(await page.getByRole('dialog').count(),0,'A downward swipe closes the viewer');
  }finally{await browser.close();}
 });
+
+test('the media viewer gives an animated AVIF video controls and leaves a still AVIF zoomable',{skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
+ const avif=require('./avif-fixtures.cjs');
+ const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch();
+ try{
+  const page=await browser.newPage({viewport:{width:1280,height:844}});page.setDefaultTimeout(7000);
+  await page.route('http://media-avif.test/**',route=>{
+   const url=new URL(route.request().url());
+   if(url.pathname.endsWith('/file'))return route.fulfill({contentType:'image/avif',body:avif[/([a-z]+)\.avif$/.exec(url.searchParams.get('path'))[1]]});
+   if(url.pathname==='/')return route.fulfill({contentType:'text/html',body:'<meta charset="utf-8"><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/conversation.css"><div class="conversation-panel"><article class="conversation-message" id="message"></article></div><script src="/gallery.js"></script><script src="/conversation-media.js"></script>'});
+   return route.fulfill({path:path.join(__dirname,'static',path.basename(url.pathname)),contentType:url.pathname.endsWith('.js')?'application/javascript':'text/css'});
+  });
+  await page.goto('http://media-avif.test/');
+  await page.evaluate(()=>SwitchboardConversationMedia.render(document.getElementById('message'),{markdown:['animated.avif','still.avif','undecodable.avif'].flatMap(url=>[{type:'start',tag:'image',url},{type:'text',text:url},{type:'end'}])},{host:'h',project:'/repo'}));
+  await page.evaluate(()=>document.addEventListener('error',event=>{if(event.target.tagName==='VIDEO')window.videoFailed=true;},true));
+  await page.getByRole('button',{name:'Preview animated.avif',exact:true}).click();
+  const dialog=page.getByRole('dialog'),video=dialog.locator('.conversation-media-stage>video'),zoom=dialog.getByRole('button',{name:'Zoom in',exact:true});
+  await video.waitFor({state:'visible'});
+  assert.equal(await video.evaluate(video=>video.controls&&video.loop),true);
+  assert.equal(await dialog.locator('.conversation-media-stage>img').count(),0,'The player replaces the image');
+  await page.waitForFunction(()=>{const video=document.querySelector('.conversation-media-stage>video');return !video.paused&&video.getVideoPlaybackQuality().totalVideoFrames>4;});
+  assert.equal(await zoom.isVisible(),false,'A video has no image zoom');
+  assert.equal(await dialog.getByRole('link',{name:'Open original',exact:true}).getAttribute('href'),'/api/hosts/h/file?path=%2Frepo%2Fanimated.avif');
+  const blob=await video.getAttribute('src');assert.match(blob,/^blob:/);
+  await page.keyboard.press('ArrowRight');
+  await dialog.locator('.conversation-media-stage>img').waitFor({state:'visible'});
+  assert.equal(await page.evaluate(url=>fetch(url).then(()=>'alive',()=>'revoked'),blob),'revoked','Moving on frees the player');
+  assert.equal(await page.evaluate(()=>window.SwitchboardAvifVideo('/api/hosts/h/file?path=%2Frepo%2Fstill.avif')),null);
+  assert.equal(await video.count(),0,'A still AVIF stays an image');
+  assert.equal(await zoom.isVisible(),true);
+  await page.keyboard.press('ArrowRight');await page.waitForFunction(()=>window.videoFailed);
+  await dialog.locator('.conversation-media-stage>img').waitFor({state:'attached'});
+  assert.equal(await video.count(),0,'A player that fails gives the image back');
+  assert.equal(await zoom.isVisible(),true);
+ }finally{await browser.close();}
+});
