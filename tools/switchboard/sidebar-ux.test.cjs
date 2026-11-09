@@ -73,7 +73,7 @@ test('touch screens open the tab menu with a long press',
     page.setDefaultTimeout(5000);
     page.on('pageerror',error=>errors.push(error.message));
     await page.addInitScript(()=>{window.setInterval=()=>0;});
-    const tabs=['Polish the sidebar','Online shopping research for the new desk'].map((name,i)=>
+    const tabs=['Polish the sidebar','Online shopping research'].map((name,i)=>
       ({host:'mac',session:'main',id:i+1,position:i,name,panes:[{pane_id:i+1,is_plugin:false,tab_position:i}]}));
     await page.route('**/*',route=>{
       const url=new URL(route.request().url()),path=url.pathname;
@@ -101,7 +101,7 @@ test('touch screens open the tab menu with a long press',
     // Holding a row opens its menu without selecting it, and lifting the finger leaves the menu open.
     await touch('touchStart',at());await page.waitForTimeout(650);
     assert.equal(await menu.isVisible(),true);
-    assert.equal(await page.locator('#tab-menu-target').textContent(),'Online shopping research for the new desk');
+    assert.equal(await page.locator('#tab-menu-target').textContent(),'Online shopping research');
     if(process.env.SWITCHBOARD_UX_SCREENSHOTS)await page.screenshot({path:process.env.SWITCHBOARD_UX_SCREENSHOTS+'/long-press.png'});
     await touch('touchEnd',[]);await page.waitForTimeout(100);
     assert.equal(await menu.isVisible(),true);assert.equal(await selectedName(),'Polish the sidebar');
