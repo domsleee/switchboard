@@ -6,6 +6,7 @@ use serde::Serialize;
 use std::path::PathBuf;
 pub(super) mod background;
 mod claude_skills;
+pub(super) mod github;
 pub(super) mod prompt;
 
 #[derive(Deserialize, Serialize)]

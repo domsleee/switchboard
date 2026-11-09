@@ -2288,7 +2288,7 @@ fn add_result(chat: &Chat, p: &Params, results: &mut Vec<Value>) {
 }
 // A small, inert Markdown event stream. The browser creates allowlisted DOM nodes;
 // neither transcript HTML nor provider-controlled attributes are inserted as HTML.
-fn markdown_events(source: &str) -> Vec<Value> {
+pub(super) fn markdown_events(source: &str) -> Vec<Value> {
     use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
     let options =
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;

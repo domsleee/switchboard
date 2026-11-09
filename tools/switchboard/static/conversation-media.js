@@ -14,6 +14,7 @@
         if(['localhost','127.0.0.1','[::1]'].includes(url.hostname))return null;
         return url.href;}catch{return null;}
     }
+    if(reference.startsWith('#'))return null;
     if(reference.startsWith('//')||reference.startsWith('\\\\'))return null;
     if(/^file:\/\//i.test(reference)){try{const url=new URL(reference);if(url.hostname&&url.hostname!=='localhost')return null;reference=decodeURIComponent(url.pathname).replace(/^\/([A-Za-z]:)/,'$1');}catch{return null;}}
     else if(/^[a-z][\w+.-]*:/i.test(reference)&&!(/^[A-Za-z]:[\\/]/.test(reference)))return null;
@@ -273,6 +274,7 @@
     while(walker.nextNode()){const text=walker.currentNode;if((text.parentElement===parent||text.parentElement.matches('p,li,td,h1,h2,h3,h4,h5,h6'))&&!text.parentElement.closest('blockquote,.conversation-media')&&mediaPath.test(text.data)&&(imageExt.test(text.data.trim())||videoExt.test(text.data.trim())||html()?.isPath(text.data.trim()))&&lineEdge(text.previousSibling,true)&&lineEdge(text.nextSibling,false))paths.push(text);}
     for(const text of paths){const path=text.data.trim();if(html()?.isPath(path)){const url=resolve(path,context,true);if(url)text.replaceWith(html().card(url,path,context.host));continue;}text.replaceWith(media(path,path.split(/[\\/]/).pop(),videoExt.test(path)?'video':'image',context,gallery,true));}
     linkify(parent,context);
+    window.SwitchboardConversationGithub?.decorate(parent,context);
     for(const attachment of message.attachments||[]){
       if(attachment.unavailable){const unavailable=node('p',`${attachment.name||'Attachment'} · ${attachment.unavailable}`);unavailable.className='conversation-media-unavailable';parent.append(unavailable);}
       else if(attachment.kind==='file'){

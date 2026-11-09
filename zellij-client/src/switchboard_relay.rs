@@ -1289,6 +1289,7 @@ async fn asset(request: Request) -> Response {
         | "tasks.js"
         | "notifications.js"
         | "sw.js"
+        | "conversation-github.js"
         | "conversation-media.js"
         | "conversation-mermaid.js"
         | "conversation-html.js"
@@ -1508,6 +1509,10 @@ fn app(state: RelayState) -> Router {
         .route(
             "/api/hosts/{host}/conversation/stop-background",
             post(conversation::background::handler),
+        )
+        .route(
+            "/api/hosts/{host}/conversation/github",
+            post(conversation::github::handler),
         )
         .route(
             "/api/hosts/{host}/conversation/skills",
