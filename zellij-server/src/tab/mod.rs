@@ -4194,14 +4194,20 @@ impl Tab {
             else {
                 continue;
             };
-            if pane.is_forward_paused() {
-                return Err("a pane is waiting for a terminal query".to_string());
-            }
             if pane.is_scrolled() {
                 pane.clear_scroll();
             }
             self.process_pending_vte_events(pid)
                 .map_err(|error| format!("{error:#}"))?;
+            // Checked last, because the output applied above can ask a query.
+            let waiting = self
+                .tiled_panes
+                .get_pane_mut(pane_id)
+                .or_else(|| self.floating_panes.get_pane_mut(pane_id))
+                .is_some_and(|pane| pane.is_forward_paused());
+            if waiting {
+                return Err("a pane is waiting for a terminal query".to_string());
+            }
         }
         Ok(())
     }

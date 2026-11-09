@@ -481,7 +481,7 @@ pub enum ScreenInstruction {
     HoldPane(PaneId, Option<i32>, RunCommand),
     /// Settles every pane and describes the session for the next engine.
     PrepareHandoff(std::sync::mpsc::Sender<Result<crate::handoff::ScreenHandoff, String>>),
-    RestoreHandoffPane(u32, String),
+    RestoreHandoffPane(u32, String, Size),
     /// The IDs for the tabs about to be created, and the next one after them.
     UseHandoffTabIds(Vec<usize>, usize),
     UpdatePaneName(Vec<u8>, ClientId, Option<NotificationEnd>),
@@ -1918,7 +1918,7 @@ impl Screen {
                 if let Some(held_terminal) = held_terminal {
                     held.insert(id, held_terminal);
                 }
-                terminals.insert(id, (snapshot, running));
+                terminals.insert(id, (snapshot, running, tab.get_display_area()));
             }
         }
         let identified = self
@@ -9955,11 +9955,21 @@ pub(crate) fn screen_thread_main(
             ScreenInstruction::PrepareHandoff(reply) => {
                 let _ = reply.send(screen.prepare_handoff());
             },
-            ScreenInstruction::RestoreHandoffPane(terminal_id, snapshot) => {
-                let restored = screen
-                    .tabs
-                    .values_mut()
-                    .any(|tab| tab.restore_handoff_pane(terminal_id, &snapshot));
+            ScreenInstruction::RestoreHandoffPane(terminal_id, snapshot, size) => {
+                let mut restored = false;
+                for tab in screen.tabs.values_mut() {
+                    if tab
+                        .get_all_pane_ids()
+                        .contains(&PaneId::Terminal(terminal_id))
+                    {
+                        // Tabs can have different sizes.
+                        if tab.get_display_area() != size {
+                            tab.resize_whole_tab(size)?;
+                        }
+                        restored = tab.restore_handoff_pane(terminal_id, &snapshot);
+                        break;
+                    }
+                }
                 if !restored {
                     log::error!("No pane to restore terminal {terminal_id} into");
                 }

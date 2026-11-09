@@ -24,6 +24,7 @@ const MANIFEST_ENV: &str = "SWITCHBOARD_HANDOFF_MANIFEST";
 const MANIFEST_VERSION: u32 = 1;
 const INPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const SETTLE_TIMEOUT: Duration = Duration::from_secs(3);
+const FROZEN_WAIT_LIMIT: Duration = Duration::from_secs(30);
 
 static FROZEN: AtomicBool = AtomicBool::new(false);
 
@@ -32,9 +33,29 @@ pub(crate) fn is_frozen() -> bool {
     FROZEN.load(Ordering::SeqCst)
 }
 
+/// A new engine stays frozen until every pane has its snapshot.
+pub(crate) fn freeze_for_adoption() {
+    FROZEN.store(true, Ordering::SeqCst);
+}
+
+pub(crate) fn unfreeze() {
+    FROZEN.store(false, Ordering::SeqCst);
+}
+
+/// Holds a new viewer back until the session can accept it. An engine that
+/// hands over exits, which ends the wait by closing the connection.
+pub(crate) fn wait_while_frozen() {
+    let deadline = std::time::Instant::now() + FROZEN_WAIT_LIMIT;
+    while is_frozen() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HandoffTerminal {
     pub snapshot: String,
+    /// The size of this pane's tab, which is what the snapshot describes.
+    pub size: Size,
     pub pid: Option<u32>,
     /// The output position the snapshot describes. Held panes have none.
     pub position: Option<u64>,
@@ -67,8 +88,9 @@ pub struct ScreenHandoff {
     pub focused_tab_index: usize,
     pub next_tab_id: usize,
     pub tabs: Vec<HandoffTab>,
-    /// Terminal ID, its snapshot, and whether a child is running in it.
-    pub terminals: BTreeMap<u32, (String, bool)>,
+    /// Terminal ID, its snapshot, whether a child is running in it, and the
+    /// size of its tab.
+    pub terminals: BTreeMap<u32, (String, bool, Size)>,
 }
 
 impl HandoffManifest {
@@ -187,7 +209,7 @@ pub(crate) fn hand_over(
             .recv_timeout(SETTLE_TIMEOUT)
             .map_err(|_| "the terminal list did not arrive in time".to_string())?;
         let mut terminals = BTreeMap::new();
-        for (id, (snapshot, running)) in screen.terminals {
+        for (id, (snapshot, running, size)) in screen.terminals {
             let position = if running {
                 Some(
                     hosted
@@ -202,6 +224,7 @@ pub(crate) fn hand_over(
                 id,
                 HandoffTerminal {
                     snapshot,
+                    size,
                     pid,
                     position,
                 },
@@ -288,6 +311,7 @@ mod tests {
                 11,
                 HandoffTerminal {
                     snapshot: "screen\u{1b}[m".to_string(),
+                    size: Size { rows: 10, cols: 40 },
                     pid: Some(42),
                     position: Some(1234),
                 },

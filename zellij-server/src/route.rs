@@ -2329,17 +2329,24 @@ pub(crate) fn route_thread_main(
             Ok((instruction, err_ctx)) => {
                 consecutive_unknown_messages_received = 0;
                 err_ctx.update_thread_ctx();
-                if crate::handoff::is_frozen()
-                    && matches!(
-                        instruction,
+                if crate::handoff::is_frozen() {
+                    match &instruction {
+                        ClientToServerMsg::Action { .. } => {
+                            // The sender may be waiting for this action to finish.
+                            let _ = os_input
+                                .send_to_client(client_id, ServerToClientMsg::UnblockInputThread);
+                            continue 'route_loop;
+                        },
                         ClientToServerMsg::Key { .. }
-                            | ClientToServerMsg::Action { .. }
-                            | ClientToServerMsg::TerminalResize { .. }
-                            | ClientToServerMsg::AttachClient { .. }
-                            | ClientToServerMsg::AttachWatcherClient { .. }
-                    )
-                {
-                    continue 'route_loop;
+                        | ClientToServerMsg::TerminalResize { .. } => {
+                            continue 'route_loop;
+                        },
+                        ClientToServerMsg::AttachClient { .. }
+                        | ClientToServerMsg::AttachWatcherClient { .. } => {
+                            crate::handoff::wait_while_frozen();
+                        },
+                        _ => {},
+                    }
                 }
                 let mut handle_instruction = |instruction: ClientToServerMsg,
                                               mut retry_queue: Option<

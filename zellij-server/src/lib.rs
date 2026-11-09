@@ -1227,6 +1227,7 @@ pub fn start_server_impl(
                             log::error!("Cannot take over the terminal host: {error}");
                             std::process::exit(1);
                         }
+                        handoff::freeze_for_adoption();
                         os_input.set_next_terminal_id(manifest.next_terminal_id);
                         layout = manifest.into_layout();
                         Some(manifest)
