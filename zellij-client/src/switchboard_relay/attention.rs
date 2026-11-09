@@ -745,6 +745,9 @@ pub(super) struct PollState {
     interactive: HashMap<(String, u64), usize>,
     // Background shells running at each local pane's last Claude Stop, by task ID.
     stop_shells: HashMap<(String, u64), Vec<String>>,
+    // Panes whose denied approval is already queued for a settle, and that queue.
+    denied: std::collections::HashSet<(String, u64)>,
+    settling: Vec<(String, u32)>,
     dirty: bool,
 }
 
@@ -864,6 +867,7 @@ impl PollState {
                     self.forget_hook(row, created);
                 }
                 self.apply_hook(row, &command);
+                self.queue_denied_settle(row, &screen);
                 // After apply_hook, which drops a hook from an agent the pane no longer runs.
                 if let (Some(session), Some(pane)) =
                     (row["session"].as_str(), row["pane_id"].as_u64())
@@ -1002,6 +1006,52 @@ impl PollState {
         self.refreshed.insert(host.into(), now);
         self.reached.insert(host.into(), now);
         changed
+    }
+    /// Forgets panes closed more than `CLOSED_PANE_SECONDS` ago, given a full scan of
+    /// this computer. Without every session listed, absence says nothing about a pane.
+    pub(super) fn prune_closed(&mut self, host: &str, snapshot: &Value) {
+        let complete = |field: &str| snapshot[field].as_array().is_some_and(Vec::is_empty);
+        let Some(panes) = snapshot["panes"].as_array().filter(|p| !p.is_empty()) else {
+            return;
+        };
+        if !complete("errors") || !complete("deferred_sessions") {
+            return;
+        }
+        let listed: std::collections::HashSet<String> = panes
+            .iter()
+            .map(|row| json!([host, row["session"], row["pane_id"]]).to_string())
+            .collect();
+        let now = unix_seconds();
+        let closed: Vec<(String, Value)> = self
+            .observed
+            .iter()
+            .filter(|(key, row)| {
+                !listed.contains(*key)
+                    && row["since"]
+                        .as_u64()
+                        .is_some_and(|since| now.saturating_sub(since) > CLOSED_PANE_SECONDS)
+            })
+            .filter_map(|(key, _)| {
+                let identity = serde_json::from_str::<Value>(key).ok()?;
+                (identity[0] == host).then(|| (key.clone(), identity))
+            })
+            .collect();
+        for (key, identity) in closed {
+            self.observed.remove(&key);
+            self.scanned.remove(&key);
+            self.unreadable.remove(&key);
+            if let (Some(session), Some(pane)) = (identity[1].as_str(), identity[2].as_u64()) {
+                let pane = (session.to_owned(), pane);
+                self.hooks.remove(&pane);
+                self.stop_shells.remove(&pane);
+                self.denied.remove(&pane);
+            }
+            self.dirty = true;
+        }
+        // Both are only read while under 30 seconds old.
+        let recent = Duration::from_secs(30);
+        self.scanned.retain(|_, at| at.elapsed() < recent);
+        self.sessions_scanned.retain(|_, at| at.elapsed() < recent);
     }
     pub(super) fn restart_identity(
         &self,
@@ -1142,13 +1192,34 @@ impl PollState {
             None => row.remove("token"),
         };
     }
-    /// Ends a Claude turn that Esc interrupted, which no hook reports. The next prompt's
-    /// hook replaces this. "idle" because stopping a turn is not a new result to review.
+    /// Denying a Claude approval sends no hook, only the Interrupted marker. A scan's
+    /// screen can be old, so the host loop confirms it from the pane itself, once each
+    /// time the marker appears under an approval.
+    fn queue_denied_settle(&mut self, row: &Value, screen: &str) {
+        let (Some(session), Some(pane)) = (row["session"].as_str(), row["pane_id"].as_u64()) else {
+            return;
+        };
+        let key = (session.to_owned(), pane);
+        let approval = self
+            .hooks
+            .get(&key)
+            .is_some_and(|hook| hook.agent == "claude" && hook.state == "approval");
+        if approval && row["interrupted"] == true {
+            if self.denied.insert(key) {
+                self.settling.push((session.to_owned(), pane as u32));
+            }
+        } else if !approval || !matches!(screen, "unread" | "unknown") {
+            self.denied.remove(&key);
+        }
+    }
+    /// Ends a Claude turn that Esc interrupted or an approval denial ended, which no hook
+    /// reports. The next prompt's hook replaces this. "idle" because stopping a turn is
+    /// not a new result to review.
     pub(super) fn settle_interrupted(&mut self, session: &str, pane: u64) {
         if let Some(hook) = self
             .hooks
             .get_mut(&(session.to_owned(), pane))
-            .filter(|hook| hook.agent == "claude" && hook.state == "working")
+            .filter(|hook| hook.agent == "claude" && matches!(hook.state, "working" | "approval"))
         {
             hook.state = "ready";
             hook.token = Some("idle".to_owned());
@@ -1352,6 +1423,7 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
                 let redrawn = live.changed.clone();
                 let hooked = poll.lock().await.hooked.clone();
                 let scans_here = host.config.escape_transport.as_deref() != Some("gateway");
+                let shared_poll = poll.clone();
                 let mut next = tokio::time::Instant::now();
                 loop {
                     let started = tokio::time::Instant::now();
@@ -1373,7 +1445,12 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
                     }
                     let mut poll = poll.lock().await;
                     let changed = match result {
-                        Ok(mut snapshot) => poll.update(&id, &mut snapshot),
+                        Ok(mut snapshot) => {
+                            if full && host.is_local_engine() {
+                                poll.prune_closed(&id, &snapshot);
+                            }
+                            poll.update(&id, &mut snapshot)
+                        },
                         Err(error) => {
                             logs::record(
                                 &host.config.name,
@@ -1388,7 +1465,16 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
                         let _ = logs::write_private(&file, poll.persisted().to_string().as_bytes())
                             .await;
                     }
+                    let settling = std::mem::take(&mut poll.settling);
                     drop(poll);
+                    for (session, pane) in settling {
+                        control::settle_interrupt(
+                            host.clone(),
+                            shared_poll.clone(),
+                            session,
+                            pane,
+                        );
+                    }
                     tokio::select! {
                         _ = tokio::time::sleep_until(next) => {},
                         // Gather a burst of redraws into one status read.
@@ -1544,6 +1630,9 @@ struct Hooked {
     // When the idle screen first stopped counting running tasks during that wait.
     idle_since: Option<tokio::time::Instant>,
 }
+
+/// How long, in seconds, a closed pane's saved state is kept.
+const CLOSED_PANE_SECONDS: u64 = 30 * 24 * 3600;
 
 /// How long Claude's footer must show no running task before a shell wait ends.
 const SHELL_WAIT_GRACE: Duration = Duration::from_secs(30);
@@ -2504,6 +2593,116 @@ esac
             )),
             "working"
         );
+    }
+
+    // Claude Code 2.1.319 after denying a Bash approval with Esc or "No"; neither sends a hook.
+    const DENIED: &str = "❯ run echo\n\n● Bash(echo denial-test > out.txt)\n  ⎿  Interrupted · What should Claude do instead?\n\n✻ Brewed for 7s · done 18:27\n──────────────────────────────────────────────────❯ \n──────────────────────────────────────────────────  ⏸ manual mode on · ? for shortcuts · ← 1 agent                              ◐ medium · /effort\n";
+
+    fn approval_poll() -> PollState {
+        let mut poll = PollState::default();
+        let event = json!({"hook_event_name":"PermissionRequest"});
+        poll.hooks
+            .insert(("main".into(), 3), hook_status("claude", &event).unwrap());
+        poll
+    }
+
+    #[test]
+    fn claude_denied_approval_is_ready_once_settled() {
+        let pane = json!({"pane_command":"claude.exe"});
+        let mut row = classify(&pane, DENIED);
+        assert_eq!(row["interrupted"], true, "{row}");
+        let mut poll = approval_poll();
+        poll.settle_interrupted("main", 3);
+        row["session"] = json!("main");
+        row["pane_id"] = json!(3);
+        poll.apply_hook(&mut row, &json!("claude.exe"));
+        assert_eq!(row["state"], "ready");
+        // The denial marker is history once a later turn's prompt follows it.
+        let later = format!(
+            "{}\n❯ try again\n\n──────\n❯\u{a0}\n──────\n  ⏸ manual mode on · ? for shortcuts\n",
+            DENIED.split("──").next().unwrap()
+        );
+        assert_ne!(classify(&pane, &later)["interrupted"], true);
+    }
+
+    #[test]
+    fn claude_denied_approval_queues_one_settle_until_the_marker_leaves() {
+        let mut poll = approval_poll();
+        let scan = |poll: &mut PollState, state: &str, interrupted: bool| {
+            let mut row = json!({"session":"main","pane_id":3,"state":state,"agent":"claude","token":"idle","command":"claude.exe"});
+            if interrupted {
+                row["interrupted"] = json!(true);
+            }
+            let mut snapshot = json!({"panes":[row],"tabs":[],"errors":[]});
+            poll.update("local", &mut snapshot);
+            std::mem::take(&mut poll.settling)
+        };
+        let settle = vec![("main".to_owned(), 3)];
+        assert_eq!(scan(&mut poll, "approval", false), []);
+        assert_eq!(scan(&mut poll, "ready", true), settle);
+        assert_eq!(scan(&mut poll, "ready", true), []);
+        // A screen that no longer shows the marker arms it again.
+        assert_eq!(scan(&mut poll, "approval", false), []);
+        assert_eq!(scan(&mut poll, "ready", true), settle);
+    }
+
+    #[test]
+    fn switchboard_prune_drops_only_panes_gone_for_30_days() {
+        let old = unix_seconds() - 31 * 24 * 3600;
+        let key = |host: &str, pane: u64| json!([host, "main", pane]).to_string();
+        let fresh = || {
+            let mut poll = PollState::default();
+            let event = json!({"hook_event_name":"UserPromptSubmit"});
+            let row = |since| json!({"state":"ready","generation":0,"since":since});
+            for pane in [1, 3] {
+                poll.observed.insert(key("local", pane), row(old));
+            }
+            poll.observed.insert(key("local", 2), row(unix_seconds()));
+            poll.observed.insert(key("peer", 9), row(old));
+            for pane in [1, 2, 3] {
+                let hook = hook_status("claude", &event).unwrap();
+                poll.hooks.insert(("main".into(), pane), hook);
+            }
+            poll.stop_shells
+                .insert(("main".into(), 1), vec!["server".into()]);
+            poll.unreadable.insert(key("local", 1));
+            let long_ago = tokio::time::Instant::now() - Duration::from_secs(60);
+            poll.scanned.insert(key("local", 7), long_ago);
+            poll.sessions_scanned.insert(key("local", 7), long_ago);
+            poll
+        };
+        let listed = json!([{"session":"main","pane_id":3}]);
+        let live = json!({"panes":listed,"tabs":[],"errors":[],"deferred_sessions":[]});
+
+        let mut poll = fresh();
+        poll.prune_closed("local", &live);
+        assert!(!poll.observed.contains_key(&key("local", 1)));
+        assert!(!poll.hooks.contains_key(&("main".to_owned(), 1)));
+        assert!(!poll.stop_shells.contains_key(&("main".to_owned(), 1)));
+        assert!(!poll.unreadable.contains(&key("local", 1)));
+        assert!(poll.dirty);
+        assert!(poll.scanned.is_empty() && poll.sessions_scanned.is_empty());
+        // Closed recently, still listed, and another computer's row all stay.
+        assert!(poll.observed.contains_key(&key("local", 2)));
+        assert!(poll.hooks.contains_key(&("main".to_owned(), 2)));
+        assert!(poll.observed.contains_key(&key("local", 3)));
+        assert!(poll.hooks.contains_key(&("main".to_owned(), 3)));
+        assert!(poll.observed.contains_key(&key("peer", 9)));
+
+        for partial in [
+            json!({"panes":[],"tabs":[],"errors":[],"deferred_sessions":[]}),
+            json!({"panes":listed,"tabs":[],"errors":[{"message":"x"}],"deferred_sessions":[]}),
+            json!({"panes":listed,"tabs":[],"errors":[],"deferred_sessions":["main"]}),
+        ] {
+            let mut poll = fresh();
+            poll.prune_closed("local", &partial);
+            assert!(poll.observed.contains_key(&key("local", 1)), "{partial}");
+            assert!(
+                poll.hooks.contains_key(&("main".to_owned(), 1)),
+                "{partial}"
+            );
+            assert!(!poll.dirty, "{partial}");
+        }
     }
 
     #[tokio::test(start_paused = true)]

@@ -263,7 +263,10 @@ input and approval prompts and running status. Ready results get an attention ba
 approvals/questions retain their badge until resolved. A new observed working-to-ready transition raises a new notification, except a
 Claude pane starting up: its `SessionStart` hook and a brief early screen flicker are not finished turns. Notification
 identities are saved beside the relay configuration as `.attention.json`, so a
-relay restart preserves viewed results.
+relay restart preserves viewed results. Saved state for a pane is dropped once a full
+scan of this computer has not listed it and its status has not changed for 30 days.
+Denying a Claude approval sends no hook, so the relay ends the approval when the pane
+itself shows Claude's `Interrupted` marker.
 Hiding a tab preserves processes and does not erase attention state.
 
 Codex's asynchronous questions use an `enter submit · ctrl+] skip · shift+→ main prompt`

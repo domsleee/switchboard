@@ -25,9 +25,10 @@ footer = ['(?:bypass permissions|accept edits|auto mode|plan mode) on|shift\+tab
 # "← 1 agent" is always there and only names the key for switching agents (2.1.319).
 background = ['·\s*[1-9]\d*\s+[a-z]']
 
-# A turn ended by Esc sends no hook. The marker counts only directly above the input
-# box; a later turn puts its prompt between them (2.1.319).
-interrupted = ['⎿\s+interrupted\s+·\s+what should claude do instead\?\s*─{3,}']
+# A turn ended by Esc, or by denying an approval, sends no hook. The marker counts only
+# directly above the input box, or the finished line a denial prints between them; a
+# later turn puts its prompt between them (2.1.319).
+interrupted = ['⎿\s+interrupted\s+·\s+what should claude do instead\?\s*(?:[✻✽✶✳] \S+ for\s+(?:\d+\s*[hms]\s*)+(?:[•·]\s*(?:done\s+)?\d{1,2}:\d{2}\s*(?:am|pm)?)?\s*)?─{3,}']
 
 # A finished turn, e.g. "✻ Baked for 4m 5s" or "✻ Sautéed for 26s".
 completion = ['(?:worked for|[✻✽✶✳] \S+ for)\s+(?:\d+\s*[hms]\s*)+(?:[•·]\s*(?:done\s+)?\d{1,2}:\d{2}\s*(?:am|pm)?)?']

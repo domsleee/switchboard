@@ -667,8 +667,9 @@ async fn execute(
     Ok(())
 }
 
-/// After Esc, ends the turn if Claude shows it was interrupted. Claude sends no hook for
-/// that, and an unwatched pane's screen feed can be arbitrarily old, so read the pane.
+/// After Esc or a denied approval, ends the turn if Claude shows it was interrupted. Claude
+/// sends no hook for that, and an unwatched pane's screen feed can be arbitrarily old, so
+/// read the pane.
 pub(super) fn settle_interrupt(
     host: Arc<Host>,
     poll: Arc<Mutex<attention::PollState>>,

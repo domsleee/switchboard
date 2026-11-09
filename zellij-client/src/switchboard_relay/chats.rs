@@ -1842,7 +1842,9 @@ pub(super) fn thread_info(agent: &str, thread: &str) -> Value {
     let title = found
         .as_ref()
         .and_then(|id| HISTORY.lock().unwrap().existing(id))
-        .map(|index| index.lock().unwrap().chat.title.clone())
+        // This runs on async workers, and indexing holds the lock; a busy index only
+        // costs the title.
+        .and_then(|index| index.try_lock().ok().map(|index| index.chat.title.clone()))
         .filter(|title| !title.is_empty());
     json!({"chat_id":found,"label":title.unwrap_or_else(|| format!("{} · {}",agent,&thread[..thread.len().min(8)]))})
 }
@@ -2970,6 +2972,34 @@ mod tests {
         assert!(!native_message_received(&thread, "second"));
         writeln!(file,"{}",json!({"type":"event_msg","payload":{"type":"user_message","message":envelope("second")}})).unwrap();
         assert!(native_message_received(&thread, "second"));
+        TRANSCRIPTS.lock().unwrap().remove(&id);
+        HISTORY.lock().unwrap().indexes.remove(&id);
+    }
+
+    #[test]
+    fn switchboard_chats_thread_info_does_not_wait_for_a_busy_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let thread = uuid::Uuid::new_v4().to_string();
+        let path = dir.path().join(format!("{thread}.jsonl"));
+        fs::File::create(&path).unwrap();
+        let id = file_id("codex", dir.path(), &path);
+        TRANSCRIPTS.lock().unwrap().insert(
+            id.clone(),
+            ("codex".into(), dir.path().into(), path.clone()),
+        );
+        let index = HISTORY.lock().unwrap().get("codex", dir.path(), &path);
+        index.lock().unwrap().chat.title = "Project setup".into();
+        let busy = index.lock().unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let asked = thread.clone();
+        std::thread::spawn(move || sender.send(thread_info("codex", &asked)));
+        let info = receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("thread_info waited for the index being read");
+        assert_eq!(info["chat_id"], id.as_str());
+        assert_eq!(info["label"], format!("codex · {}", &thread[..8]));
+        drop(busy);
+        assert_eq!(thread_info("codex", &thread)["label"], "Project setup");
         TRANSCRIPTS.lock().unwrap().remove(&id);
         HISTORY.lock().unwrap().indexes.remove(&id);
     }
