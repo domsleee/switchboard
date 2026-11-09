@@ -113,7 +113,7 @@ test('the shipped handover dialog switches providers in place and preserves cont
    holdHistory=true;await open();await page.waitForFunction(()=>document.querySelector('#handover-summary').textContent.includes('Loading conversation'));
    while(!releaseHistory)await new Promise(resolve=>setTimeout(resolve,10));
    await page.keyboard.press('Escape');await page.getByRole('button',{name:'New tab',exact:true}).click();holdHistory=false;releaseHistory();
-   assert.equal(await page.locator('#handover-preview').isVisible(),false);assert.equal(await page.locator('#new-tab-title').textContent(),'New tab');assert.equal(await page.getByRole('button',{name:'Create tab',exact:true}).isEnabled(),true);assert.equal(await page.getByLabel('Prompt',{exact:true}).inputValue(),'');
+   assert.equal(await page.locator('#handover-preview').isVisible(),false);assert.equal(await page.locator('#new-tab-title').textContent(),'New tab');assert.equal(await page.getByRole('button',{name:'Create tab',exact:true}).isEnabled(),true);assert.equal(await page.getByLabel('Prompt',{exact:true}).textContent(),'');
    await page.setViewportSize({width:390,height:844});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
    assert.deepEqual(errors,[]);
   }catch(error){error.message+='\nPage errors: '+JSON.stringify(errors)+'\nRequests: '+JSON.stringify(requests)+'\nPage: '+(await page.locator('body').innerText()).slice(-5000);throw error;}
@@ -122,10 +122,10 @@ test('the shipped handover dialog switches providers in place and preserves cont
 });
 
 // One Claude tab on a fixture relay, with its agent state, restart support and history under test control.
-async function busySwitch(browser){
- const page=await browser.newPage({viewport:{width:1280,height:900}});page.setDefaultTimeout(7000);
+async function busySwitch(browser,{phone=false}={}){
+ const page=await browser.newPage({viewport:phone?{width:390,height:844}:{width:1280,height:900},hasTouch:phone,isMobile:phone});page.setDefaultTimeout(7000);
  const f={page,state:'ready',restartable:true,switched:false,hold:null,holdUpload:{},errors:[],uploads:[],created:[],requests:[],history:[{role:'user',text:'Original task'},{role:'assistant',text:'First answer'}]};
- await page.addInitScript(()=>{localStorage.setItem('switchboard-view-mode','conversation');window.setInterval=()=>0;});
+ await page.addInitScript(()=>{localStorage.setItem('switchboard-view-mode','conversation');localStorage.setItem('switchboard-mobile-view-mode','conversation');window.setInterval=()=>0;});
  page.on('pageerror',error=>f.errors.push(error.message));
  await page.route('http://busy-switch.test/**',async route=>{
   const url=new URL(route.request().url()),p=url.pathname,json=value=>route.fulfill({json:value}).catch(()=>{});f.requests.push(p);
@@ -252,4 +252,30 @@ test('the model switch stays available while the agent works and waits for its t
    assert.equal(f.created.length,1);assert.equal(f.created[0].handover.source_messages,4);assert.equal(f.uploads.at(-1).messages.at(-1).text,'Turn done');
   });
  }finally{await browser.close();}
+});
+
+test('a phone can choose a model and effort in an existing conversation',
+ {skip:!process.env.PLAYWRIGHT_MODULE},async t=>{
+ const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch();
+ try{for(const state of ['ready','working'])await t.test(state,async()=>{
+  const f=await busySwitch(browser,{phone:true});
+  try{
+   await f.attention(state);await f.draft.fill('Unsent draft');
+   await f.chip.tap();await f.page.waitForFunction(()=>!!newTabHandover?.context);
+   await f.page.getByRole('option',{name:'GPT-6.1 Sol',exact:true}).tap();
+   await f.page.getByRole('radio',{name:'High',exact:true}).tap();
+   await f.page.getByRole('button',{name:'Switch model',exact:true}).tap();
+   await f.page.waitForFunction(()=>!document.querySelector('#new-tab-dialog').open);
+   if(state==='working'){
+    assert.equal(f.created.length,0,'The running turn is left to finish');
+    assert.match(await f.model.textContent(),/after this turn/);
+    await f.attention('ready');await f.page.waitForFunction(()=>!pendingSwitches.size);
+   }
+   assert.equal(f.created.length,1);assert.equal(f.created[0].handover.model,'codex:gpt-6.1-sol#high');
+   assert.equal(f.created[0].tab_id,1);assert.equal(f.created[0].pane_id,1);
+   await f.page.waitForFunction(()=>document.querySelector('.conversation-compose textarea')?.value==='Unsent draft');
+   assert.equal(f.requests.some(p=>p.startsWith('/hosts/fixture/main')),false,'Switching does not attach a terminal viewer');
+   assert.deepEqual(f.errors,[]);
+  }finally{await f.page.close();}
+ });}finally{await browser.close();}
 });
