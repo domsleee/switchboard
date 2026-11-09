@@ -157,6 +157,7 @@
 .conversation-working-step::before{content:attr(data-step);color:transparent;background:linear-gradient(90deg,#dcdce1 0%,#dcdce1 40%,#ffffff 50%,#dcdce1 60%,#dcdce1 100%) 0 0/300% 100%;-webkit-background-clip:text;background-clip:text;animation:conversation-shimmer 2.4s linear infinite}
 .conversation-working-time{flex-shrink:0;font-size:12.5px;color:var(--muted);font-variant-numeric:tabular-nums}
 .conversation-working-time:empty{display:none}
+.conversation-loading-time:not(:empty){margin-left:6px;color:var(--muted);font-variant-numeric:tabular-nums}
 @keyframes conversation-pulse{50%{opacity:.4}}
 @keyframes conversation-shimmer{from{background-position:100% 0}to{background-position:0 0}}
 .conversation-background{display:flex;flex-direction:column;gap:12px;margin:0 0 28px}

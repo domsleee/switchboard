@@ -230,7 +230,8 @@
     const header=el('header'),heading=el('div',undefined,'conversation-heading'),title=el('strong'),model=el(switchModel?'button':'span',undefined,'conversation-model'),activity=el('span',undefined,'conversation-activity'),terminalAction=el('button','Open Terminal','conversation-terminal-action');model.title=switchModel?'Switch between Claude and Codex with context':'Last reported model';if(switchModel){model.type='button';model.setAttribute('aria-label','Switch model with context');model.onclick=()=>switchModel(target);}const cancelModel=el('button','×','conversation-model-cancel');cancelModel.type='button';cancelModel.hidden=true;cancelModel.setAttribute('aria-label','Cancel model switch');cancelModel.title='Cancel model switch';cancelModel.onclick=()=>cancelSwitch(target);activity.setAttribute('role','status');terminalAction.type='button';terminalAction.hidden=true;terminalAction.onclick=()=>show(false);const context=el('span',undefined,'conversation-context'),cost=el('button',undefined,'conversation-cost'),subtitle=el('div',undefined,'conversation-subtitle');subtitle.append(context,activity);heading.append(title,subtitle);header.append(heading,terminalAction);
     const costDetails=el('div',undefined,'conversation-cost-details');costDetails.popover='auto';costDetails.setAttribute('role','dialog');costDetails.setAttribute('aria-label','API cost breakdown');
     cost.type='button';cost.popoverTargetElement=costDetails;cost.setAttribute('aria-haspopup','dialog');
-    const notice=el('p','Loading this terminal’s conversation…','conversation-notice');notice.setAttribute('role','status');
+    const noticeText=el('span','Loading this terminal’s conversation…'),loadingTime=el('span',undefined,'conversation-loading-time');loadingTime.setAttribute('aria-hidden','true');
+    const notice=el('p',undefined,'conversation-notice');notice.setAttribute('role','status');notice.append(noticeText,loadingTime);
     const list=el('div',undefined,'conversation-messages'),older=el('button','Load older messages'),refresh=el('button','↻'),latest=el('button','↓');refresh.setAttribute('aria-label','Refresh');refresh.title='Refresh conversation';latest.setAttribute('aria-label','Scroll to bottom');latest.title='Scroll to bottom';older.hidden=true;
     // One live row: a pulsing marker, the step in progress (or "Working"), and the elapsed time.
     // With earlier steps in this turn it is also their disclosure, showing them in place.
@@ -286,7 +287,13 @@
     let chat=null;
     const binding=()=>chat;
     const pendingFor=(key=identity(target))=>pendingSends.get(key);let queuedSubmit=null;
-    function status(text,quiet=false){if(launchShown()&&transitional.has(text))quiet=true;if(notice.textContent!==text)notice.textContent=text;notice.hidden=quiet;}
+    let loadingStarted=0,loadingTimer=null;
+    function tickLoading(){clearTimeout(loadingTimer);const seconds=Math.floor((performance.now()-loadingStarted)/1000);loadingTime.textContent=seconds?duration(seconds):'';loadingTimer=setTimeout(tickLoading,1000);}
+    function status(text,quiet=false){
+      if(launchShown()&&transitional.has(text))quiet=true;if(noticeText.textContent!==text)noticeText.textContent=text;notice.hidden=quiet;
+      if(text==='Loading conversation…'&&!quiet){if(loadingTimer===null){loadingStarted=performance.now();tickLoading();}}
+      else{clearTimeout(loadingTimer);loadingTimer=null;loadingTime.textContent='';}
+    }
     // A tab started from New tab shows its prompt as sent, with a starting row under it, until the
     // transcript has it, instead of a run of connection notices and an empty page.
     const transitional=new Set(['Starting agent…','Connecting to this agent’s conversation…','Loading conversation…','Loading this terminal’s conversation…','No agent']);
@@ -922,6 +929,8 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
     async function load(kind='poll'){
       if(!target||!binding()||loading||(!open&&kind!=='initial'))return;if(!loaded)kind='initial';const version=generation,chat=binding(),started=performance.now(),request=new AbortController();loadRequest=request;let timedOut=false,catchUp=false;busy(true);const timeout=setTimeout(()=>{timedOut=true;request.abort();},15000);
       const initial=kind==='initial',prepend=kind==='older',cursor=nextCursor??tailCursor;
+      // Each first read counts from zero, including a tab switch that keeps the same notice.
+      if(initial&&loadingTimer!==null){loadingStarted=performance.now();tickLoading();}
       historyStatus.hidden=!prepend;historyStatus.textContent='Loading earlier messages…';
       const params={host:target.chatHost||target.host,context:'true',limit:initial?firstPage:50},stages={};
       if(initial)params.tail=true;else if(prepend)params.before=startCursor;else params.cursor=cursor;
