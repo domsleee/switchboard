@@ -104,6 +104,14 @@ test('Conversation shows the model, animates real work and keeps delivery receip
   assert.equal(await page.locator('.conversation-task-status').textContent(),'Shell · Finished');
   await page.keyboard.press('Escape');assert.equal(await dialog.isVisible(),false);
   await agents.nth(1).click();await body.getByText('second event',{exact:false}).waitFor();await page.keyboard.press('Escape');
+  // A council: one Claude agent and one Codex run started from a shell.
+  background=[{id:'a1',kind:'agent',description:'Council review (Opus)',model:'claude-opus-5-5',started:new Date(Date.now()-40000).toISOString()},{id:'bsol',kind:'shell',agent:'codex',description:'Run the GPT Sol review',model:'gpt-6.1-sol',started:new Date(Date.now()-39000).toISOString()}];await refreshPage();
+  await agents.filter({hasText:'GPT Sol review'}).waitFor();
+  const council=await rows();
+  assert.deepEqual(council.map(row=>row.slice(1,3)),[['Council review (Opus)','Opus 5.5'],['Run the GPT Sol review','6.1 Sol']],'Each delegate names its own model');
+  assert.deepEqual(await agents.locator('.conversation-agent-avatar svg').evaluateAll(icons=>icons.map(icon=>getComputedStyle(icon).fill)),['rgb(217, 119, 87)','rgb(201, 209, 220)'],'Each delegate shows its own provider');
+  assert.match(await agents.nth(1).getAttribute('aria-label'),/background agent: Run the GPT Sol review, 6\.1 Sol/);
+  if(process.env.MODE_SCREENSHOTS)await page.screenshot({path:process.env.MODE_SCREENSHOTS+'/conversation-council.png'});
   background=[{id:'old',description:'Computer without the task read',model:null,started:new Date().toISOString()}];await refreshPage();
   await page.waitForFunction(()=>document.querySelector('.conversation-agent-title')?.textContent==='Computer without the task read');
   await agents.first().click();await page.getByText('This computer needs an update to show this task.').waitFor();await page.keyboard.press('Escape');

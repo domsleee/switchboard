@@ -503,6 +503,8 @@ struct Chat {
 }
 #[derive(Clone)]
 struct BackgroundTask {
+    /// The agent CLI a background shell runs, when it delegates to one.
+    delegate: Option<&'static str>,
     tool_use_id: String,
     id: String,
     kind: &'static str,
@@ -543,6 +545,52 @@ impl Chat {
 }
 /// The output file a background shell's launch result names. Output printed before the
 /// command moved to the background comes first, so the last mention is Claude's own.
+/// The agent CLI and model a background command delegates to: `codex exec` or
+/// `claude -p` naming a model. Quoted text stays one word, so a prompt that merely
+/// mentions either is not a delegation.
+fn delegate_model(command: &str) -> Option<(&'static str, String)> {
+    let mut commands = vec![Vec::new()];
+    let (mut word, mut quote) = (String::new(), None);
+    // Bash and PowerShell line continuations, and quotes escaped inside a prompt.
+    let joined = command
+        .replace("\r\n", "\n")
+        .replace("\\\n", " ")
+        .replace("`\n", " ")
+        .replace("\\\"", "");
+    for c in joined.chars().chain(['\n']) {
+        match (quote, c) {
+            (Some(open), _) if open == c => quote = None,
+            (Some(_), _) => word.push(c),
+            (None, '"' | '\'') => quote = Some(c),
+            (None, _) if c.is_whitespace() || matches!(c, ';' | '|' | '&') => {
+                if !word.is_empty() {
+                    commands.last_mut()?.push(std::mem::take(&mut word));
+                }
+                if c != ' ' && c != '\t' {
+                    commands.push(Vec::new());
+                }
+            },
+            (None, _) => word.push(c),
+        }
+    }
+    commands.iter().find_map(|words| {
+        let is_assignment = |w: &&String| w.contains('=') && !w.starts_with('-');
+        let mut words = words.iter().skip_while(is_assignment);
+        let program = words.next()?.rsplit(['/', '\\']).next()?.to_lowercase();
+        let args: Vec<&str> = words.map(String::as_str).collect();
+        let agent = match program.trim_end_matches(".exe") {
+            "codex" if args.contains(&"exec") => "codex",
+            "claude" if args.iter().any(|a| matches!(*a, "-p" | "--print")) => "claude",
+            _ => return None,
+        };
+        let model = args.iter().enumerate().find_map(|(i, arg)| match *arg {
+            "-m" | "--model" => args.get(i + 1).copied(),
+            _ => arg.strip_prefix("--model="),
+        })?;
+        Some((agent, model.to_string()))
+    })
+}
+
 fn launch_output_file(text: &str, id: &str) -> Option<PathBuf> {
     let (_, rest) = text.rsplit_once("Output is being written to: ")?;
     let name = format!("{id}.output");
@@ -1219,6 +1267,7 @@ impl Chat {
                     result["status"] == "async_launched",
                 ) {
                     self.add_background(BackgroundTask {
+                        delegate: None,
                         tool_use_id: clip(call, 128),
                         id: clip(id, 128),
                         kind: "agent",
@@ -1249,12 +1298,16 @@ impl Chat {
                         } else {
                             &description
                         };
+                        let delegated = (kind == "shell")
+                            .then(|| delegate_model(&command))
+                            .flatten();
                         self.add_background(BackgroundTask {
+                            delegate: delegated.as_ref().map(|(agent, _)| *agent),
                             tool_use_id: clip(call, 128),
                             id: clip(id, 128),
                             kind,
                             description: clip(&one_line(title), 120),
-                            model: None,
+                            model: delegated.map(|(_, model)| clip(&model, 128)),
                             started: v["timestamp"].clone(),
                             command: Some(clip(&redact(&command), 4000)),
                             output_file: launch_output_file(&text, id),
@@ -1588,7 +1641,7 @@ impl Chat {
         json!({"id":self.id,"session_id":clip(&self.session_id,256),"agent":self.agent,"title":self.title,
             "project":clip(&self.project,4096),"model":self.model,"reasoning_effort":self.reasoning_effort,
             "timestamp":self.messages.last().map(|m| &m["timestamp"]),"partial":self.partial,"partial_reasons":self.partial_reasons,
-            "background_agents":self.background.iter().map(|a| json!({"id":a.id,"kind":a.kind,"description":a.description,"model":a.model,"started":a.started})).collect::<Vec<_>>()})
+            "background_agents":self.background.iter().map(|a| json!({"id":a.id,"kind":a.kind,"agent":a.delegate,"description":a.description,"model":a.model,"started":a.started})).collect::<Vec<_>>()})
     }
 }
 fn roots() -> Vec<(&'static str, PathBuf)> {
@@ -3740,6 +3793,46 @@ mod tests {
             names(vec![one, queued("toolu_9", "b9")]),
             ["Review the diff"]
         );
+    }
+
+    #[test]
+    fn switchboard_chats_name_the_model_a_background_command_delegates_to() {
+        let codex = Some(("codex", "gpt-6.1-sol".to_string()));
+        for command in [
+            "codex exec -m gpt-6.1-sol -c model_reasoning_effort=\"high\" -s read-only \"Review\"",
+            "S=\"/tmp/a b\"; cd \"$S\" && cat p.md | codex exec --model gpt-6.1-sol -o out.txt",
+            "FOO=1 C:/tools/codex.exe exec --model=gpt-6.1-sol",
+            "& \"C:/tools/codex.exe\" exec -m gpt-6.1-sol",
+            "codex exec \\\n  -m gpt-6.1-sol \\\n  \"Review\"",
+            "codex exec `\r\n  -m gpt-6.1-sol",
+            "codex exec \"Review \\\"don't\\\".\" -m gpt-6.1-sol",
+        ] {
+            assert_eq!(delegate_model(command), codex, "{command}");
+        }
+        assert_eq!(
+            delegate_model("claude --model opus -p 'Review; codex exec -m nope'"),
+            Some(("claude", "opus".to_string()))
+        );
+        for command in [
+            "cargo test -m x",
+            "codex login -m gpt-6.1-sol",
+            "codex exec 'no model chosen'",
+            "claude --model opus",
+            "echo 'codex exec -m gpt-6.1-sol'",
+            "git commit -m 'codex exec -m gpt-6.1-sol'",
+        ] {
+            assert_eq!(delegate_model(command), None, "{command}");
+        }
+
+        let records = vec![
+            json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"codex exec -m gpt-6.1-sol 'Review'","description":"Run the GPT Sol review"}}]}}),
+            json!({"type":"user","timestamp":"2026-11-08T10:00:00Z","toolUseResult":{"backgroundTaskId":"bsol","stdout":""},"message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"Command running in background with ID: bsol."}]}}),
+        ];
+        let summary = chat("claude", records).summary();
+        let task = &summary["background_agents"][0];
+        assert_eq!(task["kind"], "shell", "Its output is still a shell's");
+        assert_eq!(task["agent"], "codex");
+        assert_eq!(task["model"], "gpt-6.1-sol");
     }
 
     #[test]

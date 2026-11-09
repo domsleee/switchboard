@@ -397,11 +397,11 @@
         background.dataset.signature=signature;
         background.replaceChildren(...agents.map(agent=>{
           // A computer on an older build sends no id, so its rows can only be read.
-          const row=el(agent.id?'button':'div',undefined,'conversation-agent'),avatar=el('span',undefined,'conversation-agent-avatar'),model=taskKinds[agent.kind]||modelName({model:agent.model}),time=el('span',undefined,'conversation-agent-time'),title=taskLabel(agent);
-          avatar.innerHTML=taskKinds[agent.kind]?shellMark:claudeMark;time.dataset.started=agent.started||'';
+          const row=el(agent.id?'button':'div',undefined,'conversation-agent'),avatar=el('span',undefined,'conversation-agent-avatar'),delegate=agentIcons[agent.agent],plain=!delegate&&taskKinds[agent.kind],model=plain||modelName({model:agent.model}),time=el('span',undefined,'conversation-agent-time'),title=taskLabel(agent);
+          avatar.innerHTML=delegate||(plain?shellMark:claudeMark);time.dataset.started=agent.started||'';
           row.append(avatar,el('span',title,'conversation-agent-title'));if(model)row.append(el('span',model,'conversation-agent-model'));row.append(time);
           if(agent.id){row.type='button';row.onclick=()=>openTask(agent);row.title='See what this is doing';}
-          row.setAttribute('aria-label',`${agent.id?'Open running':'Running'} ${taskKinds[agent.kind]?.toLowerCase()||'background agent'}: ${title}${model&&!taskKinds[agent.kind]?`, ${model}`:''}`);return row;
+          row.setAttribute('aria-label',`${agent.id?'Open running':'Running'} ${plain?plain.toLowerCase():'background agent'}: ${title}${model&&!plain?`, ${model}`:''}`);return row;
         }));
       }
       for(const time of background.querySelectorAll('.conversation-agent-time')){const started=Date.parse(time.dataset.started)/1000,text=started>0?duration(Math.max(0,Date.now()/1000-started)):'';if(time.textContent!==text)time.textContent=text;}
