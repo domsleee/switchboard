@@ -541,6 +541,63 @@ pub(crate) fn nested(agent: &str, env: impl Fn(&str) -> Option<String>) -> bool 
             && !(agent == "claude" && env("CLAUDE_CODE_ENTRYPOINT").as_deref() == Some("cli")))
 }
 
+/// Native Codex subagents run their hooks in the parent's terminal context.
+/// Their rollout has its own ID, but hooks can still report the parent's ID.
+/// An explicitly resumed child reports its own ID and may own a terminal.
+pub(crate) fn inherited_codex_hook(agent: &str, input: &[u8], root: &Path) -> bool {
+    use std::io::{BufRead, BufReader};
+    let inherited = || -> Option<bool> {
+        if agent != "codex" {
+            return None;
+        }
+        let event: serde_json::Value = serde_json::from_slice(input).ok()?;
+        let session = Uuid::parse_str(event["session_id"].as_str()?).ok()?;
+        let path = Path::new(event["transcript_path"].as_str()?);
+        // Inspect only a regular rollout inside this Codex profile, including
+        // on Windows where the hook may spell the path with different casing.
+        let root = root.canonicalize().ok()?;
+        let path = path.canonicalize().ok()?;
+        let relative = path.strip_prefix(&root).ok()?;
+        if (!relative.starts_with("sessions") && !relative.starts_with("archived_sessions"))
+            || path.extension().is_none_or(|ext| ext != "jsonl")
+        {
+            return None;
+        }
+        let file = File::open(path).ok()?;
+        if !file.metadata().ok()?.is_file() {
+            return None;
+        }
+        // Only the first metadata record owns the rollout: a fork can copy its
+        // parent's later metadata. Bound both I/O and allocation independently
+        // of the transcript's length or a malformed record.
+        const LIMIT: u64 = 1 << 20;
+        let mut line = Vec::new();
+        BufReader::new(file.take(LIMIT + 1))
+            .read_until(b'\n', &mut line)
+            .ok()?;
+        if line.len() as u64 > LIMIT {
+            return None;
+        }
+        let meta: serde_json::Value = serde_json::from_slice(&line).ok()?;
+        if meta["type"] != "session_meta" {
+            return None;
+        }
+        let meta = &meta["payload"];
+        let id = Uuid::parse_str(meta["id"].as_str()?).ok()?;
+        let source = meta.get("source")?.get("subagent")?;
+        let matches = |value: &serde_json::Value| {
+            value.as_str().and_then(|s| Uuid::parse_str(s).ok()) == Some(session)
+        };
+        Some(
+            id != session
+                && (matches(&source["thread_spawn"]["parent_thread_id"])
+                    || matches(&meta["session_id"])),
+        )
+    };
+    // Missing or unfamiliar metadata is not proof of inherited ownership.
+    inherited().unwrap_or(false)
+}
+
 /// Native HTTP hooks share the CLI/watcher's delivery cursor and identity, but
 /// return context in the response instead of starting a process to print it.
 pub(crate) fn http(input: &[u8], relay: &str) -> Option<serde_json::Value> {
@@ -701,6 +758,96 @@ pub(crate) fn run(agent: &str, input: &[u8], wait: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switchboard_codex_inherited_hooks_cannot_own_the_parent_pane() {
+        use serde_json::json;
+        let root = tempfile::tempdir().unwrap();
+        let sessions = root.path().join("sessions");
+        std::fs::create_dir(&sessions).unwrap();
+        let path = sessions.join("rollout-child.jsonl");
+        let parent = "00000000-0000-4000-8000-000000000001";
+        let child = "00000000-0000-4000-8000-000000000002";
+        // Sanitized first session_meta from a native Codex subagent. A fork
+        // copies parent metadata later, which must not change the decision.
+        let meta = json!({"type":"session_meta","payload":{
+            "id":child,"session_id":parent,"thread_source":"subagent",
+            "source":{"subagent":{"thread_spawn":{"parent_thread_id":parent}}}
+        }});
+        std::fs::write(&path, format!("{meta}\n{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{parent}\",\"source\":\"cli\"}}}}\n")).unwrap();
+        for event in [
+            "SessionStart",
+            "UserPromptSubmit",
+            "PostToolUse",
+            "PostToolUseFailure",
+            "Stop",
+            "SessionEnd",
+        ] {
+            let mut body =
+                json!({"session_id":parent,"hook_event_name":event,"transcript_path":path});
+            let inherited = |body: &serde_json::Value| {
+                inherited_codex_hook("codex", body.to_string().as_bytes(), root.path())
+            };
+            assert!(
+                inherited(&body),
+                "{event} may neither report state nor register/retire the parent inbox"
+            );
+            body["session_id"] = child.into();
+            assert!(
+                !inherited(&body),
+                "A child resumed as the terminal agent owns its own hooks"
+            );
+        }
+        let event = json!({"session_id":parent,"transcript_path":path}).to_string();
+        assert!(!inherited_codex_hook(
+            "claude",
+            event.as_bytes(),
+            root.path()
+        ));
+        // A new root thread may replace the pane's old conversation normally.
+        std::fs::write(
+            &path,
+            json!({"type":"session_meta","payload":{"id":child,"source":"cli"}}).to_string(),
+        )
+        .unwrap();
+        assert!(!inherited_codex_hook(
+            "codex",
+            event.as_bytes(),
+            root.path()
+        ));
+    }
+
+    #[test]
+    fn switchboard_codex_hook_ownership_requires_bounded_verified_metadata() {
+        use serde_json::json;
+        let root = tempfile::tempdir().unwrap();
+        let sessions = root.path().join("archived_sessions");
+        std::fs::create_dir(&sessions).unwrap();
+        let path = sessions.join("rollout.jsonl");
+        let event =
+            json!({"session_id":"00000000-0000-4000-8000-000000000001","transcript_path":path})
+                .to_string();
+        for bytes in [
+            b"".to_vec(),
+            b"{broken".to_vec(),
+            vec![b' '; (1 << 20) + 1],
+            b"{\"type\":\"event_msg\"}\n".to_vec(),
+        ] {
+            std::fs::write(&path, bytes).unwrap();
+            assert!(!inherited_codex_hook(
+                "codex",
+                event.as_bytes(),
+                root.path()
+            ));
+        }
+        let outside = tempfile::tempdir().unwrap();
+        assert!(!inherited_codex_hook(
+            "codex",
+            event.as_bytes(),
+            outside.path()
+        ));
+        assert!(!inherited_codex_hook("codex", b"{}", root.path()));
+    }
 
     #[test]
     fn switchboard_codex_tool_agents_do_not_own_the_parent_pane() {

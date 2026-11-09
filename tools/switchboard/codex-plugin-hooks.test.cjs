@@ -11,6 +11,53 @@ const plugin=path.join(repo,'plugins/switchboard');
 const config=JSON.parse(fs.readFileSync(path.join(plugin,'hooks/codex.json'),'utf8'));
 const codex=process.env.CODEX_TEST_BINARY;
 
+test('native child lifecycle hooks cannot report or consume the parent pane inbox',
+  {skip:!process.env.SWITCHBOARD_TEST_BINARY&&'Set SWITCHBOARD_TEST_BINARY for CLI hook integration',timeout:30000},async()=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'switchboard-child-hook-'));
+  const requests=[];
+  const relay=http.createServer((request,response)=>{
+    let body='';request.on('data',chunk=>body+=chunk);request.on('end',()=>{
+      requests.push({url:request.url,body});response.writeHead(request.url==='/api/agent-hook'?204:404).end();
+    });
+  });
+  try{
+    await new Promise(resolve=>relay.listen(0,'127.0.0.1',resolve));
+    const sessions=path.join(root,'sessions');fs.mkdirSync(sessions);
+    const transcript=path.join(sessions,'rollout-child.jsonl');
+    const parent='00000000-0000-4000-8000-000000000001',child='00000000-0000-4000-8000-000000000002';
+    fs.writeFileSync(transcript,JSON.stringify({type:'session_meta',payload:{id:child,session_id:parent,
+      source:{subagent:{thread_spawn:{parent_thread_id:parent}}},thread_source:'subagent'}})+'\n');
+    const env={...process.env,CODEX_HOME:root,SWITCHBOARD_RELAY_URL:`http://127.0.0.1:${relay.address().port}`,
+      SWITCHBOARD_MESSAGE_STATE_DIR:path.join(root,'message-state'),ZELLIJ_SESSION_NAME:'hook-fixture',ZELLIJ_PANE_ID:'7'};
+    for(const key of ['CLAUDECODE','CLAUDE_CODE_ENTRYPOINT','CODEX_THREAD_ID','SWITCHBOARD_BOARD_CONFIG','SWITCHBOARD_AGENT_SESSION'])delete env[key];
+    const run=(event,wait=false)=>new Promise((resolve,reject)=>{
+      const proc=spawn(path.resolve(process.env.SWITCHBOARD_TEST_BINARY),['agent-hook','--agent','codex',...(wait?['--wait']:[])],
+        {env,cwd:root,windowsHide:true,stdio:['pipe','pipe','pipe']});
+      let stderr='',stdout='';proc.stderr.on('data',data=>stderr+=data);proc.stdout.on('data',data=>stdout+=data);
+      let timedOut=false;
+      const timer=setTimeout(()=>{timedOut=true;proc.kill();},3000);
+      proc.on('error',error=>{clearTimeout(timer);reject(error);});
+      proc.on('close',code=>{clearTimeout(timer);timedOut?reject(Error('Child hook must not start a parent inbox watcher')):
+        code===0?resolve(stdout):reject(Error(stderr));});
+      proc.stdin.end(JSON.stringify(event));
+    });
+    for(const hook_event_name of ['SessionStart','UserPromptSubmit','PostToolUse','PostToolUseFailure','Stop','SessionEnd']){
+      const event={session_id:parent,hook_event_name,transcript_path:transcript,cwd:root};
+      assert.equal(await run(event),'');
+    }
+    assert.deepEqual(requests,[],'Neither attention updates nor inbox requests may escape from a native child');
+    assert.equal(fs.existsSync(env.SWITCHBOARD_MESSAGE_STATE_DIR),false,'Child hooks must not alter parent cursor/identity files');
+    for(const hook_event_name of ['SessionStart','Stop'])assert.equal(await run({session_id:parent,hook_event_name,transcript_path:transcript,cwd:root},true),'');
+    // Resuming that child as a terminal agent changes the hook's own session ID.
+    await run({session_id:child,hook_event_name:'UserPromptSubmit',transcript_path:transcript,cwd:root});
+    assert.equal(JSON.parse(requests.find(r=>r.url==='/api/agent-hook').body).session_id,child);
+    assert.ok(requests.some(r=>r.url!=='/api/agent-hook'),'The terminal owner still reaches its own inbox');
+  }finally{
+    relay.closeAllConnections();await new Promise(resolve=>relay.close(resolve));
+    fs.rmSync(root,{recursive:true,force:true});
+  }
+});
+
 test('Codex plugin selects described Codex hooks without inheriting Claude hooks',()=>{
   const manifest=JSON.parse(fs.readFileSync(path.join(plugin,'.codex-plugin/plugin.json'),'utf8'));
   assert.equal(manifest.hooks,'./hooks/codex.json');
