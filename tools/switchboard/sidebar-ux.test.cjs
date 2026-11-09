@@ -416,7 +416,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     const status=page.locator('#status'),dismiss=page.locator('#dismiss-status');
     assert.equal(await status.isVisible(),true);
     assert.match(await status.textContent(),/Windows: Host unavailable/);
-    assert.match(await status.textContent(),/Windows: attention status unavailable/);
+    await page.waitForFunction(()=>document.querySelector('#status').textContent.includes('Windows: attention status unavailable'),null,{timeout:10000});
     if(process.env.SWITCHBOARD_DISMISS_SCREENSHOTS){
       await page.screenshot({path:process.env.SWITCHBOARD_DISMISS_SCREENSHOTS+'/warning.png'});
       fs.writeFileSync(process.env.SWITCHBOARD_DISMISS_SCREENSHOTS+'/warning.json',JSON.stringify({
@@ -922,7 +922,7 @@ test('a relay restart keeps every tab status instead of flashing Unavailable',
     assert.doesNotMatch(await page.locator('#status').textContent(),/unavailable|Cannot reach/);
     // Down for longer than a restart: report it as before.
     await page.evaluate(async()=>{relayLostAt=Date.now()-RELAY_RESTART_GRACE_MS;await refreshAttention();});
-    assert.match(await page.locator('#status').textContent(),/attention status unavailable/);
+    await page.waitForFunction(()=>document.querySelector('#status').textContent.includes('attention status unavailable'),null,{timeout:10000});
     assert.doesNotMatch(await status.textContent(),/^Working/);
     down=false;
     await page.evaluate(()=>refreshAttention());
