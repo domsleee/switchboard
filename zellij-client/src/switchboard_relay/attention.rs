@@ -906,7 +906,7 @@ impl PollState {
             let mut waiting_on_run = false;
             if let Some(command) = row.as_object_mut().unwrap().remove("command") {
                 if let Some(created) = recreated {
-                    self.forget_hook(row, created);
+                    self.forget_hook(row, created, checks);
                 }
                 self.apply_hook_checked(row, &command, checks);
                 self.queue_denied_settle(row, &screen);
@@ -1161,14 +1161,28 @@ impl PollState {
     /// A new pane matching a pane ID saved from an older session looks recreated on
     /// every scan until its screen is read, so a hook sent since the session started
     /// (a new agent's SessionStart) stays.
-    fn forget_hook(&mut self, row: &Value, created: u64) {
+    fn forget_hook(&mut self, row: &Value, created: u64, checks: &ProcessChecks) {
         if let (Some(session), Some(pane)) = (row["session"].as_str(), row["pane_id"].as_u64()) {
             let key = (session.to_owned(), pane);
-            if self
-                .hooks
-                .get(&key)
-                .is_some_and(|hooked| hooked.at.saturating_add(60) >= created)
-            {
+            if self.hooks.get_mut(&key).is_some_and(|hooked| {
+                if hooked.at.saturating_add(60) >= created {
+                    return true;
+                }
+                // Engine handoff replaces the socket whose age supplies
+                // `created`, while the agent process survives unchanged.
+                if hooked.restart.as_ref().is_some_and(|identity| {
+                    checks
+                        .get(&key)
+                        .is_some_and(|(checked, running)| checked == identity && *running)
+                }) {
+                    // Accept this session incarnation once, rather than
+                    // rechecking the process on every later screen scan.
+                    hooked.at = created;
+                    self.dirty = true;
+                    return true;
+                }
+                false
+            }) {
                 return;
             }
             self.stop_shells.remove(&key);
@@ -1757,7 +1771,12 @@ async fn check_processes(
                 );
                 let hook = poll.hooks.get(&key)?;
                 let command = row["command"].as_str()?;
-                if command.is_empty() || command.to_ascii_lowercase().contains(hook.agent) {
+                let recreated = row["created"]
+                    .as_u64()
+                    .is_some_and(|created| hook.at.saturating_add(60) < created);
+                if !recreated
+                    && (command.is_empty() || command.to_ascii_lowercase().contains(hook.agent))
+                {
                     return None;
                 }
                 Some((key, hook.restart.clone()?))
@@ -1822,7 +1841,7 @@ struct Hooked {
     restart: Option<super::restart::Identity>,
     // A foreground tool must not discard a hook while its process is being captured.
     capturing: Option<uuid::Uuid>,
-    // When this agent first reported for the pane, in Unix seconds.
+    // Latest hook or verified engine handoff for this agent, in Unix seconds.
     at: u64,
     // Waiting only because of a background shell started this turn.
     shell_hold: bool,
@@ -3970,6 +3989,79 @@ esac
             assert_eq!(snapshot["panes"][0]["state"], "ready");
             assert_eq!(snapshot["panes"][0]["chat_id"], id);
         }
+    }
+
+    #[tokio::test]
+    async fn switchboard_conversation_survives_a_new_engine_socket() {
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+        let pid = Pid::from_u32(std::process::id());
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            true,
+            ProcessRefreshKind::nothing().with_exe(UpdateKind::Always),
+        );
+        let process = system.process(pid).unwrap();
+        let identity = json!({"agent":"codex", "session_id":uuid::Uuid::new_v4(),
+            "cwd":std::env::current_dir().unwrap(), "pid":std::process::id(),
+            "started":process.start_time(), "command":[], "executable":process.exe().unwrap()});
+        let old_created = unix_seconds() - 3600;
+        let created = unix_seconds();
+        let key = ("main".to_owned(), 3);
+        let mut poll = PollState::default();
+        poll.hook_codex_for_test("main", 3, "codex-preserved");
+        let hook = poll.hooks.get_mut(&key).unwrap();
+        hook.at = old_created;
+        hook.restart = Some(serde_json::from_value(identity.clone()).unwrap());
+        poll.observed.insert(
+            json!(["local", "main", 3]).to_string(),
+            json!({"created":old_created,"generation":1,"state":"ready"}),
+        );
+        let snapshot = json!({"panes":[{"session":"main","pane_id":3,"state":"ready",
+            "agent":"codex","command":"codex","created":created}],"tabs":[],"errors":[]});
+
+        // Persisted bindings survive both a relay restart and socket replacement.
+        let mut restarted = PollState::default();
+        restarted.restore_hooks(&poll.persisted()["hooks"]);
+        restarted.observed = poll.observed.clone();
+        let mutex = tokio::sync::Mutex::new(restarted);
+        let mut cache = ProcessCache::new();
+        let checks = check_processes(&mutex, &snapshot, &mut cache).await;
+        assert!(
+            checks[&key].1,
+            "Even a matching command needs validation after handoff"
+        );
+        let mut poll = mutex.lock().await;
+        let mut shown = snapshot.clone();
+        poll.update_checked("local", &mut shown, &checks);
+        assert_eq!(shown["panes"][0]["chat_id"], "codex-preserved");
+        assert_eq!(poll.hooks[&key].at, created);
+        drop(poll);
+        assert!(
+            check_processes(&mutex, &snapshot, &mut cache)
+                .await
+                .is_empty(),
+            "An accepted handoff does not add ongoing process polling"
+        );
+
+        // A genuinely replaced process must still lose its old conversation.
+        let mut poll = mutex.lock().await;
+        let hook = poll.hooks.get_mut(&key).unwrap();
+        hook.at = old_created;
+        let mut reused = identity;
+        reused["started"] = json!(process.start_time().saturating_sub(1));
+        hook.restart = Some(serde_json::from_value(reused).unwrap());
+        poll.observed
+            .get_mut(&json!(["local", "main", 3]).to_string())
+            .unwrap()["created"] = json!(old_created);
+        drop(poll);
+        let checks = check_processes(&mutex, &snapshot, &mut cache).await;
+        assert!(!checks[&key].1);
+        let mut shown = snapshot;
+        let mut poll = mutex.lock().await;
+        poll.update_checked("local", &mut shown, &checks);
+        assert!(shown["panes"][0]["chat_id"].is_null());
+        assert!(!poll.hooks.contains_key(&key));
     }
 
     fn claude_row(state: &str, token: Option<&str>) -> Value {
