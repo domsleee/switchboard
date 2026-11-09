@@ -561,7 +561,9 @@
       const where=[project,target?.computer].filter(Boolean).join(' · ');if(context.textContent!==where){context.textContent=where;context.title='New tab in '+where;}
       paintCost();
       const placeholder=target?.agent?`Ask ${providerLabel()} a follow-up…`:'Message…';if(draft.placeholder!==placeholder)draft.placeholder=placeholder;
-      transportNotice.hidden=!chat||!(target?.terminalReady===false&&target?.agent!=='claude'&&!(target?.agent==='codex'&&/^[0-9a-f-]{36}$/.test(chat.thread||'')));
+      // Binding gives us a chat id before its reply transport. Wait for the first
+      // page so native Codex startup never grows and shrinks a Terminal footer.
+      transportNotice.hidden=!loaded||!chat||!(target?.terminalReady===false&&target?.agent!=='claude'&&!(target?.agent==='codex'&&/^[0-9a-f-]{36}$/.test(chat.thread||'')));
       insert.setAttribute('aria-label',transportNotice.hidden?'Send':'Send via Terminal');insert.title=transportNotice.hidden?'Send message':'Send via Terminal and return to Conversation';
       paintPrompt();void loadPrompt();idle();
     }
