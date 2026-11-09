@@ -17,7 +17,7 @@ test('repository references and PR previews stay alongside Conversation and pres
     return route.fulfill({json:{__typename:'PullRequest',title:'Keep references in context',state:'OPEN',body:'References open next to the conversation, keeping the reply draft in view.',markdown:[{type:'start',tag:'p'},{type:'text',text:'References open next to the conversation, keeping the reply draft in view.'},{type:'end'},{type:'start',tag:'ul'},...['Resolve #42 against the current repository.','Preview pull requests without leaving the conversation.','Keep keyboard navigation and drafts intact.'].flatMap(text=>[{type:'start',tag:'li'},{type:'text',text},{type:'end'}]),{type:'end'}],author:{login:'reviewer'},additions:12,deletions:3,changedFiles:2,headRefName:'feature/references',baseRefName:'main',reviewDecision:'APPROVED',mergeStateStatus:'CLEAN'}}).catch(()=>{});
    }
    if(p.startsWith('/api/chats/'))return route.fulfill({json:{project:'/repo',session_id:'00000000-0000-4000-8000-000000000001',messages:[{role:'assistant',text:'Review #42 and example/other#7. Code #9.',markdown:[{type:'start',tag:'p'},{type:'text',text:'Review #42 and example/other#7. '},{type:'code',text:'#9'},{type:'text',text:' and C# or heading ##. '},{type:'end'},{type:'start',tag:'p'},{type:'start',tag:'a',url:'https://github.com/example/project/pull/43/files'},{type:'text',text:'PR details'},{type:'end'},{type:'text',text:' https://github.com/example/project/pull/99'},{type:'end'}]}],start_cursor:0,next_cursor:null}});
-   if(p==='/')return route.fulfill({contentType:'text/html',body:`<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/conversation.css"><style>body{margin:0}#terminals{position:relative;height:100vh}</style><main id="terminals"><iframe id="terminal"></iframe><section id="artifact-preview" hidden></section></main><script src="/conversation-github.js"></script><script src="/conversation-media.js"></script><script src="/conversation.js"></script><script>window.current={key:'pane1',host:'fixture',pane:1,title:'Example project',agent:'codex',state:'ready',chatId:'chat-one',frame:document.getElementById('terminal')};window.terminalVisits=0;SwitchboardConversation.install({selection:()=>current,terminal:()=>terminalVisits++});</script>`});
+   if(p==='/')return route.fulfill({contentType:'text/html',body:`<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/conversation.css"><div id="workspace"><button id="sidebar-toggle" aria-label="Toggle tabs sidebar">☰</button><main id="terminals"><iframe id="terminal"></iframe><section id="artifact-preview" hidden></section></main></div><script src="/conversation-github.js"></script><script src="/conversation-media.js"></script><script src="/conversation.js"></script><script>window.current={key:'pane1',host:'fixture',pane:1,title:'Example project',agent:'codex',state:'ready',chatId:'chat-one',frame:document.getElementById('terminal')};window.terminalVisits=0;SwitchboardConversation.install({selection:()=>current,terminal:()=>terminalVisits++});</script>`});
    return route.fulfill({path:path.join(__dirname,'static',path.basename(p)),contentType:p.endsWith('.css')?'text/css':'text/javascript'});
   });
   await page.goto('http://github-preview.test/');
@@ -48,8 +48,29 @@ test('repository references and PR previews stay alongside Conversation and pres
   await page.getByRole('link',{name:'PR details',exact:true}).click();await preview.getByRole('heading',{name:'Keep references in context'}).waitFor();
   await page.getByRole('button',{name:'Terminal',exact:true}).click();assert.equal(await preview.isVisible(),false);assert.equal(await page.locator('#terminals').evaluate(n=>n.classList.contains('github-open')),false);assert.ok(await page.evaluate(()=>terminalVisits)>0);
   await page.getByRole('button',{name:'Conversation',exact:true}).click();await page.evaluate(()=>window.githubClock+=31000);fail=true;await ref.click();await preview.getByRole('button',{name:'Retry'}).waitFor();fail=false;await preview.getByRole('button',{name:'Retry'}).click();await preview.getByRole('heading',{name:'Keep references in context'}).waitFor();
-  await page.setViewportSize({width:390,height:844});const size=await preview.boundingBox();assert.equal(Math.round(size.width),390);
-  if(process.env.GITHUB_SCREENSHOT)await page.screenshot({path:process.env.GITHUB_SCREENSHOT.replace('.png','-mobile.png')});
+  // Include the real outer chrome: its mobile menu used to cover the GitHub crumbs.
+  const cdp=await page.context().newCDPSession(page);
+  await cdp.send('Emulation.setTouchEmulationEnabled',{enabled:true});
+  for(const [width,height] of [[390,844],[320,568],[844,390]]){
+   await page.setViewportSize({width,height});
+   const size=await preview.boundingBox();assert.equal(Math.round(size.width),width,'touch preview fills the viewport');
+   if(process.env.GITHUB_SCREENSHOT&&width===390)await page.screenshot({path:process.env.GITHUB_SCREENSHOT.replace('.png','-mobile.png')});
+   const layout=await page.evaluate(()=>{
+    const menu=document.querySelector('#sidebar-toggle').getBoundingClientRect(),crumbs=document.querySelector('.github-crumbs').getBoundingClientRect();
+    const controls=[...document.querySelectorAll('.github-icon-button')].map(n=>{const b=n.getBoundingClientRect();return {width:b.width,height:b.height,visible:n.contains(document.elementFromPoint(b.x+b.width/2,b.y+b.height/2))};});
+    const content=document.querySelector('.conversation-github-content');
+    return {clear:crumbs.left>=menu.right,controls,overflow:content.scrollWidth>content.clientWidth};
+   });
+   assert.ok(layout.clear,'the sidebar toggle does not overlap the repository');
+   assert.ok(layout.controls.every(c=>c.width>=44&&c.height>=44&&c.visible),'preview actions keep full touch targets');
+   assert.equal(layout.overflow,false,'preview content fits horizontally');
+   await preview.getByText('No conflicts',{exact:true}).scrollIntoViewIfNeeded();
+   const details=await preview.getByText('No conflicts',{exact:true}).boundingBox();assert.ok(details.y>=0&&details.y+details.height<=height,'details remain reachable in landscape');
+   await preview.locator('.conversation-github-content').evaluate(n=>n.scrollTop=0);
+  }
+  await preview.getByRole('button',{name:'Close GitHub preview'}).click();assert.equal(await preview.isVisible(),false,'touch close returns to the conversation');
+  await cdp.send('Emulation.setTouchEmulationEnabled',{enabled:false});
+  await ref.click();await preview.getByRole('heading',{name:'Keep references in context'}).waitFor();
   await page.setViewportSize({width:1400,height:900});if(process.env.GITHUB_SCREENSHOT)await page.screenshot({path:process.env.GITHUB_SCREENSHOT});
   await page.getByRole('link',{name:'https://github.com/example/project/pull/99',exact:true}).click();await preview.getByText('Loading GitHub…').waitFor();await page.keyboard.press('Escape');release();await page.waitForTimeout(50);assert.equal(await preview.isVisible(),false,'a closed request cannot reopen the panel');
   if(process.env.GITHUB_SCREENSHOT){await page.route('**/conversation-github.js',r=>r.fulfill({contentType:'text/javascript',body:''}));await page.reload();await page.getByRole('link',{name:'PR details',exact:true}).waitFor();await page.screenshot({path:process.env.GITHUB_SCREENSHOT.replace('.png','-before.png')});}

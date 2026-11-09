@@ -19,7 +19,7 @@
 .github-crumbs>svg{color:#a6a6b0}.github-repository{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.github-number{white-space:nowrap;color:#d0d0d6}.github-crumb-divider{color:#51515b}
 .conversation-github-panel a{color:var(--accent);text-decoration:none}
 .conversation-github-panel button{color:var(--text-2);background:#ffffff08;border:1px solid #ffffff16;border-radius:6px;padding:5px 12px;cursor:pointer;font:500 12px var(--sans)}
-.conversation-github-panel .github-icon-button{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;border:0;border-radius:6px;color:#8c8c97;background:transparent}
+.conversation-github-panel .github-icon-button{display:inline-flex;flex-shrink:0;align-items:center;justify-content:center;width:28px;height:28px;padding:0;border:0;border-radius:6px;color:#8c8c97;background:transparent}
 .conversation-github-panel :is(a,button):hover{background:#ffffff09;color:#f0f0f3}
 .conversation-github-panel :is(a,button):focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .conversation-github-content{min-height:0;flex:1;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#33343a transparent;overflow-wrap:anywhere}
@@ -55,6 +55,17 @@
   .conversation-github-panel{width:min(500px,100%);box-shadow:-12px 0 36px #0006}
 }
 @media(pointer:coarse){.github-toolbar{height:56px;gap:8px}.conversation-github-panel .github-icon-button{width:36px;height:36px}}
+@media(max-width:700px),(pointer:coarse) and (max-width:1000px){
+  .conversation-github-panel{width:100%;border-left:0}
+  /* Keep the sidebar toggle clear of the repository and leave room for both actions. */
+  .github-toolbar{height:60px;padding:0 8px 0 60px;gap:4px}
+  .conversation-github-panel .github-icon-button{width:44px;height:44px}
+  .github-hero{padding:20px 16px}
+  .github-overview-heading{padding-inline:16px}
+  .github-description,.github-details{padding:20px 16px}
+  .github-body.conversation-message{font-size:14px}
+  .github-details{padding-bottom:calc(20px + env(safe-area-inset-bottom))}
+}
 
 /* Mode switch: a quiet segmented control at the header's right edge. */
 .conversation-modes{position:absolute;right:16px;top:12px;z-index:6;display:flex;gap:2px;padding:3px;border:1px solid #ffffff12;border-radius:10px;background:#141518;font-family:"Switchboard Inter",-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif}
