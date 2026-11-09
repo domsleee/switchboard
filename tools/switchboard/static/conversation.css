@@ -284,8 +284,9 @@
 .conversation-table{max-width:100%;overflow:auto;margin:var(--block) 0}
 .conversation-table table{width:auto;border-collapse:collapse;font-size:13px;line-height:1.45;font-variant-numeric:tabular-nums}
 .conversation-table td{padding:6px 32px 6px 0;border-bottom:1px solid var(--line);vertical-align:top}
+/* overflow-wrap:anywhere would let auto table layout shrink a column to one character; a table too wide scrolls instead. */
+.conversation-table td,.conversation-table td code{overflow-wrap:normal}
 .conversation-table td:last-child{padding-right:0}
-.conversation-table td:not(:first-child){text-align:right}
 .conversation-table thead td{font-size:12.5px;font-weight:500;letter-spacing:0;color:#b4b4bd;border-bottom-color:var(--line-2)}
 
 .conversation-table tr:last-child td{border-bottom:0}
