@@ -160,10 +160,10 @@ async fn acting_on(session: &str, pane_id: u32) -> tokio::sync::OwnedMutexGuard<
 // arrive. While an answered dialog is on screen, answering again would send its keys to
 // whatever dialog comes next. So automatic acceptance gets one send per dialog; if those
 // keys were lost, the person answers the card, once the first send has had time to land.
-// Each pane keeps only its latest dialog, and a relay restart clears them.
+// A relay restart clears these; a pane only ever answers a handful of dialogs.
 pub(super) const TRUST_MANUAL_WAIT: Duration = Duration::from_secs(10);
 static TRUST_SENT: std::sync::LazyLock<
-    std::sync::Mutex<HashMap<(String, u32), (String, std::time::Instant)>>,
+    std::sync::Mutex<HashMap<(String, u32, String), std::time::Instant>>,
 > = std::sync::LazyLock::new(Default::default);
 
 /// Call under `acting_on`, before writing. False if this dialog was already answered:
@@ -175,14 +175,14 @@ pub(super) fn claim_trust_answer(
     within: Option<Duration>,
 ) -> bool {
     let mut sent = TRUST_SENT.lock().unwrap();
-    let pane = (session.to_owned(), pane_id);
+    let dialog = (session.to_owned(), pane_id, token.to_owned());
     if sent
-        .get(&pane)
-        .is_some_and(|(seen, at)| seen == token && within.is_none_or(|w| at.elapsed() < w))
+        .get(&dialog)
+        .is_some_and(|at| within.is_none_or(|w| at.elapsed() < w))
     {
         return false;
     }
-    sent.insert(pane, (token.to_owned(), std::time::Instant::now()));
+    sent.insert(dialog, std::time::Instant::now());
     true
 }
 
@@ -879,6 +879,20 @@ async fn write_keys(host: &Host, session: &str, pane: &str, key: &str) -> Result
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn switchboard_folder_trust_claim_remembers_every_dialog_without_expiry() {
+        let claim = |token, within| claim_trust_answer("claim-test", 1, token, within);
+        assert!(claim("folder-a", None));
+        assert!(claim("folder-b", None));
+        assert!(!claim("folder-a", None), "a later dialog does not erase it");
+        assert!(!claim("folder-a", Some(Duration::from_secs(60))));
+        assert!(
+            claim("folder-a", Some(Duration::ZERO)),
+            "a manual answer may follow once its wait has passed"
+        );
+        assert!(!claim("folder-a", None), "only a manual wait can end");
+    }
 
     #[tokio::test]
     async fn switchboard_acting_on_a_pane_only_waits_for_that_pane() {

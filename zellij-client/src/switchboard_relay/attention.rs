@@ -246,8 +246,9 @@ pub(super) fn may_be_claude(pane: &Value) -> bool {
             _ => break,
         }
     }
+    // A bare runner, such as `cmd.exe` used as a shell, says nothing either.
     let (script, _) = split_program(arguments);
-    CLAUDE.is_match(script) || SCRIPT.is_match(script)
+    script.is_empty() || CLAUDE.is_match(script) || SCRIPT.is_match(script)
 }
 
 /// The repository holding a folder, named after its main checkout so that every worktree of a
@@ -1774,6 +1775,7 @@ mod tests {
             "node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js",
             r"node --no-warnings C:\Users\Fixture User\npm\node_modules\@anthropic-ai\claude-code\cli.js",
             r"cmd.exe /d /c C:\Users\Fixture User\npm\claude.cmd --yolo",
+            "cmd.exe",
         ] {
             assert!(may_be_claude(&json!({"pane_command":command})), "{command}");
         }
