@@ -153,10 +153,16 @@ try {
     Assert (Test-Path (Join-Path $fixture.Directory 'pending.json')) 'Failed restore lost recovery journal'
     [IO.File]::WriteAllText((Join-Path $fixture.Directory ($fixture.NewHash + '/zellij.exe')),'corrupted new executable')
     $fixture.Mode = 'normal'
-    Reject { Invoke-SwitchboardWindowsUpdate -Candidate $candidate -Directory $fixture.Directory } 'Interrupted update'
     $result = Invoke-SwitchboardWindowsUpdate -Directory $fixture.Directory -Rollback
     Assert ($result.recovered_interrupted_update -and $result.sha256 -ceq $fixture.OldHash) 'Interrupted update recovery failed'
     Assert (!(Test-Path (Join-Path $fixture.Directory 'pending.json'))) 'Recovered interruption left a journal'
+    # The automatic updater never passes -Rollback, so the next update must recover by itself.
+    $candidate = New-Fixture 'new' 'restore-failure'
+    Reject { Invoke-SwitchboardWindowsUpdate -Candidate $candidate -Directory $fixture.Directory } 'automatic pointer restore failed'
+    $fixture.Mode = 'normal'
+    $result = Invoke-SwitchboardWindowsUpdate -Candidate $candidate -Directory $fixture.Directory
+    Assert ($result.sha256 -ceq $fixture.NewHash -and $result.previous_sha256 -ceq $fixture.OldHash) 'An interrupted update blocked the next update'
+    Assert (!(Test-Path (Join-Path $fixture.Directory 'pending.json'))) 'The next update left the interruption journal'
 
     $candidate = New-Fixture
     $lock = [IO.File]::Open((Join-Path $fixture.Directory 'update.lock'),'OpenOrCreate','ReadWrite','None')

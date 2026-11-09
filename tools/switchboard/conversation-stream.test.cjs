@@ -49,7 +49,9 @@ test('conversation streams updates and restores cached tabs synchronously withou
   push(streams[2],pageData('chat-1',[{role:'assistant',text:'Newer than the pending refresh'}],1));
   await page.waitForTimeout(50);hold=false;held();held=null;
   await page.getByText('Newer than the pending refresh',{exact:true}).waitFor();
+  history.push({role:'assistant',text:'Arrived during the outage'});
   streams[2].res.destroy();await wait(()=>streams.length>=4);
+  assert.equal(streams.at(-1).url.searchParams.get('cursor'),'2','A reconnect resumes from the loaded transcript, not the old URL');
   push(streams.at(-1),pageData('chat-1',[{role:'assistant',text:'Reconnected reply'}],1));await page.getByText('Reconnected reply',{exact:true}).waitFor();
   await page.getByRole('button',{name:'Terminal',exact:true}).click();
   await page.evaluate(()=>{current={...current,key:'startup',pane:7,tab:8,chatId:null,state:'unknown'};SwitchboardConversation.update();});

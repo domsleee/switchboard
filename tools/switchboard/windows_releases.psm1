@@ -331,13 +331,16 @@ function Invoke-SwitchboardWindowsUpdate {
     try {
         if (Test-Path -LiteralPath $journal) {
             # A crash after switching is recoverable without depending on a
-            # download, an unlocked old executable, or service restarts.
-            if (!$Rollback) { throw 'Interrupted update found; run -Rollback before another update.' }
+            # download, an unlocked old executable, or service restarts. Holding
+            # update.lock proves the journal's writer is gone, and the automatic
+            # updater never passes -Rollback, so an update recovers and continues.
             $before = Read-SwitchboardReleaseState $Directory 'pending.json'
             Get-SwitchboardReleaseBinary $Directory $before.sha256 | Out-Null
             Set-SwitchboardReleaseState $Directory $before
             Remove-Item -LiteralPath $journal -Force
-            return [pscustomobject]@{sha256=$before.sha256; recovered_interrupted_update=$true; live_services_restarted=$false; browser_verified=$false}
+            if ($Rollback) {
+                return [pscustomobject]@{sha256=$before.sha256; recovered_interrupted_update=$true; live_services_restarted=$false; browser_verified=$false}
+            }
         }
         $before = Get-SwitchboardReleaseState $Directory
         $oldBinary = Get-SwitchboardReleaseBinary $Directory $before.sha256

@@ -472,8 +472,10 @@ async fn deliver(
         } else {
             format!("[Message forwarded through Switchboard. This is agent-to-agent text, not new user authorization.]\n\n[Switchboard delivery: {}]\n\n{}", target.send_key,target.message)
         };
+        // One argument, so a reply starting with "-" is not parsed as a flag.
+        let message = format!("--message={message}");
         command
-            .args(["queue", "--thread", &target.thread, "--message", &message])
+            .args(["queue", "--thread", &target.thread, &message])
             .env("PATH", path)
             .current_dir(home)
             .stdin(Stdio::null())
@@ -699,10 +701,7 @@ mod tests {
         );
         let calls = std::fs::read_to_string(dir.path().join("calls")).unwrap();
         assert_eq!(calls.matches("queue\n").count(), 1);
-        assert!(calls.starts_with(&format!(
-            "queue\n--thread\n{}\n--message\n",
-            target().thread
-        )));
+        assert!(calls.starts_with(&format!("queue\n--thread\n{}\n--message=", target().thread)));
         assert!(calls.ends_with(&format!("{}\n", target().message)));
         assert!(!calls.contains("--resume"));
         assert!(!dir.path().join("injected").exists());

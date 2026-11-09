@@ -216,7 +216,8 @@
         catch{stopStream();load();}
       });
       source.onopen=()=>{if(source===stream)streamReady=true;};
-      source.onerror=()=>{if(source===stream){streamReady=false;load();}};
+      // The browser's own reconnect reuses this URL's old cursor and would roll the transcript back.
+      source.onerror=()=>{if(source===stream){stopStream();load();}};
     }
     const modes=el('div',undefined,'conversation-modes');modes.hidden=true;modes.setAttribute('role','group');modes.setAttribute('aria-label','View mode');
     const back=el('button','Terminal'),toggle=el('button','Conversation','conversation-toggle');back.type=toggle.type='button';back.setAttribute('aria-pressed',String(!open));toggle.setAttribute('aria-pressed',String(open));modes.append(back,toggle);root.append(modes);
