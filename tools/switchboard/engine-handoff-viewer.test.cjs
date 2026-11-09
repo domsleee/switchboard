@@ -17,6 +17,7 @@ const config = path.join(dir, 'config.kdl');
 const hosts = path.join(dir, 'hosts');
 const name = `handoff-viewer-${crypto.randomBytes(6).toString('hex')}`;
 const outer = `${name}-outer`;
+const notShared = `${name}-unshared`;
 const python = process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
 const fixture = path.join(root, 'tools/switchboard/resumable-viewer/fixture.py');
 const env = {
@@ -236,9 +237,55 @@ let native, relay, browser, created = false;
         await delivered('Typing was lost or duplicated across a third handoff');
         assert.deepEqual((await (await fetch(url + '/api/hosts/test')).json()).sessions.map(session => session.name).sort(), [name, outer].sort(), 'A reattaching native client creates no session');
         console.log('PASS: a native client reattaches to the new engine and keeps typing');
+
+        assert.match(cli('switchboard', 'engine-fingerprint').trim(), /^[0-9a-f]{16}$/);
+        const swapEngine = async (tag, ...flags) => {
+            const log = path.join(dir, `swap-${tag}.log`), out = fs.openSync(log, 'w');
+            const child = spawn(binary, ['--config', config, 'switchboard', 'swap-engine', name, '--binary', binary, '--config', config, ...flags], {env, windowsHide: true, stdio: ['ignore', out, out]});
+            fs.closeSync(out);
+            const exited = new Promise(resolve => child.once('exit', resolve));
+            await waitFor(() => fs.existsSync(path.join(hosts, 'in-progress', name)), 'The swap did not start');
+            await send(`${tag}-moving|`);
+            const code = await Promise.race([exited, sleep(120000).then(() => { throw Error(`Swap ${tag} did not finish: ${fs.readFileSync(log, 'utf8')}`); })]);
+            return {code, output: fs.readFileSync(log, 'utf8')};
+        };
+        const stillTheSameSession = async message => {
+            await send(`${message}|`);
+            await delivered(`Typing was lost or duplicated: ${message}`);
+            assert.deepEqual(identities(), before, `Panes survive: ${message}`);
+            process.kill(firstPid, 0);
+            process.kill(targetPid, 0);
+            assert.equal(fs.existsSync(path.join(hosts, 'in-progress', name)), false, `No move is left in progress: ${message}`);
+        };
+        const moved = await swapEngine('verified');
+        assert.equal(moved.code, 0, moved.output);
+        assert.match(moved.output, /Moved /);
+        await stillTheSameSession('after-verified-swap');
+        console.log('PASS: the updater command verifies and commits a new engine');
+
+        const rejected = await swapEngine('rejected', '--reject-first-verification');
+        assert.notEqual(rejected.code, 0, rejected.output);
+        assert.match(rejected.output, /Rolled .* back/);
+        await stillTheSameSession('after-rollback');
+        console.log('PASS: a new engine that fails verification hands the session back');
+
+        // Sharing changed at runtime must not fall back to what the configuration says.
+        cli('attach', '--create-background', notShared);
+        await waitFor(() => cli('-s', notShared, 'action', 'list-panes', '--json', '--all').includes('"id"'), 'The unshared session did not start');
+        cli('-s', notShared, 'action', 'set-web-sharing', 'off');
+        const sharing = async () => (await (await fetch(url + '/api/hosts/test')).json()).sessions.find(session => session.name === notShared)?.web_clients_allowed;
+        await waitFor(async () => (await sharing()) === false, 'Sharing was not turned off');
+        const unsharedLog = path.join(dir, 'swap-unshared.log'), unsharedOutput = fs.openSync(unsharedLog, 'w');
+        execFileSync(binary, ['--config', config, 'switchboard', 'swap-engine', notShared, '--binary', binary, '--config', config], {env, windowsHide: true, timeout: 120000, stdio: ['ignore', unsharedOutput, unsharedOutput]});
+        fs.closeSync(unsharedOutput);
+        assert.match(fs.readFileSync(unsharedLog, 'utf8'), /Moved /);
+        await sleep(1000);
+        assert.equal(await sharing(), false, 'A session unshared at runtime stays unshared on its new engine');
+        console.log('PASS: runtime sharing survives a move');
     } finally {
         if (browser) await browser.close();
         try { cli('kill-session', outer); } catch {}
+        try { cli('kill-session', notShared); } catch {}
         if (created) try { cli('kill-session', name); } catch {}
         await stop(native);
         await stop(relay);

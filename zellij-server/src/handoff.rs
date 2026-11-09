@@ -10,16 +10,22 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
+use std::sync::{mpsc, Mutex};
 use std::time::Duration;
+use zellij_utils::data::WebSharing;
+use zellij_utils::input::actions::Action;
 use zellij_utils::input::layout::{FloatingPaneLayout, Layout, TiledPaneLayout};
 use zellij_utils::pane_size::Size;
 
 /// `zellij pipe --name switchboard-handoff -- <handoff id>` starts a handoff.
 /// A pipe needs no change to the protocol that older engines understand.
 pub(crate) const PIPE_NAME: &str = "switchboard-handoff";
+/// Makes the takeover final, after the updater has verified the new engine.
+pub(crate) const COMMIT_PIPE_NAME: &str = "switchboard-handoff-commit";
 /// Set for a new engine, to the manifest it should take over from.
 const MANIFEST_ENV: &str = "SWITCHBOARD_HANDOFF_MANIFEST";
+/// Set for a new engine that must wait for the commit pipe.
+const VERIFY_ENV: &str = "SWITCHBOARD_HANDOFF_VERIFY";
 
 const MANIFEST_VERSION: u32 = 1;
 const INPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -31,6 +37,74 @@ const VIEWER_INPUT_GRACE: Duration = Duration::from_millis(150);
 
 static FROZEN: AtomicBool = AtomicBool::new(false);
 static HANDING_OVER: AtomicBool = AtomicBool::new(false);
+static AWAITING_COMMIT: Mutex<Option<String>> = Mutex::new(None);
+
+/// What the updater needs while it verifies a new engine; nothing else may
+/// change a session in that state.
+pub(crate) fn allowed_while_frozen(action: &Action) -> bool {
+    match action {
+        Action::ListPanes { .. } => true,
+        Action::CliPipe {
+            name: Some(name), ..
+        } => name == COMMIT_PIPE_NAME,
+        _ => false,
+    }
+}
+
+/// Records which host this session uses and how to go back to this engine.
+pub(crate) fn record_session(directory: &Path) {
+    let recorded = zellij_utils::envs::get_session_name()
+        .map_err(|error| error.to_string())
+        .and_then(|session| {
+            let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+            let record = zellij_utils::handoff::SessionRecord {
+                host_directory: directory.to_path_buf(),
+                engine: env!("SWITCHBOARD_ENGINE_FINGERPRINT").to_string(),
+                executable,
+            };
+            zellij_utils::handoff::write_session_record(&session, &record)
+                .map_err(|error| error.to_string())
+        });
+    if let Err(error) = recorded {
+        log::error!("Cannot record this session's terminal host: {error}");
+    }
+}
+
+/// Lets the updater stop this engine if it fails verification.
+pub(crate) fn record_engine_pid(directory: &Path, handoff_id: &str) -> std::io::Result<()> {
+    fs::write(
+        directory.join("handoff").join(format!("{handoff_id}.pid")),
+        std::process::id().to_string(),
+    )
+}
+
+/// Whether the updater will verify this engine before it becomes final.
+pub(crate) fn hold_for_verification(handoff_id: &str) -> bool {
+    if std::env::var_os(VERIFY_ENV).is_none() {
+        return false;
+    }
+    *AWAITING_COMMIT.lock().unwrap() = Some(handoff_id.to_string());
+    true
+}
+
+/// Admits clients and makes this engine the one that owns the terminals.
+pub(crate) fn commit(os_input: &dyn ServerOsApi, senders: &ThreadSenders) -> Result<(), String> {
+    let handoff_id = AWAITING_COMMIT
+        .lock()
+        .unwrap()
+        .take()
+        .ok_or("no takeover is waiting to be committed")?;
+    let hosted = os_input
+        .terminal_host()
+        .ok_or("this session has no terminal host")?;
+    hosted
+        .commit_adoption(&handoff_id)
+        .map_err(|error| format!("{error:#}"))?;
+    hosted.release_exits();
+    senders
+        .send_to_screen(ScreenInstruction::EndHandoffAdoption)
+        .map_err(|error| format!("{error:#}"))
+}
 
 /// While frozen, clients cannot change what is being snapshotted.
 pub(crate) fn is_frozen() -> bool {
@@ -90,6 +164,9 @@ pub struct HandoffManifest {
     pub next_terminal_id: u32,
     pub tabs: Vec<HandoffTab>,
     pub terminals: BTreeMap<u32, HandoffTerminal>,
+    /// Sharing can be changed at runtime, away from what the configuration says.
+    #[serde(default)]
+    pub web_sharing: Option<WebSharing>,
 }
 
 /// What Screen knows about the session once every pane has settled.
@@ -183,6 +260,7 @@ pub(crate) fn hand_over(
     os_input: &dyn ServerOsApi,
     senders: &ThreadSenders,
     handoff_id: &str,
+    web_sharing: WebSharing,
 ) -> Result<(), String> {
     if !valid_id(handoff_id) {
         return Err(format!("invalid handoff id {handoff_id:?}"));
@@ -263,6 +341,7 @@ pub(crate) fn hand_over(
                 .max(hosted_next_id(os_input)),
             tabs: screen.tabs,
             terminals,
+            web_sharing: Some(web_sharing),
         };
         let directory = hosted
             .directory()
@@ -337,6 +416,7 @@ mod tests {
                     position: Some(1234),
                 },
             )]),
+            web_sharing: Some(WebSharing::Off),
         };
         let path = write_manifest(directory.path(), &manifest).unwrap();
         let (read, host_directory) = read_manifest(&path).unwrap();

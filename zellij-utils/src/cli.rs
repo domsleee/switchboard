@@ -233,6 +233,22 @@ pub enum SwitchboardCommand {
     },
     /// Apply the newest published main build; restarts connection services, never terminal engines
     Update(SwitchboardUpdateCli),
+    /// Print the fingerprint of what this build's session engine is built from
+    #[clap(hide = true)]
+    EngineFingerprint,
+    /// Move a running session to a new engine, keeping its programs running
+    #[clap(hide = true)]
+    SwapEngine {
+        session: String,
+        /// Executable for the new engine (default: this one)
+        #[clap(long)]
+        binary: Option<PathBuf>,
+        #[clap(long)]
+        config: Option<PathBuf>,
+        /// Treat the first verification as failed, to prove rollback
+        #[clap(long)]
+        reject_first_verification: bool,
+    },
     /// Copy files into ~/.switchboard/artifacts/<id>/ and print a URL every paired computer can open
     Artifact {
         /// The file to open; further files keep their paths relative to its directory

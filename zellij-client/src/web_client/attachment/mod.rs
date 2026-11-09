@@ -602,7 +602,8 @@ async fn attachment(
                 viewer.parser_pending.store(stdin.has_pending_bytes(),Ordering::Release);
                 handing_off=zellij_utils::handoff::in_progress(&worker.session);
                 let reconnections=os.reconnections();
-                if reconnections!=seen_reconnections {
+                // Until the move is final this engine can still be replaced.
+                if reconnections!=seen_reconnections && !handing_off && !os.is_reconnecting() {
                     seen_reconnections=reconnections;
                     // A new engine puts this viewer on the first tab. Typing waits until
                     // it is back on its own pane, and is never sent anywhere else.

@@ -12,6 +12,9 @@ pub mod output;
 pub mod panes;
 pub mod tab;
 
+/// Identifies what this build's engine is built from. See `build.rs`.
+pub const ENGINE_FINGERPRINT: &str = env!("SWITCHBOARD_ENGINE_FINGERPRINT");
+
 pub mod background_jobs;
 mod global_async_runtime;
 mod handoff;
@@ -1187,17 +1190,17 @@ pub fn start_server_impl(
             attach_if_session_running(instruction, session_data.read().unwrap().is_some());
         match instruction {
             ServerInstruction::PrepareHandoff(handoff_id) => {
-                let senders = session_data
+                let session = session_data
                     .read()
                     .unwrap()
                     .as_ref()
-                    .map(|session| session.senders.clone());
-                if let Some(senders) = senders {
+                    .map(|session| (session.senders.clone(), session.web_sharing));
+                if let Some((senders, web_sharing)) = session {
                     let os_input = os_input.clone();
                     let to_server = to_server.clone();
                     // Screen renders through this thread while it settles.
                     std::thread::spawn(move || {
-                        match handoff::hand_over(&*os_input, &senders, &handoff_id) {
+                        match handoff::hand_over(&*os_input, &senders, &handoff_id, web_sharing) {
                             Ok(()) => {
                                 let _ = to_server.send(ServerInstruction::FinishHandoff);
                             },
@@ -1225,6 +1228,9 @@ pub fn start_server_impl(
                 let adoption = match handoff::requested_manifest() {
                     None => None,
                     Some(Ok((manifest, directory))) => {
+                        if let Err(error) = handoff::record_engine_pid(&directory, &manifest.id) {
+                            log::error!("Cannot record this engine for the updater: {error}");
+                        }
                         if let Err(error) = os_input.attach_terminal_host(&directory) {
                             log::error!("Cannot take over the terminal host: {error}");
                             std::process::exit(1);
@@ -1297,8 +1303,19 @@ pub fn start_server_impl(
                     is_web_client,
                 );
                 if let Some(manifest) = adoption {
+                    if let Some(web_sharing) = manifest.web_sharing {
+                        session_data.write().unwrap().as_mut().unwrap().web_sharing = web_sharing;
+                    }
                     let rlock = session_data.read().unwrap();
                     let senders = &rlock.as_ref().unwrap().senders;
+                    if let Some(web_sharing) = manifest.web_sharing {
+                        senders
+                            .send_to_screen(ScreenInstruction::SetWebSharing(
+                                web_sharing.web_clients_allowed(),
+                                None,
+                            ))
+                            .unwrap();
+                    }
                     senders
                         .send_to_screen(ScreenInstruction::UseHandoffTabIds(
                             manifest.tabs.iter().map(|tab| (tab.id, tab.size)).collect(),
