@@ -389,8 +389,11 @@ function Invoke-SwitchboardWindowsUpdate {
             throw 'Running native web daemon became unavailable to the selected executable'
         }
         Remove-Item -LiteralPath $journal -Force -ErrorAction Stop
-        try { Sync-SwitchboardPathBinary $selectedBinary | Out-Null }
-        catch { Write-Warning "Could not update zellij.exe on PATH: $($_.Exception.Message)" }
+        # Only the installed store owns the zellij.exe on PATH; a test's fixture store must not reach it.
+        if ([IO.Path]::GetFullPath($Directory).TrimEnd('\','/') -eq [IO.Path]::GetFullPath((Get-SwitchboardReleaseDirectory)).TrimEnd('\','/')) {
+            try { Sync-SwitchboardPathBinary $selectedBinary | Out-Null }
+            catch { Write-Warning "Could not update zellij.exe on PATH: $($_.Exception.Message)" }
+        }
         [pscustomobject]@{sha256=$hash; previous_sha256=$before.sha256; live_services_restarted=$false; browser_verified=$false}
     } catch {
         $failure = $_
