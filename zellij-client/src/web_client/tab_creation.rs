@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 use std::{ffi::OsString, path::PathBuf, process::Stdio, time::Duration};
 use zellij_utils::{
     cli::CliAction,
+    consts::session_layout_cache_file_name,
     data::{PaneId, WebSharing},
     input::actions::Action,
     ipc::{ClientToServerMsg, ExitReason, IpcReceiveError, ServerToClientMsg},
@@ -81,6 +82,10 @@ async fn cli(state: &AppState, args: Vec<OsString>) -> Result<String, Error> {
         .stdin(Stdio::null())
         .kill_on_drop(true);
     if background {
+        // The engine's first shell starts here; the service's own folder means nothing to a user.
+        if let Some(home) = std::env::home_dir() {
+            command.current_dir(home);
+        }
         // The background engine can inherit these handles on Windows. Waiting
         // for EOF would keep the creation request open for the session's life.
         command.stdout(Stdio::null()).stderr(Stdio::null());
@@ -254,6 +259,8 @@ pub(super) async fn create(
                 .as_ref()
                 .is_some_and(|r| r.catalog_allowed(name, false))
     };
+    // A session started for this request opens a default shell tab nobody asked for.
+    let mut default_tab = None;
     if let Some(session) = sessions.iter().find(|s| s.name == target.session) {
         if !shared(&session.name, session.web_clients_allowed) {
             return Err((StatusCode::FORBIDDEN, "Session is not shared"));
@@ -269,6 +276,8 @@ pub(super) async fn create(
         if state.config.lock().unwrap().options.web_sharing == Some(WebSharing::Disabled) {
             return Err((StatusCode::FORBIDDEN, "Web sharing is disabled"));
         }
+        // A saved layout makes this a restore: those tabs are the user's.
+        let restoring = session_layout_cache_file_name(&target.session).is_file();
         cli(
             &state,
             vec![
@@ -285,10 +294,12 @@ pub(super) async fn create(
         // Wait on a read before issuing the one mutating new-tab request.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         loop {
-            if panes(&target.session)
+            if let Some(started) = panes(&target.session)
                 .await
-                .is_ok_and(|panes| !panes.is_empty())
+                .ok()
+                .filter(|panes| !panes.is_empty())
             {
+                default_tab = (!restoring).then(|| only_terminal_tab(&started)).flatten();
                 break;
             }
             if tokio::time::Instant::now() >= deadline {
@@ -332,6 +343,15 @@ pub(super) async fn create(
         StatusCode::BAD_GATEWAY,
         "Tab created but its identity was not returned; check the tab list",
     ))?;
+    if let Some(id) = default_tab.filter(|id| *id != tab_id) {
+        let close = Action::CloseTabById { id: id.into() };
+        if action(&target.session, close).await.is_err() {
+            log::warn!(
+                "Could not close the default tab of new session {}",
+                target.session
+            );
+        }
+    }
     if let Some(pane_id) = pane_id {
         return Ok(created(&target.session, pane_id, tab_id, typed));
     }
@@ -449,6 +469,13 @@ fn created_pane(panes: &[Value], tab_id: u32) -> Option<u32> {
         .and_then(|pane| pane["id"].as_u64()?.try_into().ok())
 }
 
+/// The tab holding the session's only terminal, as a just-started default session has.
+fn only_terminal_tab(panes: &[Value]) -> Option<u32> {
+    let mut terminals = panes.iter().filter(|pane| pane["is_plugin"] == false);
+    let tab = terminals.next()?["tab_id"].as_u64()?.try_into().ok()?;
+    terminals.next().is_none().then_some(tab)
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -478,6 +505,16 @@ mod tests {
 
     use super::*;
     use zellij_utils::{data::CommandOrPlugin, input::command::RunCommandAction};
+    #[test]
+    fn switchboard_tab_creation_finds_only_a_lone_default_tab() {
+        let plugin = json!({"tab_id":0,"is_plugin":true});
+        let shell = json!({"tab_id":0,"is_plugin":false});
+        assert_eq!(only_terminal_tab(&[plugin.clone(), shell.clone()]), Some(0));
+        assert_eq!(only_terminal_tab(&[plugin]), None);
+        let restored = json!({"tab_id":1,"is_plugin":false});
+        assert_eq!(only_terminal_tab(&[shell, restored]), None);
+    }
+
     #[test]
     fn switchboard_tab_creation_reads_the_started_terminal_from_the_reply() {
         assert_eq!(created_ids("8\nterminal_17\n"), Some((8, Some(17))));
