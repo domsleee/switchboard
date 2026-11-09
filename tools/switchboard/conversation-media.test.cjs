@@ -1,7 +1,7 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),http=require('node:http'),path=require('node:path');
 test('Markdown media uses the owning host, expands galleries, and blocks active content',{skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
  const {chromium}=require(process.env.PLAYWRIGHT_MODULE),requests=[];
- const server=http.createServer((req,res)=>{requests.push(req.url);if(req.url.startsWith('/api/hosts/')){if(req.url.includes('missing')){res.writeHead(404);return res.end();}res.setHeader('Content-Type','image/svg+xml');return res.end('<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="#468"/></svg>');}
+ const server=http.createServer((req,res)=>{requests.push(req.url);if(req.url.startsWith('/api/hosts/')){if(req.url.includes('.mp4'))return;/* Left pending so the video stays embedded. */if(req.url.includes('missing')){res.writeHead(404);return res.end();}res.setHeader('Content-Type','image/svg+xml');return res.end('<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="#468"/></svg>');}
  if(req.url==='/'){res.setHeader('Content-Type','text/html');return res.end('<meta charset="utf-8"><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/conversation.css"><div class="conversation-panel"><article class="conversation-message" id="message"></article></div><script src="/conversation-media.js"></script>');}
  const file=path.join(__dirname,'static',path.basename(req.url));res.setHeader('Content-Type',file.endsWith('.js')?'application/javascript':'text/css');res.end(fs.readFileSync(file));});
  await new Promise(r=>server.listen(0,'127.0.0.1',r));const browser=await chromium.launch();
@@ -49,6 +49,28 @@ test('Markdown media uses the owning host, expands galleries, and blocks active 
  }finally{await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));}
 });
 
+test('a video that cannot be embedded becomes just its original link',{skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
+ const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch();
+ try{const page=await browser.newPage({viewport:{width:1280,height:844}});
+ await page.route('http://fixture.test/**',route=>{
+  const {pathname}=new URL(route.request().url());
+  if(pathname==='/')return route.fulfill({contentType:'text/html',body:'<meta charset="utf-8"><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/conversation.css"><div class="conversation-panel"><article class="conversation-message" id="message"></article></div><script src="/conversation-media.js"></script>'});
+  if(pathname.startsWith('/api/'))return; // Left pending: the video never loads and never fails.
+  return route.fulfill({path:path.join(__dirname,'static',path.basename(pathname))});
+ });
+ await page.goto('http://fixture.test/');
+ await page.evaluate(()=>SwitchboardConversationMedia.render(document.getElementById('message'),{markdown:[{type:'start',tag:'a',url:'out/demo.mp4'},{type:'text',text:'demo.mp4'},{type:'end'}]},{host:'ubuntu',project:'/repo'}));
+ const media=page.locator('.conversation-media'),caption=media.locator('.conversation-media-caption'),original=media.getByRole('link',{name:'Open original',exact:true});
+ await page.locator('video').waitFor();
+ assert.equal(await caption.isVisible(),false,'A playable video has no filename beneath it');
+ assert.equal(await original.isVisible(),false,'A playable video has no original-file link beneath it');
+ await page.evaluate(()=>document.querySelector('video').onerror());
+ assert.equal(await page.locator('video').count(),0,'A failed video leaves no broken player');
+ assert.equal(await media.innerText(),'Open original','A failed video shows only its original link');
+ assert.equal(await original.isVisible(),true);
+ }finally{await browser.close();}
+});
+
 test('media reconciliation restores focus and unavailable user media keeps visible recovery links',{skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
  const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch();
  try{
@@ -81,7 +103,7 @@ test('media reconciliation restores focus and unavailable user media keeps visib
   await page.evaluate(()=>renderMessage([{kind:'image',name:'Missing image',url:'/repo/missing.png'},{kind:'video',name:'Missing video',url:'/repo/missing.mp4'}]));
   await page.waitForFunction(()=>document.querySelectorAll('.conversation-media.failed').length===2);
   assert.equal(await page.getByRole('button',{name:'Preview Missing image',exact:true}).textContent(),'Image unavailable');
-  assert.equal(await page.getByText('Missing video · Video unavailable',{exact:true}).isVisible(),true,'User-message caption styling must not hide video failure feedback');
+  assert.equal(await page.locator('video').count(),0,'A failed user video leaves no broken player');
   assert.equal(await page.getByRole('link',{name:'Open original',exact:true}).count(),2,'Failed user media keeps a visible original-file recovery link');
   for(const link of await page.getByRole('link',{name:'Open original',exact:true}).all())assert.equal(await link.isVisible(),true);
  }finally{await browser.close();}
