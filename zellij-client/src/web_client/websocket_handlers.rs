@@ -172,7 +172,8 @@ async fn handle_ws_terminal(
         (Some(rows), Some(cols)) if rows > 0 && cols > 0 => Some(Size {
             rows: rows as usize,
             cols: cols as usize,
-        }),
+        })
+        .filter(has_room),
         _ => None,
     };
     let client_pixel_dims = match (params.cell_width, params.cell_height) {
@@ -595,11 +596,23 @@ fn elevator() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("gsudo"))
 }
 
+/// A frame with no room measures xterm's floor of 2x1. New tabs copy a viewer's size,
+/// and Claude's prompts cannot be read from a pane that narrow.
+pub(super) fn has_room(size: &Size) -> bool {
+    size.cols > 2 && size.rows > 1
+}
+
 pub(super) fn control_payload_to_server_msg(
     payload: WebClientToWebServerControlMessagePayload,
     default_shell: Option<PathBuf>,
 ) -> Option<ClientToServerMsg> {
     let client_msg = match payload {
+        WebClientToWebServerControlMessagePayload::TerminalResize(size)
+        | WebClientToWebServerControlMessagePayload::SetTabViewport { size, .. }
+            if !has_room(&size) =>
+        {
+            return None;
+        },
         WebClientToWebServerControlMessagePayload::TerminalResize(size) => {
             ClientToServerMsg::TerminalResize { new_size: size }
         },
@@ -815,6 +828,33 @@ mod tests {
             },
             other => panic!("expected TerminalResize, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn switchboard_ignores_a_resize_from_a_frame_with_no_room() {
+        let resize = |cols, rows| {
+            control_payload_to_server_msg(
+                WebClientToWebServerControlMessagePayload::TerminalResize(Size { rows, cols }),
+                None,
+            )
+        };
+        assert!(resize(2, 1).is_none());
+        assert!(matches!(
+            resize(80, 24),
+            Some(ClientToServerMsg::TerminalResize { .. })
+        ));
+        let viewport = |cols, rows| {
+            control_payload_to_server_msg(
+                WebClientToWebServerControlMessagePayload::SetTabViewport {
+                    size: Size { rows, cols },
+                    tab_position: 0,
+                    ownership: None,
+                },
+                None,
+            )
+        };
+        assert!(viewport(2, 1).is_none());
+        assert!(viewport(80, 24).is_some());
     }
 
     #[test]
