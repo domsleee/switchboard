@@ -674,7 +674,9 @@ measured them, split by build and by the computer being viewed. The browser runs
 can be compared; the last 12 builds are retained, with the five slowest samples and their stages
 for each. Journeys are `terminal_to_conversation` and `conversation_select` (a chat shown from
 memory), `conversation_load` (a chat fetched before it appeared), `conversation_connect` (waiting for
-a running agent to report its chat) and `conversation_to_terminal`. A journey during which the page was hidden, or that the user abandoned,
+a running agent to report its chat), `conversation_to_terminal` and `terminal_input_ready`
+(waiting for a reconnected viewer to enable typing, split into metadata and focus stages).
+A journey during which the page was hidden, or that the user abandoned,
 is counted by outcome but left out of the percentiles; timeouts and failures stay in them. `/api/timings`
 returns the same data. The same journeys appear on a Switchboard track in Chrome's Performance panel.
 To add a journey, name it in `JOURNEYS` in `timings.rs` and call `SwitchboardTiming.begin`.

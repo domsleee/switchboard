@@ -1,14 +1,14 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 
 function timer({hidden=false}={}){
-  const listeners={},posts=[];let clock=1000;
+  const listeners={},posts=[],timers=[];let clock=1000;
   const document={hidden,addEventListener:(name,fn)=>{listeners[name]=fn;}};
   const window={};
-  const context={window,document,clearTimeout,setTimeout:()=>1,
+  const context={window,document,clearTimeout,setTimeout:fn=>{timers.push(fn);return timers.length;},
     performance:{now:()=>clock,measure(){}},
     fetch:(url,init)=>{posts.push({url,body:JSON.parse(init.body)});return Promise.resolve();}};
   vm.runInNewContext(fs.readFileSync(__dirname+'/static/timing.js','utf8'),context);
-  return {timing:window.SwitchboardTiming,posts,document,advance:ms=>{clock+=ms;},changeVisibility(){listeners.visibilitychange();}};
+  return {timing:window.SwitchboardTiming,posts,document,advance:ms=>{clock+=ms;},timeout(){timers.at(-1)();},changeVisibility(){listeners.visibilitychange();}};
 }
 
 test('A journey reports its wait and numeric stages without an unmeasured stage',()=>{
@@ -24,6 +24,15 @@ test('A journey ends once, so a late report cannot overwrite the first result',(
   const journey=timing.begin('conversation_to_terminal');
   advance(10);journey.end('left');advance(10);journey.end('ready');
   assert.equal(posts.length,1);assert.equal(posts[0].body.outcome,'left');
+});
+
+test('A timed out terminal wait retains its last known stage without increasing the deadline',()=>{
+  const {timing,posts,advance,timeout}=timer();let metadata=0;
+  const journey=timing.begin('terminal_input_ready',{timeoutStages:()=>({metadata,focus:30000-metadata})});
+  metadata=20000;advance(30000);timeout();journey.end('ready');
+  assert.equal(posts.length,1);
+  assert.equal(posts[0].body.outcome,'timeout');
+  assert.deepEqual(posts[0].body.stages,[['metadata',20000],['focus',10000]]);
 });
 
 test('Time spent in a background tab is marked hidden rather than counted as a wait',()=>{

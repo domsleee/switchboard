@@ -410,7 +410,7 @@ test('new tab focus and catalog resolve selection in either arrival order withou
       filter:'work',groups:{win:'home'},nativeTabs:false,saveReady(){},localStorage:{setItem(){}},$:()=>search,location:{origin:'http://localhost'},
       window:{addEventListener:(_,fn)=>handler=fn},setFilter(value){context.filter=value;},
       allTabs:()=>entry.catalog.map(tab=>({entry,tab,key:key(tab.id)})),acknowledgeAttention(){},
-      render(){highlight=context.selected;},focus(item){focused=item.key;entry.needsFocus=false;},
+      restoreTerminalKeyboard(){},render(){highlight=context.selected;},focus(item){focused=item.key;entry.needsFocus=false;},
       refreshAttention(){scans++;}};
     vm.createContext(context);initPins(context);
     vm.runInContext(source.slice(source.indexOf('function sessionKey('),source.indexOf('function attentionKey(')),context);
@@ -566,7 +566,7 @@ test('new-tab diagnostic forwarding sends only bounded metadata fields',()=>{
 
 test('a clicked tab waiting for metadata retries from its button without stealing focus from other controls',()=>{
   const pane={pane_id:9,is_plugin:false,tab_position:2},active={pane_id:7,is_plugin:false,tab_position:0};
-  const tab={id:90,position:1,name:'B',panes:[{...pane,tab_position:1}]},button={},messages=[];
+  const tab={id:90,position:1,name:'B',panes:[{...pane,tab_position:1}]},button={closest:()=>null},messages=[];
   const entry={host:'mac',name:'main',state:{panes:[active,pane],active_pane:active},focusInitialized:true,
     frame:{contentWindow:{postMessage:message=>messages.push(message)}}};
   const item={entry,tab,key:JSON.stringify(['mac','main','tab',90])};

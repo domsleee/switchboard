@@ -15,10 +15,10 @@ window.SwitchboardTiming = (function () {
     fetch('/api/diagnostics/timing',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),keepalive:true}).catch(()=>{});
   }
   // A journey nothing ever finishes reports a timeout, so the worst waits are not lost.
-  function begin(journey,{host,deadline=30000}={}) {
+  function begin(journey,{host,deadline=30000,timeoutStages}={}) {
     const started=performance.now();let timer;
     const end=(outcome,options={})=>{if(timer===null)return;clearTimeout(timer);timer=null;report(journey,started,outcome,{host,...options});};
-    timer=setTimeout(()=>end('timeout'),deadline);
+    timer=setTimeout(()=>end('timeout',{stages:timeoutStages?.()??{}}),deadline);
     return {end};
   }
   return {report,begin};

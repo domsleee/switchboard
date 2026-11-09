@@ -13,12 +13,13 @@ const MAX_ELAPSED_MS: u32 = 120_000;
 const MAX_STAGES: usize = 16;
 /// Each bucket is 10% wider than the last, so a reported percentile is within about 10%.
 const BUCKET_GROWTH: f64 = 1.1;
-const JOURNEYS: [&str; 5] = [
+const JOURNEYS: [&str; 6] = [
     "terminal_to_conversation",
     "conversation_select",
     "conversation_load",
     "conversation_connect",
     "conversation_to_terminal",
+    "terminal_input_ready",
 ];
 
 static STORE: LazyLock<Mutex<Store>> = LazyLock::new(Default::default);
@@ -430,6 +431,9 @@ mod tests {
     #[test]
     fn switchboard_timings_reject_anything_but_known_journeys_and_plain_names() {
         assert!(report("ready", 10, false).valid());
+        let mut typing = report("ready", 10, false);
+        typing.journey = "terminal_input_ready".into();
+        assert!(typing.valid());
         let mut bad = report("ready", 10, false);
         bad.journey = "something_else".into();
         assert!(!bad.valid());
