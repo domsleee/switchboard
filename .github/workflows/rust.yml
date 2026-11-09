@@ -178,17 +178,13 @@ jobs:
       - name: Test zellij-utils, zellij-server and zellij-client
         run: cargo test --no-default-features -p zellij-utils -p zellij-server -p zellij-client --lib
 
-      # Lives here rather than in Build (Windows): it needs the test profile,
-      # which this job has already compiled, not Build's dev-opt profile.
       - name: Install NASM
         uses: ilammy/setup-nasm@v1.5.2
 
-      # The same filter gates Windows releases in native-binaries.yml; running it
-      # here catches Windows-only failures before they stall Windows updates.
-      - name: Check Switchboard relay, installer and updater
-        run: cargo test -p zellij-client --features web_server_capability switchboard_ --lib
-      - name: Check Windows message hook launcher
-        run: cargo test -p zellij-client --features web_server_capability message_board_hook_queues_with_a_windows_cmd_launcher --lib
+      # libtest ORs multiple filters. Run both existing selections together so
+      # the message hook test reuses the relay test binary without a rebuild.
+      - name: Check Switchboard relay, installer, updater and Windows message hook launcher
+        run: cargo test -p zellij-client --features web_server_capability --lib -- switchboard_ message_board_hook_queues_with_a_windows_cmd_launcher
 
   integration-test:
     name: Integration Test

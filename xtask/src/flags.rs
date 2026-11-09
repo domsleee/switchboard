@@ -14,16 +14,6 @@ xflags::xflags! {
 
         /// Tasks for the CI
         cmd ci {
-            /// end-to-end tests
-            cmd e2e {
-                /// Build E2E binary of zellij
-                optional --build
-                /// Run the E2E tests
-                optional --test
-                /// Additional arguments for `--test`
-                repeated args: OsString
-            }
-
             /// Perform cross-compiled release builds
             cmd cross {
                 /// Target-triple to compile the application for
@@ -157,17 +147,8 @@ pub struct Ci {
 
 #[derive(Debug)]
 pub enum CiCmd {
-    E2e(E2e),
     Cross(Cross),
     BuildRelease(BuildRelease),
-}
-
-#[derive(Debug)]
-pub struct E2e {
-    pub args: Vec<OsString>,
-
-    pub build: bool,
-    pub test: bool,
 }
 
 #[derive(Debug)]
