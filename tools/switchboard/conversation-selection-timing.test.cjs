@@ -15,7 +15,7 @@ for(const mobile of [false,true])test(`chat selections report request, server an
     await gates.get(reads.at(-1).id);
     const end=q.has('before')?Number(q.get('before')):history.length,start=q.has('tail')||q.has('before')?Math.max(0,end-Number(q.get('limit'))):Number(q.get('cursor'));
     const messages=history.slice(start,Math.min(start+Number(q.get('limit')),end));
-    return route.fulfill({headers:serverTiming?{'Server-Timing':'queue;dur=25,read;dur=450,index;dur=400,page;dur=25'}:{},json:{messages,start_cursor:start,previous_cursor:start||null,next_cursor:start+messages.length<end?start+messages.length:null}}).catch(()=>{});
+    return route.fulfill({headers:serverTiming?{'Server-Timing':'queue;dur=25,read;dur=450,index;dur=400,page;dur=25,bridge;dur=470,peer;dur=480'}:{},json:{messages,start_cursor:start,previous_cursor:start||null,next_cursor:start+messages.length<end?start+messages.length:null}}).catch(()=>{});
    }
    if(url.pathname==='/')return route.fulfill({contentType:'text/html',body:`<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/conversation.css"><style>body{margin:0}#terminals{height:100dvh;position:relative}</style><main id="terminals"><section id="artifact-preview" hidden></section></main><script src="/conversation.js"></script><script>window.current={key:'pane1',host:'fixture',chatHost:'fixture',pane:1,agent:'codex',state:'ready',chatId:'private-chat-1'};SwitchboardConversation.install({selection:()=>current,terminal:()=>{}});window.selectChat=id=>{current={...current,key:'pane'+id,pane:id,chatId:'private-chat-'+id};SwitchboardConversation.update();};</script>`});
    return route.fulfill({path:path.join(__dirname,'static',path.basename(url.pathname)),contentType:url.pathname.endsWith('.css')?'text/css':'application/javascript'});
@@ -29,7 +29,7 @@ for(const mobile of [false,true])test(`chat selections report request, server an
   await page.clock.runFor(650);assert.equal(timings.length,1,'Loading is not mistaken for a visible transcript');release();
   await page.getByText(/^Message 99\./).waitFor();await waitTiming(2);
   const slow=timings[1];assert.equal(slow.reason,'selection');assert.equal(slow.end,'history');assert.ok(slow.elapsed_ms>=650);assert.ok(slow.request_ms>=650);assert.equal(slow.remote,true);
-  assert.equal(slow.queue_ms,25);assert.equal(slow.read_ms,450);assert.equal(slow.index_ms,400);assert.equal(slow.page_ms,25);assert.ok(Number.isInteger(slow.render_ms));
+  assert.equal(slow.peer_ms,480);assert.equal(slow.bridge_ms,470);assert.equal(typeof slow.host,'string');assert.equal(slow.queue_ms,25);assert.equal(slow.read_ms,450);assert.equal(slow.index_ms,400);assert.equal(slow.page_ms,25);assert.ok(Number.isInteger(slow.render_ms));
   await page.evaluate(()=>selectChat(1));await waitTiming(3);assert.equal(timings[2].end,'cached');assert.equal(timings[2].request_ms,undefined,'A cached selection does not attribute its background refresh to the visible wait');
   await page.getByRole('button',{name:'Terminal',exact:true}).click();await page.evaluate(()=>selectChat(3));
   await page.waitForFunction(()=>!document.querySelector('[aria-label="Refresh"]').disabled);await page.clock.runFor(40);assert.equal(timings.length,3,'Hidden preloading is not a visible selection');
@@ -41,6 +41,6 @@ for(const mobile of [false,true])test(`chat selections report request, server an
   serverTiming=false;await page.evaluate(()=>selectChat(5));await page.getByText(/^Message 99\./).waitFor();await waitTiming(7);
   assert.equal(timings[6].end,'history');assert.ok(Number.isInteger(timings[6].request_ms));assert.equal(timings[6].read_ms,undefined,'Old peers do not supply invented backend timings');
   await page.evaluate(()=>{current={...current,key:'shell',agent:null,chatId:null};SwitchboardConversation.update();});await waitTiming(8);assert.equal(timings[7].end,'unbound');
-  assert.doesNotMatch(JSON.stringify(timings),/private-chat|Message|fixture/);assert.deepEqual(errors,[]);
+  assert.doesNotMatch(JSON.stringify(timings),/private-chat|Message/);assert.deepEqual(errors,[]);
  }finally{await browser.close();}
 });

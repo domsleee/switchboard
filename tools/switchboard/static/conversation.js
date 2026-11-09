@@ -708,7 +708,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
     // Times each visible chat selection or mode switch until its messages are on screen.
     function startShown(reason='mode'){
       shownProgress('superseded');
-      const timing=shown={started:performance.now(),reason,stages:{render_ms:0},remote:target?.chatHost!=='local',cached:loaded,generation:null,paint_ms:null,deadline:setTimeout(()=>shownProgress('timeout'),20000)};
+      const timing=shown={started:performance.now(),reason,stages:{render_ms:0},remote:target?.chatHost!=='local',host:target?.chatHost||target?.host,cached:loaded,generation:null,paint_ms:null,deadline:setTimeout(()=>shownProgress('timeout'),20000)};
       requestAnimationFrame(()=>setTimeout(()=>{if(shown!==timing)return;timing.paint_ms=Math.round(performance.now()-timing.started);shownProgress();},0));
     }
     function shownProgress(end){
@@ -719,13 +719,13 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
         if(!end)return;
       }
       shown=null;clearTimeout(timing.deadline);
-      void fetch('/api/diagnostics/conversation-shown',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({end,elapsed_ms:Math.min(120000,Math.round(performance.now()-timing.started)),paint_ms:timing.paint_ms,reason:timing.reason,remote:timing.remote,...timing.stages})}).catch(()=>{});
+      void fetch('/api/diagnostics/conversation-shown',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({end,elapsed_ms:Math.min(120000,Math.round(performance.now()-timing.started)),paint_ms:timing.paint_ms,reason:timing.reason,remote:timing.remote,host:timing.host,...timing.stages})}).catch(()=>{});
     }
     function reportLoad(phase,outcome,started){
       const now=Date.now(),key=phase+':'+outcome;
       if(key===lastDiagnostic&&now-lastDiagnosticAt<60000)return;
       lastDiagnostic=key;lastDiagnosticAt=now;
-      void fetch('/api/diagnostics/conversation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phase,outcome,elapsed_ms:Math.min(120000,Math.round(performance.now()-started))})}).catch(()=>{});
+      void fetch('/api/diagnostics/conversation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phase,outcome,host:target?.chatHost||target?.host,elapsed_ms:Math.min(120000,Math.round(performance.now()-started))})}).catch(()=>{});
     }
     async function get(url,signal,stages){
       const started=performance.now(),response=await fetch(url,{signal});
@@ -736,7 +736,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       stages.request_ms=Math.round(performance.now()-started);
       // Fixed numeric metrics from the owning relay; old peers omit the header.
       for(const metric of (response.headers.get('Server-Timing')||'').split(',')){
-        const match=metric.trim().match(/^(queue|read|index|page);dur=(\d+)$/);
+        const match=metric.trim().match(/^(peer|bridge|queue|read|index|page);dur=(\d+)$/);
         if(match)stages[match[1]+'_ms']=Math.min(120000,Number(match[2]));
       }
       return data;
@@ -1265,7 +1265,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       if(target&&chat&&handoverDrafts.has(target.key)){drafts.set(identity(target),handoverDrafts.get(target.key));handoverDrafts.delete(target.key);}
       if(target&&chat&&handoverAttachments.has(target.key)){attachments.set(identity(target),[...fileList(),...handoverAttachments.get(target.key)]);handoverAttachments.delete(target.key);}
       const cached=conversations.get(identity(target));if(cached){({chat,messages,startCursor,tailCursor,nextCursor,streamSupported}=cached);loaded=true;}
-      if(shown){shown.generation=generation;shown.cached=loaded;shown.remote=target?.chatHost!=='local';}
+      if(shown){shown.generation=generation;shown.cached=loaded;shown.remote=target?.chatHost!=='local';shown.host=target?.chatHost||target?.host;}
       updateActivity();actions.hidden=true;
       if(!target){setPanelHidden(true);viewport();return;}draft.value=drafts.get(identity(target))||'';
       setPanelHidden(!open);paintFiles();viewport();

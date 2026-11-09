@@ -126,6 +126,7 @@ pub(super) async fn forward(root: PathBuf, request: Request) -> Response {
     }
 }
 async fn proxy(root: PathBuf, request: Request) -> anyhow::Result<Response> {
+    let started = std::time::Instant::now();
     let registration = read(&root)?;
     let (mut parts, body) = request.into_parts();
     let path = parts
@@ -192,7 +193,18 @@ async fn proxy(root: PathBuf, request: Request) -> anyhow::Result<Response> {
     for name in [header::CONNECTION, header::TRANSFER_ENCODING] {
         parts.headers.remove(name);
     }
+    add_bridge_timing(&mut parts.headers, started.elapsed());
     Ok(Response::from_parts(parts, Body::new(body)))
+}
+
+/// How long this gateway held the request, beside the relay's own timing.
+fn add_bridge_timing(headers: &mut header::HeaderMap, elapsed: Duration) {
+    let Some(timing) = headers.get("server-timing").and_then(|v| v.to_str().ok()) else {
+        return;
+    };
+    if let Ok(timing) = format!("{timing},bridge;dur={}", elapsed.as_millis()).parse() {
+        headers.insert("server-timing", timing);
+    }
 }
 
 /// The native server owns the public listener, including its TLS identity. A

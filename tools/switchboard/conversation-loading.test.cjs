@@ -48,7 +48,7 @@ test('conversation recovers from stalled reads, logs safe diagnostics and preser
   assert.equal(diagnostics.at(-1).outcome,'partial');const count=diagnostics.length;await poll();assert.equal(diagnostics.length,count,'Repeated partial reads do not flood browser diagnostics');
   partial=false;mode='invalid';await poll();await page.getByText('The conversation response was incomplete. Retrying…',{exact:true}).waitFor();assert.equal(await page.locator('.conversation-message').count(),41,'Failed reads preserve visible history');
   mode='ok';await poll();assert.equal(await page.locator('.conversation-notice').isVisible(),false);
-  for(const d of diagnostics)assert.deepEqual(Object.keys(d).sort(),['elapsed_ms','outcome','phase']);assert.doesNotMatch(JSON.stringify(diagnostics),/private-chat-id|fresh answer|Some content/);
+  for(const d of diagnostics)assert.deepEqual(Object.keys(d).sort(),['elapsed_ms','host','outcome','phase']);assert.doesNotMatch(JSON.stringify(diagnostics),/private-chat-id|fresh answer|Some content/);
   await page.getByRole('button',{name:'Terminal',exact:true}).click();const priorReads=reads;await page.evaluate(()=>polls.forEach(fn=>fn()));assert.equal(reads,priorReads);
   assert.deepEqual(errors,[]);
  }finally{release?.();await browser.close();}
