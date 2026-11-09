@@ -22,6 +22,9 @@ fn processes() -> System {
         ProcessesToUpdate::All,
         true,
         ProcessRefreshKind::nothing()
+            // Linux task threads share their agent's argv and environment. Counting
+            // them as candidates makes one multithreaded agent look ambiguous.
+            .without_tasks()
             .with_exe(UpdateKind::Always)
             .with_cmd(UpdateKind::Always)
             .with_environ(UpdateKind::Always),
@@ -435,6 +438,28 @@ pub(super) async fn local(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn switchboard_agent_process_candidates_exclude_worker_threads() {
+        let (identified, identity) = std::sync::mpsc::channel();
+        let (release, waiting) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let task = std::fs::read_link("/proc/thread-self").unwrap();
+            let tid = task.file_name().unwrap().to_str().unwrap().parse().unwrap();
+            identified.send(tid).unwrap();
+            waiting.recv().unwrap();
+        });
+        let tid = identity.recv().unwrap();
+        let system = processes();
+        release.send(()).unwrap();
+        worker.join().unwrap();
+        assert!(system.process(Pid::from_u32(std::process::id())).is_some());
+        assert!(
+            system.process(Pid::from_u32(tid)).is_none(),
+            "A worker with its agent's argv and environment is not another agent"
+        );
+    }
+
     #[test]
     fn switchboard_agent_process_checks_exit_executable_and_resume_safety() {
         let system = processes();
