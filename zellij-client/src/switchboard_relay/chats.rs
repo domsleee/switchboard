@@ -2397,6 +2397,7 @@ async fn remote_timed(
     };
     let path = format!("/switchboard/chats/{}?{}", id.unwrap_or("search"), query);
     let mut timing = None;
+    let started = std::time::Instant::now();
     let result = match tokio::time::timeout(
         Duration::from_secs(15),
         host.request(Method::GET, &path, Bytes::new(), "application/json"),
@@ -2404,7 +2405,15 @@ async fn remote_timed(
     .await
     {
         Ok(Ok(r)) if r.status == StatusCode::OK => {
-            timing = r.headers.get("server-timing").cloned();
+            timing = r
+                .headers
+                .get("server-timing")
+                .and_then(|timing| timing.to_str().ok())
+                .and_then(|timing| {
+                    format!("{timing},peer;dur={}", started.elapsed().as_millis())
+                        .parse()
+                        .ok()
+                });
             serde_json::from_slice(&r.body)
                 .unwrap_or_else(|_| json!({"error":"invalid_peer_response"}))
         },
@@ -4486,7 +4495,12 @@ mod tests {
         let host = Host::new(super::super::tests::config(&format!("http://{address}"))).unwrap();
         *host.cookie.lock().await = Some("session_token=fixture".into());
         let (page, timing) = remote_timed(&host, &Params::default(), Some("codex-test")).await;
-        assert_eq!(timing.unwrap(), expected);
+        let timing = timing.unwrap();
+        let timing = timing.to_str().unwrap();
+        assert!(
+            timing.starts_with(&format!("{expected},peer;dur=")),
+            "{timing}"
+        );
         assert_eq!(
             page,
             remote(&host, &Params::default(), Some("codex-test")).await

@@ -23,6 +23,31 @@ fn diagnostic(message: &str) -> bool {
     message.starts_with("Terminal ") && !message.starts_with("Terminal failure ")
         || message.starts_with("Browser tab ")
         || message.starts_with("Conversation shown ")
+        || message.starts_with("Relay runtime slow ")
+        || browser_load_sample(message)
+}
+
+/// Each carries its own elapsed time, so every one would be a new, permanent failure.
+fn browser_load_sample(message: &str) -> bool {
+    message.starts_with("History ")
+        && (message.contains(": recovered;") || message.contains(": partial;"))
+}
+
+/// Short, content-free computer id accepted from browser timing reports.
+fn diagnostic_host(host: Option<&str>) -> Result<Option<&str>, ()> {
+    match host {
+        None => Ok(None),
+        Some(host)
+            if !host.is_empty()
+                && host.len() <= 80
+                && host
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') =>
+        {
+            Ok(Some(&host[..host.len().min(13)]))
+        },
+        Some(_) => Err(()),
+    }
 }
 
 /// Eviction order: routine samples, then slow samples, then failures.
@@ -135,6 +160,31 @@ pub(super) async fn write_private(path: &Path, data: &[u8]) -> std::io::Result<(
     })
     .await
     .map_err(std::io::Error::other)?
+}
+
+fn runtime_late_bucket(late: Duration) -> Option<&'static str> {
+    [
+        (2000, "Relay runtime slow late=2000ms+"),
+        (1000, "Relay runtime slow late=1000ms+"),
+        (500, "Relay runtime slow late=500ms+"),
+        (250, "Relay runtime slow late=250ms+"),
+    ]
+    .into_iter()
+    .find_map(|(ms, message)| (late.as_millis() >= ms).then_some(message))
+}
+
+/// Records when a short timer fires late, the sign of a starved or blocked relay.
+pub(super) fn watch_runtime() {
+    const TICK: Duration = Duration::from_millis(100);
+    tokio::spawn(async {
+        loop {
+            let started = tokio::time::Instant::now();
+            tokio::time::sleep(TICK).await;
+            if let Some(message) = runtime_late_bucket(started.elapsed().saturating_sub(TICK)) {
+                record("relay", message);
+            }
+        }
+    });
 }
 
 /// Restore saved failures, then save changes every few seconds.
@@ -1969,6 +2019,7 @@ pub(super) struct ConversationDiagnostic {
     phase: String,
     outcome: String,
     elapsed_ms: u32,
+    host: Option<String>,
 }
 impl ConversationDiagnostic {
     fn message(&self) -> Option<String> {
@@ -1981,9 +2032,13 @@ impl ConversationDiagnostic {
         {
             return None;
         }
+        let host = diagnostic_host(self.host.as_deref()).ok()?;
         Some(format!(
-            "History {}: {}; elapsed_ms={}",
-            self.phase, self.outcome, self.elapsed_ms
+            "History {}: {}; elapsed_ms={}{}",
+            self.phase,
+            self.outcome,
+            self.elapsed_ms,
+            host.map_or_else(String::new, |host| format!(" host={host}")),
         ))
     }
 }
@@ -1997,8 +2052,11 @@ pub(super) struct ShownDiagnostic {
     #[serde(default = "shown_mode")]
     reason: String,
     remote: Option<bool>,
+    host: Option<String>,
     request_ms: Option<u32>,
     render_ms: Option<u32>,
+    peer_ms: Option<u32>,
+    bridge_ms: Option<u32>,
     queue_ms: Option<u32>,
     read_ms: Option<u32>,
     index_ms: Option<u32>,
@@ -2025,6 +2083,8 @@ impl ShownDiagnostic {
             || [
                 self.request_ms,
                 self.render_ms,
+                self.peer_ms,
+                self.bridge_ms,
                 self.queue_ms,
                 self.read_ms,
                 self.index_ms,
@@ -2036,6 +2096,7 @@ impl ShownDiagnostic {
         {
             return None;
         }
+        let host = diagnostic_host(self.host.as_deref()).ok()?;
         let slow = self.elapsed_ms > 500 || matches!(self.end.as_str(), "failed" | "timeout");
         let mut message = format!(
             "Conversation shown {} t={}ms paint={}ms end={}",
@@ -2053,9 +2114,14 @@ impl ShownDiagnostic {
                 self.reason,
                 self.remote.unwrap()
             );
+            if let Some(host) = host {
+                let _ = write!(message, " host={host}");
+            }
             for (name, value) in [
                 ("request", self.request_ms),
                 ("render", self.render_ms),
+                ("peer", self.peer_ms),
+                ("bridge", self.bridge_ms),
                 ("queue", self.queue_ms),
                 ("read", self.read_ms),
                 ("index", self.index_ms),
@@ -2137,6 +2203,8 @@ mod conversation_diagnostic_tests {
         for field in [
             "request_ms",
             "render_ms",
+            "peer_ms",
+            "bridge_ms",
             "queue_ms",
             "read_ms",
             "index_ms",
@@ -2150,6 +2218,42 @@ mod conversation_diagnostic_tests {
         invalid["reason"] = json!("private chat title");
         assert!(shown(invalid).is_none());
     }
+    #[test]
+    fn switchboard_browser_load_samples_do_not_evict_conversation_timings() {
+        let log = Log(Default::default(), Default::default());
+        log.push(
+            "Conversation",
+            "Conversation shown slow t=2400ms paint=20ms end=history",
+            0,
+        );
+        for elapsed in 0..CAPACITY as u64 + 20 {
+            log.push(
+                "Conversation",
+                &format!("History poll: recovered; elapsed_ms={elapsed}"),
+                elapsed + 1,
+            );
+        }
+        assert!(log.newest_first().iter().any(|e| e["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("Conversation shown slow ")));
+        assert!(!diagnostic(
+            "History load failed: computer_unavailable; reasons="
+        ));
+        assert!(!diagnostic("History poll: http; elapsed_ms=1720"));
+    }
+
+    #[test]
+    fn switchboard_runtime_lateness_is_bucketed() {
+        assert_eq!(runtime_late_bucket(Duration::from_millis(249)), None);
+        assert_eq!(
+            runtime_late_bucket(Duration::from_millis(1200)),
+            Some("Relay runtime slow late=1000ms+")
+        );
+        assert!(diagnostic("Relay runtime slow late=250ms+"));
+        assert_eq!(rank("Relay runtime slow late=250ms+"), 1);
+    }
+
     #[tokio::test]
     async fn switchboard_conversation_diagnostics_accept_only_content_free_codes() {
         let request = |value: Value| {
@@ -2170,6 +2274,7 @@ mod conversation_diagnostic_tests {
             json!({"phase":"poll","outcome":"private error text","elapsed_ms":1}),
             json!({"phase":"poll","outcome":"network","elapsed_ms":1,"message":"private prompt"}),
             json!({"phase":"poll","outcome":"network","elapsed_ms":120001}),
+            json!({"phase":"poll","outcome":"network","elapsed_ms":1,"host":"a b/c"}),
         ] {
             assert_eq!(conversation(request(value)).await, StatusCode::BAD_REQUEST);
         }

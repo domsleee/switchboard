@@ -62,6 +62,7 @@ const MERMAID_LIBRARY: &str = "mermaid-12.2.0.min.js";
 const LIMIT: usize = 21 * 1024 * 1024;
 // Leave room inside short control/attention deadlines for a changed DHCP address.
 const ROUTE_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+const ROUTE_LOOKUP_TIMEOUT: Duration = hostname::LOOKUP_TIMEOUT;
 const ROUTE_CONNECT_TIMEOUT: Duration = Duration::from_millis(1200);
 const ROUTE_CACHE_TTL: Duration = Duration::from_secs(60);
 const BRIDGE: &str = "<head><script src=\"/link-config.js\"></script><script src=\"/links.js\"></script><script src=\"/thumbnails.js\"></script><script src=\"/clipboard.js\"></script><script src=\"/chrome.js\"></script><script src=\"/terminal-diagnostics.js\"></script><script src=\"/predict.js\"></script><script src=\"/bridge.js\"></script>";
@@ -387,11 +388,12 @@ impl Host {
             *hint
         };
         let primary = cached.map(|(address, _)| address).unwrap_or(original);
-        let primary_error =
-            match tokio::time::timeout(ROUTE_PROBE_TIMEOUT, self.connect_to(primary)).await {
+        let mut first_try = Box::pin(self.connect_to(primary));
+        let mut primary_error =
+            match tokio::time::timeout(ROUTE_PROBE_TIMEOUT, &mut first_try).await {
                 Ok(Ok(stream)) => return Ok(stream),
-                Ok(Err(error)) => error,
-                Err(_) => anyhow::anyhow!("Paired host connection timed out"),
+                Ok(Err(error)) => Some(error),
+                Err(_) => None,
             };
         if cached.is_some() {
             let mut hint = self.route_hint.lock().await;
@@ -399,36 +401,57 @@ impl Host {
                 *hint = None;
             }
         }
-        let mut routes = lookup.await;
-        if cached.is_some() && !routes.contains(&original) {
-            routes.push(original);
-        }
         let mut failures = std::collections::BTreeMap::new();
-        let mut pending: std::collections::BTreeSet<_> = routes
-            .into_iter()
-            .filter(|address| *address != primary)
-            .collect();
-        let mut attempts = FuturesUnordered::new();
-        for address in pending.iter().copied() {
-            attempts.push(async move { (address, self.connect_to(address).await) });
+        let mut pending = std::collections::BTreeSet::new();
+        let mut attempts = FuturesUnordered::<
+            futures_util::future::BoxFuture<'_, (SocketAddr, anyhow::Result<Stream>)>,
+        >::new();
+        // A busy computer can miss the probe. Its attempt keeps running against the
+        // alternates, because a route that is merely slow is better than none.
+        if primary_error.is_none() {
+            attempts.push(Box::pin(async move { (primary, first_try.await) }));
         }
-        let connected = tokio::time::timeout(ROUTE_CONNECT_TIMEOUT, async {
-            while let Some((address, result)) = attempts.next().await {
-                pending.remove(&address);
-                match result {
-                    Ok(stream) => return Some((address, stream)),
-                    Err(error) => {
-                        failures.insert(address, format!("{address}: {error:#}"));
+        let mut lookup = std::pin::pin!(lookup);
+        let mut looked_up = false;
+        let connected = tokio::time::timeout(ROUTE_LOOKUP_TIMEOUT + ROUTE_CONNECT_TIMEOUT, async {
+            loop {
+                tokio::select! {
+                    mut routes = &mut lookup, if !looked_up => {
+                        looked_up = true;
+                        if cached.is_some() && !routes.contains(&original) {
+                            routes.push(original);
+                        }
+                        for address in routes.into_iter().filter(|address| *address != primary) {
+                            if pending.insert(address) {
+                                attempts.push(Box::pin(async move {
+                                    (address, self.connect_to(address).await)
+                                }));
+                            }
+                        }
                     },
+                    Some((address, result)) = attempts.next(), if !attempts.is_empty() => {
+                        pending.remove(&address);
+                        match result {
+                            Ok(stream) => return Some((address, stream)),
+                            Err(error) if address == primary => primary_error = Some(error),
+                            Err(error) => {
+                                failures.insert(address, format!("{address}: {error:#}"));
+                            },
+                        }
+                    },
+                    else => return None,
                 }
             }
-            None
         })
         .await;
         if let Ok(Some((address, stream))) = connected {
-            *self.route_hint.lock().await = Some((address, tokio::time::Instant::now()));
+            if address != primary || cached.is_some() {
+                *self.route_hint.lock().await = Some((address, tokio::time::Instant::now()));
+            }
             return Ok(stream);
         }
+        let primary_error =
+            primary_error.unwrap_or_else(|| anyhow::anyhow!("Paired host connection timed out"));
         for address in pending {
             failures.insert(address, format!("{address}: connection timed out"));
         }
@@ -1641,6 +1664,7 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
         .await;
     let failures_file = config_path.with_extension("logs.json");
     let failures = logs::start(failures_file.clone()).await;
+    logs::watch_runtime();
     let polling =
         attention::start(state.clone(), config_path.with_extension("attention.json")).await;
     let push = push::start(&mut state, config_path.with_extension("push.json")).await;
@@ -2349,6 +2373,36 @@ mod tests {
         stall.abort();
         assert!(result.unwrap().is_ok());
         assert_eq!(host.route_hint.lock().await.unwrap().0, correct.address);
+    }
+
+    #[tokio::test]
+    async fn hostname_slow_primary_still_connects_while_an_alternate_hangs() {
+        let correct = tls_fixture(Router::new()).await;
+        let target = correct.address;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let original = listener.local_addr().unwrap();
+        let slow = tokio::spawn(async move {
+            let (mut inbound, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(ROUTE_PROBE_TIMEOUT + Duration::from_millis(300)).await;
+            let mut outbound = tokio::net::TcpStream::connect(target).await.unwrap();
+            let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+        });
+        let hanging = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let alternate = hanging.local_addr().unwrap();
+        let stall = tokio::spawn(async move {
+            let (_tcp, _) = hanging.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let host = Host::new(paired_config(original.port(), &correct.pin)).unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_secs(3),
+            host.stream_with_routes(original, std::future::ready(vec![alternate])),
+        )
+        .await;
+        slow.abort();
+        stall.abort();
+        assert!(result.unwrap().is_ok());
+        assert!(host.route_hint.lock().await.is_none());
     }
 
     #[tokio::test]

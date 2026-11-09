@@ -2,7 +2,7 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::time::Duration;
 
-const LOOKUP_TIMEOUT: Duration = Duration::from_millis(700);
+pub(super) const LOOKUP_TIMEOUT: Duration = Duration::from_millis(700);
 
 pub(super) fn local_hostname(name: &str) -> Option<String> {
     let name = name.trim();
