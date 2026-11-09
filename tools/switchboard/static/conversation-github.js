@@ -3,6 +3,22 @@
   const node=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;};
   const repos=new Map(),previews=new Map();let panel,content,external,heading,crumbs,focusBefore,serial=0,prefetching=0;
   const PREVIEW_TTL=30000,PREVIEW_LIMIT=32;
+  const visible=new Map(),watching=new Map();let visibilityObserver;
+  // Start reads while references are on screen, including on touch devices.
+  // Limit both queued links and concurrent reads; detached links do no work.
+  function warmVisible(){
+    if(document.hidden)return;
+    while(prefetching<2&&visible.size){
+      const [link,{ref,host}]=visible.entries().next().value;visible.delete(link);
+      if(!link.isConnected){visibilityObserver.unobserve(link);watching.delete(link);continue;}
+      if(!link.getClientRects().length)continue;
+      const box=link.getBoundingClientRect();
+      if(box.bottom<=0||box.top>=innerHeight||box.right<=0||box.left>=innerWidth)continue;
+      visibilityObserver.unobserve(link);watching.delete(link);
+      preview(ref,host,true)?.catch(()=>{});
+    }
+  }
+  document.addEventListener('visibilitychange',warmVisible);
   // Fixed icon paths, never content returned by GitHub.
   const paths={pr:'M6 8v8M18 16V7a4 4 0 0 0-4-4h-1M8 5a2 2 0 1 1-4 0 2 2 0 0 1 4 0M8 18a2 2 0 1 1-4 0 2 2 0 0 1 4 0M20 18a2 2 0 1 1-4 0 2 2 0 0 1 4 0',
     branch:'M6 3v12m0-12a2 2 0 1 0 0 .01M6 15a2 2 0 1 0 0 .01M18 3a2 2 0 1 0 0 .01M18 5v2a5 5 0 0 1-5 5H6',
@@ -31,7 +47,7 @@
     if(speculative)prefetching++;
     entry.promise=request(host,{repo:reference.repo,number:reference.number}).then(item=>{
       entry.pending=false;entry.at=Date.now();return item;
-    },error=>{if(previews.get(key)===entry)previews.delete(key);throw error;}).finally(()=>{if(speculative)prefetching--;});
+    },error=>{if(previews.get(key)===entry)previews.delete(key);throw error;}).finally(()=>{if(speculative){prefetching--;warmVisible();}});
     previews.set(key,entry);return entry.promise;
   }
   function parse(href){
@@ -108,6 +124,18 @@
     // Issue links remain ordinary GitHub links unless they were inferred from #number.
     if(ref.kind!=='pull'&&!link.dataset.githubReference)return;
     link.dataset.githubPreview='true';link.title='Preview '+ref.repo+' #'+ref.number;
+    if(window.IntersectionObserver){
+      visibilityObserver??=new IntersectionObserver(entries=>{
+        for(const {target,isIntersecting} of entries){
+          if(!target.isConnected){visibilityObserver.unobserve(target);watching.delete(target);visible.delete(target);continue;}
+          if(!isIntersecting){visible.delete(target);continue;}
+          if(watching.has(target))visible.set(target,watching.get(target));
+        }
+        warmVisible();
+      });
+      if(watching.size>=PREVIEW_LIMIT){const oldest=watching.keys().next().value;visibilityObserver.unobserve(oldest);watching.delete(oldest);visible.delete(oldest);}
+      watching.set(link,{ref,host:context.host});visibilityObserver.observe(link);
+    }
     // Match T3's intent delay: passing across links does no work. Do not abort
     // an already started read on leave/close: a click or another link shares it.
     let timer;
