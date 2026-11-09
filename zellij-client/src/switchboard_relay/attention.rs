@@ -808,6 +808,10 @@ impl PollState {
     }
 
     pub(super) fn update(&mut self, host: &str, snapshot: &mut Value) -> bool {
+        self.update_checked(host, snapshot, &ProcessChecks::new())
+    }
+
+    fn update_checked(&mut self, host: &str, snapshot: &mut Value, checks: &ProcessChecks) -> bool {
         let now = tokio::time::Instant::now();
         let object = snapshot.as_object_mut().unwrap();
         let deferred = object.remove("deferred_sessions").unwrap_or(json!([]));
@@ -888,7 +892,7 @@ impl PollState {
                 if let Some(created) = recreated {
                     self.forget_hook(row, created);
                 }
-                self.apply_hook(row, &command);
+                self.apply_hook_checked(row, &command, checks);
                 self.queue_denied_settle(row, &screen);
                 // After apply_hook, which drops a hook from an agent the pane no longer runs.
                 if let (Some(session), Some(pane)) =
@@ -1085,7 +1089,11 @@ impl PollState {
         if !matches!(hook.state, "ready" | "working") || hook.chat_id.as_deref() != Some(chat) {
             return None;
         }
-        Some((hook.restart.clone()?, hook.state == "working"))
+        let identity = hook
+            .restart
+            .as_ref()
+            .filter(|identity| identity.resumable())?;
+        Some((identity.clone(), hook.state == "working"))
     }
     /// The agent whose hooks last reported for this pane, until it ends.
     pub(super) fn hooked_agent(&self, session: &str, pane: u32) -> Option<&'static str> {
@@ -1103,6 +1111,7 @@ impl PollState {
                 token: None,
                 chat_id: None,
                 restart: None,
+                capturing: None,
                 at: 0,
                 shell_hold: false,
                 idle_since: None,
@@ -1176,7 +1185,12 @@ impl PollState {
         }
     }
     /// Replaces a local pane's screen reading with its agent's hook status.
+    #[cfg(test)]
     fn apply_hook(&mut self, row: &mut Value, command: &Value) {
+        self.apply_hook_checked(row, command, &ProcessChecks::new());
+    }
+
+    fn apply_hook_checked(&mut self, row: &mut Value, command: &Value, checks: &ProcessChecks) {
         let (Some(session), Some(pane)) = (row["session"].as_str(), row["pane_id"].as_u64()) else {
             return;
         };
@@ -1185,10 +1199,20 @@ impl PollState {
         let Some(hooked) = self.hooks.get(&key) else {
             return;
         };
-        // A pane that now runs something else (the agent exited without SessionEnd) drops it.
+        // Foreground tools can replace the reported command while the agent is
+        // still running. Drop the binding only after checking its recorded process.
         if command
             .as_str()
             .is_some_and(|c| !c.is_empty() && !c.to_ascii_lowercase().contains(hooked.agent))
+            && hooked.capturing.is_none()
+            && !hooked.restart.as_ref().is_some_and(|expected| {
+                checks
+                    .get(&key)
+                    .filter(|(identity, _)| identity == expected)
+                    // No matching result means capture completed after the check,
+                    // or inspection failed. Keep the binding until it is checked.
+                    .is_none_or(|(_, running)| *running)
+            })
         {
             self.hooks.remove(&key);
             self.stop_shells.remove(&key);
@@ -1199,8 +1223,10 @@ impl PollState {
             row["chat_id"] = json!(id);
             // The screen reading can name another agent, so the chat's owner goes with its id.
             row["agent"] = json!(hooked.agent);
-            row["restart_available"] =
-                json!(hooked.restart.is_some() && matches!(hooked.state, "ready" | "working"));
+            row["restart_available"] = json!(
+                hooked.restart.as_ref().is_some_and(|i| i.resumable())
+                    && matches!(hooked.state, "ready" | "working")
+            );
         }
         if hooked.state == "unknown" {
             return;
@@ -1236,6 +1262,31 @@ impl PollState {
             Some(token) => row.insert("token".into(), json!(token)),
             None => row.remove("token"),
         };
+    }
+
+    fn captured(
+        &mut self,
+        key: &(String, u64),
+        expected: &Hooked,
+        identity: Option<super::restart::Identity>,
+    ) {
+        // The capture token survives screen-derived state changes, but a newer
+        // hook or SessionEnd invalidates it before the process check finishes.
+        if expected.capturing.is_some()
+            && self
+                .hooks
+                .get(key)
+                .is_some_and(|hook| hook.capturing == expected.capturing)
+        {
+            let hook = self.hooks.get_mut(key).unwrap();
+            let changed = hook.restart != identity;
+            hook.restart = identity;
+            hook.capturing = None;
+            if changed {
+                self.dirty = true;
+                self.hooked.notify_one();
+            }
+        }
     }
     /// Denying a Claude approval sends no hook, only the Interrupted marker. A scan's
     /// screen can be old, so the host loop confirms it from the pane itself, once each
@@ -1420,6 +1471,7 @@ impl PollState {
                     token,
                     chat_id: row[5].as_str().map(str::to_owned),
                     restart: serde_json::from_value(row[6].clone()).ok(),
+                    capturing: None,
                     at: row[7].as_u64().unwrap_or(0),
                     shell_hold: row[8] == true,
                     idle_since: None,
@@ -1470,6 +1522,7 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
                 let scans_here = host.config.escape_transport.as_deref() != Some("gateway");
                 let shared_poll = poll.clone();
                 let mut next = tokio::time::Instant::now();
+                let mut process_cache = ProcessCache::new();
                 loop {
                     let started = tokio::time::Instant::now();
                     // Panes and tabs are listed every few seconds; a screen change in
@@ -1488,13 +1541,17 @@ pub(super) async fn start(state: RelayState, file: PathBuf) -> Vec<tokio::task::
                         next = tokio::time::Instant::now()
                             + Duration::from_secs(3).max(started.elapsed() * 3);
                     }
+                    let checks = match &result {
+                        Ok(snapshot) => check_processes(&poll, snapshot, &mut process_cache).await,
+                        Err(_) => ProcessChecks::new(),
+                    };
                     let mut poll = poll.lock().await;
                     let changed = match result {
                         Ok(mut snapshot) => {
                             if full && host.is_local_engine() {
                                 poll.prune_closed(&id, &snapshot);
                             }
-                            poll.update(&id, &mut snapshot)
+                            poll.update_checked(&id, &mut snapshot, &checks)
                         },
                         Err(error) => {
                             logs::record(
@@ -1661,19 +1718,141 @@ pub(super) async fn handler(
     Json(snapshot)
 }
 
-#[derive(Clone, Debug, PartialEq)]
+type ProcessChecks = HashMap<(String, u64), (super::restart::Identity, bool)>;
+type ProcessCache = HashMap<(String, u64), (super::restart::Identity, bool, tokio::time::Instant)>;
+
+/// Copy candidates under the lock, inspect them together off-thread, then let
+/// apply_hook_checked reject results for identities replaced in the meantime.
+async fn check_processes(
+    poll: &tokio::sync::Mutex<PollState>,
+    snapshot: &Value,
+    cache: &mut ProcessCache,
+) -> ProcessChecks {
+    let mut candidates: Vec<_> = {
+        let poll = poll.lock().await;
+        snapshot["panes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|row| {
+                let key = (
+                    row["session"].as_str()?.to_owned(),
+                    row["pane_id"].as_u64()?,
+                );
+                let hook = poll.hooks.get(&key)?;
+                let command = row["command"].as_str()?;
+                if command.is_empty() || command.to_ascii_lowercase().contains(hook.agent) {
+                    return None;
+                }
+                Some((key, hook.restart.clone()?))
+            })
+            .collect()
+    };
+    cache.retain(|key, (identity, _, _)| candidates.iter().any(|(k, i)| k == key && i == identity));
+    let mut checks = ProcessChecks::new();
+    candidates.retain(|(key, identity)| {
+        if let Some((_, true, checked)) = cache.get(key) {
+            if checked.elapsed() < Duration::from_secs(3) {
+                checks.insert(key.clone(), (identity.clone(), true));
+                return false;
+            }
+        }
+        true
+    });
+    if candidates.is_empty() {
+        return checks;
+    }
+    let fresh: ProcessChecks = tokio::task::spawn_blocking(move || {
+        let identities: Vec<_> = candidates
+            .iter()
+            .map(|(_, identity)| identity.clone())
+            .collect();
+        candidates
+            .into_iter()
+            .zip(super::restart::running(&identities))
+            .map(|((key, identity), running)| (key, (identity, running)))
+            .collect()
+    })
+    .await
+    .unwrap_or_default();
+    for (key, (identity, running)) in fresh {
+        cache.insert(
+            key.clone(),
+            (identity.clone(), running, tokio::time::Instant::now()),
+        );
+        checks.insert(key, (identity, running));
+    }
+    checks
+}
+
+fn spawn_capture(
+    poll: Arc<tokio::sync::Mutex<PollState>>,
+    key: (String, u64),
+    expected: Hooked,
+    capture: impl std::future::Future<Output = Option<super::restart::Identity>> + Send + 'static,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let identity = capture.await;
+        poll.lock().await.captured(&key, &expected, identity);
+    })
+}
+
+#[derive(Clone, Debug)]
 struct Hooked {
     agent: &'static str,
     state: &'static str,
     token: Option<String>,
     chat_id: Option<String>,
     restart: Option<super::restart::Identity>,
+    // A foreground tool must not discard a hook while its process is being captured.
+    capturing: Option<uuid::Uuid>,
     // When this agent first reported for the pane, in Unix seconds.
     at: u64,
     // Waiting only because of a background shell started this turn.
     shell_hold: bool,
     // When the idle screen first stopped counting running tasks during that wait.
     idle_since: Option<tokio::time::Instant>,
+}
+
+impl PartialEq for Hooked {
+    fn eq(&self, other: &Self) -> bool {
+        // Capture tokens are transient and never written to the attention file.
+        (
+            self.agent,
+            self.state,
+            &self.token,
+            &self.chat_id,
+            &self.restart,
+            self.at,
+            self.shell_hold,
+            self.idle_since,
+        ) == (
+            other.agent,
+            other.state,
+            &other.token,
+            &other.chat_id,
+            &other.restart,
+            other.at,
+            other.shell_hold,
+            other.idle_since,
+        )
+    }
+}
+
+impl Hooked {
+    fn inherit_process(&mut self, old: &Self) {
+        self.restart = old.restart.clone();
+        self.capturing = old.capturing;
+        self.at = old.at;
+    }
+
+    fn begin_capture(&mut self) -> Option<Self> {
+        if self.restart.is_some() || self.capturing.is_some() || self.chat_id.is_none() {
+            return None;
+        }
+        self.capturing = Some(uuid::Uuid::new_v4());
+        Some(self.clone())
+    }
 }
 
 /// How long, in seconds, a closed pane's saved state is kept.
@@ -1755,6 +1934,7 @@ fn hook_status(agent: &'static str, event: &Value) -> Option<Hooked> {
         token,
         chat_id: super::chats::hook_chat_id(agent, event),
         restart: None,
+        capturing: None,
         at: unix_seconds(),
         shell_hold: false,
         idle_since: None,
@@ -1796,8 +1976,7 @@ pub(super) async fn hook(
             .get(&key)
             .filter(|old| old.chat_id == hook.chat_id && old.agent == agent)
         {
-            hook.restart = old.restart.clone();
-            hook.at = old.at;
+            hook.inherit_process(old);
         }
         // Claude resumes the turn when a background shell exits. One started this turn
         // is a wait (CI, a build, a review); one already running at the previous Stop is
@@ -1819,11 +1998,7 @@ pub(super) async fn hook(
             }
         }
     }
-    let capture = next.clone().filter(|hook| {
-        hook.restart.is_none()
-            && matches!(hook.state, "ready" | "working")
-            && hook.chat_id.is_some()
-    });
+    let capture = next.as_mut().and_then(Hooked::begin_capture);
     // An interrupted Codex turn has no Stop; the screen shows what it left.
     if matches!(event["hook_event_name"].as_str(), Some("SessionEnd")) {
         poll.stop_shells.remove(&key);
@@ -1842,19 +2017,15 @@ pub(super) async fn hook(
     drop(poll);
     if let Some(expected) = capture {
         let session = session.to_string();
-        let identity = tokio::task::spawn_blocking(move || {
-            super::restart::capture(agent, &event, &session, pane)
-        })
-        .await
-        .ok()
-        .flatten();
-        let mut poll = state.poll.lock().await;
-        // Process inspection may be slow. Never overwrite a newer busy/end event.
-        if identity.is_some() && poll.hooks.get(&key) == Some(&expected) {
-            poll.hooks.get_mut(&key).unwrap().restart = identity;
-            poll.dirty = true;
-            poll.hooked.notify_one();
-        }
+        // The capture must finish even if the HTTP client times out or disconnects.
+        spawn_capture(state.poll.clone(), key, expected, async move {
+            tokio::task::spawn_blocking(move || {
+                super::restart::capture(agent, &event, &session, pane)
+            })
+            .await
+            .ok()
+            .flatten()
+        });
     }
     StatusCode::NO_CONTENT
 }
@@ -2575,6 +2746,7 @@ esac
             token: None,
             chat_id: Some("chat".into()),
             restart: None,
+            capturing: None,
             at: 0,
             shell_hold: true,
             idle_since: None,
@@ -3169,6 +3341,173 @@ esac
             );
             poll.hooks.clear();
         }
+    }
+
+    #[tokio::test]
+    async fn switchboard_conversation_binding_survives_a_foreground_tool() {
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+        let pid = Pid::from_u32(std::process::id());
+        let mut processes = System::new();
+        processes.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            true,
+            ProcessRefreshKind::nothing().with_exe(UpdateKind::Always),
+        );
+        let process = processes.process(pid).unwrap();
+        let mut identity = json!({
+            "agent":"claude", "session_id":"6af084f2-0b7d-4ac5-9c1c-0bd11e5f577c",
+            "cwd":std::env::current_dir().unwrap(), "pid":std::process::id(),
+            "started":process.start_time(), "command":[], "executable":process.exe().unwrap()
+        });
+        let mut hook = hook_status("claude", &json!({"hook_event_name":"PostToolUse"})).unwrap();
+        hook.chat_id = Some("claude-test-transcript".into());
+        let captured = serde_json::from_value(identity.clone()).unwrap();
+        hook.capturing = Some(uuid::Uuid::new_v4());
+        let mut poll = PollState::default();
+        let key = ("main".into(), 65);
+        poll.hooks.insert(key.clone(), hook.clone());
+        let row = || json!({"session":"main","pane_id":65,"state":"unknown"});
+        // A scan racing the asynchronous capture cannot delete the new hook.
+        let mut pane = row();
+        poll.apply_hook(&mut pane, &json!("cargo test"));
+        assert_eq!(pane["chat_id"], "claude-test-transcript");
+        // Screen-derived bookkeeping during the capture must not leave its
+        // pending flag stuck after the process result arrives.
+        poll.hooks.get_mut(&key).unwrap().token = Some("screen-update".into());
+        poll.captured(&key, &hook, Some(captured));
+        assert!(poll.hooks[&key].capturing.is_none());
+        let mut pane = row();
+        let mut cache = ProcessCache::new();
+        let checks = check_processes(
+            &tokio::sync::Mutex::new({
+                let mut copy = PollState::default();
+                copy.restore_hooks(&poll.persisted()["hooks"]);
+                copy
+            }),
+            &json!({"panes":[{"session":"main","pane_id":65,"command":"cargo test"}]}),
+            &mut cache,
+        )
+        .await;
+        poll.apply_hook_checked(&mut pane, &json!("cargo test"), &checks);
+        assert_eq!(pane["chat_id"], "claude-test-transcript");
+        assert_eq!(pane["state"], "working");
+
+        let cached_at = cache[&key].2;
+        let cached_poll = tokio::sync::Mutex::new({
+            let mut copy = PollState::default();
+            copy.restore_hooks(&poll.persisted()["hooks"]);
+            copy
+        });
+        let snapshot = json!({"panes":[{"session":"main","pane_id":65,"command":"cargo test"}],"tabs":[],"errors":[]});
+        for _ in 0..10 {
+            let checks = check_processes(&cached_poll, &snapshot, &mut cache).await;
+            let mut snapshot = snapshot.clone();
+            poll.update_checked("local", &mut snapshot, &checks);
+            assert_eq!(snapshot["panes"][0]["chat_id"], "claude-test-transcript");
+        }
+        assert_eq!(cache[&key].2, cached_at, "Redraws reuse the process check");
+
+        // A relay restart must retain the transcript without reviving working state.
+        let mut restarted = PollState::default();
+        restarted.restore_hooks(&poll.persisted()["hooks"]);
+        let mut pane = row();
+        restarted.apply_hook_checked(&mut pane, &json!("cargo test"), &checks);
+        assert_eq!(pane["chat_id"], "claude-test-transcript");
+        assert_eq!(pane["state"], "unknown");
+
+        // A reused PID with a different start time cannot retain an old binding.
+        identity["started"] = json!(process.start_time().saturating_sub(1));
+        hook.capturing = None;
+        hook.restart = Some(serde_json::from_value(identity).unwrap());
+        poll.hooks.insert(key, hook.clone());
+        let mut pane = row();
+        // A result from an older identity cannot delete a newly captured one.
+        poll.apply_hook_checked(&mut pane, &json!("pwsh"), &checks);
+        assert_eq!(pane["chat_id"], "claude-test-transcript");
+        let checks = check_processes(
+            &tokio::sync::Mutex::new({
+                let mut copy = PollState::default();
+                copy.restore_hooks(&poll.persisted()["hooks"]);
+                copy
+            }),
+            &json!({"panes":[{"session":"main","pane_id":65,"command":"pwsh"}]}),
+            &mut cache,
+        )
+        .await;
+        let mut pane = row();
+        poll.apply_hook_checked(&mut pane, &json!("pwsh"), &checks);
+        assert!(pane["chat_id"].is_null());
+        assert!(poll.hooks.is_empty());
+        // A late capture cannot resurrect a hook deleted by SessionEnd.
+        poll.captured(&("main".into(), 65), &hook, None);
+        assert!(poll.hooks.is_empty());
+    }
+
+    #[test]
+    fn switchboard_conversation_capture_survives_a_newer_approval_hook() {
+        let mut working = hook_status("claude", &json!({"hook_event_name":"PostToolUse"})).unwrap();
+        working.chat_id = Some("claude-test-transcript".into());
+        let expected = working.begin_capture().unwrap();
+        assert!(
+            working.begin_capture().is_none(),
+            "Only one capture per conversation"
+        );
+        let mut approval =
+            hook_status("claude", &json!({"hook_event_name":"PermissionRequest"})).unwrap();
+        approval.chat_id = working.chat_id.clone();
+        approval.inherit_process(&working);
+        assert!(
+            approval.begin_capture().is_none(),
+            "Newer state keeps the pending capture"
+        );
+        let key = ("main".into(), 65);
+        let mut poll = PollState::default();
+        poll.hooks.insert(key.clone(), approval);
+        let mut pane = json!({"session":"main","pane_id":65,"state":"unknown"});
+        poll.apply_hook(&mut pane, &json!("cargo test"));
+        assert_eq!(pane["chat_id"], "claude-test-transcript");
+        assert_eq!(pane["state"], "approval");
+        // Even a failed capture must clear the original pending token, without
+        // overwriting the newer approval or leaving the binding immortal.
+        poll.captured(&key, &expected, None);
+        assert!(poll.hooks[&key].capturing.is_none());
+        assert_eq!(poll.hooks[&key].state, "approval");
+        assert!(
+            poll.hooks.get_mut(&key).unwrap().begin_capture().is_some(),
+            "Approval events can recover a missing identity too"
+        );
+    }
+
+    #[tokio::test]
+    async fn switchboard_conversation_capture_outlives_its_request() {
+        let mut hook = hook_status("claude", &json!({"hook_event_name":"PostToolUse"})).unwrap();
+        hook.chat_id = Some("claude-test-transcript".into());
+        let expected = hook.begin_capture().unwrap();
+        let key = ("main".into(), 65);
+        let poll = Arc::new(tokio::sync::Mutex::new(PollState::default()));
+        poll.lock().await.hooks.insert(key.clone(), hook);
+        let (finish, captured) = tokio::sync::oneshot::channel();
+        let (started, job) = tokio::sync::oneshot::channel();
+        let request_poll = poll.clone();
+        let request_key = key.clone();
+        let request = tokio::spawn(async move {
+            let capture = spawn_capture(request_poll, request_key, expected, async move {
+                captured.await.unwrap()
+            });
+            started.send(capture).unwrap();
+            std::future::pending::<()>().await;
+        });
+        let job = job.await.unwrap();
+        request.abort();
+        let _ = request.await;
+        finish.send(None).unwrap();
+        job.await.unwrap();
+        let poll = poll.lock().await;
+        assert!(poll.hooks[&key].capturing.is_none());
+        assert!(
+            !poll.dirty,
+            "Failed capture must not rewrite unchanged persisted state"
+        );
     }
 
     #[test]
@@ -4020,6 +4359,7 @@ esac
             token: token.map(str::to_owned),
             chat_id: None,
             restart: None,
+            capturing: None,
             at: 0,
             shell_hold: false,
             idle_since: None,
