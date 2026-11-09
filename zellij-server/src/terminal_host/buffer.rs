@@ -46,7 +46,7 @@ impl OutputBuffer {
     /// A new engine continues from its snapshot, or else from what the last
     /// engine confirmed.
     pub fn rewind(&mut self) {
-        let resume = self.oldest_needed();
+        let resume = self.pinned.unwrap_or(self.acknowledged);
         self.sent = resume;
         self.acknowledged = resume;
     }
@@ -125,6 +125,17 @@ mod tests {
         buffer.unpin();
         buffer.rewind();
         assert!(buffer.can_pin(buffer.sent));
+    }
+
+    #[test]
+    fn a_rewind_starts_at_the_pin_even_when_acknowledgements_lag_behind_it() {
+        let mut buffer = OutputBuffer::default();
+        buffer.append(b"0123456789");
+        while buffer.take_unsent().is_some() {}
+        buffer.acknowledge(2);
+        buffer.pin(6);
+        buffer.rewind();
+        assert_eq!(buffer.take_unsent(), Some((6, b"6789".to_vec())));
     }
 
     #[test]
