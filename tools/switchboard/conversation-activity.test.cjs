@@ -39,7 +39,7 @@ test('Conversation shows the model, animates real work and keeps delivery receip
   await page.evaluate(()=>{current.state='working';SwitchboardConversation.update();});
   assert.equal(await activity.textContent(),'Working…');assert.equal(await page.locator('.conversation-model').textContent(),'6.1 Sol Medium');
   assert.equal(await working.isVisible(),true);
-  assert.equal(await working.evaluate(node=>getComputedStyle(node.firstElementChild).animationName),'conversation-spin');
+  assert.equal(await working.evaluate(node=>getComputedStyle(node.firstElementChild).animationName),'conversation-sweep');
   assert.equal(await activity.evaluate(node=>getComputedStyle(node,'::before').animationName),'conversation-pulse');
   assert.equal(await page.getByText('Waiting for agent…',{exact:true}).count(),0);
   assert.equal(await page.locator('.conversation-messages').evaluate(node=>[...node.children].filter(child=>!child.hidden).pop().className),'conversation-working');
