@@ -220,8 +220,8 @@ Both computers need Switchboard installed and on the same network.
 4. On the other computer, under **Connection requests**, check the code matches
    and choose **Codes match, allow**. If it shows **Receive connection
    requests**, choose that first.
-5. On the computer you're adding, the other computer's request appears under
-   **Connection requests**. Check the code and choose **Codes match, allow**.
+5. On the computer you're adding, the other computer's request appears below
+   the computer list. Check the code and choose **Codes match, approve**.
 
 The new computer's tabs now appear on every computer, and the rest of your
 computers learn about it automatically. If connecting fails, check that the

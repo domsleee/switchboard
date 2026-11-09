@@ -1462,6 +1462,11 @@ async fn direct_delivery_requires_local_approval_and_matching_codes_before_crede
     let invite = invitation(&mac, 1000).await;
     let request = work.receive_offer(invite.clone(), 1000).await.unwrap();
     let code = verification(&invite, &request.value).unwrap();
+    // Add computer records the request it chose; that must not approve it.
+    mac.database.lock().await.direct_sent.insert(
+        invite.id.clone(),
+        serde_json::from_value(json!({"request":request.value,"code":code})).unwrap(),
+    );
     assert!(
         request.value
             == work
@@ -1656,12 +1661,20 @@ async fn address_pairing_delivers_over_tls_and_completes_without_copying_secrets
     )
     .await;
     assert_eq!(allowed.status, StatusCode::OK);
-    // The computer that chose Add computer does not approve a second time.
-    assert!(machines[0].status().await["requests"]
-        .as_array()
-        .unwrap()
-        .is_empty());
-    // Accepting completes pairing without a further step on either computer.
+    // Allowing only lands the request on the computer that chose Add computer.
+    let requests = machines[0].status().await["requests"].clone();
+    assert_eq!(requests.as_array().unwrap().len(), 1);
+    assert_eq!(requests[0]["code"], sent["code"]);
+    assert!(machines[0].hosts().is_empty());
+    assert!(machines[0].database.lock().await.outgoing.is_empty());
+    let approved = call(
+        &clients[0],
+        "/api/mesh/approve",
+        json!({"invitation":sent["invitation"],"request":requests[0]["request"],"code":sent["code"],"allow":true}),
+    )
+    .await;
+    assert_eq!(approved.status, StatusCode::OK);
+    machines[1].resume().await.unwrap();
     for _ in 0..50 {
         if machines[1].hosts().len() == 1 {
             break;
@@ -1701,6 +1714,15 @@ async fn address_pairing_delivers_over_tls_and_completes_without_copying_secrets
         "{}",
         String::from_utf8_lossy(&allowed.body)
     );
+    let requests = machines[1].status().await["requests"].clone();
+    let approved = call(
+        &clients[1],
+        "/api/mesh/approve",
+        json!({"invitation":sent["invitation"],"request":requests[0]["request"],"code":sent["code"],"allow":true}),
+    )
+    .await;
+    assert_eq!(approved.status, StatusCode::OK);
+    machines[2].resume().await.unwrap();
     // The first computer was offline during enrollment. Ordinary background sync
     // must discover the new member and exchange credentials in all directions.
     for _ in 0..3 {
@@ -2000,6 +2022,145 @@ async fn tab_order_syncs_and_the_latest_change_wins() {
     windows.exchange(stale).await.unwrap();
     assert_eq!(order(&mac).await, json!(["b", "a"]));
     assert_eq!(order(&windows).await, json!(["b", "a"]));
+}
+
+#[tokio::test]
+async fn group_sync_accepts_the_largest_valid_tab_lists_and_other_routes_stay_small() {
+    use tower::ServiceExt;
+    let temp = tempfile::tempdir().unwrap();
+    let mac = machine(&temp.path().join("mac"), "Mac", "https://192.0.2.1:8091").await;
+    let windows = machine(
+        &temp.path().join("windows"),
+        "Windows",
+        "https://192.0.2.2:8091",
+    )
+    .await;
+    let invite = invitation(&mac, 1000).await;
+    let (_, approval) = approved(&mac, &windows, &invite, 1000).await;
+    mac.complete(windows.install(approval, &invite).await.unwrap())
+        .await
+        .unwrap();
+    let windows_id = windows
+        .database
+        .lock()
+        .await
+        .local
+        .as_ref()
+        .unwrap()
+        .id
+        .clone();
+    for list in [sync::TabList::Order, sync::TabList::Hidden] {
+        mac.set_tab_keys(list, vec!["k".repeat(512); 2000])
+            .await
+            .unwrap();
+    }
+    let post = |path: &str, body: Vec<u8>| {
+        transport::gateway_router(windows.clone()).oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(path)
+                .header(header::HOST, "192.0.2.2:8091")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+    };
+    let update = mac.prepare_sync(&windows_id).await.unwrap();
+    let response = post("/mesh/sync", serde_json::to_vec(&update).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let status = windows.status().await;
+    assert_eq!(status["tab_order"]["keys"].as_array().unwrap().len(), 2000);
+    assert_eq!(
+        status["hidden_tabs"]["keys"].as_array().unwrap().len(),
+        2000
+    );
+    for (path, size) in [
+        ("/mesh/sync", 5 * 1024 * 1024),
+        ("/mesh/request", 64 * 1024),
+    ] {
+        let response = post(path, vec![b' '; size + 1]).await.unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE, "{path}");
+    }
+}
+
+#[tokio::test]
+async fn an_invitation_made_while_joining_does_not_block_the_approval() {
+    let temp = tempfile::tempdir().unwrap();
+    let mac = machine(&temp.path().join("mac"), "Mac", "https://192.0.2.1:8082").await;
+    let work = machine(&temp.path().join("work"), "Work", "https://192.0.2.2:8082").await;
+    let invite = invitation(&mac, 1000).await;
+    let (_, approval) = approved(&mac, &work, &invite, 1000).await;
+    // The approval arrives after this computer started a one-computer group.
+    invitation(&work, 1000).await;
+    mac.complete(work.install(approval, &invite).await.unwrap())
+        .await
+        .unwrap();
+    let group = |db: &Database| db.membership.as_ref().unwrap().value.id.clone();
+    assert_eq!(group(&*work.database.lock().await), invite.mesh_id);
+    assert!(work.database.lock().await.invitations.is_empty());
+    // A computer that is really paired keeps its group.
+    let other = machine(
+        &temp.path().join("other"),
+        "Other",
+        "https://192.0.2.3:8082",
+    )
+    .await;
+    let foreign = invitation(&other, 1000).await;
+    let (_, approval) = approved(&other, &work, &foreign, 1000).await;
+    assert_eq!(
+        work.install(approval, &foreign)
+            .await
+            .err()
+            .unwrap()
+            .to_string(),
+        "Older or unrelated membership rejected"
+    );
+    assert_eq!(group(&*work.database.lock().await), invite.mesh_id);
+}
+
+#[tokio::test]
+async fn a_join_the_inviter_never_answers_is_abandoned_a_day_after_expiry() {
+    // A released port on this host's route address refuses at once.
+    let route = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    route.connect("192.0.2.1:9").unwrap();
+    let ip = route.local_addr().unwrap().ip();
+    let address = {
+        let listener = std::net::TcpListener::bind((ip, 0)).unwrap();
+        format!("https://{}", listener.local_addr().unwrap())
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let mac = machine(&temp.path().join("mac"), "Mac", &address).await;
+    let work = machine(&temp.path().join("work"), "Work", "https://192.0.2.2:8082").await;
+    let still_joining = |created: u64| {
+        let (mac, work) = (mac.clone(), work.clone());
+        async move {
+            let invitation = invitation(&mac, created).await;
+            let attempt = attempt(&work, &invitation).await;
+            work.database.lock().await.joining = Some(Joining {
+                attempt,
+                invitation,
+            });
+            assert!(work.resume().await.is_err());
+            work.database.lock().await.joining.is_some()
+        }
+    };
+    const DAY: u64 = 24 * 60 * 60;
+    // An approval may have been granted while this computer slept.
+    assert!(still_joining(now() - 600 - DAY + 300).await);
+    assert!(!still_joining(now() - 600 - DAY - 300).await);
+    // A computer that installed its approval still has to deliver its credential.
+    let other = machine(
+        &temp.path().join("other"),
+        "Other",
+        "https://192.0.2.3:8082",
+    )
+    .await;
+    let invite = invitation(&other, 1000).await;
+    let (_, approval) = approved(&other, &work, &invite, 1000).await;
+    work.install(approval, &invite).await.unwrap();
+    assert!(still_joining(now() - 600 - DAY - 300).await);
 }
 
 #[tokio::test]

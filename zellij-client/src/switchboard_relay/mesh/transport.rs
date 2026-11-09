@@ -399,8 +399,11 @@ impl Mesh {
         let reply = match reply {
             Ok(reply) => reply,
             Err(error) => {
-                if error.to_string() == "Invitation expired, cancelled or consumed" {
-                    let mut committed = self.database.lock().await;
+                let mut committed = self.database.lock().await;
+                // The day's grace keeps an approval granted while this computer slept.
+                let abandoned = committed.can_join()
+                    && now().saturating_sub(joining.invitation.expires) > 24 * 60 * 60;
+                if abandoned || error.to_string() == "Invitation expired, cancelled or consumed" {
                     let mut db = committed.clone();
                     db.joining = None;
                     self.save(&db)?;
@@ -531,7 +534,12 @@ pub(in crate::switchboard_relay) fn gateway_router(mesh: Arc<Mesh>) -> Router {
         .route("/mesh/offer", post(super::direct::offer))
         .route("/mesh/request", post(peer_request))
         .route("/mesh/complete", post(peer_complete))
-        .route("/mesh/sync", post(super::sync::exchange))
+        .route(
+            "/mesh/sync",
+            // Two full tab lists exceed the limit for every other peer route.
+            post(super::sync::exchange)
+                .layer(axum::extract::DefaultBodyLimit::max(5 * 1024 * 1024)),
+        )
         .route("/mesh/board-host/approve", post(super::board_host::approve))
         .route(
             "/mesh/board/{*path}",
