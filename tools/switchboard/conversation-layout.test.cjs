@@ -52,6 +52,10 @@ test('Conversation folds finished progress, keeps the live step, and gives code 
   const live=page.locator('.conversation-working');
   assert.equal(await live.locator('.conversation-working-step').getAttribute('data-step'),'Running cargo test -p zellij-client…');
   assert.match(await live.locator('.conversation-working-time').textContent(),/^1m [56]s$/);
+  // The sweep covers the icon and label together, and only as wide as they are.
+  assert.equal(await live.locator('.conversation-working-label .conversation-working-icon').count(),1);
+  assert.equal(await live.locator('.conversation-working-label').evaluate(node=>getComputedStyle(node).animationName),'conversation-sweep');
+  assert.ok(await live.locator('.conversation-working-label').evaluate(node=>node.getBoundingClientRect().width<node.parentElement.getBoundingClientRect().width));
   assert.equal(await page.locator('.conversation-message.commentary.live').isVisible(),false);
   // The live row is the run's only disclosure: it shows this turn's earlier steps in place.
   const row=page.getByRole('button',{name:'Show 1 earlier step'});

@@ -824,7 +824,7 @@ test('integrated Conversation journeys use production markup and preserve delive
     await page.evaluate(()=>createNewTab(sessionKey('fixture','main'),{project:'switchboard',command:'claude:claude-haiku-5-5',prompt:'Fix the flaky test\n\nAttached files:\n/tmp/log.txt'},()=>true,'Fix the flaky test'));
     await page.locator('.conversation-launch').getByText('Fix the flaky test',{exact:true}).waitFor();
     assert.deepEqual(f.newTabs.map(body=>body.prompt),['Fix the flaky test\n\nAttached files:\n/tmp/log.txt'],'The relay gets the full prompt');
-    assert.equal(await page.locator('.conversation-working-step').getAttribute('data-step'),'Working');
+    assert.equal(await page.locator('.conversation-working-step').getAttribute('data-step'),'Thinking…');
     assert.equal(await page.locator('.conversation-notice').isVisible(),false,'No connection notices while the prompt stands in');
     assert.equal(await page.locator('.conversation-panel header strong').textContent(),'Fix the flaky test');
     const row=page.locator('#tabs .tab-select.selected');
@@ -834,7 +834,7 @@ test('integrated Conversation journeys use production markup and preserve delive
     f.tabs=[1,2,3];f.agent=null;f.state='unknown';f.bound=false;await f.refresh();
     assert.equal(await page.evaluate(()=>SwitchboardConversation&&allTabs().find(item=>item.key===selected)?.tab.id),3,'The real tab replaced the placeholder');
     assert.equal(await page.locator('#tabs .tab-select.selected').getAttribute('data-agent-state'),'Working');
-    assert.equal(await page.locator('.conversation-working-step').getAttribute('data-step'),'Working');
+    assert.equal(await page.locator('.conversation-working-step').getAttribute('data-step'),'Thinking…');
     assert.equal(await page.locator('.conversation-notice').isVisible(),false);
     f.agent='claude';f.state='ready';await f.refresh();
     assert.equal(await page.locator('#tabs .tab-select.selected').getAttribute('data-agent-state'),'Working','An empty startup prompt has not finished the submitted task');
