@@ -361,18 +361,7 @@ pub(super) async fn settle_escape(
         // An older peer rejects the unknown field rather than sending a second Esc.
         let body =
             json!({"session":target.session,"target":target.pane_id,"close":false,"settle":true});
-        let response = host
-            .request(
-                Method::POST,
-                "/switchboard/control",
-                body.to_string().into(),
-                "application/json",
-            )
-            .await
-            .map_err(|_| (StatusCode::BAD_GATEWAY, "Peer control unavailable"))?;
-        if response.status != StatusCode::OK {
-            return Err((response.status, peer_failure(response.status)));
-        }
+        peer_control(&host, body).await?;
         return Ok(Json(json!({"ok":true})));
     }
     settle_host(host, state.poll.clone(), target.session, target.pane_id).await?;
@@ -622,6 +611,32 @@ fn failed(state: &RelayState, id: &str, action: &str, (status, message): &Error)
     }
 }
 
+/// A peer asleep under a pooled connection would otherwise hold this until TCP gives up.
+/// Longer than the sidebar's own limits, which report delivery as uncertain.
+const PEER_CONTROL_TIMEOUT: Duration =
+    Duration::from_millis(if cfg!(test) { 1_500 } else { 20_000 });
+
+async fn peer_control(host: &Host, body: Value) -> Result<(), Error> {
+    let response = tokio::time::timeout(
+        PEER_CONTROL_TIMEOUT,
+        host.request(
+            Method::POST,
+            "/switchboard/control",
+            body.to_string().into(),
+            "application/json",
+        ),
+    )
+    .await
+    .ok()
+    .and_then(Result::ok)
+    .ok_or((StatusCode::BAD_GATEWAY, "Peer control unavailable"))?;
+    if response.status == StatusCode::OK {
+        Ok(())
+    } else {
+        Err((response.status, peer_failure(response.status)))
+    }
+}
+
 async fn execute(
     state: &RelayState,
     id: &str,
@@ -645,20 +660,7 @@ async fn execute(
                 json!({"session":session,"pane_id":pane_id,"close":true})
             },
         };
-        let response = host
-            .request(
-                Method::POST,
-                "/switchboard/control",
-                body.to_string().into(),
-                "application/json",
-            )
-            .await
-            .map_err(|_| (StatusCode::BAD_GATEWAY, "Peer control unavailable"))?;
-        return if response.status == StatusCode::OK {
-            Ok(())
-        } else {
-            Err((response.status, peer_failure(response.status)))
-        };
+        return peer_control(&host, body).await;
     }
     execute_host(&host, session, action).await?;
     if let ControlAction::Escape(pane) = action {
