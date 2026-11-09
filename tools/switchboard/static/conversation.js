@@ -22,6 +22,19 @@
     while(walker.nextNode())if(!walker.currentNode.parentElement.closest('pre,code,a,button,.conversation-label,.conversation-outgoing-status'))nodes.push(walker.currentNode);
     return nodes;
   }
+  function skillChip(skill,raw){
+    const label=skill.displayName?.trim()||skill.name.split(':').pop(),chip=el('button',raw,'conversation-skill');
+    chip.type='button';chip.dataset.label=label;chip.title=raw;chip.setAttribute('aria-label','Skill '+label+'. Show details');
+    chip.onclick=()=>{
+      const popup=el('div',undefined,'conversation-skill-details');popup.setAttribute('popover','auto');
+      popup.append(el('strong',label),el('code',raw),el('p',skill.description||'No description is available for this skill.'));
+      popup.addEventListener('toggle',()=>{if(!popup.matches(':popover-open'))popup.remove();});
+      chip.closest('.conversation-panel,dialog').append(popup);popup.showPopover();
+      const rect=chip.getBoundingClientRect(),box=popup.getBoundingClientRect();
+      popup.style.left=Math.max(8,Math.min(rect.left,innerWidth-box.width-8))+'px';
+      popup.style.top=Math.max(8,rect.top>=box.height+8?rect.top-box.height-6:Math.min(rect.bottom+6,innerHeight-box.height-8))+'px';
+    };return chip;
+  }
   function decorateSkills(article,skills,agent){
     const names=new Map(skills.map(skill=>[skill.name,skill]));
     for(const node of skillTextNodes(article)){
@@ -29,18 +42,8 @@
       for(const match of text.matchAll(/(^|\s)([$/])([a-zA-Z0-9][\w:.-]*)(?=\s|$)/g)){
         if(match[2]==='/'&&agent!=='claude')continue;
         const skill=names.get(match[3]);if(!skill)continue;
-        const start=match.index+match[1].length,raw=match[2]+match[3],label=skill.displayName?.trim()||skill.name.split(':').pop();
-        const chip=el('button',raw,'conversation-skill');chip.type='button';chip.dataset.label=label;chip.title=raw;chip.setAttribute('aria-label','Skill '+label+'. Show details');
-        chip.onclick=()=>{
-          const popup=el('div',undefined,'conversation-skill-details');popup.setAttribute('popover','auto');
-          popup.append(el('strong',label),el('code',raw),el('p',skill.description||'No description is available for this skill.'));
-          popup.addEventListener('toggle',()=>{if(!popup.matches(':popover-open'))popup.remove();});
-          chip.closest('.conversation-panel,dialog').append(popup);popup.showPopover();
-          const rect=chip.getBoundingClientRect(),box=popup.getBoundingClientRect();
-          popup.style.left=Math.max(8,Math.min(rect.left,innerWidth-box.width-8))+'px';
-          popup.style.top=Math.max(8,rect.top>=box.height+8?rect.top-box.height-6:Math.min(rect.bottom+6,innerHeight-box.height-8))+'px';
-        };
-        out.append(text.slice(cursor,start),chip);cursor=start+raw.length;
+        const start=match.index+match[1].length,raw=match[2]+match[3];
+        out.append(text.slice(cursor,start),skillChip(skill,raw));cursor=start+raw.length;
       }
       if(cursor){out.append(text.slice(cursor));node.replaceWith(out);}
     }
@@ -98,12 +101,10 @@
   // The / and $ menu shared by the Conversation draft and the New tab prompt. surface() names what
   // the draft talks to: {agent, host, cwd, owner}, or null while it should stay closed.
   const agentCommands={codex:[['rename','Rename this conversation'],['compact','Compact conversation context'],['model','Choose a model'],['permissions','Change permissions'],['status','Show session status'],['skills','Browse skills'],['diff','Show changes'],['review','Review changes'],['resume','Resume a conversation'],['fork','Fork this conversation'],['new','Start a new conversation']],claude:[['rename','Rename this conversation'],['compact','Compact conversation context'],['model','Choose a model'],['permissions','Change permissions'],['status','Show session status'],['help','Show commands'],['clear','Clear conversation context'],['resume','Resume a conversation']]};
-  function attachCompletions({draft,parent,id,surface,changed,previewSkills=false}){
+  function attachCompletions({draft,parent,id,surface,changed}){
     const completions=el('div',undefined,'conversation-completions');completions.id=id;completions.hidden=true;completions.setAttribute('role','listbox');completions.setAttribute('aria-label','Commands and skills');parent.prepend(completions);
     draft.setAttribute('aria-autocomplete','list');draft.setAttribute('aria-controls',id);draft.setAttribute('aria-expanded','false');
     const skillLists=new Map(),skillArticles=new Map();let completionItems=[],completionIndex=0,completionToken=null;
-    const preview=previewSkills?el('div',undefined,'conversation-draft-skills'):null;
-    if(preview){preview.hidden=true;preview.setAttribute('aria-label','Selected skills');draft.before(preview);}
     const skillKey=current=>JSON.stringify([current.host,current.cwd,current.agent==='claude']);
     function completionContext(){
       const current=surface();if(!current||document.activeElement!==draft||draft.selectionStart!==draft.selectionEnd)return null;
@@ -114,10 +115,10 @@
     function selectCompletion(index){
       const item=completionItems[index],context=completionContext();if(!item||!context)return;
       // Claude Code spells every skill with a slash; $ is only how it was typed here.
-      draft.setRangeText((context.current.agent==='claude'?'/':context.prefix)+item.name+' ',context.start,context.end,'end');closeCompletions();changed();paintSkillPreview();draft.focus({preventScroll:true});
+      draft.setRangeText((context.current.agent==='claude'?'/':context.prefix)+item.name+' ',context.start,context.end,'end');closeCompletions();changed();draft.focus({preventScroll:true});
     }
     function paintCompletions(reset=true){
-      paintSkillPreview();
+      syncSkillEditor();
       const context=completionContext();if(!context){closeCompletions();return;}
       const {current,prefix,query}=context,token=JSON.stringify([current.owner,prefix,query,context.start,context.end]);if(reset&&token!==completionToken)completionIndex=0;completionToken=token;
       const key=skillKey(current),skills=skillLists.get(key),usesSkills=prefix==='$'||current.agent==='claude';
@@ -149,18 +150,11 @@
       if(items)decorateSkills(article,items,current.agent);
       else{if(!skillArticles.has(key))skillArticles.set(key,new Set());skillArticles.get(key).add(article);ensureSkills(current);}
     }
-    // Keep the textarea's native caret, selection, undo and IME behavior. Recognized
-    // skills have the same inspectable badges here as in the sent message.
-    function paintSkillPreview(){
-      if(!preview)return;preview.replaceChildren();preview.hidden=true;
-      const current=surface();if(!current||!['codex','claude'].includes(current.agent))return;
-      const content=el('div');textBlocks(content,draft.value);
-      const pattern=current.agent==='claude'?/(?:^|\s)[$/][\w:.-]+(?=\s|$)/:/(?:^|\s)\$[\w:.-]+(?=\s|$)/;
-      if(!skillTextNodes(content).some(node=>pattern.test(node.textContent)))return;
-      const items=skillLists.get(skillKey(current))?.items;if(!items){ensureSkills(current);return;}
-      decorateSkills(content,items,current.agent);const seen=new Set();
-      for(const chip of content.querySelectorAll('.conversation-skill'))if(!seen.has(chip.textContent)){seen.add(chip.textContent);preview.append(chip);}
-      preview.hidden=!preview.childElementCount;
+    function syncSkillEditor(){
+      if(!draft.setSkillCatalog)return;
+      const current=surface(),supported=current&&['codex','claude'].includes(current.agent);
+      draft.setSkillCatalog(supported?skillLists.get(skillKey(current))?.items||[]:[],supported?current.agent:'',skillChip);
+      if(supported&&/(?:^|\s)[$/][\w:.-]+(?=\s|$)/.test(draft.value))ensureSkills(current);
     }
     // Enter, Tab and the arrows belong to an open menu. True means the key was used.
     function completionKey(event){

@@ -48,22 +48,22 @@ test('New tab completes commands and skills for the chosen agent and launches th
    // The dialog closes before the terminal's bridge sends the request.
    const launched=async count=>{await page.waitForFunction(()=>!document.querySelector('#new-tab-dialog').open);for(let tries=0;launches.length<count&&tries<100;tries++)await page.waitForTimeout(20);assert.equal(launches.length,count);};
    // Codex: its own commands after /, and its skills after $, spelled as typed.
-   await prompt.fill('/rev');await option('/review Review changes').waitFor();await prompt.press('Enter');assert.equal(await prompt.inputValue(),'/review ');assert.equal(launches.length,0);assert.equal(await menu.isVisible(),false);
-   await prompt.fill('$br');await option('$bro Codex review').waitFor();assert.deepEqual(skills.at(-1),{cwd:'switchboard'});await prompt.press('Tab');assert.equal(await prompt.inputValue(),'$bro ');assert.equal(await prompt.evaluate(node=>document.activeElement===node),true);
-   const badges=dialog.locator('.conversation-draft-skills .conversation-skill');
+   await prompt.fill('/rev');await option('/review Review changes').waitFor();await prompt.press('Enter');assert.equal(await prompt.evaluate(node=>node.value),'/review ');assert.equal(launches.length,0);assert.equal(await menu.isVisible(),false);
+   await prompt.fill('$br');await option('$bro Codex review').waitFor();assert.deepEqual(skills.at(-1),{cwd:'switchboard'});await prompt.press('Tab');assert.equal(await prompt.evaluate(node=>node.value),'$bro ');assert.equal(await prompt.evaluate(node=>document.activeElement===node),true);
+   const badges=prompt.locator('.conversation-skill');
    await badges.waitFor();assert.equal(await badges.getAttribute('data-label'),'bro');
    await prompt.fill('$bro confirm $bro `$build` $unknown');await prompt.press('Escape');
-   assert.equal(await badges.count(),1,'Selected badges are deduplicated, ignore code and leave unknown names alone');
-   await badges.click();await dialog.locator('.conversation-skill-details:popover-open').waitFor();
+   assert.equal(await badges.count(),2,'Each invocation stays inline; code and unknown names stay plain text');
+   await badges.first().click();await dialog.locator('.conversation-skill-details:popover-open').waitFor();
    assert.match(await dialog.locator('.conversation-skill-details').textContent(),/Codex review/);
    await page.keyboard.press('Escape');assert.equal(await isOpen(),true,'Escape dismisses skill details before the New tab dialog');
    await prompt.fill('ordinary prompt');assert.equal(await badges.count(),0,'Removing an invocation removes its badge');
    // Escape closes the menu first and the dialog only after that.
-   await prompt.fill('/');await menu.waitFor();await prompt.press('Escape');assert.equal(await menu.isVisible(),false);assert.equal(await isOpen(),true);assert.equal(await prompt.inputValue(),'/');
+   await prompt.fill('/');await menu.waitFor();await prompt.press('Escape');assert.equal(await menu.isVisible(),false);assert.equal(await isOpen(),true);assert.equal(await prompt.evaluate(node=>node.value),'/');
    if(!mobile&&process.env.COMMAND_SCREENSHOTS){await prompt.fill('/rev');await menu.waitFor();await page.screenshot({path:path.join(process.env.COMMAND_SCREENSHOTS,'new-tab-commands.png')});}
    // A command cannot carry attachments to Codex, which only takes it at its prompt.
    await prompt.fill('/status');await prompt.press('Escape');await page.locator('#new-tab-picker').setInputFiles({name:'shot.png',mimeType:'image/png',buffer:Buffer.from('image')});
-   await page.evaluate(()=>document.querySelector('#new-tab-form').requestSubmit());await page.getByText('Send commands without attachments.',{exact:true}).waitFor();assert.equal(launches.length,0);assert.equal(await prompt.inputValue(),'/status');
+   await page.evaluate(()=>document.querySelector('#new-tab-form').requestSubmit());await page.getByText('Send commands without attachments.',{exact:true}).waitFor();assert.equal(launches.length,0);assert.equal(await prompt.evaluate(node=>node.value),'/status');
    await page.locator('#new-tab-files button').click();
    await page.evaluate(()=>document.querySelector('#new-tab-form').requestSubmit());
    await launched(1);assert.equal(launches.at(-1).prompt,'/status');
@@ -72,12 +72,12 @@ test('New tab completes commands and skills for the chosen agent and launches th
    await open();await page.evaluate(()=>{newTabModelValue='claude:claude-opus-5-5#high';});
    await prompt.evaluate(node=>node.blur());await prompt.focus();for(let tries=0;!skills.some(item=>item.agent==='claude')&&tries<100;tries++)await page.waitForTimeout(20);assert.deepEqual(skills.at(-1),{cwd:'switchboard',agent:'claude'},'Focus loads the list, so a pasted $skill can be rewritten');
    await prompt.fill('/');await option('/tools:review From a plugin').waitFor();assert.equal(await option('/help Show commands').count(),1);assert.deepEqual(skills.at(-1),{cwd:'switchboard',agent:'claude'});
-   await prompt.fill('$rev');await option('$tools:review From a plugin').waitFor();await prompt.press('Enter');assert.equal(await prompt.inputValue(),'/tools:review ');
+   await prompt.fill('$rev');await option('$tools:review From a plugin').waitFor();await prompt.press('Enter');assert.equal(await prompt.evaluate(node=>node.value),'/tools:review ');
    await prompt.fill('/tools:review confirm');
    if(process.env.SKILL_SCREENSHOTS)await dialog.screenshot({path:path.join(process.env.SKILL_SCREENSHOTS,`new-tab-${mobile?'phone':'desktop'}.png`)});
    await badges.waitFor();assert.equal(await badges.getAttribute('data-label'),'review');
    assert.equal(await badges.textContent(),'/tools:review');
-   await badges.click();const details=dialog.locator('.conversation-skill-details:popover-open');await details.waitFor();
+   await badges.first().click();const details=dialog.locator('.conversation-skill-details:popover-open');await details.waitFor();
    const box=await details.boundingBox();assert.ok(box.x>=0&&box.x+box.width<=page.viewportSize().width&&box.y>=0&&box.y+box.height<=page.viewportSize().height);
    assert.match(await details.textContent(),/From a plugin/);await page.keyboard.press('Escape');assert.equal(await isOpen(),true);
    await prompt.fill('use $bro then $missing and $review');await prompt.press('Escape');

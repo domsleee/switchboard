@@ -71,7 +71,7 @@ test('New Tab shares the model and effort picker and launches and remembers the 
    assert.deepEqual(await page.locator('.model-picker-name').allTextContents(),['GPT-6 Astra']);
    assert.deepEqual(await page.evaluate(()=>JSON.parse(localStorage.getItem('switchboard-model-favorites'))),['codex:gpt-6-astra']);
    await page.getByRole('radio',{name:'Extra high',exact:true}).press('Enter');
-   assert.equal(await prompt.inputValue(),'Run the regression tests.','Choosing a model preserves the prompt');
+   assert.equal(await prompt.evaluate(node=>node.value),'Run the regression tests.','Choosing a model preserves the prompt');
    assert.equal(await prompt.evaluate(n=>document.activeElement===n),true,'Confirming returns to the prompt');
    assert.equal(await page.locator('#new-tab-model-name').textContent(),'GPT-6 Astra');
    assert.equal(await page.locator('#new-tab-model-effort').textContent(),'Extra high');
@@ -83,7 +83,7 @@ test('New Tab shares the model and effort picker and launches and remembers the 
    await page.getByRole('radio',{name:'Max',exact:true}).press('Escape');
    assert.equal(await page.locator('#new-tab-model-name').textContent(),'GPT-6 Astra');
    assert.equal(await page.locator('#new-tab-model-effort').textContent(),'Extra high');
-   assert.equal(await prompt.inputValue(),'Run the regression tests.');
+   assert.equal(await prompt.evaluate(node=>node.value),'Run the regression tests.');
    await page.getByRole('button',{name:'Create tab',exact:true}).click();
    await page.waitForFunction(()=>!document.querySelector('#new-tab-dialog').open&&document.querySelector('#tabs .selected .tab-name')?.textContent==='New task');
    assert.equal(launches.length,1);assert.equal(launches[0].command,'codex:gpt-6-astra#xhigh');assert.equal(launches[0].prompt,'Run the regression tests.');

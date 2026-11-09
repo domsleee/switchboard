@@ -88,8 +88,6 @@
 .conversation-skill-details strong,.conversation-skill-details code{display:block}
 .conversation-skill-details code{margin-top:4px;color:var(--muted,var(--nt-muted,#aaa));font-size:11px}
 .conversation-skill-details p{margin:10px 0 0;color:var(--text-2,var(--nt-text,#ddd))}
-.conversation-draft-skills{display:flex;flex-wrap:wrap;gap:6px;padding:12px 14px 0}
-.conversation-draft-skills[hidden]{display:none}
 .conversation-completion strong.conversation-completion-skill{font-size:0}
 .conversation-completion strong.conversation-completion-skill::after{content:attr(data-label);font-size:13px}
 /* Speaker is clear from layout; keep the label for screen readers only. */
