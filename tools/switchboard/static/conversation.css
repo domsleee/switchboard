@@ -91,6 +91,11 @@
 .conversation-completion strong.conversation-completion-skill{font-size:0}
 .conversation-completion strong.conversation-completion-skill::after{content:attr(data-label);font-size:13px}
 /* Speaker is clear from layout; keep the label for screen readers only. */
+.conversation-message:has(>.conversation-time){position:relative}
+.conversation-time{position:absolute;top:100%;left:0;font-size:11px;line-height:14px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap;opacity:0;transition:opacity .2s;user-select:none}
+.conversation-message.user>.conversation-time{left:auto;right:4px}
+.conversation-message:hover>.conversation-time,.conversation-message:focus-within>.conversation-time{opacity:1}
+@media (pointer:coarse){.conversation-time{opacity:1}}
 .conversation-label{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 
 .conversation-notification{font-size:13px;color:var(--muted);margin-bottom:20px}

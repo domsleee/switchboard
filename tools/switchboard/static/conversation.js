@@ -726,6 +726,19 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       if(peer.chat_id){const button=el('button','Open tab');button.type='button';button.onclick=()=>{if(!openConversation(peer))status('That conversation has no open tab.');};detail.append(button);}
       body.append(detail);article.append(body);
     }
+    function dayAwareTime(date){
+      const now=new Date(),time=date.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});
+      const days=Math.round((new Date(now.getFullYear(),now.getMonth(),now.getDate())-new Date(date.getFullYear(),date.getMonth(),date.getDate()))/864e5);
+      if(days<=0)return time;
+      if(days===1)return 'yesterday at '+time;
+      return date.toLocaleDateString([],date.getFullYear()===now.getFullYear()?{month:'numeric',day:'numeric'}:{year:'numeric',month:'numeric',day:'numeric'})+' '+time;
+    }
+    // First in the article so the last paragraph keeps its last-child spacing.
+    function messageTimestamp(article,item){
+      const at=messageTime(item.timestamp);if(!Number.isFinite(at))return;
+      const date=new Date(at),time=el('time',dayAwareTime(date),'conversation-time');
+      time.dateTime=date.toISOString();time.title=date.toLocaleString([],{dateStyle:'long',timeStyle:'short'});article.prepend(time);
+    }
     function setupMessage(item){return item.role==='user'&&/^(?:# AGENTS\.md instructions|<environment_context>|<permissions instructions>|<skills_instructions>)/.test((item.text||'').trimStart());}
     function normalizeMessage(value){return String(value||'').replace(/\r\n/g,'\n');}
     function sameMessage(a,b){return normalizeMessage(a)===normalizeMessage(b);}
@@ -765,6 +778,8 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
     // The scrollbar shows only while the reader scrolls, not when new output, the composer
     // growing or a resize moves the list.
     let scrollInput=0;for(const type of ['wheel','touchmove','pointerdown','keydown'])list.addEventListener(type,()=>{scrollInput=Date.now();},{passive:true});
+    // A tab left open overnight must not call yesterday's message today's.
+    for(const type of ['pointerover','focusin'])list.addEventListener(type,event=>{const time=event.target.closest('.conversation-message')?.querySelector(':scope>.conversation-time');if(!time)return;const label=dayAwareTime(new Date(time.dateTime));if(time.textContent!==label)time.textContent=label;},{passive:true});
     list.addEventListener('scroll',()=>{rememberReading();if(Date.now()-scrollInput<1000){list.classList.add('scrolling');clearTimeout(scrollIdle);scrollIdle=setTimeout(()=>list.classList.remove('scrolling'),700);}updateLatest();if(loaded&&startCursor>0&&list.scrollTop<80&&!loading&&older.hidden)load('older');},{passive:true});
     // Sends the transcript now shows leave the outgoing list; returns the list as it was.
     function acknowledge(key,messages,startCursor){
@@ -820,6 +835,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
             const body=el('div',undefined,'conversation-notification-body');textBlocks(body,item.text||'');article.append(body);article.open=entry?.node.open||false;
           }else{
             article.append(el('div',speaker,'conversation-label'));
+            if(item.phase!=='commentary')messageTimestamp(article,item);
             if(item.kind==='tool')toolStep(article,item);
             else if(item.async_question&&target?.agent==='codex'&&/^[0-9a-f-]{36}$/.test(chat?.thread||''))renderAsyncQuestion(article,item);
             else{if(window.SwitchboardConversationMedia&&(item.markdown||item.attachments))window.SwitchboardConversationMedia.render(article,item,{host:target.host,project:binding()?.project});else textBlocks(article,item.text||'');
