@@ -429,6 +429,9 @@ fn indexed_page(
     p: &Params,
     timing: &mut ReadTiming,
 ) -> Value {
+    if let Some(task) = p.task.as_deref().filter(|_| agent == "claude") {
+        return background_task(root, path, task, p, timing);
+    }
     let index = HISTORY.lock().unwrap().get(agent, root, path);
     let result = index
         .lock()
@@ -454,10 +457,13 @@ pub(super) struct Params {
     project: Option<String>,
     #[serde(default)]
     context: bool,
+    /// Read one of the chat's background tasks instead of the chat.
+    task: Option<String>,
 }
 impl Params {
     fn valid(&self) -> bool {
         self.q.len() <= 512
+            && self.task.as_ref().is_none_or(|task| valid_id(task))
             && self.project.as_ref().is_none_or(|p| p.len() <= 4096)
             && self
                 .agent
@@ -487,16 +493,75 @@ struct Chat {
     embedded_bytes: usize,
     /// The last Claude record called a tool, so the text before it was a progress note.
     used_tool: bool,
-    /// Claude background agents launched and not yet reported finished, oldest first.
-    background: Vec<BackgroundAgent>,
+    /// Claude background tasks launched and not yet reported finished, oldest first.
+    background: Vec<BackgroundTask>,
+    /// The most recent tasks to end, so a view left open can still read how they ended.
+    ended: Vec<BackgroundTask>,
+    /// Shell and Monitor calls awaiting the result that says whether they went to the
+    /// background, by tool call: the tool, its description and its command.
+    launching: HashMap<String, (String, String, String)>,
 }
 #[derive(Clone)]
-struct BackgroundAgent {
+struct BackgroundTask {
     tool_use_id: String,
-    agent_id: String,
+    id: String,
+    kind: &'static str,
     description: String,
     model: Option<String>,
     started: Value,
+    command: Option<String>,
+    output_file: Option<PathBuf>,
+    events: Vec<String>,
+}
+const BACKGROUND_TASKS: usize = 32;
+const TASK_EVENTS: usize = 20;
+const TASK_OUTPUT_BYTES: u64 = 32 * 1024;
+impl Chat {
+    fn add_background(&mut self, task: BackgroundTask) {
+        if self
+            .background
+            .iter()
+            .any(|t| t.tool_use_id == task.tool_use_id)
+        {
+            return;
+        }
+        if self.background.len() == BACKGROUND_TASKS {
+            self.background.remove(0);
+        }
+        self.background.push(task);
+    }
+    fn end_tasks(&mut self, ending: impl Fn(&BackgroundTask) -> bool) {
+        let (ended, running) = std::mem::take(&mut self.background)
+            .into_iter()
+            .partition(ending);
+        self.background = running;
+        let ended: Vec<_> = ended;
+        self.ended.extend(ended);
+        let excess = self.ended.len().saturating_sub(BACKGROUND_TASKS);
+        self.ended.drain(..excess);
+    }
+}
+/// The output file a background shell's launch result names. Output printed before the
+/// command moved to the background comes first, so the last mention is Claude's own.
+fn launch_output_file(text: &str, id: &str) -> Option<PathBuf> {
+    let (_, rest) = text.rsplit_once("Output is being written to: ")?;
+    let name = format!("{id}.output");
+    Some(PathBuf::from(&rest[..rest.find(&name)? + name.len()]))
+}
+/// Removes terminal escape sequences, which a task's output file keeps.
+fn plain_output(text: &str) -> String {
+    let mut plain = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\x1b' if chars.next_if_eq(&'[').is_some() => {
+                while chars.next().is_some_and(|c| !('@'..='~').contains(&c)) {}
+            },
+            '\x1b' | '\r' => (),
+            c => plain.push(c),
+        }
+    }
+    plain
 }
 /// The text of the first `<name>…</name>` element in `text`.
 fn tag_text<'a>(text: &'a str, name: &str) -> Option<&'a str> {
@@ -690,18 +755,24 @@ static SECRETS: LazyLock<Vec<(regex::Regex, &'static str)>> = LazyLock::new(|| {
     .map(|(pattern, replacement)| (regex::Regex::new(&pattern).unwrap(), replacement))
     .into()
 });
+/// `text` with anything that looks like a credential masked.
+fn redact(text: &str) -> String {
+    let mut text = text.to_owned();
+    for (pattern, replacement) in SECRETS.iter() {
+        text = pattern.replace_all(&text, *replacement).into_owned();
+    }
+    text
+}
 /// The first non-empty line, redacted and clipped, marking any text left out.
 fn one_line(text: &str) -> String {
     let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
-    let mut line: String = lines
+    let line: String = lines
         .next()
         .unwrap_or_default()
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect();
-    for (pattern, replacement) in SECRETS.iter() {
-        line = pattern.replace_all(&line, *replacement).into_owned();
-    }
+    let line = redact(&line);
     if line.chars().count() > 120 {
         format!("{}…", clip(&line, 119))
     } else if lines.next().is_some() {
@@ -1077,20 +1148,37 @@ impl Chat {
             self.messages.last_mut().unwrap()["attachments"] = json!(attachments);
         }
     }
-    /// Follows Claude's background agents (2.1.319): an Agent result with status
-    /// `async_launched` starts one; a task notification for its tool call or agent id,
-    /// queued or delivered, or a TaskStop of that id ends it. A new Claude process
-    /// (SessionStart on startup or resume) leaves none running.
+    /// Follows Claude's background tasks (2.1.319): an Agent result with status
+    /// `async_launched` starts an agent, a shell result with `backgroundTaskId` a shell and
+    /// a Monitor result a monitor. A task notification for its tool call or id, queued or
+    /// delivered, or a TaskStop of that id ends it, except that a monitor's events are
+    /// notifications with no status. A new Claude process (SessionStart on startup or
+    /// resume) leaves none running.
     fn track_background(&mut self, v: &Value) {
-        let finished = |agents: &mut Vec<BackgroundAgent>, text: &str| {
+        let finished = |chat: &mut Chat, text: &str| {
             if !text.contains("<task-notification>") {
                 return;
             }
             let call = tag_text(text, "tool-use-id");
-            let task = tag_text(text, "task-id");
-            agents.retain(|agent| {
-                call != Some(agent.tool_use_id.as_str()) && task != Some(agent.agent_id.as_str())
-            });
+            let id = tag_text(text, "task-id");
+            if tag_text(text, "status").is_none() {
+                // The same event is recorded when queued and again when delivered.
+                let task = chat
+                    .background
+                    .iter_mut()
+                    .find(|t| id == Some(t.id.as_str()));
+                if let (Some(task), Some(event)) = (task, tag_text(text, "event")) {
+                    let event = clip(&redact(event), 500);
+                    if !task.events.contains(&event) {
+                        if task.events.len() == TASK_EVENTS {
+                            task.events.remove(0);
+                        }
+                        task.events.push(event);
+                    }
+                }
+                return;
+            }
+            chat.end_tasks(|t| call == Some(t.tool_use_id.as_str()) || id == Some(t.id.as_str()));
         };
         match v["type"].as_str() {
             Some("attachment") => {
@@ -1114,47 +1202,94 @@ impl Chat {
                 }
             },
             Some("queue-operation") if v["operation"] == "enqueue" => {
-                finished(
-                    &mut self.background,
-                    v["content"].as_str().unwrap_or_default(),
-                );
+                finished(self, v["content"].as_str().unwrap_or_default());
             },
             Some("user") => {
                 let result = &v["toolUseResult"];
-                if result["status"] == "async_launched" {
-                    let call = v["message"]["content"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .find_map(|part| part["tool_use_id"].as_str());
-                    if let (Some(call), Some(agent_id)) = (call, result["agentId"].as_str()) {
-                        if !self.background.iter().any(|a| a.tool_use_id == call)
-                            && self.background.len() < 32
-                        {
-                            self.background.push(BackgroundAgent {
-                                tool_use_id: clip(call, 128),
-                                agent_id: clip(agent_id, 128),
-                                description: clip(
-                                    one_line(result["description"].as_str().unwrap_or_default())
-                                        .as_str(),
-                                    120,
-                                ),
-                                model: result["resolvedModel"]
-                                    .as_str()
-                                    .filter(|model| !model.is_empty())
-                                    .map(|model| clip(model, 128)),
-                                started: v["timestamp"].clone(),
-                            });
-                        }
+                let part = v["message"]["content"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|part| part["tool_use_id"].is_string());
+                let call = part.and_then(|part| part["tool_use_id"].as_str());
+                let launch = call.and_then(|call| self.launching.remove(call));
+                if let (Some(call), Some(id), true) = (
+                    call,
+                    result["agentId"].as_str(),
+                    result["status"] == "async_launched",
+                ) {
+                    self.add_background(BackgroundTask {
+                        tool_use_id: clip(call, 128),
+                        id: clip(id, 128),
+                        kind: "agent",
+                        description: clip(
+                            one_line(result["description"].as_str().unwrap_or_default()).as_str(),
+                            120,
+                        ),
+                        model: result["resolvedModel"]
+                            .as_str()
+                            .filter(|model| !model.is_empty())
+                            .map(|model| clip(model, 128)),
+                        started: v["timestamp"].clone(),
+                        command: None,
+                        output_file: None,
+                        events: Vec::new(),
+                    });
+                }
+                if let (Some(call), Some((tool, description, command))) = (call, launch) {
+                    let (kind, id) = if tool == "Monitor" {
+                        ("monitor", result["taskId"].as_str())
+                    } else {
+                        ("shell", result["backgroundTaskId"].as_str())
+                    };
+                    if let Some(id) = id {
+                        let text = part.map_or_else(String::new, |p| content(&p["content"]));
+                        let title = if description.is_empty() {
+                            &command
+                        } else {
+                            &description
+                        };
+                        self.add_background(BackgroundTask {
+                            tool_use_id: clip(call, 128),
+                            id: clip(id, 128),
+                            kind,
+                            description: clip(&one_line(title), 120),
+                            model: None,
+                            started: v["timestamp"].clone(),
+                            command: Some(clip(&redact(&command), 4000)),
+                            output_file: launch_output_file(&text, id),
+                            events: Vec::new(),
+                        });
                     }
                 }
-                finished(&mut self.background, &content(&v["message"]["content"]));
+                finished(self, &content(&v["message"]["content"]));
             },
             Some("assistant") => {
                 for part in v["message"]["content"].as_array().into_iter().flatten() {
-                    if part["type"] == "tool_use" && part["name"] == "TaskStop" {
-                        let id = part["input"]["task_id"].as_str().unwrap_or_default();
-                        self.background.retain(|agent| agent.agent_id != id);
+                    if part["type"] != "tool_use" {
+                        continue;
+                    }
+                    let name = part["name"].as_str().unwrap_or_default();
+                    let input = &part["input"];
+                    if name == "TaskStop" {
+                        let id = input["task_id"].as_str().unwrap_or_default();
+                        self.end_tasks(|task| task.id == id);
+                    } else if matches!(name, "Bash" | "PowerShell" | "Monitor") {
+                        if let Some(call) = part["id"].as_str() {
+                            // Results clear these; calls that never got one must not pile up.
+                            if self.launching.len() == 64 {
+                                self.launching.clear();
+                            }
+                            let field = |key: &str| input[key].as_str().unwrap_or_default();
+                            self.launching.insert(
+                                call.to_owned(),
+                                (
+                                    name.to_owned(),
+                                    field("description").to_owned(),
+                                    field("command").to_owned(),
+                                ),
+                            );
+                        }
                     }
                 }
             },
@@ -1453,7 +1588,7 @@ impl Chat {
         json!({"id":self.id,"session_id":clip(&self.session_id,256),"agent":self.agent,"title":self.title,
             "project":clip(&self.project,4096),"model":self.model,"reasoning_effort":self.reasoning_effort,
             "timestamp":self.messages.last().map(|m| &m["timestamp"]),"partial":self.partial,"partial_reasons":self.partial_reasons,
-            "background_agents":self.background.iter().map(|a| json!({"description":a.description,"model":a.model,"started":a.started})).collect::<Vec<_>>()})
+            "background_agents":self.background.iter().map(|a| json!({"id":a.id,"kind":a.kind,"description":a.description,"model":a.model,"started":a.started})).collect::<Vec<_>>()})
     }
 }
 fn roots() -> Vec<(&'static str, PathBuf)> {
@@ -1524,6 +1659,107 @@ fn discover(root: &Path, agent: &str) -> (Vec<PathBuf>, bool) {
     files.sort();
     (files, partial)
 }
+/// Whether every part of `path` below `root` is free of symlinks. Parts not yet created pass.
+fn no_symlinks(root: &Path, path: &Path) -> bool {
+    path.ancestors()
+        .take_while(|path| *path != root)
+        .all(|path| {
+            fs::symlink_metadata(path).map_or_else(
+                |error| error.kind() == ErrorKind::NotFound,
+                |m| !m.file_type().is_symlink(),
+            )
+        })
+}
+
+/// Tail of a background shell's output. The path comes from the transcript, so it must
+/// have the shape Claude writes: `<session>/tasks/<task id>.output`, with no symlink.
+fn task_output(file: &Path, session: &str, task: &str) -> Option<String> {
+    let tasks = file.parent()?;
+    if file.file_name()?.to_str()? != format!("{task}.output")
+        || tasks.file_name()?.to_str()? != "tasks"
+        || tasks.parent()?.file_name()?.to_str()? != session
+        || !file.is_absolute()
+        || fs::symlink_metadata(file).ok()?.file_type().is_symlink()
+    {
+        return None;
+    }
+    let mut output = fs::File::open(file).ok()?;
+    let length = output.metadata().ok()?.len();
+    let start = length.saturating_sub(TASK_OUTPUT_BYTES);
+    output.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::new();
+    output.read_to_end(&mut bytes).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    // A tail read begins partway through a line.
+    let text = if start > 0 {
+        text.split_once('\n').map_or("", |(_, rest)| rest)
+    } else {
+        &text
+    };
+    Some(redact(&plain_output(text)))
+}
+
+/// One background task of a Claude chat: an agent's own transcript, or what a shell or
+/// monitor has printed. An ended shell has no record left to read, so it reports only that.
+fn background_task(
+    root: &Path,
+    path: &Path,
+    task: &str,
+    p: &Params,
+    timing: &mut ReadTiming,
+) -> Value {
+    let index = HISTORY.lock().unwrap().get("claude", root, path);
+    let (running, found) = {
+        let mut index = index.lock().unwrap();
+        let previous = index.observed;
+        if index.update().is_err() {
+            return json!({"error":"unreadable"});
+        }
+        // This read can be first to see an append, which the chat's own next read must not miss.
+        if index.observed != previous {
+            index.page_cache = None;
+        }
+        let same = |t: &&BackgroundTask| t.id == task;
+        let running = index.chat.background.iter().find(same).cloned();
+        let found = running.is_some();
+        (
+            running.or_else(|| index.chat.ended.iter().rev().find(same).cloned()),
+            found,
+        )
+    };
+    let transcript = path
+        .with_extension("")
+        .join("subagents")
+        .join(format!("agent-{task}.jsonl"));
+    if running.as_ref().is_none_or(|t| t.kind == "agent")
+        && transcript.exists()
+        && no_symlinks(root, &transcript)
+    {
+        let page = Params {
+            task: None,
+            ..p.clone()
+        };
+        let mut result = indexed_page("claude", root, &transcript, &page, timing);
+        if result.get("error").is_none() {
+            result["task"] = json!({"id":task,"kind":"agent","running":found});
+        }
+        return result;
+    }
+    let Some(running) = running else {
+        return json!({"task":{"id":task,"running":false}});
+    };
+    let session = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    let output = running
+        .output_file
+        .as_deref()
+        .and_then(|file| task_output(file, session, task));
+    json!({"task":{"id":task,"kind":running.kind,"running":found,"command":running.command,
+        "events":running.events},"output":output})
+}
+
 fn file_id(agent: &str, root: &Path, file: &Path) -> String {
     let path = file
         .strip_prefix(root)
@@ -2114,15 +2350,7 @@ fn local_timed(
         // It may not exist yet: a new Claude session has no transcript until its first message.
         if p.agent.as_ref().is_none_or(|a| *a == agent)
             && roots.iter().any(|(a, r)| *a == agent && *r == root)
-            && path
-                .ancestors()
-                .take_while(|path| *path != root)
-                .all(|path| {
-                    fs::symlink_metadata(path).map_or_else(
-                        |error| error.kind() == ErrorKind::NotFound,
-                        |m| !m.file_type().is_symlink(),
-                    )
-                })
+            && no_symlinks(&root, &path)
         {
             return indexed_page(&agent, &root, &path, p, timing);
         }
@@ -2392,6 +2620,9 @@ async fn remote_timed(
         }
         if p.context {
             query.append_pair("context", "true");
+        }
+        if let Some(task) = &p.task {
+            query.append_pair("task", task);
         }
         query.finish()
     };
@@ -3509,6 +3740,184 @@ mod tests {
             names(vec![one, queued("toolu_9", "b9")]),
             ["Review the diff"]
         );
+    }
+
+    #[test]
+    fn switchboard_chats_name_claude_background_shells_and_monitors() {
+        // Claude Code 2.1.319 records, trimmed.
+        let call = |id: &str, name: &str, input: Value| json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":id,"name":name,"input":input}]}});
+        let result = |id: &str, result: Value, text: &str| json!({"type":"user","timestamp":"2026-11-08T10:00:00Z","toolUseResult":result,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":id,"content":text}]}});
+        let queued =
+            |text: String| json!({"type":"queue-operation","operation":"enqueue","content":text});
+        let event = |line: &str| {
+            queued(format!("<task-notification>\n<task-id>bwatch</task-id>\n<summary>Monitor event</summary>\n<event>{line}</event>\n</task-notification>"))
+        };
+        let done = |id: &str| {
+            queued(format!("<task-notification>\n<task-id>{id}</task-id>\n<status>completed</status>\n</task-notification>"))
+        };
+        let launched = vec![
+            call("t1", "PowerShell", json!({"command":"cargo test","description":"Run the relay tests"})),
+            result("t1", json!({"backgroundTaskId":"bshell","stdout":""}),
+                "Command running in background with ID: bshell. Output is being written to: /tmp/claude/s1/tasks/bshell.output. You will be notified when it completes."),
+            call("t2", "Monitor", json!({"command":"tail -F log","description":"Watch the log"})),
+            result("t2", json!({"taskId":"bwatch","timeoutMs":1800000,"persistent":false}), "Monitor started (task bwatch)"),
+            call("t3", "Bash", json!({"command":"ls"})),
+            result("t3", json!({"stdout":"a"}), "a"),
+        ];
+        let tasks = |extra: Vec<Value>| chat("claude", [launched.clone(), extra].concat());
+        let listed = tasks(vec![]);
+        let agents = listed.summary()["background_agents"].clone();
+        assert_eq!(
+            agents.as_array().unwrap().len(),
+            2,
+            "A foreground command is not a task"
+        );
+        assert_eq!(agents[0]["kind"], "shell");
+        assert_eq!(agents[0]["id"], "bshell");
+        assert_eq!(agents[0]["description"], "Run the relay tests");
+        assert_eq!(agents[1]["kind"], "monitor");
+        assert_eq!(
+            listed.background[0].output_file.as_deref(),
+            Some(Path::new("/tmp/claude/s1/tasks/bshell.output"))
+        );
+        let watching = tasks(vec![event("one"), event("two"), event("one")]);
+        assert_eq!(
+            watching.background.len(),
+            2,
+            "A monitor's event does not end it"
+        );
+        assert_eq!(watching.background[1].events, ["one", "two"]);
+        let ids = |chat: Chat| {
+            chat.background
+                .iter()
+                .map(|t| t.id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(tasks(vec![done("bwatch")])), ["bshell"]);
+        assert_eq!(ids(tasks(vec![done("bshell")])), ["bwatch"]);
+        assert_eq!(
+            ids(tasks(vec![call(
+                "t4",
+                "TaskStop",
+                json!({"task_id":"bshell"})
+            )])),
+            ["bwatch"]
+        );
+        let mut unnamed = launched.clone();
+        unnamed[0] = call("t1", "Bash", json!({"command":"sleep 60\necho done"}));
+        assert_eq!(
+            chat("claude", unnamed).background[0].description,
+            one_line("sleep 60\necho done")
+        );
+    }
+
+    #[test]
+    fn switchboard_chats_read_background_task_output_only_from_its_own_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let tasks = dir.path().join("session").join("tasks");
+        fs::create_dir_all(&tasks).unwrap();
+        let file = tasks.join("bshell.output");
+        fs::write(&file, "\x1b[32mok\x1b[0m\r\nAPI_KEY=abcdefgh\n").unwrap();
+        let output = task_output(&file, "session", "bshell").unwrap();
+        assert!(output.starts_with("ok\n"), "{output}");
+        assert!(
+            !output.contains("abcdefgh"),
+            "Credentials are masked: {output}"
+        );
+        assert_eq!(task_output(&file, "other", "bshell"), None);
+        assert_eq!(task_output(&file, "session", "other"), None);
+        let elsewhere = dir.path().join("bshell.output");
+        fs::write(&elsewhere, "x").unwrap();
+        assert_eq!(task_output(&elsewhere, "session", "bshell"), None);
+        let long = format!("{}\nlast\n", "x".repeat(TASK_OUTPUT_BYTES as usize + 10));
+        fs::write(&file, long).unwrap();
+        assert_eq!(task_output(&file, "session", "bshell").unwrap(), "last\n");
+    }
+
+    #[test]
+    fn switchboard_chats_task_reads_keep_finished_output_and_fresh_chat_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let path = root.join("finished.jsonl");
+        let tasks = root.join("finished").join("tasks");
+        fs::create_dir_all(&tasks).unwrap();
+        let output = tasks.join("bshell.output");
+        fs::write(&output, "hello\n").unwrap();
+        let call = json!({"type":"assistant","message":{"content":[{"type":"text","text":"Starting"},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"make"}}]}});
+        let result = json!({"type":"user","timestamp":"2026-11-08T10:00:00Z","toolUseResult":{"backgroundTaskId":"bshell"},
+            "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":format!("Output is being written to: {}. You will be told.",output.display())}]}});
+        fs::write(&path, format!("{call}\n{result}\n")).unwrap();
+        let params = Params {
+            limit: Some(50),
+            tail: true,
+            ..Params::default()
+        };
+        let page = || indexed_page("claude", root, &path, &params, &mut ReadTiming::default());
+        let task = || background_task(root, &path, "bshell", &params, &mut ReadTiming::default());
+        assert_eq!(page()["background_agents"][0]["id"], "bshell");
+        assert_eq!(task()["task"]["running"], true);
+        let done = json!({"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n<task-id>bshell</task-id>\n<status>completed</status>\n</task-notification>"});
+        let reply = json!({"type":"assistant","message":{"content":[{"type":"text","text":"Later reply"}]}});
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        write!(file, "{done}\n{reply}\n").unwrap();
+        drop(file);
+        fs::write(&output, "hello\nall done\n").unwrap();
+        let ended = task();
+        assert_eq!(ended["task"]["running"], false, "It ended");
+        assert_eq!(ended["task"]["command"], "make");
+        assert_eq!(
+            ended["output"], "hello\nall done\n",
+            "Its final output stays readable"
+        );
+        let fresh = page();
+        assert_eq!(
+            fresh["messages"].as_array().unwrap().last().unwrap()["text"],
+            "Later reply",
+            "A task read that saw the append first must not leave the chat's page stale"
+        );
+        assert_eq!(fresh["background_agents"], json!([]));
+    }
+
+    #[test]
+    fn switchboard_chats_read_a_running_agents_transcript() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let path = root.join("session.jsonl");
+        let launch = json!({"type":"user","timestamp":"2026-11-08T10:00:00Z",
+            "toolUseResult":{"status":"async_launched","agentId":"a1","description":"Audit"},
+            "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"launched"}]}});
+        fs::write(&path, format!("{launch}\n")).unwrap();
+        let subagents = root.join("session").join("subagents");
+        fs::create_dir_all(&subagents).unwrap();
+        let prompt = json!({"type":"user","isSidechain":true,"agentId":"a1","message":{"role":"user","content":"Audit the relay"}});
+        let step = json!({"type":"assistant","isSidechain":true,"message":{"content":[{"type":"tool_use","id":"x","name":"Bash","input":{"command":"cargo test"}}]}});
+        fs::write(
+            subagents.join("agent-a1.jsonl"),
+            format!("{prompt}\n{step}\n"),
+        )
+        .unwrap();
+        let read = |task: &str| {
+            background_task(
+                root,
+                &path,
+                task,
+                &Params {
+                    limit: Some(50),
+                    ..Params::default()
+                },
+                &mut ReadTiming::default(),
+            )
+        };
+        let page = read("a1");
+        assert_eq!(
+            page["task"],
+            json!({"id":"a1","kind":"agent","running":true})
+        );
+        assert_eq!(page["messages"][0]["text"], "Audit the relay");
+        assert_eq!(page["messages"][1]["text"], "Ran cargo test");
+        let ended = read("a2");
+        assert_eq!(ended["task"], json!({"id":"a2","running":false}));
+        assert!(ended.get("messages").is_none());
     }
 
     #[test]

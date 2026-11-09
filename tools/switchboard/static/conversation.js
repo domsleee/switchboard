@@ -240,6 +240,14 @@
     // Background agents that outlive the reply, one row each: the Claude mark ringed while it runs, its task, model and age.
     const claudeMark='<svg viewBox="0 0 256 257" aria-hidden="true"><path d="m50.228 170.321 50.357-28.257.843-2.463-.843-1.361h-2.462l-8.426-.518-28.775-.778-24.952-1.037-24.175-1.296-6.092-1.297L0 125.796l.583-3.759 5.12-3.434 7.324.648 16.202 1.101 24.304 1.685 17.629 1.037 26.118 2.722h4.148l.583-1.685-1.426-1.037-1.101-1.037-25.147-17.045-27.22-18.017-14.258-10.37-7.713-5.25-3.888-4.925-1.685-10.758 7-7.713 9.397.649 2.398.648 9.527 7.323 20.35 15.75L94.817 91.9l3.889 3.24 1.555-1.102.195-.777-1.75-2.917-14.453-26.118-15.425-26.572-6.87-11.018-1.814-6.61c-.648-2.723-1.102-4.991-1.102-7.778l7.972-10.823L71.42 0 82.05 1.426l4.472 3.888 6.61 15.101 10.694 23.786 16.591 32.34 4.861 9.592 2.592 8.879.973 2.722h1.685v-1.556l1.36-18.211 2.528-22.36 2.463-28.776.843-8.1 4.018-9.722 7.971-5.25 6.222 2.981 5.12 7.324-.713 4.73-3.046 19.768-5.962 30.98-3.889 20.739h2.268l2.593-2.593 10.499-13.934 17.628-22.036 7.778-8.749 9.073-9.657 5.833-4.601h11.018l8.1 12.055-3.628 12.443-11.342 14.388-9.398 12.184-13.48 18.147-8.426 14.518.778 1.166 2.01-.194 30.46-6.481 16.462-2.982 19.637-3.37 8.88 4.148.971 4.213-3.5 8.62-20.998 5.184-24.628 4.926-36.682 8.685-.454.324.519.648 16.526 1.555 7.065.389h17.304l32.21 2.398 8.426 5.574 5.055 6.805-.843 5.184-12.962 6.611-17.498-4.148-40.83-9.721-14-3.5h-1.944v1.167l11.666 11.406 21.387 19.314 26.767 24.887 1.36 6.157-3.434 4.86-3.63-.518-23.526-17.693-9.073-7.972-20.545-17.304h-1.36v1.814l4.73 6.935 25.017 37.59 1.296 11.536-1.814 3.76-6.481 2.268-7.13-1.297-14.647-20.544-15.1-23.138-12.185-20.739-1.49.843-7.194 77.448-3.37 3.953-7.778 2.981-6.48-4.925-3.436-7.972 3.435-15.749 4.148-20.544 3.37-16.333 3.046-20.285 1.815-6.74-.13-.454-1.49.194-15.295 20.999-23.267 31.433-18.406 19.702-4.407 1.75-7.648-3.954.713-7.064 4.277-6.286 25.47-32.405 15.36-20.092 9.917-11.6-.065-1.686h-.583L44.07 198.125l-12.055 1.555-5.185-4.86.648-7.972 2.463-2.593 20.35-13.999-.064.065Z"/></svg>';
     const background=el('div',undefined,'conversation-background');background.hidden=true;
+    const shellMark='<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3 4 4 4-4 4M8.5 12.5H13" fill="none" stroke="#b4b4bd" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    // What one background task is doing, reread while open and left in place when it ends.
+    const taskDialog=el('dialog',undefined,'conversation-task'),taskHeader=el('header'),taskHeading=el('div',undefined,'conversation-task-heading'),taskTitle=el('h3'),taskStatus=el('small',undefined,'conversation-task-status'),taskClose=el('button','Close'),taskBody=el('div',undefined,'conversation-task-body');
+    taskStatus.setAttribute('role','status');taskClose.type='button';taskClose.onclick=()=>taskDialog.close();taskDialog.setAttribute('aria-labelledby','conversation-task-title');taskTitle.id='conversation-task-title';
+    taskHeading.append(taskTitle,taskStatus);taskHeader.append(taskHeading,taskClose);taskDialog.append(taskHeader,taskBody);
+    taskDialog.onclick=event=>{if(event.target===taskDialog)taskDialog.close();};
+    let taskView=null;
+    taskDialog.onclose=()=>{clearTimeout(taskView?.timer);taskView=null;};
     const recovery=el('div',undefined,'conversation-recovery'),retryConnection=el('button','Retry connection');recovery.hidden=true;retryConnection.type='button';retryConnection.onclick=()=>{if(target)startups.delete(identity(target));status(unboundNotice());updateActivity();prepare();};recovery.append(retryConnection);
     const historyStatus=el('span',undefined,'conversation-history-status');historyStatus.hidden=true;historyStatus.setAttribute('role','status');
     const actions=el('div',undefined,'conversation-actions');actions.append(refresh,latest);list.append(older,working,background);latest.hidden=refresh.hidden=true;
@@ -262,7 +270,7 @@
     const question=el('section',undefined,'conversation-question'),questionStatus=el('small',undefined,'conversation-question-status');question.hidden=true;question.setAttribute('aria-label','Agent question');questionStatus.setAttribute('role','status');
     const promptHosts=new Set();let prompt=null,promptKey=null,promptSignature='',promptRequest=null,promptAt=0,answering=false,answered=null,promptError='',otherDraft='';
     const asyncShortcut=el('button',undefined,'conversation-pending-question');asyncShortcut.type='button';asyncShortcut.hidden=true;
-    panel.append(costDetails,header,notice,recovery,list,historyStatus,actions,question,asyncShortcut,form);root.append(panel);
+    panel.append(costDetails,header,notice,recovery,list,historyStatus,actions,question,asyncShortcut,form,taskDialog);root.append(panel);
     const identity=t=>t?JSON.stringify([t.key,t.chatId]):null;
     let chat=null;
     const binding=()=>chat;
@@ -304,16 +312,76 @@
     // The in-transcript indicator counts up from when the agent started this turn.
     let workingTimer=null;
     function backgroundAgents(){return target?.state==='waiting'&&Array.isArray(chat?.background)?chat.background:[];}
+    const taskKinds={shell:'Shell',monitor:'Monitor'};
+    function taskLabel(agent){return agent.description||(agent.kind==='shell'?'Background shell':agent.kind==='monitor'?'Background monitor':'Background agent');}
+    function openTask(agent){
+      if(!chat)return;
+      clearTimeout(taskView?.timer);
+      const view={agent,owner:identity(target),chat:chat.id,host:target.chatHost||target.host,prompt:agent.kind&&agent.kind!=='agent'?'':null,painted:''};taskView=view;
+      taskTitle.textContent=taskLabel(agent);taskStatus.textContent='Loading…';taskBody.replaceChildren();
+      if(!taskDialog.open)taskDialog.showModal();
+      readTask(view);
+    }
+    function taskUrl(view,params){return '/api/chats/'+encodeURIComponent(view.chat)+'?'+new URLSearchParams({host:view.host,task:view.agent.id,context:'true',...params});}
+    async function readTask(view){
+      // The dialog shows one tab's task, so leaving the tab or the Conversation ends it.
+      if(view!==taskView)return;
+      if(identity(target)!==view.owner||panel.hidden){taskDialog.close();return;}
+      let data=null;
+      try{const response=await fetch(taskUrl(view,{tail:'true',limit:50}),{signal:AbortSignal.timeout(15000)});if(response.ok)data=await response.json();}catch{}
+      if(view!==taskView)return;
+      if(data?.task&&view.prompt===null){
+        // A long run's first message, the task it was given, falls off the tail.
+        if(data.start_cursor===0)view.prompt=data.messages?.[0]?.text||'';
+        else try{const first=await (await fetch(taskUrl(view,{cursor:0,limit:1}),{signal:AbortSignal.timeout(15000)})).json();view.prompt=first.messages?.[0]?.text||'';}catch{}
+        if(view!==taskView)return;
+      }
+      const running=paintTask(view,data);
+      if(running)view.timer=setTimeout(()=>readTask(view),2000);
+    }
+    function taskPre(text,cls){const pre=el('pre',text,'conversation-task-output'+(cls?' '+cls:''));return pre;}
+    // Returns whether the task should be read again.
+    function paintTask(view,data){
+      const age=()=>{const started=Date.parse(view.agent.started)/1000;return started>0?' · '+duration(Math.max(0,Date.now()/1000-started)):'';};
+      if(!data||data.error){taskStatus.textContent='Could not read this task. Retrying…';return true;}
+      // A computer on an older build ignores `task` and answers with the chat itself.
+      if(!data.task){taskStatus.textContent='This computer needs an update to show this task.';return false;}
+      const kind=data.task.kind||view.agent.kind||'agent',model=modelName({model:view.agent.model}),label=taskKinds[kind]||model||'Agent',running=data.task.running;
+      taskStatus.textContent=running?`${label} · Running${age()}`:`${label} · Finished`;
+      if(!running&&!data.messages&&!('output' in data))return false;
+      const signature=JSON.stringify([data.messages?.length,data.message_count,data.messages?.at(-1)?.text,data.output,data.task.events,view.prompt]);
+      if(signature===view.painted)return running;
+      view.painted=signature;
+      const follow=!taskBody.children.length||taskBody.scrollHeight-taskBody.scrollTop-taskBody.clientHeight<48,nodes=[];
+      if(data.messages){
+        const opening=view.prompt?el('details',undefined,'conversation-task-prompt'):null;
+        if(opening){opening.append(el('summary','Task given to this agent'));textBlocks(opening,view.prompt);opening.open=!!taskBody.querySelector('.conversation-task-prompt[open]');nodes.push(opening);}
+        for(const item of data.messages){
+          if(item.role==='user'&&item.text===view.prompt)continue;
+          if(item.role==='assistant'&&item.phase==='commentary'){nodes.push(el('div',item.text,'conversation-task-step'));continue;}
+          const message=el('div',undefined,'conversation-task-message '+item.role);textBlocks(message,item.text||'');nodes.push(message);
+        }
+        if(!data.messages.length)nodes.push(el('div','Nothing recorded yet.','conversation-task-step'));
+      }else{
+        if(data.task.command)nodes.push(taskPre(data.task.command,'command'));
+        const printed=kind==='monitor'?(data.task.events||[]).join('\n'):data.output;
+        nodes.push(printed?taskPre(printed):el('div',kind==='monitor'?'No events yet.':'No output yet.','conversation-task-step'));
+      }
+      taskBody.replaceChildren(...nodes);if(follow)taskBody.scrollTop=taskBody.scrollHeight;
+      return running;
+    }
     function paintBackground(){
-      const agents=chat?backgroundAgents():[],signature=JSON.stringify(agents.map(agent=>[agent.description,agent.model,agent.started]));
+      const agents=chat?backgroundAgents():[],signature=JSON.stringify(agents.map(agent=>[agent.id,agent.kind,agent.description,agent.model,agent.started]));
       background.hidden=!agents.length;
       if(background.dataset.signature!==signature){
         background.dataset.signature=signature;
         background.replaceChildren(...agents.map(agent=>{
-          const row=el('div',undefined,'conversation-agent'),avatar=el('span',undefined,'conversation-agent-avatar'),model=modelName({model:agent.model}),time=el('span',undefined,'conversation-agent-time');
-          avatar.innerHTML=claudeMark;time.dataset.started=agent.started||'';
-          row.append(avatar,el('span',agent.description||'Background agent','conversation-agent-title'));if(model)row.append(el('span',model,'conversation-agent-model'));row.append(time);
-          row.setAttribute('aria-label',`Background agent running: ${agent.description||'unnamed'}${model?`, ${model}`:''}`);return row;
+          // A computer on an older build sends no id, so its rows can only be read.
+          const row=el(agent.id?'button':'div',undefined,'conversation-agent'),avatar=el('span',undefined,'conversation-agent-avatar'),model=taskKinds[agent.kind]||modelName({model:agent.model}),time=el('span',undefined,'conversation-agent-time'),title=taskLabel(agent);
+          avatar.innerHTML=taskKinds[agent.kind]?shellMark:claudeMark;time.dataset.started=agent.started||'';
+          row.append(avatar,el('span',title,'conversation-agent-title'));if(model)row.append(el('span',model,'conversation-agent-model'));row.append(time);
+          if(agent.id){row.type='button';row.onclick=()=>openTask(agent);row.title='See what this is doing';}
+          row.setAttribute('aria-label',`${agent.id?'Open running':'Running'} ${taskKinds[agent.kind]?.toLowerCase()||'background agent'}: ${title}${model&&!taskKinds[agent.kind]?`, ${model}`:''}`);return row;
         }));
       }
       for(const time of background.querySelectorAll('.conversation-agent-time')){const started=Date.parse(time.dataset.started)/1000,text=started>0?duration(Math.max(0,Date.now()/1000-started)):'';if(time.textContent!==text)time.textContent=text;}
@@ -334,7 +402,7 @@
         if(step){step.classList.add('live');workingStep.dataset.step=step.dataset.live||[...step.childNodes].filter(node=>!node.classList?.contains('conversation-label')).map(node=>node.textContent).join(' ').replace(/\s+/g,' ').trim();}
         working.classList.toggle('has-step',!!step);
       }
-      if(!step)workingStep.dataset.step=waiting?'Waiting on a background agent':'Working';
+      if(!step)workingStep.dataset.step=waiting?'Waiting on a background task':'Working';
       const run=step&&liveRun,expanded=!!run&&!run.collapsed,count=run?`· ${run.count} steps`:'';
       working.classList.toggle('has-run',!!run);working.disabled=!run;if(workingCount.textContent!==count)workingCount.textContent=count;
       if(run){working.removeAttribute('aria-hidden');working.setAttribute('aria-expanded',String(expanded));working.setAttribute('aria-label',`${expanded?'Hide':'Show'} ${run.count-1} earlier step${run.count===2?'':'s'}`);}
