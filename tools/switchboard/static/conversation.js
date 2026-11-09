@@ -844,7 +844,10 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
     // Claude swaps an attached image's path for an image block and leaves "[Image #N]",
     // so its transcript entry lacks the file list the composer sent; compare what remains.
     const attachedList=/\n*Attached (?:files|images):(?:\n[^\n]*)*\n*$/,withoutFiles=value=>normalizeMessage(value).replace(/\[Image #\d+\]/g,'').replace(attachedList,'').trim();
-    function sameTranscript(entry,payload){return sameMessage(entry,payload)||withoutFiles(entry)===withoutFiles(payload)&&attachedList.test(normalizeMessage(entry))&&attachedList.test(normalizeMessage(payload));}
+    // Claude stores a pasted reply with its edges trimmed and tabs expanded, and wraps a long one in tags.
+    const pastedContent=/^\s*<pasted_content id="[^"]*">\n([\s\S]*)\n<\/pasted_content id="[^"]*">\s*$/;
+    function storedForm(value){const text=normalizeMessage(value);return (pastedContent.exec(text)?.[1]??text).replace(/[ \t]+/g,' ').trim();}
+    function sameTranscript(entry,payload){const stored=storedForm(entry),sent=storedForm(payload);return stored===sent||withoutFiles(stored)===withoutFiles(sent)&&attachedList.test(stored)&&attachedList.test(sent);}
     function outgoingLabel(state){return state==='sending'?'Sending…':state==='queued'?'Queued':state==='sent'?'Sent':'Could not confirm sending';}
     function sendItem(sent,state,detail){sent.state=state;sent.detail=detail||'';if(identity(target)===sent.key)paint();}
     function nearBottom(){return following&&list.scrollHeight-list.scrollTop-list.clientHeight<80;}

@@ -411,6 +411,20 @@ test('integrated Conversation journeys use production markup and preserve delive
     assert.equal(await page.locator('.conversation-outgoing').count(),1);
    }finally{await f.close();}
   });
+  await t.test('a send is acknowledged by the different text Claude stores for it',async()=>{
+   const pasted=text=>`\n\n<pasted_content id="0415">\n${text}\n</pasted_content id="0415">\n`,long='Long paste\n'+'filler words here\n'.repeat(110)+'end';
+   // Each stored form was captured from Claude Code 2.1.319 after pasting the draft.
+   for(const [draft,stored] of [['Trailing newline\n','Trailing newline'],['Trailing space ','Trailing space'],['Inner\ttab','Inner    tab'],[long,pasted(long)]]){
+    const f=await fixture(),{page}=f;try{
+     await page.getByLabel('Reply draft').fill(draft);await page.getByRole('button',{name:'Send',exact:true}).click();
+     await page.waitForFunction(()=>document.querySelectorAll('.conversation-outgoing').length===1);
+     f.history.get(1).push({role:'user',text:'Some other message',timestamp:new Date().toISOString()});await f.poll();
+     assert.equal(await page.locator('.conversation-outgoing').count(),1,'A different message is not this send\'s receipt');
+     f.history.get(1).push({role:'user',text:stored,timestamp:new Date().toISOString()});await f.poll();
+     await page.waitForFunction(()=>document.querySelectorAll('.conversation-outgoing').length===0);
+    }finally{await f.close();}
+   }
+  });
   await t.test('an image-only send is acknowledged by the transcript entry Claude rewrote',async()=>{
    const f=await fixture(),{page}=f;try{
     await f.upload();await page.getByRole('button',{name:'Send',exact:true}).click();
