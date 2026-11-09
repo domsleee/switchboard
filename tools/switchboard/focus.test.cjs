@@ -494,7 +494,7 @@ async function browserFocusFixture({mismatch=null,acknowledge=true,platform,hasT
   const browser=await chromium.launch({headless:true});
   try{
     const context=await browser.newContext({viewport:{width:1280,height:900},hasTouch});
-    const page=await context.newPage(),pageErrors=[],closes=[];
+    const page=await context.newPage(),pageErrors=[],closes=[],timings=[];
     page.on('pageerror',error=>pageErrors.push(error.message));
     await page.addInitScript(platform=>{
       if(platform)Object.defineProperty(Navigator.prototype,'platform',{get:()=>platform});
@@ -506,6 +506,7 @@ async function browserFocusFixture({mismatch=null,acknowledge=true,platform,hasT
       // otherwise re-render every two seconds and erase notifications mid-tap.
       if(pathname==='/api/attention'&&new URL(route.request().url()).searchParams.get('after')==='1')return;
       const json=value=>route.fulfill({contentType:'application/json',body:JSON.stringify(value)});
+      if(pathname==='/api/diagnostics/timing'){timings.push(route.request().postDataJSON());return json({});}
       if(pathname==='/api/hosts')return json([{id:'mac',name:'Mac'}]);
       if(pathname==='/api/hosts/mac')return json({id:'mac',name:'Mac',sessions:[{name:'main',web_clients_allowed:true}]});
       if(pathname==='/api/attention')return json({version:1,tabs:[41,42].map((id,position)=>({host:'mac',session:'main',id,position,name:'Terminal '+id,
@@ -530,20 +531,74 @@ async function browserFocusFixture({mismatch=null,acknowledge=true,platform,hasT
         sendState(7);
       </script>`});
       const file=pathname==='/'?'index.html':pathname.slice(1);
-      if(!['index.html','app.js','skill-editor.js','model-picker.js','bridge.js','close.js','titles.js','style.css',...(conversation?['conversation.js','conversation.css']:[])].includes(file))return route.fulfill({status:404,body:''});
+      if(!['index.html','app.js','timing.js','skill-editor.js','model-picker.js','bridge.js','close.js','titles.js','style.css',...(conversation?['conversation.js','conversation.css']:[])].includes(file))return route.fulfill({status:404,body:''});
       return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
     });
     await page.goto('https://switchboard.test/?host=mac&session=main&tab=41');
     await page.bringToFront();
     await page.waitForFunction(()=>document.querySelector('iframe.active')?.contentDocument?.activeElement?.id==='terminal-input');
     const input=page.frameLocator('iframe[title="Mac: main"]').locator('#terminal-input');
-    return {browser,page,input,pageErrors,closes,setMismatch(id){mismatch=id;},
+    return {browser,page,input,pageErrors,closes,timings,setMismatch(id){mismatch=id;},
       button(id){return page.locator('#tabs .tab-select').filter({hasText:'Terminal '+id});}};
   }catch(error){
     await browser.close();
     throw error;
   }
 }
+
+test('a reconnected viewer confirms its pane while search keeps keyboard focus',
+  {skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
+  const {browser,page,input,pageErrors,timings}=await browserFocusFixture();
+  try{
+    await page.locator('#tab-search').focus();
+    await page.evaluate(()=>{
+      const entry=[...sessions.values()][0];
+      terminalTransition(entry,true);entry.needsFocus=true;
+      entry.frame.contentWindow.sendState(7);
+    });
+    const started=Date.now();
+    await page.waitForFunction(()=>![...sessions.values()][0].frame.inert,null,{timeout:1500});
+    console.log('Reconnected viewer ready in '+(Date.now()-started)+' ms');
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'tab-search');
+    assert.doesNotMatch(await page.locator('#status-message').textContent(),/Connecting terminal before/);
+    await input.focus();await page.keyboard.type('ready');assert.equal(await input.inputValue(),'ready');
+    await page.waitForFunction(()=>![...sessions.values()][0].inputTiming);
+    assert.ok(timings.some(sample=>sample.journey==='terminal_input_ready'&&sample.outcome==='ready'));
+    // A different pane still requires confirmation before typing can resume.
+    await page.locator('#tab-search').focus();
+    await page.evaluate(()=>{
+      const entry=[...sessions.values()][0];entry.frame.contentWindow.acknowledge=false;
+      terminalTransition(entry,true);entry.needsFocus=true;
+      selected=JSON.stringify(['mac','main','tab',42]);render();
+      entry.frame.contentWindow.sendState(7);
+    });
+    await page.waitForFunction(()=>[...sessions.values()][0].requestedPane?.pane_id===8);
+    assert.equal(await page.evaluate(()=>[...sessions.values()][0].frame.inert),true);
+    await page.evaluate(()=>[...sessions.values()][0].frame.contentWindow.sendState(8));
+    await page.waitForFunction(()=>![...sessions.values()][0].frame.inert);
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'tab-search');
+    // A background viewer can wait for selection without blocking this terminal.
+    await page.evaluate(()=>{
+      const entry=[...sessions.values()][0],frame=document.createElement('iframe');
+      frame.inert=true;document.querySelector('#terminals').append(frame);
+      sessions.set('fixture-background',{host:'mac',name:'background',frame,needsFocus:true});render();
+    });
+    assert.doesNotMatch(await page.locator('#status-message').textContent(),/Connecting terminal before/);
+    assert.equal(await page.locator('#status').evaluate(node=>node.classList.contains('terminal-transition')),false);
+    await page.evaluate(()=>{
+      document.activeElement.blur();
+      const entry=[...sessions.values()][0];entry.frame.contentWindow.acknowledge=true;
+      terminalTransition(entry,true);entry.needsFocus=true;entry.frame.contentWindow.sendState(8);
+    });
+    await page.waitForFunction(()=>document.querySelector('iframe.active').contentDocument.activeElement.id==='terminal-input');
+    await page.keyboard.type(' again');assert.equal(await input.inputValue(),'ready again');
+    if(process.env.MODE_SCREENSHOTS)await page.screenshot({path:process.env.MODE_SCREENSHOTS+'/terminal-ready.png'});
+    assert.deepEqual(pageErrors,[]);
+  }catch(error){
+    if(process.env.MODE_SCREENSHOTS)await page.screenshot({path:process.env.MODE_SCREENSHOTS+'/terminal-blocked.png'});
+    throw error;
+  }finally{await browser.close();}
+});
 
 for(const hasTouch of [false,true])test(`conversation composer keeps focus through sidebar interactions with touch ${hasTouch}`,
   {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{

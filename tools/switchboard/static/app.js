@@ -1098,7 +1098,10 @@ function focus(item,background=false) {
   const fromTabButton=!!activeElement&&activeElement===tabButtons.get(tabKey(item.entry,item.tab));
   // Behind Conversation the terminal focuses its pane without taking keyboard focus,
   // so it is already on the right pane when Terminal is shown.
-  if(background&&(document.hidden||!document.hasFocus()||!$('artifact-preview').hidden||document.querySelector('dialog[open]')||!conversationOpen&&activeElement&&activeElement!==document.body&&activeElement!==item.entry.frame&&!fromTabButton)){
+  const deferKeyboardFocus=background&&(document.hidden||!document.hasFocus()||!$('artifact-preview').hidden||document.querySelector('dialog[open]')||!conversationOpen&&activeElement&&activeElement!==document.body&&activeElement!==item.entry.frame&&!fromTabButton);
+  // Reconnecting an inert viewer must confirm its pane even when search, a
+  // dialog or another window owns the keyboard. Keep that focus where it is.
+  if(deferKeyboardFocus&&!item.entry.frame.inert){
     item.entry.needsFocus=true;return;
   }
   // A polling retry must not blur/disable a terminal while its control socket
@@ -1110,8 +1113,10 @@ function focus(item,background=false) {
     return;
   }
   if(item.entry.pendingNewTab||item.tab.pending&&!item.tab.panes.length)return;
-  $('artifact-preview').hidden=true;
-  $('artifact-frame').contentWindow?.location.replace('about:blank');
+  if(!deferKeyboardFocus){
+    $('artifact-preview').hidden=true;
+    $('artifact-frame').contentWindow?.location.replace('about:blank');
+  }
   const active=item.entry.state.active_pane;
   const panes=tabPanes(item.entry,item.tab);
   const preferred=item.entry.resumePane||active;
@@ -1121,7 +1126,7 @@ function focus(item,background=false) {
   if(active?.pane_id!==pane.pane_id||active?.is_plugin!==pane.is_plugin)item.entry.frame.contentWindow.SwitchboardClipboard?.clearSelection();
   const focusId=item.entry.focusId=(item.entry.focusId||0)+1;
   if(item.entry.frame.inert || item.entry.requestedPane || active?.pane_id!==pane.pane_id||active?.is_plugin!==pane.is_plugin)item.entry.requestedPane={pane_id:pane.pane_id,is_plugin:pane.is_plugin,focus_id:focusId};
-  const preserveFocus=conversationOpen||(background&&!!item.entry.focusInitialized&&!fromTabButton);
+  const preserveFocus=!!deferKeyboardFocus||conversationOpen||(background&&!!item.entry.focusInitialized&&!fromTabButton);
   item.entry.focusInitialized=true;
   item.entry.frame.contentWindow.postMessage({type:'zellij-focus',pane_id:pane.pane_id,is_plugin:pane.is_plugin,focus_id:focusId,preserve_focus:preserveFocus},location.origin);
 }
@@ -1268,11 +1273,24 @@ function terminalTransition(entry,busy) {
   entry.frame.style.opacity=busy?'0.45':'';
   entry.frame.setAttribute('aria-busy',String(busy));
   if(busy)entry.frame.blur();
+  else if(entry.inputTiming){
+    const elapsed=performance.now()-entry.inputStarted,metadata=entry.inputMetadata;
+    entry.inputTiming.end('ready',{stages:metadata==null?{}:{metadata,focus:elapsed-metadata}});
+    entry.inputTiming=null;
+  }
 }
 function showRetirementStatus() {
   const entries=[...sessions.values()];
+  const connecting=entries.find(entry=>entry.frame.classList.contains('active')&&!entry.suspended&&!entry.suspending&&!entry.retirementUnresolved&&entry.frame.inert&&!globalThis.SwitchboardConversation?.isOpen?.());
+  for(const entry of entries){
+    if(entry.inputTiming&&entry!==connecting){entry.inputTiming.end('left');entry.inputTiming=null;}
+  }
+  if(connecting&&!connecting.inputTiming){
+    connecting.inputStarted=performance.now();connecting.inputMetadata=connecting.state?0:null;
+    connecting.inputTiming=window.SwitchboardTiming?.begin('terminal_input_ready',{host:connecting.host})||null;
+  }
   const unresolved=entries.find(entry=>entry.retirementUnresolved);
-  $('status').classList.toggle('terminal-transition',entries.some(entry=>entry.retirementUnresolved||entry.suspending||!entry.suspended&&entry.frame.inert));
+  $('status').classList.toggle('terminal-transition',!!connecting||entries.some(entry=>entry.retirementUnresolved||entry.suspending));
   if(unresolved){
     setStatus(unresolved.retirementError||'Terminal disconnect is unconfirmed. Recover this viewer before typing.',true);
     if(unresolved.retirementRetryable===false)return;
@@ -1281,7 +1299,7 @@ function showRetirementStatus() {
     $('status-message').append(' ',retry);
   }else if([...sessions.values()].some(entry=>entry.suspending)){
     setStatus('Finishing terminal input before disconnecting the hidden viewer…');
-  }else if([...sessions.values()].some(entry=>!entry.suspended&&entry.frame.inert)){
+  }else if(connecting){
     setStatus('Connecting terminal before enabling typing…');
   }
 }
@@ -1418,6 +1436,7 @@ window.addEventListener('message',event=>{
   }
   if(entry.suspended)return;
   if(event.data?.type==='zellij-state') {
+    if(entry.inputTiming&&entry.inputMetadata==null)entry.inputMetadata=performance.now()-entry.inputStarted;
     entry.disconnected=false;
     const previousPosition=entry.state?.active_pane?.tab_position;
     const previousPane=entry.state?.active_pane;
@@ -1457,7 +1476,13 @@ window.addEventListener('message',event=>{
     if(entry.needsFocus && entry.frame.classList.contains('active')){
       const current=allTabs().find(item=>item.key===selected);if(current)focus(current,true);
     }
-    if(entry.frame.inert&&!entry.needsFocus&&!entry.requestedPane&&!entry.focusPending)terminalTransition(entry,false);
+    if(entry.frame.inert&&!entry.needsFocus&&!entry.requestedPane&&!entry.focusPending){
+      terminalTransition(entry,false);render();
+      // The bridge could not focus an inert iframe before its acknowledgement
+      // arrived here. Restore typing once it is enabled, unless another UI owns it.
+      if(current?.entry===entry&&!globalThis.SwitchboardConversation?.isOpen?.()&&!document.hidden&&document.hasFocus()&&$('artifact-preview').hidden&&!document.querySelector('dialog[open]')&&
+        (document.activeElement===document.body||document.activeElement===entry.frame))focus(current);
+    }
   }else if(event.data?.type==='zellij-focus-failed'){
     if(entry.requestedPane?.focus_id!==event.data.focus_id)return;
     entry.requestedPane=null;
@@ -2456,7 +2481,7 @@ async function loadLogs(){
   finally{button.disabled=false;list.setAttribute('aria-busy','false');}
 }
 $('refresh-logs').onclick=loadLogs;
-const timingJourneys={terminal_to_conversation:'Terminal → Conversation',conversation_to_terminal:'Conversation → Terminal',conversation_select:'Switch chat',conversation_load:'Load chat',conversation_connect:'Connect to agent’s chat'};
+const timingJourneys={terminal_to_conversation:'Terminal → Conversation',conversation_to_terminal:'Conversation → Terminal',terminal_input_ready:'Enable terminal typing',conversation_select:'Switch chat',conversation_load:'Load chat',conversation_connect:'Connect to agent’s chat'};
 // Below this many samples a p95 is just the slowest one or two.
 const timingMinimumForP95=20;
 async function loadTimings(){
