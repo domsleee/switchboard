@@ -347,6 +347,50 @@ pub(super) async fn escape(
     .inspect_err(|e| failed(&state, &id, "Escape", e))?;
     Ok(Json(json!({"ok":true})))
 }
+/// Esc typed into a terminal reaches the pane on its own socket; the sidebar reports it here.
+pub(super) async fn settle_escape(
+    State(state): State<RelayState>,
+    RoutePath(id): RoutePath<String>,
+    Json(target): Json<EscapeTarget>,
+) -> Result<Json<Value>, Error> {
+    validate_session(&target.session)?;
+    let host = state
+        .host(&id)
+        .ok_or((StatusCode::NOT_FOUND, "Unknown host"))?;
+    if host.config.escape_transport.as_deref() == Some("gateway") {
+        // An older peer rejects the unknown field rather than sending a second Esc.
+        let body =
+            json!({"session":target.session,"target":target.pane_id,"close":false,"settle":true});
+        let response = host
+            .request(
+                Method::POST,
+                "/switchboard/control",
+                body.to_string().into(),
+                "application/json",
+            )
+            .await
+            .map_err(|_| (StatusCode::BAD_GATEWAY, "Peer control unavailable"))?;
+        if response.status != StatusCode::OK {
+            return Err((response.status, peer_failure(response.status)));
+        }
+        return Ok(Json(json!({"ok":true})));
+    }
+    settle_host(host, state.poll.clone(), target.session, target.pane_id).await?;
+    Ok(Json(json!({"ok":true})))
+}
+
+pub(super) async fn settle_host(
+    host: Arc<Host>,
+    poll: Arc<Mutex<attention::PollState>>,
+    session: String,
+    pane: u32,
+) -> Result<(), Error> {
+    validate_session(&session)?;
+    require_writable_host(&host).await?;
+    settle_interrupt(host, poll, session, pane);
+    Ok(())
+}
+
 pub(super) async fn close_tab(
     State(state): State<RelayState>,
     RoutePath(id): RoutePath<String>,
@@ -634,8 +678,9 @@ pub(super) fn settle_interrupt(
     tokio::spawn(async move {
         let id = pane.to_string();
         let args = ["dump-screen", "-p", id.as_str()];
-        for _ in 0..8 {
-            tokio::time::sleep(Duration::from_millis(500)).await;
+        // Claude redraws within moments of Esc, so the first read need not wait long.
+        for delay in std::iter::once(200).chain(std::iter::repeat(500).take(7)) {
+            tokio::time::sleep(Duration::from_millis(delay)).await;
             let Ok(screen) = run_local(&host, &session, &args, Duration::from_secs(2)).await else {
                 continue;
             };

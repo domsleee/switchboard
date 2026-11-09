@@ -1481,6 +1481,10 @@ fn app(state: RelayState) -> Router {
         )
         .route("/api/hosts/{host}/attachments", post(attachments::handler))
         .route("/api/hosts/{host}/escape", post(control::escape))
+        .route(
+            "/api/hosts/{host}/settle-interrupt",
+            post(control::settle_escape),
+        )
         .route("/api/open-link", post(control::open_link))
         .route("/api/open-file", post(control::open_file))
         .route("/api/open-browser-page", post(control::open_browser_page))
@@ -2635,9 +2639,16 @@ mod tests {
         .await;
         assert!(response.is_ok());
         let response = control::close_tab(
-            State(relay),
+            State(relay.clone()),
             RoutePath("mesh-peer".into()),
             Json(serde_json::from_value(json!({"session":"main","pane_id":17})).unwrap()),
+        )
+        .await;
+        assert!(response.is_ok());
+        let response = control::settle_escape(
+            State(relay),
+            RoutePath("mesh-peer".into()),
+            Json(serde_json::from_value(json!({"session":"main","pane_id":9})).unwrap()),
         )
         .await;
         assert!(response.is_ok());
@@ -2646,6 +2657,7 @@ mod tests {
             [
                 json!({"session":"main","target":7,"close":true}),
                 json!({"session":"main","pane_id":17,"close":true}),
+                json!({"session":"main","target":9,"close":false,"settle":true}),
             ]
         );
         server.abort();
@@ -3167,7 +3179,11 @@ mod tests {
             StatusCode::NOT_FOUND,
             "reviews reach the relay and name a known computer"
         );
-        for path in ["/api/hosts/mac/close-tab", "/api/hosts/mac/escape"] {
+        for path in [
+            "/api/hosts/mac/close-tab",
+            "/api/hosts/mac/escape",
+            "/api/hosts/mac/settle-interrupt",
+        ] {
             assert_eq!(
                 client
                     .raw_request(Method::GET, path, Bytes::new(), "application/json", None)
@@ -3197,6 +3213,17 @@ mod tests {
             .raw_request(
                 Method::POST,
                 "/api/hosts/mac/escape",
+                json!({"session":"main","pane_id":1}).to_string().into(),
+                "application/json",
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(rejected.status, StatusCode::FORBIDDEN);
+        let rejected = client
+            .raw_request(
+                Method::POST,
+                "/api/hosts/mac/settle-interrupt",
                 json!({"session":"main","pane_id":1}).to_string().into(),
                 "application/json",
                 None,

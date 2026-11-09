@@ -560,6 +560,7 @@
     const pane=latest?.active_pane;
     if(!pane||pane.is_plugin){typedDraft='';return;}
     if(pane.pane_id!==typedPane){typedPane=pane.pane_id;typedDraft='';}
+    if(data==='\x1b')parent.postMessage({type:'zellij-escape-sent',pane_id:pane.pane_id},location.origin);
     if(data==='\r'){
       const prompt=typedDraft.trimStart();typedDraft='';
       if(prompt&&prompt[0]!=='!'&&!/^\/[a-z][\w:.-]*(?:\s|$)/i.test(prompt))parent.postMessage({type:'zellij-prompt-submit',pane_id:pane.pane_id},location.origin);
@@ -698,6 +699,11 @@
         holdFocusInput();
         if(!pendingFocus)dispatchFocus();
       }else{diagnostics?.ack();releaseFocus();restoreTerminalFocus();if(latest)sendState(latest);}
+    } else if (message?.type === 'zellij-interrupt') {
+      const pane=latest?.active_pane;
+      const ok=Date.now()<=message.expires&&!hasDialog()&&!pendingFocus&&!pendingNewTab&&latest?.session_name===message.session&&pane&&!pane.is_plugin&&pane.pane_id===message.pane_id&&terminalSocket?.readyState===1&&window.term&&!window.term.options.disableStdin;
+      if(ok)window.term.input('\x1b');
+      parent.postMessage({type:'zellij-interrupt-result',id:message.id,ok:!!ok},location.origin);
     } else if (message?.type === 'zellij-escape' && !hasDialog()) {
       focusTerminalInput();
       // The same byte the key sends, in order with typing on the terminal socket.
