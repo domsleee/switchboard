@@ -59,6 +59,12 @@ answers with `task` (`command`, recent `events`) and `output`, the last 32 KiB o
 with credentials masked. This is the one read that returns tool output; it is on request for a single
 running task. Without a `task` field the computer predates this.
 
+`delegates` lists the chat's latest 32 Claude `Agent` calls and `codex exec -m MODEL` shell commands,
+foreground or background: `call`, `provider` (`claude` or `codex`), `id` (known once launched), `model`, `effort`, `status` (`running`, `completed`, `failed` or `stopped`),
+`started` and `ended`. A transcript's `agent` tool step names its row in `call`, and Conversation
+draws that step as a card. Opening a card shows the agent's transcript as its own view over the
+Conversation, after T3 Code's subagent thread.
+
 Claude and Codex tool calls appear as one-line steps: `kind` is `tool`, `phase` is
 `commentary` (so older clients show them as progress notes), `tool` is `run`, `read`,
 `edit`, `write`, `search`, `fetch`, `agent`, `plan` or `tool`, and `detail` is the command's
