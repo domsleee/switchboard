@@ -43,6 +43,18 @@ test('hover snooze preserves the selected view and settle closes the tab',
       const headerTops=()=>groups.page.evaluate(()=>['#snoozed-toggle','#manual-snoozed-toggle','#hidden-toggle'].flatMap(selector=>{const header=document.querySelector(selector);return header?[Math.round(header.getBoundingClientRect().top)]:[];}));
       const [working,snoozed,hiddenGroup]=await headerTops();
       assert.equal(snoozed-working,hiddenGroup-snoozed,'group headers are evenly spaced');
+      const headerLook=async selector=>{
+        const header=groups.page.locator(selector);
+        const look=()=>header.evaluate(el=>{const s=getComputedStyle(el);return {background:s.backgroundColor,color:s.color,radius:s.borderRadius,outlineOffset:s.outlineOffset};});
+        await groups.page.mouse.move(1000,700);const rest=await look();
+        await header.hover();const hover=await look();
+        await groups.page.mouse.move(1000,700);await groups.page.keyboard.press('Shift');await header.focus();const focus=await look();
+        await header.blur();
+        return {rest,hover,focus};
+      };
+      const workingLook=await headerLook('#snoozed-toggle');
+      assert.deepEqual(await headerLook('#hidden-toggle'),workingLook,'Hidden is highlighted like Working');
+      assert.deepEqual(await headerLook('#manual-snoozed-toggle'),workingLook,'Snoozed is highlighted like Working and Hidden');
       if(mode==='terminal'&&process.env.SWITCHBOARD_PARKING_SCREENSHOTS)await groups.page.locator('#sidebar').screenshot({path:process.env.SWITCHBOARD_PARKING_SCREENSHOTS+'/groups.png'});
       await groups.page.evaluate(()=>{paneAttention.get(attentionKey('desktop','main',2)).state='ready';render();});
       await groups.page.locator('#snoozed-toggle').waitFor({state:'detached'});
