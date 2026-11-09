@@ -540,7 +540,7 @@
       else{working.setAttribute('aria-hidden','true');working.removeAttribute('aria-expanded');working.removeAttribute('aria-label');}
     }
     function updateActivity(){
-      const state=target?.state,questions=state==='input'&&target.agent==='codex'?messages.filter(item=>item.async_question).map(asyncState).filter(question=>question.status!=='answered'):[];
+      const state=target?.state,questions=state==='input'&&target.agent==='codex'?messages.filter(item=>item.async_question).map(asyncState).filter(question=>!['answered','dismissed'].includes(question.status)):[];
       const asyncInput=questions.length>0,needsAnswer=questions.some(question=>['draft','failed','uncertain'].includes(question.status)),sendingAnswer=questions.some(question=>question.status==='sending');
       const asyncWorking=asyncInput&&target.turnState==='working',label=state==='working'?'Working…':state==='approval'?'Approval needed':needsAnswer?'Question for you':sendingAnswer?'Sending answer…':asyncInput?(asyncWorking?'Working…':'Answer submitted'):state==='input'?'Input needed':state==='waiting'?'Waiting on an agent':state==='ready'?'Ready':'';
       paintModel();
@@ -673,6 +673,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
           const saved=JSON.parse(sessionStorage.getItem(asyncDraftKey(state)));
           if(saved&&JSON.stringify(saved.questions)===JSON.stringify(questions)&&Array.isArray(saved.answers)&&saved.answers.length===questions.length&&saved.answers.every(answer=>fits(answer,4000))&&Array.isArray(saved.custom)&&saved.custom.length===questions.length&&saved.custom.every(value=>typeof value==='boolean')){
             state.answers=saved.answers;state.custom=saved.custom;state.collapsed=saved.collapsed===true;
+            if(saved.status==='dismissed')state.status='dismissed';
             if(['queued','uncertain','failed'].includes(saved.status)&&fits(saved.payload,8192)&&fits(saved.sendKey,128)){
               state.status=saved.status;state.payload=saved.payload;state.sendKey=saved.sendKey;state.error=(fits(saved.error,4000)?saved.error:'')||(saved.status==='uncertain'?asyncUnconfirmed:'');
             }
@@ -682,7 +683,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       }
       return asyncQuestions.get(key);
     }
-    function pendingAsyncQuestion(){return target?.agent==='codex'&&messages.some(item=>item.async_question&&asyncState(item).status!=='answered');}
+    function pendingAsyncQuestion(){return target?.agent==='codex'&&messages.some(item=>item.async_question&&!['answered','dismissed'].includes(asyncState(item).status));}
     function syncAsyncQuestions(){
       for(const item of messages)if(item.async_question)asyncState(item);
       for(const item of messages)for(const id of new Set((item.question_replies||[]).map(reply=>reply.id))){
@@ -759,6 +760,11 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
         choices.append(write,other);controls.push(write,input,submit);groups.push({index,options,write,other,input});
       }
       send.type='button';send.onclick=()=>void sendAsyncAnswer(item,state);if(request.questions.length>1)body.append(send);
+      const dismiss=el('button','Dismiss question','conversation-async-write'),reopen=el('button','Answer question','conversation-async-write');
+      dismiss.type=reopen.type='button';dismiss.title='Hide this question without sending an answer';
+      dismiss.onclick=()=>{state.status='dismissed';state.error='';syncAsyncQuestions();updateActivity();toggle.focus({preventScroll:true});};
+      reopen.onclick=()=>{state.status='draft';state.collapsed=false;syncAsyncQuestions();updateActivity();toggle.focus({preventScroll:true});};
+      body.append(dismiss);card.append(reopen);
       checkTerminal.type='button';checkTerminal.onclick=()=>show(false);body.append(checkTerminal);
       retry.type='button';retry.onclick=()=>void sendAsyncAnswer(item,state,state.status!=='failed');status.setAttribute('role','status');card.append(status,retry);
       card.sync=()=>{
@@ -767,9 +773,9 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
         const focusInBody=body.contains(document.activeElement);body.hidden=state.collapsed;
         toggle.setAttribute('aria-expanded',String(!state.collapsed));toggle.setAttribute('aria-label',state.collapsed?'Show question and answer':'Hide question and answer');
         card.classList.toggle('collapsed',state.collapsed);card.classList.toggle('settled',['sending','queued','answered'].includes(state.status));
-        label.textContent=({sending:'Sending answer…',queued:'Answer submitted',answered:'Answered'}[state.status]||'Question for you');
+        label.textContent=({sending:'Sending answer…',queued:'Answer submitted',answered:'Answered',dismissed:'Dismissed'}[state.status]||'Question for you');
         label.title=state.status==='queued'?'Codex accepted your answer. Waiting for its conversation receipt.':'';
-        const summary=['sending','queued','answered'].includes(state.status);preview.textContent=summary?state.answers.join(' · '):'Reply when you’re ready';preview.title=summary?preview.textContent:'';
+        const summary=['sending','queued','answered'].includes(state.status);preview.textContent=state.status==='dismissed'?'No answer sent':summary?state.answers.join(' · '):'Reply when you’re ready';preview.title=summary?preview.textContent:'';
         mark.textContent=state.status==='answered'?'✓':summary?'↗':'?';
         if(state.collapsed&&focusInBody&&!panel.hidden)toggle.focus({preventScroll:true});
         for(const control of controls)control.disabled=locked;
@@ -781,6 +787,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
         }
         send.disabled=locked||!state.answers.every(answer=>answer.trim());
         retry.hidden=!['failed','uncertain'].includes(state.status);
+        dismiss.hidden=!['draft','failed'].includes(state.status);reopen.hidden=state.status!=='dismissed';
         checkTerminal.hidden=!['queued','uncertain'].includes(state.status);
         card.classList.toggle('answering',state.status==='sending');
         status.textContent=state.error||'';status.hidden=!status.textContent;saveAsyncDraft(state);
