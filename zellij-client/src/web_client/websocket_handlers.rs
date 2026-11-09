@@ -679,9 +679,7 @@ pub(super) fn control_payload_to_server_msg(
                 },
                 None => command,
             };
-            let cwd = project
-                .filter(|p| !p.trim().is_empty())
-                .and_then(|p| std::env::home_dir().map(|home| home.join("git").join(p)));
+            let cwd = project.and_then(|p| std::env::home_dir().map(|home| project_cwd(home, &p)));
             let initial_panes = if command.as_ref().is_some_and(|c| !c.trim().is_empty()) {
                 Some(vec![CommandOrPlugin::Command(tab_command(
                     default_shell,
@@ -734,6 +732,16 @@ pub(super) fn control_payload_to_server_msg(
     Some(client_msg)
 }
 
+pub(super) fn project_cwd(home: PathBuf, project: &str) -> PathBuf {
+    let project = project.trim();
+    let git = home.join("git");
+    if project.is_empty() && !git.is_dir() {
+        home
+    } else {
+        git.join(project)
+    }
+}
+
 fn terminal_metrics_to_ipc(metrics: TerminalMetricsPayload) -> ClientToServerMsg {
     ClientToServerMsg::TerminalPixelDimensions {
         pixel_dimensions: PixelDimensions {
@@ -752,6 +760,25 @@ fn terminal_metrics_to_ipc(metrics: TerminalMetricsPayload) -> ClientToServerMsg
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switchboard_empty_project_uses_git_directory_or_home() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().to_path_buf();
+        let git = home.join("git");
+        for project in ["", "  \t "] {
+            assert_eq!(project_cwd(home.clone(), project), home);
+        }
+        std::fs::write(&git, "not a directory").unwrap();
+        assert_eq!(project_cwd(home.clone(), ""), home);
+        std::fs::remove_file(&git).unwrap();
+        std::fs::create_dir(&git).unwrap();
+        for project in ["", "  \t "] {
+            assert_eq!(project_cwd(home.clone(), project), git);
+        }
+        assert_eq!(project_cwd(home.clone(), "sample"), git.join("sample"));
+        assert_eq!(project_cwd(home.clone(), home.to_str().unwrap()), home);
+    }
 
     #[test]
     fn terminal_metrics_to_ipc_preserves_all_dimensions() {
