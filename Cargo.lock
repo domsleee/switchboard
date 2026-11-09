@@ -4741,6 +4741,7 @@ dependencies = [
  "unicode-width 0.2.2",
  "uuid",
  "vte 0.15.0",
+ "widestring",
  "windows-sys 0.59.0",
  "zellij-utils",
 ]

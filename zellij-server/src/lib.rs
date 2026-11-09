@@ -28,6 +28,7 @@ mod route;
 mod screen;
 mod session_layout_metadata;
 mod terminal_bytes;
+pub mod terminal_host;
 mod thread_bus;
 mod ui;
 

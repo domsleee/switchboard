@@ -42,6 +42,7 @@ nix = { workspace = true, features = ["fs", "process", "signal", "term"] }
 signal-hook = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
+widestring = "1"
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Security",

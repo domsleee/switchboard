@@ -3,9 +3,11 @@ use crate::{panes::PaneId, ClientId};
 use interprocess::local_socket::Stream as LocalSocketStream;
 
 #[cfg(not(windows))]
-use crate::os_input_output_unix::UnixPtyBackend as PtyBackendImpl;
+pub(crate) use crate::os_input_output_unix::UnixPtyBackend as PtyBackendImpl;
 #[cfg(windows)]
-use crate::os_input_output_windows::WindowsPtyBackend as PtyBackendImpl;
+pub(crate) use crate::os_input_output_windows::WindowsPtyBackend as PtyBackendImpl;
+
+use crate::terminal_host::{self, HostedPtyBackend};
 
 use interprocess;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
@@ -30,7 +32,7 @@ use std::{
     io::{self, Write},
     path::PathBuf,
     process::Command,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 pub use async_trait::async_trait;
@@ -341,9 +343,137 @@ impl ClientSender {
     }
 }
 
+/// Runs terminals in this process or, when enabled, in a terminal host. The
+/// host starts on first use because the server daemonizes after construction.
+#[derive(Clone)]
+struct PtyBackend {
+    native: PtyBackendImpl,
+    hosted: Arc<OnceLock<Option<HostedPtyBackend>>>,
+}
+
+impl PtyBackend {
+    fn new() -> Result<Self, io::Error> {
+        Ok(Self {
+            native: PtyBackendImpl::new()?,
+            hosted: Arc::new(OnceLock::new()),
+        })
+    }
+
+    fn hosted(&self) -> Option<&HostedPtyBackend> {
+        self.hosted
+            .get_or_init(|| {
+                if !terminal_host::enabled() {
+                    return None;
+                }
+                HostedPtyBackend::start()
+                    .map_err(|error| {
+                        log::error!("Running terminals without a host: {error}");
+                    })
+                    .ok()
+            })
+            .as_ref()
+    }
+
+    fn spawn_terminal(
+        &self,
+        cmd: RunCommand,
+        failover_cmd: Option<RunCommand>,
+        quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+        terminal_id: u32,
+    ) -> Result<(Box<dyn AsyncReader>, u32)> {
+        match self.hosted() {
+            Some(hosted) => hosted.spawn_terminal(cmd, failover_cmd, quit_cb, terminal_id),
+            None => self
+                .native
+                .spawn_terminal(cmd, failover_cmd, Vec::new(), quit_cb, terminal_id)
+                .map(|(reader, pid)| (reader, pid as u32)),
+        }
+    }
+
+    fn set_terminal_size(
+        &self,
+        terminal_id: u32,
+        cols: u16,
+        rows: u16,
+        width_in_pixels: Option<u16>,
+        height_in_pixels: Option<u16>,
+    ) -> Result<()> {
+        match self.hosted() {
+            Some(hosted) => {
+                hosted.set_terminal_size(terminal_id, cols, rows, width_in_pixels, height_in_pixels)
+            },
+            None => self.native.set_terminal_size(
+                terminal_id,
+                cols,
+                rows,
+                width_in_pixels,
+                height_in_pixels,
+            ),
+        }
+    }
+
+    fn write_to_tty_stdin(&self, terminal_id: u32, buf: &[u8]) -> Result<usize> {
+        match self.hosted() {
+            Some(hosted) => hosted.write_to_tty_stdin(terminal_id, buf),
+            None => self.native.write_to_tty_stdin(terminal_id, buf),
+        }
+    }
+
+    fn tcdrain(&self, terminal_id: u32) -> Result<()> {
+        match self.hosted() {
+            Some(hosted) => hosted.tcdrain(terminal_id),
+            None => self.native.tcdrain(terminal_id),
+        }
+    }
+
+    #[cfg(unix)]
+    fn tcgetpgrp(&self, terminal_id: u32) -> Option<i32> {
+        match self.hosted() {
+            Some(hosted) => hosted.tcgetpgrp(terminal_id),
+            None => self.native.tcgetpgrp(terminal_id),
+        }
+    }
+
+    fn kill(&self, pid: u32) -> Result<()> {
+        match self.hosted() {
+            Some(hosted) => hosted.kill(pid),
+            None => self.native.kill(pid),
+        }
+    }
+
+    fn force_kill(&self, pid: u32) -> Result<()> {
+        match self.hosted() {
+            Some(hosted) => hosted.force_kill(pid),
+            None => self.native.force_kill(pid),
+        }
+    }
+
+    fn send_sigint(&self, pid: u32) -> Result<()> {
+        match self.hosted() {
+            Some(hosted) => hosted.send_sigint(pid),
+            None => self.native.send_sigint(pid),
+        }
+    }
+
+    fn reserve_terminal_id(&self, terminal_id: u32) {
+        self.native.reserve_terminal_id(terminal_id);
+    }
+
+    fn clear_terminal_id(&self, terminal_id: u32) {
+        self.native.clear_terminal_id(terminal_id);
+        if let Some(hosted) = self.hosted() {
+            hosted.clear_terminal_id(terminal_id);
+        }
+    }
+
+    fn next_terminal_id(&self) -> Option<u32> {
+        self.native.next_terminal_id()
+    }
+}
+
 #[derive(Clone)]
 pub struct ServerOsInputOutput {
-    pty_backend: PtyBackendImpl,
+    pty_backend: PtyBackend,
     client_senders: Arc<Mutex<HashMap<ClientId, ClientSender>>>,
     cached_resizes: Arc<Mutex<Option<BTreeMap<u32, (u16, u16, Option<u16>, Option<u16>)>>>>,
 }
@@ -488,7 +618,7 @@ impl ServerOsApi for ServerOsInputOutput {
             .spawn_terminal(cmd, failover_cmd, quit_cb, terminal_id)
             .with_context(err_context)?;
 
-        Ok((terminal_id, async_reader, Some(child_fd as u32)))
+        Ok((terminal_id, async_reader, Some(child_fd)))
     }
     fn reserve_terminal_id(&self) -> Result<u32> {
         let terminal_id = self
@@ -743,7 +873,7 @@ impl ServerOsApi for ServerOsInputOutput {
         let (async_reader, child_fd) =
             self.pty_backend
                 .spawn_terminal(run_command, None, quit_cb, terminal_id)?;
-        Ok((async_reader, Some(child_fd as u32)))
+        Ok((async_reader, Some(child_fd)))
     }
     fn clear_terminal_id(&self, terminal_id: u32) -> Result<()> {
         self.pty_backend.clear_terminal_id(terminal_id);
@@ -780,7 +910,7 @@ impl Clone for Box<dyn ServerOsApi> {
 
 pub fn get_server_os_input() -> Result<ServerOsInputOutput, std::io::Error> {
     Ok(ServerOsInputOutput {
-        pty_backend: PtyBackendImpl::new()?,
+        pty_backend: PtyBackend::new()?,
         client_senders: Arc::new(Mutex::new(HashMap::new())),
         cached_resizes: Arc::new(Mutex::new(None)),
     })

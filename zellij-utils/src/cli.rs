@@ -148,6 +148,13 @@ pub enum Command {
     #[clap(name = "web", value_parser)]
     Web(WebCli),
 
+    /// Internal process that owns a session's terminals.
+    #[clap(hide = true)]
+    TerminalHost {
+        #[clap(long)]
+        dir: PathBuf,
+    },
+
     /// Internal retained terminal attachment process.
     #[clap(hide = true)]
     AttachmentWorker {
