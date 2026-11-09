@@ -92,6 +92,8 @@ test('Conversation folds finished progress, keeps the live step, and gives code 
   // A finished turn still waiting on background work offers Stop too, which ends those tasks.
   await page.evaluate(()=>{current.state='waiting';SwitchboardConversation.update();});
   assert.equal(await stop.isVisible(),true);assert.equal(await stop.getAttribute('title'),'Stop background tasks');
+  // The Esc key interrupts a turn, and must never end background tasks.
+  await page.getByLabel('Reply draft').press('Escape');await page.waitForTimeout(100);assert.deepEqual(backgroundStops,[]);
   await stop.click();await page.waitForFunction(()=>!document.querySelector('.conversation-stop').disabled);
   assert.deepEqual(backgroundStops,[{session:'main',tab_id:7,pane_id:1}]);assert.equal(escapes.length,1);
   await page.evaluate(()=>{current.state='ready';SwitchboardConversation.update();});
