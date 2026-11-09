@@ -616,7 +616,36 @@ async fn execute(
             Err((response.status, peer_failure(response.status)))
         };
     }
-    execute_host(&host, session, action).await
+    execute_host(&host, session, action).await?;
+    if let ControlAction::Escape(pane) = action {
+        settle_interrupt(host, state.poll.clone(), session.to_owned(), pane);
+    }
+    Ok(())
+}
+
+/// After Esc, ends the turn if Claude shows it was interrupted. Claude sends no hook for
+/// that, and an unwatched pane's screen feed can be arbitrarily old, so read the pane.
+pub(super) fn settle_interrupt(
+    host: Arc<Host>,
+    poll: Arc<Mutex<attention::PollState>>,
+    session: String,
+    pane: u32,
+) {
+    tokio::spawn(async move {
+        let id = pane.to_string();
+        let args = ["dump-screen", "-p", id.as_str()];
+        for _ in 0..8 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let Ok(screen) = run_local(&host, &session, &args, Duration::from_secs(2)).await else {
+                continue;
+            };
+            let row = attention::classify(&json!({"pane_command":"claude"}), &screen);
+            if row["interrupted"] == true {
+                poll.lock().await.settle_interrupted(&session, pane.into());
+                return;
+            }
+        }
+    });
 }
 
 // Peers answer with execute_host's fixed statuses; say what each means here.
