@@ -224,7 +224,7 @@ pub(crate) struct Pty {
 struct Adoption {
     handoff_id: String,
     terminals: std::collections::BTreeMap<u32, crate::handoff::HandoffTerminal>,
-    snapshots: Vec<(u32, String, zellij_utils::pane_size::Size)>,
+    snapshots: Vec<(u32, String)>,
     exits: Vec<(u32, Option<i32>, RunCommand)>,
 }
 
@@ -1411,14 +1411,10 @@ impl Pty {
             .with_context(err_context)?;
         if let Some(adoption) = self.adoption.as_mut() {
             // After the panes exist, and before any new output can reach them.
-            for (terminal_id, snapshot, size) in adoption.snapshots.drain(..) {
+            for (terminal_id, snapshot) in adoption.snapshots.drain(..) {
                 self.bus
                     .senders
-                    .send_to_screen(ScreenInstruction::RestoreHandoffPane(
-                        terminal_id,
-                        snapshot,
-                        size,
-                    ))
+                    .send_to_screen(ScreenInstruction::RestoreHandoffPane(terminal_id, snapshot))
                     .with_context(err_context)?;
             }
             for (terminal_id, status, command) in adoption.exits.drain(..) {
@@ -1731,9 +1727,7 @@ impl Pty {
                     .remove(&terminal_id)
                     .context("the manifest does not list this terminal")
                     .with_context(err_context)?;
-                adoption
-                    .snapshots
-                    .push((terminal_id, terminal.snapshot, terminal.size));
+                adoption.snapshots.push((terminal_id, terminal.snapshot));
                 if let Some(pid) = terminal.pid {
                     self.id_to_child_pid.insert(terminal_id, pid);
                 }

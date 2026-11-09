@@ -34,8 +34,10 @@ pub(crate) fn is_frozen() -> bool {
 }
 
 /// A new engine stays frozen until every pane has its snapshot.
-pub(crate) fn freeze_for_adoption() {
-    FROZEN.store(true, Ordering::SeqCst);
+pub(crate) fn freeze_if_taking_over() {
+    if std::env::var_os(MANIFEST_ENV).is_some() {
+        FROZEN.store(true, Ordering::SeqCst);
+    }
 }
 
 pub(crate) fn unfreeze() {
@@ -43,19 +45,19 @@ pub(crate) fn unfreeze() {
 }
 
 /// Holds a new viewer back until the session can accept it. An engine that
-/// hands over exits, which ends the wait by closing the connection.
-pub(crate) fn wait_while_frozen() {
+/// hands over exits, which ends the wait by closing the connection. Returns
+/// whether the session can accept the viewer.
+pub(crate) fn wait_while_frozen() -> bool {
     let deadline = std::time::Instant::now() + FROZEN_WAIT_LIMIT;
     while is_frozen() && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
     }
+    !is_frozen()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HandoffTerminal {
     pub snapshot: String,
-    /// The size of this pane's tab, which is what the snapshot describes.
-    pub size: Size,
     pub pid: Option<u32>,
     /// The output position the snapshot describes. Held panes have none.
     pub position: Option<u64>,
@@ -65,6 +67,8 @@ pub struct HandoffTerminal {
 pub struct HandoffTab {
     pub id: usize,
     pub name: String,
+    /// Tabs can have different sizes, and snapshots describe this one.
+    pub size: Size,
     pub tiled: TiledPaneLayout,
     pub floating: Vec<FloatingPaneLayout>,
 }
@@ -88,9 +92,8 @@ pub struct ScreenHandoff {
     pub focused_tab_index: usize,
     pub next_tab_id: usize,
     pub tabs: Vec<HandoffTab>,
-    /// Terminal ID, its snapshot, whether a child is running in it, and the
-    /// size of its tab.
-    pub terminals: BTreeMap<u32, (String, bool, Size)>,
+    /// Terminal ID, its snapshot, and whether a child is running in it.
+    pub terminals: BTreeMap<u32, (String, bool)>,
 }
 
 impl HandoffManifest {
@@ -209,7 +212,7 @@ pub(crate) fn hand_over(
             .recv_timeout(SETTLE_TIMEOUT)
             .map_err(|_| "the terminal list did not arrive in time".to_string())?;
         let mut terminals = BTreeMap::new();
-        for (id, (snapshot, running, size)) in screen.terminals {
+        for (id, (snapshot, running)) in screen.terminals {
             let position = if running {
                 Some(
                     hosted
@@ -224,7 +227,6 @@ pub(crate) fn hand_over(
                 id,
                 HandoffTerminal {
                     snapshot,
-                    size,
                     pid,
                     position,
                 },
@@ -304,6 +306,7 @@ mod tests {
             tabs: vec![HandoffTab {
                 id: 7,
                 name: "Tab #8".to_string(),
+                size: Size { rows: 10, cols: 40 },
                 tiled: TiledPaneLayout::default(),
                 floating: Vec::new(),
             }],
@@ -311,7 +314,6 @@ mod tests {
                 11,
                 HandoffTerminal {
                     snapshot: "screen\u{1b}[m".to_string(),
-                    size: Size { rows: 10, cols: 40 },
                     pid: Some(42),
                     position: Some(1234),
                 },

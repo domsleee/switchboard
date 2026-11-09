@@ -2343,7 +2343,17 @@ pub(crate) fn route_thread_main(
                         },
                         ClientToServerMsg::AttachClient { .. }
                         | ClientToServerMsg::AttachWatcherClient { .. } => {
-                            crate::handoff::wait_while_frozen();
+                            if !crate::handoff::wait_while_frozen() {
+                                let _ = os_input.send_to_client(
+                                    client_id,
+                                    ServerToClientMsg::Exit {
+                                        exit_reason: ExitReason::Error(
+                                            "The session is being handed over".to_string(),
+                                        ),
+                                    },
+                                );
+                                continue 'route_loop;
+                            }
                         },
                         _ => {},
                     }

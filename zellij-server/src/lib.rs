@@ -956,6 +956,8 @@ pub fn start_server_impl(
     install_panic_hook: bool,
 ) {
     envs::set_zellij("0".to_string());
+    // Before anything can connect, so that no viewer gets in ahead of the panes.
+    handoff::freeze_if_taking_over();
 
     let (to_server, server_receiver): ChannelWithContext<ServerInstruction> = channels::bounded(50);
     let to_server = SenderWithContext::new(to_server);
@@ -1227,7 +1229,6 @@ pub fn start_server_impl(
                             log::error!("Cannot take over the terminal host: {error}");
                             std::process::exit(1);
                         }
-                        handoff::freeze_for_adoption();
                         os_input.set_next_terminal_id(manifest.next_terminal_id);
                         layout = manifest.into_layout();
                         Some(manifest)
@@ -1300,7 +1301,7 @@ pub fn start_server_impl(
                     let senders = &rlock.as_ref().unwrap().senders;
                     senders
                         .send_to_screen(ScreenInstruction::UseHandoffTabIds(
-                            manifest.tabs.iter().map(|tab| tab.id).collect(),
+                            manifest.tabs.iter().map(|tab| (tab.id, tab.size)).collect(),
                             manifest.next_tab_id,
                         ))
                         .unwrap();
