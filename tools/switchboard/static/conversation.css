@@ -372,6 +372,10 @@
 .conversation-message.user .conversation-media img{max-height:320px}
 .conversation-message.user .conversation-media .conversation-image-button{display:block;width:fit-content;max-width:24rem;background:#0a0a0c}
 .conversation-message.user a.conversation-outgoing-file{display:block}
+.conversation-html-body{position:relative;background:var(--bg)}
+.conversation-html-body>iframe{position:absolute;inset:0;visibility:visible;color-scheme:dark}
+.conversation-html-body>.conversation-media-unavailable{margin:10px}
+.conversation-panel .conversation-html .conversation-code-bar button::before{display:none}
 .conversation-media-unavailable{font-size:12px;color:#d6c08f;border:1px solid #d6c08f33;background:#d6c08f0a;padding:10px;border-radius:8px}
 @media(max-width:700px){.conversation-media img,.conversation-media video{max-height:280px}}
 
