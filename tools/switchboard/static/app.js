@@ -335,7 +335,7 @@ function updateCreatedTabs(entry){
     entry.provisionalTabs??=[];
     if(!entry.provisionalTabs.some(tab=>tab.id===paneId))entry.provisionalTabs.push({id:paneId,pending:true,name:'New tab',panes:[]});
     if(creating){
-      entry.provisionalTabs.find(tab=>tab.id===paneId).project=creating.project;requestedProjects.set(JSON.stringify([entry.host,entry.name,paneId]),creating.project);
+      entry.provisionalTabs.find(tab=>tab.id===paneId).project=creating.project;requestedProjects.set(JSON.stringify([entry.host,entry.name,paneId]),creating.project);entry.provisionalTabs.find(tab=>tab.id===paneId).requestedModel=creating.requestedModel;requestedModels.set(JSON.stringify([entry.host,entry.name,paneId]),creating.requestedModel);
       if(creating.launch){entry.provisionalTabs.find(tab=>tab.id===paneId).launch=creating.launch;launches.set(JSON.stringify([entry.host,entry.name,paneId]),creating.launch);}
       if(selected===tabKey(entry,creating))selected=tabKey(entry,entry.provisionalTabs.find(tab=>tab.id===paneId));
       entry.creatingTab=null;entry.pendingNewTab=null;entry.followActiveTab=false;
@@ -374,7 +374,9 @@ function tabTitle(item){
 }
 // A tab started from New tab with a prompt shows that prompt as its name, and a spinner until
 // its agent reports in, instead of a blank "New tab"; Conversation shows the prompt as sent.
-const launches=new Map(),requestedProjects=new Map();
+const launches=new Map(),requestedProjects=new Map(),requestedModels=new Map();
+// What the New tab picker asked for. Conversation shows it until the transcript names a model.
+function requestedModel(launch){const parts=ModelPicker.parse(launch.command);return parts&&{agent:parts.provider,model:parts.model,reasoning_effort:parts.effort};}
 function promptLaunch(launch,typed=launch.prompt){const text=typeof typed==='string'?typed:'',attachments=(launch.images||[]).map(url=>({kind:'image',name:url.split(/[\\/]/).pop(),url}));return text.trim()||attachments.length?{text:text.trim()?text:attachments.length===1?'Image attached':`${attachments.length} images attached`,attachments,agent:newTabModelProvider(launch.command),at:Date.now()}:null;}
 function launchFor(item){
   const pane=item.tab.panes.find(p=>!p.is_plugin),key=pane&&JSON.stringify([item.entry.host,item.entry.name,pane.pane_id]);
@@ -2089,7 +2091,7 @@ async function createConversationTab(key,launch,typed=launch.prompt){
   pending.requestId=entry.newTabRequestId=(entry.newTabRequestId||0)+1;pending.api=true;
   // A command's output stays in the terminal, so no message waits for it in Conversation.
   const command=newTabCommand(typed),started=command?null:promptLaunch(launch,typed);
-  entry.creatingTab={id:'creating',pending:true,name:'Creating tab…',position:Infinity,panes:[],project:launch.project,launch:started};
+  entry.creatingTab={id:'creating',pending:true,name:'Creating tab…',position:Infinity,panes:[],project:launch.project,launch:started,requestedModel:requestedModel(launch)};
   const placeholder=selected=tabKey(entry,entry.creatingTab);pushTabHistory=true;restoringTab=false;entry.followActiveTab=false;
   if(filter!=='all'&&groups[hostId]!==filter)setFilter('all');$('tab-search').value='';
   sidebarOpen=false;updateSidebar();$('new-tab-dialog').close();render();globalThis.SwitchboardConversation.focus();
@@ -2099,9 +2101,9 @@ async function createConversationTab(key,launch,typed=launch.prompt){
     const result=await response.json();if(!Number.isInteger(result.pane_id)||result.pane_id<0)throw Error('The new tab did not return its identity. Check the tab list before retrying.');
     if(entry.pendingNewTab!==pending)return;
     entry.apiCreationPane=result.pane_id;
-    requestedProjects.set(JSON.stringify([hostId,name,result.pane_id]),launch.project);
+    requestedProjects.set(JSON.stringify([hostId,name,result.pane_id]),launch.project);requestedModels.set(JSON.stringify([hostId,name,result.pane_id]),requestedModel(launch));
     if(started)launches.set(JSON.stringify([hostId,name,result.pane_id]),started);
-    const tab={id:result.pane_id,pending:true,name:'New tab',position:Infinity,panes:[{pane_id:result.pane_id,is_plugin:false,tab_position:Infinity}],project:launch.project,launch:started};
+    const tab={id:result.pane_id,pending:true,name:'New tab',position:Infinity,panes:[{pane_id:result.pane_id,is_plugin:false,tab_position:Infinity}],project:launch.project,launch:started,requestedModel:requestedModel(launch)};
     entry.provisionalTabs??=[];entry.provisionalTabs.push(tab);entry.creatingTab=null;entry.pendingNewTab=null;
     if(selected===placeholder)selected=tabKey(entry,tab);
     render();if(command)globalThis.SwitchboardConversation.showTerminal();refreshAttention(true);refresh();
@@ -2275,7 +2277,7 @@ async function createNewTab(key,launch,isCurrent=()=>true,typed){
   pending.startedAt=performance.timeOrigin+performance.now();
   pending.paneIds=new Set((entry.state.panes||[]).filter(p=>!p.is_plugin).map(p=>p.pane_id));
   if(entry.state.active_pane&&!entry.state.active_pane.is_plugin)pending.paneIds.add(entry.state.active_pane.pane_id);
-  entry.creatingTab={id:'creating',pending:true,name:'Creating tab…',position:Infinity,panes:[],project:launch.project,launch:promptLaunch(launch,typed??launch.prompt)};
+  entry.creatingTab={id:'creating',pending:true,name:'Creating tab…',position:Infinity,panes:[],project:launch.project,launch:promptLaunch(launch,typed??launch.prompt),requestedModel:requestedModel(launch)};
   selected=tabKey(entry,entry.creatingTab);pushTabHistory=true;
   restoringTab=false;entry.followActiveTab=true;
   if(filter!=='all'&&groups[entry.host]!==filter)setFilter('all');$('tab-search').value='';
@@ -2664,6 +2666,7 @@ async function switchAgentModel(source,model,text,context,isCurrent=()=>true){
   if(!restart.ok)throw Error(await restart.text()||'Could not switch models.');
   const result=await restart.json();
   if(!Number.isInteger(result.pane_id)||result.tab_id!==source.target.tab_id)throw Error('The switch was not confirmed. Check the terminal before trying again.');
+  requestedModels.set(JSON.stringify([source.host,source.target.session,result.pane_id]),requestedModel({command:model}));
   globalThis.SwitchboardConversation?.handoverSent?.(source,text,result.pane_id);
   return result;
 }
@@ -2998,10 +3001,10 @@ window.SwitchboardConversation?.install({
     if(!item)return null;
     const active=item.entry.state?.active_pane,panes=(!item.entry.state?item.tab.panes:tabPanes(item.entry,item.tab)).filter(p=>!p.is_plugin);
     const preferred=item.entry.resumePane||active,launch=launchingTab(item);
-    const pane=panes.find(p=>p.pane_id===preferred?.pane_id)||panes.find(p=>p.is_focused)||panes[0];if(!pane)return {key:item.key,host:item.entry.host,computer:hosts.get(item.entry.host)?.name,project:launchedProject(item),frame:item.entry.frame,title:displayTitle(item),state:launch?'working':undefined,since:launch?.at/1000,starting:!!item.tab.pending,launch:launchFor(item)};
+    const pane=panes.find(p=>p.pane_id===preferred?.pane_id)||panes.find(p=>p.is_focused)||panes[0];if(!pane)return {key:item.key,host:item.entry.host,computer:hosts.get(item.entry.host)?.name,project:launchedProject(item),frame:item.entry.frame,title:displayTitle(item),state:launch?'working':undefined,since:launch?.at/1000,starting:!!item.tab.pending,launch:launchFor(item),requestedModel:item.tab.requestedModel};
 
     const state=paneAttention.get(attentionKey(item.entry.host,item.entry.name,pane.pane_id)),queued=pendingSwitches.get(item.key);
-    return {key:JSON.stringify([item.entry.host,item.entry.name,pane.pane_id]),host:item.entry.host,showCost:chatCostShown(item.entry.host),chatHost:hosts.get(item.entry.host)?.local?'local':item.entry.host,session:item.entry.name,tab:item.tab.id,pane:pane.pane_id,frame:item.entry.frame,terminalReady:!item.entry.suspended&&!item.entry.disconnected&&!item.entry.needsFocus&&!item.entry.focusPending&&active?.pane_id===pane.pane_id,title:displayTitle(item),agent:state?.agent,state:launch?'working':state?.state,chatId:state?.chat_id,since:launch?launch.at/1000:state?.since,turnState:state?.turn_state,computer:hosts.get(item.entry.host)?.name,project:launchedProject(item,pane),switchAvailable:switchPossible(state),pendingSwitch:queued?.source.target.pane_id===pane.pane_id?queued:null,starting:!!item.tab.pending,launch:launchFor(item)};
+    return {key:JSON.stringify([item.entry.host,item.entry.name,pane.pane_id]),host:item.entry.host,showCost:chatCostShown(item.entry.host),chatHost:hosts.get(item.entry.host)?.local?'local':item.entry.host,session:item.entry.name,tab:item.tab.id,pane:pane.pane_id,frame:item.entry.frame,terminalReady:!item.entry.suspended&&!item.entry.disconnected&&!item.entry.needsFocus&&!item.entry.focusPending&&active?.pane_id===pane.pane_id,title:displayTitle(item),agent:state?.agent,state:launch?'working':state?.state,chatId:state?.chat_id,since:launch?launch.at/1000:state?.since,turnState:state?.turn_state,computer:hosts.get(item.entry.host)?.name,project:launchedProject(item,pane),switchAvailable:switchPossible(state),pendingSwitch:queued?.source.target.pane_id===pane.pane_id?queued:null,starting:!!item.tab.pending,launch:launchFor(item),requestedModel:requestedModels.get(JSON.stringify([item.entry.host,item.entry.name,pane.pane_id]))||item.tab.requestedModel};
   },
   openConversation(peer){
     const matches=allTabs(true).filter(item=>statesForTab(item).some(state=>state.chat_id===peer.chat_id));

@@ -287,11 +287,14 @@
       return /^gpt-\d+(?:\.\d+)?-(?:sol|astra|luna|terra)(?:-codex)?$/i.test(raw)?raw.replace(/^gpt-/i,'').replace(/-/g,' ').replace(/\b[a-z]/g,char=>char.toUpperCase()):/^claude-(opus|sonnet|haiku|fable)-\d+(?:-\d+)?(?:-\d{8})?$/i.test(raw)?raw.replace(/^claude-/i,'').replace(/-\d{8}$/,'').replace(/^(opus|sonnet|haiku|fable)-(\d+)-(\d+)$/i,'$1 $2.$3').replace(/-/g,' ').replace(/^\w/,char=>char.toUpperCase()):raw;
     }
     function effortName(value){const raw=String(value||'').trim();return /^xhigh$/i.test(raw)?'Extra High':raw.replace(/^\w/,char=>char.toUpperCase());}
-    function providerLabel(){const agent=target?.agent||chat?.agent;return agent?agent[0].toUpperCase()+agent.slice(1):'Assistant';}
+    function agentName(){return target?.agent||chat?.agent||target?.requestedModel?.agent||'';}
+    function providerLabel(){const agent=agentName();return agent?agent[0].toUpperCase()+agent.slice(1):'Assistant';}
+    // A transcript names its model with the first reply; until then show what the tab was started with.
+    function modelSource(){const requested=target?.requestedModel,agent=target?.agent||chat?.agent;return !chat?.model&&requested&&(!agent||requested.agent===agent)?requested:chat;}
     // The model, then its effort as a dimmer word, the way T3 Code labels its model button.
     // A switch waiting for the turn to end shows where it goes instead of the effort.
     function paintModel(){
-      const name=modelName(chat),pending=target?.pendingSwitch,base=name||(chat||target?.agent?providerLabel():''),label=base+(pending?` → ${pending.label} · ${pending.running?'switching…':'after this turn'}`:''),effort=name&&!pending?effortName(chat.reasoning_effort):'',agent=base?target?.agent||chat?.agent||'':'',signature=JSON.stringify([agent,label,effort,!!pending]);
+      const source=modelSource(),name=modelName(source),pending=target?.pendingSwitch,base=name||(chat||agentName()?providerLabel():''),label=base+(pending?` → ${pending.label} · ${pending.running?'switching…':'after this turn'}`:''),effort=name&&!pending?effortName(source.reasoning_effort):'',agent=base?agentName():'',signature=JSON.stringify([agent,label,effort,!!pending]);
       model.classList.toggle('pending',!!pending);model.title=pending?label+(pending.text?'\nInstructions: '+pending.text:''):switchModel?'Switch between Claude and Codex with context':'Last reported model';
       if(model.dataset.painted===signature)return;model.dataset.painted=signature;
       const icon=agentIcons[agent]?el('span',undefined,'conversation-model-icon'):null;if(icon){icon.innerHTML=agentIcons[agent];icon.setAttribute('aria-hidden','true');}
@@ -350,10 +353,10 @@
       if(follow)list.scrollTop=list.scrollHeight;
       const startup=startupState(),stalled=!!startup&&(!!startup.error||Date.now()-startup.started>=30000);
       terminalAction.hidden=(!['approval','input'].includes(state)||state==='input'&&pendingAsyncQuestion())&&!stalled;recovery.hidden=!stalled||!!chat;
-      const noComposer=!chat&&!firstMessage()&&!target?.launch&&!firstSends.has(target?.key);if(form.hidden!==noComposer){form.hidden=noComposer;sizeDraft();}
+      const noComposer=!chat&&!firstMessage()&&!target?.launch&&!firstSends.has(target?.key)&&!pendingFor();if(form.hidden!==noComposer){form.hidden=noComposer;sizeDraft();}
       insert.disabled=!!pendingFor();
       // While the agent works, an empty composer offers Stop in the send button's place.
-      form.classList.toggle('can-stop',(state==='working'||state==='input'&&target.turnState==='working'&&pendingAsyncQuestion())&&!!chat&&!!target?.session&&Number.isInteger(target?.pane));
+      form.classList.toggle('can-stop',(state==='working'||state==='input'&&target.turnState==='working'&&pendingAsyncQuestion())&&!!target?.session&&Number.isInteger(target?.pane));
       const project=String(chat?.project||target?.project||'').replace(/[\\/]+$/,'').split(/[\\/]/).pop();
       const where=[project,target?.computer].filter(Boolean).join(' · ');if(context.textContent!==where)context.textContent=where;
       paintCost();

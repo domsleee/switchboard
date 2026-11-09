@@ -22,7 +22,7 @@ test('integrated Conversation journeys use production markup and preserve delive
    if(p==='/api/hosts/fixture')return json({id:'fixture',name:'Fixture desktop',local:true,sessions:[{name:'main',web_clients_allowed:true}]});
    if(p==='/api/attention'){if(url.searchParams.has('after'))return new Promise(()=>{});return json({tabs:f.tabs.map(id=>({host:'fixture',session:'main',id,position:id-1,name:'Conversation '+id,panes:[pane(id)]})),panes:f.tabs.map(id=>({host:'fixture',session:'main',pane_id:id,...(f.agent?{agent:f.agent}:{}),state:f.state,turn_state:options.turnState,...(f.bound?{chat_id:(f.chatPrefix||'chat-')+id}:{})})),errors:[]});}
    if(p.startsWith('/api/chats/')){const id=Number(p.split('-').at(-1));return json({id:'chat-'+id,...(f.project?{project:f.project}:{}),model:f.model,reasoning_effort:f.effort,session_id:f.agent==='codex'?thread(id):null,messages:f.history.get(id)||[],message_activity:f.activities?.get(id)||[],start_cursor:0,next_cursor:null});}
-   if(p.endsWith('/conversation/reply')){f.claudeReplies.push(route.request().postDataJSON());return route.fulfill({status:f.claudeReplyStatus,json:{ok:true}});}
+   if(p.endsWith('/conversation/reply')){f.claudeReplies.push(route.request().postDataJSON());if(f.holdClaudeReply)await new Promise(resolve=>f.releaseReplies.push(resolve));return route.fulfill({status:f.claudeReplyStatus,json:{ok:true}});}
    if(p.endsWith('/conversation/prepare')){f.preparations.push(route.request().postDataJSON());return route.fulfill({status:f.prepareStatus,json:{trusted:false}});}
    if(p.endsWith('/codex/reply')){
     const data=route.request().postDataJSON(),id=Number(data.thread.slice(-12));f.requests.push(data);
@@ -721,6 +721,40 @@ test('integrated Conversation journeys use production markup and preserve delive
     f.paneCwd='/srv/gamma';await f.refresh();
     await page.getByText('Review response',{exact:true}).waitFor();
     assert.equal(await page.locator('.conversation-context').textContent(),'gamma · Fixture desktop');
+   }finally{await f.close();}
+  });
+  await t.test('a new tab shows its chosen model and Stop before the transcript reports either',async()=>{
+   const f=await fixture({agent:'claude',desktop:true,viewport:{width:1280,height:844}}),{page}=f;f.holdCreation=true;try{
+    const model=page.locator('.conversation-model'),stop=page.getByRole('button',{name:'Stop',exact:true});
+    await page.evaluate(()=>{void createNewTab(sessionKey('fixture','main'),{project:'switchboard',command:'claude:claude-haiku-5-5#high',prompt:'First task'});});
+    await page.locator('.conversation-launch').getByText('First task',{exact:true}).waitFor();
+    assert.equal(await model.textContent(),'Haiku 5.5 High','The chosen model shows while the tab is created');
+    assert.equal(await model.locator('.conversation-model-icon').count(),1);
+    assert.equal(await stop.isVisible(),false,'A tab that does not exist yet has nothing to stop');
+    while(!f.releaseCreation)await page.waitForTimeout(10);f.releaseCreation();
+    f.tabs=[1,2,3];f.agent=null;f.state='unknown';f.bound=false;await f.refresh();
+    await page.waitForFunction(()=>allTabs().find(item=>item.key===selected)?.tab.id===3);
+    assert.equal(await model.textContent(),'Haiku 5.5 High','The chosen model stays when the pane appears');
+    await stop.waitFor();
+    if(process.env.MODE_SCREENSHOTS)await page.screenshot({path:path.join(process.env.MODE_SCREENSHOTS,'first-send-footer.png')});
+    f.agent='claude';f.state='working';f.bound=true;f.model=null;f.effort=null;f.history.set(3,[{role:'user',text:'First task'}]);await f.refresh();
+    await page.locator('.conversation-message.user').getByText('First task',{exact:true}).waitFor();
+    assert.equal(await model.textContent(),'Haiku 5.5 High','A transcript with no reply yet keeps the chosen model');
+    assert.equal(await stop.isVisible(),true,'Stop stays through chat binding');
+    f.model='claude-opus-5-5';f.effort='medium';f.history.set(3,[{role:'user',text:'First task'},{role:'assistant',text:'On it'}]);await f.poll();
+    await page.waitForFunction(()=>document.querySelector('.conversation-model').textContent==='Opus 5.5 Medium');
+   }finally{await f.close();}
+  });
+  await t.test('Stop appears as soon as a first message starts a turn in a pane with no chat',async()=>{
+   const f=await fixture({agent:'claude',bound:false,desktop:true,viewport:{width:1280,height:844}}),{page}=f;f.claudeReplyStatus=200;try{
+    const stop=page.getByRole('button',{name:'Stop',exact:true});
+    await page.locator('.conversation-notice').getByText('Send a message to start the conversation.',{exact:true}).waitFor();
+    assert.equal(await stop.isVisible(),false,'A ready pane offers Send');
+    assert.equal(await page.locator('.conversation-model').textContent(),'Claude');
+    f.holdClaudeReply=true;await page.getByLabel('Reply draft').fill('Start here');await page.getByRole('button',{name:'Send',exact:true}).click();
+    await stop.waitFor();assert.equal(f.claudeReplies.length,1,'Stop shows while the first message is still being delivered');
+    f.release();f.state='working';await f.refresh();await stop.waitFor();
+    assert.equal(await page.locator('.conversation-model').textContent(),'Claude');
    }finally{await f.close();}
   });
   await t.test('a submitted prompt starts Working immediately and yields to reported activity and attention',async()=>{
