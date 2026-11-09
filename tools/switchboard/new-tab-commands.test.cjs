@@ -89,6 +89,13 @@ test('New tab completes commands and skills for the chosen agent and launches th
    await prompt.fill('use $bro then $missing and $review');await prompt.press('Escape');
    await page.evaluate(()=>document.querySelector('#new-tab-form').requestSubmit());
    await launched(2);assert.equal(launches.at(-1).prompt,'use /bro then $missing and /tools:review');
+   // In Conversation mode a Claude skill and an unknown command stay put; only a dialog needs Terminal.
+   await page.evaluate(()=>localStorage.setItem('switchboard-view-mode','conversation'));await page.reload();await page.waitForFunction(()=>document.querySelector('#tabs .selected'));
+   const pressed=name=>page.getByRole('button',{name,exact:true}).getAttribute('aria-pressed');
+   const start=async(text,picked)=>{await open();await page.evaluate(()=>{newTabModelValue='claude:claude-opus-5-5#high';});await prompt.evaluate(node=>node.blur());await prompt.focus();for(let tries=0;!skills.some(item=>item.agent==='claude')&&tries<100;tries++)await page.waitForTimeout(20);if(picked){await prompt.fill('');await prompt.pressSequentially(text);await option(picked).waitFor();await prompt.press('Tab');if(mobile)await page.evaluate(()=>document.querySelector('#new-tab-form').requestSubmit());else await prompt.press('Enter');}else{await prompt.fill(text);await page.evaluate(()=>document.querySelector('#new-tab-form').requestSubmit());}};
+   await start('$rev','$tools:review From a plugin');await launched(3);assert.equal(launches.at(-1).prompt.trim(),'/tools:review');await page.waitForFunction(()=>document.querySelector('#tabs .selected')?.textContent.includes('New 3')||document.querySelector('#tabs .selected'));await page.waitForTimeout(150);assert.equal(await pressed('Conversation'),'true','A picked skill starts in Conversation');
+   await start('/not-on-the-list go');await launched(4);await page.waitForTimeout(150);assert.equal(await pressed('Conversation'),'true','A command the list does not know starts in Conversation');
+   await start('/model');await launched(5);await page.waitForFunction(()=>document.querySelector('[aria-pressed="true"]')?.textContent==='Terminal'||[...document.querySelectorAll('button')].some(button=>button.textContent==='Terminal'&&button.getAttribute('aria-pressed')==='true'));
    assert.deepEqual(errors,[]);await context.close();
   }
  }finally{await browser.close();}

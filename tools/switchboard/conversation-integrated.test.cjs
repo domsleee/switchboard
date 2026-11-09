@@ -876,9 +876,11 @@ test('integrated Conversation journeys use production markup and preserve delive
      await page.getByText('Review response',{exact:true}).waitFor();
      const draft=page.getByLabel('Reply draft');await draft.fill('/ren');await draft.press('Enter');
      assert.equal(await draft.inputValue(),'/rename ');assert.equal(f.connections.length,0);
-     await draft.fill('/rename Example');await page.getByRole('button',{name:'Send',exact:true}).click();
+     // Claude renames without a dialog, so its case is a command that draws one.
+     const command=agent==='claude'?'/model opus':'/rename Example';
+     await draft.fill(command);await page.getByRole('button',{name:'Send',exact:true}).click();
      await page.waitForFunction(()=>reviewPastes.length===1&&!SwitchboardConversation.isOpen());
-     assert.equal(await page.evaluate(()=>reviewPastes[0].text),'/rename Example');
+     assert.equal(await page.evaluate(()=>reviewPastes[0].text),command);
      assert.equal(await page.evaluate(()=>reviewPastes[0].pane_id),1);assert.equal(f.requests.length,0);assert.equal(f.claudeReplies.length,0);
      await page.getByRole('button',{name:'Conversation',exact:true}).click();
      assert.equal(await draft.inputValue(),'');assert.equal(await page.locator('.conversation-outgoing').count(),0);

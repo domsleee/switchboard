@@ -1912,7 +1912,7 @@ $('new-tab-dialog').addEventListener('keydown',event=>{
 // The prompt grows with its text, up to a limit where it scrolls.
 function fitNewTabPrompt(){const input=$('new-tab-prompt');input.style.height='';input.style.height=Math.min(input.scrollHeight+2,Math.max(innerHeight*.4,160))+'px';}
 $('new-tab-prompt').addEventListener('input',()=>{fitNewTabPrompt();newTabCompletions?.paint();});
-// A single-line /command runs in the agent's terminal rather than being sent to it as a message.
+// A single-line /command, which the agent runs instead of reading it as text.
 const newTabCommand=text=>/^\/[a-z][\w:.-]*(?:[ \t][^\n]*)?$/i.test(text.trim());
 function newTabAgent(model=newTabModel()){return newTabModelProvider(model)||(model==='c'?'claude':'codex');}
 let newTabCompletions=null;
@@ -2100,8 +2100,8 @@ async function createConversationTab(key,launch,typed=launch.prompt){
   if(entry.pendingNewTab){setStatus('A tab is already being created on this computer.',true);return;}
   const pending=entry.pendingNewTab=new Set(sessionTabs(entry).map(tab=>tabKey(entry,tab)));
   pending.requestId=entry.newTabRequestId=(entry.newTabRequestId||0)+1;pending.api=true;
-  // A command's output stays in the terminal, so no message waits for it in Conversation.
-  const command=newTabCommand(typed),started=command?null:promptLaunch(launch,typed);
+  // Only a skill's turn appears in Conversation, so no message waits for other commands.
+  const route=newTabCommand(typed)?globalThis.SwitchboardConversation.commandRoute(newTabAgent(launch.command),typed):null,started=route&&route!=='turn'?null:promptLaunch(launch,typed);
   entry.creatingTab={id:'creating',pending:true,name:'Creating tab…',position:Infinity,panes:[],project:launch.project,launch:started,requestedModel:requestedModel(launch)};
   const placeholder=selected=tabKey(entry,entry.creatingTab);pushTabHistory=true;restoringTab=false;entry.followActiveTab=false;
   if(filter!=='all'&&groups[hostId]!==filter)setFilter('all');$('tab-search').value='';
@@ -2117,7 +2117,7 @@ async function createConversationTab(key,launch,typed=launch.prompt){
     const tab={id:result.pane_id,pending:true,name:'New tab',position:Infinity,panes:[{pane_id:result.pane_id,is_plugin:false,tab_position:Infinity}],project:launch.project,launch:started,requestedModel:requestedModel(launch)};
     entry.provisionalTabs??=[];entry.provisionalTabs.push(tab);entry.creatingTab=null;entry.pendingNewTab=null;
     if(selected===placeholder)selected=tabKey(entry,tab);
-    render();if(command)globalThis.SwitchboardConversation.showTerminal();refreshAttention(true);refresh();
+    render();if(route==='terminal')globalThis.SwitchboardConversation.showTerminal();refreshAttention(true);refresh();
   }catch(error){failNewTab(entry,pending.requestId,error.message||'Could not confirm tab creation. Check the tab list before retrying.');}
 }
 let newTabFiles=[];
