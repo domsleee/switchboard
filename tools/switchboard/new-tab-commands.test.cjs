@@ -47,6 +47,12 @@ test('New tab completes commands and skills for the chosen agent and launches th
    const isOpen=()=>dialog.evaluate(node=>node.open);
    // The dialog closes before the terminal's bridge sends the request.
    const launched=async count=>{await page.waitForFunction(()=>!document.querySelector('#new-tab-dialog').open);for(let tries=0;launches.length<count&&tries<100;tries++)await page.waitForTimeout(20);assert.equal(launches.length,count);};
+   // A chat needs something to say: empty and blank prompts stay in the dialog.
+   for(const blank of ['','  \t ']){
+    await prompt.fill(blank);await page.evaluate(()=>document.querySelector('#new-tab-form').requestSubmit());
+    await page.getByText('Type a prompt to start this chat.',{exact:true}).waitFor();assert.equal(await isOpen(),true);assert.equal(launches.length,0);
+   }
+   await prompt.fill('');
    // Codex: its own commands after /, and its skills after $, spelled as typed.
    await prompt.fill('/rev');await option('/review Review changes').waitFor();await prompt.press('Enter');assert.equal(await prompt.evaluate(node=>node.value),'/review ');assert.equal(launches.length,0);assert.equal(await menu.isVisible(),false);
    await prompt.fill('$br');await option('$bro Codex review').waitFor();assert.deepEqual(skills.at(-1),{cwd:'switchboard'});await prompt.press('Tab');assert.equal(await prompt.evaluate(node=>node.value),'$bro ');assert.equal(await prompt.evaluate(node=>document.activeElement===node),true);

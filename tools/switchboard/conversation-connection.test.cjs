@@ -106,6 +106,11 @@ test('Conversation never attaches a terminal, including initial mobile load and 
   await page.getByRole('button',{name:'Conversation',exact:true}).click();
   await page.locator('#new-tab').click();await page.locator('#new-tab-dialog').waitFor({state:'visible'});
   await page.keyboard.press('Escape');assert.equal(creations.length,0);
+  await page.locator('#new-tab').click();await page.locator('#new-tab-prompt').fill('   ');
+  await page.locator('#new-tab-form button[type="submit"]').click();
+  await page.getByText('Type a prompt to start this chat.',{exact:true}).waitFor();
+  assert.equal(await page.locator('#new-tab-dialog').evaluate(el=>el.open),true);assert.equal(creations.length,0);
+  await page.keyboard.press('Escape');
   for(const command of ['Fix spaces and quotes: "hello"','Two lines\nsecond line','']){
    const count=creations.length+1;
    await page.locator('#new-tab').click();await page.locator('#new-tab-prompt').fill(command);
