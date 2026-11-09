@@ -2,7 +2,7 @@
 use super::{
     authentication::IsReadOnly,
     types::AppState,
-    websocket_handlers::{prompt_agent, prompt_command, tab_command, Agent},
+    websocket_handlers::{project_cwd, prompt_agent, prompt_command, tab_command, Agent},
 };
 use crate::os_input_output::ClientOsApi;
 use axum::{extract::State, http::StatusCode, Extension, Json};
@@ -44,7 +44,6 @@ fn valid(target: &Target) -> bool {
             .session
             .chars()
             .any(|c| c.is_control() || matches!(c, '/' | '\\'))
-        && !target.project.trim().is_empty()
         && target.project.len() <= 4096
         && !target.project.contains('\0')
         && match target.prompt {
@@ -313,10 +312,10 @@ pub(super) async fn create(
     }
     let name = tab_name(&target);
     let shell = state.config.lock().unwrap().options.default_shell.clone();
-    let cwd = std::env::home_dir()
-        .ok_or((StatusCode::BAD_GATEWAY, "Home directory unavailable"))?
-        .join("git")
-        .join(target.project.trim());
+    let cwd = project_cwd(
+        std::env::home_dir().ok_or((StatusCode::BAD_GATEWAY, "Home directory unavailable"))?,
+        &target.project,
+    );
     let agent = prompt_agent(&target.command).unwrap_or(Agent::Alias("csol"));
     let typed = target
         .prompt
@@ -602,6 +601,10 @@ mod tests {
         assert!(!valid(&target));
         target.command = "c".into();
         target.project = "".into();
+        assert!(valid(&target));
+        target.project = "  \t ".into();
+        assert!(valid(&target));
+        target.project = "\0".into();
         assert!(!valid(&target));
         target.project = "switchboard".into();
         target.prompt = Some("go".into());

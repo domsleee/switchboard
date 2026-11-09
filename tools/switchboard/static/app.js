@@ -1901,11 +1901,11 @@ function paintNewTabProjectChip(){
   const project=$('new-tab-project').value.trim();
   const full=/^(?:[A-Za-z]:[\\/]|\/)/.test(project);
   // Keep the distinguishing folder names visible in the narrow chip too.
-  $('new-tab-project-chip-prefix').hidden=!project||full;$('new-tab-project-chip-name').textContent=full?newTabProjectLabel(project):project||'choose a folder';
+  $('new-tab-project-chip-prefix').hidden=!project||full;$('new-tab-project-chip-name').textContent=full?newTabProjectLabel(project):project||'~/git or ~';
   $('new-tab-project-chip').title=full?project:'Choose project';
 }
 // Each browser remembers the last project per computer; switchboard is the default.
-function newTabSavedProject(host){try{return JSON.parse(localStorage.getItem('switchboard-new-tab-projects')||'{}')[host]||'switchboard';}catch(_){return 'switchboard';}}
+function newTabSavedProject(host){try{return JSON.parse(localStorage.getItem('switchboard-new-tab-projects')||'{}')[host]??'switchboard';}catch(_){return 'switchboard';}}
 function saveNewTabProject(host,project){try{const saved=JSON.parse(localStorage.getItem('switchboard-new-tab-projects')||'{}');saved[host]=project;localStorage.setItem('switchboard-new-tab-projects',JSON.stringify(saved));}catch(_){}}
 let newTabProjectEdited=false;
 $('new-tab-close').onclick=()=>$('new-tab-dialog').close();
@@ -2286,7 +2286,7 @@ $('new-tab-form').onsubmit=async event=>{
   finally{if(form.pendingSubmission===request){form.pendingSubmission=null;newTabUploadStatus('');for(const item of files)if(item.state==='uploading')delete item.state;paintNewTabFiles();newTabBusy(false);newTabSubmitText();}}
 };
 async function createNewTab(key,launch,isCurrent=()=>true,typed){
-  if(!launch.project||(!launch.command&&typeof launch.prompt!=='string'))return;
+  if(!launch.command&&typeof launch.prompt!=='string')return;
   if(globalThis.SwitchboardConversation?.wantsConversation?.())return createConversationTab(key,launch,typed??launch.prompt);
   let entry=sessions.get(key);
   // A recently resumed Terminal may still be connecting. Keep the dialog
