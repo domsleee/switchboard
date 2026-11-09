@@ -759,7 +759,7 @@ pub(super) struct PollState {
     pub(super) changes: tokio::sync::watch::Sender<u64>,
     // Working panes whose latest screen could not be read.
     unreadable: std::collections::HashSet<String>,
-    // The latest Claude Code hook status per local (session, pane); it beats the screen.
+    // The latest hook status per local (session, pane); live dialogs take priority.
     hooks: HashMap<(String, u64), Hooked>,
     // Wakes the local scan loops when a hook reports.
     hooked: Arc<tokio::sync::Notify>,
@@ -1155,10 +1155,11 @@ impl PollState {
         if hooked.state == "unknown" {
             return;
         }
-        // Codex's async questions can stay open while it works and after Stop.
-        // Hooks describe the turn, so a live dialog takes priority until answered.
-        if hooked.agent == "codex"
-            && row["agent"] == "codex"
+        // Codex's async questions and Claude's subagent dialogs can stay open
+        // while the parent works or waits. Hooks describe the turn, so a live
+        // dialog takes priority until answered.
+        if matches!(hooked.agent, "codex" | "claude")
+            && row["agent"] == hooked.agent
             && matches!(row["state"].as_str(), Some("approval" | "input"))
         {
             row["turn_state"] = json!(hooked.state);
@@ -2280,6 +2281,49 @@ esac
             "each finished turn is a new result"
         );
     }
+    #[test]
+    fn switchboard_claude_subagent_dialog_overrides_parent_hooks() {
+        let pane = json!({"id":21,"tab_id":21,"pane_command":"claude","title":"Cleanup PR"});
+        // Captured with dump-screen on 2026-11-09: a subagent's cleanup needs
+        // permission while the parent Stop hook reports a running background agent.
+        let approval = include_str!("fixtures/claude-subagent-approval.txt");
+        let question =
+            "Which cleanup scope?\n❯ 1. Session only\n  2. Session and files\nEsc to cancel";
+        let scan = |screen: &str| {
+            snapshot(
+                "main",
+                std::slice::from_ref(&pane),
+                &HashMap::from([(21, screen.to_owned())]),
+                false,
+            )
+        };
+        for event in [
+            json!({"hook_event_name":"UserPromptSubmit"}),
+            json!({"hook_event_name":"Stop","background_tasks":[{"type":"subagent","status":"running"}]}),
+            json!({"hook_event_name":"Stop","prompt_id":"finished"}),
+        ] {
+            let mut poll = PollState::default();
+            let mut hook = hook_status("claude", &event).unwrap();
+            hook.chat_id = Some("claude-cleanup".into());
+            let hook_state = hook.state;
+            poll.hooks.insert(("main".into(), 21), hook);
+            for (screen, expected) in [(approval, "approval"), (question, "input")] {
+                assert_eq!(classify(&pane, screen)["state"], expected);
+                let mut shown = scan(screen);
+                poll.update("windows", &mut shown);
+                assert_eq!(shown["panes"][0]["state"], expected, "{event}");
+                assert_eq!(shown["panes"][0]["turn_state"], hook_state);
+                assert_eq!(shown["panes"][0]["chat_id"], "claude-cleanup");
+                assert_ne!(shown["panes"][0]["seen"], true);
+                assert_eq!(poll.hooks[&("main".into(), 21)].state, hook_state);
+            }
+            // Closing the dialog exposes the parent's unchanged turn state.
+            let mut resumed = scan("✻ Waiting for 1 background agent to finish");
+            poll.update("windows", &mut resumed);
+            assert_eq!(resumed["panes"][0]["state"], hook_state);
+        }
+    }
+
     #[test]
     fn claude_approval_does_not_hide_a_running_approved_tool() {
         let pane =

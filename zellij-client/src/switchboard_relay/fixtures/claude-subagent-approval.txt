@@ -1,0 +1,15 @@
+✻ Waiting for 1 background agent to finish
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Bash command · from the general-purpose agent
+ Close the private session and confirm no leftovers
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ │ U=$(cat /tmp/audit-unset); Z="env $U zellij"; SID=$(cat /tmp/audit-sid); $Z kill-session $SID; $Z delete-session $SID 2>&1 | tail -1; rm -rf "$(cygpath -u "$(cat /tmp/audit-dir)")"; timeout 20 bash -c 'until ! curl
+ │ -s http://127.0.0.1:8090/api/hosts | grep -q sb-audit-state && ! curl -s http://127.0.0.1:8090/api/attention | grep -q sb-audit-state; do :; done'; echo wait=$?; curl -s http://127.0.0.1:8090/api/hosts | grep -c
+ │ sb-audit-state; curl -s http://127.0.0.1:8090/api/attention | grep -c sb-audit-state; env -u ZELLIJ zellij list-sessions -n 2>&1 | grep -c 'sb-audit-state'
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ │ Dangerous rm operation on statically-unresolvable target: command substitution output
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+
+ Esc to cancel · Tab to amend · ctrl+x ctrl+k twice to stop background agents
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Cleanup PR ─

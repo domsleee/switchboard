@@ -59,6 +59,29 @@ test('integrated Conversation journeys use production markup and preserve delive
   return f;
  }
  try{
+  await t.test('Claude background-agent dialogs retain attention in Conversation and Terminal',async()=>{
+   const f=await fixture({agent:'claude',desktop:true,viewport:{width:1100,height:800}}),{page}=f;
+   try{
+    const row=page.locator('#tabs .tab-select.selected');
+    for(const mode of ['Conversation','Terminal']){
+     await page.getByRole('button',{name:mode,exact:true}).click();
+     f.state='waiting';await f.refresh();
+     assert.equal(await row.locator('.star.attention').count(),0);
+     if(process.env.CLAUDE_APPROVAL_SCREENSHOTS)await row.screenshot({path:path.join(process.env.CLAUDE_APPROVAL_SCREENSHOTS,mode.toLowerCase()+'-before.png')});
+     for(const [state,label] of [['approval','Approval needed'],['input','Input needed']]){
+      f.state=state;await f.refresh();
+      assert.equal(await row.getAttribute('data-agent-state'),label);
+      assert.equal(await row.locator('.star.attention').count(),1);
+      await page.evaluate(()=>acknowledgeAttention(allTabs().find(item=>item.key===selected)));
+      await f.refresh();
+      assert.equal(await row.locator('.star.attention').count(),1,'Viewing the tab cannot clear an unresolved dialog');
+      if(state==='approval'&&process.env.CLAUDE_APPROVAL_SCREENSHOTS)await row.screenshot({path:path.join(process.env.CLAUDE_APPROVAL_SCREENSHOTS,mode.toLowerCase()+'-after.png')});
+     }
+     f.state='waiting';await f.refresh();
+     assert.equal(await row.locator('.star.attention').count(),0,'Resolving the dialog returns to the parent wait');
+    }
+   }finally{await f.close();}
+  });
   for(const desktop of [true,false])await t.test(`Alt+T creates a tab from the subagent view (${desktop?'desktop':'phone'})`,async()=>{
    const f=await fixture({desktop,viewport:desktop?{width:1280,height:844}:{width:390,height:844},delegates:[{call:'review',id:'review-agent',model:'gpt-6.1-sol',effort:'xhigh',status:'completed'}],messages:[{role:'assistant',phase:'commentary',kind:'tool',tool:'agent',call:'review',detail:'Review changes',text:'Delegated Review changes'}]}),{page}=f;
    try{
