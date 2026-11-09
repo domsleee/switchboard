@@ -26,6 +26,7 @@ pub(crate) mod peer_bridge;
 mod push;
 mod restart;
 mod tasks;
+mod timings;
 mod update_watch;
 use axum::{
     body::{to_bytes, Body, Bytes},
@@ -1286,6 +1287,7 @@ async fn asset(request: Request) -> Response {
         | "pairing-notice.js"
         | "messages.js"
         | "terminal-diagnostics.js"
+        | "timing.js"
         | "tasks.js"
         | "notifications.js"
         | "sw.js"
@@ -1454,6 +1456,8 @@ fn app(state: RelayState) -> Router {
         .route("/api/chats/{id}", get(chats::read))
         .route("/api/chats/{id}/stream", get(chats::stream))
         .route("/api/logs", get(logs::handler))
+        .route("/api/timings", get(timings::handler))
+        .route("/api/diagnostics/timing", post(timings::report))
         .route(
             "/api/diagnostics/terminal-failure",
             post(logs::terminal_failure),
@@ -1676,6 +1680,8 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
         .await;
     let failures_file = config_path.with_extension("logs.json");
     let failures = logs::start(failures_file.clone()).await;
+    let timings_file = config_path.with_extension("timings.json");
+    let timing_saves = timings::start(timings_file.clone()).await;
     logs::watch_runtime();
     let polling =
         attention::start(state.clone(), config_path.with_extension("attention.json")).await;
@@ -1705,6 +1711,8 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
     tasks::stop_running().await;
     failures.abort();
     logs::save(&failures_file).await;
+    timing_saves.abort();
+    timings::flush(&timings_file).await;
     for task in polling {
         task.abort();
         let _ = task.await;
@@ -2990,6 +2998,7 @@ mod tests {
             ("/messages.js", "application/javascript"),
             ("/messages.css", "text/css; charset=utf-8"),
             ("/terminal-diagnostics.js", "application/javascript"),
+            ("/timing.js", "application/javascript"),
             ("/predict.js", "application/javascript"),
             ("/thumbnails.js", "application/javascript"),
             ("/conversation.js", "application/javascript"),

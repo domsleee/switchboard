@@ -9,7 +9,7 @@ test('integrated Conversation journeys use production markup and preserve delive
  async function fixture(options={}){
   const page=await browser.newPage({viewport:options.viewport||{width:390,height:844},isMobile:!options.desktop,hasTouch:!options.desktop});page.setDefaultTimeout(7000);
   if(options.clock)await page.clock.install();
-  const f={page,escapes:[],settles:[],errors:[],connections:[],requests:[],preparations:[],claudeReplies:[],claudeReplyStatus:404,history:new Map([[1,options.messages||[{role:'assistant',text:'Review response',model:'gpt-6.1-sol',reasoning_effort:'medium'}]],[2,[{role:'assistant',text:'Second conversation'}]]]),agent:options.agent||'codex',state:'ready',bound:options.bound!==false,model:'gpt-6.1-sol',effort:'medium',replyMode:'queue',autoHistory:false,prepareStatus:200,tabs:[1,2],newTabs:[],releaseReplies:[],releaseImages:[],delayImages:!!options.delayImages};
+  const f={page,escapes:[],settles:[],errors:[],connections:[],requests:[],preparations:[],timings:[],claudeReplies:[],claudeReplyStatus:404,history:new Map([[1,options.messages||[{role:'assistant',text:'Review response',model:'gpt-6.1-sol',reasoning_effort:'medium'}]],[2,[{role:'assistant',text:'Second conversation'}]]]),agent:options.agent||'codex',state:'ready',bound:options.bound!==false,model:'gpt-6.1-sol',effort:'medium',replyMode:'queue',autoHistory:false,prepareStatus:200,tabs:[1,2],newTabs:[],releaseReplies:[],releaseImages:[],delayImages:!!options.delayImages};
   await page.addInitScript(()=>{localStorage.setItem('switchboard-mobile-view-mode','conversation');localStorage.setItem('switchboard-view-mode','conversation');window.reviewIntervals=[];window.setInterval=fn=>reviewIntervals.push(fn);window.reviewOffset=0;const now=Date.now.bind(Date);Date.now=()=>now()+reviewOffset;window.reviewPastes=[];window.reviewHoldBridge=false;});
   const pane=id=>({pane_id:id,is_plugin:false,tab_id:id,tab_position:id-1,title:'Conversation '+id,is_focused:true,...(f.paneCwd?{cwd:f.paneCwd}:{})});
   const thread=id=>'00000000-0000-4000-8000-'+String(id).padStart(12,'0');
@@ -26,6 +26,7 @@ test('integrated Conversation journeys use production markup and preserve delive
    if(p.startsWith('/api/chats/')&&url.searchParams.has('task'))return json({task:{kind:'agent',running:false},start_cursor:0,messages:[{role:'user',text:'Review this change.'},{role:'assistant',text:'Review complete.'}]});
    if(p.startsWith('/api/chats/')){const id=Number(p.split('-').at(-1));return json({id:'chat-'+id,...(f.project?{project:f.project}:{}),model:f.model,reasoning_effort:f.effort,delegates:options.delegates||[],session_id:f.agent==='codex'?thread(id):null,messages:f.history.get(id)||[],message_activity:f.activities?.get(id)||[],start_cursor:0,next_cursor:null});}
    if(p.endsWith('/conversation/reply')){f.claudeReplies.push(route.request().postDataJSON());if(f.holdClaudeReply)await new Promise(resolve=>f.releaseReplies.push(resolve));return route.fulfill({status:f.claudeReplyStatus,json:{ok:true}});}
+   if(p==='/api/diagnostics/timing'){f.timings.push(route.request().postDataJSON());return route.fulfill({status:204});}
    if(p.endsWith('/conversation/prepare')){f.preparations.push(route.request().postDataJSON());return route.fulfill({status:f.prepareStatus,json:{trusted:false}});}
    if(p.endsWith('/codex/reply')){
     const data=route.request().postDataJSON(),id=Number(data.thread.slice(-12));f.requests.push(data);
@@ -590,7 +591,13 @@ test('integrated Conversation journeys use production markup and preserve delive
     await page.waitForFunction(()=>document.querySelector('.conversation-notice').textContent.includes('Connecting'));
     await page.evaluate(()=>{reviewOffset=31000;reviewIntervals.forEach(fn=>fn());});
     await page.getByRole('button',{name:'Retry connection',exact:true}).waitFor();assert.equal(await page.getByRole('button',{name:'Open Terminal',exact:true}).isVisible(),true);
+    const connects=outcome=>f.timings.filter(t=>t.journey==='conversation_connect'&&t.outcome===outcome).length;
+    for(let i=0;i<100&&!connects('timeout');i++)await page.waitForTimeout(20);
+    assert.equal(connects('timeout'),1,'An agent that never connects is a timed-out wait');
     f.prepareStatus=503;await page.getByRole('button',{name:'Retry connection',exact:true}).click();await page.getByText('Could not prepare this agent. Retry or open Terminal.',{exact:true}).waitFor();
+    for(let i=0;i<100&&!connects('failed');i++)await page.waitForTimeout(20);
+    assert.equal(connects('failed'),1,'A failed preparation is a failed wait');
+    assert.equal(connects('left'),0,'Neither is mistaken for leaving');
     f.prepareStatus=200;await page.getByRole('button',{name:'Retry connection',exact:true}).click();f.bound=true;await f.refresh();await page.getByText('Review response',{exact:true}).waitFor();
     f.agent=null;f.bound=false;f.state='unknown';await f.refresh();assert.equal(await page.locator('.conversation-notice').textContent(),'No agent');assert.equal(await page.getByRole('button',{name:'Retry connection',exact:true}).isVisible(),false);assert.deepEqual(f.connections,[]);
    }finally{await f.close();}

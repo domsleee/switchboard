@@ -70,7 +70,7 @@ test('Panel navigation moves between sections and keeps terminals connected',
       });
     }
     const at=(name,focused=name)=>({open:true,selected:[name],visible:['panel-'+name.toLowerCase()],title:name,focused,
-      roving:['Messages','Computers','Health','Logs','Settings'].map(tab=>tab===name?'0':'-1').join('')});
+      roving:['Messages','Computers','Health','Logs','Performance','Settings'].map(tab=>tab===name?'0':'-1').join('')});
 
     // Sidebar Messages keeps its href for new-tab use and opens the panel at Messages.
     const messages=page.locator('#sidebar-utilities a[href="/messages.html"]');

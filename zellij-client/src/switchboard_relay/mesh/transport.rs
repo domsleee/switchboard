@@ -815,6 +815,9 @@ async fn terminal_response(
     if path == "/switchboard/logs" && request.method() == Method::GET {
         return Ok(Json(logs::local()).into_response());
     }
+    if path == "/switchboard/timings" && request.method() == Method::GET {
+        return Ok(Json(timings::local()).into_response());
+    }
     if request.uri().path() == "/switchboard/attachments" && request.method() == Method::POST {
         return attachments::local(request).await;
     }

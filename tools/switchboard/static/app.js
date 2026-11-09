@@ -1471,8 +1471,9 @@ window.addEventListener('message',event=>{
     failNewTab(entry,event.data.request_id,event.data.message);
   }else if(event.data?.type==='zellij-load-diagnostic'){
     // A load that Terminal started when leaving Conversation is the time that switch took.
-    const after=entry.loadAfter;entry.loadAfter=null;
-    recordTerminalDiagnostic(entry,'terminal-load',after?{...event.data.diagnostic,after}:event.data.diagnostic);
+    const after=entry.loadAfter,load=event.data.diagnostic;entry.loadAfter=null;
+    entry.loadTiming?.end(load.outcome==='ready'?'ready':'failed',{stages:{page:load.page_ms,socket:load.socket_ms,frame:load.frame_ms,render:load.render_ms}});entry.loadTiming=null;
+    recordTerminalDiagnostic(entry,'terminal-load',after?{...load,after}:load);
   }else if(event.data?.type==='zellij-predict-diagnostic'){
     recordTerminalDiagnostic(entry,'instant-typing',event.data.diagnostic);
   }else if(event.data?.type==='zellij-new-tab-diagnostic'){
@@ -2383,6 +2384,7 @@ function showSection(name,focusTab=false){
     if(focusTab)tab.focus();
   }
   if(name==='logs')loadLogs();
+  if(name==='performance')loadTimings();
   if(name==='health')globalThis.SwitchboardTasks?.load();
 }
 function openPanel(name){
@@ -2454,6 +2456,50 @@ async function loadLogs(){
   finally{button.disabled=false;list.setAttribute('aria-busy','false');}
 }
 $('refresh-logs').onclick=loadLogs;
+const timingJourneys={terminal_to_conversation:'Terminal → Conversation',conversation_to_terminal:'Conversation → Terminal',conversation_select:'Switch chat',conversation_load:'Load chat',conversation_connect:'Connect to agent’s chat'};
+// Below this many samples a p95 is just the slowest one or two.
+const timingMinimumForP95=20;
+async function loadTimings(){
+  const list=$('timings'),button=$('refresh-timings');
+  const element=(tag,className,text)=>{const node=document.createElement(tag);node.className=className;node.textContent=text;return node;};
+  const ms=value=>value==null?'—':value<1000?`${value} ms`:`${(value/1000).toFixed(1)} s`;
+  const stat=(label,value,title)=>{const node=element('span','timing-stat',`${label} ${value}`);if(title)node.title=title;return node;};
+  const sample=item=>{
+    const row=element('div','timing-sample','');
+    row.append(element('small','',`${ms(item.elapsed_ms)} · ${item.outcome} · ${new Date(item.time).toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}`));
+    for(const [name,value] of item.stages){
+      const stage=element('div','timing-stage',''),bar=element('i','','');
+      bar.style.width=`${Math.min(100,item.elapsed_ms?value/item.elapsed_ms*100:0)}%`;
+      const track=element('span','timing-track','');track.append(bar);
+      stage.append(element('span','',name),track,element('span','',ms(value)));row.append(stage);
+    }
+    return row;
+  };
+  const series=item=>{
+    const details=element('details','timing-series',''),summary=element('summary','',''),title=element('span','timing-title',timingJourneys[item.journey]||item.journey);
+    const enough=item.count>=timingMinimumForP95;
+    summary.append(title,element('small','',`${item.target} · ${item.build}`),stat('n',item.count),stat('p50',ms(item.p50_ms)),
+      stat('p95',enough?ms(item.p95_ms):'—',enough?'':`Needs ${timingMinimumForP95} samples`),stat('max',item.max_ms?ms(item.max_ms):'—'));
+    const outcomes=Object.entries(item.outcomes).map(([name,count])=>`${name} ${count}`);
+    details.append(summary,element('p','log-note',[...outcomes,item.hidden?`${item.hidden} left out because the page was hidden`:''].filter(Boolean).join(' · ')),...item.slowest.map(sample));
+    return details;
+  };
+  button.disabled=true;list.setAttribute('aria-busy','true');
+  try{
+    const response=await fetch('/api/timings',{cache:'no-store'});
+    if(!response.ok)throw new Error('Timings unavailable');
+    const {computers=[]}=await response.json();
+    list.replaceChildren(...computers.map(computer=>{
+      const group=element('section','log-computer','');group.append(element('h4','',computer.name));
+      if(computer.error)group.append(element('p','log-note',computer.error));
+      else if(!computer.series?.length)group.append(element('p','log-note','No timings yet'));
+      else group.append(...computer.series.map(series));
+      return group;
+    }));
+  }catch(_){list.replaceChildren(element('p','log-note','Timings unavailable; refresh to try again.'));}
+  finally{button.disabled=false;list.setAttribute('aria-busy','false');}
+}
+$('refresh-timings').onclick=loadTimings;
 // Settings, like VS Code's User and Workspace settings: each has a value shared by every browser
 // on every paired computer, and this browser may override it. Terminal frames, the Messages page
 // and this page read the result from switchboard-<key>, so they need not know which one won.
@@ -3002,7 +3048,20 @@ function relayLost(){
 refreshAttention();
 (async()=>{for(;;)if(!await refreshAttention(false,true))await new Promise(resolve=>setTimeout(resolve,2000));})();
 
+// A return to a Terminal viewer kept alive behind Conversation; its report says when the frame painted.
+let terminalReturn=null;
+function finishTerminalReturn(diagnostic){
+  if(!terminalReturn)return;
+  const painted=diagnostic.terminal_animation_ms??diagnostic.first_animation_ms;
+  // A terminal asked to paint that never answered is a stalled wait, not a fast sidebar frame.
+  const stalled=diagnostic.terminal_probe&&diagnostic.terminal_animation_ms===null;
+  const outcome=!diagnostic.outcome||diagnostic.outcome==='sampled'?(stalled?'timeout':painted===null?'no_frame':'ready'):diagnostic.outcome;
+  terminalReturn.end(outcome,{elapsed:stalled?diagnostic.elapsed_ms:painted??undefined,
+    stages:{sidebar_frame:diagnostic.first_animation_ms,terminal_message:diagnostic.terminal_message_ms,terminal_frame:diagnostic.terminal_frame_ms,terminal_render_cycle:diagnostic.terminal_render_cycle_ms,terminal_reply:diagnostic.terminal_reply_ms}});
+  terminalReturn=null;
+}
 const browserDiagnostics=window.SwitchboardBrowserDiagnostics?.(diagnostic=>{
+  if(diagnostic.reason==='conversation')finishTerminalReturn(diagnostic);
   fetch('/api/diagnostics/browser-resume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(diagnostic),keepalive:true})
     .then(response=>{if(!response.ok)throw Error(`HTTP ${response.status}`);})
     .catch(error=>console.warn('Browser resume diagnostics unavailable:',error));
@@ -3032,9 +3091,11 @@ window.SwitchboardConversation?.install({
     // Terminal either shows the viewer kept through Conversation or loads a new one.
     // Time both, except the brief automatic visit that sends a reply.
     const timed=!wants&&conversationSince!==null&&!!shown&&!transient,blank=shown?.entry.frame.getAttribute('src')==='about:blank';
-    if(timed&&!blank)browserDiagnostics?.measure('conversation',conversationSince);
-    for(const entry of sessions.values()){if(wants)entry.loadAfter=null;syncTerminalConnection(entry);}render();
-    if(timed&&blank&&shown.entry.frame.getAttribute('src')!=='about:blank')shown.entry.loadAfter='conversation';
+    // Measure first: replacing an earlier return's sample ends that return, not this one.
+    if(timed&&!blank){browserDiagnostics?.measure('conversation',conversationSince,finishTerminalReturn);terminalReturn=window.SwitchboardTiming?.begin('conversation_to_terminal',{host:shown.entry.host})||null;}
+    if(wants){terminalReturn?.end('left');terminalReturn=null;}
+    for(const entry of sessions.values()){if(wants){entry.loadAfter=null;entry.loadTiming?.end('left');entry.loadTiming=null;}syncTerminalConnection(entry);}render();
+    if(timed&&blank&&shown.entry.frame.getAttribute('src')!=='about:blank'){shown.entry.loadAfter='conversation';shown.entry.loadTiming=window.SwitchboardTiming?.begin('conversation_to_terminal',{host:shown.entry.host})||null;}
     conversationSince=wants?conversationSince??performance.now():null;
 
     // A viewer kept connected through Conversation reclaims its tab size, which
