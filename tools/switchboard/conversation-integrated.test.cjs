@@ -425,6 +425,29 @@ test('integrated Conversation journeys use production markup and preserve delive
     }finally{await f.close();}
    }
   });
+  await t.test('obsolete questions can be dismissed without sending an answer and reopened after reload',async()=>{
+   for(const desktop of [true,false]){
+    const q=asyncQuestion('old-question',[{title:'Publish this change?',options:['Publish','Keep the draft']}]);
+    const messages=[q,{role:'user',text:'Go ahead.'},{role:'assistant',text:'Published.'},...Array.from({length:12},(_,i)=>({role:'assistant',text:'Later update '+i+'. '+('Work continued. '.repeat(20))}))];
+    const f=await fixture({desktop,viewport:desktop?{width:1100,height:800}:{width:390,height:844},messages}),{page}=f;
+    try{
+     const card=page.getByRole('region',{name:'Codex question'}),jump=page.getByRole('button',{name:'1 question to answer',exact:true}),draft=page.getByLabel('Reply draft');
+     await draft.fill('Keep my follow-up');await jump.click();
+     await card.getByRole('button',{name:'Dismiss question',exact:true}).click();
+     await card.getByText('Dismissed',{exact:true}).waitFor();
+     assert.equal(await jump.isVisible(),false);assert.deepEqual(f.requests,[],'Dismissal never sends another answer');
+     assert.equal(await draft.inputValue(),'Keep my follow-up');
+     await page.getByRole('button',{name:'Terminal',exact:true}).click();await page.getByRole('button',{name:'Conversation',exact:true}).click();
+     await page.reload();await card.getByText('Dismissed',{exact:true}).waitFor();
+     assert.equal(await jump.isVisible(),false,'Dismissal survives reload');
+     await card.scrollIntoViewIfNeeded();
+     if(process.env.MODE_SCREENSHOTS)await page.screenshot({path:path.join(process.env.MODE_SCREENSHOTS,`codex-question-dismissed-${desktop?'desktop':'phone'}.png`)});
+     await card.getByRole('button',{name:'Answer question',exact:true}).click();
+     await card.getByRole('button',{name:'Publish',exact:true}).click();
+     await card.getByText('Answer submitted',{exact:true}).waitFor();assert.equal(f.requests.length,1);
+    }finally{await f.close();}
+   }
+  });
   await t.test('desktop header is one row that clears the view controls in both modes',async()=>{
    const f=await fixture({desktop:true,viewport:{width:1280,height:844}}),{page}=f;try{
     await page.getByText('Review response',{exact:true}).waitFor();

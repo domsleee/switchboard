@@ -394,6 +394,7 @@
 .conversation-async-option-mark{display:grid;place-items:center;flex:0 0 16px;height:16px;margin-top:2px;border:1px solid #ffffff30;border-radius:50%;color:var(--accent);font-size:10px}
 .conversation-async-question [aria-pressed="true"] .conversation-async-option-mark{border-color:#8fb4ff80;background:#8fb4ff14}
 .conversation-panel .conversation-async-write{grid-column:1/-1;justify-self:start;min-height:32px;padding:3px 2px;font-size:12px;font-weight:400;color:var(--muted)}
+.conversation-async-question>.conversation-async-write{margin:0 12px 8px}
 .conversation-async-question .conversation-question-other{grid-column:1/-1}
 .conversation-async-question .conversation-question-other input{font-size:13px}
 .conversation-async-question>.conversation-question-status{margin:0 12px 10px;color:#e0b25c}
