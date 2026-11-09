@@ -1668,6 +1668,7 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
     let polling =
         attention::start(state.clone(), config_path.with_extension("attention.json")).await;
     let push = push::start(&mut state, config_path.with_extension("push.json")).await;
+    chats::start_tail_cache(state.clone());
     let update_tasks = tasks::start(state.clone()).await;
     let also =
         (port != DEFAULT_PORT).then(|| tokio::spawn(serve_also_on(state.clone(), DEFAULT_PORT)));
