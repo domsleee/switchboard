@@ -98,3 +98,25 @@ test('Conversation folds finished progress, keeps the live step, and gives code 
   assert.deepEqual(errors,[]);
  }finally{await browser.close();}
 });
+
+test('Conversation rows without a timestamp do not make the page scroll',
+ {skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
+ const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch();
+ const messages=Array.from({length:30},(_,index)=>({role:index%2?'assistant':'user',text:('Line '+index+'. ').repeat(80)}));
+ try{
+  const page=await browser.newPage({viewport:{width:1280,height:900}});page.setDefaultTimeout(5000);
+  await page.addInitScript(()=>{window.setInterval=()=>0;localStorage.setItem('switchboard-view-mode','conversation');});
+  await page.route('http://layout.test/**',route=>{
+   const p=new URL(route.request().url()).pathname;
+   if(p.endsWith('/stream'))return route.fulfill({status:404,body:''});
+   if(p.startsWith('/api/chats/'))return route.fulfill({json:{messages,start_cursor:0,next_cursor:null}});
+   if(p.startsWith('/api/'))return route.fulfill({status:404,body:''});
+   if(p==='/')return route.fulfill({contentType:'text/html',body:`<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/conversation.css"><style>body{margin:0}#terminals{position:relative;height:100dvh}</style><main id="terminals"><iframe id="terminal"></iframe><section id="artifact-preview" hidden></section></main><script src="/conversation-media.js"></script><script src="/conversation.js"></script><script>window.current={key:'pane1',host:'fixture',session:'main',pane:1,title:'Fix',agent:'claude',state:'ready',since:0,chatId:'chat-1',frame:document.getElementById('terminal')};SwitchboardConversation.install({selection:()=>current,terminal(){}});</script>`});
+   return route.fulfill({path:path.join(__dirname,'static',path.basename(p)),contentType:p.endsWith('.css')?'text/css':'text/javascript'});
+  });
+  await page.goto('http://layout.test/');await page.locator('.conversation-message').first().waitFor();
+  const size=await page.evaluate(()=>({page:document.documentElement.scrollHeight,viewport:innerHeight,transcript:document.querySelector('.conversation-messages').scrollHeight}));
+  assert.ok(size.transcript>size.viewport,'the transcript must overflow for this test to mean anything');
+  assert.equal(size.page,size.viewport);
+ }finally{await browser.close();}
+});
