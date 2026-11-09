@@ -29,11 +29,14 @@
     if (!response.ok) throw new Error(await response.text());
     return response.json();
   }
+  let actions = 0, actionButtons = [];
   async function action(fn) {
-    const buttons = [...document.querySelectorAll('button')].map(button => [button, button.disabled]);
-    buttons.forEach(([button]) => button.disabled = true);
+    if (!actions++) {
+      actionButtons = [...document.querySelectorAll('button')].map(button => [button, button.disabled]);
+      actionButtons.forEach(([button]) => button.disabled = true);
+    }
     try { await fn(); } catch (error) { show(error.message || 'Pairing unavailable. Check the network and retry.', true); }
-    finally { buttons.forEach(([button, disabled]) => button.disabled = disabled); }
+    finally { if (!--actions) actionButtons.forEach(([button, disabled]) => button.disabled = disabled); }
   }
   function local() {
     if (!$('address').value.trim()) {

@@ -8,7 +8,7 @@ async function fixture(fn, initial = {}) {
   try {
     const context = await browser.newContext();
     const page = await context.newPage();
-    const calls = [], errors = [];
+    const calls = [], errors = [], holds = new Map();
     page.on('pageerror', error => errors.push(error.message));
     let state = {configured: false, computer: null, mesh: null, administrator: false, requests: [], members: [], joining: null, ...initial};
     const responses = new Map([['/api/mesh/defaults', {computer_name:'Mac',address:'https://192.0.2.1:8082',name:'My computers',addresses:['https://192.0.2.1:8082'],requires_choice:false}]]);
@@ -17,6 +17,7 @@ async function fixture(fn, initial = {}) {
       const request = route.request(), path = new URL(request.url()).pathname;
       if (path.startsWith('/api/mesh')) {
         const body = request.postDataJSON(); calls.push({path, body});
+        await holds.get(path);
         if (path === '/api/mesh' && responses.has('/api/mesh-error')) return route.fulfill({status:503,body:responses.get('/api/mesh-error')});
         if (responses.has(path + ':error')) return route.fulfill({status: 400, body: responses.get(path + ':error')});
         return route.fulfill({contentType: 'application/json', body: JSON.stringify(path === '/api/mesh' ? state : responses.get(path) || {})});
@@ -30,7 +31,7 @@ async function fixture(fn, initial = {}) {
       if (!['computers.html', 'computers.js'].includes(name)) return route.fulfill({status: 404, body: ''});
       return route.fulfill({contentType: name.endsWith('.js') ? 'text/javascript' : 'text/html', body: fs.readFileSync(__dirname + '/static/' + name, 'utf8')});
     });
-    const controls = {page, calls, responses, setState(value) {state = {...state, ...value};}};
+    const controls = {page, calls, responses, holds, setState(value) {state = {...state, ...value};}};
     await fn(controls);
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }
@@ -56,6 +57,25 @@ test('opening and reviewing an app link requires an explicit Join click', async 
     const joined = calls.find(call => call.path === '/api/mesh/join');
     assert.deepEqual(joined.body, {link: 'switchboard://join#isolated-invitation-fragment', computer_name: 'Windows', address: 'https://192.0.2.2:8091'});
   });
+});
+
+test('an action that outlasts an overlapping one leaves the buttons usable', async () => {
+  let finishLoad, finishDeny;
+  const incoming = [{computer: 'Laptop', address: 'https://192.0.2.3:8091', code: 'ABCD-1234-5678', invitation: 'incoming-invite'}];
+  await fixture(async ({page, holds, setState}) => {
+    holds.set('/api/mesh/defaults', new Promise(resolve => finishLoad = resolve));
+    holds.set('/api/mesh/answer', new Promise(resolve => finishDeny = resolve));
+    await page.goto('https://switchboard.test/computers.html');
+    // The page's load action is still running; this card arrived after it disabled the page.
+    await Promise.all([page.waitForRequest(request => request.url().endsWith('/api/mesh/answer')), page.getByRole('button', {name: 'Deny'}).click()]);
+    await page.waitForFunction(() => document.querySelector('#create-form button[type=submit]').disabled);
+    finishLoad();
+    await page.waitForFunction(() => document.querySelector('#address').value);
+    setState({incoming: []});
+    finishDeny();
+    await page.waitForFunction(() => !document.querySelector('#incoming .request'));
+    await page.waitForFunction(() => ![...document.querySelectorAll('#create-form button, #join-form button')].some(button => button.disabled), null, {timeout: 3000});
+  }, {incoming});
 });
 
 test('Create invitation shares only the one-time link and Cancel clears it', async () => {

@@ -66,6 +66,27 @@ test('A line that is only an image or video path shows the media; paths inside s
  }finally{await browser.close();server.close();}
 });
 
+test('A bare path keeps percent signs literal; a Markdown URL is still decoded',{skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
+ const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch(),requests=[];
+ try{const page=await browser.newPage();page.setDefaultTimeout(7000);
+  await page.route('http://literal-paths.test/**',route=>{
+   const url=new URL(route.request().url());
+   if(url.pathname==='/api/hosts/workstation/file'){requests.push(url.searchParams.get('path'));return route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="#468"/></svg>'});}
+   if(url.pathname==='/')return route.fulfill({contentType:'text/html',body:'<article id="message"></article><script src="/conversation-media.js"></script>'});
+   return route.fulfill({path:path.join(__dirname,'static','conversation-media.js'),contentType:'application/javascript'});
+  });
+  await page.goto('http://literal-paths.test/');
+  await page.evaluate(()=>SwitchboardConversationMedia.render(document.getElementById('message'),{markdown:[
+   {type:'start',tag:'p'},{type:'text',text:'/tmp/100%.png'},{type:'end'},
+   {type:'start',tag:'p'},{type:'text',text:'/tmp/a%20b.png'},{type:'end'},
+   {type:'start',tag:'image',url:'/tmp/c%20d.png'},{type:'text',text:'Encoded'},{type:'end'}
+  ]},{host:'workstation',project:'/repo'}));
+  await page.waitForFunction(()=>document.querySelectorAll('#message img').length===3&&[...document.querySelectorAll('#message img')].every(img=>img.naturalWidth===320));
+  assert.deepEqual([...requests].sort(),['/tmp/100%.png','/tmp/a%20b.png','/tmp/c d.png']);
+  assert.doesNotMatch(await page.locator('#message').textContent(),/preview unavailable/);
+ }finally{await browser.close();}
+});
+
 test('Bare URLs become links, keeping sentence punctuation outside and code untouched',{skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
  const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
  const server=http.createServer((req,res)=>{
