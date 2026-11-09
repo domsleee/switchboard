@@ -141,6 +141,8 @@
     watch.observe(window.frameElement,{attributes:true,attributeFilter:['class']});
     const terminals=parent.document.getElementById('terminals');
     if(terminals)watch.observe(terminals,{attributes:true,attributeFilter:['class']});
+    // Observing the sidebar's #terminals would otherwise keep this whole page in memory after the frame retires.
+    addEventListener('pagehide',event=>{if(!event.persisted)watch.disconnect();});
   }
   function moveTerminal(terminal,target,before=null){
     const active=document.activeElement,focused=terminal.contains(active)&&document.hasFocus();
