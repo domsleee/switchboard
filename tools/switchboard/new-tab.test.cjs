@@ -225,6 +225,17 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
         await page.locator('#new-tab-projects [role=option]').filter({has:page.locator('span',{hasText:/^Glow2\/DotNet$/})}).click();
         assert.equal(await page.locator('#new-tab-project').inputValue(),'C:/work/Glow2/DotNet');
         assert.equal(await page.locator('#new-tab-project-chip-name').textContent(),'Glow2/DotNet');
+        // Enter selects the folder, typed or suggested, and leaves the dialog open on the prompt.
+        for(const [typed,value] of [['dot','dotfiles'],['typed-folder','typed-folder']]){
+          await page.locator('#new-tab-project-chip').click();
+          await page.locator('#new-tab-project').fill(typed);
+          if(typed==='dot'){await page.getByRole('option',{name:value,exact:true}).waitFor();assert.match(await page.locator('#new-tab-project-popover .new-tab-options-hint').textContent(),/Select dotfiles/);}
+          await page.keyboard.press('Enter');
+          assert.equal(await page.locator('#new-tab-project').inputValue(),value);
+          assert.equal(await page.locator('#new-tab-project-popover').isVisible(),false);
+          assert.equal(await page.locator('#new-tab-dialog').evaluate(el=>el.open),true);
+          assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-prompt');
+        }
         await page.locator('#new-tab-project-chip').click();
         await page.locator('#new-tab-project').fill('dot');
         await page.getByRole('option',{name:'dotfiles',exact:true}).waitFor();

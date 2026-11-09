@@ -1970,7 +1970,7 @@ function newTabProjectLabel(path){
 function newTabLookup(inputId,listId,buttonId,items,emptyText,onChange=()=>{},next=null){
   const input=$(inputId),list=$(listId),button=$(buttonId),popup=list.parentElement;let index=-1,showAll=false;
   const status=popup.querySelector('.new-tab-options-status'),hint=popup.querySelector('.new-tab-options-hint');
-  function showHint(){const name=list.querySelectorAll('[role=option] span')[index]?.textContent;hint.replaceChildren();if(!name){hint.textContent='Choose a folder, or type a full path';return;}const enter=document.createElement('kbd'),tab=document.createElement('kbd');enter.textContent='↵';tab.textContent='Tab';hint.append(enter,' Open tab in '+name+'  ·  ',tab,' Fill');}
+  function showHint(){const name=list.querySelectorAll('[role=option] span')[index]?.textContent;hint.replaceChildren();if(!name){hint.textContent='Choose a folder, or type a full path';return;}const enter=document.createElement('kbd'),tab=document.createElement('kbd');enter.textContent='↵';tab.textContent='Tab';hint.append(enter,' Select '+name+'  ·  ',tab,' Fill');}
   function close(){popup.hidden=true;index=-1;input.setAttribute('aria-expanded','false');button.setAttribute('aria-expanded','false');input.removeAttribute('aria-activedescendant');input.dispatchEvent(new Event('lookuptoggle'));}
   function highlight(next){index=next;showHint();[...list.querySelectorAll('[role=option]')].forEach((option,i)=>option.setAttribute('aria-selected',String(i===index)));const option=list.querySelectorAll('[role=option]')[index];if(option)input.setAttribute('aria-activedescendant',option.id);}
   // A tapped or clicked suggestion moves on to the next field; the keyboard keeps its place.
@@ -2004,7 +2004,7 @@ function newTabLookup(inputId,listId,buttonId,items,emptyText,onChange=()=>{},ne
       list.querySelectorAll('[role=option]')[index]?.scrollIntoView({block:'nearest'});
     }else if(event.key==='Escape'&&!popup.hidden){event.preventDefault();event.stopPropagation();close();
     }else if((event.key==='Enter'||(event.key==='Tab'&&!event.shiftKey))&&!popup.hidden&&index>=0){
-      // Tab fills the suggestion and moves on; Enter fills it before the form submits.
+      // Tab fills the suggestion and moves on to the model; Enter fills it and moves on to the prompt.
       choose(list.querySelectorAll('[role=option]')[index].dataset.value);
     }
   };
@@ -2025,7 +2025,8 @@ function updateNewTabProject(){
 let newTabProjects=[],newTabProjectMessage='',newTabProjectRequest;
 const newTabProjectLookup=newTabLookup('new-tab-project','new-tab-projects','new-tab-project-lookup',()=>newTabProjects.map(name=>{const path=name.replaceAll('\\','/');return [name,path.includes('/')?path.slice(0,path.lastIndexOf('/')):'',newTabProjectLabel(name)];}),()=>newTabProjectMessage||'No matching folders. Type a name in ~/git or a full path.',()=>{newTabProjectEdited=true;updateNewTabProject();},'new-tab-prompt');
 // Registered after the lookup's own keys: Tab fills the name, then moves on to the model.
-$('new-tab-project').addEventListener('keydown',event=>{if(event.key==='Tab'&&!event.shiftKey){event.preventDefault();focusNewTabField($('new-tab-model'));}});
+// Enter only settles the folder and never submits the form.
+$('new-tab-project').addEventListener('keydown',event=>{if(event.key==='Tab'&&!event.shiftKey){event.preventDefault();focusNewTabField($('new-tab-model'));}else if(event.key==='Enter'){event.preventDefault();if(!event.isComposing)closeNewTabProjectPicker(true);}});
 // The closest listed name, by containment or a small edit distance.
 function closestNewTabProject(project){
   const query=project.toLowerCase();let best='',bestScore=Infinity;
