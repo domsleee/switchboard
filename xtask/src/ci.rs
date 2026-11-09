@@ -1,111 +1,21 @@
 //! Tasks related to zellij CI
 use crate::{
     assets, build,
-    flags::{self, BuildRelease, CiCmd, Cross, E2e},
+    flags::{self, BuildRelease, CiCmd, Cross},
     metadata,
 };
 use anyhow::Context;
-use std::{
-    ffi::OsString,
-    path::{Path, PathBuf},
-};
+use std::{ffi::OsString, path::PathBuf};
 use xshell::{cmd, Shell};
 
 pub fn main(sh: &Shell, flags: flags::Ci) -> anyhow::Result<()> {
     let err_context = "failed to run CI task";
 
     match flags.subcommand {
-        CiCmd::E2e(E2e {
-            build: false,
-            test: false,
-            ..
-        }) => Err(anyhow::anyhow!(
-            "either '--build' or '--test' must be provided!"
-        )),
-        CiCmd::E2e(E2e {
-            build: true,
-            test: true,
-            ..
-        }) => Err(anyhow::anyhow!(
-            "flags '--build' and '--test' are mutually exclusive!"
-        )),
-        CiCmd::E2e(E2e {
-            build: true,
-            test: false,
-            ..
-        }) => e2e_build(sh),
-        CiCmd::E2e(E2e {
-            build: false,
-            test: true,
-            args,
-        }) => e2e_test(sh, args),
         CiCmd::Cross(Cross { triple, no_web }) => cross_compile(sh, &triple, no_web),
         CiCmd::BuildRelease(BuildRelease { no_web }) => build_release(sh, no_web),
     }
     .context(err_context)
-}
-
-fn e2e_build(sh: &Shell) -> anyhow::Result<()> {
-    let err_context = "failed to build E2E binary";
-
-    build::proto(sh).context(err_context)?;
-
-    let project_root = crate::project_root();
-    let data_dir = crate::target_dir().join("e2e-data");
-    sh.remove_path(&data_dir)
-        .and_then(|_| sh.create_dir(&data_dir))
-        .context(err_context)?;
-
-    let _pd = sh.push_dir(project_root);
-    // On Windows, build natively (MSVC).
-    // On macOS: use cargo-zigbuild which handles musl cross-compilation for any arch without
-    //   needing a separate linker toolchain. The target arch matches the host so the Docker
-    //   container runs natively without emulation (arm64 on Apple Silicon, amd64 on Intel).
-    //   Install with: cargo install cargo-zigbuild && brew install zig
-    // On Linux: cross-compile for musl.
-    if cfg!(windows) {
-        crate::cargo()
-            .and_then(|cargo| {
-                cmd!(sh, "{cargo} build --release")
-                    .run()
-                    .map_err(anyhow::Error::new)
-            })
-            .context(err_context)
-    } else if cfg!(target_os = "macos") {
-        let target = if cfg!(target_arch = "aarch64") {
-            "aarch64-unknown-linux-musl"
-        } else {
-            "x86_64-unknown-linux-musl"
-        };
-        crate::cargo()
-            .and_then(|cargo| {
-                if which::which("cargo-zigbuild").is_err() {
-                    eprintln!("!! 'cargo-zigbuild' wasn't found but is needed on macOS.");
-                    eprintln!("!! Please install it with:");
-                    eprintln!("!!   cargo install cargo-zigbuild");
-                    eprintln!("!!   brew install zig");
-                    return Err(anyhow::anyhow!("couldn't find 'cargo-zigbuild'"));
-                }
-                cmd!(sh, "rustup target add {target}")
-                    .run()
-                    .map_err(anyhow::Error::new)?;
-                cmd!(sh, "{cargo} zigbuild --release --target {target}")
-                    .run()
-                    .map_err(anyhow::Error::new)
-            })
-            .context(err_context)
-    } else {
-        crate::cargo()
-            .and_then(|cargo| {
-                cmd!(
-                    sh,
-                    "{cargo} build --release --target x86_64-unknown-linux-musl"
-                )
-                .run()
-                .map_err(anyhow::Error::new)
-            })
-            .context(err_context)
-    }
 }
 
 /// Native release build: generates protobufs, and runs
@@ -145,41 +55,6 @@ fn build_release(sh: &Shell, no_web: bool) -> anyhow::Result<()> {
                     .run()
                     .map_err(anyhow::Error::new)
             }
-        })
-        .context(err_context)
-}
-
-fn e2e_test(sh: &Shell, args: Vec<OsString>) -> anyhow::Result<()> {
-    let err_context = "failed to run E2E tests";
-
-    e2e_build(sh).context(err_context)?;
-
-    let _pd = sh.push_dir(crate::project_root());
-
-    // Build the test binary with only the requested native features.
-    crate::cargo()
-        .and_then(|cargo| {
-            // e2e tests
-            cmd!(
-                sh,
-                "{cargo} test --no-default-features -- --ignored --nocapture --test-threads 1"
-            )
-            .args(args.clone())
-            .run()
-            .map_err(anyhow::Error::new)?;
-
-            // plugin system tests are run here because they're medium-slow
-            let _pd = sh.push_dir(Path::new("zellij-server"));
-            println!();
-            let msg = ">> Testing Plugin System".to_string();
-            crate::status(&msg);
-            println!("{}", msg);
-
-            cmd!(sh, "{cargo} test -- --ignored --nocapture --test-threads 1")
-                .args(args.clone())
-                .run()
-                .with_context(|| "Failed to run tests for the Plugin System".to_string())?;
-            Ok(())
         })
         .context(err_context)
 }

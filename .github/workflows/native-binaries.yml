@@ -46,17 +46,10 @@ jobs:
         shell: bash
         run: echo 'RUSTC_WRAPPER=' >> "$GITHUB_ENV"
       - uses: ilammy/setup-nasm@v1.5.2
-      - name: Check Windows session discovery and colours
-        run: |
-          cargo test -p zellij-utils windows_session_catalog_tests --lib
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          cargo test -p zellij-utils windows_ipc --lib
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          cargo test -p zellij-server windows_pane_environment --lib
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          cargo test -p zellij-server windows_terminal_resize --lib
-      - name: Check Rust relay transport and update decisions
-        run: cargo test -p zellij-client --features web_server_capability switchboard_ --lib
+      # libtest accepts multiple filters (OR). Keep the existing release checks
+      # in one Cargo invocation so shared dependencies compile once.
+      - name: Check Windows sessions, IPC, colours, resizing, relay and updates
+        run: cargo test -p zellij-utils -p zellij-server -p zellij-client --no-default-features --features zellij-client/web_server_capability,zellij-server/web_server_capability --lib -- windows_session_catalog_tests windows_ipc windows_pane_environment windows_terminal_resize switchboard_
       - name: Check Windows update transactions and tray supervision
         run: |
           powershell -NoLogo -NoProfile -NonInteractive -File tools/switchboard/windows_releases.test.ps1

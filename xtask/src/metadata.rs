@@ -18,7 +18,10 @@ pub fn get_cargo_metadata(sh: &Shell) -> anyhow::Result<Value> {
 /// Returns None if the crate doesn't have web_server_capability and should use normal build
 pub fn get_no_web_features(sh: &Shell, crate_name: &str) -> anyhow::Result<Option<String>> {
     let metadata = get_cargo_metadata(sh)?;
+    no_web_features(&metadata, crate_name)
+}
 
+pub fn no_web_features(metadata: &Value, crate_name: &str) -> anyhow::Result<Option<String>> {
     let packages = metadata["packages"]
         .as_array()
         .context("Expected packages array in metadata")?;
