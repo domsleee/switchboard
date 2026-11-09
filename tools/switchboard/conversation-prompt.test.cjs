@@ -70,7 +70,7 @@ test('Conversation answers Claude permission prompts and questions without Termi
    assert.equal(await card.isVisible(),false);await page.evaluate(()=>{skew+=2000;intervals.forEach(fn=>fn());});assert.equal(f.reads,reads,'No screen reads while the agent works');
    // Folder trust appears before Claude has a transcript. Waiting for the user's
    // answer must not turn an approval into a failed connection.
-   f.prompt={detail:['Accessing workspace:','C:\\git\\GitHub\\WiseTechGlobal\\Tools.QGLWrap','Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to review what\'s in this folder first.',"Claude Code'll be able to read, edit, and execute files here.",'Security guide'],question:'Do you trust this folder?',token:'trust1',choices:[{label:'No, exit',number:null,checked:null,text:false},{label:'Yes, I trust this folder',number:null,checked:null,text:false}]};
+   f.prompt={detail:['Accessing workspace:','C:\\git\\GitHub\\acme\\sample-project','Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to review what\'s in this folder first.',"Claude Code'll be able to read, edit, and execute files here.",'Security guide'],question:'Do you trust this folder?',token:'trust1',choices:[{label:'No, exit',number:null,checked:null,text:false},{label:'Yes, I trust this folder',number:null,checked:null,text:false}]};
    f.answerStatus=200;
    await page.evaluate(()=>{current={...current,chatId:null,state:'approval'};SwitchboardConversation.update();});
    await poll();await card.getByText('Do you trust this folder?',{exact:true}).waitFor();
@@ -78,7 +78,7 @@ test('Conversation answers Claude permission prompts and questions without Termi
    assert.equal(await page.locator('.conversation-notice').textContent(),'Approval needed before the conversation can start.');
    assert.equal(await page.getByRole('button',{name:'Retry connection',exact:true}).isVisible(),false);
    assert.equal(await page.getByLabel('Reply draft').isVisible(),false);
-   assert.ok((await card.locator('.conversation-question-detail').textContent()).includes('Tools.QGLWrap'));
+   assert.ok((await card.locator('.conversation-question-detail').textContent()).includes('sample-project'));
    const trustBox=await card.boundingBox();assert.ok(trustBox.y>=0&&trustBox.y+trustBox.height<=viewport.height,'Startup approval fits the viewport');
    if(process.env.MODE_SCREENSHOTS)await page.screenshot({path:`${process.env.MODE_SCREENSHOTS}/conversation-folder-trust-${viewport.width}.png`});
    await card.getByRole('button',{name:'Yes, I trust this folder',exact:true}).click();

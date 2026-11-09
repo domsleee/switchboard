@@ -180,11 +180,11 @@ fn unix_seconds() -> u64 {
         .map_or(0, |elapsed| elapsed.as_secs())
 }
 
+static SHELL: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?:^|[\\/])(?:nu|zsh|bash|fish|pwsh|powershell)(?:\.exe)?(?:\s|$)").unwrap()
+});
+
 fn quiet_shell(pane: &Value) -> bool {
-    static SHELL: LazyLock<regex::Regex> = LazyLock::new(|| {
-        regex::Regex::new(r"(?:^|[\\/])(?:nu|zsh|bash|fish|pwsh|powershell)(?:\.exe)?(?:\s|$)")
-            .unwrap()
-    });
     static PATH_TITLE: LazyLock<regex::Regex> =
         LazyLock::new(|| regex::Regex::new(r"^(~|/|[A-Za-z]:[\\/])").unwrap());
     SHELL.is_match(
@@ -193,6 +193,20 @@ fn quiet_shell(pane: &Value) -> bool {
             .unwrap_or("")
             .to_ascii_lowercase(),
     ) && PATH_TITLE.is_match(pane["title"].as_str().unwrap_or(""))
+}
+
+/// False when the pane's command names some other program. A shell or no command
+/// says nothing, because Claude started from a shell is reported that way.
+pub(super) fn may_be_claude(pane: &Value) -> bool {
+    let command = pane["pane_command"]
+        .as_str()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    command.is_empty()
+        || SHELL.is_match(&command)
+        || AGENTS
+            .iter()
+            .any(|agent| agent.name == "claude" && any(&agent.command, &command))
 }
 
 /// The repository holding a folder, named after its main checkout so that every worktree of a

@@ -280,6 +280,10 @@ fn folder_trust(rows: &[Row]) -> Option<Menu> {
     })
 }
 
+pub(super) fn folder_trust_token(screen: &str) -> Option<String> {
+    folder_trust(&rows(screen)).map(|menu| menu.token)
+}
+
 pub(super) fn folder_trust_keys(screen: &str) -> Option<Vec<String>> {
     let menu = folder_trust(&rows(screen))?;
     match keys(&menu, 1, None)?.pop()? {
@@ -459,7 +463,7 @@ mod tests {
         assert!(menu
             .detail
             .iter()
-            .any(|line| line == r"C:\git\GitHub\WiseTechGlobal\Tools.QGLWrap"));
+            .any(|line| line == r"C:\git\GitHub\acme\sample-project"));
         assert!(menu
             .detail
             .iter()
@@ -486,7 +490,7 @@ mod tests {
             )])
         );
         assert_ne!(
-            claude_menu(&screen.replace("Tools.QGLWrap", "OtherProject"))
+            claude_menu(&screen.replace("sample-project", "OtherProject"))
                 .unwrap()
                 .token,
             menu.token

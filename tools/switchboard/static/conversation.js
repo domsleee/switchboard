@@ -143,7 +143,7 @@
     async function prepare(){
       if(!open||document.hidden||!target||!['codex','claude'].includes(target.agent)||!target.session||!Number.isInteger(target.tab))return;
       const folderTrust=target.agent==='claude';
-      if(folderTrust&&(target.chatId||target.state!=='approval'))return;
+      if(folderTrust&&(target.chatId||target.state!=='approval')){trustPreparations.delete(identity(target));return;}
       if(target.chatId&&['ready','working'].includes(target.state))return;
       const destination=target,key=identity(destination);
       if(folderTrust&&!trustPreparations.has(key))trustPreparations.set(key,{started:Date.now()});
@@ -151,7 +151,7 @@
       if(!startup||startup.pending||startup.error||Date.now()-startup.started>=30000||Date.now()-(startup.at||0)<5000)return;
       startup.at=Date.now();startup.pending=true;
       try{const response=await fetch('/api/hosts/'+encodeURIComponent(destination.host)+'/conversation/prepare',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:destination.session,tab_id:destination.tab,pane_id:destination.pane}),signal:AbortSignal.timeout(20000)});if(!response.ok)throw Error(response.status===404?'Update Switchboard on this computer to prepare the agent.':'Could not prepare this agent. Retry or open Terminal.');}
-      catch(error){startup.error=error.name==='TimeoutError'?'Agent preparation timed out. Retry or open Terminal.':error.message||'Could not reach this agent. Retry or open Terminal.';}
+      catch(error){if(!folderTrust)startup.error=error.name==='TimeoutError'?'Agent preparation timed out. Retry or open Terminal.':error.message||'Could not reach this agent. Retry or open Terminal.';}
       finally{startup.pending=false;if(identity(target)===key&&!chat){status(unboundNotice());updateActivity();}}
     }
     function stopStream(){stream?.close();stream=null;streamReady=false;streamPages=[];}
@@ -535,7 +535,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
     // A launched prompt is already the first message; follow-ups wait for its transcript.
     function firstMessage(){return !chat&&!target?.launch&&target?.agent==='claude'&&target.state==='ready'&&!!target.session&&Number.isInteger(target.pane)&&!firstSends.has(target.key);}
     function startupState(){if(!target||chat||!target.agent&&!target.starting)return null;const key=identity(target);if(firstMessage()||target.agent==='claude'&&['approval','input'].includes(target.state)){startups.delete(key);return null;}if(!startups.has(key)&&open&&!document.hidden)startups.set(key,{started:Date.now()});return startups.get(key);}
-    function unboundNotice(){if(target?.state==='approval')return 'Approval needed before the conversation can start.';if(target?.state==='input')return 'Answer the agent’s question to continue.';if(firstMessage())return 'Send a message to start the conversation.';const startup=startupState();return startup?.error||(startup&&Date.now()-startup.started>=30000?'The agent has not connected. Retry or open Terminal.':target?.starting?'Starting agent…':target?.agent?'Connecting to this agent’s conversation…':'No agent');}
+    function unboundNotice(){if(target?.agent==='claude'&&target.state==='approval')return 'Approval needed before the conversation can start.';if(target?.agent==='claude'&&target.state==='input')return 'Answer the agent’s question to continue.';if(firstMessage())return 'Send a message to start the conversation.';const startup=startupState();return startup?.error||(startup&&Date.now()-startup.started>=30000?'The agent has not connected. Retry or open Terminal.':target?.starting?'Starting agent…':target?.agent?'Connecting to this agent’s conversation…':'No agent');}
     function busy(value){loading=value;older.disabled=refresh.disabled=value;}
     // Touch screens open the on-screen keyboard over the conversation when the draft gains focus, so
     // there navigation focuses the panel for reading and only a tap on the draft starts a reply. A

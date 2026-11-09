@@ -156,6 +156,19 @@ async fn acting_on(session: &str, pane_id: u32) -> tokio::sync::OwnedMutexGuard<
     pane.lock_owned().await
 }
 
+// Zellij accepts input before the agent redraws. While a dialog we answered is still
+// on screen, answering again would send its keys to whatever dialog comes next.
+const TRUST_REDRAW: Duration = Duration::from_secs(10);
+static TRUST_SENT: std::sync::LazyLock<
+    std::sync::Mutex<HashMap<(String, u32), (String, std::time::Instant)>>,
+> = std::sync::LazyLock::new(Default::default);
+
+fn trust_just_sent(pane: &(String, u32), token: &str) -> bool {
+    let mut sent = TRUST_SENT.lock().unwrap();
+    sent.retain(|_, (_, at)| at.elapsed() < TRUST_REDRAW);
+    sent.get(pane).is_some_and(|(seen, _)| seen == token)
+}
+
 pub(super) async fn local(host: &Host, target: Target) -> Result<Json<Value>, Error> {
     let _guard = acting_on(&target.session, target.pane_id).await;
     let (pane, screen) = checked_screen(host, &target, tokio::time::Instant::now()).await?;
@@ -163,18 +176,32 @@ pub(super) async fn local(host: &Host, target: Target) -> Result<Json<Value>, Er
         Some("codex") => {
             trust_keys(&screen).map(|keys| keys.iter().map(|key| (*key).to_string()).collect())
         },
-        Some("claude") => prompt::folder_trust_keys(&screen),
+        Some("claude") if attention::may_be_claude(&pane) => prompt::folder_trust_keys(&screen),
         _ => None,
     };
     let Some(keys) = keys else {
         return Ok(Json(json!({"trusted":false})));
     };
+    let pane_key = (target.session.clone(), target.pane_id);
+    let token = prompt::folder_trust_token(&screen);
+    if token
+        .as_ref()
+        .is_some_and(|token| trust_just_sent(&pane_key, token))
+    {
+        return Ok(Json(json!({"trusted":true})));
+    }
     let id = target.pane_id.to_string();
     let mut args = vec!["write", "-p", &id];
     args.extend(keys.iter().map(String::as_str));
     control::run_local(host, &target.session, &args, Duration::from_secs(5))
         .await
         .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot confirm startup trust"))?;
+    if let Some(token) = token {
+        TRUST_SENT
+            .lock()
+            .unwrap()
+            .insert(pane_key, (token, std::time::Instant::now()));
+    }
     Ok(Json(json!({"trusted":true})))
 }
 
@@ -1253,16 +1280,30 @@ esac
         std::fs::remove_file(&actions).unwrap();
         std::fs::write(
             &catalog,
-            r#"[{"id":7,"tab_id":8,"pane_command":"claude","is_plugin":false}]"#,
+            r#"[{"id":7,"tab_id":8,"pane_command":"vim","is_plugin":false}]"#,
         )
         .unwrap();
         std::fs::write(&screen, include_str!("fixtures/claude-folder-trust.txt")).unwrap();
-        assert_eq!(local(&host, target()).await.unwrap().0["trusted"], true);
         assert_eq!(local(&host, target()).await.unwrap().0["trusted"], false);
+        assert!(!actions.exists(), "another program's dialog gets no keys");
+        std::fs::write(
+            &catalog,
+            r#"[{"id":7,"tab_id":8,"pane_command":"claude","is_plugin":false}]"#,
+        )
+        .unwrap();
+        // The dialog stays on screen after the keys are accepted, as it does until
+        // Claude redraws.
+        let retained = dir.path().join("after-27");
+        std::fs::write(&retained, include_str!("fixtures/claude-folder-trust.txt")).unwrap();
+        assert_eq!(local(&host, target()).await.unwrap().0["trusted"], true);
+        assert_eq!(local(&host, target()).await.unwrap().0["trusted"], true);
         assert_eq!(
             std::fs::read_to_string(&actions).unwrap().trim(),
             "-s fixture action write -p 7 27 91 66 13"
         );
+        std::fs::remove_file(&retained).unwrap();
+        std::fs::write(&screen, "").unwrap();
+        assert_eq!(local(&host, target()).await.unwrap().0["trusted"], false);
         std::fs::remove_file(&actions).unwrap();
 
         // Claude replies type into an empty prompt only.

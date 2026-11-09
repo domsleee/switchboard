@@ -470,6 +470,19 @@ test('integrated Conversation journeys use production markup and preserve delive
     assert.deepEqual(f.connections,[]);
    }finally{await f.close();}
   });
+  await t.test('a failed Claude folder trust preparation retries, and Codex keeps its error',async()=>{
+   const prepared=response=>response.url().endsWith('/conversation/prepare');
+   let f=await fixture({agent:'claude',bound:false}),{page}=f;try{
+    f.prepareStatus=502;f.state='approval';await Promise.all([page.waitForResponse(prepared),f.refresh()]);
+    f.prepareStatus=200;await page.evaluate(()=>{window.reviewOffset+=5100;});await Promise.all([page.waitForResponse(prepared),f.refresh()]);
+    assert.equal(f.preparations.length,2,'One failure does not end automatic preparation');
+    assert.equal(await page.locator('.conversation-notice').textContent(),'Approval needed before the conversation can start.');
+   }finally{await f.close();}
+   f=await fixture({bound:false});({page}=f);try{
+    f.prepareStatus=502;f.state='approval';await page.evaluate(()=>{window.reviewOffset+=5100;});await Promise.all([page.waitForResponse(prepared),f.refresh()]);
+    await page.waitForFunction(()=>document.querySelector('.conversation-notice').textContent.includes('Could not prepare'));
+   }finally{await f.close();}
+  });
   await t.test('unbound startup fails visibly, retries explicitly, and leaves shell tabs at No agent',async()=>{
    const f=await fixture({bound:false}),{page}=f;try{
     await page.waitForFunction(()=>document.querySelector('.conversation-notice').textContent.includes('Connecting'));
