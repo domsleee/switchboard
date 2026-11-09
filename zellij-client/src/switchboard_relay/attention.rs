@@ -4009,10 +4009,11 @@ esac
         let created = unix_seconds();
         let key = ("main".to_owned(), 3);
         let mut poll = PollState::default();
-        poll.hook_codex_for_test("main", 3, "codex-preserved");
-        let hook = poll.hooks.get_mut(&key).unwrap();
+        let mut hook = hook_status("codex", &json!({"hook_event_name":"Stop"})).unwrap();
+        hook.chat_id = Some("codex-preserved".into());
         hook.at = old_created;
         hook.restart = Some(serde_json::from_value(identity.clone()).unwrap());
+        poll.hooks.insert(key.clone(), hook);
         poll.observed.insert(
             json!(["local", "main", 3]).to_string(),
             json!({"created":old_created,"generation":1,"state":"ready"}),
