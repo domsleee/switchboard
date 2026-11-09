@@ -627,18 +627,8 @@ impl Mesh {
                 denied: false,
             },
         );
-        // Add computer already chose this exact request (checked above); its
-        // acceptance completes pairing.
-        let chosen = db.direct_sent.contains_key(&value.invitation);
-        let (invitation, request) = (value.invitation.clone(), value.request.clone());
         self.save(&db)?;
         *committed = db;
-        drop(committed);
-        if chosen {
-            self.approve(&invitation, &request, &code, true, now)
-                .await?;
-            return Box::pin(self.request(attempt, now)).await;
-        }
         Ok(Decision::Pending { code })
     }
     async fn approve(
@@ -734,6 +724,8 @@ impl Mesh {
             membership.members.get(&local.id) == Some(&local),
             "Approval belongs to another computer"
         );
+        // An invitation made while this join waited started a one-computer group.
+        db.leave_solo_group();
         if let Some(current) = &db.membership {
             anyhow::ensure!(
                 current.value.id == membership.id && current.value.version <= membership.version,

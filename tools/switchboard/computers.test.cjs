@@ -221,6 +221,21 @@ test('configured Windows appears before pairing and pairs using its existing gat
   });
 });
 
+test('the computer that chose Add computer shows an Approve button once the other computer allows', async () => {
+  const request = {invitation:'direct',request:'request',computer:'Windows',address:'https://192.0.2.2:8082',code:'AAAA-BBBB-CCCC'};
+  await fixture(async ({page,calls}) => {
+    await page.goto('https://switchboard.test/computers.html');
+    const approve = page.getByRole('button',{name:'Codes match, approve'});
+    await approve.waitFor();
+    assert.match(await page.locator('#sent').textContent(),/Request sent to Windows.*then approve it here/s);
+    assert.match(await page.locator('#requests').textContent(),/Windows wants to join.*AAAA-BBBB-CCCC/s);
+    assert.equal(calls.some(call => call.path === '/api/mesh/approve'),false);
+    await approve.click();
+    await page.waitForFunction(() => document.querySelector('#message').textContent.includes('Approved Windows'));
+    assert.deepEqual(calls.find(call => call.path === '/api/mesh/approve').body,{invitation:'direct',request:'request',code:'AAAA-BBBB-CCCC',allow:true});
+  },{configured:true,computer:{name:'Mac',address:'https://192.0.2.1:8082'},mesh:'Home',requests:[request],sent:[{invitation:'direct',computer:'Windows',address:'https://192.0.2.2:8082',code:'AAAA-BBBB-CCCC'}],members:[{id:'mac',name:'Mac',address:'https://192.0.2.1:8082',local:true,state:'paired'}]});
+});
+
 test('configured connections dedupe paired endpoints and local identity without hiding distinct gateway ports', async () => {
   await fixture(async ({page,responses}) => {
     responses.set('/api/hosts', [
