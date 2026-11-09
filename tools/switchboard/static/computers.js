@@ -157,6 +157,7 @@
         if (!member.local && paired && (!host || host.error)) {
           const retry = document.createElement('button'); retry.textContent = 'Retry'; retry.title = 'Retry connection'; retry.onclick = () => action(refresh); aside.append(retry);
         }
+        if (!member.local) aside.append(removeButton(member, state.board_host));
         cards.push(card);
       }
       const endpoints = new Set(state.members.map(member => endpoint(member.address)).filter(Boolean));
@@ -245,6 +246,21 @@
   };
   function endpoint(address) {
     try { return new URL(address).origin; } catch (_) { return null; }
+  }
+  // Removing cuts a computer off every other computer, so it always asks first.
+  function removeButton(member, board) {
+    const button = document.createElement('button');
+    button.textContent = 'Remove'; button.title = `Remove ${member.name} from your computers`;
+    button.onclick = () => {
+      const messages = board && board.host_id === member.id ? ' Shared messages stored on it will stop being available.' : '';
+      if (!confirm(`Remove ${member.name}? It loses access to all your computers and cannot pair again without a fresh Switchboard setup.${messages}`)) return;
+      action(async () => {
+        await api('/remove', {member_id: member.id});
+        show(`Removed ${member.name}. Your other computers cut it off as they sync.`);
+        await refresh();
+      });
+    };
+    return button;
   }
   async function addComputer(target) {
     const result = await api('/add', {target, name: $('mesh-name').value.trim(), ...local()});

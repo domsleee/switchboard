@@ -50,6 +50,20 @@ each) and appear in **Computers** with **Pair this computer**. Pair them, then
 delete the entry. A paired computer gets a new id, so its browser tab order and
 hidden tabs start fresh.
 
+To cut a computer off, for example a lost laptop, choose **Remove** on its row in
+**Settings → Computers**. The removal is signed and syncs to every computer, each of
+which drops its membership and credentials and revokes its terminal token. It is
+permanent for that identity: a stale peer cannot bring it back, and the computer can
+pair again only with a fresh identity (new `identity.json`). Its name becomes free at
+once. A computer cannot remove itself. The removed computer is not told; it keeps
+its copy of the group and its syncs start failing.
+
+Removal is refused while a reachable computer answers that it does not understand
+it (`GET /mesh/removal`), because a membership with a removal does not verify on
+older builds: they would stop merging group changes until they update. A computer
+that does not answer is not waited for, so an old offline computer simply cannot
+sync with the group until its updater runs, while its terminal credentials stay valid.
+
 Pairing remembers the computer's LAN address. If that address stops working,
 Switchboard also resolves `<computer-name>.local` and checks the paired computer's
 certificate before connecting. The paired name must match its network hostname;

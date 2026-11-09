@@ -18,6 +18,7 @@ async function fixture(fn, initial = {}) {
       if (path.startsWith('/api/mesh')) {
         const body = request.postDataJSON(); calls.push({path, body});
         if (path === '/api/mesh' && responses.has('/api/mesh-error')) return route.fulfill({status:503,body:responses.get('/api/mesh-error')});
+        if (responses.has(path + ':error')) return route.fulfill({status: 400, body: responses.get(path + ':error')});
         return route.fulfill({contentType: 'application/json', body: JSON.stringify(path === '/api/mesh' ? state : responses.get(path) || {})});
       }
       if (path === '/api/hosts') {
@@ -89,7 +90,7 @@ test('approval binds the visible verification code and health requires authentic
     assert.deepEqual(calls.find(call => call.path === '/api/mesh/approve').body, {invitation: 'invite', request: 'request', code: 'ABCD-1234-5678', allow: true});
     await page.waitForFunction(() => !document.querySelector('#create-form button[type=submit]').disabled);
     responses.set('/api/hosts', [{id: 'mesh-peer', name: 'Windows', sessions: [{name: 'isolated'}]}]);
-    await page.locator('#members button').click();
+    await page.locator('#members button', {hasText: 'Retry'}).click();
     await page.waitForFunction(() => document.querySelector('#members').textContent.includes('Connected'));
   }, {configured: true, computer: {name: 'Mac', address: 'https://192.0.2.1:8091'}, mesh: 'Home', administrator: true, requests: [request], members: [{id: 'peer', name: 'Windows', address: 'https://192.0.2.2:8091', local: false, state: 'paired'}], joining: {mesh: 'Home', computer: 'Mac', code: 'ABCD-1234-5678'}});
 });
@@ -233,7 +234,7 @@ test('configured connections dedupe paired endpoints and local identity without 
     assert.equal(await page.locator('#members .card').count(),3);
     assert.doesNotMatch(await page.locator('#members').textContent(), /Local legacy|Duplicate legacy/);
     assert.match(await page.locator('#members').textContent(), /Connected/);
-    assert.equal(await page.locator('#members button').textContent(),'Pair this computer');
+    assert.equal(await page.locator('#members button', {hasText: 'Pair'}).textContent(),'Pair this computer');
   }, pairedState);
 });
 
@@ -324,4 +325,52 @@ test('unpaired configured computers fill in versions after the fast summary rend
     await page.waitForFunction(() => document.querySelector('#members small.different'));
     assert.match(await page.locator('#members').textContent(), /Version def5678 · 2026-09-30 · Older than this computer/);
   });
+});
+
+const twoComputers = {configured: true, computer: {name: 'Mac', address: 'https://192.0.2.1:8082'}, mesh: 'Home', gateway_available: true, members: [
+  {id: 'mac-id', name: 'Mac', address: 'https://192.0.2.1:8082', local: true, state: 'paired'},
+  {id: 'laptop-id', name: 'Laptop', address: 'https://192.0.2.3:8082', local: false, state: 'paired'},
+]};
+
+test('Removing a paired computer asks first and is not offered for this computer', async () => {
+  await fixture(async ({page, calls, responses, setState}) => {
+    responses.set('/api/mesh/remove', {removed: true});
+    await page.goto('https://switchboard.test/computers.html');
+    const laptop = page.locator('.computer', {hasText: 'Laptop'});
+    await laptop.locator('button', {hasText: 'Remove'}).waitFor();
+    assert.equal(await page.locator('.computer', {hasText: 'This computer'}).locator('button', {hasText: 'Remove'}).count(), 0);
+
+    const dismissed = page.waitForEvent('dialog').then(async dialog => { assert.match(dialog.message(), /Remove Laptop\?/); await dialog.dismiss(); });
+    await laptop.locator('button', {hasText: 'Remove'}).click();
+    await dismissed;
+    assert.equal(calls.some(call => call.path === '/api/mesh/remove'), false);
+
+    setState({members: twoComputers.members.slice(0, 1)});
+    page.once('dialog', dialog => dialog.accept());
+    await laptop.locator('button', {hasText: 'Remove'}).click();
+    await page.waitForFunction(() => document.querySelector('#message').textContent.includes('Removed Laptop'));
+    assert.deepEqual(calls.find(call => call.path === '/api/mesh/remove').body, {member_id: 'laptop-id'});
+    await page.locator('.computer', {hasText: 'Laptop'}).waitFor({state: 'detached'});
+  }, twoComputers);
+});
+
+test('Removing a computer warns when it holds the shared messages', async () => {
+  await fixture(async ({page}) => {
+    await page.goto('https://switchboard.test/computers.html');
+    const dialog = page.waitForEvent('dialog').then(async dialog => { assert.match(dialog.message(), /Shared messages/); await dialog.dismiss(); });
+    await page.locator('.computer', {hasText: 'Laptop'}).locator('button', {hasText: 'Remove'}).click();
+    await dialog;
+  }, {...twoComputers, board_host: {state: 'selected', host_id: 'laptop-id', host_name: 'Laptop', can_select: false, candidates: []}});
+});
+
+test('A refused removal explains why and keeps the computer listed', async () => {
+  await fixture(async ({page, responses}) => {
+    responses.set('/api/mesh/remove:error', 'Update Switchboard on Tower first');
+    await page.goto('https://switchboard.test/computers.html');
+    page.once('dialog', dialog => dialog.accept());
+    await page.locator('.computer', {hasText: 'Laptop'}).locator('button', {hasText: 'Remove'}).click();
+    await page.waitForFunction(() => document.querySelector('#message').textContent.includes('Update Switchboard on Tower first'));
+    assert.equal(await page.locator('#message').getAttribute('class'), 'error');
+    assert.equal(await page.locator('.computer', {hasText: 'Laptop'}).count(), 1);
+  }, twoComputers);
 });

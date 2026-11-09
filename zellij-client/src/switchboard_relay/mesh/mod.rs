@@ -14,7 +14,7 @@ use super::*;
 use crypto::{hash, secret, verification, verify, Identity};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::PathBuf,
     sync::RwLock,
     time::{SystemTime, UNIX_EPOCH},
@@ -55,6 +55,9 @@ pub(super) struct Membership {
     administrator: String,
     version: u64,
     members: BTreeMap<String, Member>,
+    // Omitted while empty, so a group that never removed anyone signs the same bytes as before.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    removed: BTreeSet<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct Invitation {
@@ -216,6 +219,17 @@ impl Database {
             _ => false,
         }
     }
+    /// Drops what this computer holds for a removed member. `incoming` must go
+    /// with the member: the catalog refuses a credential from a non-member.
+    fn forget(&mut self, id: &str) {
+        self.incoming.remove(id);
+        self.outgoing.remove(id);
+        self.categories.remove(id);
+        self.hostnames.remove(id);
+        self.addresses.remove(id);
+        self.board_hosts
+            .retain(|selection| selection.host_id() != id);
+    }
     /// Only on this computer's own explicit join or approval.
     fn leave_solo_group(&mut self) {
         if self.membership.is_some() && self.can_join() {
@@ -229,6 +243,7 @@ impl Database {
 
 pub(super) trait TokenIssuer: Send + Sync {
     fn issue(&self, peer: &str) -> anyhow::Result<String>;
+    fn revoke(&self, peer: &str) -> anyhow::Result<()>;
 }
 struct NativeIssuer;
 impl TokenIssuer for NativeIssuer {
@@ -237,6 +252,17 @@ impl TokenIssuer for NativeIssuer {
         zellij_utils::web_authentication_tokens::create_token(Some(name), false)
             .map(|(token, _)| token)
             .map_err(|_| anyhow::anyhow!("Cannot issue a peer terminal credential"))
+    }
+    fn revoke(&self, peer: &str) -> anyhow::Result<()> {
+        use zellij_utils::web_authentication_tokens::{list_tokens, revoke_token};
+        let prefix = format!("switchboard-{peer}-");
+        let failed = |_| anyhow::anyhow!("Cannot revoke a removed computer's terminal credential");
+        for token in list_tokens().map_err(failed)? {
+            if token.name.starts_with(&prefix) {
+                revoke_token(&token.name).map_err(failed)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -475,6 +501,7 @@ impl Mesh {
                 administrator: local.id.clone(),
                 version: 1,
                 members: [(local.id.clone(), local.clone())].into_iter().collect(),
+                removed: BTreeSet::new(),
             };
             db.membership = Some(self.identity.sign(membership)?);
         }
@@ -656,6 +683,10 @@ impl Mesh {
         }
         let member = pending.request.member.clone();
         anyhow::ensure!(
+            !membership.removed.contains(&member.id),
+            "Computer was removed from the group"
+        );
+        anyhow::ensure!(
             !membership
                 .members
                 .values()
@@ -792,6 +823,101 @@ impl Mesh {
         self.save(&db)?;
         *committed = db;
         Ok(())
+    }
+    /// Removes a computer from the group, unless a computer that would have to
+    /// accept the removal is running a build that cannot verify it.
+    pub(super) async fn remove_member(&self, id: &str) -> anyhow::Result<()> {
+        if let Some(name) = self.outdated_member(id).await {
+            anyhow::bail!(
+                "Update Switchboard on {name} first: it cannot accept a removal yet, and would stop syncing with your other computers"
+            );
+        }
+        self.apply_removal(id).await
+    }
+    /// A computer that does not answer is not waited for: the computer being
+    /// cut off may be the lost one, and others may be off when it matters.
+    async fn outdated_member(&self, removing: &str) -> Option<String> {
+        let peers: Vec<Member> = {
+            let db = self.database.lock().await;
+            let local = db.local.as_ref()?.id.clone();
+            let members = &db.membership.as_ref()?.value.members;
+            members
+                .values()
+                .filter(|member| member.id != local && member.id != removing)
+                .cloned()
+                .collect()
+        };
+        let answers = futures_util::future::join_all(peers.iter().map(|peer| async move {
+            let host = self.peer_client(peer).ok()?;
+            let request = host.raw_request(
+                Method::GET,
+                "/mesh/removal",
+                Bytes::new(),
+                "application/json",
+                None,
+            );
+            let response = tokio::time::timeout(Duration::from_secs(3), request)
+                .await
+                .ok()?
+                .ok()?;
+            // Builds without the route answer from their authenticated terminal fallback.
+            let outdated =
+                response.status != StatusCode::NO_CONTENT && !response.status.is_server_error();
+            outdated.then(|| peer.name.clone())
+        }))
+        .await;
+        answers.into_iter().flatten().next()
+    }
+    pub(super) async fn apply_removal(&self, id: &str) -> anyhow::Result<()> {
+        let mut committed = self.database.lock().await;
+        let mut db = committed.clone();
+        let local = db
+            .local
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Computer unavailable"))?;
+        anyhow::ensure!(local.id != id, "A computer cannot remove itself");
+        let mut membership = db
+            .membership
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Group unavailable"))?
+            .value
+            .clone();
+        anyhow::ensure!(membership.members.remove(id).is_some(), "Unknown computer");
+        membership.removed.insert(id.to_owned());
+        membership.version = membership
+            .version
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("Group version exhausted"))?;
+        db.membership = Some(self.identity.sign(membership)?);
+        db.forget(id);
+        self.save(&db)?;
+        *committed = db;
+        drop(committed);
+        self.retire(id);
+        Ok(())
+    }
+    /// After a removal is committed, so a failed save never loses a live credential.
+    /// `id` is always a former member's identity hash, never peer-supplied text.
+    fn retire(&self, id: &str) {
+        self.peer_clients.write().unwrap().remove(id);
+        let (own, issued) = (format!("{id}-"), format!("issued-{id}-"));
+        for entry in std::fs::read_dir(&self.storage.root)
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with(&own) || name.starts_with(&issued) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+        if let Err(error) = self.issuer.revoke(id) {
+            logs::record(
+                "pairing",
+                &format!("{error:#}; revoke it with zellij web --revoke-token"),
+            );
+        }
     }
     async fn status(&self) -> Value {
         let connection_address = self.gateway.lock().await.clone();
