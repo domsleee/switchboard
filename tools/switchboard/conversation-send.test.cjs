@@ -69,8 +69,8 @@ test('outgoing replies stay visible through queue acknowledgement and reconcile 
   // The terminal path waits for Claude's box the same way, past its own 4 second limit.
   await draft.fill('Bridge held');await send.click();await page.waitForFunction(()=>pastes.length===4);
   await page.evaluate(()=>window.dispatchEvent(new MessageEvent('message',{origin:location.origin,source:current.frame.contentWindow,data:{type:'zellij-conversation-paste-result',id:pastes[3].id,ok:false,error:"Waiting for Claude's input box."}})));
-  await page.getByText('Your message will send as soon as Claude can take it.',{exact:true}).waitFor();
   await page.waitForFunction(()=>pastes.length===5,null,{timeout:5000});
+  assert.equal(await page.locator('.conversation-send-notice').isVisible(),false,'A held send shows no notice');
   await page.evaluate(()=>timers[3]?.());
   assert.equal(await outgoing.getByText('No confirmation from the terminal',{exact:false}).count(),0,'A held send is not timed out by its earlier attempt');
   await page.evaluate(()=>window.dispatchEvent(new MessageEvent('message',{origin:location.origin,source:current.frame.contentWindow,data:{type:'zellij-conversation-paste-result',id:pastes[4].id,ok:true}})));
@@ -87,18 +87,17 @@ test('outgoing replies stay visible through queue acknowledgement and reconcile 
   history.push({role:'user',text:'Relay reply'});await poll();
   await page.waitForFunction(()=>document.querySelectorAll('.conversation-outgoing').length===0);
   // No input box means nothing was typed: the message waits and is sent, old relay or new.
-  const holding='Your message will send as soon as Claude can take it.';
   for(const body of ["Waiting for Claude's input box.",'Claude is not at its prompt. Open Terminal to see what it needs.']){
    relay=409;relayBody=body;const before=replies.length,text='Held: '+body.length;await draft.fill(text);await send.click();
-   await page.getByText(holding,{exact:true}).waitFor();
    await page.waitForFunction(()=>document.querySelector('.conversation-compose textarea').value==='');
    // Retried, and the refusal never reaches the page.
    while(replies.length<before+2)await page.waitForTimeout(50);
    assert.equal(await page.getByText(body,{exact:true}).count(),0,'The refusal is never shown');
+   assert.equal(await page.locator('.conversation-send-notice').isVisible(),false,'A held send shows no notice');
+   assert.equal(await outgoing.count(),1,'The held message stays on its way');
    assert.equal(await draft.inputValue(),'','The held message stays out of the draft');
    relay=200;await outgoing.getByText('Queued',{exact:true}).waitFor({timeout:20000});
    assert.deepEqual(replies.at(-1),{pane_id:1,text});
-   await page.waitForFunction(text=>!document.body.innerText.includes(text),holding);
    history.push({role:'user',text});await poll();
    await page.waitForFunction(()=>document.querySelectorAll('.conversation-outgoing').length===0);
   }

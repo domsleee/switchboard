@@ -1069,7 +1069,6 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       // The tab should not read as Working while nothing has reached Claude.
       if(!sent.holds)notSent(sent.pane);
       const delay=Math.min(15000,1000*2**(sent.holds||0));sent.holds=(sent.holds||0)+1;sent.attempt=(sent.attempt||0)+1;
-      if(identity(target)===sent.key)sendStatus('Your message will send as soon as Claude can take it.',sent);
       setTimeout(()=>{if(pendingFor(sent.key)===sent)void deliver(sent,sent.target);},delay);
     }
     async function deliver(sent,current){
