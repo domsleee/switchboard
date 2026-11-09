@@ -86,7 +86,8 @@ test('Conversation reports a reply as submitted and takes it back when it fails'
     await page.route('http://send.test/**',route=>{
       const url=new URL(route.request().url());
       if(url.pathname.startsWith('/api/diagnostics/'))return route.fulfill({status:204});
-      if(url.pathname.endsWith('/conversation/reply'))return status===200?route.fulfill({json:{ok:true}}):route.fulfill({status,body:'Claude is not at its prompt.'});
+      if(url.pathname.endsWith('/skills'))return route.fulfill({json:{skills:[]}});
+      if(url.pathname.endsWith('/conversation/reply'))return status===200?route.fulfill({json:{ok:true}}):route.fulfill({status,body:'The selected pane changed'});
       if(url.pathname.startsWith('/api/chats/'))return route.fulfill({json:{session_id:'00000000-0000-4000-8000-000000000001',messages:[{role:'assistant',text:'Earlier answer'}],start_cursor:0,next_cursor:null}});
       if(url.pathname==='/')return route.fulfill({contentType:'text/html',body:`<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/conversation.css"><main id="terminals"><iframe id="terminal"></iframe><section id="artifact-preview" hidden></section></main><script src="/conversation.js"></script><script>window.calls=[];window.current={key:'pane1',host:'fixture',session:'main',pane:1,agent:'claude',state:'ready',chatId:'chat',frame:document.getElementById('terminal')};SwitchboardConversation.install({selection:()=>current,terminal:()=>{},sending:(view,command)=>calls.push(['sending',view.pane,command]),notSent:key=>calls.push(['notSent',key])});</script>`});
       return route.fulfill({contentType:url.pathname.endsWith('.css')?'text/css':'application/javascript',path:path.join(__dirname,'static',path.basename(url.pathname))});

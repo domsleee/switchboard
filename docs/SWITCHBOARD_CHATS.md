@@ -156,6 +156,8 @@ forwarded-message annotation. Claude replies use `/api/hosts/HOST/conversation/r
 including while working: the relay pastes the reply into the pane and presses Enter
 only when Claude's prompt box is empty, so Conversation stays on screen. Relays
 without that route answer 404 and the browser falls back to pasting through Terminal.
+When Claude shows no input box, nothing is typed and the message stays on its way:
+the browser retries with backoff until the box returns.
 Codex approvals and synchronous terminal prompts still require Terminal. In
 Conversation, Codex's exact startup **Hooks need review** menu is
 completed automatically by choosing **Trust all and continue**. Codex records its

@@ -2,7 +2,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),path=requir
 test('outgoing replies stay visible through queue acknowledgement and reconcile one-for-one',{skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
  const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch();
  const history=[{role:'user',text:'Same message'},{role:'assistant',text:'Earlier answer'}],requests=[];
- let held,hold=true,fail=false,relay=404,relayNotice,relayHold;const replies=[];
+ let held,hold=true,fail=false,relay=404,relayBody='',relayNotice,relayHold;const replies=[];
  try{
   const page=await browser.newPage({viewport:{width:390,height:844},hasTouch:true,isMobile:true});page.setDefaultTimeout(5000);
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
@@ -10,7 +10,8 @@ test('outgoing replies stay visible through queue acknowledgement and reconcile 
   await page.route('http://send.test/**',async route=>{
    const url=new URL(route.request().url());
    if(url.pathname.startsWith('/api/diagnostics/'))return route.fulfill({status:204});
-   if(url.pathname.endsWith('/conversation/reply')){replies.push(route.request().postDataJSON());await relayHold;return relay===200?route.fulfill({json:{ok:true,...relayNotice&&{draft:'stashed',notice:relayNotice}}}):route.fulfill({status:relay,body:relay===409?'Claude is not at its prompt. Open Terminal to see what it needs.':''});}
+   if(url.pathname.endsWith('/conversation/reply')){replies.push(route.request().postDataJSON());await relayHold;return relay===200?route.fulfill({json:{ok:true,...relayNotice&&{draft:'stashed',notice:relayNotice}}}):route.fulfill({status:relay,body:relayBody});}
+   if(url.pathname.endsWith('/skills'))return route.fulfill({json:{skills:[]}});
    if(url.pathname.endsWith('/codex/reply')){requests.push(route.request().postDataJSON());if(fail)return route.abort();if(hold)await new Promise(resolve=>held=resolve);return route.fulfill({json:{status:'queued'}});}
    if(url.pathname.startsWith('/api/chats/'))return route.fulfill({json:{session_id:'00000000-0000-4000-8000-000000000001',messages:history,start_cursor:0,next_cursor:null}});
    if(url.pathname==='/')return route.fulfill({contentType:'text/html',body:`<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/conversation.css"><main id="terminals"><iframe id="terminal"></iframe><section id="artifact-preview" hidden></section></main><script src="/conversation.js"></script><script>window.current={key:'pane1',host:'fixture',pane:1,agent:'codex',state:'working',chatId:'codex-chat',frame:document.getElementById('terminal')};SwitchboardConversation.install({selection:()=>current,terminal:()=>{}});</script>`});
@@ -65,14 +66,42 @@ test('outgoing replies stay visible through queue acknowledgement and reconcile 
   await page.waitForFunction(()=>document.querySelectorAll('.conversation-outgoing').length===0);
   await page.evaluate(notice=>window.dispatchEvent(new MessageEvent('message',{origin:location.origin,source:current.frame.contentWindow,data:{type:'zellij-conversation-paste-result',id:pastes[2].id,ok:true,error:'',notice}})),stashNotice);
   await page.getByText(stashNotice,{exact:true}).waitFor();
+  // The terminal path waits for Claude's box the same way, past its own 4 second limit.
+  await draft.fill('Bridge held');await send.click();await page.waitForFunction(()=>pastes.length===4);
+  await page.evaluate(()=>window.dispatchEvent(new MessageEvent('message',{origin:location.origin,source:current.frame.contentWindow,data:{type:'zellij-conversation-paste-result',id:pastes[3].id,ok:false,error:"Waiting for Claude's input box."}})));
+  await page.getByText('Your message will send as soon as Claude can take it.',{exact:true}).waitFor();
+  await page.waitForFunction(()=>pastes.length===5,null,{timeout:5000});
+  await page.evaluate(()=>timers[3]?.());
+  assert.equal(await outgoing.getByText('No confirmation from the terminal',{exact:false}).count(),0,'A held send is not timed out by its earlier attempt');
+  await page.evaluate(()=>window.dispatchEvent(new MessageEvent('message',{origin:location.origin,source:current.frame.contentWindow,data:{type:'zellij-conversation-paste-result',id:pastes[4].id,ok:true}})));
+  await outgoing.getByText('Sent',{exact:true}).waitFor();history.push({role:'user',text:'Bridge held'});await poll();
+  await page.waitForFunction(()=>document.querySelectorAll('.conversation-outgoing').length===0);
   // A current relay types Claude replies itself; the terminal is never used.
-  relay=409;await draft.fill('Relay reply');await send.click();
-  await outgoing.getByText('Claude is not at its prompt. Open Terminal to see what it needs.',{exact:true}).waitFor();
+  relay=409;relayBody='The selected pane changed';await draft.fill('Relay reply');await send.click();
+  await outgoing.getByText('The selected pane changed',{exact:true}).waitFor();
   assert.equal(await draft.inputValue(),'Relay reply','A failed send puts its text back in the draft');
   relay=200;await send.click();await outgoing.getByText('Queued',{exact:true}).waitFor();
-  assert.equal(await page.evaluate(()=>pastes.length),3);
+  assert.equal(await page.evaluate(()=>pastes.length),5);
   assert.deepEqual(replies.at(-1),{pane_id:1,text:'Relay reply'});
   assert.equal(await draft.inputValue(),'');
+  history.push({role:'user',text:'Relay reply'});await poll();
+  await page.waitForFunction(()=>document.querySelectorAll('.conversation-outgoing').length===0);
+  // No input box means nothing was typed: the message waits and is sent, old relay or new.
+  const holding='Your message will send as soon as Claude can take it.';
+  for(const body of ["Waiting for Claude's input box.",'Claude is not at its prompt. Open Terminal to see what it needs.']){
+   relay=409;relayBody=body;const before=replies.length,text='Held: '+body.length;await draft.fill(text);await send.click();
+   await page.getByText(holding,{exact:true}).waitFor();
+   await page.waitForFunction(()=>document.querySelector('.conversation-compose textarea').value==='');
+   // Retried, and the refusal never reaches the page.
+   while(replies.length<before+2)await page.waitForTimeout(50);
+   assert.equal(await page.getByText(body,{exact:true}).count(),0,'The refusal is never shown');
+   assert.equal(await draft.inputValue(),'','The held message stays out of the draft');
+   relay=200;await outgoing.getByText('Queued',{exact:true}).waitFor({timeout:20000});
+   assert.deepEqual(replies.at(-1),{pane_id:1,text});
+   await page.waitForFunction(text=>!document.body.innerText.includes(text),holding);
+   history.push({role:'user',text});await poll();
+   await page.waitForFunction(()=>document.querySelectorAll('.conversation-outgoing').length===0);
+  }
   // The relay sets a terminal draft aside; if Claude did not restore it, say where it is.
   relayNotice="Your terminal draft is in Claude's stash. Press Ctrl+S on its empty prompt to bring it back.";
   await draft.fill('Over a draft');await send.click();await page.getByText(relayNotice,{exact:true}).waitFor();
