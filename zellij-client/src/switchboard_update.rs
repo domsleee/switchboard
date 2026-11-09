@@ -905,6 +905,9 @@ impl Updater {
                 }
             }
             if !self.check {
+                // Unit fixtures use fake services and binaries, never desktop sessions.
+                // Real engine recovery is covered by the process acceptance suite.
+                #[cfg(not(test))]
                 engine_swap::settle_interrupted_moves(self.config.as_deref());
             }
             self.update(&mut state)
@@ -1178,6 +1181,7 @@ impl Updater {
             },
         }
         state.save(&self.state_path())?;
+        #[cfg(not(test))]
         if matches!(result, Ok(true)) {
             // The update may have replaced the file the running engines came from.
             let previous = self.retained_previous_build();
