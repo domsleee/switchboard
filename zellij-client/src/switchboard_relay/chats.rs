@@ -3332,7 +3332,9 @@ mod tests {
         ] {
             let events = markdown_events(&format!("Here it is:\n\n{path}\n\nDone."));
             assert!(
-                events.iter().any(|e| e["type"] == "text" && e["text"] == path),
+                events
+                    .iter()
+                    .any(|e| e["type"] == "text" && e["text"] == path),
                 "{events:?}"
             );
         }
