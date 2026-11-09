@@ -54,7 +54,7 @@ test('Conversation folds finished progress, keeps the live step, and gives code 
   assert.match(await live.locator('.conversation-working-time').textContent(),/^1m [56]s$/);
   // The sweep covers the icon and label together, and only as wide as they are.
   assert.equal(await live.locator('.conversation-working-label .conversation-working-icon').count(),1);
-  assert.equal(await live.locator('.conversation-working-label').evaluate(node=>getComputedStyle(node).animationName),'conversation-sweep');
+  assert.equal(await live.locator('.conversation-working-label').evaluate(node=>getComputedStyle(node).animationName),'none','Only Thinking sweeps: a fixed duration races across a long step');
   assert.ok(await live.locator('.conversation-working-label').evaluate(node=>node.getBoundingClientRect().width<node.parentElement.getBoundingClientRect().width));
   assert.equal(await page.locator('.conversation-message.commentary.live').isVisible(),false);
   // The live row is the run's only disclosure: it shows this turn's earlier steps in place.
