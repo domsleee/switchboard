@@ -979,8 +979,9 @@ impl Pty {
         hosted.resume_output()?;
         hosted.commit_adoption(&adoption.handoff_id)?;
         hosted.release_exits();
-        crate::handoff::unfreeze();
-        Ok(())
+        self.bus
+            .senders
+            .send_to_screen(ScreenInstruction::EndHandoffAdoption)
     }
     pub fn get_default_terminal(
         &self,

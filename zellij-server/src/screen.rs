@@ -484,6 +484,8 @@ pub enum ScreenInstruction {
     RestoreHandoffPane(u32, String),
     /// The IDs and sizes of the tabs about to be created, and the next ID.
     UseHandoffTabIds(Vec<(usize, Size)>, usize),
+    /// Every snapshot is ahead of this in the queue, so viewers can be let in.
+    EndHandoffAdoption,
     UpdatePaneName(Vec<u8>, ClientId, Option<NotificationEnd>),
     UndoRenamePane(ClientId, Option<NotificationEnd>),
     NewTab(
@@ -1094,6 +1096,7 @@ impl From<&ScreenInstruction> for ScreenContext {
             ScreenInstruction::PrepareHandoff(..) => ScreenContext::PrepareHandoff,
             ScreenInstruction::RestoreHandoffPane(..) => ScreenContext::RestoreHandoffPane,
             ScreenInstruction::UseHandoffTabIds(..) => ScreenContext::UseHandoffTabIds,
+            ScreenInstruction::EndHandoffAdoption => ScreenContext::UseHandoffTabIds,
             ScreenInstruction::UpdatePaneName(..) => ScreenContext::UpdatePaneName,
             ScreenInstruction::UndoRenamePane(..) => ScreenContext::UndoRenamePane,
             ScreenInstruction::NewTab(..) => ScreenContext::NewTab,
@@ -2607,6 +2610,10 @@ impl Screen {
     }
 
     pub fn recompute_tab_size(&mut self, tab_id: usize) -> Result<()> {
+        // A takeover keeps each tab at the size its snapshots describe.
+        if crate::handoff::is_frozen() {
+            return Ok(());
+        }
         let released = self
             .tab_size_owners
             .get(&tab_id)
@@ -9977,6 +9984,7 @@ pub(crate) fn screen_thread_main(
                 }
                 screen.render(None)?;
             },
+            ScreenInstruction::EndHandoffAdoption => crate::handoff::unfreeze(),
             ScreenInstruction::UseHandoffTabIds(tabs, next_tab_id) => {
                 screen.handoff_tab_ids = tabs.iter().map(|(id, _)| *id).collect();
                 screen.handoff_tab_sizes = tabs.into_iter().collect();
