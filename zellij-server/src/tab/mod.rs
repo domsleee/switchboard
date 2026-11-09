@@ -696,6 +696,13 @@ pub trait Pane {
     fn hold(&mut self, _exit_status: Option<i32>, _is_first_run: bool, _run_command: RunCommand) {
         // No-op by default, only terminal panes support holding
     }
+    fn handoff_snapshot(&self) -> Option<String> {
+        None
+    }
+    fn held_for_handoff(&self) -> Option<zellij_utils::input::layout::HeldTerminal> {
+        None
+    }
+    fn restore_handoff_snapshot(&mut self, _snapshot: &str) {}
     fn has_bell(&self) -> bool {
         false
     }
@@ -4166,6 +4173,55 @@ impl Tab {
             plugin_pane.handle_plugin_bytes(client_id, bytes);
         }
         Ok(())
+    }
+    /// Applies whatever has been held back from this tab's panes, so that
+    /// their grids describe all the output they have received.
+    pub fn settle_for_handoff(&mut self) -> std::result::Result<(), String> {
+        if self.is_pending {
+            return Err("a tab is still being created".to_string());
+        }
+        if !self.suppressed_panes.is_empty() {
+            return Err("a tab has a suppressed pane".to_string());
+        }
+        for pane_id in self.get_all_pane_ids() {
+            let PaneId::Terminal(pid) = pane_id else {
+                continue;
+            };
+            let Some(pane) = self
+                .tiled_panes
+                .get_pane_mut(pane_id)
+                .or_else(|| self.floating_panes.get_pane_mut(pane_id))
+            else {
+                continue;
+            };
+            if pane.is_scrolled() {
+                pane.clear_scroll();
+            }
+            self.process_pending_vte_events(pid)
+                .map_err(|error| format!("{error:#}"))?;
+            // Checked last, because the output applied above can ask a query.
+            let waiting = self
+                .tiled_panes
+                .get_pane_mut(pane_id)
+                .or_else(|| self.floating_panes.get_pane_mut(pane_id))
+                .is_some_and(|pane| pane.is_forward_paused());
+            if waiting {
+                return Err("a pane is waiting for a terminal query".to_string());
+            }
+        }
+        Ok(())
+    }
+    pub fn restore_handoff_pane(&mut self, pid: u32, snapshot: &str) -> bool {
+        let pane_id = PaneId::Terminal(pid);
+        let pane = self
+            .tiled_panes
+            .get_pane_mut(pane_id)
+            .or_else(|| self.floating_panes.get_pane_mut(pane_id));
+        let found = pane.is_some();
+        if let Some(pane) = pane {
+            pane.restore_handoff_snapshot(snapshot);
+        }
+        found
     }
     pub fn process_pending_vte_events(&mut self, pid: u32) -> Result<()> {
         if let Some(pending_vte_events) = self.pending_vte_events.get_mut(&pid) {

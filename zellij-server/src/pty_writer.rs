@@ -17,6 +17,8 @@ pub enum PtyWriteInstruction {
     ResizePty(u32, u16, u16, Option<u16>, Option<u16>),
     StartCachingResizes,
     ApplyCachedResizes,
+    /// Replies once every queued write has reached its terminal.
+    Flush(std::sync::mpsc::Sender<()>),
     Exit,
 }
 
@@ -27,6 +29,7 @@ impl From<&PtyWriteInstruction> for PtyWriteContext {
             PtyWriteInstruction::ResizePty(..) => PtyWriteContext::ResizePty,
             PtyWriteInstruction::ApplyCachedResizes => PtyWriteContext::ApplyCachedResizes,
             PtyWriteInstruction::StartCachingResizes => PtyWriteContext::StartCachingResizes,
+            PtyWriteInstruction::Flush(..) => PtyWriteContext::Write,
             PtyWriteInstruction::Exit => PtyWriteContext::Exit,
         }
     }
@@ -53,6 +56,7 @@ struct PendingWrite {
 pub(crate) fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
     let err_context = || "failed to write to pty".to_string();
     let mut pending: HashMap<u32, VecDeque<PendingWrite>> = HashMap::new();
+    let mut flush_waiters: Vec<std::sync::mpsc::Sender<()>> = Vec::new();
 
     loop {
         // If we have pending writes, use a short timeout so we can keep
@@ -134,6 +138,7 @@ pub(crate) fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
                 PtyWriteInstruction::ApplyCachedResizes => {
                     os_input.apply_cached_resizes();
                 },
+                PtyWriteInstruction::Flush(waiter) => flush_waiters.push(waiter),
                 PtyWriteInstruction::Exit => {
                     return Ok(());
                 },
@@ -174,6 +179,11 @@ pub(crate) fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
             }
         }
         pending.retain(|_, q| !q.is_empty());
+        if pending.is_empty() {
+            for waiter in flush_waiters.drain(..) {
+                let _ = waiter.send(());
+            }
+        }
     }
 }
 

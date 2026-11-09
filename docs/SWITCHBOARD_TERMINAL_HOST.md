@@ -1,6 +1,6 @@
 # Terminal host: replacing a session engine without losing its shells
 
-Status: design. Nothing here is implemented yet.
+Status: steps 1 and 2 of Delivery are implemented and off by default. `zellij pipe --name switchboard-handoff -- <id>` makes an engine hand over, and an engine started with `SWITCHBOARD_HANDOFF_MANIFEST` takes over. Until step 4 adds verification, the new engine commits as soon as it has adopted every terminal.
 
 ## Goal
 

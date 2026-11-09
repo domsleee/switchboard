@@ -259,9 +259,36 @@ pub enum Run {
     Command(RunCommand),
     EditFile(PathBuf, Option<usize>, Option<PathBuf>),
     Cwd(PathBuf),
+    /// Attach to a terminal that is already running in a terminal host.
+    Adopt(AdoptedTerminal),
+}
+
+/// A pane taken over from the engine this one replaced.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct AdoptedTerminal {
+    pub terminal_id: u32,
+    /// How the pane was started, which a later layout export needs.
+    pub invoked_with: Option<Box<Run>>,
+    /// Set when the pane has no running child.
+    pub held: Option<HeldTerminal>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct HeldTerminal {
+    pub exit_status: Option<i32>,
+    pub is_first_run: bool,
+    pub command: RunCommand,
 }
 
 impl Run {
+    /// What a pane should remember having been started with.
+    pub fn without_adoption(run: Option<Run>) -> Option<Run> {
+        match run {
+            Some(Run::Adopt(adopted)) => adopted.invoked_with.map(|run| *run),
+            other => other,
+        }
+    }
+
     pub fn merge(base: &Option<Run>, other: &Option<Run>) -> Option<Run> {
         // This method is necessary to merge between pane_templates and their consumers
         // TODO: reconsider the way we parse command/edit/plugin pane_templates from layouts to prevent this
@@ -346,6 +373,7 @@ impl Run {
             Run::Plugin(run_plugin_or_alias) => {
                 run_plugin_or_alias.add_initial_cwd(&cwd);
             },
+            Run::Adopt(_) => {},
         }
     }
     pub fn add_args(&mut self, args: Option<Vec<String>>) {
@@ -388,7 +416,11 @@ impl Run {
     }
     pub fn is_terminal(run: &Option<Run>) -> bool {
         match run {
-            Some(Run::Command(..)) | Some(Run::EditFile(..)) | Some(Run::Cwd(..)) | None => true,
+            Some(Run::Command(..))
+            | Some(Run::EditFile(..))
+            | Some(Run::Cwd(..))
+            | Some(Run::Adopt(..))
+            | None => true,
             _ => false,
         }
     }
@@ -398,6 +430,7 @@ impl Run {
             Run::Command(run_command) => run_command.cwd.clone(),
             Run::EditFile(_file, _line_num, cwd) => cwd.clone(),
             Run::Cwd(cwd) => Some(cwd.clone()),
+            Run::Adopt(_) => None,
         }
     }
     pub fn get_run_plugin(&self) -> Option<RunPlugin> {

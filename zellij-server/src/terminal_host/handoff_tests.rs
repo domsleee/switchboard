@@ -242,6 +242,152 @@ fn shell_at_prompt(engine: &mut Engine) -> u32 {
     pid
 }
 
+mod through_the_client {
+    use super::super::HostedPtyBackend;
+    use super::*;
+    use crate::os_input_output::AsyncReader;
+    use crate::panes::PaneId;
+    use std::path::PathBuf;
+    use zellij_utils::input::command::RunCommand;
+
+    fn backend(host: &Host) -> HostedPtyBackend {
+        HostedPtyBackend::connect(&endpoint_for(&host.path), &host.token).unwrap()
+    }
+
+    fn shell() -> RunCommand {
+        RunCommand {
+            command: PathBuf::from(shell_command().command),
+            ..Default::default()
+        }
+    }
+
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    fn read_briefly(
+        runtime: &tokio::runtime::Runtime,
+        reader: &mut Box<dyn AsyncReader>,
+    ) -> Option<Vec<u8>> {
+        let mut buffer = vec![0; 65536];
+        let read = runtime.block_on(async {
+            tokio::time::timeout(Duration::from_millis(100), reader.read(&mut buffer)).await
+        });
+        match read {
+            Ok(Ok(count)) => Some(buffer[..count].to_vec()),
+            _ => None,
+        }
+    }
+
+    fn read_until(
+        runtime: &tokio::runtime::Runtime,
+        reader: &mut Box<dyn AsyncReader>,
+        marker: &str,
+    ) -> Vec<u8> {
+        let deadline = Instant::now() + TIMEOUT;
+        let mut output = Vec::new();
+        while !String::from_utf8_lossy(&output).contains(marker) {
+            assert!(
+                Instant::now() < deadline,
+                "no {marker:?} in {}",
+                String::from_utf8_lossy(&output)
+            );
+            output.extend(read_briefly(runtime, reader).unwrap_or_default());
+        }
+        output
+    }
+
+    fn type_all(backend: &HostedPtyBackend, mut bytes: &[u8]) {
+        while !bytes.is_empty() {
+            let accepted = backend.write_to_tty_stdin(1, bytes).unwrap();
+            bytes = &bytes[accepted..];
+        }
+    }
+
+    #[test]
+    fn a_detached_terminal_is_adopted_and_keeps_running() {
+        let host = start(TIMEOUT);
+        let runtime = runtime();
+        let old = backend(&host);
+        let (old_exit, old_exited) = channel();
+        let (mut old_reader, pid) = old
+            .spawn_terminal(
+                shell(),
+                None,
+                Box::new(move |pane, _, _| {
+                    let _ = old_exit.send(pane);
+                }),
+                1,
+            )
+            .unwrap();
+        let (line, marker) = sum_line(40, 2);
+        type_all(&old, &line);
+        read_until(&runtime, &mut old_reader, &marker);
+
+        let ends = old.pause_output(TIMEOUT).unwrap();
+        let deadline = Instant::now() + TIMEOUT;
+        while !old.wait_until_delivered(&ends, Duration::ZERO) {
+            assert!(Instant::now() < deadline, "output never reached the screen");
+            read_briefly(&runtime, &mut old_reader);
+        }
+        let position = old.resume_position(1).expect("a resumable position");
+        old.begin_handoff("h1", vec![(1, position)]).unwrap();
+        old.detach();
+        assert!(
+            old_exited.recv_timeout(Duration::from_millis(400)).is_err(),
+            "detaching reported the terminal as exited"
+        );
+        assert!(process_alive(pid));
+
+        let new = backend(&host);
+        new.hold_exits();
+        let (new_exit, new_exited) = channel();
+        let mut new_reader = new.adopt_terminal(
+            1,
+            position,
+            Box::new(move |pane, status, _| {
+                let _ = new_exit.send((pane, status));
+            }),
+            shell(),
+        );
+        new.resume_output().unwrap();
+        let (line, marker) = sum_line(100, 23);
+        type_all(&new, &line);
+        read_until(&runtime, &mut new_reader, &marker);
+
+        let exit: &[u8] = if cfg!(windows) { b"exit\r" } else { b"exit\n" };
+        type_all(&new, exit);
+        assert!(
+            new_exited.recv_timeout(Duration::from_secs(1)).is_err(),
+            "an exit was reported during the handoff"
+        );
+        new.commit_adoption("h1").unwrap();
+        new.release_exits();
+        let (pane, _) = new_exited.recv_timeout(TIMEOUT).unwrap();
+        assert_eq!(pane, PaneId::Terminal(1));
+    }
+
+    #[test]
+    fn only_a_known_terminal_has_a_resume_position() {
+        let host = start(TIMEOUT);
+        let runtime = runtime();
+        let engine = backend(&host);
+        let (mut reader, _) = engine
+            .spawn_terminal(shell(), None, Box::new(|_, _, _| {}), 1)
+            .unwrap();
+        let (line, marker) = sum_line(11, 22);
+        type_all(&engine, &line);
+        read_until(&runtime, &mut reader, &marker);
+        read_briefly(&runtime, &mut reader);
+        assert!(engine.resume_position(1).is_some());
+        assert_eq!(engine.resume_position(99), None);
+    }
+}
+
 #[test]
 fn a_new_engine_takes_over_the_same_shell_from_the_snapshot_position() {
     let host = start(TIMEOUT);

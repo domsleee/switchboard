@@ -30,7 +30,7 @@ use std::{
     env,
     fs::File,
     io::{self, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex, OnceLock},
 };
@@ -349,14 +349,40 @@ impl ClientSender {
 struct PtyBackend {
     native: PtyBackendImpl,
     hosted: Arc<OnceLock<Option<HostedPtyBackend>>>,
+    held_resizes: Arc<Mutex<Option<HeldResizes>>>,
 }
+
+type HeldResizes = HashMap<u32, (u16, u16, Option<u16>, Option<u16>)>;
+
+/// A new engine resizes its panes several times while it starts. A running
+/// program would redraw for each one, so only the final size is applied.
+const ADOPTION_RESIZE_HOLD: std::time::Duration = std::time::Duration::from_secs(3);
 
 impl PtyBackend {
     fn new() -> Result<Self, io::Error> {
         Ok(Self {
             native: PtyBackendImpl::new()?,
             hosted: Arc::new(OnceLock::new()),
+            held_resizes: Arc::new(Mutex::new(None)),
         })
+    }
+
+    /// Takes over the host of the engine this one replaces.
+    fn attach_host(&self, directory: &Path) -> io::Result<()> {
+        let hosted = HostedPtyBackend::attach(directory)?;
+        self.hosted
+            .set(Some(hosted.clone()))
+            .map_err(|_| io::Error::new(io::ErrorKind::AlreadyExists, "already has a host"))?;
+        *self.held_resizes.lock().unwrap() = Some(HashMap::new());
+        let held_resizes = self.held_resizes.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(ADOPTION_RESIZE_HOLD);
+            let held = held_resizes.lock().unwrap().take().unwrap_or_default();
+            for (terminal_id, (cols, rows, width, height)) in held {
+                let _ = hosted.set_terminal_size(terminal_id, cols, rows, width, height);
+            }
+        });
+        Ok(())
     }
 
     fn hosted(&self) -> Option<&HostedPtyBackend> {
@@ -398,6 +424,10 @@ impl PtyBackend {
         width_in_pixels: Option<u16>,
         height_in_pixels: Option<u16>,
     ) -> Result<()> {
+        if let Some(held) = self.held_resizes.lock().unwrap().as_mut() {
+            held.insert(terminal_id, (cols, rows, width_in_pixels, height_in_pixels));
+            return Ok(());
+        }
         match self.hosted() {
             Some(hosted) => {
                 hosted.set_terminal_size(terminal_id, cols, rows, width_in_pixels, height_in_pixels)
@@ -576,11 +606,31 @@ pub trait ServerOsApi: Send + Sync {
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> Result<(Box<dyn AsyncReader>, Option<u32>)>;
     fn clear_terminal_id(&self, terminal_id: u32) -> Result<()>;
+    /// The terminal host running this session's terminals, if it has one.
+    fn terminal_host(&self) -> Option<HostedPtyBackend> {
+        None
+    }
+    fn attach_terminal_host(&self, _directory: &Path) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "no terminal host support",
+        ))
+    }
+    fn set_next_terminal_id(&self, _terminal_id: u32) {}
     fn cache_resizes(&mut self) {}
     fn apply_cached_resizes(&mut self) {}
 }
 
 impl ServerOsApi for ServerOsInputOutput {
+    fn terminal_host(&self) -> Option<HostedPtyBackend> {
+        self.pty_backend.hosted().cloned()
+    }
+    fn attach_terminal_host(&self, directory: &Path) -> io::Result<()> {
+        self.pty_backend.attach_host(directory)
+    }
+    fn set_next_terminal_id(&self, terminal_id: u32) {
+        self.pty_backend.native.set_next_terminal_id(terminal_id);
+    }
     fn set_terminal_size_using_terminal_id(
         &self,
         id: u32,

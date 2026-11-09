@@ -2058,7 +2058,7 @@ impl From<&crate::input::layout::TiledPaneLayout> for PaneMetadata {
                     is_builtin_plugin = plugin.is_builtin_plugin();
                     Some(plugin.location_string())
                 },
-                Run::Cwd(_) => None,
+                Run::Cwd(_) | Run::Adopt(_) => None,
             }
         } else {
             None
@@ -2102,7 +2102,7 @@ impl From<&crate::input::layout::FloatingPaneLayout> for PaneMetadata {
                     // Use the plugin location string
                     Some(plugin.location_string())
                 },
-                Run::Cwd(_) => None,
+                Run::Cwd(_) | Run::Adopt(_) => None,
             }
         } else {
             None

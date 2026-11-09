@@ -8,7 +8,7 @@ use zellij_utils::pane_size::PaneGeom;
 use zellij_utils::{
     data::{LayoutMetadata, PaneMetadata, TabMetadata},
     input::command::RunCommand,
-    input::layout::{Layout, Run, RunPlugin, RunPluginOrAlias},
+    input::layout::{AdoptedTerminal, HeldTerminal, Layout, Run, RunPlugin, RunPluginOrAlias},
     input::plugins::PluginAliases,
     session_serialization::{
         extract_command_and_args, extract_edit_and_line_number, extract_plugin_and_config,
@@ -248,7 +248,56 @@ impl SessionLayoutMetadata {
             hide_floating_panes,
             tiled_panes,
             floating_panes,
+            identity: None,
         })
+    }
+    /// Records what a handoff keeps exactly: the tab's ID and literal name.
+    pub fn identify_last_tab(&mut self, tab_id: usize, literal_name: String) {
+        if let Some(tab) = self.tabs.last_mut() {
+            tab.identity = Some((tab_id, literal_name));
+        }
+    }
+    /// The session's tabs with every terminal set to be adopted by a new
+    /// engine: `(tab id, name, is focused, panes)`.
+    pub fn into_handoff_tabs(
+        self,
+        held: &HashMap<u32, HeldTerminal>,
+    ) -> Vec<(usize, String, bool, TabLayoutManifest)> {
+        let manifest = |panes: Vec<PaneLayoutMetadata>| -> Vec<PaneLayoutManifest> {
+            panes
+                .into_iter()
+                .map(|pane| {
+                    let adopted = match pane.id {
+                        PaneId::Terminal(terminal_id) => Some(Run::Adopt(AdoptedTerminal {
+                            terminal_id,
+                            invoked_with: pane.run.clone().map(Box::new),
+                            held: held.get(&terminal_id).cloned(),
+                        })),
+                        PaneId::Plugin(_) => None,
+                    };
+                    let mut layout: PaneLayoutManifest = pane.into();
+                    layout.run = adopted.or(layout.run);
+                    layout
+                })
+                .collect()
+        };
+        self.tabs
+            .into_iter()
+            .filter_map(|tab| {
+                let (tab_id, name) = tab.identity?;
+                Some((
+                    tab_id,
+                    name,
+                    tab.is_focused,
+                    TabLayoutManifest {
+                        tiled_panes: manifest(tab.tiled_panes),
+                        floating_panes: manifest(tab.floating_panes),
+                        is_focused: tab.is_focused,
+                        hide_floating_panes: tab.hide_floating_panes,
+                    },
+                ))
+            })
+            .collect()
     }
     pub fn all_terminal_ids(&self) -> Vec<u32> {
         let mut terminal_ids = vec![];
@@ -602,6 +651,7 @@ pub struct TabLayoutMetadata {
     floating_panes: Vec<PaneLayoutMetadata>,
     is_focused: bool,
     hide_floating_panes: bool,
+    identity: Option<(usize, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -656,7 +706,7 @@ impl PaneLayoutMetadata {
                     path.file_name().map(|n| n.to_string_lossy().to_string())
                 },
                 Run::Plugin(plugin) => Some(plugin.location_string()),
-                Run::Cwd(_) => None,
+                Run::Cwd(_) | Run::Adopt(_) => None,
             })
         });
 

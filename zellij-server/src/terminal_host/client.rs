@@ -1,5 +1,6 @@
 //! The engine's side of the terminal host: a PTY backend whose terminals live
 //! in the host process.
+use super::boundary::SequenceTracker;
 use super::protocol::{
     control, parse, read_frame, write_frame, Channel, CommandSpec, Event, Frame, Hello, Reply,
     Request, RequestEnvelope, PROTOCOL,
@@ -11,10 +12,10 @@ use async_trait::async_trait;
 use interprocess::local_socket::Stream;
 use std::collections::HashMap;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    mpsc, Arc, Mutex,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    mpsc, Arc, Condvar, Mutex,
 };
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -32,6 +33,38 @@ struct Route {
     command: RunCommand,
 }
 
+/// How far a terminal's output has reached Screen.
+struct Progress {
+    tracker: Mutex<SequenceTracker>,
+    changed: Condvar,
+}
+
+impl Progress {
+    fn new(position: u64) -> Arc<Self> {
+        Arc::new(Self {
+            tracker: Mutex::new(SequenceTracker::new(position)),
+            changed: Condvar::new(),
+        })
+    }
+
+    fn record(&self, bytes: &[u8]) {
+        self.tracker.lock().unwrap().advance(bytes);
+        self.changed.notify_all();
+    }
+
+    fn wait_for(&self, position: u64, deadline: Instant) -> bool {
+        let mut tracker = self.tracker.lock().unwrap();
+        while tracker.position() < position {
+            let wait = deadline.saturating_duration_since(Instant::now());
+            if wait.is_zero() {
+                return false;
+            }
+            tracker = self.changed.wait_timeout(tracker, wait).unwrap().0;
+        }
+        true
+    }
+}
+
 struct Waiter {
     reply: mpsc::Sender<Reply>,
     /// Installed when `Spawned` arrives, so output from a previous process in
@@ -46,12 +79,20 @@ struct Connection {
     waiters: Mutex<Option<HashMap<u64, Waiter>>>,
     routes: Mutex<HashMap<u32, Route>>,
     next_request: AtomicU64,
+    progress: Mutex<HashMap<u32, Arc<Progress>>>,
+    paused: Mutex<Option<mpsc::Sender<Vec<(u32, u64)>>>>,
+    /// Exits wait here during a handoff, so that a terminal cannot close while
+    /// it is between engines.
+    held_exits: Mutex<Option<Vec<(u32, Option<i32>)>>>,
+    /// This engine is leaving on purpose, and its terminals carry on.
+    detached: AtomicBool,
 }
 
 /// A running terminal host. Cloning shares the connection.
 #[derive(Clone)]
 pub struct HostedPtyBackend {
     connection: Arc<Connection>,
+    directory: Option<PathBuf>,
 }
 
 impl HostedPtyBackend {
@@ -59,7 +100,23 @@ impl HostedPtyBackend {
     pub fn start() -> io::Result<Self> {
         let directory = HostDirectory::create()?;
         super::spawn_host_process(directory.path())?;
-        Self::connect(&directory.endpoint(), &directory.read_token()?)
+        let mut backend = Self::connect(&directory.endpoint(), &directory.read_token()?)?;
+        backend.directory = Some(directory.path().to_path_buf());
+        Ok(backend)
+    }
+
+    /// Connect to the host of the engine this one replaces. Exits wait until
+    /// the adoption is complete.
+    pub fn attach(directory: &Path) -> io::Result<Self> {
+        let token = std::fs::read_to_string(directory.join("token"))?;
+        let mut backend = Self::connect(&super::endpoint_for(directory), &token)?;
+        backend.directory = Some(directory.to_path_buf());
+        backend.hold_exits();
+        Ok(backend)
+    }
+
+    pub fn directory(&self) -> Option<&Path> {
+        self.directory.as_deref()
     }
 
     pub(super) fn connect(endpoint: &PathBuf, token: &str) -> io::Result<Self> {
@@ -91,6 +148,10 @@ impl HostedPtyBackend {
             waiters: Mutex::new(Some(HashMap::new())),
             routes: Mutex::new(HashMap::new()),
             next_request: AtomicU64::new(1),
+            progress: Mutex::new(HashMap::new()),
+            paused: Mutex::new(None),
+            held_exits: Mutex::new(None),
+            detached: AtomicBool::new(false),
         });
         std::thread::Builder::new()
             .name("terminal_host_events".into())
@@ -98,7 +159,10 @@ impl HostedPtyBackend {
                 let connection = connection.clone();
                 move || connection.read_events(events)
             })?;
-        Ok(Self { connection })
+        Ok(Self {
+            connection,
+            directory: None,
+        })
     }
 
     pub fn spawn_terminal(
@@ -122,13 +186,8 @@ impl HostedPtyBackend {
         };
         match self.connection.call(request, Some((terminal_id, route)))? {
             Reply::Spawned { pid } => Ok((
-                Box::new(HostedReader {
-                    connection: self.connection.clone(),
-                    terminal_id,
-                    receiver,
-                    leftover: Vec::new(),
-                    acknowledge: None,
-                }) as Box<dyn AsyncReader>,
+                self.connection
+                    .reader(terminal_id, receiver, Progress::new(0)),
                 pid,
             )),
             Reply::CommandNotFound => Err(ZellijError::CommandNotFound {
@@ -206,7 +265,123 @@ impl HostedPtyBackend {
         }
     }
 
+    /// Takes over a running terminal, whose output continues from `position`.
+    pub fn adopt_terminal(
+        &self,
+        terminal_id: u32,
+        position: u64,
+        quit_cb: QuitCallback,
+        command: RunCommand,
+    ) -> Box<dyn AsyncReader> {
+        let (output, receiver) = unbounded_channel();
+        let route = Route {
+            output,
+            quit: quit_cb,
+            command,
+        };
+        self.connection
+            .routes
+            .lock()
+            .unwrap()
+            .insert(terminal_id, route);
+        self.connection
+            .reader(terminal_id, receiver, Progress::new(position))
+    }
+
+    /// Stops output and returns where each terminal's output ended.
+    pub fn pause_output(&self, timeout: Duration) -> Result<Vec<(u32, u64)>> {
+        let (sender, receiver) = mpsc::channel();
+        *self.connection.paused.lock().to_anyhow()? = Some(sender);
+        self.connection.send(Request::PauseOutput)?;
+        receiver
+            .recv_timeout(timeout)
+            .map_err(|_| anyhow!("terminal host did not pause output"))
+    }
+
+    pub fn resume_output(&self) -> Result<()> {
+        self.connection.send(Request::ResumeOutput)
+    }
+
+    /// Waits until the output up to these positions has reached Screen.
+    pub fn wait_until_delivered(&self, ends: &[(u32, u64)], timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let progress = self.connection.progress.lock().unwrap();
+        let waiting: Vec<_> = ends
+            .iter()
+            .filter_map(|(id, end)| Some((progress.get(id)?.clone(), *end)))
+            .collect();
+        drop(progress);
+        waiting
+            .iter()
+            .all(|(progress, end)| progress.wait_for(*end, deadline))
+    }
+
+    /// Where a new parser must start for this terminal, or `None` when no
+    /// position would reproduce the state of the screen.
+    pub fn resume_position(&self, terminal_id: u32) -> Option<u64> {
+        let progress = self.connection.progress.lock().unwrap();
+        let tracker = progress.get(&terminal_id)?.tracker.lock().unwrap();
+        tracker.resume_position()
+    }
+
+    /// Asks the host to keep these terminals, and their output from these
+    /// positions, until the handoff ends.
+    pub fn begin_handoff(&self, handoff_id: &str, retain_from: Vec<(u32, u64)>) -> Result<()> {
+        self.expect_ok(Request::BeginHandoff {
+            handoff_id: handoff_id.to_string(),
+            retain_from,
+        })
+    }
+
+    pub fn commit_adoption(&self, handoff_id: &str) -> Result<()> {
+        self.expect_ok(Request::CommitAdoption {
+            handoff_id: handoff_id.to_string(),
+        })
+    }
+
+    pub fn abort_handoff(&self, handoff_id: &str) -> Result<()> {
+        self.expect_ok(Request::AbortHandoff {
+            handoff_id: handoff_id.to_string(),
+        })
+    }
+
+    /// Stops every terminal and the host, for a real session kill.
+    pub fn shutdown(&self) -> Result<()> {
+        self.connection.send(Request::Shutdown)
+    }
+
+    fn expect_ok(&self, request: Request) -> Result<()> {
+        match self.connection.call(request, None)? {
+            Reply::Ok => Ok(()),
+            other => Err(anyhow!("terminal host refused: {other:?}")),
+        }
+    }
+
+    /// Exits wait until `release_exits`.
+    pub fn hold_exits(&self) {
+        let mut held = self.connection.held_exits.lock().unwrap();
+        held.get_or_insert_with(Vec::new);
+    }
+
+    pub fn release_exits(&self) {
+        let held = self.connection.held_exits.lock().unwrap().take();
+        for (terminal_id, status) in held.unwrap_or_default() {
+            self.connection.finish_terminal(terminal_id, status);
+        }
+    }
+
+    /// Leaves without stopping anything or reporting any terminal as exited.
+    pub fn detach(&self) {
+        self.connection.detached.store(true, Ordering::SeqCst);
+        self.connection.commands.lock().unwrap().take();
+    }
+
     pub fn clear_terminal_id(&self, terminal_id: u32) {
+        self.connection
+            .progress
+            .lock()
+            .unwrap()
+            .remove(&terminal_id);
         self.connection.routes.lock().unwrap().remove(&terminal_id);
         let _ = self.connection.send(Request::Close { terminal_id });
     }
@@ -223,6 +398,27 @@ impl HostedPtyBackend {
 }
 
 impl Connection {
+    fn reader(
+        self: &Arc<Self>,
+        terminal_id: u32,
+        receiver: UnboundedReceiver<(u64, Vec<u8>)>,
+        progress: Arc<Progress>,
+    ) -> Box<dyn AsyncReader> {
+        self.progress
+            .lock()
+            .unwrap()
+            .insert(terminal_id, progress.clone());
+        Box::new(HostedReader {
+            connection: self.clone(),
+            terminal_id,
+            receiver,
+            leftover: Vec::new(),
+            acknowledge: None,
+            progress,
+            just_returned: Vec::new(),
+        })
+    }
+
     fn request_id(&self) -> u64 {
         self.next_request.fetch_add(1, Ordering::Relaxed)
     }
@@ -279,8 +475,22 @@ impl Connection {
                     Ok(Event::Exited {
                         terminal_id,
                         status,
-                    }) => self.finish_terminal(terminal_id, status),
-                    Ok(Event::Welcome { .. }) | Ok(Event::OutputPaused { .. }) | Err(_) => {},
+                    }) => {
+                        let mut held = self.held_exits.lock().unwrap();
+                        match held.as_mut() {
+                            Some(held) => held.push((terminal_id, status)),
+                            None => {
+                                drop(held);
+                                self.finish_terminal(terminal_id, status);
+                            },
+                        }
+                    },
+                    Ok(Event::OutputPaused { ends }) => {
+                        if let Some(sender) = self.paused.lock().unwrap().take() {
+                            let _ = sender.send(ends);
+                        }
+                    },
+                    Ok(Event::Welcome { .. }) | Err(_) => {},
                 },
                 Ok(Frame::Write { .. }) => {},
                 Err(error) => {
@@ -331,6 +541,9 @@ impl Connection {
         self.waiters.lock().unwrap().take();
         self.commands.lock().unwrap().take();
         let routes: Vec<_> = self.routes.lock().unwrap().drain().collect();
+        if self.detached.load(Ordering::SeqCst) {
+            return;
+        }
         for (terminal_id, route) in routes {
             run_quit_callback(route.quit, terminal_id, None, route.command);
         }
@@ -408,13 +621,19 @@ struct HostedReader {
     receiver: UnboundedReceiver<(u64, Vec<u8>)>,
     leftover: Vec<u8>,
     acknowledge: Option<u64>,
+    progress: Arc<Progress>,
+    just_returned: Vec<u8>,
 }
 
 #[async_trait]
 impl AsyncReader for HostedReader {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
+        // Reaching the next read means the previous bytes reached Screen.
+        if !self.just_returned.is_empty() {
+            self.progress.record(&self.just_returned);
+            self.just_returned.clear();
+        }
         if self.leftover.is_empty() {
-            // Reaching the next read means the previous bytes reached Screen.
             if let Some(sequence) = self.acknowledge.take() {
                 let _ = self.connection.send(Request::Ack {
                     terminal_id: self.terminal_id,
@@ -432,6 +651,7 @@ impl AsyncReader for HostedReader {
         let length = self.leftover.len().min(buf.len());
         buf[..length].copy_from_slice(&self.leftover[..length]);
         self.leftover.drain(..length);
+        self.just_returned.extend_from_slice(&buf[..length]);
         Ok(length)
     }
 }

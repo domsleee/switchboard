@@ -4225,6 +4225,8 @@ impl From<crate::input::layout::Run>
             crate::input::layout::Run::Cwd(path) => Self {
                 run_type: Some(RunType::Cwd(path.to_string_lossy().to_string())),
             },
+            // Only exists inside an engine that is taking over a session.
+            crate::input::layout::Run::Adopt(_) => Self { run_type: None },
         }
     }
 }
