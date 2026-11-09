@@ -319,6 +319,24 @@ dialog p{font-size:12px;color:#9ba7bd}
 .perf-range-empty::before{background:#303137}
 .perf-detail-heading{margin-top:26px}
 .perf-detail-heading>span{font-size:12px;color:var(--perf-muted)}
+.perf-events-heading{margin-top:0}
+.perf-events-heading label{display:flex;align-items:center;gap:10px;color:var(--perf-muted);font-size:12px}
+.perf-events-heading input{width:95px;min-height:36px;padding:7px 10px;background:var(--perf-surface);border:1px solid var(--perf-line);border-radius:7px;color:var(--perf-text);font-size:13px}
+.perf-events-heading input:focus-visible{outline:2px solid var(--perf-accent);outline-offset:2px}
+#timing-events{max-height:330px;overflow:auto;border:1px solid var(--perf-line);border-radius:8px;background:var(--perf-surface);margin-bottom:26px}
+.perf-event+.perf-event{border-top:1px solid var(--perf-line)}
+.perf-event summary{display:grid;grid-template-columns:minmax(0,1fr) 70px auto;align-items:center;gap:16px;padding:12px 14px;cursor:pointer;list-style:none;font-size:13px}
+.perf-event summary::-webkit-details-marker{display:none}
+.perf-event summary:hover{background:#24252b}
+.perf-event summary:focus-visible{outline:2px solid var(--perf-accent);outline-offset:-2px}
+.perf-event-title{display:grid;gap:5px;overflow-wrap:anywhere}
+.perf-event-title>span::before{content:'›';display:inline-block;width:14px;color:var(--perf-muted)}
+.perf-event[open] .perf-event-title>span::before{transform:rotate(90deg)}
+.perf-event-title small,.perf-event time{font-size:12px;color:var(--perf-muted)}
+.perf-event-duration,.perf-event time{text-align:right;font-variant-numeric:tabular-nums}
+.perf-event .perf-note{padding:0 14px}
+.perf-event .timing-sample{padding:12px 14px;border-color:var(--perf-line)}
+.perf-event .timing-track i{background:var(--perf-accent)}
 .perf-table-head,#timing-series .timing-series summary{display:grid;grid-template-columns:minmax(145px,1.65fr) minmax(90px,1fr) 55px 68px 68px 68px;align-items:center;gap:12px;padding:14px}
 .perf-table-head{color:var(--perf-muted);font-size:12px;padding-top:0;padding-bottom:10px}
 .perf-table-head>span:nth-child(n+3){text-align:right}
@@ -355,6 +373,8 @@ dialog p{font-size:12px;color:#9ba7bd}
   #timing-series .timing-stat-label{display:block;position:static;width:auto;height:auto;overflow:visible;clip-path:none;font-size:12px;color:var(--perf-muted);margin-bottom:4px}
 }
 @container perf (max-width:520px){
+  .perf-event summary{grid-template-columns:minmax(0,1fr) auto;gap:8px}
+  .perf-event time{grid-column:1/-1;text-align:left}
   .perf-filters{grid-template-columns:1fr}
   .perf-legend{gap:10px}
   .perf-cards{grid-template-columns:1fr}
@@ -368,7 +388,7 @@ dialog p{font-size:12px;color:#9ba7bd}
   .perf-heading{align-items:flex-start}
 }
 @media(pointer:coarse),(max-width:700px){
-  #panel-performance .perf-filters select{min-height:44px;font-size:16px}
+  #panel-performance .perf-filters select,.perf-events-heading input{min-height:44px;font-size:16px}
   .perf-heading button,.perf-method summary{min-height:44px}
 }
 
