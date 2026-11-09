@@ -117,10 +117,9 @@ pub(super) async fn send(
         ));
     }
     let _guard = acting_on(&destination.session, destination.pane_id).await;
-    let (pane, screen) = checked_screen(&host, &destination, tokio::time::Instant::now()).await?;
-    if attention::classify(&pane, &screen)["agent"] != "codex" {
-        return Err((StatusCode::CONFLICT, "The Codex pane changed"));
-    }
+    checked_screen(host, destination, tokio::time::Instant::now()).await?;
+    // A foreground build can replace the command name while Codex still owns
+    // this terminal. Use the exact hook binding and the live composer below.
     let draft = read(&host, destination)
         .await?
         .ok_or((StatusCode::CONFLICT, "Waiting for Codex's composer"))?;

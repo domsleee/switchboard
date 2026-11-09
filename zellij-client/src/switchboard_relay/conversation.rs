@@ -1719,6 +1719,11 @@ esac
         }
         let chat = "codex-fixture";
         poll.lock().await.hook_codex_for_test("fixture", 7, chat);
+        std::fs::write(
+            &catalog,
+            r#"[{"id":7,"tab_id":8,"pane_command":"powershell -Command build","is_plugin":false}]"#,
+        )
+        .unwrap();
         let footer = "\n\n  GPT-6.1-Sol medium · project · ? for shortcuts\n";
         let codex_empty = format!(
             "Working (1s • esc to interrupt)\n\n› \x1b[2mAsk Codex to do anything\x1b[m{footer}"
