@@ -107,6 +107,13 @@ function Initialize-SwitchboardReleaseStore([string]$Binary, [string]$Directory 
 # release, as macOS and Linux updates do, so it never goes stale. A running
 # executable can be renamed but not overwritten, so the old copy moves aside and
 # is deleted by a later update once nothing runs it.
+# Only the installed store owns the zellij.exe on PATH; a test's fixture store must not reach it.
+function Sync-SwitchboardInstalledPathBinary([string]$Directory, [string]$Binary) {
+    if ([IO.Path]::GetFullPath($Directory).TrimEnd('\','/') -ne [IO.Path]::GetFullPath((Get-SwitchboardReleaseDirectory)).TrimEnd('\','/')) { return }
+    try { Sync-SwitchboardPathBinary $Binary | Out-Null }
+    catch { Write-Warning "Could not update zellij.exe on PATH: $($_.Exception.Message)" }
+}
+
 function Assert-SwitchboardExecutable([string]$Path) {
     $stream = [IO.File]::OpenRead($Path)
     try { $first = $stream.ReadByte(); $second = $stream.ReadByte() } finally { $stream.Dispose() }
@@ -354,6 +361,7 @@ function Invoke-SwitchboardWindowsUpdate {
             $before.previous_sha256
         } else { Add-SwitchboardRelease $Directory $Candidate }
         if ($hash -ceq $before.sha256) {
+            Sync-SwitchboardInstalledPathBinary $Directory $oldBinary
             return [pscustomobject]@{sha256=$hash; previous_sha256=$before.previous_sha256; live_services_restarted=$false; browser_verified=$false}
         }
         $candidateBinary = Get-SwitchboardReleaseBinary $Directory $hash
@@ -396,11 +404,7 @@ function Invoke-SwitchboardWindowsUpdate {
             throw 'Running native web daemon became unavailable to the selected executable'
         }
         Remove-Item -LiteralPath $journal -Force -ErrorAction Stop
-        # Only the installed store owns the zellij.exe on PATH; a test's fixture store must not reach it.
-        if ([IO.Path]::GetFullPath($Directory).TrimEnd('\','/') -eq [IO.Path]::GetFullPath((Get-SwitchboardReleaseDirectory)).TrimEnd('\','/')) {
-            try { Sync-SwitchboardPathBinary $selectedBinary | Out-Null }
-            catch { Write-Warning "Could not update zellij.exe on PATH: $($_.Exception.Message)" }
-        }
+        Sync-SwitchboardInstalledPathBinary $Directory $selectedBinary
         [pscustomobject]@{sha256=$hash; previous_sha256=$before.sha256; live_services_restarted=$false; browser_verified=$false}
     } catch {
         $failure = $_

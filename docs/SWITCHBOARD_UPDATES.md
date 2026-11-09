@@ -128,7 +128,7 @@ A relay on another port, such as an older installation on port 80, also answers 
 Healthy existing sessions retain their engines, shells and agents, including new
 tabs created inside those sessions. Legacy viewers defer automatic updates for up to 10 minutes. New sessions use the selected release when started through the
 updated services/launcher.
-On Windows, each update also copies the selected release over
+On Windows, each update, including a reinstall of the selected release, also copies it over
 `~/.cargo/bin/zellij.exe` when that file exists, because agent hooks and the CLI
 run `zellij` from PATH. A running copy is renamed aside and deleted by a later
 update.

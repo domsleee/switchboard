@@ -191,6 +191,9 @@ try {
     Assert ((& $module $countSyncs $candidate $fixture.Directory $false) -eq 0) 'A fixture store updated the PATH copy'
     $candidate = New-Fixture 'new' 'normal'
     Assert ((& $module $countSyncs $candidate $fixture.Directory $true) -eq 1) 'The installed store did not update the PATH copy'
+    # Reinstalling the selected release is how a damaged PATH copy gets replaced.
+    Assert ((& $module $countSyncs $candidate $fixture.Directory $true) -eq 1) 'Reinstalling the selected release did not update the PATH copy'
+    Assert ((& $module $countSyncs $candidate $fixture.Directory $false) -eq 0) 'A fixture store updated the PATH copy on a reinstall'
 
     & $module {
         $baseline = @([pscustomobject]@{id=10; started='original'})
