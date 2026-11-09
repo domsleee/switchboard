@@ -114,10 +114,14 @@ struct Pending {
 }
 
 fn pending(home: &Path) -> anyhow::Result<Vec<Pending>> {
+    pending_at(home, now())
+}
+
+fn pending_at(home: &Path, timestamp: i64) -> anyhow::Result<Vec<Pending>> {
     let db = open(home)?;
     // Keep FIFO order within a thread, including while its first message backs off.
     let mut query = db.prepare("SELECT a.send_key,thread,message,attempts,c.chat FROM user_outbox a LEFT JOIN user_outbox_chat c ON c.send_key=a.send_key WHERE next_attempt<=?1 AND NOT EXISTS (SELECT 1 FROM user_outbox b WHERE b.thread=a.thread AND b.rowid<a.rowid) ORDER BY a.rowid LIMIT 8")?;
-    let rows = query.query_map([now()], |row| {
+    let rows = query.query_map([timestamp], |row| {
         Ok(Pending {
             key: row.get(0)?,
             thread: row.get(1)?,
@@ -436,8 +440,18 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].message, first.message);
         finish(dir.path(), &items[0], false).unwrap();
-        assert!(pending(dir.path()).unwrap().is_empty());
         let db = open(dir.path()).unwrap();
+        let due = db
+            .query_row(
+                "SELECT next_attempt FROM user_outbox WHERE send_key=?1",
+                [&first.send_key],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        // Exercise the scheduling boundary explicitly. Reading the wall clock
+        // here can cross the one-second retry boundary on a loaded runner.
+        assert!(pending_at(dir.path(), due - 1).unwrap().is_empty());
+        assert_eq!(pending_at(dir.path(), due).unwrap()[0].key, first.send_key);
         db.execute("UPDATE user_outbox SET next_attempt=0", [])
             .unwrap();
         // Reopen after a failed attempt: the first message still precedes the second.

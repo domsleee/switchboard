@@ -1173,6 +1173,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn switchboard_conversation_preparation_checks_the_pane_and_confirms_once() {
         let upstream = Router::new()
             .route(
