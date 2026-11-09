@@ -2,7 +2,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),path=requir
 test('outgoing replies stay visible through queue acknowledgement and reconcile one-for-one',{skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
  const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch();
  const history=[{role:'user',text:'Same message'},{role:'assistant',text:'Earlier answer'}],requests=[];
- let held,hold=true,fail=false,relay=404,relayBody='',relayNotice,relayHold;const replies=[];
+ let held,hold=true,fail=false,relay=404,relayBody='',relayNotice,relayHold,receipt='pending';const replies=[];
  try{
   const page=await browser.newPage({viewport:{width:390,height:844},hasTouch:true,isMobile:true});page.setDefaultTimeout(5000);
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
@@ -12,6 +12,7 @@ test('outgoing replies stay visible through queue acknowledgement and reconcile 
    if(url.pathname.startsWith('/api/diagnostics/'))return route.fulfill({status:204});
    if(url.pathname.endsWith('/conversation/reply')){replies.push(route.request().postDataJSON());await relayHold;return relay===200?route.fulfill({json:{ok:true,...relayNotice&&{draft:'stashed',notice:relayNotice}}}):route.fulfill({status:relay,body:relayBody});}
    if(url.pathname.endsWith('/skills'))return route.fulfill({json:{skills:[]}});
+   if(url.pathname.endsWith('/codex/receipt'))return route.fulfill({json:{status:receipt,detail:'Saved. Codex may have accepted this message; waiting for its receipt. It will not be resent automatically.'}});
    if(url.pathname.endsWith('/codex/reply')){requests.push(route.request().postDataJSON());if(fail)return route.abort();if(hold)await new Promise(resolve=>held=resolve);return route.fulfill({json:{status:'queued'}});}
    if(url.pathname.startsWith('/api/chats/'))return route.fulfill({json:{session_id:'00000000-0000-4000-8000-000000000001',messages:history,start_cursor:0,next_cursor:null}});
    if(url.pathname==='/')return route.fulfill({contentType:'text/html',body:`<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/conversation.css"><main id="terminals"><iframe id="terminal"></iframe><section id="artifact-preview" hidden></section></main><script src="/conversation.js"></script><script>window.current={key:'pane1',host:'fixture',pane:1,agent:'codex',state:'working',chatId:'codex-chat',frame:document.getElementById('terminal')};SwitchboardConversation.install({selection:()=>current,terminal:()=>{}});</script>`});
@@ -19,6 +20,13 @@ test('outgoing replies stay visible through queue acknowledgement and reconcile 
   });
   await page.goto('http://send.test/');await page.getByText('Earlier answer',{exact:true}).waitFor();
   const draft=page.getByLabel('Reply draft'),send=page.getByRole('button',{name:'Send',exact:true}),outgoing=page.locator('.conversation-outgoing');
+  const screenshot=async(name,color,label)=>{
+   if(!process.env.DELIVERY_SCREENSHOTS)return;
+   const bounds=await outgoing.boundingBox();
+   await page.evaluate(({bounds,color,label})=>{const box=document.createElement('div');box.id='delivery-annotation';box.style.cssText=`position:fixed;z-index:10000;pointer-events:none;left:${bounds.x-2}px;top:${bounds.y-2}px;width:${bounds.width+4}px;height:${bounds.height+4}px;border:2px solid ${color};border-radius:10px;box-sizing:border-box`;const caption=document.createElement('span');caption.textContent=label;caption.style.cssText=`position:absolute;left:4px;top:100%;margin-top:4px;font:11px system-ui;color:${color};background:#0f1012;padding:0 3px`;box.append(caption);document.body.append(box);},{bounds,color,label});
+   await page.screenshot({path:path.join(process.env.DELIVERY_SCREENSHOTS,name+'.png'),clip:{x:bounds.x+bounds.width-336,y:bounds.y-4,width:340,height:160}});
+   await page.locator('#delivery-annotation').evaluate(node=>node.remove());
+  };
   const poll=async()=>{await page.waitForFunction(()=>!document.querySelector('button[aria-label=Refresh]').disabled);await Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/')),page.evaluate(()=>intervals.forEach(fn=>fn()))]);await page.waitForFunction(()=>!document.querySelector('button[aria-label=Refresh]').disabled);};
   await draft.fill('Same message');await send.click();await outgoing.getByText('Sending…',{exact:true}).waitFor();
   assert.equal(await outgoing.count(),1);assert.equal(await draft.inputValue(),'','Enter empties the draft before the send is confirmed');
@@ -50,6 +58,15 @@ test('outgoing replies stay visible through queue acknowledgement and reconcile 
   await outgoing.getByRole('button',{name:'Retry'}).click();await outgoing.getByText('Queued',{exact:true}).waitFor();
   assert.equal(requests.at(-1).send_key,retryKey);assert.equal(await draft.inputValue(),'My next thought');
   history.push({role:'user',text:'Uncertain send'});await poll();await page.waitForFunction(()=>document.querySelectorAll('.conversation-outgoing').length===0);
+  // A durable but uncertain add must become visible without replaying its body.
+  await draft.fill('Saved message awaiting receipt');await send.click();await outgoing.getByText('Queued',{exact:true}).waitFor();
+  await screenshot('delivery-before','#ef7979','Unconfirmed delivery');
+  receipt='review';await page.evaluate(()=>{const now=Date.now;Date.now=()=>now()+6000;});
+  await draft.fill('Keep my next thought');const submitted=requests.length;await poll();
+  await outgoing.getByText('Saved. Codex may have accepted this message; waiting for its receipt. It will not be resent automatically.',{exact:true}).waitFor();
+  assert.equal(requests.length,submitted,'Checking an uncertain receipt never resends');assert.equal(await draft.inputValue(),'Keep my next thought');
+  await screenshot('delivery-after','#72ce98','Saved for receipt review');
+  history.push({role:'user',text:'Saved message awaiting receipt'});await poll();await page.waitForFunction(()=>document.querySelectorAll('.conversation-outgoing').length===0);receipt='pending';
   // A superseded bridge timeout must not fail a later manual attempt.
   await page.evaluate(()=>{current.agent='claude';current.state='ready';window.pastes=[];window.timers=[];current.frame.contentWindow.postMessage=data=>pastes.push(data);const original=setTimeout;window.setTimeout=(fn,ms,...args)=>ms===4000?timers.push(fn):original(fn,ms,...args);});
   await draft.fill('Bridge reply');await send.click();await page.waitForFunction(()=>pastes.length===1);

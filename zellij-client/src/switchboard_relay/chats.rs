@@ -2066,14 +2066,10 @@ pub(super) fn thread_info(agent: &str, thread: &str) -> Value {
 
 /// Receipt means a uniquely identified queue envelope appears in provider history.
 /// It does not mean the agent finished the work or acknowledged the message.
-pub(super) fn native_message_received(thread: &str, send_key: &str) -> bool {
+fn codex_history(thread: &str) -> Option<Arc<SyncMutex<HistoryIndex>>> {
     let info = thread_info("codex", thread);
-    let Some(id) = info["chat_id"].as_str() else {
-        return false;
-    };
-    let Some((agent, root, path)) = TRANSCRIPTS.lock().unwrap().get(id).cloned() else {
-        return false;
-    };
+    let id = info["chat_id"].as_str()?;
+    let (agent, root, path) = TRANSCRIPTS.lock().unwrap().get(id).cloned()?;
     let _ = indexed_page(
         &agent,
         &root,
@@ -2085,7 +2081,11 @@ pub(super) fn native_message_received(thread: &str, send_key: &str) -> bool {
         },
         &mut ReadTiming::default(),
     );
-    let Some(index) = HISTORY.lock().unwrap().existing(id) else {
+    HISTORY.lock().unwrap().existing(id)
+}
+
+pub(super) fn native_message_received(thread: &str, send_key: &str) -> bool {
+    let Some(index) = codex_history(thread) else {
         return false;
     };
     let mut index = index.lock().unwrap();
@@ -2121,6 +2121,190 @@ pub(super) fn native_message_received(thread: &str, send_key: &str) -> bool {
                     })
             })
     })
+}
+
+pub(super) fn user_reply_checkpoint(thread: &str) -> Option<usize> {
+    Some(codex_history(thread)?.lock().unwrap().messages.len())
+}
+
+#[cfg(test)]
+pub(super) fn bind_receipt_fixture(root: PathBuf, path: &Path) {
+    bind_transcript("codex", root, path).unwrap();
+}
+
+/// Confirm raw user input after this send's checkpoint, never an old identical
+/// message. Legacy question answers have a native question ID and can also be
+/// reconciled when only their display-question punctuation was corrupted.
+pub(super) fn user_reply_received(thread: &str, text: &str, after: Option<usize>) -> bool {
+    let expected = if after.is_none() {
+        codex_question_replies(text)
+    } else {
+        None
+    };
+    if after.is_none() && expected.is_none() {
+        return false;
+    }
+    let Some(index) = codex_history(thread) else {
+        return false;
+    };
+    let index = index.lock().unwrap();
+    let Ok(mut file) = fs::File::open(&index.path) else {
+        return false;
+    };
+    let entries = index
+        .messages
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(cursor, entry)| *cursor >= after.unwrap_or(0) && !entry.assistant && !entry.tool)
+        .take(200);
+    for (_, entry) in entries {
+        if file.seek(SeekFrom::Start(entry.start)).is_err() {
+            return false;
+        }
+        let mut bytes = vec![0; entry.bytes];
+        if file.read_exact(&mut bytes).is_err() {
+            return false;
+        }
+        let Ok(record) = serde_json::from_slice::<Value>(&bytes) else {
+            continue;
+        };
+        // Use provider bytes, not Conversation's shortened/pretty-printed text.
+        let parts = match record["type"].as_str() {
+            Some("response_item") if record["payload"]["role"] == "user" => {
+                &record["payload"]["content"]
+            },
+            Some("event_msg") if record["payload"]["item"]["type"] == "UserMessage" => {
+                &record["payload"]["item"]["content"]
+            },
+            _ => continue,
+        };
+        let actual = parts
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|part| part["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if after.is_some() && actual == text {
+            return true;
+        }
+        if let Some(expected) = &expected {
+            // Earlier paste retries sometimes concatenated complete envelopes
+            // and left one final truncated copy. Only a complete, equal answer
+            // set is evidence; a matching prefix or subset is insufficient.
+            for envelope in actual.split_inclusive("</send_user_message_question_reply>") {
+                let Some(start) = envelope.rfind("<send_user_message_question_reply>") else {
+                    continue;
+                };
+                if codex_question_replies(&envelope[start..]).is_some_and(|actual| {
+                    let (expected, actual) =
+                        (expected.as_array().unwrap(), actual.as_array().unwrap());
+                    let signature = |answers: &[Value]| {
+                        let mut pairs = answers
+                            .iter()
+                            .map(|answer| {
+                                (
+                                    answer["id"].as_str().unwrap().to_owned(),
+                                    answer["answer"].as_str().unwrap().to_owned(),
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        pairs.sort();
+                        pairs
+                    };
+                    signature(expected) == signature(actual)
+                }) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod user_receipt_tests {
+    use super::*;
+    use std::io::Write;
+
+    fn append(file: &mut fs::File, text: &str) {
+        writeln!(file, "{}", json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":text}]}}})).unwrap();
+        file.flush().unwrap();
+    }
+
+    #[test]
+    fn switchboard_codex_user_receipt_matches_raw_input_after_its_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let thread = uuid::Uuid::new_v4().to_string();
+        fs::create_dir(dir.path().join("sessions")).unwrap();
+        let path = dir
+            .path()
+            .join("sessions")
+            .join(format!("rollout-{thread}.jsonl"));
+        let mut file = fs::File::create(&path).unwrap();
+        let text = "  Don’t lose ‘quotes’ — 東京 🦀\nsecond line  ";
+        append(&mut file, text);
+        bind_transcript("codex", dir.path().into(), &path).unwrap();
+        let after = user_reply_checkpoint(&thread).unwrap();
+        assert_eq!(after, 1);
+        assert!(
+            !user_reply_received(&thread, text, Some(after)),
+            "An old identical message cannot settle a new send"
+        );
+        append(&mut file, &text.replace('’', ""));
+        assert!(
+            !user_reply_received(&thread, text, Some(after)),
+            "Partial/corrupted input is not acceptance"
+        );
+        append(&mut file, text);
+        assert!(user_reply_received(&thread, text, Some(after)));
+        assert!(
+            !user_reply_received(&thread, text, None),
+            "Legacy ordinary input has no safe checkpoint"
+        );
+    }
+
+    #[test]
+    fn switchboard_codex_legacy_question_receipt_requires_the_same_item_and_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        let thread = uuid::Uuid::new_v4().to_string();
+        fs::create_dir(dir.path().join("sessions")).unwrap();
+        let path = dir
+            .path()
+            .join("sessions")
+            .join(format!("rollout-{thread}.jsonl"));
+        let mut file = fs::File::create(&path).unwrap();
+        bind_transcript("codex", dir.path().into(), &path).unwrap();
+        let reply = |id: &str, question: &str, answer: &str| {
+            format!(
+                "<send_user_message_question_reply>\n{}\n</send_user_message_question_reply>",
+                json!([{"questionItemId":id,"question":question,"answer":answer}])
+            )
+        };
+        let expected = reply("question-1", "Shouldn’t we proceed?", "Yes");
+        append(
+            &mut file,
+            &reply("question-2", "Shouldnt we proceed?", "Yes"),
+        );
+        append(
+            &mut file,
+            &reply("question-1", "Shouldnt we proceed?", "No"),
+        );
+        assert!(!user_reply_received(&thread, &expected, None));
+        let accepted = reply("question-1", "Shouldnt we proceed?", "Yes");
+        append(
+            &mut file,
+            &format!(
+                "{accepted}\n{accepted}\n<send_user_message_question_reply>\n[{{\"answer\":\"Ye"
+            ),
+        );
+        assert!(user_reply_received(&thread, &expected, None));
+        assert!(
+            !user_reply_received(&thread, &expected, Some(0)),
+            "New native receipts require exact original bytes"
+        );
+    }
 }
 
 // Use only paths within the history roots already exposed by the read-only API.

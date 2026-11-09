@@ -467,7 +467,7 @@
 .conversation-outgoing-file{margin-top:8px;padding:7px 10px;background:#ffffff08;border:1px solid var(--line-2);border-radius:8px;color:var(--text-2);font-size:12px;text-decoration:none}
 .conversation-outgoing.failed,.conversation-outgoing.uncertain{border-color:#d8735f66}
 .conversation-outgoing.failed .conversation-outgoing-status,.conversation-outgoing.uncertain .conversation-outgoing-status{color:#f0a897}
-.conversation-outgoing-status button{border:0;background:transparent;color:var(--text);text-decoration:underline;cursor:pointer}
+.conversation-outgoing-status button{flex-shrink:0;border:0;background:transparent;color:var(--text);text-decoration:underline;cursor:pointer}
 
 .conversation-media{display:inline-flex;vertical-align:top;flex-direction:column;gap:6px;max-width:min(100%,30rem);width:fit-content;margin:10px 12px 12px 0;white-space:normal}
 .conversation-media img,.conversation-media video{display:block;max-width:100%;max-height:360px;border-radius:10px;object-fit:contain;background:#0a0a0c}

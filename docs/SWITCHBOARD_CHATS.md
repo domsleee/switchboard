@@ -156,27 +156,35 @@ transcript API's `async_question` field. Conversation renders choices and a free
 answer inline. Answers use Codex's question-reply message format through its native
 queue, without opening Terminal or interrupting the turn. The ordinary composer
 stays available while a question or its answer is pending. Recorded `question_replies`
-settle the matching card on every browser, including after a reload; an uncertain
-delivery retries the same message and send key.
+settle the matching card on every browser, including after a reload. Retrying an
+uncertain delivery checks its saved receipt using the same message and send key.
 Questions can fold without losing a custom answer. A shortcut above the composer
 returns to an offscreen or folded question, and a submitted answer becomes a
 compact receipt that reopens for review.
 
 Codex replies use `/api/hosts/HOST/codex/reply`, whether idle or working. The destination
 saves the reply in a durable outbox before acknowledging it, then delivers to the
-exact live Codex pane reported by its transcript hook. It waits for an empty composer,
-checks that the pasted reply has appeared, presses Enter, and confirms submission.
-Enter steers a working turn and submits a new turn at idle. No viewer is attached or
-focused. A terminal draft or dialog keeps the reply saved until the composer is ready;
-recorded input ownership allows an unfinished paste to resume after a relay restart.
-This works with embedded Codex servers, which a separate daemon's `codex queue` cannot
-reach. Failed attempts retry with backoff capped at 15 seconds, and relay
-startup resumes saved replies. Messages to the same thread retain their send order.
+native thread through Codex's structured `thread/queue/add` API. One persistent
+`codex app-server` connection serves the account's outbox. This queue also reaches
+embedded `--no-daemon` terminals; it does not resume a thread or start a model turn
+in another server. Terminal drafts and viewers are left alone. A positive native
+acknowledgement must match the original submission ID and exact text, including
+Unicode. Failed operations before submission retry with backoff capped at 15 seconds;
+relay startup resumes saved replies. Messages to the same thread retain their send order.
 The transcript supplies the native session ID. A retry keeps the same send key;
 repeating it reuses the saved delivery. Old unconfirmed receipts can be recovered by
 retrying with the original key and content. “Queued” means Switchboard has saved the
-message for delivery, not that Codex has read it. Delivery is at least once: if Codex
-accepts a message but its acknowledgement is lost, retrying can produce a duplicate.
+message for delivery, not that Codex has read it. Codex does not deduplicate
+`clientUserMessageId`. An intent is therefore saved before adding: a timeout, EOF,
+or restart after that checkpoint cannot cause another add. The relay checks the
+native queue and exact raw user input after the saved transcript checkpoint.
+If neither confirms it, the message remains saved for review and holds later
+messages in order. A crash between saving the intent and submitting can require
+manual recovery; absence from both queue and transcript never proves a safe resend.
+Legacy terminal submissions are never pasted again. Complete question answers can
+be reconciled by the entire native question-ID/answer set even when display prose
+lost punctuation; ambiguous ordinary input remains saved for review. Receipt status
+and Conversation expose this distinction instead of claiming it is actively retrying.
 Delivered payloads are removed immediately and their receipts expire after seven days;
 undelivered messages remain saved until accepted. These browser
 replies retain user text; the separate agent-to-agent `/codex/queue` route keeps its

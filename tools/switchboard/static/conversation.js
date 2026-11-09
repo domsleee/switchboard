@@ -1112,8 +1112,23 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
     }
     function acknowledgeVisible(){if(open&&!panel.hidden&&!document.hidden&&document.hasFocus()&&nextCursor===null&&nearBottom())viewed(target);}
     const firstPage=15;
+    async function checkSavedReplies(){
+      const current=target,key=identity(current),items=outgoing.get(key)||[];
+      for(const state of asyncQuestions.values()){
+        if(state.destination.chatKey!==key||state.status!=='queued'||state.receiptPending||Date.now()-(state.receiptChecked||0)<=5000)continue;
+        state.receiptPending=true;state.receiptChecked=Date.now();
+        try{const response=await fetch('/api/hosts/'+encodeURIComponent(state.destination.host)+'/codex/receipt?'+new URLSearchParams({thread:state.destination.thread,send_key:state.sendKey}),{signal:AbortSignal.timeout(5000)});if(!response.ok)continue;const result=await response.json();if(state.status==='queued'&&result.status==='review'){state.status='uncertain';state.error=result.detail||asyncUnconfirmed;if(identity(target)===key)syncAsyncQuestions();}}
+        catch{}finally{state.receiptPending=false;}
+      }
+      for(const sent of items.filter(item=>item.native&&item.state==='queued'&&!item.receiptPending&&Date.now()-(item.receiptChecked||0)>5000)){
+        sent.receiptPending=true;sent.receiptChecked=Date.now();
+        try{const response=await fetch('/api/hosts/'+encodeURIComponent(sent.host)+'/codex/receipt?'+new URLSearchParams({thread:sent.thread,send_key:sent.sendKey}),{signal:AbortSignal.timeout(5000)});if(!response.ok)continue;const result=await response.json();if(result.status==='review'){sent.state='uncertain';sent.detail=result.detail||'Saved. Check the conversation before resending.';if(identity(target)===key)paint();}}
+        catch{}finally{sent.receiptPending=false;}
+      }
+    }
     async function load(kind='poll'){
       if(!target||!binding()||loading||(!open&&kind!=='initial'))return;if(!loaded)kind='initial';const version=generation,chat=binding(),started=performance.now(),request=new AbortController();loadRequest=request;let timedOut=false,catchUp=false;busy(true);const timeout=setTimeout(()=>{timedOut=true;request.abort();},15000);
+      checkSavedReplies();
       const initial=kind==='initial',prepend=kind==='older',cursor=nextCursor??tailCursor;
       // Each first read counts from zero, including a tab switch that keeps the same notice.
       if(initial&&loadingTimer!==null){loadingStarted=performance.now();tickLoading();}
