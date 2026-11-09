@@ -147,7 +147,7 @@ test('reconnect metadata restores the chosen tab instead of following another na
   const context={window:{addEventListener:(_,fn)=>handler=fn},location:{origin:'https://switchboard.test'},
     sessions:new Map([[JSON.stringify(['windows','main']),entry]]),selected:key('windows',42),ready:{},nativeTabs:false,
     allTabs:()=>entry.catalog.map(tab=>({entry,tab,key:key('windows',tab.id)})),saveReady(){},render(){},acknowledgeAttention(){},
-    focus(item){focused=item.key;entry.needsFocus=false;}};
+    restoreTerminalKeyboard(){},focus(item){focused=item.key;entry.needsFocus=false;}};
   vm.createContext(context);
   vm.runInContext(source.slice(source.indexOf('function sessionKey('),source.indexOf('function attentionKey(')),context);
   const start=source.indexOf("window.addEventListener('message'");
@@ -489,7 +489,7 @@ for(const touchscreen of [false,true])test(`sidebar selection supports immediate
   }finally{await browser.close();}
 });
 
-async function browserFocusFixture({mismatch=null,acknowledge=true,platform,hasTouch=false,conversation=false}={}){
+async function browserFocusFixture({mismatch=null,acknowledge=true,platform,hasTouch=false,conversation=false,diagnostics=false}={}){
   const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
   const browser=await chromium.launch({headless:true});
   try{
@@ -523,15 +523,23 @@ async function browserFocusFixture({mismatch=null,acknowledge=true,platform,hasT
         window.WebSocket=class extends EventTarget {constructor(){super();this.readyState=1;}send(){}};
         window.term={element:document.querySelector('#terminal'),options:{disableStdin:false},focus(){input.focus();},blur(){input.blur();},
           _core:{_renderService:{dimensions:{css:{cell:{width:8,height:16}}}}},buffer:{active:{viewportY:0,getLine:()=>({translateToString:()=>''})}},onRender(){},onResize(){}};
-      </script><script src="/bridge.js"></script><script>
+      </script>${diagnostics?`<script src="/terminal-diagnostics.js"></script><script>
+        window.focusSpans=[];
+        const makeDiagnostics=window.SwitchboardTerminalDiagnostics;
+        window.SwitchboardTerminalDiagnostics=(...args)=>{
+          const instance=makeDiagnostics(...args),start=instance.start;
+          instance.start=function(...args){focusSpans.push(args[0]);return start.apply(this,args);};
+          return instance;
+        };
+      </script>`:''}<script src="/bridge.js"></script><script>
         const socket=new WebSocket('wss://switchboard.test/ws/control');
         const panes=[7,8].map((pane_id,tab_position)=>({pane_id,is_plugin:false,tab_position}));
         window.sendState=paneId=>socket.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'MobileState',payload:{session_name:'main',panes,active_pane:panes.find(p=>p.pane_id===paneId)}})}));
         window.__zjSendControl=message=>{controlMessages.push(message);if(acknowledge&&message.type==='FocusPane')queueMicrotask(()=>sendState(message.pane_id));};
-        sendState(7);
+        if(!parent.holdTerminalState)sendState(7);
       </script>`});
       const file=pathname==='/'?'index.html':pathname.slice(1);
-      if(!['index.html','app.js','timing.js','skill-editor.js','model-picker.js','bridge.js','close.js','titles.js','style.css',...(conversation?['conversation.js','conversation.css']:[])].includes(file))return route.fulfill({status:404,body:''});
+      if(!['index.html','app.js','timing.js','terminal-diagnostics.js','skill-editor.js','model-picker.js','bridge.js','close.js','titles.js','style.css',...(conversation?['conversation.js','conversation.css']:[])].includes(file))return route.fulfill({status:404,body:''});
       return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
     });
     await page.goto('https://switchboard.test/?host=mac&session=main&tab=41');
@@ -545,6 +553,79 @@ async function browserFocusFixture({mismatch=null,acknowledge=true,platform,hasT
     throw error;
   }
 }
+
+test('returning from a retired Conversation viewer restores typing after the Terminal button click',
+  {skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
+  const {browser,page,input,pageErrors}=await browserFocusFixture({conversation:true});
+  try{
+    await page.setViewportSize({width:390,height:844});
+    await input.evaluate(()=>{window.__zjSuspendTerminal=async()=>true;});
+    await page.getByRole('button',{name:'Conversation',exact:true}).click();
+    await page.waitForFunction(()=>[...sessions.values()][0].frame.getAttribute('src')==='about:blank');
+    await page.getByRole('button',{name:'Terminal',exact:true}).click();
+    await page.waitForFunction(()=>![...sessions.values()][0].frame.inert);
+    await page.waitForFunction(()=>document.querySelector('iframe.active').contentDocument.activeElement.id==='terminal-input',null,{timeout:1500});
+    await page.keyboard.type('clicked');assert.equal(await input.inputValue(),'clicked');
+    assert.deepEqual(pageErrors,[]);
+  }finally{await browser.close();}
+});
+
+for(const deferred of ['search','dialog','preview','window'])test(`a retired viewer confirms its pane without taking focus from ${deferred}`,
+  {skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
+  const {browser,page,input,pageErrors}=await browserFocusFixture({conversation:true});
+  try{
+    await page.setViewportSize({width:390,height:844});
+    await input.evaluate(()=>{window.__zjSuspendTerminal=async()=>true;});
+    await page.getByRole('button',{name:'Conversation',exact:true}).click();
+    await page.waitForFunction(()=>[...sessions.values()][0].frame.getAttribute('src')==='about:blank');
+    await page.setViewportSize({width:1280,height:900});
+    await page.evaluate(()=>{window.holdTerminalState=true;});
+    await page.getByRole('button',{name:'Terminal',exact:true}).click();
+    await page.waitForFunction(()=>typeof document.querySelector('iframe.active').contentWindow.sendState==='function'&&![...sessions.values()][0].state);
+    await page.evaluate(deferred=>{
+      if(deferred==='search')document.querySelector('#tab-search').focus();
+      if(deferred==='dialog'){
+        const dialog=document.createElement('dialog');dialog.id='focus-dialog';dialog.innerHTML='<input id="dialog-input">';document.body.append(dialog);dialog.showModal();
+      }
+      if(deferred==='preview')document.querySelector('#artifact-preview').hidden=false;
+      if(deferred==='window')Object.defineProperty(document,'hasFocus',{configurable:true,value:()=>false});
+      document.querySelector('iframe.active').contentWindow.sendState(7);
+    },deferred);
+    await page.waitForFunction(()=>![...sessions.values()][0].frame.inert);
+    if(deferred==='search')assert.equal(await page.evaluate(()=>document.activeElement.id),'tab-search');
+    if(deferred==='dialog'){
+      assert.equal(await page.evaluate(()=>document.activeElement.id),'dialog-input');
+      await page.evaluate(()=>document.querySelector('#focus-dialog').close());
+    }
+    if(deferred==='preview'){
+      assert.equal(await page.locator('#artifact-preview').isVisible(),true);
+      await page.evaluate(()=>{document.querySelector('#artifact-preview').hidden=true;dispatchEvent(new Event('focus'));});
+    }
+    if(deferred==='window')await page.evaluate(()=>{delete document.hasFocus;dispatchEvent(new Event('focus'));});
+    if(deferred!=='search'){
+      await page.waitForFunction(()=>document.querySelector('iframe.active').contentDocument.activeElement.id==='terminal-input');
+      await page.keyboard.type('deferred');assert.equal(await input.inputValue(),'deferred');
+    }
+    assert.deepEqual(pageErrors,[]);
+  }finally{await browser.close();}
+});
+
+test('restoring typing after reconnect preserves the original switch diagnostic span',
+  {skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
+  const {browser,page,input,pageErrors}=await browserFocusFixture({diagnostics:true});
+  try{
+    await page.evaluate(()=>{
+      const entry=[...sessions.values()][0];entry.frame.contentWindow.focusSpans.length=0;
+      terminalTransition(entry,true);entry.needsFocus=true;
+      selected=JSON.stringify(['mac','main','tab',42]);render();
+      entry.frame.contentWindow.sendState(7);
+    });
+    await page.waitForFunction(()=>!document.querySelector('iframe.active').inert&&document.querySelector('iframe.active').contentDocument.activeElement.id==='terminal-input');
+    await page.keyboard.type('restored');assert.equal(await input.inputValue(),'restored');
+    assert.deepEqual(await input.evaluate(()=>focusSpans.map(span=>span.pane_id)),[8]);
+    assert.deepEqual(pageErrors,[]);
+  }finally{await browser.close();}
+});
 
 test('a reconnected viewer confirms its pane while search keeps keyboard focus',
   {skip:!process.env.PLAYWRIGHT_MODULE},async()=>{

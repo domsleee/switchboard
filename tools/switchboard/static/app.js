@@ -1070,7 +1070,11 @@ window.addEventListener('blur',finishDrag);
 window.addEventListener('focus',()=>{
   const current=allTabs().find(item=>item.key===selected);
   if(current&&document.hasFocus())current.entry.frame.contentWindow.postMessage({type:'zellij-window-focus'},location.origin);
+  if(current)restoreTerminalKeyboard(current.entry);
 });
+document.addEventListener('close',()=>queueMicrotask(()=>{
+  const current=allTabs().find(item=>item.key===selected);if(current)restoreTerminalKeyboard(current.entry);
+}),true);
 // Passive chrome should not interrupt typing. Cancel the default focus transfer;
 // clicks still run, and keyboard navigation keeps normal focus. Conversation
 // also preserves its composer and soft keyboard through passive touch taps.
@@ -1090,6 +1094,7 @@ document.addEventListener('mousedown',event=>{
   event.preventDefault();
 },true);
 function focus(item,background=false) {
+  if(!background)item.entry.keyboardIntent=document.activeElement;
   if(item.entry.suspending||item.entry.retirementUnresolved){item.entry.needsFocus=true;return;}
   const conversationOpen=globalThis.SwitchboardConversation?.isOpen?.()||false;
   if(conversationOpen&&!background)globalThis.SwitchboardConversation.focus();
@@ -1129,6 +1134,16 @@ function focus(item,background=false) {
   const preserveFocus=!!deferKeyboardFocus||conversationOpen||(background&&!!item.entry.focusInitialized&&!fromTabButton);
   item.entry.focusInitialized=true;
   item.entry.frame.contentWindow.postMessage({type:'zellij-focus',pane_id:pane.pane_id,is_plugin:pane.is_plugin,focus_id:focusId,preserve_focus:preserveFocus},location.origin);
+}
+function restoreTerminalKeyboard(entry,unlocked=false){
+  if(!entry.keyboardIntent&&!unlocked)return;
+  if(entry.suspending||entry.retirementUnresolved||entry.suspended||entry.frame.inert||entry.needsFocus||entry.requestedPane||entry.focusPending||
+    !entry.frame.classList.contains('active')||globalThis.SwitchboardConversation?.isOpen?.()||document.hidden||!document.hasFocus()||!$('artifact-preview').hidden||document.querySelector('dialog[open]'))return;
+  const active=document.activeElement;
+  if(active!==document.body&&active!==entry.frame&&active!==entry.keyboardIntent)return;
+  entry.keyboardIntent=null;
+  entry.frame.focus();
+  entry.frame.contentWindow.postMessage({type:'zellij-restore-focus'},location.origin);
 }
 function activate(item, clear=true, addHistory=true) {
   if(addHistory&&item.key!==selected)pushTabHistory=true;
@@ -1274,10 +1289,13 @@ function terminalTransition(entry,busy) {
   entry.frame.setAttribute('aria-busy',String(busy));
   if(busy)entry.frame.blur();
   else if(entry.inputTiming){
-    const elapsed=performance.now()-entry.inputStarted,metadata=entry.inputMetadata;
-    entry.inputTiming.end('ready',{stages:metadata==null?{}:{metadata,focus:elapsed-metadata}});
+    entry.inputTiming.end('ready',{stages:terminalInputStages(entry)});
     entry.inputTiming=null;
   }
+}
+function terminalInputStages(entry){
+  const elapsed=performance.now()-entry.inputStarted,metadata=entry.inputMetadata;
+  return metadata==null?{metadata:elapsed}:{metadata,focus:elapsed-metadata};
 }
 function showRetirementStatus() {
   const entries=[...sessions.values()];
@@ -1287,7 +1305,7 @@ function showRetirementStatus() {
   }
   if(connecting&&!connecting.inputTiming){
     connecting.inputStarted=performance.now();connecting.inputMetadata=connecting.state?0:null;
-    connecting.inputTiming=window.SwitchboardTiming?.begin('terminal_input_ready',{host:connecting.host})||null;
+    connecting.inputTiming=window.SwitchboardTiming?.begin('terminal_input_ready',{host:connecting.host,timeoutStages:()=>terminalInputStages(connecting)})||null;
   }
   const unresolved=entries.find(entry=>entry.retirementUnresolved);
   $('status').classList.toggle('terminal-transition',!!connecting||entries.some(entry=>entry.retirementUnresolved||entry.suspending));
@@ -1368,7 +1386,7 @@ function pruneSessions(listed=null,hostId=null){
   for(const [key,entry] of sessions){
     const host=hosts.get(entry.host);
     if(!host||entry.host===hostId&&!host.error&&Array.isArray(host.sessions)&&!entry.starting&&!host.sessions.some(session=>session.name===entry.name)){
-      clearTimeout(entry.startTimeout);entry.frame.remove();sessions.delete(key);
+      clearTimeout(entry.startTimeout);entry.inputTiming?.end('left');entry.frame.remove();sessions.delete(key);
     }
   }
 }
@@ -1459,7 +1477,7 @@ window.addEventListener('message',event=>{
       sessions.delete(sessionKey(entry.host,entry.name));
       entry.name=entry.state.session_name;setCatalog(entry,tabCatalog.filter(tab=>tab.host===entry.host&&tab.session===entry.name));entry.followActiveTab=entry.frame.classList.contains('active');
       const key=sessionKey(entry.host,entry.name), duplicate=sessions.get(key);
-      if(duplicate&&duplicate!==entry)duplicate.frame.remove();
+      if(duplicate&&duplicate!==entry){duplicate.inputTiming?.end('left');duplicate.frame.remove();}
       sessions.set(key,entry);
     }
     if(!entry.needsFocus && !entry.requestedPane && !entry.focusPending && entry.frame.classList.contains('active') && previousPane && (previousPosition!==entry.state.active_pane?.tab_position||previousPane.pane_id!==entry.state.active_pane?.pane_id||previousPane.is_plugin!==entry.state.active_pane?.is_plugin)){
@@ -1476,13 +1494,12 @@ window.addEventListener('message',event=>{
     if(entry.needsFocus && entry.frame.classList.contains('active')){
       const current=allTabs().find(item=>item.key===selected);if(current)focus(current,true);
     }
-    if(entry.frame.inert&&!entry.needsFocus&&!entry.requestedPane&&!entry.focusPending){
+    const unlocked=entry.frame.inert&&!entry.needsFocus&&!entry.requestedPane&&!entry.focusPending;
+    if(unlocked){
       terminalTransition(entry,false);render();
-      // The bridge could not focus an inert iframe before its acknowledgement
-      // arrived here. Restore typing once it is enabled, unless another UI owns it.
-      if(current?.entry===entry&&!globalThis.SwitchboardConversation?.isOpen?.()&&!document.hidden&&document.hasFocus()&&$('artifact-preview').hidden&&!document.querySelector('dialog[open]')&&
-        (document.activeElement===document.body||document.activeElement===entry.frame))focus(current);
     }
+    // An inert frame cannot receive keyboard focus until its acknowledgement.
+    restoreTerminalKeyboard(entry,unlocked);
   }else if(event.data?.type==='zellij-focus-failed'){
     if(entry.requestedPane?.focus_id!==event.data.focus_id)return;
     entry.requestedPane=null;
@@ -2325,7 +2342,7 @@ async function createNewTab(key,launch,isCurrent=()=>true,typed){
   if(!entry?.state){
     const [id,name]=JSON.parse(key),host=hosts.get(id);
     if(firstSessionName(host)!==name){newTabProblem(noSessionMessage(id),'target');return;}
-    if(entry&&!entry.starting){entry.frame.remove();sessions.delete(key);}
+    if(entry&&!entry.starting){entry.inputTiming?.end('left');entry.frame.remove();sessions.delete(key);}
     const created=connectSession(host,name,true);created.selectOnStart=true;created.launchOnStart=launch;
     if(filter!=='all'&&groups[id]!==filter)setFilter('all');$('tab-search').value='';
     // Closing the dialog returns focus to +; restore the current viewing surface.

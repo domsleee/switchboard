@@ -30,14 +30,14 @@
     else window.term?.focus();
   }
   function conversationOpen(){return !!parent.document.getElementById('terminals')?.classList.contains('conversation-open');}
-  function restoreTerminalFocus(origin = focusOrigin) {
+  function restoreTerminalFocus(origin = focusOrigin, preserve = preserveFocus) {
     if (conversationOpen() || !parent.document.hasFocus() || parent.document.querySelector('dialog[open]') ||
       (window.frameElement && !window.frameElement.classList.contains('active'))) return;
     const active = parent.document.activeElement;
     // Focus still in this frame but on nothing (a reconnect reload or a pane
     // switch blurred xterm) belongs to the terminal; it was never elsewhere.
     const stray = !!window.frameElement && active === window.frameElement && (!document.activeElement || document.activeElement === document.body);
-    if (stray || (!preserveFocus && active === origin)) focusTerminalInput();
+    if (stray || (!preserve && active === origin)) focusTerminalInput();
   }
   let terminalSocket, controlSocket;
   // Instant typing draws what the terminal socket sends before it echoes (predict.js, off by default).
@@ -703,6 +703,11 @@
         holdFocusInput();
         if(!pendingFocus)dispatchFocus();
       }else{diagnostics?.ack();releaseFocus();restoreTerminalFocus();if(latest)sendState(latest);}
+    } else if (message?.type === 'zellij-restore-focus') {
+      // Enabling an inert iframe can leave its input blurred. Restore only the
+      // keyboard: another pane focus would replace the switch's render timings.
+      if(!pendingFocus&&!pendingNewTab&&!parent.document.hidden&&parent.document.getElementById('artifact-preview')?.hidden!==false)
+        restoreTerminalFocus(parent.document.body,false);
     } else if (message?.type === 'zellij-interrupt') {
       const pane=latest?.active_pane;
       const ok=Date.now()<=message.expires&&!hasDialog()&&!pendingFocus&&!pendingNewTab&&latest?.session_name===message.session&&pane&&!pane.is_plugin&&pane.pane_id===message.pane_id&&terminalSocket?.readyState===1&&window.term&&!window.term.options.disableStdin;
