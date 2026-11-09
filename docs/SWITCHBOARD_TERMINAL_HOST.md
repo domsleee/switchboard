@@ -182,16 +182,20 @@ offset is no longer retained, the handoff aborts.
 
 ## Viewers
 
-An attachment worker that loses its IPC connection checks the host directory for
-`handoff/in-progress` and retries the attach for up to 60 seconds with typing held in its
-journal. After attaching, it completes the existing confirmed-focus transaction for its exact
-pane and restores its hidden report before it releases input, because `Screen::add_client`
-puts a new web client on the first tab. Terminal identity is host ID plus terminal ID, so a
-resume cannot reach a different terminal.
+An engine marks a handoff with `in-progress/<session>` under the terminal-hosts root before
+it freezes, and the new engine clears the marker once adoption finishes. An attachment worker
+stops sending input when it sees the marker. If its IPC connection then drops, it waits up to
+60 seconds for the new engine and attaches with typing held in its journal. It restores its
+hidden report and completes the existing confirmed-focus transaction for its exact pane
+before it releases input, because `Screen::add_client` puts a new web client on the first
+tab. Terminal identity is host ID plus terminal ID, so a resume cannot reach a different
+terminal. The web server keeps listing a marked session while its socket is absent, because
+the sidebar closes the terminal of any session it stops seeing.
 
 Workers from builds without this capability fail visibly, as they do today, and the updater
 defers for them the same bounded way it defers for legacy viewers. Native attached clients
-reattach on the new exit reason.
+reattach the same way when their connection drops while the session is marked. They land on
+the session's active tab, and keys typed while they wait are lost.
 
 ## Update policy
 

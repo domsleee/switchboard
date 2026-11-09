@@ -514,6 +514,9 @@ async fn attachment(
     let mut timer = tokio::time::interval(Duration::from_millis(50));
     let mut held_since = Instant::now();
     let mut auth_checked = Instant::now();
+    os.remember_viewer_hidden(hidden);
+    let mut handing_off = false;
+    let mut seen_reconnections = 0;
     loop {
         {
             let mut journal = viewer.journal.lock().unwrap();
@@ -525,7 +528,8 @@ async fn attachment(
             }
         }
         tokio::select! {
-            Some(delivery)=input.recv()=>{
+            // Typing waits here while the session moves to a new engine.
+            Some(delivery)=input.recv(), if !handing_off && !os.is_reconnecting() && os.reconnections()==seen_reconnections =>{
                 let mut accepted=false;
                 let result=async {
                     let focus;
@@ -541,6 +545,7 @@ async fn attachment(
                             held_since=Instant::now();focus=None;
                         } else {
                             let payload:WebClientToWebServerControlMessagePayload=serde_json::from_str(&delivery.input.data)?;
+                            if let WebClientToWebServerControlMessagePayload::SetViewerHidden{hidden}=&payload {os.remember_viewer_hidden(*hidden);}
                             // Geometry does not change the input target. It may arrive
                             // between paste chunks during a mode switch or resize.
                             // Leave the parser untouched; routing/action controls must
@@ -595,7 +600,21 @@ async fn attachment(
             _=timer.tick()=>{
                 if stdin.pending_finalize() && held_since.elapsed()>=Duration::from_millis(50){stdin.finalize(&*os,&mut mouse);}
                 viewer.parser_pending.store(stdin.has_pending_bytes(),Ordering::Release);
-                if let Some(error)=os.send_failure(){viewer.journal.lock().unwrap().failure=Some(format!("Terminal IPC failed: {error}"));}
+                handing_off=zellij_utils::handoff::in_progress(&worker.session);
+                let reconnections=os.reconnections();
+                if reconnections!=seen_reconnections {
+                    seen_reconnections=reconnections;
+                    // A new engine puts this viewer on the first tab. Typing waits until
+                    // it is back on its own pane, and is never sent anywhere else.
+                    let target=viewer.failure_context.lock().unwrap().target;
+                    if let Some(target)=target {
+                        send_focus_probe(&*os,target);
+                        if let Err(error)=confirm_focus(&viewer,target,&mut output,&mut controls,|| send_focus_probe(&*os,target)).await {
+                            viewer.journal.lock().unwrap().failure=Some(format!("Could not reselect the terminal pane after a new engine took over: {error}"));
+                        }
+                    }
+                }
+                if let Some(error)=os.send_failure().filter(|_|!handing_off&&!os.is_reconnecting()){viewer.journal.lock().unwrap().failure=Some(format!("Terminal IPC failed: {error}"));}
                 if auth_checked.elapsed()>=Duration::from_secs(1){
                     auth_checked=Instant::now();
                     if credential_is_read_only(&viewer.owner).ok() != Some(viewer.read_only) {

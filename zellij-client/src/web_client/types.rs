@@ -52,6 +52,24 @@ pub trait SessionManager: Send + Sync + std::fmt::Debug {
 #[derive(Debug, Clone)]
 pub struct RealSessionManager;
 
+/// A session has no socket while it moves between engines, and the sidebar closes
+/// the terminal of any session it stops seeing, so report its last known state.
+fn keep_moving_sessions(mut live: Vec<WebSessionInfo>) -> Vec<WebSessionInfo> {
+    static LAST_LISTED: Mutex<Vec<WebSessionInfo>> = Mutex::new(Vec::new());
+    let mut last = LAST_LISTED
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    for session in last.iter() {
+        if zellij_utils::handoff::in_progress(&session.name)
+            && !live.iter().any(|listed| listed.name == session.name)
+        {
+            live.push(session.clone());
+        }
+    }
+    last.clone_from(&live);
+    live
+}
+
 /// When #357 merged, plus an hour to reach every computer. The engine publishes no marker
 /// for it, and engines started earlier ignore SetViewerHidden.
 const ENGINES_OBEY_HIDDEN_SINCE_UNIX_SECS: u64 = 1_794_048_177;
@@ -151,7 +169,7 @@ impl SessionManager for RealSessionManager {
     }
 
     fn list_sessions(&self) -> Vec<WebSessionInfo> {
-        zellij_utils::sessions::read_live_session_states_default_dirs("")
+        let live = zellij_utils::sessions::read_live_session_states_default_dirs("")
             .into_values()
             .map(|info| {
                 let late_hidden_attach_size = late_hidden_attach_size(&info, unix_now());
@@ -167,7 +185,8 @@ impl SessionManager for RealSessionManager {
                     creation_secs_ago: info.creation_time.as_secs(),
                 }
             })
-            .collect()
+            .collect();
+        keep_moving_sessions(live)
     }
 
     fn get_resurrection_layout(

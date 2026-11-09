@@ -1722,22 +1722,18 @@ pub fn start_server_impl(
                     }
                     // Handle regular client removal
                     remove_client!(client_id, os_input, session_state, session_data);
-                    session_data
-                        .write()
-                        .unwrap()
-                        .as_ref()
-                        .unwrap()
-                        .senders
-                        .send_to_screen(ScreenInstruction::RemoveClient(client_id))
-                        .unwrap();
-                    session_data
-                        .write()
-                        .unwrap()
-                        .as_ref()
-                        .unwrap()
-                        .senders
-                        .send_to_plugin(PluginInstruction::RemoveClient(client_id))
-                        .unwrap();
+                    // A viewer can connect and leave before the first client has
+                    // initialized the session.
+                    if let Some(session_data) = session_data.write().unwrap().as_ref() {
+                        session_data
+                            .senders
+                            .send_to_screen(ScreenInstruction::RemoveClient(client_id))
+                            .unwrap();
+                        session_data
+                            .senders
+                            .send_to_plugin(PluginInstruction::RemoveClient(client_id))
+                            .unwrap();
+                    }
                 }
             },
             ServerInstruction::SendWebClientsForbidden(client_id) => {

@@ -19,7 +19,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use uuid::Uuid;
 
-const ROOT_OVERRIDE: &str = "SWITCHBOARD_TERMINAL_HOST_ROOT";
 pub(crate) const ENABLE: &str = "SWITCHBOARD_TERMINAL_HOST";
 
 pub(crate) fn enabled() -> bool {
@@ -31,13 +30,8 @@ fn new_token() -> String {
 }
 
 fn root() -> io::Result<PathBuf> {
-    if let Some(root) = std::env::var_os(ROOT_OVERRIDE) {
-        return Ok(root.into());
-    }
-    #[allow(deprecated)]
-    let home = std::env::home_dir()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no home directory"))?;
-    Ok(home.join(".local/share/switchboard/terminal-hosts"))
+    zellij_utils::handoff::hosts_root()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no home directory"))
 }
 
 /// Private directory holding a host's token.

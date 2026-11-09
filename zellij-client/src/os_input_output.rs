@@ -16,6 +16,7 @@ use crate::os_input_output_windows::{
 use std::io::prelude::*;
 use std::io::IsTerminal;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::{io, thread, time};
 use zellij_utils::{
@@ -94,6 +95,9 @@ pub struct ClientOsInputOutput {
     reading_from_stdin: Arc<Mutex<Option<Vec<u8>>>>,
     session_name: Arc<Mutex<Option<String>>>,
     send_failure: Arc<Mutex<Option<String>>>,
+    reconnecting: Arc<AtomicBool>,
+    reconnections: Arc<AtomicU64>,
+    viewer_hidden: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for ClientOsInputOutput {
@@ -133,6 +137,21 @@ pub trait ClientOsApi: Send + Sync + std::fmt::Debug {
     /// Sticky transport failure, so retained delivery never acknowledges a dropped write.
     fn send_failure(&self) -> Option<String> {
         None
+    }
+    /// The engine has gone and a new one is expected on this connection.
+    fn begin_reconnect(&self) {}
+    fn finish_reconnect(&self) {}
+    fn is_reconnecting(&self) -> bool {
+        false
+    }
+    /// How many times this connection has moved to a new engine.
+    fn reconnections(&self) -> u64 {
+        0
+    }
+    /// Whether the viewer on this connection is hidden, for its next attach.
+    fn remember_viewer_hidden(&self, _hidden: bool) {}
+    fn remembered_viewer_hidden(&self) -> bool {
+        false
     }
     /// Receives a message on client-side IPC channel
     // This should be called from the client-side router thread only.
@@ -202,6 +221,8 @@ impl ClientOsApi for ClientOsInputOutput {
     }
     fn read_from_stdin(&mut self) -> Result<Vec<u8>, &'static str> {
         let session_name_at_calltime = { self.session_name.lock().unwrap().clone() };
+        // A session that moves to a new engine keeps its name.
+        let reconnections_at_calltime = self.reconnections.load(Ordering::SeqCst);
         // here we wait for a lock in case another thread is holding stdin
         // this can happen for example when switching sessions, the old thread will only be
         // released once it sees input over STDIN
@@ -215,6 +236,10 @@ impl ClientOsApi for ClientOsInputOutput {
         // the lock (without having to wait for STDIN itself) forward this buffer and proceed to
         // wait for the "real" STDIN net time it is called
         let mut buffered_bytes = self.reading_from_stdin.lock().unwrap();
+        // Several handoffs can pass without a key press, leaving a queue of old readers.
+        if reconnections_at_calltime != self.reconnections.load(Ordering::SeqCst) {
+            return Err("Session ended");
+        }
         match buffered_bytes.take() {
             Some(buffered_bytes) => Ok(buffered_bytes),
             None => {
@@ -228,7 +253,8 @@ impl ClientOsApi for ClientOsInputOutput {
                 let session_name_after_reading_from_stdin =
                     { self.session_name.lock().unwrap().clone() };
                 if session_name_at_calltime.is_some()
-                    && session_name_at_calltime != session_name_after_reading_from_stdin
+                    && (session_name_at_calltime != session_name_after_reading_from_stdin
+                        || reconnections_at_calltime != self.reconnections.load(Ordering::SeqCst))
                 {
                     *buffered_bytes = Some(read_bytes);
                     Err("Session ended")
@@ -273,6 +299,26 @@ impl ClientOsApi for ClientOsInputOutput {
     }
     fn send_failure(&self) -> Option<String> {
         self.send_failure.lock().unwrap().clone()
+    }
+    fn begin_reconnect(&self) {
+        self.reconnecting.store(true, Ordering::SeqCst);
+    }
+    fn finish_reconnect(&self) {
+        self.send_failure.lock().unwrap().take();
+        self.reconnections.fetch_add(1, Ordering::SeqCst);
+        self.reconnecting.store(false, Ordering::SeqCst);
+    }
+    fn is_reconnecting(&self) -> bool {
+        self.reconnecting.load(Ordering::SeqCst)
+    }
+    fn reconnections(&self) -> u64 {
+        self.reconnections.load(Ordering::SeqCst)
+    }
+    fn remember_viewer_hidden(&self, hidden: bool) {
+        self.viewer_hidden.store(hidden, Ordering::SeqCst);
+    }
+    fn remembered_viewer_hidden(&self) -> bool {
+        self.viewer_hidden.load(Ordering::SeqCst)
     }
     fn recv_from_server(&self) -> Option<(ServerToClientMsg, ErrorContext)> {
         self.try_recv_from_server().ok()
@@ -401,6 +447,9 @@ pub fn get_client_os_input() -> Result<ClientOsInputOutput, std::io::Error> {
         reading_from_stdin,
         session_name: Arc::new(Mutex::new(None)),
         send_failure: Arc::new(Mutex::new(None)),
+        reconnecting: Arc::new(AtomicBool::new(false)),
+        reconnections: Arc::new(AtomicU64::new(0)),
+        viewer_hidden: Arc::new(AtomicBool::new(false)),
     })
 }
 
@@ -412,6 +461,9 @@ pub fn get_cli_client_os_input() -> Result<ClientOsInputOutput, std::io::Error> 
         reading_from_stdin,
         session_name: Arc::new(Mutex::new(None)),
         send_failure: Arc::new(Mutex::new(None)),
+        reconnecting: Arc::new(AtomicBool::new(false)),
+        reconnections: Arc::new(AtomicU64::new(0)),
+        viewer_hidden: Arc::new(AtomicBool::new(false)),
     })
 }
 

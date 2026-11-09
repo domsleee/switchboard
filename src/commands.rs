@@ -667,7 +667,9 @@ pub(crate) fn start_client(opts: CliArgs) {
             if reconnect_to_session.name.is_some() {
                 opts.command = Some(Command::Sessions(Sessions::Attach {
                     session_name: reconnect_to_session.name.clone(),
-                    create: true,
+                    // A session reattaching after an engine swap must never be recreated.
+                    create: reconnect_to_session.name.as_deref()
+                        != std::env::var(envs::SESSION_NAME_ENV_KEY).ok().as_deref(),
                     create_background: false,
                     existing_only: false,
                     force_run_commands: false,
@@ -829,7 +831,8 @@ pub(crate) fn start_client(opts: CliArgs) {
                 };
 
                 if let Ok(val) = std::env::var(envs::SESSION_NAME_ENV_KEY) {
-                    if val == *client.get_session_name() {
+                    // A client whose session moved to a new engine reattaches by name.
+                    if val == *client.get_session_name() && !is_a_reconnect {
                         panic!("You are trying to attach to the current session (\"{}\"). This is not supported.", val);
                     }
                 }
