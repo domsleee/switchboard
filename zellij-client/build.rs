@@ -11,7 +11,8 @@ fn git(args: &[&str]) -> Option<String> {
 fn main() {
     // Track both detached HEADs (CI) and branch refs, including linked worktrees.
     println!("cargo:rerun-if-changed=build.rs");
-    for name in ["HEAD", "packed-refs"]
+    // The refs directory also catches a packed branch gaining a loose ref.
+    for name in ["HEAD", "packed-refs", "refs"]
         .into_iter()
         .map(String::from)
         .chain(git(&["symbolic-ref", "-q", "HEAD"]))
