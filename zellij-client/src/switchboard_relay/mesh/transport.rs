@@ -21,6 +21,7 @@ pub(in crate::switchboard_relay) fn routes() -> Router<RelayState> {
         .route("/api/mesh/join", post(join))
         .route("/api/mesh/retry", post(retry))
         .route("/api/mesh/retry-gateway", post(retry_gateway))
+        .route("/api/mesh/remove", post(remove))
         .route("/api/mesh/approve", post(approve))
 }
 type MeshResult = Result<Json<Value>, Error>;
@@ -64,6 +65,12 @@ fn rejection(error: anyhow::Error) -> Error {
         return (
             StatusCode::GONE,
             "Invitation expired, cancelled or consumed. Create a new invitation.",
+        );
+    }
+    if reason.contains("was removed") {
+        return (
+            StatusCode::CONFLICT,
+            "That computer was removed from this group. It can pair again only after a fresh Switchboard setup.",
         );
     }
     if reason.contains("Verification code") || reason.contains("Pairing identity verification") {
@@ -215,6 +222,23 @@ async fn approve(State(state): State<RelayState>, Json(input): Json<Approve>) ->
     .await
     .map_err(rejected)?;
     Ok(Json(json!({"approved":input.allow})))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Remove {
+    member_id: String,
+}
+async fn remove(State(state): State<RelayState>, Json(input): Json<Remove>) -> Response {
+    let Some(mesh) = state.mesh else {
+        return unavailable().into_response();
+    };
+    match mesh.remove_member(&input.member_id).await {
+        Ok(()) => {
+            tokio::spawn(async move { mesh.synchronize().await });
+            Json(json!({"removed":true})).into_response()
+        },
+        Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+    }
 }
 
 impl Mesh {
@@ -501,6 +525,8 @@ impl Mesh {
 pub(in crate::switchboard_relay) fn gateway_router(mesh: Arc<Mesh>) -> Router {
     Router::new()
         .route("/mesh/health", get(|| async { StatusCode::NO_CONTENT }))
+        // Answers only on builds that can verify a signed removal.
+        .route("/mesh/removal", get(|| async { StatusCode::NO_CONTENT }))
         .route("/mesh/direct-info", post(super::direct::info))
         .route("/mesh/offer", post(super::direct::offer))
         .route("/mesh/request", post(peer_request))

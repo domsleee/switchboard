@@ -282,6 +282,9 @@ impl TokenIssuer for FakeIssuer {
             self.0.fetch_add(1, Ordering::SeqCst)
         ))
     }
+    fn revoke(&self, _peer: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 async fn machine(root: &Path, label: &str, address: &str) -> Arc<Mesh> {
     machine_with_engine(root, label, address, "http://127.0.0.1:1").await
@@ -2609,4 +2612,441 @@ fn a_database_saved_by_an_older_build_still_opens() {
     let minimal = json!({"local": null, "membership": null, "invitations": {},
         "incoming": {}, "outgoing": {}, "joining": null});
     serde_json::from_value::<Database>(minimal).expect("minimal state.json opens");
+}
+
+async fn id_of(mesh: &Mesh) -> String {
+    mesh.database
+        .lock()
+        .await
+        .local
+        .as_ref()
+        .unwrap()
+        .id
+        .clone()
+}
+async fn sync(from: &Mesh, to: &Mesh) {
+    let update = from.prepare_sync(&id_of(to).await).await.unwrap();
+    let reply = to.exchange(update).await.unwrap();
+    from.exchange(reply).await.unwrap();
+}
+async fn roster(mesh: &Mesh) -> Vec<String> {
+    let db = mesh.database.lock().await;
+    let members = &db.membership.as_ref().unwrap().value.members;
+    let mut names: Vec<_> = members.values().map(|member| member.name.clone()).collect();
+    names.sort();
+    names
+}
+/// Three computers that have all exchanged credentials with each other.
+async fn paired_trio(root: &Path) -> (Arc<Mesh>, Arc<Mesh>, Arc<Mesh>) {
+    let desk = machine(&root.join("desk"), "Desk", "https://192.0.2.1:8091").await;
+    let tower = machine(&root.join("tower"), "Tower", "https://192.0.2.2:8091").await;
+    let laptop = machine(&root.join("laptop"), "Laptop", "https://192.0.2.3:8091").await;
+    for peer in [&tower, &laptop] {
+        let invite = invitation(&desk, 1000).await;
+        let (_, approval) = approved(&desk, peer, &invite, 1000).await;
+        desk.complete(peer.install(approval, &invite).await.unwrap())
+            .await
+            .unwrap();
+    }
+    sync(&desk, &tower).await;
+    sync(&desk, &laptop).await;
+    sync(&tower, &laptop).await;
+    (desk, tower, laptop)
+}
+async fn gateway_status(mesh: &Arc<Mesh>, authority: &str, bearer: &str) -> StatusCode {
+    use tower::ServiceExt;
+    transport::gateway_router(mesh.clone())
+        .oneshot(
+            Request::builder()
+                .uri("/switchboard/logs")
+                .header(header::HOST, authority)
+                .header(header::AUTHORIZATION, format!("Bearer {bearer}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+}
+
+#[tokio::test]
+async fn removing_a_computer_propagates_and_revokes_its_gateway_credential() {
+    let temp = tempfile::tempdir().unwrap();
+    let (desk, tower, laptop) = paired_trio(temp.path()).await;
+    let laptop_id = id_of(&laptop).await;
+    let desk_bearer = desk.database.lock().await.outgoing[&laptop_id]
+        .gateway
+        .clone();
+    let tower_bearer = tower.database.lock().await.outgoing[&laptop_id]
+        .gateway
+        .clone();
+    assert_eq!(
+        gateway_status(&desk, "192.0.2.1:8091", &desk_bearer).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        gateway_status(&tower, "192.0.2.2:8091", &tower_bearer).await,
+        StatusCode::OK
+    );
+    assert!(desk.host(&format!("mesh-{laptop_id}")).is_some());
+
+    desk.apply_removal(&laptop_id).await.unwrap();
+    assert_eq!(roster(&desk).await, ["Desk", "Tower"]);
+    assert_eq!(
+        gateway_status(&desk, "192.0.2.1:8091", &desk_bearer).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert!(desk.host(&format!("mesh-{laptop_id}")).is_none());
+    assert!(
+        !std::fs::read_dir(&desk.storage.root)
+            .unwrap()
+            .any(|entry| entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(&laptop_id)),
+        "Its credential files are deleted too"
+    );
+
+    // Another computer learns it through ordinary sync.
+    sync(&desk, &tower).await;
+    assert_eq!(roster(&tower).await, ["Desk", "Tower"]);
+    assert_eq!(
+        gateway_status(&tower, "192.0.2.2:8091", &tower_bearer).await,
+        StatusCode::UNAUTHORIZED
+    );
+    {
+        let db = tower.database.lock().await;
+        assert!(!db.incoming.contains_key(&laptop_id));
+        assert!(!db.outgoing.contains_key(&laptop_id));
+        assert!(db
+            .membership
+            .as_ref()
+            .unwrap()
+            .value
+            .removed
+            .contains(&laptop_id));
+    }
+    // The catalog would fail to load if `incoming` still named a non-member.
+    let root = tower.storage.root.clone();
+    drop(tower);
+    let engine = Arc::new(Host::new(super::super::tests::config("http://127.0.0.1:1")).unwrap());
+    Mesh::with_issuer(root, engine, Arc::new(FakeIssuer::default()))
+        .await
+        .unwrap();
+}
+
+#[derive(Default)]
+struct RecordingIssuer(std::sync::Mutex<Vec<String>>);
+impl TokenIssuer for RecordingIssuer {
+    fn issue(&self, peer: &str) -> anyhow::Result<String> {
+        Ok(format!("isolated-terminal-{peer}"))
+    }
+    fn revoke(&self, peer: &str) -> anyhow::Result<()> {
+        self.0.lock().unwrap().push(peer.to_owned());
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn removing_a_computer_revokes_the_native_terminal_token_it_was_issued() {
+    let temp = tempfile::tempdir().unwrap();
+    let issuer = Arc::new(RecordingIssuer::default());
+    let engine = Arc::new(Host::new(super::super::tests::config("http://127.0.0.1:1")).unwrap());
+    let desk = Mesh::with_issuer(temp.path().join("desk"), engine, issuer.clone())
+        .await
+        .unwrap();
+    {
+        let mut db = desk.database.lock().await;
+        db.local = Some(
+            desk.identity
+                .member("Desk".into(), "https://192.0.2.1:8091".into())
+                .unwrap(),
+        );
+        desk.save(&db).unwrap();
+    }
+    let laptop = machine(
+        &temp.path().join("laptop"),
+        "Laptop",
+        "https://192.0.2.3:8091",
+    )
+    .await;
+    let invite = invitation(&desk, 1000).await;
+    let (_, approval) = approved(&desk, &laptop, &invite, 1000).await;
+    desk.complete(laptop.install(approval, &invite).await.unwrap())
+        .await
+        .unwrap();
+    let laptop_id = id_of(&laptop).await;
+    desk.apply_removal(&laptop_id).await.unwrap();
+    assert_eq!(*issuer.0.lock().unwrap(), [laptop_id]);
+}
+
+#[tokio::test]
+async fn a_removal_survives_a_merge_from_a_peer_that_still_lists_the_computer() {
+    let temp = tempfile::tempdir().unwrap();
+    let (desk, tower, laptop) = paired_trio(temp.path()).await;
+    let laptop_id = id_of(&laptop).await;
+    desk.apply_removal(&laptop_id).await.unwrap();
+
+    // Tower has not heard yet and still sends a roster that lists the laptop.
+    let stale = tower.prepare_sync(&id_of(&desk).await).await.unwrap();
+    desk.exchange(stale).await.unwrap();
+    assert_eq!(roster(&desk).await, ["Desk", "Tower"]);
+    assert!(desk.host(&format!("mesh-{laptop_id}")).is_none());
+
+    // The removed computer can no longer reintroduce itself either.
+    let own = laptop.prepare_sync(&id_of(&desk).await).await.unwrap();
+    assert!(desk.exchange(own).await.is_err());
+    assert_eq!(roster(&desk).await, ["Desk", "Tower"]);
+
+    sync(&desk, &tower).await;
+    assert_eq!(roster(&tower).await, ["Desk", "Tower"]);
+    // A second stale snapshot arriving after the removal has spread changes nothing.
+    let again = tower.prepare_sync(&id_of(&desk).await).await.unwrap();
+    desk.exchange(again).await.unwrap();
+    assert_eq!(roster(&desk).await, ["Desk", "Tower"]);
+}
+
+#[tokio::test]
+async fn removing_a_computer_frees_its_name_but_not_its_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    let (desk, tower, laptop) = paired_trio(temp.path()).await;
+    let laptop_id = id_of(&laptop).await;
+    desk.apply_removal(&laptop_id).await.unwrap();
+
+    // The same computer, keeping its identity, stays refused.
+    let invite = invitation(&desk, 1000).await;
+    let refused = attempt(&laptop, &invite).await;
+    let code = match desk.request(refused.clone(), 1000).await.unwrap() {
+        Decision::Pending { code } => code,
+        _ => panic!("approval must be explicit"),
+    };
+    let error = desk
+        .approve(
+            &invite.id,
+            &refused.request.value.request,
+            &code,
+            true,
+            1000,
+        )
+        .await
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("was removed"), "{error}");
+
+    // A reinstalled computer reuses the name with a new identity.
+    let reinstalled = machine(&temp.path().join("new"), "laptop", "https://192.0.2.4:8091").await;
+    let invite = invitation(&desk, 1000).await;
+    let (_, approval) = approved(&desk, &reinstalled, &invite, 1000).await;
+    desk.complete(reinstalled.install(approval, &invite).await.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(roster(&desk).await, ["Desk", "Tower", "laptop"]);
+
+    // Tower still lists the old laptop: the removal must apply before the new name is checked.
+    sync(&desk, &tower).await;
+    assert_eq!(roster(&tower).await, ["Desk", "Tower", "laptop"]);
+}
+
+#[tokio::test]
+async fn a_computer_cannot_remove_itself_or_an_unknown_computer() {
+    let temp = tempfile::tempdir().unwrap();
+    let (desk, _tower, _laptop) = paired_trio(temp.path()).await;
+    let error = desk.apply_removal(&id_of(&desk).await).await.err().unwrap();
+    assert!(
+        error.to_string().contains("cannot remove itself"),
+        "{error}"
+    );
+    assert!(desk.apply_removal("no-such-computer").await.is_err());
+    assert_eq!(roster(&desk).await, ["Desk", "Laptop", "Tower"]);
+    assert!(desk
+        .database
+        .lock()
+        .await
+        .membership
+        .as_ref()
+        .unwrap()
+        .value
+        .removed
+        .is_empty());
+}
+
+/// The membership exactly as builds from before removal existed read and write it.
+#[derive(Serialize, Deserialize)]
+struct OlderMembership {
+    id: String,
+    name: String,
+    administrator: String,
+    version: u64,
+    members: BTreeMap<String, Member>,
+}
+fn as_older(signed: &Signed<Membership>) -> Signed<OlderMembership> {
+    serde_json::from_slice(&serde_json::to_vec(signed).unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn memberships_without_removals_stay_signature_compatible_with_older_builds() {
+    let temp = tempfile::tempdir().unwrap();
+    let (desk, tower, _laptop) = paired_trio(temp.path()).await;
+    let membership = desk.database.lock().await.membership.clone().unwrap();
+    let local = desk.database.lock().await.local.clone().unwrap();
+    assert!(membership.value.removed.is_empty());
+    let older = as_older(&membership);
+    assert_eq!(
+        serde_json::to_vec(&older.value).unwrap(),
+        serde_json::to_vec(&membership.value).unwrap(),
+        "An empty removed set must not change the signed bytes"
+    );
+    verify(&older, &local).unwrap();
+    let update = desk.prepare_sync(&id_of(&tower).await).await.unwrap();
+    assert!(!serde_json::to_string(&update).unwrap().contains("removed"));
+}
+
+#[tokio::test]
+async fn a_removal_is_signed_and_older_builds_refuse_it_rather_than_merge_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let (desk, _tower, laptop) = paired_trio(temp.path()).await;
+    desk.apply_removal(&id_of(&laptop).await).await.unwrap();
+    let local = desk.database.lock().await.local.clone().unwrap();
+    let signed = desk.database.lock().await.membership.clone().unwrap();
+    verify(&signed, &local).unwrap();
+    // An older build ignores the unknown field, so what it re-serializes no longer verifies.
+    assert!(verify(&as_older(&signed), &local).is_err());
+    // Nobody can strip or forge a removal without breaking the signature.
+    let mut tampered = signed.clone();
+    tampered.value.removed.clear();
+    assert!(verify(&tampered, &local).is_err());
+}
+
+#[tokio::test]
+async fn removing_the_board_host_clears_its_selection_and_keeps_syncing() {
+    let temp = tempfile::tempdir().unwrap();
+    let (desk, tower, laptop) = paired_trio(temp.path()).await;
+    let laptop_id = id_of(&laptop).await;
+    laptop.select_board_host(&laptop_id).await.unwrap();
+    sync(&laptop, &desk).await;
+    sync(&desk, &tower).await;
+    assert_eq!(desk.database.lock().await.board_hosts.len(), 1);
+
+    desk.apply_removal(&laptop_id).await.unwrap();
+    assert!(desk.database.lock().await.board_hosts.is_empty());
+    // Tower still carries the selection; it must not break the sync that carries the removal.
+    let stale = tower.prepare_sync(&id_of(&desk).await).await.unwrap();
+    desk.exchange(stale).await.unwrap();
+    assert!(desk.database.lock().await.board_hosts.is_empty());
+    sync(&desk, &tower).await;
+    assert!(tower.database.lock().await.board_hosts.is_empty());
+}
+
+#[tokio::test]
+async fn a_board_selection_outlives_the_removed_computer_that_chose_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let (desk, tower, laptop) = paired_trio(temp.path()).await;
+    let tower_id = id_of(&tower).await;
+    let laptop_id = id_of(&laptop).await;
+    let group = desk
+        .database
+        .lock()
+        .await
+        .membership
+        .as_ref()
+        .unwrap()
+        .value
+        .id
+        .clone();
+    let choice: board_host::Choice = serde_json::from_value(
+        json!({"group_id":group,"host_id":tower_id,"selector_id":laptop_id}),
+    )
+    .unwrap();
+    tower
+        .approve_board_host(laptop.identity.sign(choice).unwrap())
+        .await
+        .unwrap();
+    sync(&tower, &desk).await;
+
+    desk.apply_removal(&laptop_id).await.unwrap();
+    sync(&desk, &tower).await;
+    for mesh in [&desk, &tower] {
+        let db = mesh.database.lock().await;
+        assert_eq!(mesh.board_host_status(&db)["state"], "selected");
+    }
+    sync(&tower, &desk).await;
+}
+
+async fn serve_tls(mesh: &Mesh, router: Router) -> (tokio::task::JoinHandle<()>, SocketAddr) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = axum_server::from_tcp_rustls(
+        listener,
+        axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(mesh.tls().unwrap())),
+    )
+    .unwrap();
+    let task = tokio::spawn(async move { server.serve(router.into_make_service()).await.unwrap() });
+    (task, address)
+}
+
+#[tokio::test]
+async fn removal_waits_for_every_reachable_computer_to_understand_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let (desk, tower, laptop) = paired_trio(temp.path()).await;
+    let laptop_id = id_of(&laptop).await;
+    let member = tower.database.lock().await.local.clone().unwrap();
+    let client = desk.peer_client(&member).unwrap();
+
+    // An older build has no such route and answers from its gateway's terminal fallback.
+    let older = Router::new().fallback(|| async { StatusCode::UNAUTHORIZED });
+    let (task, address) = serve_tls(&tower, older).await;
+    *client.route_hint.lock().await = Some((address, tokio::time::Instant::now()));
+    let error = desk.remove_member(&laptop_id).await.err().unwrap();
+    assert!(
+        error.to_string().contains("Update Switchboard on Tower"),
+        "{error}"
+    );
+    assert_eq!(roster(&desk).await, ["Desk", "Laptop", "Tower"]);
+    task.abort();
+
+    // A computer that does not answer cannot be asked, and must not block cutting off a lost one.
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    client.idle_http.lock().await.clear();
+    *client.route_hint.lock().await = Some((closed, tokio::time::Instant::now()));
+    desk.remove_member(&laptop_id).await.unwrap();
+    assert_eq!(roster(&desk).await, ["Desk", "Tower"]);
+}
+
+#[tokio::test]
+async fn removal_proceeds_when_the_other_computers_are_up_to_date() {
+    let temp = tempfile::tempdir().unwrap();
+    let (desk, tower, laptop) = paired_trio(temp.path()).await;
+    let member = tower.database.lock().await.local.clone().unwrap();
+    let client = desk.peer_client(&member).unwrap();
+    let (task, address) = serve_tls(&tower, transport::gateway_router(tower.clone())).await;
+    *client.route_hint.lock().await = Some((address, tokio::time::Instant::now()));
+    desk.remove_member(&id_of(&laptop).await).await.unwrap();
+    assert_eq!(roster(&desk).await, ["Desk", "Tower"]);
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_build_without_the_removal_route_answers_from_its_terminal_fallback() {
+    use tower::ServiceExt;
+    let temp = tempfile::tempdir().unwrap();
+    let (_desk, tower, _laptop) = paired_trio(temp.path()).await;
+    // Any path the gateway does not route reaches the authenticated fallback, as /mesh/removal
+    // does on older builds: not 204, and not a server error that reads as "unreachable".
+    let status = transport::gateway_router(tower.clone())
+        .oneshot(
+            Request::builder()
+                .uri("/mesh/not-a-route")
+                .header(header::HOST, "192.0.2.2:8091")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }

@@ -13,22 +13,28 @@ pub(super) struct Selection {
     approval: Signed<Choice>,
 }
 impl Selection {
+    pub(super) fn host_id(&self) -> &str {
+        &self.request.value.host_id
+    }
     fn validate(&self, membership: &Membership) -> anyhow::Result<()> {
         let choice = &self.request.value;
         anyhow::ensure!(
             choice == &self.approval.value && choice.group_id == membership.id,
             "Board selection belongs to a different group"
         );
-        let selector = membership
-            .members
-            .get(&choice.selector_id)
-            .ok_or_else(|| anyhow::anyhow!("Unknown board selector"))?;
         let host = membership
             .members
             .get(&choice.host_id)
             .ok_or_else(|| anyhow::anyhow!("Board host must be paired"))?;
-        verify(&self.request, selector)?;
         verify(&self.approval, host)?;
+        // A removed selector's key is gone; the host's approval still stands.
+        if !membership.removed.contains(&choice.selector_id) {
+            let selector = membership
+                .members
+                .get(&choice.selector_id)
+                .ok_or_else(|| anyhow::anyhow!("Unknown board selector"))?;
+            verify(&self.request, selector)?;
+        }
         Ok(())
     }
 }
@@ -90,7 +96,15 @@ impl Mesh {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Group unavailable"))?
             .value;
-        for selection in incoming {
+        // A peer that has not heard of a removal may still send its board selection.
+        let incoming: Vec<_> = incoming
+            .iter()
+            .filter(|selection| !membership.removed.contains(selection.host_id()))
+            .collect();
+        if incoming.is_empty() {
+            return Ok(false);
+        }
+        for selection in &incoming {
             selection.validate(membership)?;
         }
         anyhow::ensure!(

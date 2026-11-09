@@ -103,7 +103,8 @@ impl Mesh {
             next.id == current.id
                 && next.name == current.name
                 && next.administrator == current.administrator
-                && next.members.get(&local.id) == Some(local),
+                && next.members.get(&local.id) == Some(local)
+                && !next.removed.contains(&local.id),
             "Unrelated group or changed local identity"
         );
         anyhow::ensure!(
@@ -114,7 +115,19 @@ impl Mesh {
             "Membership was not signed by a trusted computer"
         );
         let mut merged = current.clone();
+        // Removals apply first, so a computer reusing a removed name is not a duplicate.
+        let mut newly_removed = Vec::new();
+        for id in &next.removed {
+            if merged.members.remove(id).is_some() {
+                newly_removed.push(id.clone());
+            }
+            merged.removed.insert(id.clone());
+        }
         for (id, member) in &next.members {
+            // Removal is permanent, so a peer that has not heard of it cannot undo it.
+            if merged.removed.contains(id) {
+                continue;
+            }
             member.validate()?;
             anyhow::ensure!(id == &member.id, "Member identity key mismatch");
             if let Some(existing) = merged.members.get(id) {
@@ -132,7 +145,8 @@ impl Mesh {
         }
         // A stale snapshot can add a concurrently approved computer, but cannot
         // discard computers learned from another peer or roll back credentials.
-        let changed = merged.members.len() != current.members.len();
+        let changed =
+            merged.members.len() != current.members.len() || merged.removed != current.removed;
         if changed {
             merged.version = current
                 .version
@@ -152,6 +166,9 @@ impl Mesh {
             .get(peer)
             .is_none_or(|old| old.version != update.credential.header.version);
         Self::install_credential(&mut db, &update.credential, credential)?;
+        for id in &newly_removed {
+            db.forget(id);
+        }
         if changed {
             db.membership = Some(self.identity.sign(merged)?);
         }
@@ -175,6 +192,10 @@ impl Mesh {
         {
             self.save(&db)?;
             *committed = db;
+        }
+        drop(committed);
+        for id in &newly_removed {
+            self.retire(id);
         }
         Ok(response)
     }
