@@ -106,6 +106,30 @@ test('integrated Conversation journeys use production markup and preserve delive
     }finally{await f.close();}
    }
   });
+  await t.test('claude.ai links follow the Settings browser rule, except on touch devices',async()=>{
+   const claude='https://claude.ai/code/session_1',other='https://example.com/docs';
+   const messages=[{role:'assistant',text:'links',markdown:[{type:'start',tag:'p'},{type:'start',tag:'a',url:claude},{type:'start',tag:'strong'},{type:'text',text:'Open chat'},{type:'end'},{type:'end'},{type:'text',text:' or '+other},{type:'end'}]}];
+   for(const desktop of [true,false]){
+    const f=await fixture({desktop,viewport:desktop?{width:1100,height:800}:{width:390,height:844},messages}),{page}=f,posted=[];
+    try{
+     await page.context().route(/^https:\/\/(claude\.ai|example\.com)\//,route=>route.fulfill({contentType:'text/html',body:'<title>Link</title>'}));
+     await page.route('**/api/open-link',route=>{posted.push(route.request().postDataJSON());return route.fulfill({json:{ok:true}});});
+     await page.evaluate(()=>{groups.fixture='work';settingOverrides['link-app-work']='Work Browser';});
+     const chat=page.getByRole('link',{name:'Open chat',exact:true}),external=page.getByRole('link',{name:other,exact:true});
+     const opensHere=async action=>{const before=posted.length,popup=page.waitForEvent('popup');await action();await (await popup).close();assert.equal(posted.length,before,'A link opened here does not also open in the other browser');};
+     if(!desktop){await opensHere(()=>chat.tap());continue;}
+     const popups=[];page.on('popup',popup=>popups.push(popup));
+     const opensThere=async action=>{const response=page.waitForResponse('**/api/open-link',{timeout:3000});await action();await response;assert.deepEqual(posted.at(-1),{url:claude,app:'Work Browser'});await page.waitForTimeout(100);assert.equal(popups.length,0,'A routed link must not also open here');};
+     await opensThere(()=>chat.locator('strong').click());
+     await opensThere(()=>chat.click({button:'middle'}));
+     await opensThere(()=>chat.click({modifiers:['ControlOrMeta']}));
+     await opensHere(()=>external.click());
+     await chat.click({button:'right'});await page.waitForTimeout(100);assert.equal(posted.length,3,'Right-click keeps the browser menu');
+     await page.evaluate(()=>{settingOverrides['link-app-work']='';});
+     await opensHere(()=>chat.click());
+    }finally{await f.close();}
+   }
+  });
   await t.test('Codex async answers and ordinary follow-ups queue independently without opening Terminal',async()=>{
    for(const viewport of [{width:1100,height:800},{width:390,height:844}]){
     const q=asyncQuestion('q1',[{title:'Should I rename “Hidden” to “Settled”?',options:['Yes, use Settled','Keep the Hidden label']}]);
