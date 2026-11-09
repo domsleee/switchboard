@@ -3,7 +3,8 @@ const test=require('node:test'),assert=require('node:assert/strict'),path=requir
 test('Conversation folds finished progress, keeps the live step, and gives code a copyable card',
  {skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
  const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch();
- const at=seconds=>new Date(Date.UTC(2026,10,8,10,0,seconds)).toISOString();
+ // The live turn began 65 seconds ago, at the second user message below.
+ const turnBegan=Date.now()-145000,at=seconds=>new Date(turnBegan+seconds*1000).toISOString();
  const step=(text,seconds)=>({role:'assistant',phase:'commentary',text,timestamp:at(seconds)});
  // Tool calls arrive as commentary with a kind, so older browsers show them as quiet notes.
  const tool=(kind,detail,text,seconds)=>({role:'assistant',phase:'commentary',kind:'tool',tool:kind,detail,text,timestamp:at(seconds),markdown:[{type:'start',tag:'p'},{type:'text',text:text.slice(0,-detail.length)},{type:'code',text:detail},{type:'end'}]});
@@ -27,7 +28,7 @@ test('Conversation folds finished progress, keeps the live step, and gives code 
    if(p.startsWith('/api/')&&p!=='/api/hosts/fixture/escape'&&!p.startsWith('/api/chats/'))return route.fulfill({status:404,body:''});
    if(p==='/api/hosts/fixture/escape'){escapes.push(route.request().postDataJSON());return route.fulfill({json:{ok:true}});}
    if(p.startsWith('/api/chats/'))return route.fulfill({json:{messages,start_cursor:0,next_cursor:null}});
-   if(p==='/')return route.fulfill({contentType:'text/html',body:`<meta charset="utf-8"><link rel="stylesheet" href="/conversation.css"><style>body{margin:0}#terminals{position:relative;height:100dvh}</style><main id="terminals"><iframe id="terminal"></iframe><section id="artifact-preview" hidden></section></main><script src="/conversation-media.js"></script><script src="/conversation.js"></script><script>window.current={key:'pane1',host:'fixture',session:'main',tab:7,pane:1,title:'Fix',agent:'claude',state:'working',since:Math.floor(Date.now()/1000)-65,chatId:'chat-1',frame:document.getElementById('terminal')};SwitchboardConversation.install({selection:()=>current,terminal(){}});</script>`});
+   if(p==='/')return route.fulfill({contentType:'text/html',body:`<meta charset="utf-8"><link rel="stylesheet" href="/conversation.css"><style>body{margin:0}#terminals{position:relative;height:100dvh}</style><main id="terminals"><iframe id="terminal"></iframe><section id="artifact-preview" hidden></section></main><script src="/conversation-media.js"></script><script src="/conversation.js"></script><script>window.current={key:'pane1',host:'fixture',session:'main',tab:7,pane:1,title:'Fix',agent:'claude',state:'working',since:Math.floor(Date.now()/1000)-10,chatId:'chat-1',frame:document.getElementById('terminal')};SwitchboardConversation.install({selection:()=>current,terminal(){}});</script>`});
    return route.fulfill({path:path.join(__dirname,'static',path.basename(p)),contentType:p.endsWith('.css')?'text/css':'text/javascript'});
   });
   await page.goto('http://layout.test/');await page.locator('.conversation-steps').first().waitFor();
@@ -48,10 +49,11 @@ test('Conversation folds finished progress, keeps the live step, and gives code 
   // Polling again keeps the reader's choice.
   await page.evaluate(()=>intervals.forEach(fn=>fn()));await page.waitForTimeout(100);
   assert.equal(await page.getByText('Reading app.js',{exact:true}).isVisible(),true);
-  // The newest step, here a command, moves into the live row, which counts from when the turn started.
+  // The newest step, here a command, moves into the live row, which counts from when the turn
+  // started even though the pane's state changed 10 seconds ago, when the agent woke.
   const live=page.locator('.conversation-working');
   assert.equal(await live.locator('.conversation-working-step').getAttribute('data-step'),'Running cargo test -p zellij-client…');
-  assert.match(await live.locator('.conversation-working-time').textContent(),/^1m [56]s$/);
+  assert.match(await live.locator('.conversation-working-time').textContent(),/^1m \d+s$/);
   // The sweep covers the icon and label together, and only as wide as they are.
   assert.equal(await live.locator('.conversation-working-label .conversation-working-icon').count(),1);
   assert.equal(await live.locator('.conversation-working-label').evaluate(node=>getComputedStyle(node).animationName),'none','Only Thinking sweeps: a fixed duration races across a long step');
@@ -110,6 +112,33 @@ test('Conversation folds finished progress, keeps the live step, and gives code 
   assert.equal(await page.getByText('Checking Windows',{exact:true}).isVisible(),true);
   assert.equal(await page.locator('.conversation-message.commentary.tool[data-tool="run"] code').textContent(),'cargo test -p zellij-client');
   assert.deepEqual(errors,[]);
+ }finally{await browser.close();}
+});
+
+test('The live timer shows a run as soon as it paints and forgets it on another tab',
+ {skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
+ const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch();
+ const started=Date.now()-65000,at=seconds=>new Date(started+seconds*1000).toISOString();
+ const messages=[{role:'user',text:'Go',timestamp:at(0)},...[5,6].map(seconds=>({role:'assistant',phase:'commentary',text:'Step '+seconds,timestamp:at(seconds)}))];
+ try{
+  const page=await browser.newPage({viewport:{width:1280,height:900}});page.setDefaultTimeout(5000);
+  // Timers stay still, so only a repaint can have set the time this test reads.
+  await page.addInitScript(()=>{window.setInterval=()=>0;window.setTimeout=()=>0;localStorage.setItem('switchboard-view-mode','conversation');});
+  await page.route('http://layout.test/**',route=>{
+   const p=new URL(route.request().url()).pathname;
+   if(p.endsWith('/stream'))return route.fulfill({status:404,body:''});
+   if(p.includes('chat-2'))return; // The other tab's history is still loading.
+   if(p.startsWith('/api/chats/'))return route.fulfill({json:{messages,start_cursor:0,next_cursor:null}});
+   if(p.startsWith('/api/'))return route.fulfill({status:404,body:''});
+   if(p==='/')return route.fulfill({contentType:'text/html',body:`<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/conversation.css"><style>body{margin:0}#terminals{position:relative;height:100dvh}</style><main id="terminals"><iframe id="terminal"></iframe><section id="artifact-preview" hidden></section></main><script src="/conversation-media.js"></script><script src="/conversation.js"></script><script>window.current={key:'pane1',host:'fixture',session:'main',pane:1,title:'Fix',agent:'claude',state:'working',since:Math.floor(Date.now()/1000)-10,chatId:'chat-1',frame:document.getElementById('terminal')};SwitchboardConversation.install({selection:()=>current,terminal(){}});</script>`});
+   return route.fulfill({path:path.join(__dirname,'static',path.basename(p)),contentType:p.endsWith('.css')?'text/css':'text/javascript'});
+  });
+  await page.goto('http://layout.test/');
+  const time=page.locator('.conversation-working-time');
+  await page.locator('.conversation-working-count').filter({hasText:'2 steps'}).waitFor();
+  assert.match(await time.textContent(),/^1m \d+s$/);
+  await page.evaluate(()=>{current={...current,key:'pane2',pane:2,chatId:'chat-2',frame:document.getElementById('terminal')};SwitchboardConversation.update();});
+  assert.match(await time.textContent(),/^1\ds$/);
  }finally{await browser.close();}
 });
 

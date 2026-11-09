@@ -492,7 +492,8 @@
     }
     function tickWorking(){
       clearTimeout(workingTimer);syncLiveStep();paintBackground();paintDelegates();if((working.hidden&&background.hidden)||panel.hidden)return;
-      const since=launchShown()?target.launch.at/1000:Number(target?.since),time=since>0?duration(Math.max(0,Date.now()/1000-since)):'';
+      // A pane's own `since` restarts whenever the agent pauses and wakes, so a run in progress counts from where its steps do.
+      const since=launchShown()?target.launch.at/1000:target?.state==='working'&&liveRun?.since>0?liveRun.since:Number(target?.since),time=since>0?duration(Math.max(0,Date.now()/1000-since)):'';
       if(workingTime.textContent!==time)workingTime.textContent=time;workingTimer=setTimeout(tickWorking,1000);
     }
     // The newest progress update moves into the live row, so the step in progress
@@ -840,15 +841,14 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       for(let i=0;i<visible.length;){
         if(!isCommentary(visible[i].item)){i++;continue;}
         let end=i;while(end+1<visible.length&&isCommentary(visible[end+1].item))end++;
-        const after=visible[end+1],count=end-i+1;
+        const after=visible[end+1],count=end-i+1,before=visible[i-1]?.item.role==='user'?visible[i-1].item:visible[i].item;
         if(after&&count>=2){
-          const before=visible[i-1]?.item.role==='user'?visible[i-1].item:visible[i].item;
           const elapsed=(messageTime(after.item.timestamp)-messageTime(before.timestamp))/1000;
           const run={start:visible[i].key,collapsed:!expandedRuns.has(identity(target)+':'+visible[i].key),label:(Number.isFinite(elapsed)&&elapsed>0?`${providerLabel()} worked for ${duration(elapsed)} · `:`${providerLabel()} · `)+`${count} steps`};
           for(let j=i;j<=end;j++)runs.set(visible[j].key,run);
         }else if(!after&&count>=2){
           // While the agent works, the live row is this run's disclosure and the summary is hidden.
-          const earlier=count-1,run={start:visible[i].key,count,inProgress:true,collapsed:!expandedRuns.has(identity(target)+':'+visible[i].key),label:`${earlier} earlier step${earlier===1?'':'s'}`};
+          const earlier=count-1,run={start:visible[i].key,count,since:messageTime(before.timestamp)/1000,inProgress:true,collapsed:!expandedRuns.has(identity(target)+':'+visible[i].key),label:`${earlier} earlier step${earlier===1?'':'s'}`};
           for(let j=i;j<end;j++)runs.set(visible[j].key,run);
         }
         i=end+1;
@@ -1054,7 +1054,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       // Replacing an earlier message can move the reader before ResizeObserver
       // runs. Restore the saved anchor before remembering the new layout.
       else restoreReadingAnchor();
-      syncAsyncQuestions();syncLiveStep();updateLatest();rememberReading();paintFiles();
+      syncAsyncQuestions();tickWorking();updateLatest();rememberReading();paintFiles();
       if(shown)shown.stages.render_ms=Math.round(performance.now()-renderStarted);
     }
     function applyPage(data,kind,cursor){
@@ -1338,7 +1338,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       if(target)drafts.set(identity(target),draft.value);
       if(target&&loaded){conversations.delete(identity(target));conversations.set(identity(target),{chat,messages,startCursor,tailCursor,nextCursor,streamSupported,position:restorePosition?.position??list.scrollTop,follow:restorePosition?.follow??nearBottom()});if(conversations.size>8)conversations.delete(conversations.keys().next().value);}
       window.SwitchboardConversationMedia?.pause(panel);window.SwitchboardConversationMedia?.close();
-      costDetails.hidePopover();stopStream();streamSupported=false;restorePosition=null;target=current;loadRequest?.abort();lastFailure=null;lastDiagnostic='';newOutput=false;sendStatus('');generation++;settle(false,false);settleClears=false;loaded=false;lastPaint=null;busy(false);messages=[];startCursor=tailCursor=0;nextCursor=null;following=true;readingAnchor=null;readingPosition=0;for(const entry of [...rendered.values(),...renderedOutgoing.values()])contentResize?.unobserve(entry.node);rendered.clear();renderedOutgoing.clear();summaries.clear();list.replaceChildren(older,working);older.hidden=true;historyStatus.hidden=true;latest.hidden=refresh.hidden=true;
+      costDetails.hidePopover();stopStream();streamSupported=false;restorePosition=null;target=current;liveRun=null;loadRequest?.abort();lastFailure=null;lastDiagnostic='';newOutput=false;sendStatus('');generation++;settle(false,false);settleClears=false;loaded=false;lastPaint=null;busy(false);messages=[];startCursor=tailCursor=0;nextCursor=null;following=true;readingAnchor=null;readingPosition=0;for(const entry of [...rendered.values(),...renderedOutgoing.values()])contentResize?.unobserve(entry.node);rendered.clear();renderedOutgoing.clear();summaries.clear();list.replaceChildren(older,working);older.hidden=true;historyStatus.hidden=true;latest.hidden=refresh.hidden=true;
       chat=target?.chatId?{id:target.chatId,agent:target.agent,title:target.title}:null;
       // The temporary Creating tab identity becomes a pane before it gets a chat.
       // Keep its follow-ups, draft and attachments through both transitions.
