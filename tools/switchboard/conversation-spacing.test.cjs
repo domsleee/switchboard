@@ -21,3 +21,17 @@ test('Conversation spaces blocks and messages like T3 Code',{skip:!process.env.P
   }
  }finally{await browser.close();}
 });
+
+test('Conversation tables keep words whole and read from the left',{skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
+ const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch();
+ try{
+  const page=await browser.newPage({viewport:{width:760,height:600}});
+  const long='Reproduced on a real session. The new test failed before the fix, and every integrated Conversation test passes with it, including the slow ones.';
+  await page.setContent(`<div class="conversation-panel"><div class="conversation-messages"><div class="conversation-message assistant"><div class="conversation-table"><table><tr><td id="label">Review</td><td id="value">${long} <code id="code">gpt-6.1-sol</code></td></tr></table></div></div></div></div>`);
+  await page.addStyleTag({path:path.join(__dirname,'static','conversation.css')});
+  const lines=id=>page.evaluate(id=>{const range=document.createRange();range.selectNodeContents(document.getElementById(id));return new Set([...range.getClientRects()].map(rect=>Math.round(rect.top))).size;},id);
+  assert.equal(await lines('label'),1,'A short label stays on one line');
+  assert.equal(await lines('code'),1,'Inline code stays whole');
+  assert.equal(await page.locator('#value').evaluate(node=>getComputedStyle(node).textAlign),'start');
+ }finally{await browser.close();}
+});
