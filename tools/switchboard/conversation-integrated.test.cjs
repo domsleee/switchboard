@@ -90,7 +90,7 @@ test('integrated Conversation journeys use production markup and preserve delive
    const f=await fixture({desktop:true,viewport:{width:1280,height:900}}),{page}=f;
    try{
     const acknowledgements=[];
-    await page.route('**/api/timings',route=>route.fulfill({json:{computers:[{name:'Fixture Mac',local:true,series:[]}]}}));
+    await page.route('**/api/timings?*',route=>route.fulfill({json:{computers:[{name:'Fixture Mac',local:true,series:[]}]}}));
     await page.route('**/api/attention/ack',route=>{acknowledgements.push(route.request().postDataJSON());return route.fulfill({json:{}});});
     await page.getByLabel('Reply draft').fill('Keep this draft while checking performance');
     const selected=await page.evaluate(()=>selected);

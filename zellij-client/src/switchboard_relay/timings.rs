@@ -304,15 +304,39 @@ async fn computer_name(state: &RelayState) -> String {
     .unwrap_or_else(|| "This computer".to_string())
 }
 
-pub(super) async fn handler(State(state): State<RelayState>) -> Json<Value> {
+#[derive(Default, Deserialize)]
+pub(super) struct Selection {
+    computer: Option<String>,
+}
+
+async fn snapshot(name: String, peers: &[Arc<Host>], selected: Option<&str>) -> Value {
+    let mut computers = vec![json!({"name": name, "local": true, "series": local()["series"]})];
+    if let Some(selected) = selected {
+        // List every computer without waiting for unselected or offline peers.
+        for host in peers {
+            computers.push(if host.config.name == selected {
+                peer(host).await
+            } else {
+                json!({"name": host.config.name})
+            });
+        }
+    } else {
+        // Preserve the aggregate API for callers that request all computers.
+        computers.extend(futures_util::future::join_all(peers.iter().map(|host| peer(host))).await);
+    }
+    json!({ "computers": computers })
+}
+
+pub(super) async fn handler(
+    State(state): State<RelayState>,
+    axum::extract::Query(selection): axum::extract::Query<Selection>,
+) -> Json<Value> {
     let name = computer_name(&state).await;
     let peers = state
         .mesh
         .as_ref()
         .map_or_else(Vec::new, |mesh| mesh.hosts());
-    let mut computers = vec![json!({"name": name, "local": true, "series": local()["series"]})];
-    computers.extend(futures_util::future::join_all(peers.iter().map(|host| peer(host))).await);
-    Json(json!({ "computers": computers }))
+    Json(snapshot(name, &peers, selection.computer.as_deref()).await)
 }
 
 async fn save(file: &Path) {
@@ -357,6 +381,68 @@ mod tests {
 
     fn series(store: &Store) -> &Series {
         store.series.values().next().unwrap()
+    }
+
+    #[tokio::test]
+    async fn switchboard_timings_only_contact_the_selected_computer() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut config =
+            super::super::tests::config(&format!("http://{}", listener.local_addr().unwrap()));
+        config.name = "Offline PC".into();
+        let offline = Arc::new(Host::new(config).unwrap());
+        // Authentication is already available, but the server never answers.
+        *offline.cookie.lock().await = Some("session_token=fixture".into());
+        let peers = vec![offline];
+        for selected in ["Fixture PC", "Removed PC", ""] {
+            let view = tokio::time::timeout(
+                Duration::from_millis(200),
+                snapshot("Fixture PC".into(), &peers, Some(selected)),
+            )
+            .await
+            .expect("An unselected peer cannot delay local timings");
+            assert!(view["computers"][0]["series"].is_array());
+            assert_eq!(view["computers"][1], json!({"name":"Offline PC"}));
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), listener.accept())
+                .await
+                .is_err(),
+            "Listing computers must not open a connection to unselected peers"
+        );
+        let fast_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut config =
+            super::super::tests::config(&format!("http://{}", fast_listener.local_addr().unwrap()));
+        config.name = "Studio PC".into();
+        let fast = Arc::new(Host::new(config).unwrap());
+        *fast.cookie.lock().await = Some("session_token=fixture".into());
+        let server = tokio::spawn(async move {
+            axum::serve(
+                fast_listener,
+                Router::new().route(
+                    "/switchboard/timings",
+                    get(|| async { Json(json!({"series":[]})) }),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+        let peers = vec![peers[0].clone(), fast];
+        let view = tokio::time::timeout(
+            Duration::from_millis(500),
+            snapshot("Fixture PC".into(), &peers, Some("Studio PC")),
+        )
+        .await
+        .expect("An offline peer cannot delay the selected healthy peer");
+        assert_eq!(view["computers"][1], json!({"name":"Offline PC"}));
+        assert_eq!(
+            view["computers"][2],
+            json!({"name":"Studio PC", "series":[]})
+        );
+        server.abort();
+        let started = tokio::time::Instant::now();
+        let view = snapshot("Fixture PC".into(), &peers, Some("Offline PC")).await;
+        assert!(started.elapsed() >= Duration::from_secs(3));
+        assert_eq!(view["computers"][1]["error"], "Computer did not respond");
     }
 
     #[tokio::test]

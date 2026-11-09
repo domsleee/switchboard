@@ -53,6 +53,70 @@ test('A journey that starts after the tab returns is not marked hidden',()=>{
 });
 
 // All HTTP is local fixture data; never attach to user sessions.
+test('Performance loads only the selected computer and cancels a slow selection',
+  {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
+  const {chromium}=require(process.env.PLAYWRIGHT_MODULE),path=require('node:path');
+  const browser=await chromium.launch({headless:true});
+  try{
+    const page=await browser.newPage(),errors=[],requests=[];page.setDefaultTimeout(5000);
+    page.on('pageerror',e=>errors.push(e.message));
+    const series=ms=>[{journey:'conversation_select',build:'fixture1',target:'Fixture PC',first_seen:1,count:1,p50_ms:ms,max_ms:ms}];
+    const local={name:'Fixture PC',local:true,series:series(12)},remote={name:'Studio PC',series:series(25)};
+    let release,fail=false;
+    await page.addInitScript(()=>{window.setInterval=()=>0;});
+    await page.clock.setFixedTime(new Date('2026-11-10T09:00:00Z'));
+    await page.route('**/*',async route=>{
+      const url=new URL(route.request().url()),p=url.pathname;
+      if(p==='/api/timings'){
+        const selected=url.searchParams.get('computer');requests.push(selected);
+        assert.notEqual(selected,null,'The dashboard must never wait for the aggregate endpoint');
+        if(selected==='Offline PC')await new Promise(resolve=>release=resolve);
+        if(fail&&selected==='Studio PC')return route.fulfill({status:500}).catch(()=>{});
+        return route.fulfill({json:{computers:[local,selected==='Studio PC'?remote:{name:remote.name},
+          selected==='Offline PC'?{name:'Offline PC',error:'Computer did not respond'}:{name:'Offline PC'}]}}).catch(()=>{});
+      }
+      if(p==='/api/hosts')return route.fulfill({json:[]});
+      if(p==='/api/attention'){if(url.searchParams.has('after'))return;return route.fulfill({json:{version:1,tabs:[],panes:[],errors:[]}});}
+      if(p.startsWith('/api/'))return route.fulfill({json:{}});
+      const file=p==='/'?'index.html':path.basename(p),asset=path.join(__dirname,'static',file);
+      return fs.existsSync(asset)?route.fulfill({path:asset,contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html'}):route.fulfill({status:404});
+    });
+    const open=async()=>{await page.getByRole('button',{name:'Performance dashboard',exact:true}).click();await page.waitForFunction(()=>document.querySelector('#timings').getAttribute('aria-busy')==='false');};
+    const value=page.locator('.perf-card[data-journey=conversation_select] .perf-value');
+    await page.goto('https://performance.test/');await open();
+    assert.deepEqual(requests,['']);assert.equal(await value.textContent(),'12 ms');
+    assert.deepEqual(await page.locator('#timing-computer option').allTextContents(),['Fixture PC · this computer','Studio PC','Offline PC']);
+    await page.locator('#timing-computer').selectOption('Offline PC');
+    await page.waitForFunction(()=>document.querySelector('#timings').getAttribute('aria-busy')==='true');
+    assert.match(await page.locator('#timing-status').textContent(),/Loading measurements/);
+    await page.locator('#timing-computer').selectOption('Studio PC');
+    await page.waitForFunction(()=>document.querySelector('.perf-card[data-journey=conversation_select] .perf-value').textContent==='25 ms');
+    release();
+    await page.waitForFunction(()=>document.querySelector('#timings').getAttribute('aria-busy')==='false');
+    assert.equal(await page.locator('#timing-computer').inputValue(),'Studio PC','A late cancelled reply cannot overwrite the current selection');
+    await page.locator('#timing-computer').selectOption('Fixture PC');assert.equal(await value.textContent(),'12 ms','Revisiting a loaded computer paints its cached measurements immediately');
+    await page.waitForFunction(()=>document.querySelector('#timings').getAttribute('aria-busy')==='false');
+    await page.locator('#timing-computer').selectOption('Studio PC');await page.waitForFunction(()=>document.querySelector('#timings').getAttribute('aria-busy')==='false');
+    requests.length=0;await page.reload();await open();
+    assert.deepEqual(requests,['Studio PC'],'A remembered remote computer loads directly without first waiting for local or offline computers');
+    assert.equal(await value.textContent(),'25 ms');
+    const measuredAt=await page.evaluate(()=>new Date().toLocaleTimeString());
+    delete remote.series;remote.error='Computer did not respond';
+    await page.clock.setFixedTime(new Date('2026-11-10T10:00:00Z'));
+    await page.locator('#refresh-timings').click();
+    await page.waitForFunction(()=>document.querySelector('#timings').getAttribute('aria-busy')==='false');
+    assert.equal(await value.textContent(),'25 ms','A paired computer going offline retains its last measurements');
+    assert.equal(await page.locator('#timing-status').textContent(),`Refresh failed. Showing the last measurements from ${measuredAt}.`,'An unavailable peer cannot advance the measurement timestamp');
+    delete remote.error;
+    remote.series=[];await page.reload();await open();
+    assert.match(await page.locator('#timing-events').textContent(),/No recent events yet/);
+    assert.match(await page.locator('#timing-series').textContent(),/No timings yet/);
+    fail=true;await page.reload();await open();
+    await page.locator('#timing-status').filter({hasText:'Timings unavailable; refresh to try again.'}).waitFor();
+    assert.deepEqual(errors,[],'A failed first request must not dereference a missing refresh timestamp');
+  }finally{await browser.close();}
+});
+
 test('Performance dashboard separates browser, destination and build, preserves inspection and stops polling',
   {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
   const {chromium}=require(process.env.PLAYWRIGHT_MODULE),path=require('node:path');

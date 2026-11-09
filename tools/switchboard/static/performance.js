@@ -19,6 +19,7 @@ window.SwitchboardPerformance = (() => {
   const list = $('timings'), status = $('timing-status'), refresh = $('refresh-timings');
   const events = $('timing-events'), minimum = $('timing-minimum');
   let eventsSignature;
+  const refreshed = new Map();
   let computers = [], visible = false, timer, request, signature, renderedSignature, updated, preference, stale = false;
   try { preference = localStorage.getItem('switchboard-performance-computer'); } catch {}
   const active = () => visible && !document.hidden;
@@ -65,7 +66,7 @@ window.SwitchboardPerformance = (() => {
     const selected = computer(), series = filtered(), threshold = Math.max(0, Number(minimum.value) || 0);
     const recent = series.flatMap(item => (item.recent || []).map(event => ({...event, journey:item.journey, target:item.target, build:item.build})))
       .filter(event => event.elapsed_ms >= threshold).sort((a,b) => b.time - a.time).slice(0, 50);
-    const next = JSON.stringify([selected?.name, selected?.error, buildSelect.value, targetSelect.value, threshold, recent]);
+    const next = JSON.stringify([selected?.name, selected?.error, !!selected?.series, buildSelect.value, targetSelect.value, threshold, recent]);
     if(eventsSignature === next) return;
     eventsSignature = next;
     const open = new Set([...events.querySelectorAll('details[open]')].map(row => row.dataset.key));
@@ -80,7 +81,7 @@ window.SwitchboardPerformance = (() => {
       row.append(summary, item.stages?.length ? sample(item, false) : element('p', 'perf-note', 'No stage breakdown recorded.'));
       return row;
     });
-    const empty = selected?.error || (!selected ? 'No computers reported measurements.' :
+    const empty = selected?.error || (!selected ? 'No computers reported measurements.' : !selected.series ? 'Loading measurements…' :
       series.some(item => item.recent?.length) ? 'No recent events match this minimum duration.' : 'No recent events yet. New measurements will appear here.');
     events.replaceChildren(...(rows.length ? rows : [element('p', 'perf-empty', empty)]));
     if(focused) [...events.children].find(row => row.dataset.key === focused)?.querySelector('summary')?.focus({preventScroll:true});
@@ -106,7 +107,7 @@ window.SwitchboardPerformance = (() => {
   function paint() {
     paintEvents();
     const selected = computer(), series = filtered();
-    const next = JSON.stringify([selected?.name, selected?.error, buildSelect.value, targetSelect.value, series]);
+    const next = JSON.stringify([selected?.name, selected?.error, !!selected?.series, buildSelect.value, targetSelect.value, series]);
     if(renderedSignature === next) { showStatus();return; }
     renderedSignature = next;
     const openRows = new Set([...$('timing-series').querySelectorAll('details[open]')].map(row => row.dataset.key));
@@ -134,14 +135,14 @@ window.SwitchboardPerformance = (() => {
       return card;
     }));
     const rows = [...series].sort((a,b) => a.target.localeCompare(b.target) || journeys.findIndex(([key]) => key === a.journey) - journeys.findIndex(([key]) => key === b.journey));
-    const empty = !selected ? 'No computers reported measurements.' : selected.error || 'No timings yet. Switch between chats and Terminal, then return here.';
+    const empty = !selected ? 'No computers reported measurements.' : selected.error || (!selected.series ? 'Loading measurements…' : 'No timings yet. Switch between chats and Terminal, then return here.');
     $('timing-series').replaceChildren(...(rows.length ? rows.map(item => seriesRow(item, openRows)) : [element('p', 'perf-empty', empty)]));
     if(focusedRow) [...$('timing-series').children].find(row => row.dataset.key === focusedRow)?.querySelector('summary')?.focus({preventScroll:true});
     showStatus();
   }
   function showStatus() {
     const count = filtered().reduce((sum, item) => sum + item.count, 0);
-    status.textContent = stale ? computers.length ? `Refresh failed. Showing the last measurements from ${updated.toLocaleTimeString()}.` : 'Timings unavailable; refresh to try again.' :
+    status.textContent = stale ? updated ? `Refresh failed. Showing the last measurements from ${updated.toLocaleTimeString()}.` : 'Timings unavailable; refresh to try again.' : !updated ? 'Loading measurements…' :
       `${number(count)} measured waits${buildSelect.value ? ` · build ${buildSelect.value}` : ''}${updated ? ` · updated ${updated.toLocaleTimeString(undefined, {hour:'numeric', minute:'2-digit', second:'2-digit'})}` : ''}`;
     status.classList.toggle('perf-stale', stale);
   }
@@ -157,21 +158,24 @@ window.SwitchboardPerformance = (() => {
     const current = request = new AbortController(), timeout = setTimeout(() => current.abort(), 10000);
     refresh.setAttribute('aria-busy', 'true');list.setAttribute('aria-busy', 'true');
     try {
-      const response = await fetch('/api/timings', {cache:'no-store', signal:current.signal});
+      const selected = computerSelect.value || preference || '';
+      const response = await fetch(`/api/timings?computer=${encodeURIComponent(selected)}`, {cache:'no-store', signal:current.signal});
       if(!response.ok) throw Error('Timings unavailable');
       const data = await response.json();
       if(!Array.isArray(data.computers)) throw Error('Timings unavailable');
       if(!active() || request !== current) return;
       const recovered = stale;
-      updated = new Date();stale = false;const next = JSON.stringify(data.computers);
-      if(signature !== next) {
-        computers = data.computers;signature = next;updateControls();paint();
-      } else {
-        // Do not rebuild rows a person may be reading or using with the keyboard.
-        showStatus();
-      }
-      status.classList.remove('perf-stale');
-      if(recovered) announce('Performance measurements refreshed.');
+      const merged = data.computers.map(item => {
+        if(Array.isArray(item.series)) { refreshed.set(item.name, new Date());return item; }
+        const previous = computers.find(previous => previous.name === item.name);
+        return item.error ? {...previous, ...item} : previous || item;
+      });
+      const next = JSON.stringify(merged), changed = signature !== next;
+      if(changed) { computers = merged;signature = next;updateControls(); }
+      updated = refreshed.get(computerSelect.value);stale = !!computer()?.error;
+      // Do not rebuild unchanged rows a person may be inspecting with the keyboard.
+      if(changed) paint();else showStatus();
+      if(stale) announce(status.textContent);else if(recovered) announce('Performance measurements refreshed.');
     } catch(error) {
       if(request !== current || !active()) return;
       stale = true;showStatus();announce(status.textContent);
@@ -184,8 +188,9 @@ window.SwitchboardPerformance = (() => {
     clearTimeout(timer);request?.abort();request = null;refresh.setAttribute('aria-busy', 'false');list.setAttribute('aria-busy', 'false');
   }
   computerSelect.onchange = () => {
+    stop();stale = !!computer()?.error;updated = refreshed.get(computerSelect.value);
     preference = computerSelect.value;try { localStorage.setItem('switchboard-performance-computer', preference); } catch {}
-    buildSelect.value = '';targetSelect.value = '';destinations();paint();
+    buildSelect.value = '';targetSelect.value = '';destinations();paint();load();
   };
   buildSelect.onchange = () => { destinations();paint(); };
   targetSelect.onchange = paint;
