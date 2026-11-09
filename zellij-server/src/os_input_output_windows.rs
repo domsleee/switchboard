@@ -194,9 +194,20 @@ fn build_command_line(cmd: &RunCommand) -> Vec<u16> {
 
 /// Build a UTF-16 environment block (each entry `KEY=VALUE\0`, terminated by
 /// an extra `\0`) with terminal capability defaults and the pane identity.
-fn build_environment_block(terminal_id: u32) -> Vec<u16> {
+fn build_environment_block(terminal_id: u32, overrides: &[(String, String)]) -> Vec<u16> {
     let mut block: Vec<u16> = Vec::new();
-    for (key, value) in windows_pane_environment(std::env::vars(), terminal_id) {
+    let mut environment = windows_pane_environment(std::env::vars(), terminal_id);
+    environment.retain(|(key, _)| {
+        !overrides
+            .iter()
+            .any(|(name, _)| key.eq_ignore_ascii_case(name))
+    });
+    environment.extend_from_slice(overrides);
+    // CreateProcessW expects a case-insensitively sorted environment block.
+    environment.sort_unstable_by(|(left, _), (right, _)| {
+        left.to_ascii_uppercase().cmp(&right.to_ascii_uppercase())
+    });
+    for (key, value) in environment {
         let entry = format!("{}={}", key, value);
         block.extend(OsStr::new(&entry).encode_wide());
         block.push(0);
@@ -346,6 +357,7 @@ fn create_conpty(
 fn spawn_child_process(
     hpcon: HPCON,
     cmd: &RunCommand,
+    env: &[(String, String)],
     terminal_id: u32,
 ) -> io::Result<(HANDLE, HANDLE, u32)> {
     // --- proc thread attribute list ---
@@ -392,7 +404,7 @@ fn spawn_child_process(
 
     // --- command line & environment ---
     let mut cmd_line = build_command_line(cmd);
-    let env_block = build_environment_block(terminal_id);
+    let env_block = build_environment_block(terminal_id, env);
 
     let cwd: Option<Vec<u16>> = cmd.cwd.as_ref().and_then(|p| {
         if p.exists() && p.is_dir() {
@@ -471,6 +483,7 @@ impl WindowsPtyBackend {
     fn do_spawn(
         &self,
         cmd: RunCommand,
+        env: Vec<(String, String)>,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         terminal_id: u32,
     ) -> Result<(Box<dyn AsyncReader>, u32)> {
@@ -519,7 +532,7 @@ impl WindowsPtyBackend {
 
         // 5. Spawn child process
         let (process_handle, thread_handle, child_pid) =
-            match spawn_child_process(hpcon, &cmd, terminal_id) {
+            match spawn_child_process(hpcon, &cmd, &env, terminal_id) {
                 Ok(r) => r,
                 Err(e) => {
                     unsafe {
@@ -576,17 +589,18 @@ impl WindowsPtyBackend {
         &self,
         mut cmd: RunCommand,
         failover_cmd: Option<RunCommand>,
+        env: Vec<(String, String)>,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         terminal_id: u32,
     ) -> Result<(Box<dyn AsyncReader>, u32)> {
         if let Some(resolved) = resolve_command(&cmd) {
             cmd.command = resolved;
-            return self.do_spawn(cmd, quit_cb, terminal_id);
+            return self.do_spawn(cmd, env, quit_cb, terminal_id);
         }
         if let Some(mut failover) = failover_cmd {
             if let Some(resolved) = resolve_command(&failover) {
                 failover.command = resolved;
-                return self.do_spawn(failover, quit_cb, terminal_id);
+                return self.do_spawn(failover, env, quit_cb, terminal_id);
             }
         }
         Err(ZellijError::CommandNotFound {
@@ -848,6 +862,7 @@ mod tests {
         let (mut reader, pid) = backend
             .do_spawn(
                 command,
+                Vec::new(),
                 Box::new(move |_, _, _| {
                     let _ = exited.send(());
                 }),

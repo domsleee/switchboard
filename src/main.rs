@@ -402,6 +402,11 @@ fn main() {
         opts.new_session_with_layout = None;
         opts.layout = Some(layout_for_new_session.clone());
         commands::start_client(opts);
+    } else if let Some(Command::TerminalHost { dir }) = &opts.command {
+        if let Err(error) = zellij_server::terminal_host::host::run(dir) {
+            eprintln!("Terminal host failed: {error}");
+            std::process::exit(1);
+        }
     } else if let Some(Command::AttachmentWorker { session }) = &opts.command {
         std::env::set_var("SWITCHBOARD_ATTACHMENT_WORKER", session);
         commands::start_web_server(opts.clone(), false, None, None, None, None, None);

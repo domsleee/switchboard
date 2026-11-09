@@ -198,6 +198,7 @@ fn sudo_askpass(configured: Option<std::ffi::OsString>, home: Option<PathBuf>) -
 fn handle_openpty(
     open_pty_res: OpenptyResult,
     cmd: RunCommand,
+    env: Vec<(String, String)>,
     quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     terminal_id: u32,
 ) -> Result<(RawFd, RawFd)> {
@@ -245,6 +246,7 @@ fn handle_openpty(
             .env("TERM", term)
             .env("COLORTERM", colorterm)
             .env("ZELLIJ_PANE_ID", &format!("{}", terminal_id))
+            .envs(env)
             .pre_exec(move || -> io::Result<()> {
                 if libc::login_tty(pid_secondary) != 0 {
                     panic!("failed to set controlling terminal");
@@ -274,6 +276,7 @@ fn handle_openpty(
 fn handle_terminal(
     cmd: RunCommand,
     failover_cmd: Option<RunCommand>,
+    env: Vec<(String, String)>,
     orig_termios: Option<termios::Termios>,
     quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     terminal_id: u32,
@@ -283,10 +286,10 @@ fn handle_terminal(
     // Create a pipe to allow the child the communicate the shell's pid to its
     // parent.
     match openpty(None, &orig_termios) {
-        Ok(open_pty_res) => handle_openpty(open_pty_res, cmd, quit_cb, terminal_id),
+        Ok(open_pty_res) => handle_openpty(open_pty_res, cmd, env, quit_cb, terminal_id),
         Err(e) => match failover_cmd {
             Some(failover_cmd) => {
-                handle_terminal(failover_cmd, None, orig_termios, quit_cb, terminal_id)
+                handle_terminal(failover_cmd, None, env, orig_termios, quit_cb, terminal_id)
                     .with_context(err_context)
             },
             None => Err::<(i32, i32), _>(e)
@@ -342,6 +345,7 @@ impl UnixPtyBackend {
         &self,
         cmd: RunCommand,
         failover_cmd: Option<RunCommand>,
+        env: Vec<(String, String)>,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         terminal_id: u32,
     ) -> Result<(Box<dyn AsyncReader>, RawFd)> {
@@ -353,6 +357,7 @@ impl UnixPtyBackend {
         let (pid_primary, child_fd) = handle_terminal(
             cmd,
             failover_cmd,
+            env,
             orig_termios.clone(),
             quit_cb,
             terminal_id,
