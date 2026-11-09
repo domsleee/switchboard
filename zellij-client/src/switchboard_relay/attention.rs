@@ -918,9 +918,8 @@ impl PollState {
                 !started && !previous.is_null() && row["token"] != "idle" && row["token"] != last;
             // Codex ends every turn with a timed "Worked for" line and briefly looks
             // ready mid-task, so only that line ends a Codex turn.
-            let finished = !started
-                && previous["state"] == "working"
-                && (row["agent"] != "codex" || new_line);
+            let finished =
+                !started && previous["state"] == "working" && (row["agent"] != "codex" || new_line);
             let generation = previous["generation"].as_u64().unwrap_or(0)
                 + u64::from(row["state"] == "ready" && (new_line || finished));
             if row["state"] != "unknown" {
