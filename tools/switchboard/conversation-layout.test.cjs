@@ -15,7 +15,7 @@ test('Conversation folds finished progress, keeps the live step, and gives code 
    {type:'start',tag:'pre',lang:'js'},{type:'text',text:'const a = "<b>";\n'},{type:'end'}]},
   {role:'user',text:'And Windows?',timestamp:at(80)},
   step('Checking Windows',85),tool('run','cargo test -p zellij-client','Ran cargo test -p zellij-client',90),
- ],escapes=[];
+ ],escapes=[],backgroundStops=[];
  try{
   const page=await browser.newPage({viewport:{width:1280,height:900}});page.setDefaultTimeout(5000);
   const errors=[];page.on('pageerror',error=>errors.push(error.message));
@@ -23,6 +23,7 @@ test('Conversation folds finished progress, keeps the live step, and gives code 
   await page.route('http://layout.test/**',route=>{
    const p=new URL(route.request().url()).pathname;
    if(p.endsWith('/stream'))return route.fulfill({status:404,body:''});
+   if(p==='/api/hosts/fixture/conversation/stop-background'){backgroundStops.push(route.request().postDataJSON());return route.fulfill({json:{ok:true}});}
    if(p.startsWith('/api/')&&p!=='/api/hosts/fixture/escape'&&!p.startsWith('/api/chats/'))return route.fulfill({status:404,body:''});
    if(p==='/api/hosts/fixture/escape'){escapes.push(route.request().postDataJSON());return route.fulfill({json:{ok:true}});}
    if(p.startsWith('/api/chats/'))return route.fulfill({json:{messages,start_cursor:0,next_cursor:null}});
@@ -88,6 +89,11 @@ test('Conversation folds finished progress, keeps the live step, and gives code 
   await page.getByLabel('Reply draft').fill('More context');
   assert.equal(await stop.isVisible(),false);assert.equal(await send.isVisible(),true);
   await page.getByLabel('Reply draft').fill('');
+  // A finished turn still waiting on background work offers Stop too, which ends those tasks.
+  await page.evaluate(()=>{current.state='waiting';SwitchboardConversation.update();});
+  assert.equal(await stop.isVisible(),true);assert.equal(await stop.getAttribute('title'),'Stop background tasks');
+  await stop.click();await page.waitForFunction(()=>!document.querySelector('.conversation-stop').disabled);
+  assert.equal(backgroundStops.length,1);assert.equal(backgroundStops[0].pane_id,1);assert.equal(escapes.length,1);
   await page.evaluate(()=>{current.state='ready';SwitchboardConversation.update();});
   assert.equal(await stop.isVisible(),false);assert.equal(await send.isVisible(),true);
   // When the answer lands, the run folds into its summary and stays open as the reader left it.

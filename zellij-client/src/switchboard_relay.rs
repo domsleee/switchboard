@@ -1476,6 +1476,10 @@ fn app(state: RelayState) -> Router {
             post(conversation::prompt::answer_handler),
         )
         .route(
+            "/api/hosts/{host}/conversation/stop-background",
+            post(conversation::background::handler),
+        )
+        .route(
             "/api/hosts/{host}/conversation/skills",
             post(conversation::skills_handler),
         )
