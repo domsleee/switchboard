@@ -546,7 +546,9 @@ async function browserFocusFixture({mismatch=null,acknowledge=true,platform,hasT
     await page.bringToFront();
     await page.waitForFunction(()=>document.querySelector('iframe.active')?.contentDocument?.activeElement?.id==='terminal-input');
     const input=page.frameLocator('iframe[title="Mac: main"]').locator('#terminal-input');
-    return {browser,page,input,pageErrors,closes,timings,setMismatch(id){mismatch=id;},
+    return {browser,page,input,pageErrors,closes,timings,
+      waitForInputTiming:()=>page.waitForResponse(response=>response.url().endsWith('/api/diagnostics/timing')&&response.request().postDataJSON()?.journey==='terminal_input_ready'&&response.request().postDataJSON()?.outcome==='ready',{timeout:3000}),
+      setMismatch(id){mismatch=id;},
       button(id){return page.locator('#tabs .tab-select').filter({hasText:'Terminal '+id});}};
   }catch(error){
     await browser.close();
@@ -617,7 +619,7 @@ for(const deferred of ['search','dialog','preview','window','drawer'])test(`a re
 
 for(const navigate of [false,true])test(`an automatic Terminal send excludes typing waits until user navigation: ${navigate}`,
   {skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
-  const {browser,page,input,pageErrors,timings}=await browserFocusFixture({conversation:true});
+  const {browser,page,input,pageErrors,timings,waitForInputTiming}=await browserFocusFixture({conversation:true});
   try{
     await page.setViewportSize({width:390,height:844});
     await input.evaluate(()=>{window.__zjSuspendTerminal=async()=>true;});
@@ -628,12 +630,14 @@ for(const navigate of [false,true])test(`an automatic Terminal send excludes typ
     await page.getByRole('button',{name:'Send via Terminal',exact:true}).click();
     await page.waitForFunction(()=>terminalInputTransient&&document.querySelector('iframe.active').contentWindow.sendState);
     assert.equal(await page.evaluate(()=>[...sessions.values()][0].inputTiming??null),null);
+    const readySample=navigate?waitForInputTiming():null;
     if(navigate){
       await page.keyboard.press('Alt+Digit2');
       await page.waitForFunction(()=>!![...sessions.values()][0].inputTiming&&terminalInputTransient===null);
     }
     await page.evaluate(()=>document.querySelector('iframe.active').contentWindow.sendState(7));
     await page.waitForFunction(()=>![...sessions.values()][0].frame.inert);
+    if(readySample)await readySample;
     assert.equal(timings.some(sample=>sample.journey==='terminal_input_ready'),navigate);
     assert.equal(await page.evaluate(()=>terminalInputTransient),null,'A completed automatic attach cannot suppress later manual waits');
     assert.deepEqual(pageErrors,[]);
@@ -689,8 +693,9 @@ test('restoring typing after reconnect preserves the original switch diagnostic 
 
 test('a reconnected viewer confirms its pane while search keeps keyboard focus',
   {skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
-  const {browser,page,input,pageErrors,timings}=await browserFocusFixture();
+  const {browser,page,input,pageErrors,timings,waitForInputTiming}=await browserFocusFixture();
   try{
+    const readySample=waitForInputTiming();
     await page.locator('#tab-search').focus();
     await page.evaluate(()=>{
       const entry=[...sessions.values()][0];
@@ -704,6 +709,7 @@ test('a reconnected viewer confirms its pane while search keeps keyboard focus',
     assert.doesNotMatch(await page.locator('#status-message').textContent(),/Connecting terminal before/);
     await input.focus();await page.keyboard.type('ready');assert.equal(await input.inputValue(),'ready');
     await page.waitForFunction(()=>![...sessions.values()][0].inputTiming);
+    await readySample;
     assert.ok(timings.some(sample=>sample.journey==='terminal_input_ready'&&sample.outcome==='ready'));
     // A different pane still requires confirmation before typing can resume.
     await page.locator('#tab-search').focus();
