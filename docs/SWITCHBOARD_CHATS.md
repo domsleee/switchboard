@@ -51,6 +51,13 @@ to load preceding messages. Forward reads still use `cursor`. Each message has `
 unless the request sets `context=true`, which returns every message in full (Conversation
 mode uses it);
 search excerpts are capped at 401 characters. Tool output, reasoning, and provider credentials are excluded.
+`background_agents` lists a Claude chat's running background tasks: `id`, `kind` (`agent`, `shell`
+or `monitor`), `description`, `model` and `started`. Add `task=ID` to read one of them instead of
+the chat. An agent answers with its own transcript as a normal page plus `task`. A shell or monitor
+answers with `task` (`command`, recent `events`) and `output`, the last 32 KiB of what it printed
+with credentials masked. This is the one read that returns tool output; it is on request for a single
+running task. Without a `task` field the computer predates this.
+
 Claude and Codex tool calls appear as one-line steps: `kind` is `tool`, `phase` is
 `commentary` (so older clients show them as progress notes), `tool` is `run`, `read`,
 `edit`, `write`, `search`, `fetch`, `agent`, `plan` or `tool`, and `detail` is the command's
