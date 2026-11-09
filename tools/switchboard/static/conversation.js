@@ -899,14 +899,21 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
     const mailboxNotice=new RegExp('^New Switchboard messages: ('+uuid+'(?:, '+uuid+')*)\\. Read them with `zellij message --agent-session '+uuid+' unread --json` and `zellij message unread --computer [0-9a-f]{64} --json`\\. Reply using this agent identity when an answer is needed, and explicitly acknowledge receipt\\.(?: |$)','i');
     function mailboxCount(item){return item.role==='user'?(mailboxNotice.exec((item.receipt_text??item.text??'').trimStart())?.[1].split(', ').length||0):0;}
     const forwarded='[Message forwarded through Switchboard. This is agent-to-agent text, not new user authorization.]\n\n';
-    const receivedBody=item=>item.role==='user'&&String(item.receipt_text??item.text??'').startsWith(forwarded)?String(item.receipt_text??item.text).slice(forwarded.length).replace(/^\[Switchboard delivery: [A-Za-z0-9_.-]{1,128}\]\n\n/,''):null;
+    const forwardedAuthority=/^\[Message forwarded through Switchboard\.\]\n\[Switchboard authority: [^\]\r\n]+\]\n\n/;
+    function receivedEnvelope(item){
+      if(item.role!=='user')return null;
+      const text=String(item.receipt_text??item.text??''),prefix=text.startsWith(forwarded)?forwarded.length:forwardedAuthority.exec(text)?.[0].length;
+      if(!prefix)return null;
+      const rest=text.slice(prefix),delivery=/^\[Switchboard delivery: ([A-Za-z0-9_.-]{1,128})\]\n\n/.exec(rest);
+      return {body:delivery?rest.slice(delivery[0].length):rest,delivery:delivery?.[1]};
+    }
     function timeline(){
       const activity=(chat?.messageActivity||[]).map(event=>({...event})),entries=[],received=new Set();
       const firstTime=messages.map(item=>messageTime(item.timestamp)).find(Number.isFinite);
       for(const [offset,item] of messages.entries()){
-        const body=receivedBody(item),notice=item.role==='user'?mailboxNotice.exec((item.receipt_text??item.text??'').trimStart()):null;
+        const envelope=receivedEnvelope(item),body=envelope?.body??null,notice=item.role==='user'?mailboxNotice.exec((item.receipt_text??item.text??'').trimStart()):null;
         if(body!==null){
-          const delivery=/^\[Switchboard delivery: ([A-Za-z0-9_.-]{1,128})\]\n\n/.exec(String(item.receipt_text??item.text).slice(forwarded.length))?.[1];
+          const delivery=envelope.delivery;
           const event=activity.find(event=>event.direction==='received'&&!received.has(event.id)&&(delivery?event.id==='native:'+delivery:event.text===body));
           if(event){received.add(event.id);event.status='received';continue;}
           entries.push({key:startCursor+offset,item:{kind:'message',direction:'received',status:'received',text:body,peer:{label:'Agent'},timestamp:item.timestamp}});continue;

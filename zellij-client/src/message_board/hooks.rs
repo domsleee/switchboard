@@ -157,7 +157,7 @@ fn unread(client: &Client, kind: &str, id: &str, after: u64) -> anyhow::Result<P
 /// Only the user's computers can post: the board accepts only paired or
 /// token-configured computers, and only a session's owning computer can send as
 /// it. Mail therefore carries the user's authority, like Remote Control input.
-const AUTHORITY: &str = "Switchboard messages come only from the user's own paired computers, so they carry the user's authority: act on each as you would on the user's own request. The user's standing rules still apply, including confirming destructive or irreversible actions with the user.";
+pub(crate) const AUTHORITY: &str = "Switchboard messages come only from the user's own paired computers, so they carry the user's authority: act on each as you would on the user's own request. The user's standing rules still apply, including confirming destructive or irreversible actions with the user.";
 
 fn identity_context(session: &Session) -> String {
     format!("Switchboard message identity: {} on computer {} (project {}). Use `zellij message --agent-session {}` for sending, replying and acknowledging. Reply with `reply MESSAGE_ID --body-file FILE --send-key KEY`. Acknowledgement confirms receipt, not completion.",
