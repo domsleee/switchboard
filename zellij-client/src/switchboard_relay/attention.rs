@@ -1185,10 +1185,15 @@ impl PollState {
         let Some(hooked) = self.hooks.get(&key) else {
             return;
         };
-        // A pane that now runs something else (the agent exited without SessionEnd) drops it.
+        // Foreground tools can replace the reported command while the agent is
+        // still running. Drop the binding only after checking its recorded process.
         if command
             .as_str()
             .is_some_and(|c| !c.is_empty() && !c.to_ascii_lowercase().contains(hooked.agent))
+            && !hooked
+                .restart
+                .as_ref()
+                .is_some_and(|identity| identity.running())
         {
             self.hooks.remove(&key);
             self.stop_shells.remove(&key);
@@ -3169,6 +3174,52 @@ esac
             );
             poll.hooks.clear();
         }
+    }
+
+    #[test]
+    fn switchboard_conversation_binding_survives_a_foreground_tool() {
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+        let pid = Pid::from_u32(std::process::id());
+        let mut processes = System::new();
+        processes.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            true,
+            ProcessRefreshKind::nothing().with_exe(UpdateKind::Always),
+        );
+        let process = processes.process(pid).unwrap();
+        let mut identity = json!({
+            "agent":"claude", "session_id":"6af084f2-0b7d-4ac5-9c1c-0bd11e5f577c",
+            "cwd":std::env::current_dir().unwrap(), "pid":std::process::id(),
+            "started":process.start_time(), "command":[], "executable":process.exe().unwrap()
+        });
+        let mut hook = hook_status("claude", &json!({"hook_event_name":"PostToolUse"})).unwrap();
+        hook.chat_id = Some("claude-test-transcript".into());
+        hook.restart = Some(serde_json::from_value(identity.clone()).unwrap());
+        let mut poll = PollState::default();
+        let key = ("main".into(), 65);
+        poll.hooks.insert(key.clone(), hook.clone());
+        let row = || json!({"session":"main","pane_id":65,"state":"unknown"});
+        let mut pane = row();
+        poll.apply_hook(&mut pane, &json!("cargo test"));
+        assert_eq!(pane["chat_id"], "claude-test-transcript");
+        assert_eq!(pane["state"], "working");
+
+        // A relay restart must retain the transcript without reviving working state.
+        let mut restarted = PollState::default();
+        restarted.restore_hooks(&poll.persisted()["hooks"]);
+        let mut pane = row();
+        restarted.apply_hook(&mut pane, &json!("cargo test"));
+        assert_eq!(pane["chat_id"], "claude-test-transcript");
+        assert_eq!(pane["state"], "unknown");
+
+        // A reused PID with a different start time cannot retain an old binding.
+        identity["started"] = json!(process.start_time().saturating_sub(1));
+        hook.restart = Some(serde_json::from_value(identity).unwrap());
+        poll.hooks.insert(key, hook);
+        let mut pane = row();
+        poll.apply_hook(&mut pane, &json!("pwsh"));
+        assert!(pane["chat_id"].is_null());
+        assert!(poll.hooks.is_empty());
     }
 
     #[test]

@@ -79,6 +79,21 @@ pub(super) fn capture(agent: &str, event: &Value, session: &str, pane: u64) -> O
     Some(identity)
 }
 impl Identity {
+    /// A tool can become the foreground command while its agent stays alive.
+    /// Inspect only the recorded PID; attention polling must not scan every process.
+    pub(super) fn running(&self) -> bool {
+        let mut system = System::new();
+        let pid = Pid::from_u32(self.pid);
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            true,
+            ProcessRefreshKind::nothing().with_exe(UpdateKind::Always),
+        );
+        system.process(pid).is_some_and(|p| {
+            p.start_time() == self.started && p.exe() == Some(self.executable.as_path())
+        })
+    }
+
     fn live(&self, session: &str, pane: u32) -> bool {
         processes()
             .process(Pid::from_u32(self.pid))
