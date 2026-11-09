@@ -44,6 +44,10 @@ test('Windows Health activates a ready build through the tray without a startabl
     assert.equal(await group.getByRole('button',{name:'Check for updates',exact:true}).count(),0);
     assert.doesNotMatch(await group.textContent(),/needs a newer updater/);
     assert.match(await group.textContent(),/Terminals briefly reconnect; running commands continue/);
+    assert.doesNotMatch(await group.textContent(),/Updates leave/);
+    sb.sessionsWithoutHost=['old-work'];await refresh();
+    assert.match(await group.textContent(),/Updates leave old-work on the engine it has/);
+    delete sb.sessionsWithoutHost;await refresh();
     if(process.env.WINDOWS_ACTIVATION_SCREENSHOTS)await group.screenshot({path:process.env.WINDOWS_ACTIVATION_SCREENSHOTS+'/after.png'});
     await dispatch();
     assert.deepEqual(actions,[{activate:commit}],'local activation queues the exact ready build');

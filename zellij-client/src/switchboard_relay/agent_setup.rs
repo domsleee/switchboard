@@ -1640,6 +1640,21 @@ fn switchboard() -> Value {
     status
 }
 
+/// Sessions an update cannot move, because their engine owns their terminals.
+fn sessions_without_host() -> Vec<String> {
+    let mut names: Vec<String> = zellij_utils::sessions::get_sessions()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(name, _)| name)
+        .filter(|name| {
+            zellij_utils::handoff::read_session_record(name)
+                .is_none_or(|record| !record.host_directory.is_dir())
+        })
+        .collect();
+    names.sort();
+    names
+}
+
 fn switchboard_in(directory: &Path, automatic: bool) -> Value {
     let update_state = read_json(&directory.join("state.json")).unwrap_or(Value::Null);
     let request = read_json(&directory.join("activate.json")).unwrap_or(Value::Null);
@@ -1668,6 +1683,7 @@ fn switchboard_in(directory: &Path, automatic: bool) -> Value {
         "updateNotice": update_state["notice"],
         "readyUpdate": update_state["ready"],
         "activationTarget": update_state["ready"]["commit"].as_str().or(update_state["pending"]["target"].as_str()),
+        "sessionsWithoutHost": sessions_without_host(),
         // Windows consumes activation requests on the tray's next update check.
         "activateUpdate": automatic,
     })

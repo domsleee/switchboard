@@ -130,17 +130,28 @@ pub fn run(command: &SwitchboardCommand) -> Result<()> {
             None => install::install(&std::env::current_exe()?),
         },
         SwitchboardCommand::Update(cli) => Updater::from_cli(cli)?.run(),
+        SwitchboardCommand::SwapOutdatedEngines { binary, config } => {
+            let current = std::env::current_exe()?;
+            engine_swap::swap_outdated_engines(
+                binary.as_deref().unwrap_or(&current),
+                None,
+                config.as_deref(),
+            );
+            Ok(())
+        },
         SwitchboardCommand::EngineFingerprint => {
             bail!("The engine fingerprint is printed by the zellij executable")
         },
         SwitchboardCommand::SwapEngine {
             session,
             binary,
+            previous,
             config,
             reject_first_verification,
         } => engine_swap::run_cli(
             session,
             binary.as_deref(),
+            previous.as_deref(),
             config.as_deref(),
             *reject_first_verification,
         ),
@@ -893,6 +904,9 @@ impl Updater {
                     return Ok(());
                 }
             }
+            if !self.check {
+                engine_swap::settle_interrupted_moves(self.config.as_deref());
+            }
             self.update(&mut state)
         })();
         // Closing is not enough: a child forked meanwhile shares the lock until it execs.
@@ -1164,6 +1178,15 @@ impl Updater {
             },
         }
         state.save(&self.state_path())?;
+        if matches!(result, Ok(true)) {
+            // The update may have replaced the file the running engines came from.
+            let previous = self.retained_previous_build();
+            engine_swap::swap_outdated_engines(
+                &self.selected_binary()?,
+                previous.as_deref(),
+                self.config.as_deref(),
+            );
+        }
         result.map(|_| ())
     }
 
@@ -1308,6 +1331,17 @@ impl Updater {
         state.save(&self.state_path())?;
         self.prune_rollbacks(&backup);
         Ok(true)
+    }
+
+    /// The build this update replaced, kept beside the update state.
+    fn retained_previous_build(&self) -> Option<PathBuf> {
+        fs::read_dir(&self.state_directory)
+            .ok()?
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("rollback-"))
+            .map(|entry| entry.path().join(self.exe()))
+            .filter(|path| path.is_file())
+            .max()
     }
 
     /// Any journal naming an older directory was settled before this update

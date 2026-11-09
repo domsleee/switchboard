@@ -63,7 +63,16 @@ fn frozen_identities(manifest: &Path) -> Result<Identities> {
 pub(super) struct Swap<'a> {
     pub session: &'a str,
     pub config: Option<&'a Path>,
+    /// Where the previous build is kept, when an update has replaced the file
+    /// the running engine was started from.
+    pub previous: Option<&'a Path>,
     pub reject_first_verification: Cell<bool>,
+}
+
+fn engine_fingerprint(binary: &Path) -> Result<String> {
+    let mut command = Command::new(binary);
+    command.args(["switchboard", "engine-fingerprint"]);
+    Ok(run_command(command, COMMAND_TIMEOUT)?.trim().to_string())
 }
 
 fn wait_until(timeout: Duration, mut done: impl FnMut() -> bool) -> bool {
@@ -237,12 +246,6 @@ impl Swap<'_> {
         let Some(record) = handoff::read_session_record(self.session) else {
             return Ok(Outcome::NotMoved("the session has no terminal host".into()));
         };
-        if !record.executable.is_file() {
-            return Ok(Outcome::NotMoved(format!(
-                "cannot go back to {}, which no longer exists",
-                record.executable.display()
-            )));
-        }
         if self.settle_interrupted()? {
             return Ok(Outcome::RolledBack(
                 "an earlier update left this session between engines".into(),
@@ -251,19 +254,32 @@ impl Swap<'_> {
         if handoff::in_progress(self.session) {
             return Ok(Outcome::NotMoved("a move is already in progress".into()));
         }
+        // An update can replace the recorded file, and a session can be several
+        // builds behind, so only a build proven to be this engine's will do.
+        let Some(previous) = [Some(record.executable.as_path()), self.previous]
+            .into_iter()
+            .flatten()
+            .find(|path| {
+                path.is_file() && engine_fingerprint(path).is_ok_and(|built| built == record.engine)
+            })
+        else {
+            return Ok(Outcome::NotMoved(
+                "the build this session is running is no longer available".into(),
+            ));
+        };
         let folder = record.host_directory.join("handoff");
         fs::create_dir_all(&folder)?;
         let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let journal = Journal {
             id: format!("update-{nanos}"),
-            previous: record.executable.clone(),
+            previous: previous.to_path_buf(),
         };
         fs::write(folder.join(JOURNAL), serde_json::to_vec(&journal)?)?;
         // Only the old engine's own executable is sure to speak its protocol.
         // The pipe ends when the engine exits, so its own result says little.
         let _ = run_command(
             self.command(
-                &record.executable,
+                previous,
                 &[
                     "-s",
                     self.session,
@@ -298,9 +314,58 @@ impl Swap<'_> {
     }
 }
 
+/// Finishes moves an earlier run left between engines. Reads files only, so
+/// it can run on every scheduled update.
+pub(super) fn settle_interrupted_moves(config: Option<&Path>) {
+    for (session, _) in handoff::session_records() {
+        let swap = Swap {
+            session: &session,
+            config,
+            previous: None,
+            reject_first_verification: Cell::new(false),
+        };
+        match swap.settle_interrupted() {
+            Ok(true) => println!("Gave {session} back to its previous engine"),
+            Ok(false) => {},
+            Err(error) => eprintln!("Cannot recover {session}: {error:#}"),
+        }
+    }
+}
+
+/// Moves each running session whose engine is built differently from `binary`.
+/// A session that cannot move keeps the engine it has, so nothing here fails
+/// the update.
+pub(super) fn swap_outdated_engines(binary: &Path, previous: Option<&Path>, config: Option<&Path>) {
+    let fingerprint = match engine_fingerprint(binary) {
+        Ok(fingerprint) => fingerprint,
+        Err(error) => {
+            eprintln!("Not moving sessions: {error:#}");
+            return;
+        },
+    };
+    for (session, record) in handoff::session_records() {
+        let swap = Swap {
+            session: &session,
+            config,
+            previous,
+            reject_first_verification: Cell::new(false),
+        };
+        if record.engine == fingerprint || !swap.session_exists() {
+            continue;
+        }
+        match swap.run(binary) {
+            Ok(Outcome::Moved) => println!("Moved {session} to a new engine"),
+            Ok(Outcome::NotMoved(reason)) => println!("Did not move {session}: {reason}"),
+            Ok(Outcome::RolledBack(reason)) => eprintln!("Rolled {session} back: {reason}"),
+            Err(error) => eprintln!("Cannot move {session}: {error:#}"),
+        }
+    }
+}
+
 pub(super) fn run_cli(
     session: &str,
     binary: Option<&Path>,
+    previous: Option<&Path>,
     config: Option<&Path>,
     reject_first_verification: bool,
 ) -> Result<()> {
@@ -308,6 +373,7 @@ pub(super) fn run_cli(
     let swap = Swap {
         session,
         config,
+        previous,
         reject_first_verification: Cell::new(reject_first_verification),
     };
     match swap.run(binary.unwrap_or(&current))? {

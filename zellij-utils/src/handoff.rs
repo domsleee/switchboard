@@ -88,6 +88,34 @@ pub fn read_session_record(session: &str) -> Option<SessionRecord> {
     serde_json::from_slice(&fs::read(record_path(session)?).ok()?).ok()
 }
 
+pub fn remove_session_record(session: &str) {
+    if let Some(path) = record_path(session) {
+        let _ = fs::remove_file(path);
+    }
+}
+
+/// Every session that has recorded a terminal host.
+pub fn session_records() -> Vec<(String, SessionRecord)> {
+    let Some(folder) = hosts_root().map(|root| root.join("sessions")) else {
+        return Vec::new();
+    };
+    let Ok(entries) = fs::read_dir(folder) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension()? != "json" {
+                return None;
+            }
+            let session = path.file_stem()?.to_string_lossy().into_owned();
+            let record = serde_json::from_slice(&fs::read(&path).ok()?).ok()?;
+            Some((session, record))
+        })
+        .collect()
+}
+
 /// Waits for the new engine to open the session. Attaching before then would
 /// create a new session in its place.
 pub fn wait_for_new_engine(mut session_exists: impl FnMut() -> bool) -> bool {

@@ -419,10 +419,13 @@ CLI and reaches paired computers through their gateways, which run the same CLI
 locally. Neither path inputs commands into an existing user shell or changes
 focus to close a tab.
 
-One executable still runs as separate relay, web and session processes. Existing
-engines keep their loaded release. Migrating the relay requires only a relay
-service restart, followed by actual browser reconnection and usable-tab checks.
-Do not restart session engines. Keep the old relay available for rollback until
+One executable still runs as separate relay, web and session processes. After a
+successful update, the updater moves each session that has a terminal host and a
+differently built engine to the new build, verifying it and rolling back on failure
+(see [terminal host](SWITCHBOARD_TERMINAL_HOST.md)). Sessions without a host keep
+their loaded release, and Settings → Health lists them. Migrating the relay requires
+only a relay service restart, followed by actual browser reconnection and usable-tab
+checks. Do not restart session engines. Keep the old relay available for rollback until
 Windows acceptance checks pass. See [Windows test plan](SWITCHBOARD_WINDOWS_TEST_PLAN.md).
 
 The relay preserves WebSocket close codes. Updated web daemons send a

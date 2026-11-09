@@ -22,7 +22,7 @@ use uuid::Uuid;
 pub(crate) const ENABLE: &str = "SWITCHBOARD_TERMINAL_HOST";
 
 pub(crate) fn enabled() -> bool {
-    std::env::var(ENABLE).is_ok_and(|value| value == "1")
+    std::env::var(ENABLE).map_or(true, |value| value != "0")
 }
 
 fn new_token() -> String {

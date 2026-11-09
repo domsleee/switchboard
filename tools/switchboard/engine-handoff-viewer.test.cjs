@@ -263,10 +263,17 @@ let native, relay, browser, created = false;
         await stillTheSameSession('after-verified-swap');
         console.log('PASS: the updater command verifies and commits a new engine');
 
-        const rejected = await swapEngine('rejected', '--reject-first-verification');
+        // An update can replace the file a running engine started from.
+        const previousBuild = path.join(dir, `previous${path.extname(binary)}`);
+        fs.copyFileSync(binary, previousBuild);
+        const sessionRecord = path.join(hosts, 'sessions', `${name}.json`);
+        const editRecord = change => fs.writeFileSync(sessionRecord, JSON.stringify({...JSON.parse(fs.readFileSync(sessionRecord, 'utf8')), ...change}));
+        editRecord({executable: path.join(dir, 'replaced-by-an-update')});
+        const rejected = await swapEngine('rejected', '--reject-first-verification', '--previous', previousBuild);
         assert.notEqual(rejected.code, 0, rejected.output);
         assert.match(rejected.output, /Rolled .* back/);
         await stillTheSameSession('after-rollback');
+        assert.equal(path.basename(JSON.parse(fs.readFileSync(path.join(hosts, 'sessions', `${name}.json`), 'utf8')).executable), path.basename(previousBuild), 'Rollback uses the retained build');
         console.log('PASS: a new engine that fails verification hands the session back');
 
         // Sharing changed at runtime must not fall back to what the configuration says.
@@ -282,6 +289,24 @@ let native, relay, browser, created = false;
         await sleep(1000);
         assert.equal(await sharing(), false, 'A session unshared at runtime stays unshared on its new engine');
         console.log('PASS: runtime sharing survives a move');
+
+        // The updater moves only sessions whose engine is built differently.
+        // A wrapper stands in for an older build, which reports its own fingerprint.
+        const olderBuild = path.join(dir, process.platform === 'win32' ? 'older.cmd' : 'older');
+        fs.writeFileSync(olderBuild, process.platform === 'win32'
+            ? `@echo off\r\nif "%1"=="switchboard" if "%2"=="engine-fingerprint" (echo an-older-build& exit /b 0)\r\n"${binary}" %*\r\n`
+            : `#!/bin/sh\nif [ "$1 $2" = "switchboard engine-fingerprint" ]; then echo an-older-build; exit 0; fi\nexec "${binary}" "$@"\n`, {mode: 0o755});
+        editRecord({engine: 'an-older-build', executable: olderBuild});
+        const swapOutdated = () => {
+            const log = path.join(dir, `outdated-${++cliSequence}.log`), out = fs.openSync(log, 'w');
+            execFileSync(binary, ['--config', config, 'switchboard', 'swap-outdated-engines', '--binary', binary, '--config', config], {env, windowsHide: true, timeout: 120000, stdio: ['ignore', out, out]});
+            fs.closeSync(out);
+            return fs.readFileSync(log, 'utf8');
+        };
+        assert.deepEqual(swapOutdated().trim().split('\n'), [`Moved ${name} to a new engine`], 'Only the outdated session moves');
+        await stillTheSameSession('after-updater-move');
+        assert.equal(swapOutdated().trim(), '', 'A moved session is not moved again');
+        console.log('PASS: the updater moves outdated sessions and leaves current ones alone');
     } finally {
         if (browser) await browser.close();
         try { cli('kill-session', outer); } catch {}
