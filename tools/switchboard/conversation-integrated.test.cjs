@@ -23,7 +23,8 @@ test('integrated Conversation journeys use production markup and preserve delive
    if(p==='/api/hosts/fixture/escape'){f.escapes.push(route.request().postDataJSON());return json({ok:true});}
    if(p==='/api/hosts/fixture/settle-interrupt'){f.settles.push(route.request().postDataJSON());return json({ok:true});}
    if(p==='/api/attention'){if(url.searchParams.has('after'))return new Promise(()=>{});return json({tabs:f.tabs.map(id=>({host:'fixture',session:'main',id,position:id-1,name:'Conversation '+id,panes:[pane(id)]})),panes:f.tabs.map(id=>({host:'fixture',session:'main',pane_id:id,...(f.agent?{agent:f.agent}:{}),state:f.state,turn_state:options.turnState,...(f.bound?{chat_id:(f.chatPrefix||'chat-')+id}:{})})),errors:[]});}
-   if(p.startsWith('/api/chats/')){const id=Number(p.split('-').at(-1));return json({id:'chat-'+id,...(f.project?{project:f.project}:{}),model:f.model,reasoning_effort:f.effort,session_id:f.agent==='codex'?thread(id):null,messages:f.history.get(id)||[],message_activity:f.activities?.get(id)||[],start_cursor:0,next_cursor:null});}
+   if(p.startsWith('/api/chats/')&&url.searchParams.has('task'))return json({task:{kind:'agent',running:false},start_cursor:0,messages:[{role:'user',text:'Review this change.'},{role:'assistant',text:'Review complete.'}]});
+   if(p.startsWith('/api/chats/')){const id=Number(p.split('-').at(-1));return json({id:'chat-'+id,...(f.project?{project:f.project}:{}),model:f.model,reasoning_effort:f.effort,delegates:options.delegates||[],session_id:f.agent==='codex'?thread(id):null,messages:f.history.get(id)||[],message_activity:f.activities?.get(id)||[],start_cursor:0,next_cursor:null});}
    if(p.endsWith('/conversation/reply')){f.claudeReplies.push(route.request().postDataJSON());if(f.holdClaudeReply)await new Promise(resolve=>f.releaseReplies.push(resolve));return route.fulfill({status:f.claudeReplyStatus,json:{ok:true}});}
    if(p.endsWith('/conversation/prepare')){f.preparations.push(route.request().postDataJSON());return route.fulfill({status:f.prepareStatus,json:{trusted:false}});}
    if(p.endsWith('/codex/reply')){
@@ -58,6 +59,30 @@ test('integrated Conversation journeys use production markup and preserve delive
   return f;
  }
  try{
+  for(const desktop of [true,false])await t.test(`Alt+T creates a tab from the subagent view (${desktop?'desktop':'phone'})`,async()=>{
+   const f=await fixture({desktop,viewport:desktop?{width:1280,height:844}:{width:390,height:844},delegates:[{call:'review',id:'review-agent',model:'gpt-6.1-sol',effort:'xhigh',status:'completed'}],messages:[{role:'assistant',phase:'commentary',kind:'tool',tool:'agent',call:'review',detail:'Review changes',text:'Delegated Review changes'}]}),{page}=f;
+   try{
+    await page.route('**/project-list',route=>route.fulfill({json:['switchboard']}));
+    await page.route('**/model-list',route=>route.fulfill({json:{}}));
+    await page.locator('.conversation-delegate').click();
+    const view=page.locator('.conversation-task');await view.getByText('Review complete.',{exact:true}).waitFor();
+    if(process.env.SUBAGENT_SCREENSHOTS&&desktop)await view.screenshot({path:path.join(process.env.SUBAGENT_SCREENSHOTS,'subagent.png')});
+    await page.keyboard.press('Alt+t');await page.locator('#new-tab-prompt').waitFor();
+    await page.locator('#new-tab-prompt').fill('A fresh task');
+    await page.keyboard.press('Alt+t');assert.equal(await page.locator('#new-tab-prompt').textContent(),'A fresh task','A modal dialog keeps its own keys');
+    await page.keyboard.press('Escape');await page.locator('#new-tab-dialog:not([open])').waitFor({state:'attached'});
+    assert.equal(await view.isVisible(),true,'Cancel returns to the subagent');
+    assert.equal(await view.evaluate(node=>node.contains(document.activeElement)),true,'Focus returns to the subagent');
+    await page.keyboard.press('Alt+t');await page.locator('#new-tab-prompt').fill('A fresh task');
+    await page.locator('#new-tab-form button[type=submit]').click();
+    await page.waitForFunction(()=>allTabs().find(item=>item.key===selected)?.tab.id===3);
+    assert.equal(f.newTabs.length,1);assert.equal(f.newTabs[0].prompt,'A fresh task');
+    await view.waitFor({state:'hidden'});assert.deepEqual(f.escapes,[],'Opening a tab never interrupts the parent');
+    await page.getByRole('button',{name:'Terminal',exact:true}).click();
+    await page.waitForFunction(()=>!SwitchboardConversation.wantsConversation());
+    await page.keyboard.press('Alt+t');await page.locator('#new-tab-prompt').waitFor();await page.keyboard.press('Escape');
+   }finally{await f.close();}
+  });
   const asyncQuestion=(id,questions)=>({role:'assistant',text:questions.map(q=>q.title).join('\n'),phase:'final',async_question:{id,questions}});
   const questionReceipt=payload=>{const replies=JSON.parse(payload.split('\n')[1]);return {role:'user',text:replies.map(reply=>'> '+reply.question+'\n\n'+reply.answer).join('\n\n'),question_replies:replies.map(reply=>({id:reply.questionItemId,question:reply.question,answer:reply.answer}))};};
   await t.test('agent message links select the counterpart in the real sidebar and keep drafts and view mode',async()=>{
