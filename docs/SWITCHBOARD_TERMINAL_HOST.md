@@ -160,8 +160,8 @@ child, so it carries the original `RunCommand`, exit status and first-run flag f
 Existing `Grid::serialize` writes styled lines but no cursor, modes or alternate screen. A
 new `Grid::handoff_snapshot` writes, in this order:
 
-1. primary scrollback and viewport, omitting the line break after a wrapped row so canonical
-   lines stay intact for later reflow;
+1. primary scrollback and viewport, with a restore-only sequence marking each wrapped row so
+   canonical lines stay intact for later reflow;
 2. primary cursor state, saved cursor, character sets and tab stops;
 3. when active, `?1049h` and the alternate viewport;
 4. scroll region and the modes that change input or rendering (application cursor keys,
@@ -171,8 +171,8 @@ new `Grid::handoff_snapshot` writes, in this order:
    cursor home.
 
 Snapshots are parsed only by the next engine and never reach a real terminal. Panes are
-created at the sizes in the manifest. Kitty and Sixel images, selection and scroll position
-are not preserved.
+created at the sizes in the manifest. Kitty and Sixel images, selection, scroll position and
+shell command markers (OSC 133) on existing output are not preserved.
 
 A pause can land inside an escape sequence or UTF-8 character. vte acts on a sequence only
 when it completes, so the old grid has not applied an unfinished one. A small scanner, tested
