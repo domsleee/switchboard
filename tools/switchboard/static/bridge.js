@@ -627,7 +627,7 @@
   // Ctrl+S never interrupts a turn, unlike Escape.
   function sendToClaude(message,reply,unchanged){
     const box=claudePrompt();
-    if(!box)return reply(false,'Claude is not at its prompt. Open Terminal to see what it needs.');
+    if(!box)return reply(false,"Waiting for Claude's input box.");
     if(box.draft&&box.stashed)return reply(false,'Claude already holds a stashed prompt and a new draft in Terminal. Send or clear the draft there first.');
     const wait=(done,tries,then)=>{const now=claudePrompt();if(now&&done(now))return then(true);if(!tries)return then(false);setTimeout(()=>wait(done,tries-1,then),50);};
     const send=()=>{

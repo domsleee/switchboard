@@ -980,6 +980,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       if(pendingFor(sent.key)!==sent){if(ok&&message&&!pendingFor(sent.key)&&identity(target)===sent.key)sendStatus(message,sent);return;}
       pendingSends.delete(sent.key);if(!ok){restoreDraft(sent);if(sent.detachedFiles)attachments.set(sent.key,[...sent.files,...fileList(sent.key).filter(item=>!sent.files.includes(item))]);}
       sendQueued(sent.key,ok);
+      if(ok&&sent.holds)sending(sent.target,sent.command&&!sent.skill);
       if(ok){clearSentDraft(sent);if(sent.command&&!sent.skill){outgoing.set(sent.key,(outgoing.get(sent.key)||[]).filter(item=>item!==sent));if(identity(target)===sent.key)paint();}else sendItem(sent,sent.native||sent.relay?'queued':'sent');}
       else{notSent(sent.pane);sendItem(sent,uncertain?'uncertain':'failed',message);}
       returnToConversation(sent);
@@ -1043,9 +1044,22 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       sent.waitingForAgent=false;Object.assign(sent,{native,thread:chat.thread,frame:target.frame,pane:target.key,unbound:false,at:Date.now(),baseline:startCursor+messages.length-1,earlier:new Set(messages.filter(item=>item.role==='user'&&item.timestamp).map(item=>item.timestamp)),state:'sending'});
       pendingSends.set(sent.key,sent);paintFiles();paint();void deliver(sent,target);
     }
+    // Claude's input box can be gone for a moment (a redraw) or until a dialog or a
+    // collapsed pane clears. Nothing was typed, so the message stays on its way and is
+    // tried again. Computers that have not updated still answer with the second text.
+    const AWAITING_PROMPT=new Set(["Waiting for Claude's input box.",'Claude is not at its prompt. Open Terminal to see what it needs.']);
+    function holdSend(sent){
+      if(pendingFor(sent.key)!==sent)return;
+      // The tab should not read as Working while nothing has reached Claude.
+      if(!sent.holds)notSent(sent.pane);
+      const delay=Math.min(15000,1000*2**(sent.holds||0));sent.holds=(sent.holds||0)+1;sent.attempt=(sent.attempt||0)+1;
+      if(identity(target)===sent.key)sendStatus('Your message will send as soon as Claude can take it.',sent);
+      setTimeout(()=>{if(pendingFor(sent.key)===sent)void deliver(sent,sent.target);},delay);
+    }
     async function deliver(sent,current){
       const {native,key,id,payload,skill}=sent,command=sent.command&&!skill;
-      sending(current,command);
+      sent.target=current;
+      if(!sent.holds)sending(current,command);
       if(native){
         const prior=retryKeys.get(key),sendKey=prior?.payload===payload?prior.id:id;sent.sendKey=sendKey;retryKeys.set(key,{payload,id:sendKey});
         await sendNative(sent);return;
@@ -1058,12 +1072,17 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
           // An accepted first message starts the connection timer, whatever the pane reads next.
           if(response.ok&&sent.unbound){firstSends.add(sent.pane);if(identity(selection())===sent.key){updateActivity();status(unboundNotice(),loaded);}}
           // A draft typed in Terminal is set aside and restored; the relay says if it was not.
-          if(response.status!==404){sent.relay=true;complete(sent,response.ok,response.ok?(await response.json().catch(()=>({}))).notice||'':(await response.text())||'Could not send the reply. Your draft is kept.');return;}
+          if(response.status!==404){
+            sent.relay=true;
+            const refusal=response.ok?'':await response.text();
+            if(AWAITING_PROMPT.has(refusal)){holdSend(sent);return;}
+            complete(sent,response.ok,response.ok?(await response.json().catch(()=>({}))).notice||'':refusal||'Could not send the reply. Your draft is kept.');return;
+          }
         }catch(error){const timeout=error.name==='TimeoutError';complete(sent,false,timeout?'No confirmation from the terminal. Check it before trying again; your draft is kept.':'Could not reach this computer. Your draft is kept.',timeout);return;}
       }
       // Agents without a native reply API need the visible terminal connection.
       // Attach only after leaving Conversation, then wait for the selected pane.
-      if(command||current.terminalReady===false){
+      if(!sent.holds&&(command||current.terminalReady===false)){
         sent.returnHere=!command;sent.modeRevision=modeRevision;sent.navigationRevision=navigationRevision;show(false,true);
         const deadline=Date.now()+10000;
         while(pendingFor(key)===sent&&identity(selection())===key&&!selection()?.terminalReady&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,50));
@@ -1073,11 +1092,13 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       // Found by id until its result arrives, even once the transcript acknowledged it.
       bridgeSends.set(id,sent);
       sent.frame.contentWindow.postMessage({type:'zellij-conversation-paste',id,pane_id:current.pane,agent:current.agent,submit:true,text:payload},location.origin);
-      setTimeout(()=>complete(sent,false,'No confirmation from the terminal. Check it before trying again; your draft is kept.'),4000);
+      const attempt=sent.attempt=(sent.attempt||0)+1;
+      setTimeout(()=>{if(sent.attempt===attempt)complete(sent,false,'No confirmation from the terminal. Check it before trying again; your draft is kept.');},4000);
     }
     window.addEventListener('message',event=>{
       if(event.origin!==location.origin||event.data?.type!=='zellij-conversation-paste-result')return;
       const sent=bridgeSends.get(event.data.id);if(!sent||event.source!==sent.frame?.contentWindow)return;bridgeSends.delete(sent.id);
+      if(!event.data.ok&&AWAITING_PROMPT.has(event.data.error)){holdSend(sent);return;}
       complete(sent,event.data.ok,event.data.ok?event.data.notice||'':event.data.error||'Open the terminal and try again.');
     });
     function update(){

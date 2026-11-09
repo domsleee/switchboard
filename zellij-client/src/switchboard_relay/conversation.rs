@@ -72,6 +72,9 @@ const REPLY_RETRY_WINDOW: Duration = Duration::from_secs(9);
 /// after 20, so a reply must not be typed once the shorter of those is close.
 const TYPE_WITHIN: Duration = Duration::from_secs(13);
 const NOT_RESPONDING: &str = "The terminal did not respond, so nothing was sent. Try again.";
+/// Claude shows no input box, so nothing was typed. Conversation matches this text,
+/// keeps the message on its way and tries again.
+const AWAITING_PROMPT: &str = "Waiting for Claude's input box.";
 
 /// Repeats a read that failed. Reading changes nothing, and a busy computer can
 /// time out or fail one `zellij action` that works moments later. The cause
@@ -755,10 +758,13 @@ pub(super) async fn reply_local(host: &Host, reply: Reply) -> Result<Json<Value>
     let id = reply.pane_id.to_string();
     let session = &reply.session;
     // Only a fresh read counts: a dialog may have replaced the box since `screen`.
-    let prompt = read_prompt(host, session, &id, retry_until).await?.ok_or((
-        StatusCode::CONFLICT,
-        "Claude is not at its prompt. Open Terminal to see what it needs.",
-    ))?;
+    // A resize redraws the whole screen, so a missing box often returns at once.
+    let prompt = match read_prompt(host, session, &id, retry_until).await? {
+        Some(prompt) => prompt,
+        None => wait_for_prompt(host, session, &id, |_| true)
+            .await
+            .ok_or((StatusCode::CONFLICT, AWAITING_PROMPT))?,
+    };
     // A draft typed in Terminal goes into Claude's stash (Ctrl+S), which keeps its
     // cursor, shell mode and pasted blocks; Claude puts it back once the reply is
     // submitted, whether it runs now or waits in the queue. Ctrl+S never
@@ -1357,9 +1363,17 @@ esac
         )
         .unwrap();
         assert_eq!(
-            reply_local(&host, reply("hi")).await.unwrap_err().0,
-            StatusCode::CONFLICT
+            reply_local(&host, reply("hi")).await.unwrap_err(),
+            (StatusCode::CONFLICT, AWAITING_PROMPT)
         );
+        assert!(!actions.exists());
+        // A box that returns during the wait, as after a resize redraw, takes the reply.
+        let (sent, ()) = tokio::join!(reply_local(&host, reply("hi")), async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            std::fs::write(&screen, CLAUDE_IDLE).unwrap();
+        });
+        assert_eq!(sent.unwrap().0["ok"], true);
+        std::fs::remove_file(&actions).unwrap();
         for bad in ["", "  ", "a\x1b[201~b", &"x".repeat(REPLY_LIMIT + 1)] {
             assert_eq!(
                 reply_local(&host, reply(bad)).await.unwrap_err().0,
