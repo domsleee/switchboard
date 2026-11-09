@@ -45,7 +45,7 @@ test('Conversation shows the model, animates real work and keeps delivery receip
   assert.equal(await page.locator('.conversation-messages').evaluate(node=>[...node.children].filter(child=>!child.hidden).pop().className),'conversation-working');
   if(process.env.MODE_SCREENSHOTS)await page.screenshot({path:process.env.MODE_SCREENSHOTS+'/conversation-working.png'});
   await page.emulateMedia({reducedMotion:'reduce'});
-  assert.equal(await working.evaluate(node=>getComputedStyle(node,'::before').animationName),'none');
+  assert.equal(await working.evaluate(node=>getComputedStyle(node.firstElementChild).animationName),'conversation-sweep','The Thinking sweep ignores reduced motion');
   await page.emulateMedia({reducedMotion:'no-preference'});
   model='gpt-6-astra';effort='high';
   await Promise.all([page.waitForResponse(r=>r.url().includes('/api/chats/')),page.evaluate(()=>intervals.forEach(fn=>fn()))]);
