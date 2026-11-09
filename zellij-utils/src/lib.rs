@@ -5,6 +5,7 @@ pub mod consts;
 pub mod data;
 pub mod envs;
 pub mod errors;
+pub mod handoff;
 pub mod home;
 #[cfg(not(windows))]
 mod home_unix;

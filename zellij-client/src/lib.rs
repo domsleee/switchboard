@@ -1365,6 +1365,7 @@ pub fn start_client(
         .name("router".to_string())
         .spawn({
             let os_input = os_input.clone();
+            let own_session_name = own_session_name.clone();
             let mut should_break = false;
             let mut consecutive_unknown_messages_received = 0;
             move || loop {
@@ -1381,6 +1382,21 @@ pub fn start_client(
                         }
                     },
                     Err(IpcReceiveError::Disconnected) => {
+                        if zellij_utils::handoff::in_progress(&own_session_name)
+                            && zellij_utils::handoff::wait_for_new_engine(|| {
+                                zellij_utils::sessions::session_exists(&own_session_name)
+                                    .unwrap_or(false)
+                            })
+                        {
+                            os_input.finish_reconnect();
+                            send_client_instructions
+                                .send(ClientInstruction::SwitchSession(ConnectToSession {
+                                    name: Some(own_session_name.clone()),
+                                    ..Default::default()
+                                }))
+                                .unwrap();
+                            break;
+                        }
                         log::error!("Lost connection to the Zellij server");
                         send_client_instructions
                             .send(ClientInstruction::UnblockInputThread)

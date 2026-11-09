@@ -25,8 +25,12 @@ const MANIFEST_VERSION: u32 = 1;
 const INPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const SETTLE_TIMEOUT: Duration = Duration::from_secs(3);
 const FROZEN_WAIT_LIMIT: Duration = Duration::from_secs(30);
+/// Time for viewers, which poll for the marker, to stop sending input before
+/// the engine starts discarding it.
+const VIEWER_INPUT_GRACE: Duration = Duration::from_millis(150);
 
 static FROZEN: AtomicBool = AtomicBool::new(false);
+static HANDING_OVER: AtomicBool = AtomicBool::new(false);
 
 /// While frozen, clients cannot change what is being snapshotted.
 pub(crate) fn is_frozen() -> bool {
@@ -41,6 +45,9 @@ pub(crate) fn freeze_if_taking_over() {
 }
 
 pub(crate) fn unfreeze() {
+    if let Ok(session) = zellij_utils::envs::get_session_name() {
+        zellij_utils::handoff::clear(&session);
+    }
     FROZEN.store(false, Ordering::SeqCst);
 }
 
@@ -183,9 +190,20 @@ pub(crate) fn hand_over(
     let hosted = os_input
         .terminal_host()
         .ok_or("this session has no terminal host")?;
-    if FROZEN.swap(true, Ordering::SeqCst) {
+    if HANDING_OVER.swap(true, Ordering::SeqCst) {
         return Err("a handoff is already in progress".to_string());
     }
+    let marked = zellij_utils::envs::get_session_name()
+        .map_err(|error| error.to_string())
+        .and_then(|session| {
+            zellij_utils::handoff::mark(&session).map_err(|error| error.to_string())
+        });
+    if let Err(error) = marked {
+        HANDING_OVER.store(false, Ordering::SeqCst);
+        return Err(format!("cannot mark the handoff: {error}"));
+    }
+    std::thread::sleep(VIEWER_INPUT_GRACE);
+    FROZEN.store(true, Ordering::SeqCst);
     hosted.hold_exits();
     let prepared = (|| {
         flush_writes(senders)?;
@@ -262,7 +280,8 @@ pub(crate) fn hand_over(
     if prepared.is_err() {
         let _ = hosted.resume_output();
         hosted.release_exits();
-        FROZEN.store(false, Ordering::SeqCst);
+        unfreeze();
+        HANDING_OVER.store(false, Ordering::SeqCst);
         return prepared;
     }
     hosted.detach();

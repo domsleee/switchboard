@@ -16,7 +16,7 @@ use std::{
 };
 use zellij_utils::{
     cli::CliArgs,
-    data::Style,
+    data::{ConnectToSession, Style},
     input::{config::Config, options::Options},
     ipc::{ClientToServerMsg, ExitReason, PixelDimensions, ServerToClientMsg},
     pane_size::{Size, SizeInPixels},
@@ -61,7 +61,13 @@ pub fn zellij_server_listener(
                 let mut attachment_complete_tx = attachment_complete_tx;
                 let mut host_query_seed_msgs: Option<Vec<ClientToServerMsg>> = None;
                 let mut switched_from_previous_session = false;
+                let mut moving_to_new_engine = false;
                 'reconnect_loop: loop {
+                    let viewer_hidden = if moving_to_new_engine {
+                        os_input.remembered_viewer_hidden()
+                    } else {
+                        viewer_hidden
+                    };
                     let reconnect_info = reconnect_to_session.take();
                     let initial_layout = reconnect_info.as_ref().and_then(|r| r.layout.clone());
                     let path = {
@@ -127,7 +133,21 @@ pub fn zellij_server_listener(
                         .is_client_read_only(&web_client_id);
 
 
-                    let session_exists = session_manager.session_exists(&session_name).unwrap_or(false);
+                    // Read before the socket: adoption clears this marker once the socket exists.
+                    let moving = moving_to_new_engine || zellij_utils::handoff::in_progress(&session_name);
+                    let mut session_exists = session_manager.session_exists(&session_name).unwrap_or(false);
+
+                    // Creating a session here would replace the one that is moving.
+                    if !session_exists && moving {
+                        session_exists = zellij_utils::handoff::wait_for_new_engine(|| {
+                            session_manager.session_exists(&session_name).unwrap_or(false)
+                        });
+                        if !session_exists {
+                            log::error!("No engine took over session {session_name}");
+                            client_connection_bus.close_connection();
+                            return;
+                        }
+                    }
 
                     if is_read_only && !session_exists {
                         log::error!("Read only tokens cannot create new sessions.");
@@ -231,6 +251,14 @@ pub fn zellij_server_listener(
                         let _ = tx.send(());
                     }
 
+                    if std::mem::take(&mut moving_to_new_engine) {
+                        os_input.finish_reconnect();
+                        // The browser may have been resized while disconnected.
+                        client_connection_bus.send_control(
+                            WebServerToWebClientControlMessage::QueryTerminalSize,
+                        );
+                    }
+
                     if switched_from_previous_session {
                         client_connection_bus.send_control(
                             WebServerToWebClientControlMessage::SwitchedSession {
@@ -240,6 +268,7 @@ pub fn zellij_server_listener(
                     }
 
                     let mut unknown_message_count = 0;
+                    let mut connection_lost = false;
                     loop {
                         let msg = os_input.recv_from_server();
                         if msg.is_some() {
@@ -358,10 +387,20 @@ pub fn zellij_server_listener(
                                     log::error!("Error: Received more than 1000 consecutive unknown server messages, disconnecting.");
                                     // this probably means we're in an infinite loop, let's
                                     // disconnect so as not to cause 100% CPU
+                                    connection_lost = true;
                                     break;
                                 }
                             },
                         }
+                    }
+                    if connection_lost && zellij_utils::handoff::in_progress(&session_name) {
+                        os_input.begin_reconnect();
+                        reconnect_to_session = Some(ConnectToSession {
+                            name: Some(session_name),
+                            ..Default::default()
+                        });
+                        moving_to_new_engine = true;
+                        continue 'reconnect_loop;
                     }
                     if reconnect_to_session.is_none() {
                         break;
