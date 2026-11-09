@@ -731,6 +731,27 @@ test('integrated Conversation journeys use production markup and preserve delive
     assert.equal(await header(),'beta · Fixture desktop','The chat\'s own project wins once it is known');
    }finally{await f.close();}
   });
+  await t.test('clicking the header opens a new tab dialog on that machine and folder',async()=>{
+   for(const viewport of [{desktop:true,viewport:{width:1280,height:844}},{viewport:{width:390,height:844}}]){
+    const f=await fixture({agent:'claude',...viewport}),{page}=f;try{
+     f.paneCwd='/srv/gamma';await f.refresh();
+     await page.getByText('Review response',{exact:true}).waitFor();
+     const context=page.locator('.conversation-context');
+     assert.equal(await context.getAttribute('title'),'New tab in gamma · Fixture desktop');
+     await page.evaluate(()=>localStorage.setItem('switchboard-new-tab-projects',JSON.stringify({fixture:'remembered'})));
+     await context.click();
+     await page.locator('#new-tab-dialog[open]').waitFor();
+     assert.equal(await page.locator('#new-tab-title').textContent(),'New tab');
+     assert.equal(JSON.parse(await page.locator('#new-tab-target').inputValue())[0],'fixture');
+     assert.equal(await page.locator('#new-tab-project').inputValue(),'/srv/gamma','The tab\'s folder replaces the remembered one');
+     if(process.env.MODE_SCREENSHOTS)await page.screenshot({path:path.join(process.env.MODE_SCREENSHOTS,`header-new-tab-${viewport.desktop?'desktop':'phone'}.png`)});
+     await page.keyboard.press('Escape');await page.locator('#new-tab-dialog:not([open])').waitFor({state:'attached'});
+     // The + button still starts from the remembered folder.
+     await page.evaluate(()=>openNewTabDialog(false));
+     assert.equal(await page.locator('#new-tab-project').inputValue(),'remembered');
+    }finally{await f.close();}
+   }
+  });
   await t.test('a tab opened without a prompt keeps its project until the pane reports where it is',async()=>{
    const f=await fixture({agent:'claude',desktop:true,viewport:{width:1280,height:844}}),{page}=f;try{
     await page.getByText('Review response',{exact:true}).waitFor();

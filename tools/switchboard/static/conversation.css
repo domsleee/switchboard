@@ -34,7 +34,8 @@
 .conversation-heading strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:15px;font-weight:600;letter-spacing:-.012em;line-height:1.35;color:#f4f4f5}
 .conversation-subtitle{display:flex;align-items:center;gap:10px;min-width:0;font-size:12.5px;line-height:1.4;color:var(--muted)}
 .conversation-subtitle:empty,.conversation-subtitle:not(:has(:not(:empty))){display:none}
-.conversation-context{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.conversation-context{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;padding:0;border:0;border-radius:0;background:none;color:inherit;font:inherit;text-align:left}
+.conversation-context:hover{color:#f2f2f4}
 .conversation-context:empty{display:none}
 /* Desktop: one row reading "project · computer / title", with the status after it. */
 @media (min-width:701px) and (not (pointer:coarse)),(min-width:1001px){

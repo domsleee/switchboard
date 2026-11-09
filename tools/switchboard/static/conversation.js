@@ -181,7 +181,7 @@
     draft.addEventListener('focus',()=>{refreshSkills();paintCompletions();});draft.addEventListener('click',()=>paintCompletions());draft.addEventListener('blur',closeCompletions);
     return {paint:paintCompletions,close:closeCompletions,key:completionKey,expand:expandSkills,isSkill,refresh:refreshSkills,decorate};
   }
-  window.SwitchboardConversation={agentIcons,attachCompletions,install({selection,terminal,openConversation=()=>false,modeChanged=()=>{},viewed=()=>{},sending=()=>{},notSent=()=>{},switchModel=null,cancelSwitch=()=>{},idle=()=>{}}){
+  window.SwitchboardConversation={agentIcons,attachCompletions,install({selection,terminal,openConversation=()=>false,modeChanged=()=>{},viewed=()=>{},sending=()=>{},notSent=()=>{},switchModel=null,cancelSwitch=()=>{},idle=()=>{},newTabHere=()=>{}}){
     const root=document.getElementById('terminals'),drafts=new Map(),attachments=new Map(),retryKeys=new Map();
     const mobile=matchMedia('(max-width:700px), (pointer:coarse) and (max-width:1000px)').matches;
     const modeKey=mobile?'switchboard-mobile-view-mode':'switchboard-view-mode';
@@ -227,7 +227,7 @@
     panel.addEventListener('click',routeLink);panel.addEventListener('auxclick',routeLink);
     // CSS keeps a hidden panel laid out (see conversation.css), so hide it from assistive technology here.
     const setPanelHidden=value=>{panel.hidden=value;panel.setAttribute('aria-hidden',String(value));};setPanelHidden(true);panel.tabIndex=-1;panel.setAttribute('aria-label','Agent conversation');
-    const header=el('header'),heading=el('div',undefined,'conversation-heading'),title=el('strong'),model=el(switchModel?'button':'span',undefined,'conversation-model'),activity=el('span',undefined,'conversation-activity'),terminalAction=el('button','Open Terminal','conversation-terminal-action');model.title=switchModel?'Switch between Claude and Codex with context':'Last reported model';if(switchModel){model.type='button';model.setAttribute('aria-label','Switch model with context');model.onclick=()=>switchModel(target);}const cancelModel=el('button','×','conversation-model-cancel');cancelModel.type='button';cancelModel.hidden=true;cancelModel.setAttribute('aria-label','Cancel model switch');cancelModel.title='Cancel model switch';cancelModel.onclick=()=>cancelSwitch(target);activity.setAttribute('role','status');terminalAction.type='button';terminalAction.hidden=true;terminalAction.onclick=()=>show(false);const context=el('span',undefined,'conversation-context'),cost=el('button',undefined,'conversation-cost'),subtitle=el('div',undefined,'conversation-subtitle');subtitle.append(context,activity);heading.append(title,subtitle);header.append(heading,terminalAction);
+    const header=el('header'),heading=el('div',undefined,'conversation-heading'),title=el('strong'),model=el(switchModel?'button':'span',undefined,'conversation-model'),activity=el('span',undefined,'conversation-activity'),terminalAction=el('button','Open Terminal','conversation-terminal-action');model.title=switchModel?'Switch between Claude and Codex with context':'Last reported model';if(switchModel){model.type='button';model.setAttribute('aria-label','Switch model with context');model.onclick=()=>switchModel(target);}const cancelModel=el('button','×','conversation-model-cancel');cancelModel.type='button';cancelModel.hidden=true;cancelModel.setAttribute('aria-label','Cancel model switch');cancelModel.title='Cancel model switch';cancelModel.onclick=()=>cancelSwitch(target);activity.setAttribute('role','status');terminalAction.type='button';terminalAction.hidden=true;terminalAction.onclick=()=>show(false);const context=el('button',undefined,'conversation-context');context.type='button';context.onclick=()=>{if(target)newTabHere({host:target.host,project:projectPath()});};const cost=el('button',undefined,'conversation-cost'),subtitle=el('div',undefined,'conversation-subtitle');subtitle.append(context,activity);heading.append(title,subtitle);header.append(heading,terminalAction);
     const costDetails=el('div',undefined,'conversation-cost-details');costDetails.popover='auto';costDetails.setAttribute('role','dialog');costDetails.setAttribute('aria-label','API cost breakdown');
     cost.type='button';cost.popoverTargetElement=costDetails;cost.setAttribute('aria-haspopup','dialog');
     const notice=el('p','Loading this terminal’s conversation…','conversation-notice');notice.setAttribute('role','status');
@@ -284,6 +284,7 @@
     panel.append(costDetails,header,notice,recovery,list,historyStatus,actions,question,asyncShortcut,form);root.append(panel);
     const identity=t=>t?JSON.stringify([t.key,t.chatId]):null;
     let chat=null;
+    const projectPath=()=>String(chat?.project||target?.project||'').replace(/[\\/]+$/,'');
     const binding=()=>chat;
     const pendingFor=(key=identity(target))=>pendingSends.get(key);let queuedSubmit=null;
     function status(text,quiet=false){if(launchShown()&&transitional.has(text))quiet=true;if(notice.textContent!==text)notice.textContent=text;notice.hidden=quiet;}
@@ -377,8 +378,8 @@
       insert.disabled=!!pendingFor();
       // While the agent works, an empty composer offers Stop in the send button's place.
       form.classList.toggle('can-stop',(state==='working'||state==='waiting'&&target.agent==='claude'||state==='input'&&target.turnState==='working'&&pendingAsyncQuestion())&&!!target?.session&&Number.isInteger(target?.pane));stop.title=state==='waiting'?'Stop background tasks':'Interrupt the agent (sends Esc)';
-      const project=String(chat?.project||target?.project||'').replace(/[\\/]+$/,'').split(/[\\/]/).pop();
-      const where=[project,target?.computer].filter(Boolean).join(' · ');if(context.textContent!==where)context.textContent=where;
+      const project=projectPath().split(/[\\/]/).pop();
+      const where=[project,target?.computer].filter(Boolean).join(' · ');if(context.textContent!==where){context.textContent=where;context.title='New tab in '+where;}
       paintCost();
       const placeholder=target?.agent?`Ask ${providerLabel()} a follow-up…`:'Message…';if(draft.placeholder!==placeholder)draft.placeholder=placeholder;
       transportNotice.hidden=!chat||!(target?.terminalReady===false&&target?.agent!=='claude'&&!(target?.agent==='codex'&&/^[0-9a-f-]{36}$/.test(chat.thread||'')));
