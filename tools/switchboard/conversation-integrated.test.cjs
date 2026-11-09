@@ -42,7 +42,7 @@ test('integrated Conversation journeys use production markup and preserve delive
    if(p.endsWith('/new-tab')&&route.request().method()==='POST'){f.newTabs.push(route.request().postDataJSON());if(f.holdCreation)await new Promise(resolve=>f.releaseCreation=resolve);return json({pane_id:3,tab_id:3});}
    if(p.startsWith('/hosts/')){
     f.connections.push(p);
-    return route.fulfill({contentType:'text/html',body:`<script>let active=${JSON.stringify(pane(1))};const state=id=>parent.postMessage({type:'zellij-state',focus_id:id,payload:{session_name:'main',active_pane:active,panes:${JSON.stringify(f.tabs.map(pane))}}},location.origin);addEventListener('message',event=>{const data=event.data;if(data.type==='zellij-focus'){active=${JSON.stringify(f.tabs.map(pane))}.find(p=>p.pane_id===data.pane_id);state(data.focus_id);}else if(data.type==='zellij-conversation-paste'){parent.reviewPastes.push(data);if(!parent.reviewHoldBridge)parent.postMessage({type:'zellij-conversation-paste-result',id:data.id,ok:true},location.origin);}else if(data.type==='zellij-interrupt'){(parent.reviewInterrupts||=[]).push(data);parent.postMessage({type:'zellij-interrupt-result',id:data.id,ok:!parent.reviewRefuseInterrupt},location.origin);}});state();</script>`});
+    return route.fulfill({contentType:'text/html',body:`<script>let active=${JSON.stringify(pane(1))};const state=id=>parent.postMessage({type:'zellij-state',focus_id:id,payload:{session_name:'main',active_pane:active,panes:${JSON.stringify(f.tabs.map(pane))}}},location.origin);addEventListener('message',event=>{const data=event.data;if(data.type==='zellij-focus'){if(!data.preserve_focus)window.frameElement.focus();active=${JSON.stringify(f.tabs.map(pane))}.find(p=>p.pane_id===data.pane_id);state(data.focus_id);}else if(data.type==='zellij-conversation-paste'){parent.reviewPastes.push(data);if(!parent.reviewHoldBridge)parent.postMessage({type:'zellij-conversation-paste-result',id:data.id,ok:true},location.origin);}else if(data.type==='zellij-interrupt'){(parent.reviewInterrupts||=[]).push(data);parent.postMessage({type:'zellij-interrupt-result',id:data.id,ok:!parent.reviewRefuseInterrupt},location.origin);}});state();</script>`});
    }
    if(p.startsWith('/api/'))return json({});
    const file=path.join(__dirname,'static',p==='/'?'index.html':p.slice(1));
@@ -60,6 +60,36 @@ test('integrated Conversation journeys use production markup and preserve delive
   return f;
  }
  try{
+  await t.test('Performance dashboard preserves conversation drafts, terminal connections and review state',async()=>{
+   const f=await fixture({desktop:true,viewport:{width:1280,height:900}}),{page}=f;
+   try{
+    const acknowledgements=[];
+    await page.route('**/api/timings',route=>route.fulfill({json:{computers:[{name:'Fixture Mac',local:true,series:[]}]}}));
+    await page.route('**/api/attention/ack',route=>{acknowledgements.push(route.request().postDataJSON());return route.fulfill({json:{}});});
+    await page.getByLabel('Reply draft').fill('Keep this draft while checking performance');
+    const selected=await page.evaluate(()=>selected);
+    for(const mode of ['Conversation','Terminal']){
+     await page.getByRole('button',{name:mode,exact:true}).click();
+     await page.evaluate(()=>{window.perfFrames=[...document.querySelectorAll('#terminals>iframe')];window.perfSources=perfFrames.map(frame=>frame.getAttribute('src'));window.perfCommands=[];for(const frame of perfFrames){const send=frame.contentWindow.postMessage;frame.contentWindow.postMessage=function(message,...args){if(document.querySelector('#panel').open)perfCommands.push(message.type);return send.call(frame.contentWindow,message,...args);};}});
+     const connections=f.connections.length;
+     await page.getByRole('button',{name:'Performance dashboard',exact:true}).click();
+     await page.getByText('Performance dashboard',{exact:true}).waitFor();
+     await page.locator('#timing-computer').selectOption('Fixture Mac');
+     const reviews=acknowledgements.length;await f.refresh();
+     await page.keyboard.press('Alt+l');
+     assert.equal(await page.evaluate(()=>selected),selected,'Dialog keeps tab navigation shortcuts inside it');
+     assert.equal(acknowledgements.length,reviews,'Refreshing attention behind the dashboard does not acknowledge other output');
+     assert.equal(f.connections.length,connections,'Dashboard does not attach a viewer');
+     assert.equal(await page.evaluate(()=>perfFrames.every((frame,i)=>frame===document.querySelectorAll('#terminals>iframe')[i]&&frame.getAttribute('src')===perfSources[i])),true);
+     assert.deepEqual(await page.evaluate(()=>perfCommands.filter(type=>/focus|size-owner/.test(type))),[],'Dashboard does not send terminal focus or sizing requests');
+     await page.keyboard.press('Escape');await page.waitForFunction(()=>!document.querySelector('#panel').open);
+     if(mode==='Conversation')assert.equal(await page.getByLabel('Reply draft').evaluate(node=>node===document.activeElement),true,'Closing returns focus to the draft');
+     else await page.waitForFunction(()=>document.querySelector('#terminals>iframe.active')===document.activeElement);
+    }
+    await page.getByRole('button',{name:'Conversation',exact:true}).click();
+    assert.equal(await page.getByLabel('Reply draft').inputValue(),'Keep this draft while checking performance');
+   }finally{await f.close();}
+  });
   await t.test('GitHub preview owns Escape, keeps drafts, and closes on navigation',async()=>{
    const f=await fixture({desktop:true,viewport:{width:1400,height:900},messages:[{role:'assistant',text:'Review https://github.com/example/project/pull/42'}]}),{page}=f;
    try{

@@ -2,7 +2,7 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const tab=(host,id)=>({host,session:'main',id,position:0,name:host+' terminal',panes:[{pane_id:id,is_plugin:false,tab_position:0}]});
-const statics=['index.html','app.js','model-picker.js','bridge.js','close.js','titles.js','pairing-notice.js','style.css','messages.html','messages.js','messages.css','computers.html','computers.js'];
+const statics=['index.html','app.js','model-picker.js','bridge.js','close.js','titles.js','pairing-notice.js','style.css','messages.html','messages.js','messages.css','computers.html','computers.js','performance.js'];
 
 // Synthetic hosts and fixture terminals only; never a live relay.
 test('Panel navigation moves between sections and keeps terminals connected',
@@ -22,6 +22,7 @@ test('Panel navigation moves between sections and keeps terminals connected',
       if(pathname.startsWith('/api/hosts/'))return json({id:pathname.split('/')[3],name:pathname.endsWith('mac')?'Mac':'Windows',sessions:[{name:'main',web_clients_allowed:true}]});
       if(pathname==='/api/attention')return json({tabs:[tab('mac',1),tab('windows',42)],panes:[],errors:[]});
       if(pathname==='/api/logs'){logRequests++;return json({computers:[{name:'Mac',entries:[]}]});}
+      if(pathname==='/api/timings')return json({computers:[{name:'Mac',local:true,series:[]}]});
       if(pathname==='/api/mesh')return json({configured:true,computer:{name:'Mac'},mesh:{name:'My computers'},administrator:true,requests:[],members:[{name:'Mac',address:'https://192.0.2.1:8082'},{name:'Windows',address:'https://192.0.2.2:8082'}]});
       if(pathname.startsWith('/api/mesh/'))return json({});
       if(pathname.endsWith('/inboxes'))return json({machine_id:'mac',machines:[{id:'mac',name:'Mac',unread_count:1,participants:[]},{id:'windows',name:'Windows',unread_count:0,participants:[]}]});
@@ -37,7 +38,12 @@ test('Panel navigation moves between sections and keeps terminals connected',
         </script><script src="/bridge.js"></script><script>
           const socket=new WebSocket('wss://switchboard.test/ws/control');
           const pane={pane_id:${id},is_plugin:false,tab_position:0};
-          socket.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'MobileState',payload:{session_name:'main',panes:[pane],active_pane:pane,tab_viewport:{owner_active:true,cols:100,rows:40}}})}));
+          const state={session_name:'main',panes:[pane],active_pane:pane,tab_viewport:{owner_active:true,cols:100,rows:40}};
+          const publish=()=>socket.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'MobileState',payload:state})}));
+          // Current engines acknowledge hidden viewers; otherwise the real bridge
+          // deliberately disconnects this fixture after two seconds.
+          window.__zjSendControl=message=>{if(message.type==='SetViewerHidden'){state.tab_viewport.hidden=message.hidden;publish();}};
+          publish();
         </script>`});
       }
       const file=pathname==='/'?'index.html':pathname.slice(1);
@@ -130,6 +136,9 @@ test('Panel navigation moves between sections and keeps terminals connected',
     assert.equal(await page.evaluate(()=>localStorage.getItem('switchboard-media-thumbnails')),'true');
     await page.locator('#media-thumbnails').click();
     await page.locator('#close-panel').click();await terminalsIntact();
+    await page.locator('#performance').click();assert.deepEqual(await section(),at('Performance'));
+    await page.getByText('No timings yet. Switch between chats and Terminal, then return here.').waitFor();
+    await page.keyboard.press('Escape');await terminalsIntact();
     await page.evaluate(()=>document.querySelector('#pairing-notice').click());assert.deepEqual(await section(),at('Computers'));
 
     // A backdrop click closes; a click inside, or a drag from inside to the backdrop, does not.
@@ -145,7 +154,8 @@ test('Panel navigation moves between sections and keeps terminals connected',
     const standalone=await context.newPage();await standalone.goto('https://switchboard.test/messages.html');
     for(const selector of ['a[href="/"]','h1','a[href="/computers.html"]'])assert.equal(await standalone.locator(selector).isVisible(),true,selector+' visible standalone');
     await standalone.close();
-    // Phone width: full screen, title and Close above a single row of sections, no horizontal scroll.
+    // Phone width: full screen, title and Close above scrollable section tabs,
+    // with the selected tab visible and no page-wide horizontal overflow.
     await page.setViewportSize({width:390,height:844});
     await page.evaluate(()=>document.querySelector('#sidebar-utilities a[href="/messages.html"]').click());
     const box=await page.locator('#panel').boundingBox();
@@ -153,7 +163,8 @@ test('Panel navigation moves between sections and keeps terminals connected',
     await page.waitForFunction(()=>matchMedia('(max-width:700px)').matches);
     const layout=await page.evaluate(()=>{
       const tabs=[...document.querySelectorAll('#panel-tabs [role=tab]:not([hidden])')].map(tab=>tab.getBoundingClientRect());
-      return {row:new Set(tabs.map(tab=>tab.top)).size,within:tabs.every(tab=>tab.left>=0&&tab.right<=390),
+      const selected=document.querySelector('#panel-tabs [aria-selected=true]').getBoundingClientRect();
+      return {row:new Set(tabs.map(tab=>tab.top)).size,within:selected.left>=0&&selected.right<=390,
         headerAbove:document.querySelector('#panel-body>header').getBoundingClientRect().bottom<=tabs[0].top,
         orientation:document.querySelector('#panel-tabs').getAttribute('aria-orientation'),
         scroll:Math.max(document.documentElement.scrollWidth,document.querySelector('#panel').scrollWidth)};

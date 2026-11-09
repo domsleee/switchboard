@@ -2404,6 +2404,7 @@ $('ready').onclick=()=>{
   closeTabMenu(true);render();
 };
 $('settings').onclick=()=>openPanel('settings');
+$('performance').onclick=()=>openPanel('performance');
 $('size-owner').onclick=()=>{
   const item=contextItem;
   if(!item || $('size-owner').disabled)return;
@@ -2433,7 +2434,7 @@ function showSection(name,focusTab=false){
     if(focusTab)tab.focus();
   }
   if(name==='logs')loadLogs();
-  if(name==='performance')loadTimings();
+  globalThis.SwitchboardPerformance?.show(name==='performance');
   if(name==='health')globalThis.SwitchboardTasks?.load();
 }
 function openPanel(name){
@@ -2460,6 +2461,7 @@ for(const frame of panel.querySelectorAll('iframe'))frame.onload=()=>{
 };
 $('close-panel').onclick=()=>panel.close();
 panel.onclose=()=>{
+  globalThis.SwitchboardPerformance?.show(false);
   for(const frame of panel.querySelectorAll('iframe'))replaceFrameSrc(frame,'about:blank');
   const item=allTabs().find(item=>item.key===selected);
   if(item&&$('artifact-preview').hidden&&!document.querySelector('dialog[open]'))focus(item);
@@ -2505,50 +2507,6 @@ async function loadLogs(){
   finally{button.disabled=false;list.setAttribute('aria-busy','false');}
 }
 $('refresh-logs').onclick=loadLogs;
-const timingJourneys={terminal_to_conversation:'Terminal → Conversation',conversation_to_terminal:'Conversation → Terminal',terminal_input_ready:'Enable terminal typing',conversation_select:'Switch chat',conversation_load:'Load chat',conversation_connect:'Connect to agent’s chat'};
-// Below this many samples a p95 is just the slowest one or two.
-const timingMinimumForP95=20;
-async function loadTimings(){
-  const list=$('timings'),button=$('refresh-timings');
-  const element=(tag,className,text)=>{const node=document.createElement(tag);node.className=className;node.textContent=text;return node;};
-  const ms=value=>value==null?'—':value<1000?`${value} ms`:`${(value/1000).toFixed(1)} s`;
-  const stat=(label,value,title)=>{const node=element('span','timing-stat',`${label} ${value}`);if(title)node.title=title;return node;};
-  const sample=item=>{
-    const row=element('div','timing-sample','');
-    row.append(element('small','',`${ms(item.elapsed_ms)} · ${item.outcome} · ${new Date(item.time).toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}`));
-    for(const [name,value] of item.stages){
-      const stage=element('div','timing-stage',''),bar=element('i','','');
-      bar.style.width=`${Math.min(100,item.elapsed_ms?value/item.elapsed_ms*100:0)}%`;
-      const track=element('span','timing-track','');track.append(bar);
-      stage.append(element('span','',name),track,element('span','',ms(value)));row.append(stage);
-    }
-    return row;
-  };
-  const series=item=>{
-    const details=element('details','timing-series',''),summary=element('summary','',''),title=element('span','timing-title',timingJourneys[item.journey]||item.journey);
-    const enough=item.count>=timingMinimumForP95;
-    summary.append(title,element('small','',`${item.target} · ${item.build}`),stat('n',item.count),stat('p50',ms(item.p50_ms)),
-      stat('p95',enough?ms(item.p95_ms):'—',enough?'':`Needs ${timingMinimumForP95} samples`),stat('max',item.max_ms?ms(item.max_ms):'—'));
-    const outcomes=Object.entries(item.outcomes).map(([name,count])=>`${name} ${count}`);
-    details.append(summary,element('p','log-note',[...outcomes,item.hidden?`${item.hidden} left out because the page was hidden`:''].filter(Boolean).join(' · ')),...item.slowest.map(sample));
-    return details;
-  };
-  button.disabled=true;list.setAttribute('aria-busy','true');
-  try{
-    const response=await fetch('/api/timings',{cache:'no-store'});
-    if(!response.ok)throw new Error('Timings unavailable');
-    const {computers=[]}=await response.json();
-    list.replaceChildren(...computers.map(computer=>{
-      const group=element('section','log-computer','');group.append(element('h4','',computer.name));
-      if(computer.error)group.append(element('p','log-note',computer.error));
-      else if(!computer.series?.length)group.append(element('p','log-note','No timings yet'));
-      else group.append(...computer.series.map(series));
-      return group;
-    }));
-  }catch(_){list.replaceChildren(element('p','log-note','Timings unavailable; refresh to try again.'));}
-  finally{button.disabled=false;list.setAttribute('aria-busy','false');}
-}
-$('refresh-timings').onclick=loadTimings;
 // Settings, like VS Code's User and Workspace settings: each has a value shared by every browser
 // on every paired computer, and this browser may override it. Terminal frames, the Messages page
 // and this page read the result from switchboard-<key>, so they need not know which one won.

@@ -668,7 +668,15 @@ into bash, clears each line with Ctrl+Backspace, and fails if any guess goes unc
 
 ## Diagnostics
 
-Settings → Performance shows how long user-visible waits took, for each computer whose browser
+The chart icon beside Settings opens the Performance dashboard (also in Settings → Performance).
+Choose **Measured on** for the browser computer, **Viewing tabs on** for the destination, and a
+build. Cards show each journey's median; with multiple destinations they show the range of
+destination medians, never a combined percentile. Rows show sample counts, median, worst, and
+p95 once that row has 20 samples; open a row for its slowest waits and recorded stages. The
+dashboard refreshes every ten seconds only while open and visible, and retains its last data
+with a warning if refreshing fails.
+
+The dashboard shows how long user-visible waits took, for each computer whose browser
 measured them, split by build and by the computer being viewed. The browser runs the clock
 (`static/timing.js`) and the relay keeps every sample as a histogram in `timings.json`, so builds
 can be compared; the last 12 builds are retained, with the five slowest samples and their stages

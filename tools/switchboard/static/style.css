@@ -133,6 +133,7 @@ body.sidebar-collapsed #sidebar-toggle{left:8px}
 #sidebar-utilities button:hover{color:#ededed}
 #sidebar-utilities .sidebar-utility-icon{display:inline-flex;align-items:center;justify-content:center;min-width:32px;min-height:32px;padding:6px;flex-shrink:0;border-radius:4px}
 #sidebar-utilities .sidebar-utility-icon svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+#sidebar-utilities #performance{margin-left:auto}
 @media(pointer:coarse),(max-width:700px){#sidebar-utilities .sidebar-utility-icon{min-width:44px;min-height:44px}}
 #selection-tools{position:absolute;top:10px;right:12px;z-index:3;display:flex;align-items:center;gap:6px;max-width:calc(100% - 56px);padding:6px;border:1px solid #465674;background:#202b3e;border-radius:7px;box-shadow:0 4px 18px #0006;font-size:12px}
 #selection-tools[hidden]{display:none}
@@ -277,6 +278,40 @@ dialog p{font-size:12px;color:#9ba7bd}
 .timing-stage>span:last-child{text-align:right;font-variant-numeric:tabular-nums}
 .timing-track{display:block;height:4px;background:#1d222b;border-radius:2px;overflow:hidden}
 .timing-track i{display:block;height:100%;background:#9dc2fa}
+
+/* Performance is a read-only view of waits recorded by each browser computer. */
+#panel-performance>*{max-width:none}
+.perf-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:22px 0}
+.perf-heading h3{font-size:23px;letter-spacing:-.5px;margin:5px 0 8px;font-weight:600}
+.perf-heading p{color:#929bad;font-size:12px;line-height:1.5;margin:0}
+.perf-heading .perf-eyebrow{font-size:10px;letter-spacing:1.4px;color:#9dc2fa}
+.perf-heading button{padding:7px 12px;background:transparent;font-size:12px}
+.perf-filters{display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:12px}
+.perf-filters label{display:flex;flex-direction:column;gap:7px;color:#aeb8c9;font-size:11px;min-width:0}
+.perf-filters select{width:100%;min-width:0;padding:9px 10px;background:#171b23;font-size:12px;text-overflow:ellipsis}
+.perf-note{font-size:11px;line-height:1.6;color:#8590a3;margin:12px 0}
+#timing-status{margin:20px 0 12px;font-variant-numeric:tabular-nums}
+#timing-status.perf-stale{color:#e6bd75}
+.perf-cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.perf-card{padding:16px 14px;border:1px solid #2b3341;border-radius:9px;background:linear-gradient(155deg,#1c2330,#151922);min-width:0}
+.perf-card h4{font-size:12px;font-weight:500;margin:0;color:#d7dde8}
+.perf-card .perf-value{font-size:25px;line-height:1.2;letter-spacing:-.7px;font-weight:600;color:#e9f1ff;font-variant-numeric:tabular-nums;margin:18px 0 5px;overflow-wrap:anywhere}
+.perf-card-label{font-size:10px;color:#a1aec3;margin:0}
+.perf-card-meta{font-size:10px;font-variant-numeric:tabular-nums;color:#b7c4d9;margin:15px 0 7px}
+.perf-card-help{font-size:10px;line-height:1.5;color:#8590a3;margin:0}
+.perf-detail-heading{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:8px;margin:26px 0 12px}
+.perf-detail-heading h3{font-size:13px;margin:0;font-weight:500}
+.perf-detail-heading span{font-size:10px;color:#8590a3}
+#timing-series{border:1px solid #2b3341;border-radius:8px;overflow:hidden}
+#timing-series .timing-series summary{padding:12px 14px;gap:6px 12px}
+#timing-series .timing-title{flex:1 1 100%;font-size:12px}
+#timing-series .timing-stat{font-size:11px;white-space:nowrap}
+#timing-series .timing-series[open]{background:#151922}
+#timing-series .log-note{font-size:11px;line-height:1.6;padding-bottom:10px;overflow-wrap:anywhere}
+.perf-empty{font-size:12px;line-height:1.6;color:#a1aec3;margin:0;padding:18px}
+.perf-footnote{margin-top:18px}
+@media(max-width:900px){.perf-cards{grid-template-columns:repeat(2,minmax(0,1fr))}.perf-filters{grid-template-columns:1fr 1fr}.perf-filters label:first-child{grid-column:1/-1}}
+@media(max-width:420px){.perf-heading h3{font-size:21px}.perf-card{padding:14px 11px}.perf-card .perf-value{font-size:23px}.perf-filters select{min-height:44px}.perf-heading button{min-height:44px}}
 @media(prefers-reduced-motion:reduce){.toggle-state,.toggle-state::after{transition:none}#tab-empty::before,.task-dot{animation:none}.task-group>summary::before{transition:none}}
 @media(max-width:700px), (pointer:coarse) and (max-width:1000px){
   body{padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) 0 env(safe-area-inset-left,0px)}
