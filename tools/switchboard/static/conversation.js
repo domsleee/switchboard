@@ -808,7 +808,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
     function acknowledge(key,messages,startCursor){
       const sentItems=outgoing.get(key)||[],used=consumedTranscript.get(key)||new Set();
       for(const sent of sentItems){
-        if(sent.transcriptCursor!==undefined||sent.waitingForAgent)continue;
+        if(sent.transcriptCursor!==undefined||sent.waitingForAgent||sent.uploading)continue;
         // Cursors can shift down when the relay hides records that settle (interrupts, local
         // command output), so an entry written after the send also counts by its timestamp.
         const after=(item,offset)=>startCursor+offset>sent.baseline||Date.parse(item.timestamp)>=sent.at-30000&&!sent.earlier.has(item.timestamp);
@@ -826,7 +826,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       const key=identity(target),sentItems=acknowledge(key,messages,startCursor);
       const visibleOutgoing=sentItems.filter(item=>item.transcriptCursor===undefined);
       const entries=timeline();
-      const snapshot={start:startCursor,messages:entries.map(({key,item})=>JSON.stringify([key,signatureOf(item)])),outgoing:JSON.stringify(visibleOutgoing.map(({id,text,files,state,detail})=>({id,text,files:files.map(file=>file.name),state,detail})))};
+      const snapshot={start:startCursor,messages:entries.map(({key,item})=>JSON.stringify([key,signatureOf(item)])),outgoing:JSON.stringify(visibleOutgoing.map(({id,text,files,state,detail})=>({id,text,files:files.map(file=>[file.name,!!file.path]),state,detail})))};
       if(lastPaint&&lastPaint.start===snapshot.start&&lastPaint.outgoing===snapshot.outgoing&&lastPaint.messages.length===snapshot.messages.length&&snapshot.messages.every((signature,i)=>signature===lastPaint.messages[i]))return;
       lastPaint=snapshot;
       // The transcript now has the launched prompt: drop the stand-in and its starting row.
@@ -874,11 +874,11 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       }
       for(const [key,summary] of summaries)if(!summaryKeys.has(key)){summary.remove();summaries.delete(key);}
       for(const sent of visibleOutgoing){
-        const signature=JSON.stringify([sent.text,sent.files.map(file=>file.name),sent.state,sent.detail]);let entry=renderedOutgoing.get(sent.id);
+        const signature=JSON.stringify([sent.text,sent.files.map(file=>[file.name,!!file.path]),sent.state,sent.detail]);let entry=renderedOutgoing.get(sent.id);
         if(!entry||entry.signature!==signature){
           const article=el('article',undefined,'conversation-message user conversation-outgoing '+sent.state),label=el('div','You','conversation-label');article.append(label);textBlocks(article,sent.text||'');completions.decorate(article);
           article.dataset.conversationEntry='outgoing-'+sent.id;contentResize?.observe(article);
-          const mediaFiles=sent.files.filter(file=>file.kind==='image'||file.kind==='video');
+          const mediaFiles=sent.files.filter(file=>file.path&&(file.kind==='image'||file.kind==='video'));
           if(window.SwitchboardConversationMedia&&mediaFiles.length)window.SwitchboardConversationMedia.render(article,{attachments:mediaFiles.map(file=>({kind:file.kind,name:file.name,url:file.path}))},{host:sent.host});
           for(const file of sent.files.filter(file=>!window.SwitchboardConversationMedia||!mediaFiles.includes(file)))article.append(el('div',file.name,'conversation-outgoing-file'));
           const footer=el('div',undefined,'conversation-outgoing-status');footer.append(el('span',sent.detail||outgoingLabel(sent.state)));
@@ -968,13 +968,14 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       for(const file of selected){
         if(fileList(key).length>=8){if(identity(target)===key)sendStatus('Attach up to 8 files per message.');break;}
         if(!file.size||file.size>20*1024*1024){if(identity(target)===key)sendStatus('Choose a non-empty file up to 20 MB.');continue;}
-        const item={name:file.name,kind:file.type.startsWith('image/')?'image':file.type.startsWith('video/')?'video':'file',preview:file.type.startsWith('image/')?URL.createObjectURL(file):null};attachments.set(key,[...fileList(key),item]);added.push([file,item]);
+        const item={name:file.name,kind:file.type.startsWith('image/')?'image':file.type.startsWith('video/')?'video':'file',preview:file.type.startsWith('image/')?URL.createObjectURL(file):null};item.uploaded=new Promise(resolve=>item.finishUpload=resolve);attachments.set(key,[...fileList(key),item]);added.push([file,item]);
       }
       if(identity(target)===key)paintFiles();
       for(const [file,item] of added){
         try{const response=await fetch('/api/hosts/'+encodeURIComponent(host)+'/attachments?'+new URLSearchParams({name:file.name}),{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:file});
           if(!response.ok)throw Error('Could not upload '+file.name+'. Remove it and try again.');const data=await response.json();if(typeof data.path!=='string'||!data.path||/[\x00-\x1f]/.test(data.path))throw Error('Invalid attachment response');item.path=data.path;
         }catch(error){item.error=true;if(fileList().includes(item))sendStatus(error.message);}
+        item.finishUpload();
         if(fileList().includes(item))paintFiles();
       }
     }
@@ -1051,29 +1052,54 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       // Waiting: the turn ended while background work runs; the prompt still takes input.
       const asyncReply=current.agent==='codex'&&current.state==='input'&&/^[0-9a-f-]{36}$/.test(chat?.thread||'');
       if(!waiting&&!['ready','waiting','working'].includes(current.state)&&!asyncReply){sendStatus(question.hidden?'The agent needs attention in Terminal. Your draft is kept.':'Answer the agent’s question first. Your draft is kept.');return;}
-      const selected=fileList();if(selected.some(item=>!item.path)){sendStatus(selected.some(item=>item.error)?'Remove failed attachments before sending.':'Wait for attachments to finish uploading.');return;}
+      const selected=fileList(),uploading=selected.some(item=>!item.path);if(selected.some(item=>item.error)){sendStatus('Remove failed attachments before sending.');return;}
       const expanded=completions.expand(draft.value);if(expanded!==draft.value){draft.value=expanded;draft.oninput();}
-      const text=draft.value,payload=text+(selected.length?'\n\nAttached files:\n'+selected.map(item=>item.path).join('\n'):'');
+      const text=draft.value,payload=withAttachments(text,selected);
       if(/[\x00-\x08\x0b-\x1f\x7f]/.test(payload)){sendStatus('The draft contains terminal control characters. Remove them first.');return;}
       const command=/^\/[a-z][\w:.-]*(?:\s|$)/i.test(text),native=!command&&current.agent==='codex'&&/^[0-9a-f-]{36}$/.test(chat?.thread||'');
       if(command&&selected.length){sendStatus('Send commands without attachments. Your draft is kept.');return;}
       // Claude queues a command typed while it works; Codex refuses most of them.
       if(!waiting&&command&&current.agent!=='claude'&&!['ready','waiting'].includes(current.state)){sendStatus('Wait for the agent to finish before sending a command. Your draft is kept.');return;}
       if(!waiting&&current.state==='working'&&!native&&current.agent!=='claude'){sendStatus('Still connecting to this conversation. Try sending again in a moment.');return;}
-      if(new TextEncoder().encode(payload).length>(native||waiting&&(current.agent||current.launch?.agent)==='codex'?8192:16000)){sendStatus('This message is too long. Shorten it before sending.');return;}
-      const retry=native&&(outgoing.get(identity(target))||[]).find(item=>['failed','uncertain'].includes(item.state)&&item.native&&sameMessage(item.payload,payload));
+      const byteLimit=native||waiting&&(current.agent||current.launch?.agent)==='codex'?8192:16000;
+      if(tooLong(payload,byteLimit)){sendStatus(TOO_LONG);return;}
+      const retry=native&&!uploading&&(outgoing.get(identity(target))||[]).find(item=>['failed','uncertain'].includes(item.state)&&item.native&&sameMessage(item.payload,payload));
       if(retry){retrySend(retry,true);return;}
       const key=identity(target),id='conversation-'+Array.from(crypto.getRandomValues(new Uint32Array(4)),n=>n.toString(16)).join('-');
-      const items=outgoing.get(key)||[],failedBridge=!native&&items.find(item=>item.state==='failed'&&!item.native&&sameMessage(item.payload,payload));
-      const sent={id,key,pane:target.key,unbound:!chat,frame:target.frame,text,payload,files:[...selected],native,command,skill:command&&completions.isSkill(text),host:target.host,thread:chat?.thread,draftRevision:draftVersions.get(key)||0,baseline:failedBridge?failedBridge.baseline:startCursor+messages.length-1,at:failedBridge?failedBridge.at:Date.now(),earlier:failedBridge?failedBridge.earlier:new Set(messages.filter(item=>item.role==='user'&&item.timestamp).map(item=>item.timestamp)),sendKey:id,state:'sending'};
+      const items=outgoing.get(key)||[],failedBridge=!native&&!uploading&&items.find(item=>item.state==='failed'&&!item.native&&sameMessage(item.payload,payload));
+      const sent={id,key,pane:target.key,unbound:!chat,frame:target.frame,text,payload,uploading,byteLimit,files:[...selected],native,command,skill:command&&completions.isSkill(text),host:target.host,thread:chat?.thread,draftRevision:draftVersions.get(key)||0,baseline:failedBridge?failedBridge.baseline:startCursor+messages.length-1,at:failedBridge?failedBridge.at:Date.now(),earlier:failedBridge?failedBridge.earlier:new Set(messages.filter(item=>item.role==='user'&&item.timestamp).map(item=>item.timestamp)),sendKey:id,state:'sending'};
       if(failedBridge)items[items.indexOf(failedBridge)]=sent;else items.push(sent);
       if(waiting){
         sent.waitingForAgent=true;sent.detachedFiles=true;sent.state='queued';outgoing.set(key,items);takeDraft(sent);
         attachments.delete(key);paintFiles();sendStatus('');paint();flushStartup();return;
       }
       outgoing.set(key,items);pendingSends.set(key,sent);insert.disabled=true;takeDraft(sent);paintFiles();sendStatus('');paint();
-      await deliver(sent,current);
+      await deliverAfterUploads(sent,current);
     };
+    function withAttachments(text,selected){const paths=selected.map(item=>item.path).filter(Boolean);return text+(paths.length?'\n\nAttached files:\n'+paths.join('\n'):'');}
+    const TOO_LONG='This message is too long. Shorten it before sending.';
+    function tooLong(payload,limit){return new TextEncoder().encode(payload).length>limit;}
+    // Enter does not wait for uploads. The message goes out once they finish, and a
+    // failed upload puts it back in the composer with the failed file marked.
+    async function deliverAfterUploads(sent,current){
+      if(sent.uploading){
+        await Promise.all(sent.files.map(item=>item.uploaded));
+        if(pendingFor(sent.key)!==sent)return;
+        sent.uploading=false;sent.payload=withAttachments(sent.text,sent.files);
+        const failed=sent.files.find(item=>item.error);
+        if(failed||tooLong(sent.payload,sent.byteLimit)){abandonSend(sent,failed?'Could not upload '+failed.name+'. Remove it and try again.':TOO_LONG);return;}
+        if(identity(target)===sent.key)paint();
+        const latest=selection();if(identity(latest)===sent.key)current=latest;
+      }
+      await deliver(sent,current);
+    }
+    // Nothing reached the agent, so there is nothing to retry. The bubble stays only if
+    // newer typing kept the text from returning to the composer.
+    function abandonSend(sent,message){
+      sent.native=false;complete(sent,false,message);
+      if(sent.text&&drafts.get(sent.key)!==sent.text)return;
+      outgoing.set(sent.key,(outgoing.get(sent.key)||[]).filter(item=>item!==sent));if(identity(target)===sent.key)paint();
+    }
     // Startup follow-ups wait for the real pane and transcript, then use the same
     // delivery and acknowledgement path as any other reply, one at a time.
     function flushStartup(){
@@ -1082,7 +1108,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       const native=!sent.command&&target.agent==='codex'&&/^[0-9a-f-]{36}$/.test(chat.thread||'');
       if(target.state==='working'&&!native&&target.agent!=='claude')return;
       sent.waitingForAgent=false;Object.assign(sent,{native,thread:chat.thread,frame:target.frame,pane:target.key,unbound:false,at:Date.now(),baseline:startCursor+messages.length-1,earlier:new Set(messages.filter(item=>item.role==='user'&&item.timestamp).map(item=>item.timestamp)),state:'sending'});
-      pendingSends.set(sent.key,sent);paintFiles();paint();void deliver(sent,target);
+      pendingSends.set(sent.key,sent);paintFiles();paint();void deliverAfterUploads(sent,target);
     }
     // Claude's input box can be gone for a moment (a redraw) or until a dialog or a
     // collapsed pane clears. Nothing was typed, so the message stays on its way and is
