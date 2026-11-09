@@ -1261,6 +1261,7 @@ async fn asset(request: Request) -> Response {
         | "sw.js"
         | "conversation-media.js"
         | "conversation.js"
+        | "skill-editor.js"
         | "handover.js"
         | "model-picker.js"
         | "predict.js" => "application/javascript",
@@ -2833,6 +2834,7 @@ mod tests {
             ("/predict.js", "application/javascript"),
             ("/thumbnails.js", "application/javascript"),
             ("/conversation.js", "application/javascript"),
+            ("/skill-editor.js", "application/javascript"),
             ("/handover.js", "application/javascript"),
             ("/model-picker.js", "application/javascript"),
             ("/conversation-media.js", "application/javascript"),

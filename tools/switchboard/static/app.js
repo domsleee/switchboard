@@ -1,4 +1,5 @@
 const $ = id => document.getElementById(id);
+globalThis.SwitchboardSkillEditor?.install($('new-tab-prompt'));
 // "Wed 7 Oct 2026, 7:31 pm (2 hours ago)" in the viewer's locale and time zone.
 function humanTime(date,now=Date.now()){
   const units=[['year',31536e6],['month',2592e6],['week',6048e5],['day',864e5],['hour',36e5],['minute',6e4]];
@@ -1949,6 +1950,7 @@ function updateNewTabProject(){
   const computer=$('new-tab-target').selectedOptions[0]?.textContent||'this computer';
   $('new-tab-project-warning-text').textContent=state==='unknown'?folder+' isn’t on '+computer+'. The tab would open in the session’s starting folder instead.':'';
   $('new-tab-project-guess-row').hidden=!guess;$('new-tab-project-guess').textContent=guess;$('new-tab-project-guess').dataset.name=guess;
+  newTabCompletions?.paint();
 }
 let newTabProjects=[],newTabProjectMessage='',newTabProjectRequest;
 const newTabProjectLookup=newTabLookup('new-tab-project','new-tab-projects','new-tab-project-lookup',()=>newTabProjects.map(name=>{const path=name.replaceAll('\\','/');return [name,path.includes('/')?path.slice(0,path.lastIndexOf('/')):'',newTabProjectLabel(name)];}),()=>newTabProjectMessage||'No matching folders. Type a name in ~/git or a full path.',()=>{newTabProjectEdited=true;updateNewTabProject();},'new-tab-prompt');
@@ -2054,7 +2056,7 @@ function clearNewTabFiles(){
 }
 function newTabBusy(busy){
   $('new-tab-close').title=busy?'Stop and close · Esc':'Close · Esc';$('new-tab-close').setAttribute('aria-label',busy?'Stop upload and close':'Close');$('new-tab-form').classList.toggle('busy',busy);
-  for(const control of $('new-tab-form').querySelectorAll('input,textarea,select,button'))control.disabled=busy&&control.id!=='new-tab-close'&&control.id!=='handover-cancel';
+  for(const control of $('new-tab-form').querySelectorAll('input,textarea,select,button,[role="textbox"]'))control.disabled=busy&&control.id!=='new-tab-close'&&control.id!=='handover-cancel';
   if(newTabHandover){$('new-tab-target').disabled=true;$('new-tab-project').disabled=true;}
   $('new-tab-submit').disabled=busy||newTabTargetBlocked||!!newTabHandover&&!newTabHandover.context;
 }
@@ -2108,8 +2110,8 @@ function addNewTabFiles(files){
 $('new-tab-attach').onclick=()=>$('new-tab-picker').click();
 $('new-tab-picker').onchange=()=>{addNewTabFiles([...$('new-tab-picker').files]);$('new-tab-picker').value='';};
 $('new-tab-prompt').addEventListener('paste',event=>{
-  const files=[...(event.clipboardData?.files||[])];if(files.length){event.preventDefault();addNewTabFiles(files);const text=event.clipboardData.getData('text/plain');if(text){const input=$('new-tab-prompt');input.setRangeText(text,input.selectionStart,input.selectionEnd,'end');}}
-});
+  const files=[...(event.clipboardData?.files||[])];if(files.length){event.preventDefault();event.stopPropagation();addNewTabFiles(files);const text=event.clipboardData.getData('text/plain');if(text){const input=$('new-tab-prompt');input.setRangeText(text,input.selectionStart,input.selectionEnd,'end');}}
+},true);
 // Dragging files over the dialog highlights the prompt, where they land.
 let newTabDragDepth=0;
 function newTabDragging(on){$('new-tab-form').querySelector('.new-tab-composer').classList.toggle('dragging',on&&!newTabHandover);}
@@ -2117,7 +2119,7 @@ $('new-tab-form').addEventListener('dragenter',event=>{if(event.dataTransfer?.ty
 $('new-tab-form').addEventListener('dragleave',()=>{if(newTabDragDepth&&!--newTabDragDepth)newTabDragging(false);});
 $('new-tab-form').addEventListener('dragover',event=>{if(event.dataTransfer?.types.includes('Files'))event.preventDefault();});
 $('new-tab-form').addEventListener('drop',event=>{newTabDragDepth=0;newTabDragging(false);if(event.dataTransfer?.files.length){event.preventDefault();addNewTabFiles([...event.dataTransfer.files]);}});
-$('new-tab-prompt').onkeydown=event=>{if(newTabCompletions?.key(event))return;if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing&&!(matchMedia('(pointer:coarse)').matches&&!matchMedia('(any-pointer:fine)').matches)){event.preventDefault();$('new-tab-form').requestSubmit();}};
+$('new-tab-prompt').addEventListener('keydown',event=>{if(newTabCompletions?.key(event))return;if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing&&!(matchMedia('(pointer:coarse)').matches&&!matchMedia('(any-pointer:fine)').matches)){event.preventDefault();$('new-tab-form').requestSubmit();}},true);
 // On a phone the sheet rests on the on-screen keyboard, so Create stays in reach.
 function fitNewTabDialog(){
   if(newTabHandover){placeModelSwitch();return;}

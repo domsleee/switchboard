@@ -55,7 +55,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
         window.confirmCreation=()=>{count++;window.creationPane=8+count;window.creationRequested=false;state()};state();
       </script>`});}
       const file=path==='/'?'index.html':path.slice(1);
-      if(!['index.html','app.js','model-picker.js','bridge.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
+      if(!['index.html','app.js','skill-editor.js','model-picker.js','bridge.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
       return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
     });
     await page.goto('https://switchboard.test/'+(emptyMachine?'':'?host=windows&session=main&tab=42'));
@@ -105,7 +105,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
       await page.waitForFunction(()=>document.querySelector('#new-tab-dialog').open);
       assert.equal(await page.locator('#new-tab-title').textContent(),number===2?'New administrator tab':'New tab');
       assert.equal(await page.locator('#new-tab-prompt').evaluate(input=>document.activeElement===input),true);
-      assert.equal(await page.locator('#new-tab-prompt').inputValue(),'');
+      assert.equal(await page.locator('#new-tab-prompt').evaluate(node=>node.value),'');
       assert.equal(await page.getByLabel('Prompt',{exact:true}).count(),1);
       assert.equal(await page.locator('#new-tab-model').getAttribute('aria-label'),'Model: GPT-6.1 Sol, Codex, High effort');
       // Shift+Tab from the prompt reaches the model chip, which opens the picker with focus in its search.
@@ -331,7 +331,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
     await page.locator('#new-tab-picker').setInputFiles({name:'retry.png',mimeType:'image/png',buffer:png});
     uploadError=true;await page.locator('#new-tab-form button[type=submit]').click();
     await page.waitForFunction(()=>document.querySelector('#new-tab-error').textContent.includes('Could not upload'));
-    assert.equal(await page.locator('#new-tab-prompt').inputValue(),'Keep this draft');
+    assert.equal(await page.locator('#new-tab-prompt').evaluate(node=>node.value),'Keep this draft');
     assert.equal(await page.locator('#new-tab-files .new-tab-file').count(),1);
     assert.equal(await page.locator('#new-tab-form button[type=submit]').isEnabled(),true);
     uploadError=false;delayUpload=true;await page.locator('#new-tab-form button[type=submit]').click();
@@ -345,7 +345,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
     await page.keyboard.press('Escape');await cancelled;await page.locator('#new-tab').click();
     releaseUpload();delayUpload=false;
     await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,50)));
-    assert.equal(await page.locator('#new-tab-prompt').inputValue(),'');
+    assert.equal(await page.locator('#new-tab-prompt').evaluate(node=>node.value),'');
     assert.equal(await page.locator('#new-tab-files .new-tab-file').count(),0);
     assert.equal(await input.evaluate(()=>!!window.creationRequested),false,'A cancelled upload cannot create a tab after reopening');
     await page.keyboard.press('Escape');
@@ -379,7 +379,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
     await page.locator('#new-tab').click();
     assert.equal(await page.evaluate(()=>newTabModel()),'claude:claude-opus-5-5#high','The dialog remembers the last model');
     await page.locator('#new-tab-prompt').fill('custom --flag');await page.keyboard.press('Tab');
-    assert.equal(await page.locator('#new-tab-prompt').inputValue(),'custom --flag');
+    assert.equal(await page.locator('#new-tab-prompt').evaluate(node=>node.value),'custom --flag');
     assert.equal(await page.evaluate(()=>document.activeElement.id),'new-tab-attach','Tab moves to attachments');
     await page.locator('#new-tab-prompt').focus();await page.keyboard.press('Enter');
     await page.waitForFunction(()=>document.querySelector('iframe.active')?.contentWindow.creationRequested);

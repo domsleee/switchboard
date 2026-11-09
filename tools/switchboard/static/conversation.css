@@ -80,6 +80,16 @@
 .conversation-message{margin:0 0 16px;overflow-wrap:anywhere}
 .conversation-message.user{width:fit-content;max-width:min(80%,36rem);background:#1f2024;color:var(--text);border-radius:14px;padding:8px 14px;margin-left:auto;line-height:1.55}
 .conversation-message.user:not(:first-of-type){margin-top:16px}
+:is(.conversation-panel,#new-tab-dialog) button.conversation-skill{display:inline-flex;align-items:center;gap:5px;vertical-align:baseline;max-width:100%;min-height:24px;margin:0 2px;padding:1px 7px;border:1px solid #ffffff20;border-radius:6px;background:#ffffff09;color:#cbd7ef;font-size:0;line-height:1.5}
+:is(.conversation-panel,#new-tab-dialog) button.conversation-skill::before{content:"";flex-shrink:0;width:13px;height:13px;background:currentColor;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linejoin='round'%3E%3Cpath d='m12 2 9 5v10l-9 5-9-5V7zM3 7l9 5 9-5M12 12v10'/%3E%3C/svg%3E") center/contain no-repeat}
+:is(.conversation-panel,#new-tab-dialog) button.conversation-skill::after{content:attr(data-label);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+:is(.conversation-panel,#new-tab-dialog) button.conversation-skill:hover{background:#ffffff16;border-color:#ffffff35}
+.conversation-skill-details{position:fixed;inset:auto;margin:0;width:min(320px,calc(100vw - 16px));max-height:calc(100dvh - 16px);overflow:auto;padding:14px;background:var(--surface,var(--nt-bg,#16171b));color:var(--text,var(--nt-text,#eee));border:1px solid var(--line-2,var(--nt-line-hover,#383a42));border-radius:10px;box-shadow:0 8px 32px #0008;font:13px/1.5 var(--sans,system-ui,sans-serif);overflow-wrap:anywhere}
+.conversation-skill-details strong,.conversation-skill-details code{display:block}
+.conversation-skill-details code{margin-top:4px;color:var(--muted,var(--nt-muted,#aaa));font-size:11px}
+.conversation-skill-details p{margin:10px 0 0;color:var(--text-2,var(--nt-text,#ddd))}
+.conversation-completion strong.conversation-completion-skill{font-size:0}
+.conversation-completion strong.conversation-completion-skill::after{content:attr(data-label);font-size:13px}
 /* Speaker is clear from layout; keep the label for screen readers only. */
 .conversation-label{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 

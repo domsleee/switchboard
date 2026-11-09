@@ -377,6 +377,11 @@ body.sidebar-collapsed #artifact-preview header{padding-left:42px}
 .new-tab-composer.dragging{border-style:dashed;border-color:#6b8fd6;background:#10131a}
 #new-tab-prompt{display:block;width:100%;min-height:92px;resize:none;padding:16px 18px 6px;border:0;outline:0;background:transparent;color:var(--nt-text);font:15px/1.55 system-ui,sans-serif}
 #new-tab-prompt::placeholder{color:#62666f}
+#new-tab-prompt.ProseMirror{position:relative;white-space:pre-wrap;overflow-wrap:anywhere;overflow:auto;cursor:text}
+#new-tab-prompt.ProseMirror[data-empty="true"]::before{content:attr(data-placeholder);position:absolute;color:#62666f;pointer-events:none}
+#new-tab-prompt .ProseMirror-selectednode{outline:2px solid #8fb4ff;outline-offset:1px}
+#new-tab-prompt .ProseMirror-separator{display:inline!important;border:0!important;margin:0!important;width:0!important;height:0!important}
+#new-tab-prompt.ProseMirror-hideselection *::selection{background:transparent}
 #new-tab-prompt::selection{background:#3a5ea8;color:white}
 #new-tab-files{display:flex;flex-wrap:wrap;gap:6px;padding:4px 14px 2px}
 #new-tab-files:empty{display:none}

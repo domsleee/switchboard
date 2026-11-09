@@ -197,7 +197,7 @@ test('headless browser keeps iframe, selection, URL and input focus through fail
         </script>`});
       }
       const file=pathname==='/'?'index.html':pathname.slice(1);
-      if(!['index.html','app.js','model-picker.js','bridge.js','close.js','titles.js','style.css','conversation.js','conversation.css'].includes(file))return route.fulfill({status:404,body:''});
+      if(!['index.html','app.js','skill-editor.js','model-picker.js','bridge.js','close.js','titles.js','style.css','conversation.js','conversation.css'].includes(file))return route.fulfill({status:404,body:''});
       return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
     });
     const requested='https://switchboard.test/?host=windows&session=main&tab=42';
@@ -338,7 +338,7 @@ test('headless browser returns focus to the same terminal after a reconnect relo
         </script>`});
       }
       const file=pathname==='/'?'index.html':pathname.slice(1);
-      if(!['index.html','app.js','model-picker.js','bridge.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
+      if(!['index.html','app.js','skill-editor.js','model-picker.js','bridge.js','close.js','titles.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
       return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
     });
     await page.goto('https://switchboard.test/?host=windows&session=main&tab=42');
@@ -530,7 +530,7 @@ async function browserFocusFixture({mismatch=null,acknowledge=true,platform,hasT
         sendState(7);
       </script>`});
       const file=pathname==='/'?'index.html':pathname.slice(1);
-      if(!['index.html','app.js','model-picker.js','bridge.js','close.js','titles.js','style.css',...(conversation?['conversation.js','conversation.css']:[])].includes(file))return route.fulfill({status:404,body:''});
+      if(!['index.html','app.js','skill-editor.js','model-picker.js','bridge.js','close.js','titles.js','style.css',...(conversation?['conversation.js','conversation.css']:[])].includes(file))return route.fulfill({status:404,body:''});
       return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
     });
     await page.goto('https://switchboard.test/?host=mac&session=main&tab=41');
@@ -568,7 +568,7 @@ for(const hasTouch of [false,true])test(`conversation composer keeps focus throu
     assert.equal(await draft.inputValue(),'keep typing','Opening New tab preserves the reply draft');
     await page.locator('#new-tab-prompt').fill('custom command');
     await page.keyboard.press('Alt+KeyT');
-    assert.equal(await page.locator('#new-tab-prompt').inputValue(),'custom command','Alt+T leaves an existing dialog alone');
+    assert.equal(await page.locator('#new-tab-prompt').evaluate(node=>node.value),'custom command','Alt+T leaves an existing dialog alone');
     await page.keyboard.press('Escape');
     await draft.focus();
     await draft.evaluate(node=>node.setSelectionRange(0,4));
