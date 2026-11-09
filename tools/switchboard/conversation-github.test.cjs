@@ -5,7 +5,7 @@ test('repository references and PR previews stay alongside Conversation and pres
  const reads=[],errors=[];let fail=false,release;
  try{
   const page=await browser.newPage({viewport:{width:1400,height:900}});page.setDefaultTimeout(7000);page.on('pageerror',e=>errors.push(e.message));
-  await page.addInitScript(()=>{localStorage.setItem('switchboard-view-mode','conversation');window.intervals=[];window.setInterval=fn=>intervals.push(fn);});
+  await page.addInitScript(()=>{localStorage.setItem('switchboard-view-mode','conversation');window.intervals=[];window.setInterval=fn=>intervals.push(fn);const now=Date.now;window.githubClock=0;Date.now=()=>now()+window.githubClock;});
   await page.route('http://github-preview.test/**',async route=>{
    const p=new URL(route.request().url()).pathname;
    if(p.startsWith('/api/diagnostics/'))return route.fulfill({status:204});
@@ -47,7 +47,7 @@ test('repository references and PR previews stay alongside Conversation and pres
   const popupPromise=page.context().waitForEvent('page');await ref.click({modifiers:['Control']});const popup=await popupPromise;await popup.close();assert.equal(await preview.isVisible(),false,'modified click stays a browser gesture');
   await page.getByRole('link',{name:'PR details',exact:true}).click();await preview.getByRole('heading',{name:'Keep references in context'}).waitFor();
   await page.getByRole('button',{name:'Terminal',exact:true}).click();assert.equal(await preview.isVisible(),false);assert.equal(await page.locator('#terminals').evaluate(n=>n.classList.contains('github-open')),false);assert.ok(await page.evaluate(()=>terminalVisits)>0);
-  await page.getByRole('button',{name:'Conversation',exact:true}).click();fail=true;await ref.click();await preview.getByRole('button',{name:'Retry'}).waitFor();fail=false;await preview.getByRole('button',{name:'Retry'}).click();await preview.getByRole('heading',{name:'Keep references in context'}).waitFor();
+  await page.getByRole('button',{name:'Conversation',exact:true}).click();await page.evaluate(()=>window.githubClock+=31000);fail=true;await ref.click();await preview.getByRole('button',{name:'Retry'}).waitFor();fail=false;await preview.getByRole('button',{name:'Retry'}).click();await preview.getByRole('heading',{name:'Keep references in context'}).waitFor();
   await page.setViewportSize({width:390,height:844});const size=await preview.boundingBox();assert.equal(Math.round(size.width),390);
   if(process.env.GITHUB_SCREENSHOT)await page.screenshot({path:process.env.GITHUB_SCREENSHOT.replace('.png','-mobile.png')});
   await page.setViewportSize({width:1400,height:900});if(process.env.GITHUB_SCREENSHOT)await page.screenshot({path:process.env.GITHUB_SCREENSHOT});

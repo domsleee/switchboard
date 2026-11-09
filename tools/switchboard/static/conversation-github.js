@@ -1,7 +1,8 @@
 // Repository references and GitHub previews. All remote content stays text.
 (() => {
   const node=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;};
-  const repos=new Map();let panel,content,external,heading,crumbs,controller,focusBefore,serial=0;
+  const repos=new Map(),previews=new Map();let panel,content,external,heading,crumbs,focusBefore,serial=0,prefetching=0;
+  const PREVIEW_TTL=30000,PREVIEW_LIMIT=32;
   // Fixed icon paths, never content returned by GitHub.
   const paths={pr:'M6 8v8M18 16V7a4 4 0 0 0-4-4h-1M8 5a2 2 0 1 1-4 0 2 2 0 0 1 4 0M8 18a2 2 0 1 1-4 0 2 2 0 0 1 4 0M20 18a2 2 0 1 1-4 0 2 2 0 0 1 4 0',
     branch:'M6 3v12m0-12a2 2 0 1 0 0 .01M6 15a2 2 0 1 0 0 .01M18 3a2 2 0 1 0 0 .01M18 5v2a5 5 0 0 1-5 5H6',
@@ -17,6 +18,22 @@
     if(!response.ok)throw Error('GitHub details unavailable. Check repository access and gh login on the conversation’s computer.');
     return response.json();
   }
+  // Hover, focus and click share one read. Only successful reads get a freshness
+  // window, and the bounded cache lives in memory, never in browser storage.
+  function preview(reference,host,speculative=false){
+    const key=JSON.stringify([host,reference.repo.toLowerCase(),reference.number]);
+    let entry=previews.get(key);
+    if(entry&&(entry.pending||Date.now()-entry.at<PREVIEW_TTL))return entry.promise;
+    if(speculative&&prefetching>=2)return;
+    previews.delete(key);
+    while(previews.size>=PREVIEW_LIMIT)previews.delete(previews.keys().next().value);
+    entry={pending:true,at:0};
+    if(speculative)prefetching++;
+    entry.promise=request(host,{repo:reference.repo,number:reference.number}).then(item=>{
+      entry.pending=false;entry.at=Date.now();return item;
+    },error=>{if(previews.get(key)===entry)previews.delete(key);throw error;}).finally(()=>{if(speculative)prefetching--;});
+    previews.set(key,entry);return entry.promise;
+  }
   function parse(href){
     try{const url=new URL(href);if(url.protocol!=='https:'||url.hostname!=='github.com'||url.username||url.password)return null;
       const match=/^\/([\w.-]+\/[\w.-]+)\/(pull|issues)\/([1-9]\d*)(?:\/|$)/.exec(url.pathname);
@@ -24,7 +41,7 @@
     }catch{}return null;
   }
   function close(restore=true){
-    serial++;controller?.abort();if(!panel)return;panel.hidden=true;
+    serial++;if(!panel)return;panel.hidden=true;
     document.getElementById('terminals')?.classList.remove('github-open');
     if(restore){
       const source=focusBefore?.isConnected&&focusBefore.getClientRects().length?focusBefore:document.querySelector('.conversation-panel:not([hidden]) .conversation-compose textarea');
@@ -41,12 +58,12 @@
     panel.addEventListener('keydown',event=>{if(event.key==='Escape'&&!event.isComposing){event.preventDefault();event.stopPropagation();close();}});
   }
   async function open(reference,host,source){
-    if(!panel)build();controller?.abort();controller=new AbortController();const version=++serial;
+    if(!panel)build();const version=++serial;
     focusBefore=source;external.href=reference.url;crumbs.replaceChildren(icon(reference.kind==='pull'?'pr':'issue'),node('span',reference.repo,'github-repository'),node('span','/','github-crumb-divider'),node('span','#'+reference.number,'github-number'));heading.textContent='';
     const loading=node('div',undefined,'github-loading');loading.setAttribute('role','status');loading.append(node('span','Loading GitHub…','github-muted'));for(let i=0;i<4;i++)loading.append(node('div',undefined,'github-skeleton'));content.replaceChildren(loading);panel.hidden=false;
     document.getElementById('terminals')?.classList.add('github-open');panel.focus({preventScroll:true});
     try{
-      const item=await request(host,{repo:reference.repo,number:reference.number},AbortSignal.any([controller.signal,AbortSignal.timeout(15000)]));
+      const item=await preview(reference,host);
       if(version!==serial)return;
       heading.textContent=item.title;
       const pr=item.__typename==='PullRequest',state=node('span',item.isDraft?'Draft':words(item.state),'github-state');state.dataset.state=item.isDraft?'DRAFT':item.state;state.prepend(icon(pr?'pr':'issue'));
@@ -91,9 +108,18 @@
     // Issue links remain ordinary GitHub links unless they were inferred from #number.
     if(ref.kind!=='pull'&&!link.dataset.githubReference)return;
     link.dataset.githubPreview='true';link.title='Preview '+ref.repo+' #'+ref.number;
+    // Match T3's intent delay: passing across links does no work. Do not abort
+    // an already started read on leave/close: a click or another link shares it.
+    let timer;
+    const cancel=()=>{clearTimeout(timer);timer=undefined;};
+    const warm=()=>{cancel();timer=setTimeout(()=>{if(link.isConnected)preview(ref,context.host,true)?.catch(()=>{});},150);};
+    link.addEventListener('pointerenter',event=>{if(event.pointerType!=='touch')warm();});
+    link.addEventListener('pointerleave',cancel);
+    link.addEventListener('focus',warm);
+    link.addEventListener('blur',cancel);
     link.addEventListener('click',event=>{
       if(event.button!==0||event.ctrlKey||event.metaKey||event.shiftKey||event.altKey)return;
-      event.preventDefault();open(ref,context.host,link);
+      cancel();event.preventDefault();open(ref,context.host,link);
     });
   }
   function references(parent,context,repo){
