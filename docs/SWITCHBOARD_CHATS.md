@@ -162,10 +162,17 @@ Questions can fold without losing a custom answer. A shortcut above the composer
 returns to an offscreen or folded question, and a submitted answer becomes a
 compact receipt that reopens for review.
 
-Codex replies use `/api/hosts/HOST/codex/reply` and its native queue, whether idle
-or working. The transcript supplies the native session ID. A retry keeps the same
-send key, and the destination stores a receipt to prevent a duplicate submission.
-“Queued” means Codex accepted the message, not that it has read it. These browser
+Codex replies use `/api/hosts/HOST/codex/reply`, whether idle or working. The destination
+saves the reply in a durable outbox before acknowledging it, then attempts its native
+queue immediately. Failed attempts retry with backoff capped at 15 seconds, and relay
+startup resumes saved replies. Messages to the same thread retain their send order.
+The transcript supplies the native session ID. A retry keeps the same send key;
+repeating it reuses the saved delivery. Old unconfirmed receipts can be recovered by
+retrying with the original key and content. “Queued” means Switchboard has saved the
+message for delivery, not that Codex has read it. Delivery is at least once: if Codex
+accepts a message but its acknowledgement is lost, retrying can produce a duplicate.
+Delivered payloads are removed immediately and their receipts expire after seven days;
+undelivered messages remain saved until accepted. These browser
 replies retain user text; the separate agent-to-agent `/codex/queue` route keeps its
 forwarded-message annotation. Claude replies use `/api/hosts/HOST/conversation/reply`,
 including while working: the relay pastes the reply into the pane and presses Enter
