@@ -479,6 +479,11 @@ pub enum ScreenInstruction {
     ), // i32 -> optional exit
     // status
     HoldPane(PaneId, Option<i32>, RunCommand),
+    /// Settles every pane and describes the session for the next engine.
+    PrepareHandoff(std::sync::mpsc::Sender<Result<crate::handoff::ScreenHandoff, String>>),
+    RestoreHandoffPane(u32, String),
+    /// The IDs for the tabs about to be created, and the next one after them.
+    UseHandoffTabIds(Vec<usize>, usize),
     UpdatePaneName(Vec<u8>, ClientId, Option<NotificationEnd>),
     UndoRenamePane(ClientId, Option<NotificationEnd>),
     NewTab(
@@ -1086,6 +1091,9 @@ impl From<&ScreenInstruction> for ScreenContext {
             ScreenInstruction::ShowPluginCursor(..) => ScreenContext::ShowPluginCursor,
             ScreenInstruction::ClosePane(..) => ScreenContext::ClosePane,
             ScreenInstruction::HoldPane(..) => ScreenContext::HoldPane,
+            ScreenInstruction::PrepareHandoff(..) => ScreenContext::PrepareHandoff,
+            ScreenInstruction::RestoreHandoffPane(..) => ScreenContext::RestoreHandoffPane,
+            ScreenInstruction::UseHandoffTabIds(..) => ScreenContext::UseHandoffTabIds,
             ScreenInstruction::UpdatePaneName(..) => ScreenContext::UpdatePaneName,
             ScreenInstruction::UndoRenamePane(..) => ScreenContext::UndoRenamePane,
             ScreenInstruction::NewTab(..) => ScreenContext::NewTab,
@@ -1542,6 +1550,8 @@ pub(crate) struct Screen {
     /// A map between this [`Screen`]'s tabs and their ID/key.
     tabs: BTreeMap<usize, Tab>,
     next_tab_id: usize,
+    /// IDs for tabs being rebuilt from the engine this one replaced.
+    handoff_tab_ids: VecDeque<usize>,
     last_single_pane_tab_names: HashMap<usize, Option<String>>,
     pixel_dimensions: PixelDimensions,
     character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
@@ -1783,6 +1793,7 @@ impl Screen {
             global_last_active_tab_id: 0,
             tabs: BTreeMap::new(),
             next_tab_id: 0,
+            handoff_tab_ids: VecDeque::new(),
             last_single_pane_tab_names: HashMap::new(),
             terminal_emulator_colors: Rc::new(RefCell::new(Palette::default())),
             terminal_emulator_color_codes: Rc::new(RefCell::new(HashMap::new())),
@@ -1879,7 +1890,77 @@ impl Screen {
             .unwrap_or(false)
     }
 
+    fn prepare_handoff(&mut self) -> Result<crate::handoff::ScreenHandoff, String> {
+        for tab in self.tabs.values_mut() {
+            tab.settle_for_handoff()?;
+        }
+        let mut held = HashMap::new();
+        let mut terminals = BTreeMap::new();
+        for tab in self.tabs.values() {
+            let panes = tab
+                .get_tiled_panes()
+                .map(|(id, pane)| (*id, pane))
+                .chain(tab.get_floating_panes().map(|(id, pane)| (*id, pane)))
+                .chain(
+                    tab.hidden_stack_list_members_for_serialization()
+                        .into_iter()
+                        .map(|(id, pane, _)| (id, pane)),
+                );
+            for (pane_id, pane) in panes {
+                let PaneId::Terminal(id) = pane_id else {
+                    continue;
+                };
+                let Some(snapshot) = pane.handoff_snapshot() else {
+                    continue;
+                };
+                let held_terminal = pane.held_for_handoff();
+                let running = held_terminal.is_none();
+                if let Some(held_terminal) = held_terminal {
+                    held.insert(id, held_terminal);
+                }
+                terminals.insert(id, (snapshot, running));
+            }
+        }
+        let identified = self
+            .get_layout_metadata(None, None)
+            .into_handoff_tabs(&held);
+        let focused_tab_index = identified
+            .iter()
+            .position(|(_, _, is_focused, _)| *is_focused)
+            .unwrap_or(0);
+        let size = identified
+            .get(focused_tab_index)
+            .and_then(|(id, _, _, _)| self.tabs.get(id))
+            .map(|tab| tab.get_display_area())
+            .ok_or("the session has no tabs")?;
+        let mut tabs = Vec::new();
+        for (id, name, _, panes) in identified {
+            let (tiled, floating) =
+                zellij_utils::session_serialization::tab_layouts_from_manifest(&panes)
+                    .ok_or_else(|| format!("tab {id} has no layout"))?;
+            tabs.push(crate::handoff::HandoffTab {
+                id,
+                name,
+                tiled,
+                floating,
+            });
+        }
+        Ok(crate::handoff::ScreenHandoff {
+            size,
+            focused_tab_index,
+            next_tab_id: self
+                .next_tab_id
+                .max(self.tabs.keys().last().map_or(0, |id| *id + 1)),
+            tabs,
+            terminals,
+        })
+    }
+
     fn get_new_tab_id(&mut self) -> usize {
+        if let Some(id) = self.handoff_tab_ids.pop_front() {
+            self.next_tab_id = self.next_tab_id.max(id + 1);
+            return id;
+        }
         // Closing the last tab must not recycle its ID. Browser state and
         // in-flight close requests identify tabs by this ID for the whole session.
         let id = self
@@ -7771,6 +7852,7 @@ impl Screen {
                 tiled_panes,
                 floating_panes,
             );
+            session_layout_metadata.identify_last_tab(*tab_index, tab.name.clone());
         }
         session_layout_metadata
     }
@@ -9869,6 +9951,23 @@ pub(crate) fn screen_thread_main(
                 screen.render(None)?;
                 screen.log_and_report_session_state().non_fatal();
                 screen.retain_only_existing_panes_in_pane_groups();
+            },
+            ScreenInstruction::PrepareHandoff(reply) => {
+                let _ = reply.send(screen.prepare_handoff());
+            },
+            ScreenInstruction::RestoreHandoffPane(terminal_id, snapshot) => {
+                let restored = screen
+                    .tabs
+                    .values_mut()
+                    .any(|tab| tab.restore_handoff_pane(terminal_id, &snapshot));
+                if !restored {
+                    log::error!("No pane to restore terminal {terminal_id} into");
+                }
+                screen.render(None)?;
+            },
+            ScreenInstruction::UseHandoffTabIds(ids, next_tab_id) => {
+                screen.handoff_tab_ids = ids.into();
+                screen.next_tab_id = next_tab_id;
             },
             ScreenInstruction::HoldPane(id, exit_status, run_command) => {
                 let is_first_run = false;

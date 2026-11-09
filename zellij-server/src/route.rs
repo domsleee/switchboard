@@ -228,6 +228,22 @@ pub(crate) fn route_action(
     default_mode: InputMode,
     os_input: Option<Box<dyn ServerOsApi>>,
 ) -> Result<(bool, Option<ActionCompletionResult>)> {
+    if let Action::CliPipe {
+        name: Some(name),
+        payload,
+        ..
+    } = &action
+    {
+        if name == crate::handoff::PIPE_NAME {
+            senders.send_to_server(ServerInstruction::PrepareHandoff(
+                payload.clone().unwrap_or_default(),
+            ))?;
+            let (completion_tx, completion_rx) = oneshot::channel();
+            drop(NotificationEnd::new(completion_tx));
+            let result = wait_for_action_completion(completion_rx, "handoff", false);
+            return Ok((false, Some(result)));
+        }
+    }
     if matches!(
         &action,
         Action::LaunchOrFocusPlugin { .. }
@@ -2313,6 +2329,18 @@ pub(crate) fn route_thread_main(
             Ok((instruction, err_ctx)) => {
                 consecutive_unknown_messages_received = 0;
                 err_ctx.update_thread_ctx();
+                if crate::handoff::is_frozen()
+                    && matches!(
+                        instruction,
+                        ClientToServerMsg::Key { .. }
+                            | ClientToServerMsg::Action { .. }
+                            | ClientToServerMsg::TerminalResize { .. }
+                            | ClientToServerMsg::AttachClient { .. }
+                            | ClientToServerMsg::AttachWatcherClient { .. }
+                    )
+                {
+                    continue 'route_loop;
+                }
                 let mut handle_instruction = |instruction: ClientToServerMsg,
                                               mut retry_queue: Option<
                     &mut VecDeque<ClientToServerMsg>,

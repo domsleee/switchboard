@@ -309,7 +309,7 @@ mod through_the_client {
     }
 
     #[test]
-    fn a_detached_terminal_is_adopted_with_its_snapshot_and_keeps_running() {
+    fn a_detached_terminal_is_adopted_and_keeps_running() {
         let host = start(TIMEOUT);
         let runtime = runtime();
         let old = backend(&host);
@@ -348,7 +348,6 @@ mod through_the_client {
         let (new_exit, new_exited) = channel();
         let mut new_reader = new.adopt_terminal(
             1,
-            b"SNAPSHOT".to_vec(),
             position,
             Box::new(move |pane, status, _| {
                 let _ = new_exit.send((pane, status));
@@ -356,17 +355,6 @@ mod through_the_client {
             shell(),
         );
         new.resume_output().unwrap();
-        assert_eq!(
-            read_briefly(&runtime, &mut new_reader).unwrap(),
-            b"SNAPSHOT"
-        );
-        read_briefly(&runtime, &mut new_reader);
-        assert_eq!(
-            new.resume_position(1),
-            Some(position),
-            "a snapshot is not terminal output"
-        );
-
         let (line, marker) = sum_line(100, 23);
         type_all(&new, &line);
         read_until(&runtime, &mut new_reader, &marker);

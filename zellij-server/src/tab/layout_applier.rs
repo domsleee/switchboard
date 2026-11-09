@@ -628,7 +628,8 @@ impl<'a> LayoutApplier<'a> {
         let mut pane_id_to_focus = None;
         let next_terminal_position =
             get_next_terminal_position(&self.tiled_panes, &self.floating_panes);
-        let initial_title = match &floating_pane_layout.run {
+        let invoked_with = Run::without_adoption(floating_pane_layout.run.clone());
+        let initial_title = match &invoked_with {
             Some(Run::Command(run_command)) => Some(run_command.to_string()),
             _ => None,
         };
@@ -645,7 +646,7 @@ impl<'a> LayoutApplier<'a> {
             self.terminal_emulator_colors.clone(),
             self.terminal_emulator_color_codes.clone(),
             initial_title,
-            floating_pane_layout.run.clone(),
+            invoked_with,
             self.debug,
             self.arrow_fonts,
             self.styled_underlines,
@@ -693,7 +694,8 @@ impl<'a> LayoutApplier<'a> {
     ) -> Result<()> {
         let next_terminal_position =
             get_next_terminal_position(&self.tiled_panes, &self.floating_panes);
-        let initial_title = match &layout.run {
+        let invoked_with = Run::without_adoption(layout.run.clone());
+        let initial_title = match &invoked_with {
             Some(Run::Command(run_command)) => Some(run_command.to_string()),
             _ => None,
         };
@@ -722,7 +724,7 @@ impl<'a> LayoutApplier<'a> {
             self.terminal_emulator_colors.clone(),
             self.terminal_emulator_color_codes.clone(),
             initial_title,
-            layout.run.clone(),
+            invoked_with,
             self.debug,
             self.arrow_fonts,
             self.styled_underlines,

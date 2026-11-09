@@ -14,6 +14,7 @@ pub mod tab;
 
 pub mod background_jobs;
 mod global_async_runtime;
+mod handoff;
 mod mobile_web;
 mod native_layout;
 pub mod nested_guest;
@@ -144,11 +145,17 @@ pub enum ServerInstruction {
     ForwardQueryToHost(u32, Vec<u8>, bool),
     KeyPassthroughChanged(ClientId, PaneId, PaneId, bool, Option<Direction>, bool),
     EmitNestedSessionFrameToClient(ClientId, Vec<u8>),
+    /// Hand this session to a new engine. The string is the handoff ID.
+    PrepareHandoff(String),
+    /// The terminals are safe with their host, so this engine can exit.
+    FinishHandoff,
 }
 
 impl From<&ServerInstruction> for ServerContext {
     fn from(server_instruction: &ServerInstruction) -> Self {
         match *server_instruction {
+            ServerInstruction::PrepareHandoff(..) => ServerContext::PrepareHandoff,
+            ServerInstruction::FinishHandoff => ServerContext::FinishHandoff,
             ServerInstruction::FirstClientConnected(..) => ServerContext::NewClient,
             ServerInstruction::Render(..) => ServerContext::Render,
             ServerInstruction::UnblockInputThread => ServerContext::UnblockInputThread,
@@ -1177,10 +1184,58 @@ pub fn start_server_impl(
         let instruction =
             attach_if_session_running(instruction, session_data.read().unwrap().is_some());
         match instruction {
+            ServerInstruction::PrepareHandoff(handoff_id) => {
+                let senders = session_data
+                    .read()
+                    .unwrap()
+                    .as_ref()
+                    .map(|session| session.senders.clone());
+                if let Some(senders) = senders {
+                    let os_input = os_input.clone();
+                    let to_server = to_server.clone();
+                    // Screen renders through this thread while it settles.
+                    std::thread::spawn(move || {
+                        match handoff::hand_over(&*os_input, &senders, &handoff_id) {
+                            Ok(()) => {
+                                let _ = to_server.send(ServerInstruction::FinishHandoff);
+                            },
+                            Err(error) => log::error!("Handoff {handoff_id} aborted: {error}"),
+                        }
+                    });
+                }
+            },
+            ServerInstruction::FinishHandoff => {
+                // Leaves without dropping anything: every drop path stops terminals.
+                #[cfg(windows)]
+                let owns_marker = std::fs::read_to_string(&socket_path)
+                    .is_ok_and(|pid| pid.trim() == std::process::id().to_string());
+                #[cfg(not(windows))]
+                let owns_marker = true;
+                if owns_marker {
+                    drop(std::fs::remove_file(&socket_path));
+                }
+                std::process::exit(0);
+            },
             ServerInstruction::FirstClientConnected(cli_assets, is_web_client, client_id) => {
                 let host_terminal_env = cli_assets.host_terminal_env.clone();
                 let mut initial_panes = cli_assets.initial_panes.clone();
                 let (config, mut layout) = cli_assets.load_config_and_layout();
+                let adoption = match handoff::requested_manifest() {
+                    None => None,
+                    Some(Ok((manifest, directory))) => {
+                        if let Err(error) = os_input.attach_terminal_host(&directory) {
+                            log::error!("Cannot take over the terminal host: {error}");
+                            std::process::exit(1);
+                        }
+                        os_input.set_next_terminal_id(manifest.next_terminal_id);
+                        layout = manifest.into_layout();
+                        Some(manifest)
+                    },
+                    Some(Err(error)) => {
+                        log::error!("Cannot take over the session: {error}");
+                        std::process::exit(1);
+                    },
+                };
                 layout.remove_plugin_panes();
                 Config::write_config_to_disk_if_it_does_not_exist(
                     config.to_string(true),
@@ -1195,7 +1250,10 @@ pub fn start_server_impl(
                 };
 
                 let client_attributes = ClientAttributes {
-                    size: cli_assets.terminal_window_size,
+                    // Panes must be rebuilt at the size their snapshots describe.
+                    size: adoption
+                        .as_ref()
+                        .map_or(cli_assets.terminal_window_size, |manifest| manifest.size),
                     style: Style {
                         colors: config
                             .theme_config(runtime_config_options.theme.as_ref())
@@ -1236,6 +1294,22 @@ pub fn start_server_impl(
                     client_attributes.size,
                     is_web_client,
                 );
+                if let Some(manifest) = adoption {
+                    let rlock = session_data.read().unwrap();
+                    let senders = &rlock.as_ref().unwrap().senders;
+                    senders
+                        .send_to_screen(ScreenInstruction::UseHandoffTabIds(
+                            manifest.tabs.iter().map(|tab| tab.id).collect(),
+                            manifest.next_tab_id,
+                        ))
+                        .unwrap();
+                    senders
+                        .send_to_pty(PtyInstruction::PrepareAdoption(
+                            manifest.id,
+                            manifest.terminals,
+                        ))
+                        .unwrap();
+                }
 
                 session_data
                     .read()

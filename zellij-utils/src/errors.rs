@@ -212,6 +212,9 @@ impl Display for ContextType {
 /// Stack call representations corresponding to the different types of [`ScreenInstruction`]s.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum ScreenContext {
+    PrepareHandoff,
+    RestoreHandoffPane,
+    UseHandoffTabIds,
     HandlePtyBytes,
     PluginBytes,
     Render,
@@ -491,6 +494,8 @@ pub enum ScreenContext {
 /// Stack call representations corresponding to the different types of [`PtyInstruction`]s.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum PtyContext {
+    HandoffPids,
+    PrepareAdoption,
     SpawnTerminal,
     OpenInPlaceEditor,
     SpawnTerminalVertically,
@@ -601,6 +606,8 @@ pub enum ClientContext {
 /// Stack call representations corresponding to the different types of [`ServerInstruction`]s.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum ServerContext {
+    PrepareHandoff,
+    FinishHandoff,
     NewClient,
     Render,
     UnblockInputThread,

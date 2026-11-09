@@ -528,6 +528,7 @@ fn format_run_instruction(run: &Option<Run>) -> String {
             format!("Plugin({})", plugin.location_string())
         },
         Some(Run::Cwd(path)) => format!("Cwd({:?})", path),
+        Some(Run::Adopt(adopted)) => format!("Adopt({})", adopted.terminal_id),
         Some(Run::EditFile(path, line, cwd)) => {
             format!("EditFile({:?}, line={:?}, cwd={:?})", path, line, cwd)
         },

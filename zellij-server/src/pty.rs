@@ -110,6 +110,11 @@ pub enum PtyInstruction {
         ClientTabIndexOrPaneId,
         Option<NotificationEnd>, // completion signal
     ), // String is an optional pane name
+    HandoffPids(std::sync::mpsc::Sender<HashMap<u32, u32>>),
+    PrepareAdoption(
+        String,
+        std::collections::BTreeMap<u32, crate::handoff::HandoffTerminal>,
+    ),
     DumpLayout(SessionLayoutMetadata, ClientId, Option<NotificationEnd>),
     DumpLayoutToPlugin {
         session_layout_metadata: SessionLayoutMetadata,
@@ -176,6 +181,8 @@ impl From<&PtyInstruction> for PtyContext {
             PtyInstruction::ReRunCommandInPane(..) => PtyContext::ReRunCommandInPane,
             PtyInstruction::DropToShellInPane { .. } => PtyContext::DropToShellInPane,
             PtyInstruction::SpawnInPlaceTerminal(..) => PtyContext::SpawnInPlaceTerminal,
+            PtyInstruction::HandoffPids(..) => PtyContext::HandoffPids,
+            PtyInstruction::PrepareAdoption(..) => PtyContext::PrepareAdoption,
             PtyInstruction::DumpLayout(..) => PtyContext::DumpLayout,
             PtyInstruction::DumpLayoutToPlugin { .. } => PtyContext::DumpLayoutToPlugin,
             PtyInstruction::LogLayoutToHd(..) => PtyContext::LogLayoutToHd,
@@ -210,6 +217,15 @@ pub(crate) struct Pty {
     pane_activity_flags: HashMap<u32, std::sync::Arc<std::sync::atomic::AtomicBool>>,
     terminal_cmds: HashMap<u32, Vec<String>>,
     terminal_foreground_cmds: HashMap<u32, Vec<String>>,
+    adoption: Option<Adoption>,
+}
+
+/// The terminals this engine is taking over from the one it replaces.
+struct Adoption {
+    handoff_id: String,
+    terminals: std::collections::BTreeMap<u32, crate::handoff::HandoffTerminal>,
+    snapshots: Vec<(u32, String)>,
+    exits: Vec<(u32, Option<i32>, RunCommand)>,
 }
 
 pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
@@ -217,6 +233,17 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
         let (event, mut err_ctx) = pty.bus.recv().expect("failed to receive event on channel");
         err_ctx.add_call(ContextType::Pty((&event).into()));
         match event {
+            PtyInstruction::HandoffPids(reply) => {
+                let _ = reply.send(pty.id_to_child_pid.clone());
+            },
+            PtyInstruction::PrepareAdoption(handoff_id, terminals) => {
+                pty.adoption = Some(Adoption {
+                    handoff_id,
+                    terminals,
+                    snapshots: Vec::new(),
+                    exits: Vec::new(),
+                });
+            },
             PtyInstruction::SpawnTerminal(
                 terminal_action,
                 name,
@@ -930,7 +957,29 @@ impl Pty {
             pane_activity_flags: HashMap::new(),
             terminal_cmds: HashMap::new(),
             terminal_foreground_cmds: HashMap::new(),
+            adoption: None,
         }
+    }
+    /// Once every adopted terminal has a reader, output can flow to them.
+    fn finish_adoption_if_complete(&mut self) -> Result<()> {
+        let complete = self
+            .adoption
+            .as_ref()
+            .is_some_and(|adoption| adoption.terminals.is_empty());
+        if !complete {
+            return Ok(());
+        }
+        let adoption = self.adoption.take().unwrap();
+        let hosted = self
+            .bus
+            .os_input
+            .as_ref()
+            .and_then(|os_input| os_input.terminal_host())
+            .context("the session has no terminal host")?;
+        hosted.resume_output()?;
+        hosted.commit_adoption(&adoption.handoff_id)?;
+        hosted.release_exits();
+        Ok(())
     }
     pub fn get_default_terminal(
         &self,
@@ -1359,6 +1408,25 @@ impl Pty {
                 blocking_terminal,
             ))
             .with_context(err_context)?;
+        if let Some(adoption) = self.adoption.as_mut() {
+            // After the panes exist, and before any new output can reach them.
+            for (terminal_id, snapshot) in adoption.snapshots.drain(..) {
+                self.bus
+                    .senders
+                    .send_to_screen(ScreenInstruction::RestoreHandoffPane(terminal_id, snapshot))
+                    .with_context(err_context)?;
+            }
+            for (terminal_id, status, command) in adoption.exits.drain(..) {
+                self.bus
+                    .senders
+                    .send_to_screen(ScreenInstruction::HoldPane(
+                        PaneId::Terminal(terminal_id),
+                        status,
+                        command,
+                    ))
+                    .with_context(err_context)?;
+            }
+        }
         let mut terminals_to_start = vec![];
 
         terminals_to_start.append(&mut new_pane_pids);
@@ -1417,7 +1485,7 @@ impl Pty {
         for (terminal_id, originating_plugin) in originating_plugins_to_inform {
             self.inform_originating_plugin_of_open(terminal_id, originating_plugin);
         }
-        Ok(())
+        self.finish_adoption_if_complete()
     }
     pub fn spawn_terminals_for_layout_override(
         &mut self,
@@ -1646,6 +1714,71 @@ impl Pty {
         });
 
         match run_instruction {
+            Some(Run::Adopt(adopted)) => {
+                let terminal_id = adopted.terminal_id;
+                let adoption = self
+                    .adoption
+                    .as_mut()
+                    .context("no adoption is in progress")
+                    .with_context(err_context)?;
+                let terminal = adoption
+                    .terminals
+                    .remove(&terminal_id)
+                    .context("the manifest does not list this terminal")
+                    .with_context(err_context)?;
+                adoption.snapshots.push((terminal_id, terminal.snapshot));
+                if let Some(pid) = terminal.pid {
+                    self.id_to_child_pid.insert(terminal_id, pid);
+                }
+                if let Some(held) = adopted.held {
+                    if !held.is_first_run {
+                        adoption
+                            .exits
+                            .push((terminal_id, held.exit_status, held.command.clone()));
+                    }
+                    return Ok(Some((
+                        terminal_id,
+                        true,
+                        Some(held.command),
+                        Ok(Box::new(NullAsyncReader) as Box<dyn AsyncReader>),
+                    )));
+                }
+                let position = terminal
+                    .position
+                    .context("a running terminal has no position")
+                    .with_context(err_context)?;
+                let command = match adopted.invoked_with.map(|run| *run) {
+                    Some(Run::Command(command)) => command,
+                    _ => RunCommand::default(),
+                };
+                let hold_on_close = command.hold_on_close;
+                let senders = self.bus.senders.clone();
+                let quit_cb = Box::new(move |pane_id, exit_status, command| {
+                    let _ = if hold_on_close {
+                        senders.send_to_screen(ScreenInstruction::HoldPane(
+                            pane_id,
+                            exit_status,
+                            command,
+                        ))
+                    } else {
+                        senders.send_to_screen(ScreenInstruction::ClosePane(
+                            pane_id,
+                            None,
+                            None,
+                            exit_status,
+                        ))
+                    };
+                });
+                let hosted = self
+                    .bus
+                    .os_input
+                    .as_ref()
+                    .and_then(|os_input| os_input.terminal_host())
+                    .context("the session has no terminal host")
+                    .with_context(err_context)?;
+                let reader = hosted.adopt_terminal(terminal_id, position, quit_cb, command);
+                Ok(Some((terminal_id, false, None, Ok(reader))))
+            },
             Some(Run::Command(mut command)) => {
                 let starts_held = command.hold_on_start;
                 let hold_on_close = command.hold_on_close;

@@ -482,6 +482,11 @@ impl UnixPtyBackend {
             .remove(&terminal_id);
     }
 
+    pub fn set_next_terminal_id(&self, terminal_id: u32) {
+        self.next_terminal_id_counter
+            .store(terminal_id, Ordering::Relaxed);
+    }
+
     pub fn next_terminal_id(&self) -> Option<u32> {
         Some(
             self.next_terminal_id_counter

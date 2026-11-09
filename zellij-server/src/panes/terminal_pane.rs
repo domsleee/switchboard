@@ -1182,6 +1182,26 @@ impl Pane for TerminalPane {
     fn is_held(&self) -> bool {
         self.is_held.is_some()
     }
+    fn handoff_snapshot(&self) -> Option<String> {
+        Some(String::from_utf8_lossy(&self.grid.handoff_snapshot()).into_owned())
+    }
+    fn held_for_handoff(&self) -> Option<zellij_utils::input::layout::HeldTerminal> {
+        self.is_held
+            .as_ref()
+            .map(
+                |(exit_status, is_first_run, command)| zellij_utils::input::layout::HeldTerminal {
+                    exit_status: *exit_status,
+                    is_first_run: *is_first_run,
+                    command: command.clone(),
+                },
+            )
+    }
+    fn restore_handoff_snapshot(&mut self, snapshot: &str) {
+        self.grid.set_restoring_handoff(true);
+        self.vte_parser.advance(&mut self.grid, snapshot.as_bytes());
+        self.grid.set_restoring_handoff(false);
+        self.set_should_render(true);
+    }
     fn exited(&self) -> bool {
         match self.is_held {
             Some((_, is_first_run, _)) => !is_first_run,

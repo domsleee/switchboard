@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use interprocess::local_socket::Stream;
 use std::collections::HashMap;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc, Arc, Condvar, Mutex,
@@ -92,6 +92,7 @@ struct Connection {
 #[derive(Clone)]
 pub struct HostedPtyBackend {
     connection: Arc<Connection>,
+    directory: Option<PathBuf>,
 }
 
 impl HostedPtyBackend {
@@ -99,7 +100,23 @@ impl HostedPtyBackend {
     pub fn start() -> io::Result<Self> {
         let directory = HostDirectory::create()?;
         super::spawn_host_process(directory.path())?;
-        Self::connect(&directory.endpoint(), &directory.read_token()?)
+        let mut backend = Self::connect(&directory.endpoint(), &directory.read_token()?)?;
+        backend.directory = Some(directory.path().to_path_buf());
+        Ok(backend)
+    }
+
+    /// Connect to the host of the engine this one replaces. Exits wait until
+    /// the adoption is complete.
+    pub fn attach(directory: &Path) -> io::Result<Self> {
+        let token = std::fs::read_to_string(directory.join("token"))?;
+        let mut backend = Self::connect(&super::endpoint_for(directory), &token)?;
+        backend.directory = Some(directory.to_path_buf());
+        backend.hold_exits();
+        Ok(backend)
+    }
+
+    pub fn directory(&self) -> Option<&Path> {
+        self.directory.as_deref()
     }
 
     pub(super) fn connect(endpoint: &PathBuf, token: &str) -> io::Result<Self> {
@@ -142,7 +159,10 @@ impl HostedPtyBackend {
                 let connection = connection.clone();
                 move || connection.read_events(events)
             })?;
-        Ok(Self { connection })
+        Ok(Self {
+            connection,
+            directory: None,
+        })
     }
 
     pub fn spawn_terminal(
@@ -167,7 +187,7 @@ impl HostedPtyBackend {
         match self.connection.call(request, Some((terminal_id, route)))? {
             Reply::Spawned { pid } => Ok((
                 self.connection
-                    .reader(terminal_id, receiver, Vec::new(), Progress::new(0)),
+                    .reader(terminal_id, receiver, Progress::new(0)),
                 pid,
             )),
             Reply::CommandNotFound => Err(ZellijError::CommandNotFound {
@@ -245,12 +265,10 @@ impl HostedPtyBackend {
         }
     }
 
-    /// Takes over a running terminal. The reader yields `snapshot`, then the
-    /// terminal's output from `position`.
+    /// Takes over a running terminal, whose output continues from `position`.
     pub fn adopt_terminal(
         &self,
         terminal_id: u32,
-        snapshot: Vec<u8>,
         position: u64,
         quit_cb: QuitCallback,
         command: RunCommand,
@@ -267,7 +285,7 @@ impl HostedPtyBackend {
             .unwrap()
             .insert(terminal_id, route);
         self.connection
-            .reader(terminal_id, receiver, snapshot, Progress::new(position))
+            .reader(terminal_id, receiver, Progress::new(position))
     }
 
     /// Stops output and returns where each terminal's output ended.
@@ -384,7 +402,6 @@ impl Connection {
         self: &Arc<Self>,
         terminal_id: u32,
         receiver: UnboundedReceiver<(u64, Vec<u8>)>,
-        snapshot: Vec<u8>,
         progress: Arc<Progress>,
     ) -> Box<dyn AsyncReader> {
         self.progress
@@ -395,8 +412,7 @@ impl Connection {
             connection: self.clone(),
             terminal_id,
             receiver,
-            snapshot_remaining: snapshot.len(),
-            leftover: snapshot,
+            leftover: Vec::new(),
             acknowledge: None,
             progress,
             just_returned: Vec::new(),
@@ -605,8 +621,6 @@ struct HostedReader {
     receiver: UnboundedReceiver<(u64, Vec<u8>)>,
     leftover: Vec<u8>,
     acknowledge: Option<u64>,
-    /// How much of `leftover` is a snapshot, which is not terminal output.
-    snapshot_remaining: usize,
     progress: Arc<Progress>,
     just_returned: Vec<u8>,
 }
@@ -637,10 +651,7 @@ impl AsyncReader for HostedReader {
         let length = self.leftover.len().min(buf.len());
         buf[..length].copy_from_slice(&self.leftover[..length]);
         self.leftover.drain(..length);
-        let from_snapshot = length.min(self.snapshot_remaining);
-        self.snapshot_remaining -= from_snapshot;
-        self.just_returned
-            .extend_from_slice(&buf[from_snapshot..length]);
+        self.just_returned.extend_from_slice(&buf[..length]);
         Ok(length)
     }
 }

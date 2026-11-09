@@ -40,6 +40,18 @@ pub struct PaneLayoutManifest {
     pub default_bg: Option<String>,
 }
 
+/// A tab's panes as a layout, without going through the text format.
+pub fn tab_layouts_from_manifest(
+    tab: &TabLayoutManifest,
+) -> Option<(TiledPaneLayout, Vec<FloatingPaneLayout>)> {
+    let mut tiled = get_tiled_panes_layout_from_panegeoms(&tab.tiled_panes, None)?;
+    tiled.hide_floating_panes = tab.hide_floating_panes;
+    Some((
+        tiled,
+        get_floating_panes_layout_from_panegeoms(&tab.floating_panes),
+    ))
+}
+
 pub fn serialize_session_layout(
     global_layout_manifest: GlobalLayoutManifest,
 ) -> Result<(String, BTreeMap<String, String>), &'static str> {
