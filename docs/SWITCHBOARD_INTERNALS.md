@@ -17,9 +17,9 @@ The sidebar relay, UI and terminal engine are bundled in the Rust executable.
 Updating the executable changes new sessions;
 running sessions keep their existing engine until they end naturally.
 
-Opening Switchboard automatically starts a shell on each connected machine that
-has no sessions. Existing sessions are reused. Closing the last tab leaves the
-workspace empty until you use **+ New tab** or open Switchboard again.
+Opening Switchboard shows existing sessions. Closing the last tab leaves the
+workspace empty until you use **+ New tab**. Reloading an old terminal viewer or
+reconnecting after an update cannot recreate an ended session.
 
 ## Running the relay by hand
 

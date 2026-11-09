@@ -46,6 +46,10 @@ pub fn zellij_server_listener(
             move || {
                 let mut client_connection_bus =
                     ClientConnectionBus::new(&web_client_id, &connection_table);
+                let mut may_create_session = session_name.is_none() || connection_table.lock().unwrap()
+                    .client_id_to_channels.get_mut(&web_client_id)
+                    .map(|channels| std::mem::take(&mut channels.may_create_session))
+                    .unwrap_or(false);
                 let is_welcome_session = session_name
                     .as_ref()
                     .map(|name| take_pending_welcome_session(&pending_welcome_sessions, name))
@@ -149,11 +153,12 @@ pub fn zellij_server_listener(
                         }
                     }
 
-                    if is_read_only && !session_exists {
-                        log::error!("Read only tokens cannot create new sessions.");
-                        client_connection_bus.close_connection();
+                    if !session_exists && (is_read_only || !may_create_session) {
+                        log::warn!("Refusing to create missing session {session_name} from a terminal viewer");
+                        client_connection_bus.close_connection_kicked();
                         return;
                     }
+                    may_create_session = false;
 
                     // The configured recovery name is permanently pinned to an existing
                     // session. Missing/replaced targets must not fall through to creation.
@@ -304,6 +309,7 @@ pub fn zellij_server_listener(
                             },
                             Some(ServerToClientMsg::SwitchSession{connect_to_session}) => {
                                 reconnect_to_session = Some(connect_to_session);
+                                may_create_session = true;
                                 switched_from_previous_session = true;
                                 continue 'reconnect_loop;
                             },

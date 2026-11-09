@@ -144,6 +144,7 @@ pub(in crate::web_client) async fn bootstrap(
     token: String,
     read_only: bool,
     session: String,
+    may_create_session: bool,
 ) -> Result<CreateClientIdResponse> {
     // Block new retained viewers during activation, including first-upgrade rollback.
     let _admission = crate::switchboard_viewers::bootstrap()?;
@@ -157,7 +158,11 @@ pub(in crate::web_client) async fn bootstrap(
         call(
             &endpoint,
             "/attach",
-            Some(serde_json::to_vec(&Attach { token, welcome })?),
+            Some(serde_json::to_vec(&Attach {
+                token,
+                welcome,
+                may_create_session,
+            })?),
         )
     })
     .await??;

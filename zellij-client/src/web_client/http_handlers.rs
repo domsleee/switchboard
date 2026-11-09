@@ -109,7 +109,9 @@ pub async fn create_new_client(
             Json("Missing session info".to_string()),
         ))?;
 
-    let session_name = match params.session.filter(|name| !name.is_empty()) {
+    let requested_session = params.session.filter(|name| !name.is_empty());
+    let may_create_session = requested_session.is_none();
+    let session_name = match requested_session {
         Some(session_name) => session_name,
         None => {
             let generated = generate_unique_session_name().ok_or((
@@ -123,14 +125,43 @@ pub async fn create_new_client(
         },
     };
 
+    // A named URL is a viewer of an existing session. Old pages can reload long
+    // after the last tab closes; they must not turn that reload into a new shell.
+    if !may_create_session && !zellij_utils::handoff::in_progress(&session_name) {
+        let manager = state.session_manager.clone();
+        let target = session_name.clone();
+        let exists =
+            tokio::task::spawn_blocking(move || manager.session_exists(&target).map_err(|_| ()))
+                .await
+                .unwrap_or(Err(()))
+                .map_err(|_| {
+                    (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json("Cannot query session".to_string()),
+                    )
+                })?;
+        if !exists {
+            return Err((
+                StatusCode::GONE,
+                Json("Terminal session has ended".to_string()),
+            ));
+        }
+    }
+
     if params.resumable {
         let token = super::utils::parse_cookies(&request)
             .remove("session_token")
             .unwrap_or_default();
-        return super::attachment::bootstrap(state, token, is_read_only, session_name)
-            .await
-            .map(Json)
-            .map_err(|error| (StatusCode::SERVICE_UNAVAILABLE, Json(error.to_string())));
+        return super::attachment::bootstrap(
+            state,
+            token,
+            is_read_only,
+            session_name,
+            may_create_session,
+        )
+        .await
+        .map(Json)
+        .map_err(|error| (StatusCode::SERVICE_UNAVAILABLE, Json(error.to_string())));
     }
 
     let web_client_id = String::from(Uuid::new_v4());
@@ -139,12 +170,20 @@ pub async fn create_new_client(
         .create_client_os_api()
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(e.to_string())))?;
 
-    state.connection_table.lock().unwrap().add_new_client(
-        web_client_id.to_owned(),
-        os_input,
-        is_read_only,
-        session_token_hash.0,
-    );
+    {
+        let mut table = state.connection_table.lock().unwrap();
+        table.add_new_client(
+            web_client_id.to_owned(),
+            os_input,
+            is_read_only,
+            session_token_hash.0,
+        );
+        table
+            .client_id_to_channels
+            .get_mut(&web_client_id)
+            .unwrap()
+            .may_create_session = may_create_session;
+    }
 
     let config = SetConfigPayload::from(&*state.config.lock().unwrap());
 
