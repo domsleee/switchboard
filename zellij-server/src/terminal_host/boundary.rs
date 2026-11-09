@@ -55,6 +55,11 @@ impl SequenceTracker {
         }
     }
 
+    /// How much output has been followed.
+    pub fn position(&self) -> u64 {
+        self.position
+    }
+
     /// The position a new parser should read from, or `None` when no position
     /// reproduces the old parser's state and the handoff must not proceed.
     pub fn resume_position(&self) -> Option<u64> {
