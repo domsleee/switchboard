@@ -28,6 +28,7 @@ test('integrated Conversation journeys use production markup and preserve delive
    if(p.endsWith('/conversation/reply')){f.claudeReplies.push(route.request().postDataJSON());if(f.holdClaudeReply)await new Promise(resolve=>f.releaseReplies.push(resolve));return route.fulfill({status:f.claudeReplyStatus,json:{ok:true}});}
    if(p==='/api/diagnostics/timing'){f.timings.push(route.request().postDataJSON());return route.fulfill({status:204});}
    if(p.endsWith('/conversation/prepare')){f.preparations.push(route.request().postDataJSON());return route.fulfill({status:f.prepareStatus,json:{trusted:false}});}
+   if(p.endsWith('/conversation/github')&&options.githubPreview)return json(options.githubPreview);
    if(p.endsWith('/codex/reply')){
     const data=route.request().postDataJSON(),id=Number(data.thread.slice(-12));f.requests.push(data);f.replyStarted?.();
     if(f.replyMode==='failed')return route.fulfill({status:503,json:{status:'failed',detail:'Codex could not accept this answer.'}});
@@ -116,9 +117,10 @@ test('integrated Conversation journeys use production markup and preserve delive
    }finally{await f.close();}
   });
   await t.test('GitHub preview owns Escape, keeps drafts, and closes on navigation',async()=>{
-   const f=await fixture({desktop:true,viewport:{width:1400,height:900},messages:[{role:'assistant',text:'Review https://github.com/example/project/pull/42'}]}),{page}=f;
+   const githubPreview={__typename:'PullRequest',title:'Review change',state:'OPEN',body:'Description',author:{login:'reviewer'},headRefName:'feature',baseRefName:'main',additions:1,deletions:0,changedFiles:1};
+   const f=await fixture({desktop:true,viewport:{width:1400,height:900},messages:[{role:'assistant',text:'Review https://github.com/example/project/pull/42'}],githubPreview}),{page}=f;
    try{
-    await page.route('**/conversation/github',route=>route.fulfill({json:{__typename:'PullRequest',title:'Review change',state:'OPEN',body:'Description',author:{login:'reviewer'},headRefName:'feature',baseRefName:'main',additions:1,deletions:0,changedFiles:1}}));
+    await page.waitForFunction(()=>performance.getEntriesByType('resource').some(entry=>new URL(entry.name).pathname.endsWith('/conversation/github')));
     const link=page.getByRole('link',{name:'https://github.com/example/project/pull/42',exact:true}),preview=page.getByRole('complementary',{name:'GitHub preview'});
     await page.getByLabel('Reply draft').fill('Keep this draft');await link.click();await preview.getByRole('heading',{name:'Review change'}).waitFor();
     await page.keyboard.press('Escape');assert.equal(await preview.isVisible(),false);assert.equal(await page.getByRole('button',{name:'Conversation',exact:true}).getAttribute('aria-pressed'),'true');assert.equal(f.escapes.length,0);
