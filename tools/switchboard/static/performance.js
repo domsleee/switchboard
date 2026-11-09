@@ -17,6 +17,8 @@ window.SwitchboardPerformance = (() => {
   const when = value => new Date(value).toLocaleString(undefined, {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'});
   const computerSelect = $('timing-computer'), targetSelect = $('timing-target'), buildSelect = $('timing-build');
   const list = $('timings'), status = $('timing-status'), refresh = $('refresh-timings');
+  const events = $('timing-events'), minimum = $('timing-minimum');
+  let eventsSignature;
   let computers = [], visible = false, timer, request, signature, renderedSignature, updated, preference, stale = false;
   try { preference = localStorage.getItem('switchboard-performance-computer'); } catch {}
   const active = () => visible && !document.hidden;
@@ -48,9 +50,9 @@ window.SwitchboardPerformance = (() => {
     options(computerSelect, computers.map(item => [item.name, item.name + (item.local ? ' · this computer' : '')]), preferred);
     destinations();
   }
-  function sample(item) {
+  function sample(item, heading = true) {
     const row = element('div', 'timing-sample', '');
-    row.append(element('small', '', `${ms(item.elapsed_ms)} · ${item.outcome} · ${when(item.time)}`));
+    if(heading) row.append(element('small', '', `${ms(item.elapsed_ms)} · ${item.outcome} · ${when(item.time)}`));
     for(const [name, value] of item.stages || []) {
       const stage = element('div', 'timing-stage', ''), bar = element('i', '', ''), track = element('span', 'timing-track', '');
       bar.style.width = `${Math.min(100, item.elapsed_ms ? value / item.elapsed_ms * 100 : 0)}%`;track.append(bar);
@@ -59,6 +61,30 @@ window.SwitchboardPerformance = (() => {
     return row;
   }
   const seriesKey = item => JSON.stringify([item.journey, item.target, item.build]);
+  function paintEvents() {
+    const selected = computer(), series = filtered(), threshold = Math.max(0, Number(minimum.value) || 0);
+    const recent = series.flatMap(item => (item.recent || []).map(event => ({...event, journey:item.journey, target:item.target, build:item.build})))
+      .filter(event => event.elapsed_ms >= threshold).sort((a,b) => b.time - a.time).slice(0, 50);
+    const next = JSON.stringify([selected?.name, selected?.error, buildSelect.value, targetSelect.value, threshold, recent]);
+    if(eventsSignature === next) return;
+    eventsSignature = next;
+    const open = new Set([...events.querySelectorAll('details[open]')].map(row => row.dataset.key));
+    const focused = document.activeElement?.closest('#timing-events details')?.dataset.key;
+    const rows = recent.map(item => {
+      const row = element('details', 'perf-event', ''), summary = element('summary', '', ''), title = element('span', 'perf-event-title', '');
+      row.dataset.key = JSON.stringify([selected?.name, item]);row.open = open.has(row.dataset.key);
+      title.append(element('span', '', journeys.find(([key]) => key === item.journey)?.[1] || item.journey), element('small', '', `${item.target} · ${item.outcome}`));
+      const time = element('time', '', new Date(item.time).toLocaleString(undefined, {month:'short', day:'numeric', hour:'numeric', minute:'2-digit', second:'2-digit'}));
+      time.dateTime = new Date(item.time).toISOString();
+      summary.append(title, element('strong', 'perf-event-duration', ms(item.elapsed_ms)), time);
+      row.append(summary, item.stages?.length ? sample(item, false) : element('p', 'perf-note', 'No stage breakdown recorded.'));
+      return row;
+    });
+    const empty = selected?.error || (!selected ? 'No computers reported measurements.' :
+      series.some(item => item.recent?.length) ? 'No recent events match this minimum duration.' : 'No recent events yet. New measurements will appear here.');
+    events.replaceChildren(...(rows.length ? rows : [element('p', 'perf-empty', empty)]));
+    if(focused) [...events.children].find(row => row.dataset.key === focused)?.querySelector('summary')?.focus({preventScroll:true});
+  }
   function seriesRow(item, openRows) {
     const row = element('details', 'timing-series', ''), summary = element('summary', '', '');
     row.dataset.key = seriesKey(item);row.open = openRows.has(row.dataset.key);
@@ -73,11 +99,12 @@ window.SwitchboardPerformance = (() => {
     const outcomes = Object.entries(item.outcomes || {}).map(([name, count]) => `${name} ${number(count)}`);
     row.append(summary, element('p', 'log-note', [...outcomes, item.hidden ? `${number(item.hidden)} excluded because the page was hidden` : ''].filter(Boolean).join(' · ')));
     if(item.slowest?.length) {
-      row.append(element('p', 'log-note', 'Slowest recorded waits. Stages can overlap and may not cover the full wait.'), ...item.slowest.map(sample));
+      row.append(element('p', 'log-note', 'Slowest recorded waits. Stages can overlap and may not cover the full wait.'), ...item.slowest.map(item => sample(item)));
     }
     return row;
   }
   function paint() {
+    paintEvents();
     const selected = computer(), series = filtered();
     const next = JSON.stringify([selected?.name, selected?.error, buildSelect.value, targetSelect.value, series]);
     if(renderedSignature === next) { showStatus();return; }
@@ -162,6 +189,7 @@ window.SwitchboardPerformance = (() => {
   };
   buildSelect.onchange = () => { destinations();paint(); };
   targetSelect.onchange = paint;
+  minimum.oninput = paintEvents;
   refresh.onclick = load;
   document.addEventListener('visibilitychange', () => { if(active()) load();else stop(); });
   return {show(value) { visible = value;if(active()) load();else stop(); }};

@@ -9,6 +9,7 @@ use std::{
 
 const MAX_BUILDS: usize = 12;
 const SLOWEST_PER_SERIES: usize = 5;
+const RECENT_PER_SERIES: usize = 20;
 const MAX_ELAPSED_MS: u32 = 120_000;
 const MAX_STAGES: usize = 16;
 /// Each bucket is 10% wider than the last, so a reported percentile is within about 10%.
@@ -85,6 +86,8 @@ struct Series {
     outcomes: BTreeMap<String, u32>,
     hidden: u32,
     slowest: Vec<Sample>,
+    #[serde(default)]
+    recent: Vec<Sample>,
 }
 
 fn bucket(ms: u32) -> u16 {
@@ -106,12 +109,15 @@ impl Series {
         self.count += 1;
         self.max_ms = self.max_ms.max(report.elapsed_ms);
         *self.buckets.entry(bucket(report.elapsed_ms)).or_default() += 1;
-        self.slowest.push(Sample {
+        let sample = Sample {
             time: now,
             elapsed_ms: report.elapsed_ms,
             outcome: report.outcome.clone(),
             stages: report.stages.clone(),
-        });
+        };
+        self.recent.insert(0, sample.clone());
+        self.recent.truncate(RECENT_PER_SERIES);
+        self.slowest.push(sample);
         self.slowest
             .sort_by_key(|sample| std::cmp::Reverse(sample.elapsed_ms));
         self.slowest.truncate(SLOWEST_PER_SERIES);
@@ -182,7 +188,7 @@ impl Store {
                     "first_seen": series.first_seen, "count": series.count,
                     "p50_ms": series.percentile(0.5), "p95_ms": series.percentile(0.95),
                     "max_ms": series.max_ms, "outcomes": series.outcomes,
-                    "hidden": series.hidden, "slowest": series.slowest,
+                    "hidden": series.hidden, "slowest": series.slowest, "recent": series.recent,
                 })
             })
             .collect()
@@ -414,6 +420,7 @@ mod tests {
         assert_eq!(row["max_ms"], 640);
         assert_ne!(row["target"], "unknown", "A paired host is stored by name");
         assert_eq!(row["slowest"][0]["stages"][0], json!(["request", 600]));
+        assert_eq!(row["recent"][0]["elapsed_ms"], 640);
         let local = json!({"journey":"conversation_load","outcome":"history","elapsed_ms":9,
             "hidden":false,"host":"local"});
         assert_eq!(
@@ -457,6 +464,7 @@ mod tests {
         assert_eq!(row.max_ms, 100);
         assert_eq!(row.outcomes["left"], 1);
         assert_eq!(row.slowest.len(), 1);
+        assert_eq!(row.recent.len(), 1);
     }
 
     #[test]
@@ -492,6 +500,35 @@ mod tests {
             .map(|s| s.elapsed_ms)
             .collect();
         assert_eq!(kept, [20, 19, 18, 17, 16]);
+    }
+
+    #[test]
+    fn switchboard_timings_keep_recent_waits_even_when_they_are_fast() {
+        let mut store = Store::default();
+        for n in 1..=30 {
+            store.add(&report("ready", 1000 - n, false), "abc", "Mac", n.into());
+        }
+        let row = series(&store);
+        assert_eq!(row.recent.len(), RECENT_PER_SERIES);
+        assert_eq!(row.recent.first().unwrap().elapsed_ms, 970);
+        assert_eq!(row.recent.last().unwrap().time, 11);
+        assert_eq!(row.slowest.first().unwrap().elapsed_ms, 999);
+        store.add(&report("timeout", 30_000, false), "def", "Studio", 31);
+        let mut restored = Store::default();
+        restored.load(&store.saved().unwrap());
+        assert_eq!(restored.view(), store.view());
+    }
+
+    #[test]
+    fn switchboard_timings_load_files_without_recent_events() {
+        let mut store = Store::default();
+        store.add(&report("ready", 42, false), "abc", "Mac", 1);
+        let mut saved: Value = serde_json::from_slice(&store.saved().unwrap()).unwrap();
+        saved[0]["series"].as_object_mut().unwrap().remove("recent");
+        let mut restored = Store::default();
+        restored.load(&serde_json::to_vec(&saved).unwrap());
+        assert_eq!(series(&restored).count, 1);
+        assert!(series(&restored).recent.is_empty());
     }
 
     #[test]
