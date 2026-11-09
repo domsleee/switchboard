@@ -1247,7 +1247,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       const command=/^\/[a-z][\w:.-]*(?:\s|$)/i.test(text),native=!command&&current.agent==='codex'&&/^[0-9a-f-]{36}$/.test(chat?.thread||'');
       if(command&&selected.length){sendStatus('Send commands without attachments. Your draft is kept.');return;}
       // Codex commands need its prompt. Keep them queued through startup or a turn.
-      const waitForPrompt=command&&current.agent!=='claude'&&current.state==='working';
+      const waitForPrompt=command&&current.agent!=='claude'&&['working','input'].includes(current.state);
       if(!waiting&&!waitForPrompt&&current.state==='working'&&!native&&current.agent!=='claude'){sendStatus('Still connecting to this conversation. Try sending again in a moment.');return;}
       const byteLimit=native||waiting&&(current.agent||current.launch?.agent)==='codex'?8192:16000;
       if(tooLong(payload,byteLimit)){sendStatus(TOO_LONG);return;}
