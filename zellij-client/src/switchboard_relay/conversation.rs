@@ -76,6 +76,23 @@ const NOT_RESPONDING: &str = "The terminal did not respond, so nothing was sent.
 /// Claude shows no input box, so nothing was typed. Conversation matches this text,
 /// keeps the message on its way and tries again.
 const AWAITING_PROMPT: &str = "Waiting for Claude's input box.";
+const NOT_CLAUDE: &str = "The selected pane is not Claude";
+/// How long a pane that cannot be identified yet is read again. A busy computer
+/// leaves out a pane's command, and a redraw can hide Claude's footer.
+const IDENTIFY_WITHIN: Duration = Duration::from_secs(2);
+
+/// Whether Claude runs in this pane, or `None` while this read cannot say.
+fn is_claude(pane: &Value, screen: &str) -> Option<bool> {
+    let agent = attention::classify(pane, screen);
+    if agent["agent"] == "claude" {
+        return Some(true);
+    }
+    let command = pane["pane_command"].as_str().unwrap_or("").trim();
+    if agent["agent"].is_string() || !command.is_empty() {
+        return Some(false);
+    }
+    None
+}
 
 /// Repeats a read that failed. Reading changes nothing, and a busy computer can
 /// time out or fail one `zellij action` that works moments later. The cause
@@ -393,7 +410,7 @@ pub(super) async fn reply_handler(
                 .map_err(|_| (StatusCode::BAD_GATEWAY, "Cannot reach the other computer"))?;
             return Ok((response.status, response.body).into_response());
         }
-        reply_local(&host, reply)
+        reply_local(&host, Some(&state.poll), reply)
             .await
             .map(IntoResponse::into_response)
     })
@@ -734,7 +751,11 @@ fn skill_choices(result: &Value) -> Vec<Value> {
     choices.into_values().collect()
 }
 
-pub(super) async fn reply_local(host: &Host, reply: Reply) -> Result<Json<Value>, Error> {
+pub(super) async fn reply_local(
+    host: &Host,
+    poll: Option<&Arc<Mutex<attention::PollState>>>,
+    reply: Reply,
+) -> Result<Json<Value>, Error> {
     let text = &reply.text;
     if text.trim().is_empty()
         || text.len() > REPLY_LIMIT
@@ -752,9 +773,34 @@ pub(super) async fn reply_local(host: &Host, reply: Reply) -> Result<Json<Value>
         pane_id: reply.pane_id,
         tab_id: reply.tab_id,
     };
-    let (pane, screen) = checked_screen(host, &target, retry_until).await?;
-    if attention::classify(&pane, &screen)["agent"] != "claude" {
-        return Err((StatusCode::CONFLICT, "The selected pane is not Claude"));
+    // Counted from the first read, which is slowest when the computer is busy.
+    let mut identify_until = None;
+    loop {
+        let (pane, screen) = checked_screen(host, &target, retry_until).await?;
+        match is_claude(&pane, &screen) {
+            Some(true) => break,
+            Some(false) => return Err((StatusCode::CONFLICT, NOT_CLAUDE)),
+            None => {},
+        }
+        let now = tokio::time::Instant::now();
+        if now < *identify_until.get_or_insert(now + IDENTIFY_WITHIN) {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            continue;
+        }
+        // Claude's hooks say it is there, but they outlive a crash, so they only
+        // keep the message waiting. A later read must still identify the pane.
+        let hooked = match poll {
+            Some(poll) => {
+                let poll = poll.lock().await;
+                poll.hooked_agent(&reply.session, reply.pane_id)
+            },
+            None => None,
+        };
+        return Err(if hooked == Some("claude") {
+            (StatusCode::CONFLICT, AWAITING_PROMPT)
+        } else {
+            (StatusCode::CONFLICT, NOT_CLAUDE)
+        });
     }
     let id = reply.pane_id.to_string();
     let session = &reply.session;
@@ -1158,7 +1204,8 @@ mod tests {
         .unwrap();
         // Input clears the fake screen, unless `after-<first key>` holds the screen
         // that key leads to. `ansi`, when present, is what a styled dump reads.
-        // `fail-list`, `fail-plain` and `fail-ansi` each fail that read once.
+        // `fail-list`, `fail-plain` and `fail-ansi` each fail that read once. `slow-list`
+        // makes one list take longer than the identify wait, then installs `after-list`.
         #[cfg(windows)]
         std::fs::write(
             &cli,
@@ -1171,6 +1218,7 @@ if "%~4"=="paste" goto write
 exit /b 1
 :catalog
 if exist "{dir}\fail-list" (del "{dir}\fail-list" & exit /b 2)
+if exist "{dir}\slow-list" (del "{dir}\slow-list" & ping -n 4 127.0.0.1 >nul & type "{catalog}" & move /y "{dir}\after-list" "{catalog}" >nul & exit /b 0)
 type "{catalog}"
 exit /b 0
 :screen
@@ -1198,7 +1246,9 @@ if exist "{dir}\after-%~7" (copy /y "{dir}\after-%~7" "{screen}" >nul) else (typ
                 format!(
                     r#"#!/bin/sh
 case "$4" in
-list-panes) if [ -f '{dir}/fail-list' ]; then rm '{dir}/fail-list'; exit 2; fi; cat '{catalog}' ;;
+list-panes) if [ -f '{dir}/fail-list' ]; then rm '{dir}/fail-list'; exit 2; fi
+  if [ -f '{dir}/slow-list' ]; then rm '{dir}/slow-list'; sleep 3; cat '{catalog}'; mv '{dir}/after-list' '{catalog}'; exit 0; fi
+  cat '{catalog}' ;;
 dump-screen) if [ "$5" = --ansi ]; then fail='{dir}/fail-ansi'; else fail='{dir}/fail-plain'; fi
   if [ -f "$fail" ]; then rm "$fail"; exit 2; fi
   if [ "$5" = --ansi ] && [ -f '{dir}/ansi' ]; then cat '{dir}/ansi'; else cat '{screen}'; fi ;;
@@ -1364,12 +1414,12 @@ esac
         )
         .unwrap();
         assert_eq!(
-            reply_local(&host, reply("hi")).await.unwrap_err(),
+            reply_local(&host, None, reply("hi")).await.unwrap_err(),
             (StatusCode::CONFLICT, AWAITING_PROMPT)
         );
         assert!(!actions.exists());
         // A box that returns during the wait, as after a resize redraw, takes the reply.
-        let (sent, ()) = tokio::join!(reply_local(&host, reply("hi")), async {
+        let (sent, ()) = tokio::join!(reply_local(&host, None, reply("hi")), async {
             tokio::time::sleep(Duration::from_millis(300)).await;
             std::fs::write(&screen, CLAUDE_IDLE).unwrap();
         });
@@ -1377,13 +1427,71 @@ esac
         std::fs::remove_file(&actions).unwrap();
         for bad in ["", "  ", "a\x1b[201~b", &"x".repeat(REPLY_LIMIT + 1)] {
             assert_eq!(
-                reply_local(&host, reply(bad)).await.unwrap_err().0,
+                reply_local(&host, None, reply(bad)).await.unwrap_err().0,
                 StatusCode::BAD_REQUEST
             );
         }
         assert!(!actions.exists());
+        // A busy computer leaves out the command, and Claude's default footer names no
+        // mode: only another read can identify the pane.
+        let default_idle = format!("{RULE}\n❯\u{a0}\n{RULE}\n  ? for shortcuts\n");
+        let no_command = r#"[{"id":7,"tab_id":8,"is_plugin":false}]"#;
+        let claude_command = r#"[{"id":7,"tab_id":8,"pane_command":"claude","is_plugin":false}]"#;
+        std::fs::write(&catalog, no_command).unwrap();
+        std::fs::write(&screen, &default_idle).unwrap();
+        assert_eq!(
+            reply_local(&host, None, reply("hi")).await.unwrap_err(),
+            (StatusCode::CONFLICT, NOT_CLAUDE),
+            "nothing identifies this pane, so nothing is typed"
+        );
+        assert!(!actions.exists());
+        // The command comes back on a later read.
+        let (sent, ()) = tokio::join!(reply_local(&host, None, reply("hi")), async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            std::fs::write(&catalog, claude_command).unwrap();
+        });
+        assert_eq!(sent.unwrap().0["ok"], true);
+        std::fs::remove_file(&actions).unwrap();
+        // Claude's hooks keep the message waiting, but never type by themselves.
+        let poll: Arc<Mutex<attention::PollState>> = Default::default();
+        poll.lock().await.hook_claude_for_test("fixture", 7);
+        std::fs::write(&catalog, no_command).unwrap();
+        std::fs::write(&screen, &default_idle).unwrap();
+        assert_eq!(
+            reply_local(&host, Some(&poll), reply("hi"))
+                .await
+                .unwrap_err(),
+            (StatusCode::CONFLICT, AWAITING_PROMPT)
+        );
+        assert!(!actions.exists());
+        // A first read slower than the whole wait still gets a second read.
+        std::fs::write(dir.path().join("slow-list"), "").unwrap();
+        std::fs::write(dir.path().join("after-list"), claude_command).unwrap();
+        assert_eq!(
+            reply_local(&host, None, reply("hi")).await.unwrap().0["ok"],
+            true
+        );
+        std::fs::remove_file(&actions).unwrap();
+        // The report is stale once the pane runs something else.
+        std::fs::write(
+            &catalog,
+            r#"[{"id":7,"tab_id":8,"pane_command":"vim","is_plugin":false}]"#,
+        )
+        .unwrap();
+        std::fs::write(&screen, &default_idle).unwrap();
+        assert_eq!(
+            reply_local(&host, Some(&poll), reply("hi"))
+                .await
+                .unwrap_err(),
+            (StatusCode::CONFLICT, NOT_CLAUDE)
+        );
+        assert!(!actions.exists());
+        std::fs::write(&catalog, claude_command).unwrap();
         std::fs::write(&screen, CLAUDE_IDLE).unwrap();
-        assert_eq!(reply_local(&host, reply("-v")).await.unwrap().0["ok"], true);
+        assert_eq!(
+            reply_local(&host, None, reply("-v")).await.unwrap().0["ok"],
+            true
+        );
         // cmd's echo writes CRLF; compare the recorded actions, not their line endings.
         assert_eq!(
             std::fs::read_to_string(&actions)
@@ -1414,7 +1522,7 @@ esac
         .unwrap();
         std::fs::write(after("13"), &typed).unwrap();
         assert_eq!(
-            reply_local(&host, reply("hi")).await.unwrap().0,
+            reply_local(&host, None, reply("hi")).await.unwrap().0,
             json!({"ok":true,"draft":"restored"})
         );
         assert_eq!(
@@ -1428,7 +1536,7 @@ esac
         // If the draft does not come back, the browser says where it is.
         std::fs::remove_file(after("13")).unwrap();
         std::fs::write(&screen, &typed).unwrap();
-        let sent = reply_local(&host, reply("hi")).await.unwrap().0;
+        let sent = reply_local(&host, None, reply("hi")).await.unwrap().0;
         assert_eq!(sent["draft"], "stashed");
         assert!(sent["notice"].as_str().unwrap().contains("Ctrl+S"));
         assert_eq!(recorded().len(), 3);
@@ -1439,7 +1547,7 @@ esac
         )
         .unwrap();
         assert_eq!(
-            reply_local(&host, reply("hi")).await.unwrap_err().0,
+            reply_local(&host, None, reply("hi")).await.unwrap_err().0,
             StatusCode::CONFLICT
         );
         assert!(!actions.exists());
@@ -1447,7 +1555,7 @@ esac
         std::fs::remove_file(after("19")).unwrap();
         std::fs::write(&screen, &typed).unwrap();
         assert_eq!(
-            reply_local(&host, reply("hi")).await.unwrap_err().0,
+            reply_local(&host, None, reply("hi")).await.unwrap_err().0,
             StatusCode::CONFLICT
         );
         assert_eq!(recorded(), ["-s fixture action write -p 7 19"]);
@@ -1456,14 +1564,14 @@ esac
         let shell = format!("{RULE}\n! \n{RULE}\n  ! for shell mode\n");
         std::fs::write(&screen, &shell).unwrap();
         assert_eq!(
-            reply_local(&host, reply("hi")).await.unwrap_err().0,
+            reply_local(&host, None, reply("hi")).await.unwrap_err().0,
             StatusCode::CONFLICT
         );
         assert_eq!(recorded(), ["-s fixture action write -p 7 127"]);
         std::fs::write(after("127"), CLAUDE_IDLE).unwrap();
         std::fs::write(&screen, &shell).unwrap();
         assert_eq!(
-            reply_local(&host, reply("hi")).await.unwrap().0,
+            reply_local(&host, None, reply("hi")).await.unwrap().0,
             json!({"ok":true})
         );
         assert_eq!(
@@ -1484,7 +1592,7 @@ esac
         )
         .unwrap();
         assert_eq!(
-            reply_local(&host, reply("hi")).await.unwrap_err().0,
+            reply_local(&host, None, reply("hi")).await.unwrap_err().0,
             StatusCode::CONFLICT
         );
         assert!(!actions.exists());
@@ -1495,7 +1603,7 @@ esac
             std::fs::write(&screen, CLAUDE_IDLE).unwrap();
             std::fs::write(dir.path().join(fail), "").unwrap();
             assert_eq!(
-                reply_local(&host, reply("hi")).await.unwrap().0,
+                reply_local(&host, None, reply("hi")).await.unwrap().0,
                 json!({"ok":true}),
                 "{fail}"
             );
