@@ -73,7 +73,7 @@ test('integrated Conversation journeys use production markup and preserve delive
      await page.evaluate(()=>{window.perfFrames=[...document.querySelectorAll('#terminals>iframe')];window.perfSources=perfFrames.map(frame=>frame.getAttribute('src'));window.perfCommands=[];for(const frame of perfFrames){const send=frame.contentWindow.postMessage;frame.contentWindow.postMessage=function(message,...args){if(document.querySelector('#panel').open)perfCommands.push(message.type);return send.call(frame.contentWindow,message,...args);};}});
      const connections=f.connections.length;
      await page.getByRole('button',{name:'Performance dashboard',exact:true}).click();
-     await page.getByText('Performance dashboard',{exact:true}).waitFor();
+     await page.locator('#panel-title').getByText('Performance',{exact:true}).waitFor();
      await page.locator('#timing-computer').selectOption('Fixture Mac');
      const reviews=acknowledgements.length;await f.refresh();
      await page.keyboard.press('Alt+l');

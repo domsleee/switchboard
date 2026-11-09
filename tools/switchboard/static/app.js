@@ -2424,6 +2424,7 @@ function sectionLink(event){
   return panelPages[link.pathname];
 }
 function showSection(name,focusTab=false){
+  panel.dataset.section=name;
   for(const tab of panelTabs){
     const on=tab.dataset.section===name,section=$(tab.getAttribute('aria-controls'));
     tab.setAttribute('aria-selected',String(on));tab.tabIndex=on?0:-1;section.hidden=!on;
@@ -2440,7 +2441,8 @@ function showSection(name,focusTab=false){
 function openPanel(name){
   showSection(name);
   if(!panel.open)panel.showModal();
-  panelTabs.find(tab=>tab.dataset.section===name).focus();
+  const tab=panelTabs.find(tab=>tab.dataset.section===name);
+  tab.focus();tab.scrollIntoView({block:'nearest',inline:'nearest'});
 }
 document.addEventListener('click',event=>{const name=sectionLink(event);if(name)openPanel(name);});
 $('panel-tabs').onclick=event=>{const tab=event.target.closest('[role=tab]');if(tab)showSection(tab.dataset.section,true);};
@@ -2461,6 +2463,7 @@ for(const frame of panel.querySelectorAll('iframe'))frame.onload=()=>{
 };
 $('close-panel').onclick=()=>panel.close();
 panel.onclose=()=>{
+  if(panel.open)return;
   globalThis.SwitchboardPerformance?.show(false);
   for(const frame of panel.querySelectorAll('iframe'))replaceFrameSrc(frame,'about:blank');
   const item=allTabs().find(item=>item.key===selected);

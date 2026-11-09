@@ -17,7 +17,7 @@ window.SwitchboardPerformance = (() => {
   const when = value => new Date(value).toLocaleString(undefined, {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'});
   const computerSelect = $('timing-computer'), targetSelect = $('timing-target'), buildSelect = $('timing-build');
   const list = $('timings'), status = $('timing-status'), refresh = $('refresh-timings');
-  let computers = [], visible = false, timer, request, signature, updated, preference;
+  let computers = [], visible = false, timer, request, signature, updated, preference, stale = false;
   try { preference = localStorage.getItem('switchboard-performance-computer'); } catch {}
   const active = () => visible && !document.hidden;
   const computer = () => computers.find(item => item.name === computerSelect.value);
@@ -65,7 +65,8 @@ window.SwitchboardPerformance = (() => {
     const title = element('span', 'timing-title', journeys.find(([key]) => key === item.journey)?.[1] || item.journey);
     summary.append(title, element('small', '', item.target));
     for(const [label, value] of [['Samples', number(item.count)], ['Median', ms(item.p50_ms)], ['p95', item.count >= 20 ? ms(item.p95_ms) : '—'], ['Worst', item.count ? ms(item.max_ms) : '—']]) {
-      const stat = element('span', 'timing-stat', `${label} ${value}`);
+      const stat = element('span', 'timing-stat', '');
+      stat.append(element('span', 'timing-stat-label', label + ' '), element('span', 'timing-stat-value', value));
       if(label === 'p95' && item.count < 20) stat.title = 'Needs 20 samples for this destination and build';
       summary.append(stat);
     }
@@ -78,6 +79,10 @@ window.SwitchboardPerformance = (() => {
   }
   function paint() {
     const selected = computer(), series = filtered(), openRows = new Set([...$('timing-series').querySelectorAll('details[open]')].map(row => row.dataset.key));
+    const focusedRow = document.activeElement?.closest('#timing-series details')?.dataset.key;
+    const scale = Math.max(0, ...series.filter(item => item.count > 0).map(item => item.max_ms));
+    $('timing-scale').replaceChildren();
+    if(scale > 0) $('timing-scale').append(element('span', 'perf-median-key', 'Median'), element('span', 'perf-worst-key', 'Worst'), element('span', 'perf-axis', `0 – ${ms(scale)}`));
     $('timing-cards').replaceChildren(...journeys.map(([key, title, help]) => {
       const rows = series.filter(item => item.journey === key && item.count > 0), medians = rows.map(item => item.p50_ms).filter(value => value != null);
       const card = element('section', 'perf-card', '');card.dataset.journey = key;
@@ -86,18 +91,31 @@ window.SwitchboardPerformance = (() => {
       const value = !medians.length ? '—' : min === max ? ms(min) : `${ms(min)} – ${ms(max)}`;
       card.append(element('p', 'perf-value', value), element('p', 'perf-card-label', rows.length > 1 ? 'Median range by destination' : 'Median wait'));
       const count = rows.reduce((sum, item) => sum + item.count, 0), worst = Math.max(...rows.map(item => item.max_ms));
+      const plot = element('div', 'perf-range', '');plot.setAttribute('aria-hidden', 'true');
+      if(medians.length && scale > 0) {
+        const band = element('span', 'perf-range-band', ''), marker = element('i', 'perf-range-median', ''), tail = element('i', 'perf-range-worst', '');
+        band.style.left = `${min / scale * 100}%`;band.style.width = `${(max - min) / scale * 100}%`;
+        marker.style.left = `${max / scale * 100}%`;tail.style.left = `${worst / scale * 100}%`;
+        plot.append(band, marker, tail);
+      } else plot.classList.add('perf-range-empty');
+      card.append(plot);
       card.append(element('p', 'perf-card-meta', count ? `${number(count)} ${count === 1 ? 'sample' : 'samples'} · worst ${ms(worst)}` : 'No samples for this selection'), element('p', 'perf-card-help', help));
       return card;
     }));
     const rows = [...series].sort((a,b) => a.target.localeCompare(b.target) || journeys.findIndex(([key]) => key === a.journey) - journeys.findIndex(([key]) => key === b.journey));
     const empty = !selected ? 'No computers reported measurements.' : selected.error || 'No timings yet. Switch between chats and Terminal, then return here.';
     $('timing-series').replaceChildren(...(rows.length ? rows.map(item => seriesRow(item, openRows)) : [element('p', 'perf-empty', empty)]));
+    if(focusedRow) [...$('timing-series').children].find(row => row.dataset.key === focusedRow)?.querySelector('summary')?.focus({preventScroll:true});
     showStatus();
   }
   function showStatus() {
     const count = filtered().reduce((sum, item) => sum + item.count, 0);
-    status.textContent = `${number(count)} measured waits${buildSelect.value ? ` · build ${buildSelect.value}` : ''}${updated ? ` · updated ${updated.toLocaleTimeString(undefined, {hour:'numeric', minute:'2-digit', second:'2-digit'})}` : ''}`;
-    status.classList.remove('perf-stale');
+    status.textContent = stale ? computers.length ? `Refresh failed. Showing the last measurements from ${updated.toLocaleTimeString()}.` : 'Timings unavailable; refresh to try again.' :
+      `${number(count)} measured waits${buildSelect.value ? ` · build ${buildSelect.value}` : ''}${updated ? ` · updated ${updated.toLocaleTimeString(undefined, {hour:'numeric', minute:'2-digit', second:'2-digit'})}` : ''}`;
+    status.classList.toggle('perf-stale', stale);
+  }
+  function announce(message) {
+    if($('timing-announcement').textContent !== message) $('timing-announcement').textContent = message;
   }
   function schedule() {
     clearTimeout(timer);
@@ -106,14 +124,15 @@ window.SwitchboardPerformance = (() => {
   async function load() {
     if(!active() || request) return;
     const current = request = new AbortController(), timeout = setTimeout(() => current.abort(), 10000);
-    refresh.disabled = true;list.setAttribute('aria-busy', 'true');
+    refresh.setAttribute('aria-busy', 'true');list.setAttribute('aria-busy', 'true');
     try {
       const response = await fetch('/api/timings', {cache:'no-store', signal:current.signal});
       if(!response.ok) throw Error('Timings unavailable');
       const data = await response.json();
       if(!Array.isArray(data.computers)) throw Error('Timings unavailable');
       if(!active() || request !== current) return;
-      updated = new Date();const next = JSON.stringify(data.computers);
+      const recovered = stale;
+      updated = new Date();stale = false;const next = JSON.stringify(data.computers);
       if(signature !== next) {
         computers = data.computers;signature = next;updateControls();paint();
       } else {
@@ -121,17 +140,17 @@ window.SwitchboardPerformance = (() => {
         showStatus();
       }
       status.classList.remove('perf-stale');
+      if(recovered) announce('Performance measurements refreshed.');
     } catch(error) {
       if(request !== current || !active()) return;
-      status.textContent = computers.length ? `Refresh failed. Showing the last measurements from ${updated.toLocaleTimeString()}.` : 'Timings unavailable; refresh to try again.';
-      status.classList.add('perf-stale');
+      stale = true;showStatus();announce(status.textContent);
     } finally {
       clearTimeout(timeout);
-      if(request === current) { request = null;refresh.disabled = false;list.setAttribute('aria-busy', 'false');schedule(); }
+      if(request === current) { request = null;refresh.setAttribute('aria-busy', 'false');list.setAttribute('aria-busy', 'false');schedule(); }
     }
   }
   function stop() {
-    clearTimeout(timer);request?.abort();request = null;refresh.disabled = false;list.setAttribute('aria-busy', 'false');
+    clearTimeout(timer);request?.abort();request = null;refresh.setAttribute('aria-busy', 'false');list.setAttribute('aria-busy', 'false');
   }
   computerSelect.onchange = () => {
     preference = computerSelect.value;try { localStorage.setItem('switchboard-performance-computer', preference); } catch {}
