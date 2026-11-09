@@ -279,6 +279,7 @@ fn claude_http(hook: &Value) -> bool {
             ("X-Zellij-Pane", "ZELLIJ_PANE_ID"),
             ("X-Claudecode", "CLAUDECODE"),
             ("X-Claude-Entrypoint", "CLAUDE_CODE_ENTRYPOINT"),
+            ("X-Codex-Thread-Id", "CODEX_THREAD_ID"),
         ]
         .iter()
         .all(|(header, var)| {
@@ -1960,6 +1961,10 @@ mod tests {
         for (pointer, value) in [
             ("/hooks/PostToolUse/0/hooks/0/allowedEnvVars", json!([])),
             ("/hooks/PostToolUse/0/hooks/0/headers", json!({})),
+            (
+                "/hooks/PostToolUse/0/hooks/0/headers/X-Codex-Thread-Id",
+                json!(""),
+            ),
             (
                 "/hooks/PostToolUse/0/hooks/0/url",
                 json!("http://127.0.0.1:8090/api/agent-hook"),

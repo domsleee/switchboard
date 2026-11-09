@@ -44,13 +44,15 @@
               "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
               "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
               "X-Claudecode": "$CLAUDECODE",
-              "X-Claude-Entrypoint": "$CLAUDE_CODE_ENTRYPOINT"
+              "X-Claude-Entrypoint": "$CLAUDE_CODE_ENTRYPOINT",
+              "X-Codex-Thread-Id": "$CODEX_THREAD_ID"
             },
             "allowedEnvVars": [
               "ZELLIJ_SESSION_NAME",
               "ZELLIJ_PANE_ID",
               "CLAUDECODE",
-              "CLAUDE_CODE_ENTRYPOINT"
+              "CLAUDE_CODE_ENTRYPOINT",
+              "CODEX_THREAD_ID"
             ]
           }
         ]
@@ -67,13 +69,15 @@
               "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
               "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
               "X-Claudecode": "$CLAUDECODE",
-              "X-Claude-Entrypoint": "$CLAUDE_CODE_ENTRYPOINT"
+              "X-Claude-Entrypoint": "$CLAUDE_CODE_ENTRYPOINT",
+              "X-Codex-Thread-Id": "$CODEX_THREAD_ID"
             },
             "allowedEnvVars": [
               "ZELLIJ_SESSION_NAME",
               "ZELLIJ_PANE_ID",
               "CLAUDECODE",
-              "CLAUDE_CODE_ENTRYPOINT"
+              "CLAUDE_CODE_ENTRYPOINT",
+              "CODEX_THREAD_ID"
             ]
           }
         ]
@@ -90,13 +94,15 @@
               "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
               "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
               "X-Claudecode": "$CLAUDECODE",
-              "X-Claude-Entrypoint": "$CLAUDE_CODE_ENTRYPOINT"
+              "X-Claude-Entrypoint": "$CLAUDE_CODE_ENTRYPOINT",
+              "X-Codex-Thread-Id": "$CODEX_THREAD_ID"
             },
             "allowedEnvVars": [
               "ZELLIJ_SESSION_NAME",
               "ZELLIJ_PANE_ID",
               "CLAUDECODE",
-              "CLAUDE_CODE_ENTRYPOINT"
+              "CLAUDE_CODE_ENTRYPOINT",
+              "CODEX_THREAD_ID"
             ]
           }
         ]
@@ -113,13 +119,15 @@
               "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
               "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
               "X-Claudecode": "$CLAUDECODE",
-              "X-Claude-Entrypoint": "$CLAUDE_CODE_ENTRYPOINT"
+              "X-Claude-Entrypoint": "$CLAUDE_CODE_ENTRYPOINT",
+              "X-Codex-Thread-Id": "$CODEX_THREAD_ID"
             },
             "allowedEnvVars": [
               "ZELLIJ_SESSION_NAME",
               "ZELLIJ_PANE_ID",
               "CLAUDECODE",
-              "CLAUDE_CODE_ENTRYPOINT"
+              "CLAUDE_CODE_ENTRYPOINT",
+              "CODEX_THREAD_ID"
             ]
           }
         ]
@@ -136,13 +144,15 @@
               "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
               "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
               "X-Claudecode": "$CLAUDECODE",
-              "X-Claude-Entrypoint": "$CLAUDE_CODE_ENTRYPOINT"
+              "X-Claude-Entrypoint": "$CLAUDE_CODE_ENTRYPOINT",
+              "X-Codex-Thread-Id": "$CODEX_THREAD_ID"
             },
             "allowedEnvVars": [
               "ZELLIJ_SESSION_NAME",
               "ZELLIJ_PANE_ID",
               "CLAUDECODE",
-              "CLAUDE_CODE_ENTRYPOINT"
+              "CLAUDE_CODE_ENTRYPOINT",
+              "CODEX_THREAD_ID"
             ]
           }
         ]
@@ -159,13 +169,15 @@
               "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
               "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
               "X-Claudecode": "$CLAUDECODE",
-              "X-Claude-Entrypoint": "$CLAUDE_CODE_ENTRYPOINT"
+              "X-Claude-Entrypoint": "$CLAUDE_CODE_ENTRYPOINT",
+              "X-Codex-Thread-Id": "$CODEX_THREAD_ID"
             },
             "allowedEnvVars": [
               "ZELLIJ_SESSION_NAME",
               "ZELLIJ_PANE_ID",
               "CLAUDECODE",
-              "CLAUDE_CODE_ENTRYPOINT"
+              "CLAUDE_CODE_ENTRYPOINT",
+              "CODEX_THREAD_ID"
             ]
           },
           {
@@ -194,13 +206,15 @@
               "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
               "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
               "X-Claudecode": "$CLAUDECODE",
-              "X-Claude-Entrypoint": "$CLAUDE_CODE_ENTRYPOINT"
+              "X-Claude-Entrypoint": "$CLAUDE_CODE_ENTRYPOINT",
+              "X-Codex-Thread-Id": "$CODEX_THREAD_ID"
             },
             "allowedEnvVars": [
               "ZELLIJ_SESSION_NAME",
               "ZELLIJ_PANE_ID",
               "CLAUDECODE",
-              "CLAUDE_CODE_ENTRYPOINT"
+              "CLAUDE_CODE_ENTRYPOINT",
+              "CODEX_THREAD_ID"
             ]
           }
         ]
@@ -217,13 +231,15 @@
               "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
               "X-Zellij-Pane": "$ZELLIJ_PANE_ID",
               "X-Claudecode": "$CLAUDECODE",
-              "X-Claude-Entrypoint": "$CLAUDE_CODE_ENTRYPOINT"
+              "X-Claude-Entrypoint": "$CLAUDE_CODE_ENTRYPOINT",
+              "X-Codex-Thread-Id": "$CODEX_THREAD_ID"
             },
             "allowedEnvVars": [
               "ZELLIJ_SESSION_NAME",
               "ZELLIJ_PANE_ID",
               "CLAUDECODE",
-              "CLAUDE_CODE_ENTRYPOINT"
+              "CLAUDE_CODE_ENTRYPOINT",
+              "CODEX_THREAD_ID"
             ]
           }
         ]
