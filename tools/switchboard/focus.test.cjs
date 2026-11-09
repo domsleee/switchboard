@@ -615,7 +615,7 @@ for(const deferred of ['search','dialog','preview','window','drawer'])test(`a re
   }finally{await browser.close();}
 });
 
-test('an automatic Terminal visit to deliver a Conversation reply is not a typing wait',
+for(const navigate of [false,true])test(`an automatic Terminal send excludes typing waits until user navigation: ${navigate}`,
   {skip:!process.env.PLAYWRIGHT_MODULE},async()=>{
   const {browser,page,input,pageErrors,timings}=await browserFocusFixture({conversation:true});
   try{
@@ -628,9 +628,14 @@ test('an automatic Terminal visit to deliver a Conversation reply is not a typin
     await page.getByRole('button',{name:'Send via Terminal',exact:true}).click();
     await page.waitForFunction(()=>terminalInputTransient&&document.querySelector('iframe.active').contentWindow.sendState);
     assert.equal(await page.evaluate(()=>[...sessions.values()][0].inputTiming??null),null);
+    if(navigate){
+      await page.keyboard.press('Alt+Digit2');
+      await page.waitForFunction(()=>!![...sessions.values()][0].inputTiming&&terminalInputTransient===null);
+    }
     await page.evaluate(()=>document.querySelector('iframe.active').contentWindow.sendState(7));
     await page.waitForFunction(()=>![...sessions.values()][0].frame.inert);
-    assert.equal(timings.some(sample=>sample.journey==='terminal_input_ready'),false);
+    assert.equal(timings.some(sample=>sample.journey==='terminal_input_ready'),navigate);
+    assert.equal(await page.evaluate(()=>terminalInputTransient),null,'A completed automatic attach cannot suppress later manual waits');
     assert.deepEqual(pageErrors,[]);
   }finally{await browser.close();}
 });

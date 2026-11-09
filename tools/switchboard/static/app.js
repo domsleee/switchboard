@@ -45,7 +45,7 @@ function humanTime(date,now=Date.now()){
   setInterval(check,30000);void check();
 })();
 const hosts = new Map(), sessions = new Map();
-let terminalInputTransient=false;
+let terminalInputTransient=null;
 const tabButtons=new Map();
 const mobileSidebar=matchMedia("(max-width:700px), (pointer:coarse) and (max-width:1000px)");
 // An iframe's visual viewport does not report the keyboard covering its parent.
@@ -1150,6 +1150,7 @@ function restoreTerminalKeyboard(entry,unlocked=false){
   entry.frame.contentWindow.postMessage({type:'zellij-restore-focus'},location.origin);
 }
 function activate(item, clear=true, addHistory=true) {
+  terminalInputTransient=null;
   if(addHistory&&item.key!==selected)pushTabHistory=true;
   selected=item.key;restoringTab=false;item.entry.followActiveTab=false;
   if(mobileSidebar.matches){sidebarOpen=false;updateSidebar();}
@@ -1303,6 +1304,7 @@ function terminalInputStages(entry){
 }
 function showRetirementStatus() {
   const entries=[...sessions.values()];
+  if(terminalInputTransient!==selected)terminalInputTransient=null;
   const connecting=entries.find(entry=>entry.frame.classList.contains('active')&&!entry.suspended&&!entry.suspending&&!entry.retirementUnresolved&&entry.frame.inert&&!globalThis.SwitchboardConversation?.isOpen?.());
   for(const entry of entries){
     if(entry.inputTiming&&(entry!==connecting||terminalInputTransient)){entry.inputTiming.end('left');entry.inputTiming=null;}
@@ -1500,6 +1502,7 @@ window.addEventListener('message',event=>{
     }
     const unlocked=entry.frame.inert&&!entry.needsFocus&&!entry.requestedPane&&!entry.focusPending;
     if(unlocked){
+      if(entry.frame.classList.contains('active'))terminalInputTransient=null;
       terminalTransition(entry,false);render();
     }
     // An inert frame cannot receive keyboard focus until its acknowledgement.
@@ -3134,7 +3137,7 @@ window.SwitchboardConversation?.install({
   idle(){if(pendingSwitches.size)queueMicrotask(runPendingSwitches);},
   modeChanged(transient){
     const wants=globalThis.SwitchboardConversation.wantsConversation(),shown=allTabs().find(item=>item.key===selected);
-    terminalInputTransient=!!transient&&!wants;
+    terminalInputTransient=transient&&!wants?shown?.key:null;
     // Terminal either shows the viewer kept through Conversation or loads a new one.
     // Time both, except the brief automatic visit that sends a reply.
     const timed=!wants&&conversationSince!==null&&!!shown&&!transient,blank=shown?.entry.frame.getAttribute('src')==='about:blank';
