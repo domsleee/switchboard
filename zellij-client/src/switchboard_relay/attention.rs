@@ -31,6 +31,8 @@ struct Agent {
     footer: Vec<regex::Regex>,
     #[serde(default, deserialize_with = "patterns")]
     background: Vec<regex::Regex>,
+    #[serde(default, deserialize_with = "patterns")]
+    interrupted: Vec<regex::Regex>,
     #[serde(deserialize_with = "patterns")]
     completion: Vec<regex::Regex>,
     working: Working,
@@ -132,7 +134,10 @@ pub(crate) fn classify(pane: &Value, screen: &str) -> Value {
     };
     let (before, after) = prompt.map_or((text, ""), |p| (&text[..p.start()], &text[p.end()..]));
     let completion = newest(&rules.completion, before);
-    let normal = prompt.is_some() && any(&rules.footer, after) && !NUMBER.is_match(after);
+    // Claude can draw the box without a prompt row after Esc.
+    let interrupted = any(&rules.interrupted, text) && any(&rules.footer, text);
+    let normal =
+        interrupted || prompt.is_some() && any(&rules.footer, after) && !NUMBER.is_match(after);
     if !normal {
         let chooser = tail(text, 1800);
         if all_of_one(&rules.approval, chooser) {
@@ -170,6 +175,9 @@ pub(crate) fn classify(pane: &Value, screen: &str) -> Value {
     let mut ready = json!({"state":"ready","agent":agent,"token":token});
     if any(&rules.background, after) {
         ready["footer_tasks"] = json!(true);
+    }
+    if interrupted {
+        ready["interrupted"] = json!(true);
     }
     ready
 }
@@ -867,6 +875,7 @@ impl PollState {
                 waiting_on_run = self.waiting_on_run(row);
             }
             row.as_object_mut().unwrap().remove("footer_tasks");
+            row.as_object_mut().unwrap().remove("interrupted");
             if row.as_object_mut().unwrap().remove("deferred") == Some(json!(true))
                 && self
                     .scanned
@@ -1099,6 +1108,11 @@ impl PollState {
             && matches!(row["state"].as_str(), Some("approval" | "input"))
         {
             row["turn_state"] = json!(hooked.state);
+            return;
+        }
+        // Claude sends no hook when Esc ends a turn, so its last "working" would stand
+        // forever. The hook stays: the next prompt's screen no longer matches.
+        if hooked.agent == "claude" && hooked.state == "working" && row["interrupted"] == true {
             return;
         }
         // Claude's next PostToolUse arrives when the approved tool finishes. Its
@@ -2385,6 +2399,45 @@ esac
         restarted.apply_hook(&mut row, &command);
         assert_eq!(row["chat_id"], "chat");
         assert_eq!(row["agent"], "claude");
+    }
+
+    #[test]
+    fn claude_turn_ended_by_esc_is_ready_despite_its_last_working_hook() {
+        let pane = json!({"pane_command":"claude.exe","title":"✳ Claude Code"});
+        let footer = "  ⏵⏵ auto mode on (shift+tab to cycle) · ← 1 agent\n";
+        let state = |screen: String| {
+            let mut poll = PollState::default();
+            let working = json!({"hook_event_name":"UserPromptSubmit"});
+            poll.hooks
+                .insert(("main".into(), 3), hook_status("claude", &working).unwrap());
+            let mut row = classify(&pane, &screen);
+            row["session"] = json!("main");
+            row["pane_id"] = json!(3);
+            poll.apply_hook(&mut row, &json!("claude.exe"));
+            row["state"].clone()
+        };
+        // Claude Code 2.1.319 after Esc, during a tool and while thinking; neither sends a hook.
+        let mid_tool = "❯ run ping\n● Bash(ping -n 90 127.0.0.1)\n  ⎿\u{a0} Interrupted · What should Claude do instead?\n\n";
+        let thinking = "❯ run sleep\n● The sleep didn't run.\n  ⎿\u{a0} Interrupted · What should Claude do instead?\n\n";
+        assert_eq!(
+            state(format!("{mid_tool}────\n❯\u{a0}\n────\n{footer}")),
+            "ready"
+        );
+        assert_eq!(state(format!("{thinking}────\n────\n{footer}")), "ready");
+        // The same box with the prompt scrolled away, so no ❯ is on screen at all.
+        let scrolled = thinking.trim_start_matches("❯ run sleep\n");
+        assert_eq!(state(format!("{scrolled}────\n────\n{footer}")), "ready");
+        assert_eq!(
+            state(format!("{mid_tool}────\n❯ a draft\n────\n{footer}")),
+            "ready"
+        );
+        // The next turn's prompt follows the old marker, so its working hook stands again.
+        assert_eq!(
+            state(format!(
+                "{mid_tool}❯ try again\n\n────\n❯\u{a0}\n────\n{footer}"
+            )),
+            "working"
+        );
     }
 
     #[tokio::test(start_paused = true)]

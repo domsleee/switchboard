@@ -9,7 +9,7 @@
 #
 # Lists match when any pattern matches. A list of lists matches when every
 # pattern in one inner list matches.
-version = "2026-11-08"
+version = "2026-11-09"
 
 # Which panes are Claude: the running command, or its prompt footer on screen.
 command = ['\bclaude(?:\.exe)?\b']
@@ -24,6 +24,10 @@ footer = ['(?:bypass permissions|accept edits|auto mode|plan mode) on|shift\+tab
 # In that footer: a count of running tasks, "· 1 shell ·" or "· 1 shell, 1 monitor".
 # "← 1 agent" is always there and only names the key for switching agents (2.1.319).
 background = ['·\s*[1-9]\d*\s+[a-z]']
+
+# A turn ended by Esc sends no hook. The marker counts only directly above the input
+# box; a later turn puts its prompt between them (2.1.319).
+interrupted = ['⎿\s+interrupted\s+·\s+what should claude do instead\?\s*─{3,}']
 
 # A finished turn, e.g. "✻ Baked for 4m 5s" or "✻ Sautéed for 26s".
 completion = ['(?:worked for|[✻✽✶✳] \S+ for)\s+(?:\d+\s*[hms]\s*)+(?:[•·]\s*(?:done\s+)?\d{1,2}:\d{2}\s*(?:am|pm)?)?']
