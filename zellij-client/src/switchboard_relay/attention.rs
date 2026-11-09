@@ -33,6 +33,8 @@ struct Agent {
     background: Vec<regex::Regex>,
     #[serde(default, deserialize_with = "patterns")]
     interrupted: Vec<regex::Regex>,
+    #[serde(default, deserialize_with = "patterns")]
+    busy_footer: Vec<regex::Regex>,
     #[serde(deserialize_with = "patterns")]
     completion: Vec<regex::Regex>,
     working: Working,
@@ -180,6 +182,26 @@ pub(crate) fn classify(pane: &Value, screen: &str) -> Value {
         ready["interrupted"] = json!(true);
     }
     ready
+}
+
+/// Whether a Claude pane has stopped once Esc has been sent to it.
+pub(crate) fn stopped_after_escape(screen: &str) -> bool {
+    let row = classify(&json!({"pane_command":"claude"}), screen);
+    if row["interrupted"] == true {
+        return true;
+    }
+    if matches!(
+        row["state"].as_str(),
+        Some("working" | "approval" | "input")
+    ) {
+        return false;
+    }
+    let Some(rules) = AGENTS.iter().find(|agent| agent.name == "claude") else {
+        return false;
+    };
+    let text = tail(screen, 8000).to_ascii_lowercase();
+    let footer = text.lines().rev().find(|line| !line.trim().is_empty());
+    footer.is_some_and(|line| any(&rules.footer, line) && !any(&rules.busy_footer, line))
 }
 
 fn unix_seconds() -> u64 {
@@ -2503,6 +2525,28 @@ esac
         stopped.settle_interrupted("main", 3);
         let old_frame = json!({"state":"working","agent":"claude"});
         assert_eq!(applied(&mut stopped, old_frame), "ready");
+
+        // Claude Code 2.1.319, captured with dump-screen: Esc at "(3s · thinking)", before any
+        // output, erased the prompt and drew no marker.
+        let rule = "─".repeat(40);
+        let idle_footer = "  ⏵⏵ auto mode on (shift+tab to cycle)\n\n";
+        let busy_footer =
+            "  ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt · ← 1 agent\n\n";
+        let banner = " ▐▛███▛█   Claude Code v2.1.319\n";
+        assert!(stopped_after_escape(&format!(
+            "{banner}{rule}\n{rule}\n{idle_footer}"
+        )));
+        assert!(!stopped_after_escape(&format!(
+            "{banner}· Hatching… (3s · thinking)\n{rule}\n❯ \n{rule}\n{busy_footer}"
+        )));
+        // Still busy with no spinner drawn, as between a tool and the next reply.
+        assert!(!stopped_after_escape(&format!(
+            "{banner}{rule}\n{rule}\n{busy_footer}"
+        )));
+        // A dialog Esc did not dismiss has no prompt footer.
+        assert!(!stopped_after_escape(&format!(
+            "{banner}Do you want to proceed?\n ❯ 1. Yes\n   2. No\nEsc to cancel · Enter to confirm\n"
+        )));
 
         // Claude Code 2.1.319 after Esc, during a tool and while thinking; neither sends a hook.
         let mid_tool = "❯ run ping\n● Bash(ping -n 90 127.0.0.1)\n  ⎿\u{a0} Interrupted · What should Claude do instead?\n\n";
