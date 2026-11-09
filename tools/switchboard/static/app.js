@@ -625,7 +625,7 @@ function sidebarTabs(){
 // Search includes collapsed groups; keyboard navigation follows the visible rows.
 function listedTabs(){
   const searching=!!$('tab-search').value.trim();
-  return sidebarTabs().filter(item=>matchesSearch(item)&&(!item.hidden||hiddenOpen||searching)&&(!item.snoozed||snoozedOpen||searching||item.key===selected)&&(!item.shelf||sectionExpanded('manual-'+item.shelf)||searching||item.key===selected));
+  return sidebarTabs().filter(item=>matchesSearch(item)&&(!item.hidden||hiddenOpen||searching||item.key===selected)&&(!item.snoozed||snoozedOpen||searching||item.key===selected)&&(!item.shelf||sectionExpanded('manual-'+item.shelf)||searching||item.key===selected));
 }
 function moveTab(key,targetKey,after=false) {
   if(key===targetKey)return;
@@ -690,12 +690,10 @@ function renderHiddenHeader(tabs,shown,searching){
   hiddenHeader.children[2].hidden=!attention;
   if(hiddenHeader.children[3].textContent!==count)hiddenHeader.children[3].textContent=count;
   hiddenHeader.setAttribute('aria-label',`Hidden tabs, ${tabs.length}${attention?', one needs you':''}`);
-  hiddenHeader.title=`${expanded?'Collapse':'Expand'} hidden tabs. They keep running.\nDrag a tab here to hide it, or above here to show it again.`;
 }
 const snoozedHeader=document.createElement('button');
 snoozedHeader.id='snoozed-toggle';
 snoozedHeader.innerHTML='<span class="chevron" aria-hidden="true">›</span><span>Working</span><span class="count"></span>';
-snoozedHeader.title='Working tabs keep running here and return when they finish or need you.';
 snoozedHeader.onclick=()=>{
   if(dragging||Date.now()<suppressTabClickUntil)return;
   snoozedOpen=!snoozedOpen;localStorage.setItem(`switchboard-snoozed-open:${filter}`,String(snoozedOpen));render();
