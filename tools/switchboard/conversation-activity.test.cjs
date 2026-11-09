@@ -82,13 +82,13 @@ test('Conversation shows the model, animates real work and keeps delivery receip
   await page.evaluate(()=>{current.state='waiting';SwitchboardConversation.update();});
   await agents.first().click();await body.getByText('Ran cargo test',{exact:true}).waitFor();
   assert.equal(await page.locator('.conversation-task h3').textContent(),'Review the diff');
-  assert.match(await page.locator('.conversation-task-status').textContent(),/^Opus 5\.5 · Running · 2m \d+s$/);
+  assert.match(await page.locator('.conversation-task-status').textContent(),/^Working for 2m \d+s$/);
   await body.getByText('Found one bug so far',{exact:true}).waitFor();
-  assert.equal(await body.locator('.conversation-task-prompt summary').textContent(),'Task given to this agent');
+  assert.match(await body.locator('.conversation-task-prompt summary').textContent(),/Audit the relay carefully$/);
   assert.equal(await body.getByText('Audit the relay carefully').count(),1,'The prompt shows once');
   assert.equal(taskReads.at(-1).host,'fixture');assert.equal(taskReads.at(-1).tail,'true');
   if(process.env.MODE_SCREENSHOTS)await page.screenshot({path:process.env.MODE_SCREENSHOTS+'/conversation-background-detail.png'});
-  await page.locator('.conversation-task header button').click();assert.equal(await dialog.isVisible(),false);
+  await page.locator('.conversation-task-parent').click();assert.equal(await dialog.isVisible(),false);
   await page.evaluate(()=>{current.state='waiting';SwitchboardConversation.update();});
   background=[{id:'bshell',kind:'shell',description:'Run the relay tests',model:null,started:new Date(Date.now()-5000).toISOString()},{id:'bwatch',kind:'monitor',description:'Watch the log',model:null,started:new Date(Date.now()-5000).toISOString()},{description:'Unaddressable',model:null,started:new Date(Date.now()-5000).toISOString()}];await refreshPage();
   await agents.nth(2).waitFor();

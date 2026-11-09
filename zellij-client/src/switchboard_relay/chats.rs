@@ -500,6 +500,8 @@ struct Chat {
     background: Vec<BackgroundTask>,
     /// The most recent tasks to end, so a view left open can still read how they ended.
     ended: Vec<BackgroundTask>,
+    /// The latest `Agent` calls, foreground or background, oldest first.
+    delegates: Vec<Delegate>,
     /// Shell and Monitor calls awaiting the result that says whether they went to the
     /// background, by tool call: the tool, its description and its command.
     launching: HashMap<String, (String, String, String)>,
@@ -516,12 +518,120 @@ struct BackgroundTask {
     started: Value,
     command: Option<String>,
     output_file: Option<PathBuf>,
+    /// What a foreground `codex exec` returned; it has no output file to read later.
+    output: Option<String>,
     events: Vec<String>,
+}
+/// One `Agent` call: what the Conversation card shows for it wherever the transcript names it.
+#[derive(Clone)]
+struct Delegate {
+    call: String,
+    /// `claude` for an `Agent` call, `codex` for a `codex exec` run in the shell.
+    provider: &'static str,
+    id: Option<String>,
+    model: Option<String>,
+    effort: Option<String>,
+    status: &'static str,
+    started: Value,
+    ended: Value,
 }
 const BACKGROUND_TASKS: usize = 32;
 const TASK_EVENTS: usize = 20;
 const TASK_OUTPUT_BYTES: u64 = 32 * 1024;
 impl Chat {
+    fn add_delegate(
+        &mut self,
+        call: &str,
+        provider: &'static str,
+        model: Option<String>,
+        effort: Option<String>,
+        started: Value,
+    ) {
+        if self.delegates.iter().any(|d| d.call == call) {
+            return;
+        }
+        if self.delegates.len() == BACKGROUND_TASKS {
+            self.delegates.remove(0);
+        }
+        self.delegates.push(Delegate {
+            call: clip(call, 128),
+            provider,
+            id: None,
+            model,
+            effort,
+            status: "running",
+            started,
+            ended: Value::Null,
+        });
+    }
+    /// A launch only names the agent; a foreground call's result is also how it ended.
+    fn delegate_result(&mut self, call: &str, result: &Value, part: &Value, timestamp: &Value) {
+        let Some(delegate) = self.delegates.iter_mut().find(|d| d.call == call) else {
+            return;
+        };
+        let shell = result["backgroundTaskId"].as_str();
+        if let Some(id) = result["agentId"].as_str().or(shell) {
+            delegate.id = Some(clip(id, 128));
+        }
+        if let Some(model) = result["resolvedModel"].as_str().filter(|m| !m.is_empty()) {
+            delegate.model = Some(clip(model, 128));
+        }
+        let launched = shell.is_some()
+            || result["status"] == "async_launched"
+            || content(&part["content"]).contains("Async agent launched");
+        if !launched {
+            let status = if part["is_error"] == true {
+                "failed"
+            } else {
+                "completed"
+            };
+            delegate.end(status, timestamp);
+        }
+    }
+    /// A foreground `codex exec` has no task to read, so its result is kept to open by call.
+    fn keep_foreground_codex(
+        &mut self,
+        call: &str,
+        description: String,
+        command: String,
+        part: &Value,
+        v: &Value,
+    ) {
+        let text = redact(&content(&part["content"]));
+        let start = text.len().saturating_sub(TASK_OUTPUT_BYTES as usize);
+        let start = (start..=text.len())
+            .find(|index| text.is_char_boundary(*index))
+            .unwrap_or(0);
+        let id = clip(call, 128);
+        if let Some(delegate) = self.delegates.iter_mut().find(|d| d.call == call) {
+            delegate.id = Some(id.clone());
+        }
+        self.ended.push(BackgroundTask {
+            tool_use_id: id.clone(),
+            id,
+            kind: "shell",
+            delegate: Some("codex"),
+            description: clip(&one_line(&description), 120),
+            model: None,
+            started: v["timestamp"].clone(),
+            command: Some(clip(&redact(&command), 4000)),
+            output_file: None,
+            output: Some(text[start..].to_owned()),
+            events: Vec::new(),
+        });
+        let excess = self.ended.len().saturating_sub(BACKGROUND_TASKS);
+        self.ended.drain(..excess);
+    }
+    fn end_delegates(
+        &mut self,
+        status: &'static str,
+        timestamp: &Value,
+        ending: impl Fn(&Delegate) -> bool,
+    ) {
+        for delegate in self.delegates.iter_mut().filter(|d| ending(d)) {
+            delegate.end(status, timestamp);
+        }
+    }
     fn add_background(&mut self, task: BackgroundTask) {
         if self
             .background
@@ -545,6 +655,32 @@ impl Chat {
         let excess = self.ended.len().saturating_sub(BACKGROUND_TASKS);
         self.ended.drain(..excess);
     }
+}
+impl Delegate {
+    /// The same ending is recorded when queued and again when delivered; the first counts.
+    fn end(&mut self, status: &'static str, timestamp: &Value) {
+        if self.status == "running" {
+            self.status = status;
+            self.ended = timestamp.clone();
+        }
+    }
+}
+/// The model and effort of a shell command that runs `codex exec -m MODEL`.
+fn codex_exec(name: &str, input: &Value) -> Option<(String, Option<String>)> {
+    if !matches!(name, "Bash" | "PowerShell") {
+        return None;
+    }
+    let command = input["command"].as_str()?;
+    let (agent, model) = delegate_model(command)?;
+    if agent != "codex" {
+        return None;
+    }
+    let effort = command.split_whitespace().find_map(|word| {
+        word.trim_matches(['"', '\''])
+            .strip_prefix("model_reasoning_effort=")
+            .map(|value| clip(value.trim_matches(['"', '\'']), 128))
+    });
+    Some((clip(&model, 128), effort))
 }
 /// The output file a background shell's launch result names. Output printed before the
 /// command moved to the background comes first, so the last mention is Claude's own.
@@ -1094,12 +1230,28 @@ impl Chat {
     }
     /// A tool call becomes a one-line progress step. Older browsers read `phase` and show
     /// it as a progress note; newer ones read `kind`, `tool` and `detail`.
-    fn push_tool(&mut self, name: &str, input: &Value, timestamp: Value) {
+    fn push_tool(&mut self, name: &str, call: Option<&str>, input: &Value, timestamp: Value) {
         if self.messages.len() == 50_000 {
             self.incomplete("message_limit");
             return;
         }
-        let (tool, detail) = tool_step(name, input, &self.project);
+        let delegated = call.is_some() && codex_exec(name, input).is_some();
+        let (tool, detail) = if delegated {
+            let title = clip(
+                &redact(&one_line(input["description"].as_str().unwrap_or_default())),
+                120,
+            );
+            (
+                "agent",
+                if title.is_empty() {
+                    "codex exec".into()
+                } else {
+                    title
+                },
+            )
+        } else {
+            tool_step(name, input, &self.project)
+        };
         let verb = match tool {
             "run" => "Ran",
             "read" => "Read",
@@ -1112,10 +1264,12 @@ impl Chat {
             _ => "Used",
         };
         let text = format!("{verb} {detail}").trim_end().to_owned();
-        self.messages.push(
-            json!({"role":"assistant","phase":"commentary","kind":"tool","tool":tool,
-            "detail":detail,"text":text,"timestamp":timestamp}),
-        );
+        let mut message = json!({"role":"assistant","phase":"commentary","kind":"tool","tool":tool,
+            "detail":detail,"text":text,"timestamp":timestamp});
+        if let Some(call) = call.filter(|_| tool == "agent") {
+            message["call"] = json!(clip(call, 128));
+        }
+        self.messages.push(message);
     }
     // Only explicit user/assistant content parts, never tool output or reasoning.
     fn push_parts(&mut self, role: &str, parts: &Value, timestamp: Value) {
@@ -1206,6 +1360,7 @@ impl Chat {
     /// notifications with no status. A new Claude process (SessionStart on startup or
     /// resume) leaves none running.
     fn track_background(&mut self, v: &Value) {
+        let timestamp = v["timestamp"].clone();
         let finished = |chat: &mut Chat, text: &str| {
             if !text.contains("<task-notification>") {
                 return;
@@ -1230,6 +1385,14 @@ impl Chat {
                 return;
             }
             chat.end_tasks(|t| call == Some(t.tool_use_id.as_str()) || id == Some(t.id.as_str()));
+            let status = match tag_text(text, "status") {
+                Some("failed") => "failed",
+                Some("killed" | "stopped") => "stopped",
+                _ => "completed",
+            };
+            chat.end_delegates(status, &timestamp, |d| {
+                call == Some(d.call.as_str()) || (id.is_some() && id == d.id.as_deref())
+            });
         };
         match v["type"].as_str() {
             Some("attachment") => {
@@ -1241,6 +1404,7 @@ impl Chat {
                     )
                 {
                     self.background.clear();
+                    self.end_delegates("stopped", &v["timestamp"], |_| true);
                 }
                 // A prompt Claude takes in mid-turn is recorded only as this attachment,
                 // with no user record. The same type also carries task notifications
@@ -1264,6 +1428,9 @@ impl Chat {
                     .find(|part| part["tool_use_id"].is_string());
                 let call = part.and_then(|part| part["tool_use_id"].as_str());
                 let launch = call.and_then(|call| self.launching.remove(call));
+                if let (Some(call), Some(part)) = (call, part) {
+                    self.delegate_result(call, result, part, &v["timestamp"]);
+                }
                 if let (Some(call), Some(id), true) = (
                     call,
                     result["agentId"].as_str(),
@@ -1285,6 +1452,7 @@ impl Chat {
                         started: v["timestamp"].clone(),
                         command: None,
                         output_file: None,
+                        output: None,
                         events: Vec::new(),
                     });
                 }
@@ -1314,8 +1482,16 @@ impl Chat {
                             started: v["timestamp"].clone(),
                             command: Some(clip(&redact(&command), 4000)),
                             output_file: launch_output_file(&text, id),
+                            output: None,
                             events: Vec::new(),
                         });
+                    } else if let (Some(part), true) = (
+                        part,
+                        self.delegates
+                            .iter()
+                            .any(|d| d.call == call && d.provider == "codex"),
+                    ) {
+                        self.keep_foreground_codex(call, description, command, part, v);
                     }
                 }
                 finished(self, &content(&v["message"]["content"]));
@@ -1330,8 +1506,37 @@ impl Chat {
                     if name == "TaskStop" {
                         let id = input["task_id"].as_str().unwrap_or_default();
                         self.end_tasks(|task| task.id == id);
+                        self.end_delegates("stopped", &v["timestamp"], |d| {
+                            d.id.as_deref() == Some(id)
+                        });
+                    } else if matches!(name, "Agent" | "Task") {
+                        if let Some(call) = part["id"].as_str() {
+                            let field = |key: &str| {
+                                input[key]
+                                    .as_str()
+                                    .filter(|value| !value.is_empty())
+                                    .map(|value| clip(value, 128))
+                            };
+                            let (model, effort) = (field("model"), field("effort"));
+                            self.add_delegate(
+                                call,
+                                "claude",
+                                model,
+                                effort,
+                                v["timestamp"].clone(),
+                            );
+                        }
                     } else if matches!(name, "Bash" | "PowerShell" | "Monitor") {
                         if let Some(call) = part["id"].as_str() {
+                            if let Some((model, effort)) = codex_exec(name, input) {
+                                self.add_delegate(
+                                    call,
+                                    "codex",
+                                    Some(model),
+                                    effort,
+                                    v["timestamp"].clone(),
+                                );
+                            }
                             // Results clear these; calls that never got one must not pile up.
                             if self.launching.len() == 64 {
                                 self.launching.clear();
@@ -1487,7 +1692,12 @@ impl Chat {
                     }
                     for call in calls() {
                         if let Some(name) = call["name"].as_str() {
-                            self.push_tool(name, &call["input"], v["timestamp"].clone());
+                            self.push_tool(
+                                name,
+                                call["id"].as_str(),
+                                &call["input"],
+                                v["timestamp"].clone(),
+                            );
                         }
                     }
                 }
@@ -1542,7 +1752,7 @@ impl Chat {
                         _ => return,
                     };
                     if !name.is_empty() {
-                        self.push_tool(&name, &input, v["timestamp"].clone());
+                        self.push_tool(&name, None, &input, v["timestamp"].clone());
                     }
                     return;
                 }
@@ -1644,7 +1854,8 @@ impl Chat {
         json!({"id":self.id,"session_id":clip(&self.session_id,256),"agent":self.agent,"title":self.title,
             "project":clip(&self.project,4096),"model":self.model,"reasoning_effort":self.reasoning_effort,
             "timestamp":self.messages.last().map(|m| &m["timestamp"]),"partial":self.partial,"partial_reasons":self.partial_reasons,
-            "background_agents":self.background.iter().map(|a| json!({"id":a.id,"kind":a.kind,"agent":a.delegate,"description":a.description,"model":a.model,"started":a.started})).collect::<Vec<_>>()})
+            "background_agents":self.background.iter().map(|a| json!({"id":a.id,"kind":a.kind,"agent":a.delegate,"description":a.description,"model":a.model,"started":a.started})).collect::<Vec<_>>(),
+            "delegates":self.delegates.iter().map(|d| json!({"call":d.call,"provider":d.provider,"id":d.id,"model":d.model,"effort":d.effort,"status":d.status,"started":d.started,"ended":d.ended})).collect::<Vec<_>>()})
     }
 }
 fn roots() -> Vec<(&'static str, PathBuf)> {
@@ -1811,7 +2022,8 @@ fn background_task(
     let output = running
         .output_file
         .as_deref()
-        .and_then(|file| task_output(file, session, task));
+        .and_then(|file| task_output(file, session, task))
+        .or_else(|| running.output.clone());
     json!({"task":{"id":task,"kind":running.kind,"running":found,"command":running.command,
         "events":running.events},"output":output})
 }
@@ -3849,6 +4061,155 @@ mod tests {
         assert_eq!(task["kind"], "shell", "Its output is still a shell's");
         assert_eq!(task["agent"], "codex");
         assert_eq!(task["model"], "gpt-6.1-sol");
+    }
+
+    #[test]
+    fn switchboard_chats_track_each_claude_delegate_through_to_its_end() {
+        let call = |id: &str, input: Value| json!({"type":"assistant","timestamp":"2026-11-09T10:00:00Z","message":{"content":[{"type":"tool_use","id":id,"name":"Agent","input":input}]}});
+        let result = |id: &str, outcome: Value, text: &str, error: bool| {
+            json!({"type":"user","timestamp":"2026-11-09T10:01:00Z","toolUseResult":outcome,
+                "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":id,"is_error":error,"content":text}]}})
+        };
+        let notice = |id: &str, status: &str, at: &str| {
+            json!({"type":"queue-operation","operation":"enqueue","timestamp":at,
+                "content":format!("<task-notification>\n<tool-use-id>{id}</tool-use-id>\n<status>{status}</status>\n</task-notification>")})
+        };
+        let records = vec![
+            json!({"type":"user","timestamp":"2026-11-09T09:59:00Z","message":{"role":"user","content":"council"}}),
+            call(
+                "bg",
+                json!({"description":"Council: Opus","prompt":"SECRET","model":"opus","effort":"high"}),
+            ),
+            result(
+                "bg",
+                json!({"status":"async_launched","agentId":"a1","resolvedModel":"claude-opus-5-5"}),
+                "Async agent launched successfully.",
+                false,
+            ),
+            call("killed", json!({"description":"Stopped by a notice"})),
+            result(
+                "killed",
+                Value::Null,
+                "Async agent launched successfully.",
+                false,
+            ),
+            notice("killed", "killed", "2026-11-09T10:02:00Z"),
+            call("fg", json!({"description":"Foreground"})),
+            result(
+                "fg",
+                json!({"status":"completed","agentId":"a3","resolvedModel":"claude-haiku-5-5"}),
+                "report",
+                false,
+            ),
+            call("bad", json!({"description":"Rejected"})),
+            result("bad", Value::Null, "tool use rejected", true),
+            call("open", json!({"description":"Still going"})),
+            notice("bg", "completed", "2026-11-09T10:05:00Z"),
+            notice("bg", "completed", "2026-11-09T10:09:00Z"),
+        ];
+        let chat = chat("claude", records);
+        let delegates = chat.summary()["delegates"].clone();
+        let row = |call: &str| {
+            delegates
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|d| d["call"] == call)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(
+            row("bg"),
+            json!({"call":"bg","provider":"claude","id":"a1","model":"claude-opus-5-5","effort":"high","status":"completed",
+                "started":"2026-11-09T10:00:00Z","ended":"2026-11-09T10:05:00Z"}),
+            "The first report of an ending counts"
+        );
+        assert_eq!(row("killed")["status"], "stopped");
+        assert_eq!(
+            (row("fg")["status"].clone(), row("fg")["id"].clone()),
+            (json!("completed"), json!("a3"))
+        );
+        assert_eq!(row("bad")["status"], "failed");
+        assert_eq!(
+            (row("open")["status"].clone(), row("open")["id"].clone()),
+            (json!("running"), Value::Null)
+        );
+        assert!(!delegates.to_string().contains("SECRET"));
+        let step = chat.messages.iter().find(|m| m["tool"] == "agent").unwrap();
+        assert_eq!(step["call"], "bg");
+    }
+
+    #[test]
+    fn switchboard_chats_treat_codex_exec_with_a_model_as_a_delegate() {
+        let bash = |id: &str, command: &str, description: &str| json!({"type":"assistant","timestamp":"2026-11-09T10:00:00Z","message":{"content":[{"type":"tool_use","id":id,"name":"Bash","input":{"command":command,"description":description,"run_in_background":true}}]}});
+        let launched = json!({"type":"user","timestamp":"2026-11-09T10:00:01Z","toolUseResult":{"stdout":"","backgroundTaskId":"bsol"},
+            "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"bg","content":"Command running in background"}]}});
+        let foreground = json!({"type":"user","timestamp":"2026-11-09T10:02:00Z","toolUseResult":{"stdout":"LGTM"},
+            "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"fg","content":"LGTM"}]}});
+        let done = json!({"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-09T10:05:00Z",
+            "content":"<task-notification>\n<tool-use-id>bg</tool-use-id>\n<status>failed</status>\n</task-notification>"});
+        let chat = chat(
+            "claude",
+            vec![
+                json!({"type":"user","timestamp":"2026-11-09T09:59:00Z","message":{"role":"user","content":"council"}}),
+                bash("bg", "cd /repo; git diff | /usr/bin/codex exec -m gpt-6.1-sol -c model_reasoning_effort=\"xhigh\" -s read-only \"Review\" < /dev/null", "Council: Sol"),
+                launched,
+                bash("fg", "codex exec --model=gpt-6-astra \"Review\" < /dev/null", ""),
+                foreground,
+                bash("no", "grep -n 'codex exec -m x' a; codex --version; echo codex exec", "Not a delegate"),
+                done,
+            ],
+        );
+        let delegates = chat.summary()["delegates"].clone();
+        assert_eq!(delegates.as_array().unwrap().len(), 2);
+        assert_eq!(
+            delegates[0],
+            json!({"call":"bg","provider":"codex","id":"bsol","model":"gpt-6.1-sol","effort":"xhigh","status":"failed",
+                "started":"2026-11-09T10:00:00Z","ended":"2026-11-09T10:05:00Z"})
+        );
+        assert_eq!(delegates[1]["model"], "gpt-6-astra");
+        assert_eq!(delegates[1]["id"], "fg");
+        let kept = chat.ended.iter().find(|task| task.id == "fg").unwrap();
+        assert_eq!((kept.kind, kept.output.as_deref()), ("shell", Some("LGTM")));
+        assert_eq!(delegates[1]["status"], "completed");
+        assert_eq!(delegates[1]["effort"], Value::Null);
+        let steps: Vec<_> = chat
+            .messages
+            .iter()
+            .filter(|m| m["kind"] == "tool")
+            .map(|m| {
+                (
+                    m["tool"].as_str().unwrap().to_owned(),
+                    m["detail"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(steps[0], ("agent".to_owned(), "Council: Sol".to_owned()));
+        assert_eq!(steps[1], ("agent".to_owned(), "codex exec".to_owned()));
+        assert_eq!(steps[2].0, "run");
+    }
+
+    #[test]
+    fn switchboard_chats_end_claude_delegates_when_stopped_or_the_session_restarts() {
+        let call = |id: &str| json!({"type":"assistant","timestamp":"2026-11-09T10:00:00Z","message":{"content":[{"type":"tool_use","id":id,"name":"Agent","input":{"description":"d"}}]}});
+        let launched = json!({"type":"user","toolUseResult":{"status":"async_launched","agentId":"a1"},
+            "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"one","content":"launched"}]}});
+        let stop = json!({"type":"assistant","timestamp":"2026-11-09T10:03:00Z","message":{"content":[{"type":"tool_use","id":"s","name":"TaskStop","input":{"task_id":"a1"}}]}});
+        let restart = json!({"type":"attachment","timestamp":"2026-11-09T10:04:00Z","attachment":{"type":"hook_success","hookName":"SessionStart:resume","hookEvent":"SessionStart"}});
+        let chat = chat(
+            "claude",
+            vec![call("one"), launched, stop, call("two"), restart],
+        );
+        let delegates = chat.summary()["delegates"].clone();
+        assert_eq!(delegates[0]["ended"], "2026-11-09T10:03:00Z");
+        assert_eq!(delegates[1]["ended"], "2026-11-09T10:04:00Z");
+        assert_eq!(
+            (
+                delegates[0]["status"].as_str(),
+                delegates[1]["status"].as_str()
+            ),
+            (Some("stopped"), Some("stopped"))
+        );
     }
 
     #[test]
