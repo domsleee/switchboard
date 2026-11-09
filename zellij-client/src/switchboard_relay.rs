@@ -1688,6 +1688,7 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
     let push = push::start(&mut state, config_path.with_extension("push.json")).await;
     chats::start_tail_cache(state.clone());
     let update_tasks = tasks::start(state.clone()).await;
+    let reply_outbox = std::env::home_dir().map(native_messages::outbox::start);
     let also =
         (port != DEFAULT_PORT).then(|| tokio::spawn(serve_also_on(state.clone(), DEFAULT_PORT)));
     let update_watch = tokio::spawn(update_watch::watch());
@@ -1707,6 +1708,9 @@ pub async fn serve(config_path: &Path, port: u16) -> anyhow::Result<()> {
         push.abort();
     }
     update_tasks.abort();
+    if let Some(task) = reply_outbox {
+        task.abort();
+    }
     update_watch.abort();
     tasks::stop_running().await;
     failures.abort();

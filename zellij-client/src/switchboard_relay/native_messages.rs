@@ -4,6 +4,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::{ffi::OsStr, path::PathBuf, process::Stdio};
 
+pub(super) mod outbox;
+
 const MESSAGE_BYTES: usize = 8192;
 const REQUEST_BYTES: usize = 64 * 1024; // Allow JSON escaping of an 8 KiB message.
 const QUEUE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -354,6 +356,9 @@ async fn local(target: Queue) -> Response {
             "Account home unavailable",
         );
     };
+    if target.user_message {
+        return outbox::accept(&home, target).await;
+    }
     let (program, path) = agent_setup::codex_queue_program()
         .map(|(program, path)| (Some(program), path))
         .unwrap_or_default();
@@ -522,7 +527,7 @@ async fn deliver(
 mod tests {
     use super::*;
 
-    fn target() -> Queue {
+    pub(super) fn target() -> Queue {
         Queue {
             thread: "00000000-0000-4000-8000-000000000001".into(),
             message: "Hello \"world\"; $(touch injected)\n你好".into(),
