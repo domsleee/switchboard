@@ -804,22 +804,32 @@ async fn run(task: &TaskConfig, env: &BTreeMap<String, String>, log: &Path) -> T
     let (stdout, stderr) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
     let collected = output.clone();
     let reader = tokio::spawn(async move {
-        let mut out = tokio::io::BufReader::new(stdout).lines();
-        let mut err = tokio::io::BufReader::new(stderr).lines();
+        let mut out = tokio::io::BufReader::new(stdout);
+        let mut err = tokio::io::BufReader::new(stderr);
+        // select! may cancel read_until mid-line; the partial bytes stay in these buffers.
+        let (mut out_line, mut err_line) = (Vec::new(), Vec::new());
         let (mut out_open, mut err_open) = (true, true);
         while out_open || err_open {
-            let (line, is_err) = tokio::select! {
-                line = out.next_line(), if out_open => (line, false),
-                line = err.next_line(), if err_open => (line, true),
+            let (read, is_err) = tokio::select! {
+                read = out.read_until(b'\n', &mut out_line), if out_open => (read, false),
+                read = err.read_until(b'\n', &mut err_line), if err_open => (read, true),
             };
-            let Ok(Some(line)) = line else {
+            let bytes = if is_err { &mut err_line } else { &mut out_line };
+            // A partial line can be waiting at EOF, so check the buffer and not the count.
+            if read.is_err() || bytes.is_empty() {
                 if is_err {
                     err_open = false
                 } else {
                     out_open = false
                 }
                 continue;
-            };
+            }
+            let mut line = String::from_utf8_lossy(bytes.strip_suffix(b"\n").unwrap_or(&bytes[..]))
+                .into_owned();
+            if line.ends_with('\r') {
+                line.pop();
+            }
+            bytes.clear();
             let _ = file.write_all(format!("{line}\n").as_bytes()).await;
             let mut output = collected.lock().unwrap();
             if is_err {
@@ -1414,6 +1424,57 @@ mod tests {
         );
         let env = BTreeMap::from([("A".to_string(), "x".to_string())]);
         assert_eq!(substitute("${A}/${SWITCHBOARD_UNSET_VARIABLE}", &env), "x/");
+    }
+
+    #[tokio::test]
+    async fn output_that_is_not_utf8_does_not_end_the_stream() {
+        let run = if cfg!(windows) {
+            let write = |stream: &str, text: &str| {
+                format!(
+                    "$s=[Console]::{stream}();$b=[Text.Encoding]::ASCII.GetBytes(\"{text}\");\
+                     $s.Write($b,0,$b.Length);$s.Flush();"
+                )
+            };
+            json!([
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                format!(
+                    "{}$s=[Console]::OpenStandardOutput();\
+                     $s.Write([byte[]](255,254,32,98,97,100,10),0,7);$s.Flush();\
+                     {}Start-Sleep -Milliseconds 300;{}Start-Sleep -Milliseconds 300;{}",
+                    write("OpenStandardOutput", "before`n"),
+                    write("OpenStandardOutput", "after`npar"),
+                    write("OpenStandardError", "err`n"),
+                    write("OpenStandardOutput", "tial"),
+                )
+            ])
+        } else {
+            json!([
+                "sh",
+                "-c",
+                r"printf 'before\n\377\376 bad\nafter\npar'; sleep 0.3; echo err >&2; sleep 0.3; printf 'tial'"
+            ])
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let tasks = tasks_in(directory.path(), Default::default());
+        write_config(
+            directory.path(),
+            json!({"groups":[{"name":"g","every":"6h","tasks":[{"name":"bytes","run":run}]}]}),
+        )
+        .await;
+        run_due(&tasks).await;
+        assert_eq!(tasks.status()["groups"][0]["tasks"][0]["status"], "ok");
+        let log = tasks.log("g", "bytes").await.unwrap();
+        for line in [
+            "before\n",
+            "\u{fffd}\u{fffd} bad\n",
+            "after\n",
+            "err\n",
+            "partial\n",
+        ] {
+            assert!(log.contains(line), "missing {line:?} in {log:?}");
+        }
     }
 
     #[cfg(unix)]

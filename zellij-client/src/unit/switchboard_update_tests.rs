@@ -704,6 +704,75 @@ fn a_manifest_read_leaves_other_failures_standing() {
 }
 
 #[test]
+fn a_failed_asset_download_is_a_check_error_but_a_checksum_mismatch_is_not() {
+    let harness = Harness::new(true);
+    harness.publish(&full('c'), 5, "");
+    let asset = harness.root.join("release/switchboard-windows-zellij.exe");
+    // An upload in progress: retried quietly.
+    fs::write(&asset, "next build's executable").unwrap();
+    harness.updater.run().unwrap();
+    assert!(harness.state().get("error").is_none());
+
+    fs::remove_file(&asset).unwrap();
+    assert!(
+        harness.updater.run().is_err(),
+        "a failed download reported success"
+    );
+    let mut state = harness.state();
+    assert!(
+        state["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("Release manifest unavailable"),
+        "{state}"
+    );
+    assert_eq!(state["manifest_failure"]["error"], state["error"]);
+
+    state["run_number"] = 5.into();
+    fs::write(harness.updater.state_path(), state.to_string()).unwrap();
+    harness.updater.run().unwrap();
+    let state = harness.state();
+    assert!(state.get("error").is_none(), "{state}");
+    assert!(state.get("manifest_failure").is_none(), "{state}");
+}
+
+#[test]
+fn a_corrupt_state_file_is_set_aside_and_a_running_build_still_matches() {
+    let damaged: [&[u8]; 2] = [b"", b"{\"run_number\": 5,"];
+    for bytes in damaged {
+        let harness = Harness::new(true);
+        harness.publish(&full('a'), 5, "");
+        let path = harness.updater.state_path();
+        fs::write(&path, bytes).unwrap();
+        harness.updater.run().unwrap();
+        let state = harness.state();
+        assert_eq!(state["commit"], full('a'), "{state}");
+        assert_eq!(state["run_number"], 5, "{state}");
+        assert!(harness.calls().is_empty());
+        assert_eq!(
+            fs::read(path.with_extension("json.corrupt")).unwrap(),
+            bytes
+        );
+    }
+}
+
+#[test]
+fn pruning_removes_only_other_rollback_directories() {
+    let harness = Harness::new(true);
+    let state = harness.root.join("state");
+    for name in ["rollback-1", "rollback-2", "ready"] {
+        fs::create_dir(state.join(name)).unwrap();
+        fs::write(state.join(name).join("zellij.exe"), "x").unwrap();
+    }
+    fs::write(state.join("rollback-note"), "x").unwrap();
+    harness.updater.prune_rollbacks(&state.join("rollback-2"));
+    assert!(!state.join("rollback-1").exists());
+    assert!(state.join("rollback-2/zellij.exe").exists());
+    assert!(state.join("ready/zellij.exe").exists());
+    assert!(state.join("rollback-note").exists());
+}
+
+#[test]
 fn a_published_build_keeps_a_newer_local_build_and_its_wait() {
     let harness = Harness::new(true);
     write_executable(
@@ -1216,6 +1285,26 @@ mod orchestration {
         fs::write(&asset, original).unwrap();
         harness.updater.run().unwrap();
         assert_eq!(harness.state()["commit"], full('b'));
+    }
+
+    #[serial]
+    #[test]
+    fn a_successful_update_keeps_only_its_own_rollback_directory() {
+        let harness = Harness::new(false);
+        let older = harness.root.join("state/rollback-1");
+        fs::create_dir(&older).unwrap();
+        harness.publish(&full('b'), 5, "broken");
+        assert!(harness.updater.run().is_err());
+        assert!(older.exists(), "a failed update pruned rollback files");
+        harness.publish(&full('c'), 6, "");
+        harness.updater.run().unwrap();
+        let rollbacks: Vec<_> = fs::read_dir(harness.root.join("state"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .filter(|name| name.starts_with("rollback-"))
+            .collect();
+        assert_eq!(rollbacks.len(), 1, "{rollbacks:?}");
+        assert_ne!(rollbacks[0], "rollback-1");
     }
 
     #[serial]

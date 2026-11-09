@@ -47,19 +47,6 @@ function Stop-Captured($Identity, [string]$Pattern) {
     Wait-Process -Id $live.ProcessId -Timeout 10 -ErrorAction SilentlyContinue
     foreach ($subscriber in $subscribers) { Stop-Process -Id $subscriber.ProcessId -ErrorAction SilentlyContinue }
 }
-function Get-CapturedPanes([string]$Binary) {
-    $panes = @{}
-    & $module { param($Exe) Get-SwitchboardLiveSessions $Exe @() 15 } $Binary | ForEach-Object {
-        $session = $_
-        try {
-            $panes[$session] = & $module { param($Exe,$Session) Get-SwitchboardPaneSnapshot $Exe @() $Session 15 } $Binary $session
-        } catch {
-            $remaining = @(& $module { param($Exe) Get-SwitchboardLiveSessions $Exe @() 15 } $Binary)
-            if ($session -in $remaining) { throw }
-        }
-    }
-    $panes
-}
 if ($Action -eq 'Arguments') {
     # The running tray's -Config/-ReleaseDirectory, for updates started without them.
     if (!$HostConfig) { $HostConfig = Join-Path $HOME '.config/switchboard/hosts.json' }
@@ -86,11 +73,9 @@ if ($Action -eq 'Snapshot') {
     # The installed tray (SWITCHBOARD_TRAY_SCRIPT), not this helper's location:
     # updates may run from a downloaded bundle.
     $trays = @(Get-SwitchboardTrays $processes)
-    $selected = Get-SwitchboardCurrentBinary $ReleaseDirectory
-    $panes = Get-CapturedPanes $selected
     $protected = @(& $module { Get-SwitchboardProtectedProcesses (Get-SwitchboardWindowsProcesses) })
     Save-Snapshot ([ordered]@{services=@($services); running=@($services.identity); protected=$protected;
-        panes=$panes; trays=@($trays | ForEach-Object { Process-Identity $_ })})
+        trays=@($trays | ForEach-Object { Process-Identity $_ })})
     return
 }
 $state = Get-Content -LiteralPath $Snapshot -Raw | ConvertFrom-Json
@@ -126,11 +111,4 @@ if ($Action -eq 'Stop') {
     $health = Invoke-WebRequest "http://127.0.0.1:$RelayPort/api/health" -Headers @{Host='switchboard.localhost'} -UseBasicParsing -TimeoutSec 5
     if (($health.Content | ConvertFrom-Json).relay -ne 'rust') { throw 'Restarted relay is not answering' }
     & $module { param($Baseline) Assert-SwitchboardProcesses $Baseline -AllowExited } $state.protected
-    $selected = Get-SwitchboardCurrentBinary $ReleaseDirectory
-    $remaining = @(& $module { param($Exe) Get-SwitchboardLiveSessions $Exe @() 15 } $selected)
-    foreach ($entry in $state.panes.PSObject.Properties) {
-        if ($entry.Name -notin $remaining) { continue }
-        $current = & $module { param($Exe,$Session) Get-SwitchboardPaneSnapshot $Exe @() $Session 15 } $selected $entry.Name
-        if ($current -cne $entry.Value) { throw "Terminal pane identity changed: $($entry.Name)" }
-    }
 }

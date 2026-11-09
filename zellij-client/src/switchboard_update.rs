@@ -16,7 +16,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -645,9 +645,23 @@ impl State {
             Err(error) => Err(error.into()),
         }
     }
+    /// A damaged file would fail every run with nothing able to record why, while
+    /// Health reads it as current. Callers must hold the updater lock.
+    fn set_aside_if_corrupt(path: &Path) {
+        if Self::load(path).is_err_and(|error| error.is::<serde_json::Error>()) {
+            let aside = path.with_extension("json.corrupt");
+            match fs::rename(path, &aside) {
+                Ok(()) => println!("Set aside corrupt {}", path.display()),
+                Err(error) => eprintln!("Cannot set aside {}: {error}", path.display()),
+            }
+        }
+    }
     fn save(&self, path: &Path) -> Result<()> {
         let temporary = path.with_extension("tmp");
-        fs::write(&temporary, serde_json::to_vec(self)?)?;
+        let mut file = fs::File::create(&temporary)?;
+        file.write_all(&serde_json::to_vec(self)?)?;
+        file.sync_all()?;
+        drop(file);
         fs::rename(&temporary, path)?;
         Ok(())
     }
@@ -836,6 +850,7 @@ impl Updater {
                 Err(_) => return Err(anyhow!("Another automatic update is running")),
             }
         }
+        State::set_aside_if_corrupt(&self.state_path());
         let previous_error = State::load(&self.state_path())
             .ok()
             .and_then(|state| state.error);
@@ -1062,7 +1077,12 @@ impl Updater {
                 fs::write(staging.path().join(name), self.fetch(&asset(name))?)
                     .map_err(anyhow::Error::from)
             });
-            if let Err(error) = downloaded.and_then(|()| verify_files(staging.path(), &manifest)) {
+            downloaded.context(ManifestUnavailable)?;
+            if let Err(error) = verify_files(staging.path(), &manifest) {
+                // Only a checksum mismatch means an upload is still in progress.
+                if error.is::<std::io::Error>() {
+                    return Err(error.context(ManifestUnavailable));
+                }
                 println!("Release assets are not ready ({error:#}); retrying on the next run.");
                 return Ok(());
             }
@@ -1270,7 +1290,27 @@ impl Updater {
         state.attempts = None;
         state.commit = Some(manifest.commit.clone());
         state.save(&self.state_path())?;
+        self.prune_rollbacks(&backup);
         Ok(true)
+    }
+
+    /// Any journal naming an older directory was settled before this update
+    /// started, and this update's journal is cleared. Deletion is best effort: a
+    /// directory that cannot be removed is retried after the next success.
+    fn prune_rollbacks(&self, keep: &Path) {
+        let Ok(entries) = fs::read_dir(&self.state_directory) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with("rollback-")
+                && entry.file_type().is_ok_and(|kind| kind.is_dir())
+                && keep.file_name() != Some(entry.file_name().as_os_str())
+            {
+                if let Err(error) = fs::remove_dir_all(entry.path()) {
+                    eprintln!("Cannot delete {}: {error}", entry.path().display());
+                }
+            }
+        }
     }
 
     fn handoff(

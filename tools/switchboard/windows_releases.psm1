@@ -397,11 +397,6 @@ function Invoke-SwitchboardWindowsUpdate {
         $switched = $true
         Set-SwitchboardReleaseState $Directory ([ordered]@{schema_version=1; sha256=$hash; previous_sha256=$before.sha256})
         $selectedBinary = Get-SwitchboardCurrentBinary $Directory
-        foreach ($session in $sessions) {
-            if ((Get-SwitchboardPaneSnapshot $selectedBinary $prefix $session $TimeoutSeconds) -cne $panes[$session]) {
-                throw "Session panes or native tab names changed: $session"
-            }
-        }
         Assert-SwitchboardProcesses $protected
         if ($webOnline -and (Invoke-SwitchboardProbe $selectedBinary $webArguments $TimeoutSeconds -AllowFailure).Code -ne 0) {
             throw 'Running native web daemon became unavailable to the selected executable'

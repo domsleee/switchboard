@@ -275,14 +275,13 @@ done < "$work/sessions"
 changed=true
 atomic_install "$new_release" "$new_hash"
 
-# Agents start and end scratch sessions at any time. Before the restart, nothing since the
-# compatibility probes has touched a session server, so one that is gone then ended on its
-# own; a loss after the restart may be the restart's doing. Liveness comes from the
-# retained old CLI: the candidate's own view must not decide that a session ended.
+# Agents start and end scratch sessions and tabs at any time, so only the servers are
+# compared. Before the restart, nothing since the compatibility probes has touched a
+# session server, so one that is gone then ended on its own; a loss after the restart
+# may be the restart's doing.
 : > "$work/ended"
 verify_sessions() {
-    local tolerate=${1:-false} pid session index=0
-    live_sessions "$old_release" > "$work/sessions-now" || exit 1
+    local tolerate=${1:-false} pid
     while IFS= read -r pid; do
         ! grep -qxF -- "$pid" "$work/ended" || continue
         ps -p "$pid" -o lstart= > "$work/current-start" || true
@@ -291,22 +290,10 @@ verify_sessions() {
         echo "Session server $pid exited on its own during the update" >&2
         echo "$pid" >> "$work/ended"
     done < "$work/protected-pids"
-    while IFS= read -r session; do
-        if grep -qxF -- "s:$session" "$work/ended"; then
-            :
-        elif [[ $tolerate == true ]] && ! grep -qxF -- "$session" "$work/sessions-now"; then
-            echo "Session $session ended on its own during the update" >&2
-            echo "s:$session" >> "$work/ended"
-        else
-            panes "$installed" "$session" > "$work/probe"
-            cmp -s "$work/panes-$index" "$work/probe" || { echo "Session panes changed: $session" >&2; exit 1; }
-        fi
-        index=$((index+1))
-    done < "$work/sessions"
 }
 verify_sessions true
 if [[ $binary_only == 1 ]]; then
-    echo "Installed $new_hash. Existing session servers, terminal processes and pane identities are intact."
+    echo "Installed $new_hash. Existing session servers and terminal processes are intact."
     echo "Previous binary retained at $old_release"
     echo 'Binary-only: running services and browser connections remain untouched; new sessions use the update.'
     exit 0
@@ -315,5 +302,5 @@ restart_services
 await_services || { echo "Web server or relay did not come back on $new_hash (relay port $relay_port)." >&2; exit 1; }
 verify_sessions
 echo "Installed $new_hash and restarted the web server and relay (relay reports $(jq -r .commit "$work/health"))."
-echo 'Session servers, terminal processes and pane identities are intact; browsers reconnect.'
+echo 'Session servers and terminal processes are intact; browsers reconnect.'
 echo "Previous binary retained at $old_release"
