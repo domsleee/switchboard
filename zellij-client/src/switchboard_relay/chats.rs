@@ -9,6 +9,9 @@ use std::{
     sync::{LazyLock, Mutex as SyncMutex},
 };
 
+mod tail_cache;
+pub(super) use tail_cache::start as start_tail_cache;
+
 const AGENTS: &[&str] = &["claude", "codex", "muse", "copilot", "opencode"];
 const FILE_BYTES: u64 = 64 * 1024 * 1024;
 const SCAN_BYTES: u64 = 128 * 1024 * 1024;
@@ -2766,7 +2769,11 @@ pub(super) async fn read(
         let Some(h) = state.mesh.as_ref().and_then(|m| m.host(host)) else {
             return StatusCode::NOT_FOUND.into_response();
         };
-        remote_timed(&h, &p, Some(&id)).await
+        if tail_cache::applies(&p) {
+            tail_cache::read(h, &id, &p).await
+        } else {
+            remote_timed(&h, &p, Some(&id)).await
+        }
     } else {
         let (result, timing) = local_timed_async(p, Some(id)).await;
         (result, Some(timing.header()))
