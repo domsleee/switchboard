@@ -325,6 +325,7 @@ fn folder_trust(rows: &[Row]) -> Option<Menu> {
         question,
         choices,
         cursor: cursor?,
+        preview: false,
         token,
     })
 }
