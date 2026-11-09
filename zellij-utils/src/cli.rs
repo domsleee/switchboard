@@ -231,8 +231,17 @@ pub enum SwitchboardCommand {
         #[clap(long)]
         binary: Option<PathBuf>,
     },
-    /// Apply the newest published main build; restarts connection services, never terminal engines
+    /// Apply the newest published main build; restarts connection services and moves sessions
+    /// that have a terminal host to the new engine, keeping their programs running
     Update(SwitchboardUpdateCli),
+    /// Move every session whose engine differs from this build's
+    #[clap(hide = true)]
+    SwapOutdatedEngines {
+        #[clap(long)]
+        binary: Option<PathBuf>,
+        #[clap(long)]
+        config: Option<PathBuf>,
+    },
     /// Print the fingerprint of what this build's session engine is built from
     #[clap(hide = true)]
     EngineFingerprint,
@@ -243,6 +252,9 @@ pub enum SwitchboardCommand {
         /// Executable for the new engine (default: this one)
         #[clap(long)]
         binary: Option<PathBuf>,
+        /// Executable to go back to (default: the one the engine started from)
+        #[clap(long)]
+        previous: Option<PathBuf>,
         #[clap(long)]
         config: Option<PathBuf>,
         /// Treat the first verification as failed, to prove rollback

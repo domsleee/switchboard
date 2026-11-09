@@ -1,6 +1,6 @@
 # Terminal host: replacing a session engine without losing its shells
 
-Status: steps 1 to 3 of Delivery are implemented and off by default, along with the part of step 4 that moves one session: the hidden `zellij switchboard swap-engine <session>` hands a session over, verifies the new engine and rolls back if it fails. The updater does not call it yet.
+Status: implemented and on by default for new sessions (`SWITCHBOARD_TERMINAL_HOST=0` turns it off). After a successful update the updater moves each hosted session whose engine differs. The hidden `zellij switchboard swap-engine <session>` moves one session by hand.
 
 ## Goal
 
@@ -207,8 +207,8 @@ source trees, root `Cargo.toml` and `Cargo.lock`. `zellij switchboard engine-fin
 prints a build's own. The updater swaps a session only when the engine's recorded fingerprint
 differs, so a sidebar-only merge causes no reconnect at all.
 
-`Settings → Health` lists sessions without a host, explaining that moving them stops their
-processes, with a confirm button. They are never restarted automatically.
+`Settings → Health` lists sessions without a host. They are never restarted automatically;
+closing and reopening a session gives it a host, which stops the programs running in it.
 
 ## Platform notes
 

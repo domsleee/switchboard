@@ -298,6 +298,10 @@
     else if(sb.updateNotice)update.append(element('p','task-note',sb.updateNotice));
     if(sb.lastUpdateError||sb.updateCheckError)update.append(element('pre','task-tail',sb.lastUpdateError||sb.updateCheckError));
     block.append(update,...agents.map(agent=>agentRow(computer,agent)));
+    if(sb.sessionsWithoutHost?.length){
+      const one=sb.sessionsWithoutHost.length===1;
+      block.append(element('p','task-note sessions-without-host',`Updates leave ${sb.sessionsWithoutHost.join(', ')} on the engine ${one?'it has':'they have'}, because ${one?'it':'they'} started before updates could move terminals. Closing and reopening a session lets updates move it, but stops what runs in it.`));
+    }
     if(!agents.length)block.append(element('p','task-note agent-none','No Claude Code, Copilot CLI or Codex on this computer'));
     // Open by default while something needs the user.
     if(status!=='ok')block.open=true;

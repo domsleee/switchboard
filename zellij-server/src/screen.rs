@@ -11949,6 +11949,15 @@ pub(crate) fn screen_thread_main(
 
                     // set the env variable
                     set_session_name(name.clone());
+                    let host = screen
+                        .bus
+                        .os_input
+                        .as_ref()
+                        .and_then(|os_input| os_input.terminal_host());
+                    if let Some(directory) = host.as_ref().and_then(|host| host.directory()) {
+                        crate::handoff::record_session(directory);
+                        zellij_utils::handoff::remove_session_record(&old_session_name);
+                    }
                     let connected_client_ids: Vec<ClientId> =
                         screen.active_tab_ids.keys().copied().collect();
                     for client_id in connected_client_ids {
