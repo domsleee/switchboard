@@ -1616,10 +1616,14 @@ fn update_phase(state: &Value, requested: bool, running: bool) -> &'static str {
 
 /// The build this relay runs, whether it updates itself and whether its last update failed.
 fn switchboard() -> Value {
-    switchboard_in(
+    let mut status = switchboard_in(
         &home().join(".local/share/switchboard/automatic-updates"),
         automatic_updates(),
-    )
+    );
+    status["pathCopyDamaged"] = path_copy()
+        .is_some_and(|path| path_copy_damaged(&path))
+        .into();
+    status
 }
 
 fn switchboard_in(directory: &Path, automatic: bool) -> Value {

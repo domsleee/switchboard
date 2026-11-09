@@ -219,13 +219,17 @@ try {
     $pathBinary = Join-Path $pathDirectory 'zellij.exe'
     $release = Join-Path $root 'release zellij.exe'
     [IO.File]::WriteAllText($pathBinary, 'old build')
-    [IO.File]::WriteAllText($release, 'selected release')
+    [IO.File]::WriteAllText($release, 'MZ selected release')
     Assert (!(Sync-SwitchboardPathBinary $release (Join-Path $root 'missingzellij.exe'))) 'A computer without a PATH copy must not get one'
     $running = [IO.File]::Open($pathBinary, 'Open', 'Read', ([IO.FileShare]::Read -bor [IO.FileShare]::Delete))
     try { Assert (Sync-SwitchboardPathBinary $release $pathBinary) 'The stale PATH copy was not replaced' } finally { $running.Dispose() }
-    Assert ([IO.File]::ReadAllText($pathBinary) -ceq 'selected release') 'PATH copy does not hold the selected release'
+    Assert ([IO.File]::ReadAllText($pathBinary) -ceq 'MZ selected release') 'PATH copy does not hold the selected release'
     Assert (!(Sync-SwitchboardPathBinary $release $pathBinary)) 'An up-to-date PATH copy was rewritten'
     Assert (@(Get-ChildItem -LiteralPath $pathDirectory).Count -eq 1) 'Staged or retired copies were left behind'
+    $notExecutable = Join-Path $root 'not executable.exe'
+    [IO.File]::WriteAllText($notExecutable, 'new')
+    Reject { Sync-SwitchboardPathBinary $notExecutable $pathBinary } 'Not a Windows executable'
+    Assert ([IO.File]::ReadAllText($pathBinary) -ceq 'MZ selected release') 'A non-executable replaced the PATH copy'
 
     Write-Output "PASS: $checks Windows release checks; closed engines are allowed only during service verification, reused PIDs still fail."
 } finally {

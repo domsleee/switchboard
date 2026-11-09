@@ -282,6 +282,14 @@ test('Health shows each computer\'s build and agent reporting, and sets agents u
     await page.waitForFunction(()=>document.querySelector('#updates .switchboard-group .task-state')?.textContent==='All set');
     await mac.evaluate(el=>el.open=true);
     if(process.env.PLUGIN_HOST_SCREENSHOTS)await mac.screenshot({path:process.env.PLUGIN_HOST_SCREENSHOTS+'/before.png'});
+
+    // A damaged zellij on PATH earns the sidebar's count, not only a Health row.
+    tasks.computers[0].switchboard.pathCopyDamaged=true;
+    await page.evaluate(()=>SwitchboardTasks.load());
+    assert.match(await page.locator('#task-notices .task-notice-open').getAttribute('title'),/Mac · zellij on PATH is damaged/);
+    tasks.computers[0].switchboard.pathCopyDamaged=false;
+    await page.evaluate(()=>SwitchboardTasks.load());
+
     for(const agent of tasks.computers[0].agents){
       agent.plugins={state:'attention',warnings:['dotfiles-work@dotfiles: not intended for this computer or agent. Remove it from '+agent.name+'.']};
     }

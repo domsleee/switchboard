@@ -107,8 +107,15 @@ function Initialize-SwitchboardReleaseStore([string]$Binary, [string]$Directory 
 # release, as macOS and Linux updates do, so it never goes stale. A running
 # executable can be renamed but not overwritten, so the old copy moves aside and
 # is deleted by a later update once nothing runs it.
+function Assert-SwitchboardExecutable([string]$Path) {
+    $stream = [IO.File]::OpenRead($Path)
+    try { $first = $stream.ReadByte(); $second = $stream.ReadByte() } finally { $stream.Dispose() }
+    if ($first -ne 0x4D -or $second -ne 0x5A) { throw "Not a Windows executable: $Path" }
+}
+
 function Sync-SwitchboardPathBinary([string]$Binary, [string]$Target = (Join-Path $HOME '.cargo/bin/zellij.exe')) {
     if (!(Test-Path -LiteralPath $Target)) { return $false }
+    Assert-SwitchboardExecutable $Binary
     $directory = Split-Path -LiteralPath $Target
     foreach ($old in @(Get-ChildItem -LiteralPath $directory -Filter 'zellij.retired-*.exe' -ErrorAction SilentlyContinue)) {
         Remove-Item -LiteralPath $old.FullName -Force -ErrorAction SilentlyContinue
