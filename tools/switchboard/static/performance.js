@@ -17,7 +17,7 @@ window.SwitchboardPerformance = (() => {
   const when = value => new Date(value).toLocaleString(undefined, {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'});
   const computerSelect = $('timing-computer'), targetSelect = $('timing-target'), buildSelect = $('timing-build');
   const list = $('timings'), status = $('timing-status'), refresh = $('refresh-timings');
-  let computers = [], visible = false, timer, request, signature, updated, preference, stale = false;
+  let computers = [], visible = false, timer, request, signature, renderedSignature, updated, preference, stale = false;
   try { preference = localStorage.getItem('switchboard-performance-computer'); } catch {}
   const active = () => visible && !document.hidden;
   const computer = () => computers.find(item => item.name === computerSelect.value);
@@ -78,7 +78,11 @@ window.SwitchboardPerformance = (() => {
     return row;
   }
   function paint() {
-    const selected = computer(), series = filtered(), openRows = new Set([...$('timing-series').querySelectorAll('details[open]')].map(row => row.dataset.key));
+    const selected = computer(), series = filtered();
+    const next = JSON.stringify([selected?.name, selected?.error, buildSelect.value, targetSelect.value, series]);
+    if(renderedSignature === next) { showStatus();return; }
+    renderedSignature = next;
+    const openRows = new Set([...$('timing-series').querySelectorAll('details[open]')].map(row => row.dataset.key));
     const focusedRow = document.activeElement?.closest('#timing-series details')?.dataset.key;
     const scale = Math.max(0, ...series.filter(item => item.count > 0).map(item => item.max_ms));
     $('timing-scale').replaceChildren();

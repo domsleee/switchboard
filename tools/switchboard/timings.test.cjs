@@ -84,6 +84,7 @@ test('Performance dashboard separates browser, destination and build, preserves 
     });
     await page.goto('https://switchboard.test/');
     assert.equal(requests,0,'No dashboard traffic until opened');
+    assert.match(await page.locator('.perf-method').textContent(),/histogram estimates, accurate to about 10%; Worst is exact/);
     assert.equal(await page.locator('#performance + #settings').count(),1,'Icon sits beside Settings');
     await page.getByRole('button',{name:'Performance dashboard',exact:true}).click();
     await page.waitForFunction(()=>document.querySelectorAll('#timing-series details').length===3);
@@ -117,6 +118,12 @@ test('Performance dashboard separates browser, destination and build, preserves 
     await page.clock.runFor(10050);await page.waitForFunction(()=>document.querySelector('#timing-series').textContent.includes('Samples 41'));
     assert.equal(await terminal.getAttribute('open'),'','Changed data preserves expanded rows');
     assert.equal(await terminal.locator('summary').evaluate(node=>node===document.activeElement),true,'Changed data preserves keyboard focus');
+    await terminal.evaluate(node=>{window.inspectedTimingRow=node;const range=document.createRange();range.selectNodeContents(node.querySelector('.timing-sample small'));getSelection().removeAllRanges();getSelection().addRange(range);window.inspectedTimingText=getSelection().toString();});
+    timings.computers[0].series=[series({count:1})];await page.clock.runFor(10050);
+    await page.waitForFunction(()=>document.querySelector('#timings').getAttribute('aria-busy')==='false');
+    assert.equal(await terminal.evaluate(node=>node===inspectedTimingRow&&getSelection().toString()===inspectedTimingText),true,'Another computer updating cannot replace inspected rows or clear a text selection');
+    timings.computers[0].series=[];await page.locator('#refresh-timings').click();
+    await page.waitForFunction(()=>document.querySelector('#timings').getAttribute('aria-busy')==='false');
     await page.locator('#refresh-timings').focus();await page.clock.runFor(10050);
     await page.waitForFunction(()=>document.querySelector('#timings').getAttribute('aria-busy')==='false');
     assert.equal(await page.locator('#refresh-timings').evaluate(node=>node===document.activeElement),true,'Automatic refresh never disables or blurs Refresh');
