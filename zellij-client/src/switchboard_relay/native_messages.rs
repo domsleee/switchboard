@@ -742,6 +742,7 @@ mod tests {
         let program = fake_codex(dir.path(), 0);
         let db = dir.path().join("receipts.sqlite3");
         let request = Queue {
+            message: "- first item".into(),
             user_message: true,
             ..target()
         };
@@ -766,7 +767,7 @@ mod tests {
         assert_eq!(
             calls,
             format!(
-                "queue\n--thread\n{}\n--message\n{}\n",
+                "queue\n--thread\n{}\n--message={}\n",
                 request.thread, request.message
             )
         );

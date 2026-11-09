@@ -1241,6 +1241,16 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         // Its links reach the viewer only from a same-origin page, as in rendered Markdown.
         assert_eq!(headers[header::CONTENT_SECURITY_POLICY], FILE_MARKDOWN);
+        // A peer's native HTTPS listener passes that policy on and adds its own to the rest.
+        let mut through_listener = headers.clone();
+        crate::web_client::default_content_security_policy(&mut through_listener);
+        assert_eq!(
+            through_listener[header::CONTENT_SECURITY_POLICY],
+            FILE_MARKDOWN
+        );
+        let mut other = HeaderMap::new();
+        crate::web_client::default_content_security_policy(&mut other);
+        assert!(other.contains_key(header::CONTENT_SECURITY_POLICY));
         let listing = String::from_utf8_lossy(&body);
         let href = |path: &Path| format!("?path={}", urlencoding::encode(path.to_str().unwrap()));
         let images = listing.find(">images/<").unwrap();

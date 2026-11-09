@@ -67,6 +67,16 @@ use websocket_handlers::{ws_handler_control, ws_handler_terminal};
 const DEFAULT_SERVER_STARTUP_TIMEOUT_SECS: u64 = 10;
 
 /// Whether New tab and handover can launch this model choice.
+/// A response that set its own policy keeps it: Switchboard's file viewer pages allow no scripts.
+pub(crate) fn default_content_security_policy(headers: &mut axum::http::HeaderMap) {
+    if !headers.contains_key("Content-Security-Policy") {
+        headers.insert(
+            "Content-Security-Policy",
+            "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' ws: wss:; img-src 'self' data:".parse().unwrap(),
+        );
+    }
+}
+
 pub(crate) fn known_agent(model: &str) -> bool {
     websocket_handlers::Agent::parse(model).is_some()
 }
@@ -378,17 +388,17 @@ pub async fn serve_web_client(
         .layer(middleware::from_fn(move |request, next| {
             crate::switchboard_relay::peer_bridge::dispatch(peer_directory.clone(), request, next)
         }))
-        .layer(axum::middleware::from_fn(move |request, next: axum::middleware::Next| {
-            async move {
+        .layer(axum::middleware::from_fn(
+            move |request, next: axum::middleware::Next| async move {
                 let mut response = next.run(request).await;
                 let headers = response.headers_mut();
                 headers.insert("X-Content-Type-Options", "nosniff".parse().unwrap());
                 headers.insert("X-Frame-Options", "DENY".parse().unwrap());
-                headers.insert("Referrer-Policy", "strict-origin-when-cross-origin".parse().unwrap());
                 headers.insert(
-                    "Content-Security-Policy",
-                    "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' ws: wss:; img-src 'self' data:".parse().unwrap(),
+                    "Referrer-Policy",
+                    "strict-origin-when-cross-origin".parse().unwrap(),
                 );
+                default_content_security_policy(headers);
                 if is_https {
                     headers.insert(
                         "Strict-Transport-Security",
@@ -396,8 +406,8 @@ pub async fn serve_web_client(
                     );
                 }
                 response
-            }
-        }));
+            },
+        ));
 
     if let Err(e) = listener.set_nonblocking(true) {
         log::error!("Failed to set web server listener to non-blocking: {}", e);
