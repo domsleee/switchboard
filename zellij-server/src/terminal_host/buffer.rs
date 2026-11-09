@@ -13,6 +13,7 @@ pub struct OutputBuffer {
     bytes: VecDeque<u8>,
     sent: u64,
     acknowledged: u64,
+    pinned: Option<u64>,
 }
 
 impl OutputBuffer {
@@ -20,8 +21,38 @@ impl OutputBuffer {
         self.start + self.bytes.len() as u64
     }
 
+    fn oldest_needed(&self) -> u64 {
+        self.pinned
+            .map_or(self.acknowledged, |pinned| pinned.min(self.acknowledged))
+    }
+
     pub fn has_room(&self) -> bool {
-        self.end() - self.acknowledged < MAX_UNACKNOWLEDGED
+        self.end() - self.oldest_needed() < MAX_UNACKNOWLEDGED
+    }
+
+    pub fn can_pin(&self, sequence: u64) -> bool {
+        (self.start..=self.sent).contains(&sequence)
+    }
+
+    /// Keeps output from `sequence` for the engine that takes over.
+    pub fn pin(&mut self, sequence: u64) {
+        self.pinned = Some(sequence);
+    }
+
+    pub fn unpin(&mut self) {
+        self.pinned = None;
+    }
+
+    /// A new engine continues from its snapshot, or else from what the last
+    /// engine confirmed.
+    pub fn rewind(&mut self) {
+        let resume = self.pinned.unwrap_or(self.acknowledged);
+        self.sent = resume;
+        self.acknowledged = resume;
+    }
+
+    pub fn sent(&self) -> u64 {
+        self.sent
     }
 
     pub fn append(&mut self, bytes: &[u8]) {
@@ -57,7 +88,10 @@ impl OutputBuffer {
     /// Acknowledge output up to `sequence`, which cannot pass what was sent.
     pub fn acknowledge(&mut self, sequence: u64) {
         self.acknowledged = self.acknowledged.max(sequence.min(self.sent));
-        let keep_from = self.acknowledged.saturating_sub(RETAINED_ACKNOWLEDGED);
+        let mut keep_from = self.acknowledged.saturating_sub(RETAINED_ACKNOWLEDGED);
+        if let Some(pinned) = self.pinned {
+            keep_from = keep_from.min(pinned);
+        }
         if keep_from > self.start {
             self.bytes.drain(..(keep_from - self.start) as usize);
             self.start = keep_from;
@@ -68,6 +102,75 @@ impl OutputBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pin_keeps_output_past_the_retention_limit_and_counts_against_room() {
+        let mut buffer = OutputBuffer::default();
+        buffer.append(b"snapshot starts here");
+        while buffer.take_unsent().is_some() {}
+        buffer.pin(9);
+        buffer.acknowledge(buffer.sent);
+        let mut remaining = MAX_UNACKNOWLEDGED;
+        while remaining > 0 {
+            let chunk = remaining.min(MAX_IN_FLIGHT);
+            buffer.append(&vec![1; chunk as usize]);
+            while buffer.take_unsent().is_some() {}
+            buffer.acknowledge(buffer.sent);
+            remaining -= chunk;
+        }
+        assert_eq!(buffer.start, 9);
+        assert!(!buffer.has_room());
+        buffer.rewind();
+        assert_eq!(buffer.take_unsent().unwrap().0, 9);
+        buffer.unpin();
+        buffer.rewind();
+        assert!(buffer.can_pin(buffer.sent));
+    }
+
+    #[test]
+    fn a_rewind_starts_at_the_pin_even_when_acknowledgements_lag_behind_it() {
+        let mut buffer = OutputBuffer::default();
+        buffer.append(b"0123456789");
+        while buffer.take_unsent().is_some() {}
+        buffer.acknowledge(2);
+        buffer.pin(6);
+        buffer.rewind();
+        assert_eq!(buffer.take_unsent(), Some((6, b"6789".to_vec())));
+    }
+
+    #[test]
+    fn a_rewind_without_a_pin_resumes_from_what_was_confirmed() {
+        let mut buffer = OutputBuffer::default();
+        buffer.append(b"hello");
+        while buffer.take_unsent().is_some() {}
+        buffer.acknowledge(2);
+        buffer.rewind();
+        assert_eq!(buffer.take_unsent(), Some((2, b"llo".to_vec())));
+    }
+
+    #[test]
+    fn output_already_discarded_cannot_be_pinned() {
+        let mut buffer = OutputBuffer::default();
+        buffer.append(&vec![1; 2 * MAX_IN_FLIGHT as usize]);
+        loop {
+            while buffer.take_unsent().is_some() {}
+            buffer.acknowledge(buffer.sent);
+            if buffer.is_fully_sent() {
+                break;
+            }
+        }
+        let later = RETAINED_ACKNOWLEDGED + 3 * MAX_IN_FLIGHT;
+        buffer.append(&vec![2; later as usize]);
+        loop {
+            while buffer.take_unsent().is_some() {}
+            buffer.acknowledge(buffer.sent);
+            if buffer.is_fully_sent() {
+                break;
+            }
+        }
+        assert!(!buffer.can_pin(0));
+        assert!(!buffer.can_pin(buffer.sent + 1));
+    }
 
     #[test]
     fn sends_in_order_with_sequence_numbers() {

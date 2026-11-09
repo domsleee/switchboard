@@ -280,7 +280,7 @@ impl Connection {
                         terminal_id,
                         status,
                     }) => self.finish_terminal(terminal_id, status),
-                    Ok(Event::Welcome { .. }) | Err(_) => {},
+                    Ok(Event::Welcome { .. }) | Ok(Event::OutputPaused { .. }) | Err(_) => {},
                 },
                 Ok(Frame::Write { .. }) => {},
                 Err(error) => {

@@ -21,6 +21,8 @@ use tokio::task::AbortHandle;
 use zellij_utils::{errors::ZellijError, input::command::RunCommand};
 
 const ENGINE_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long terminals outlive an engine that handed over and was not replaced.
+const HANDOFF_DEADLINE: Duration = Duration::from_secs(60 * 60);
 /// How long an exit waits for the terminal's final output to be read.
 const EXIT_OUTPUT_GRACE: Duration = Duration::from_millis(200);
 
@@ -42,6 +44,11 @@ struct Outgoing {
     announce: Option<u32>,
 }
 
+struct Handoff {
+    id: String,
+    deadline: Instant,
+}
+
 #[derive(Default)]
 struct State {
     terminals: BTreeMap<u32, Terminal>,
@@ -49,6 +56,11 @@ struct State {
     next_instance: u64,
     last_sent: u32,
     stopping: bool,
+    /// Identifies the one engine connection allowed to act.
+    generation: u64,
+    paused: bool,
+    pause_pending: bool,
+    handoff: Option<Handoff>,
 }
 
 impl State {
@@ -62,6 +74,17 @@ impl State {
                 reply: outgoing.reply,
             })
             .map(Some);
+        }
+        if self.paused {
+            if !std::mem::take(&mut self.pause_pending) {
+                return Ok(None);
+            }
+            let ends = self
+                .terminals
+                .iter()
+                .map(|(id, terminal)| (*id, terminal.buffer.sent()))
+                .collect();
+            return control(&Event::OutputPaused { ends }).map(Some);
         }
         // Start after the last terminal served so a busy one cannot starve others.
         let ids: Vec<u32> = self
@@ -105,6 +128,17 @@ struct Shared {
     changed: Condvar,
     backend: PtyBackendImpl,
     runtime: Runtime,
+    input: mpsc::Sender<Input>,
+    handoff_limit: Duration,
+}
+
+/// What the host's main loop waits for.
+enum Input {
+    Connection(Hello, Stream),
+    Closed(u64),
+    Shutdown,
+    /// A handoff began, so the loop has a deadline to watch.
+    Wake,
 }
 
 impl Shared {
@@ -119,12 +153,12 @@ impl Shared {
         }
     }
 
-    fn write_events(&self, mut events: Stream) {
+    fn write_events(&self, mut events: Stream, generation: u64) {
         loop {
             let frame = {
                 let mut state = self.state.lock().unwrap();
                 loop {
-                    if state.stopping {
+                    if state.stopping || state.generation != generation {
                         return;
                     }
                     match state.next_frame() {
@@ -318,6 +352,111 @@ impl Shared {
         self.changed.notify_all();
     }
 
+    fn in_handoff(&self) -> bool {
+        self.state.lock().unwrap().handoff.is_some()
+    }
+
+    fn begin_handoff(&self, handoff_id: String, retain_from: Vec<(u32, u64)>) -> Reply {
+        let mut state = self.state.lock().unwrap();
+        if state.handoff.is_some() {
+            return Reply::Error {
+                message: "a handoff is already in progress".to_string(),
+            };
+        }
+        let retained = retain_from.iter().all(|(terminal_id, sequence)| {
+            state
+                .terminals
+                .get(terminal_id)
+                .is_some_and(|terminal| terminal.buffer.can_pin(*sequence))
+        });
+        if !retained {
+            return Reply::Error {
+                message: "a snapshot position is no longer retained".to_string(),
+            };
+        }
+        for (terminal_id, sequence) in retain_from {
+            if let Some(terminal) = state.terminals.get_mut(&terminal_id) {
+                terminal.buffer.pin(sequence);
+            }
+        }
+        state.handoff = Some(Handoff {
+            id: handoff_id,
+            deadline: Instant::now() + self.handoff_limit,
+        });
+        drop(state);
+        let _ = self.input.send(Input::Wake);
+        Reply::Ok
+    }
+
+    /// Commit and abort both end the handoff; they differ in who carries on.
+    fn end_handoff(&self, handoff_id: &str) -> Reply {
+        let mut state = self.state.lock().unwrap();
+        if state.handoff.as_ref().map(|handoff| handoff.id.as_str()) != Some(handoff_id) {
+            return Reply::Error {
+                message: "no such handoff".to_string(),
+            };
+        }
+        state.handoff = None;
+        state.paused = false;
+        for terminal in state.terminals.values_mut() {
+            terminal.buffer.unpin();
+            terminal.room.notify_one();
+        }
+        drop(state);
+        self.changed.notify_all();
+        Reply::Ok
+    }
+
+    /// Makes a new connection the only one allowed to act. Output waits for
+    /// `ResumeOutput`, because the new engine has no readers yet.
+    fn adopt_connection(&self) -> u64 {
+        let mut state = self.state.lock().unwrap();
+        state.generation += 1;
+        state.paused = true;
+        state.pause_pending = false;
+        state.replies.clear();
+        for terminal in state.terminals.values_mut() {
+            terminal.buffer.rewind();
+            terminal.exit_sent = false;
+        }
+        let generation = state.generation;
+        drop(state);
+        self.changed.notify_all();
+        generation
+    }
+
+    fn start_connection(
+        self: &Arc<Self>,
+        commands: Stream,
+        mut events: Stream,
+        generation: u64,
+    ) -> io::Result<()> {
+        write_frame(
+            &mut events,
+            &control(&Event::Welcome {
+                protocol: PROTOCOL,
+                host_pid: std::process::id(),
+                generation,
+            })?,
+        )?;
+        std::thread::Builder::new()
+            .name("terminal_host_events".into())
+            .spawn({
+                let shared = self.clone();
+                move || shared.write_events(events, generation)
+            })?;
+        std::thread::Builder::new()
+            .name("terminal_host_commands".into())
+            .spawn({
+                let shared = self.clone();
+                move || {
+                    shared.read_commands(commands, generation);
+                    let _ = shared.input.send(Input::Closed(generation));
+                }
+            })?;
+        Ok(())
+    }
+
     fn handle(self: &Arc<Self>, envelope: RequestEnvelope) {
         let id = envelope.id;
         let finished = |result: zellij_utils::errors::prelude::Result<()>| match result {
@@ -326,7 +465,46 @@ impl Shared {
                 message: format!("{error:#}"),
             },
         };
+        // Nothing may destroy a terminal while it is between engines.
+        if self.in_handoff()
+            && matches!(
+                envelope.request,
+                Request::Close { .. }
+                    | Request::Kill { .. }
+                    | Request::ForceKill { .. }
+                    | Request::Shutdown
+            )
+        {
+            let message = "a handoff is in progress".to_string();
+            self.reply(id, Reply::Error { message }, None);
+            return;
+        }
         match envelope.request {
+            Request::PauseOutput => {
+                let mut state = self.state.lock().unwrap();
+                state.paused = true;
+                state.pause_pending = true;
+                drop(state);
+                self.changed.notify_all();
+            },
+            Request::ResumeOutput => {
+                self.state.lock().unwrap().paused = false;
+                self.changed.notify_all();
+            },
+            Request::BeginHandoff {
+                handoff_id,
+                retain_from,
+            } => {
+                let reply = self.begin_handoff(handoff_id, retain_from);
+                self.reply(id, reply, None);
+            },
+            Request::CommitAdoption { handoff_id } | Request::AbortHandoff { handoff_id } => {
+                let reply = self.end_handoff(&handoff_id);
+                self.reply(id, reply, None);
+            },
+            Request::Shutdown => {
+                let _ = self.input.send(Input::Shutdown);
+            },
             Request::Spawn {
                 terminal_id,
                 command,
@@ -394,9 +572,13 @@ impl Shared {
         }
     }
 
-    fn read_commands(self: &Arc<Self>, mut commands: Stream) {
+    fn read_commands(self: &Arc<Self>, mut commands: Stream, generation: u64) {
         loop {
-            match read_frame(&mut commands) {
+            let frame = read_frame(&mut commands);
+            if self.state.lock().unwrap().generation != generation {
+                return;
+            }
+            match frame {
                 Ok(Frame::Control(bytes)) => match parse::<RequestEnvelope>(&bytes) {
                     Ok(envelope) => self.handle(envelope),
                     Err(error) => log::error!("Terminal host ignored a request: {error}"),
@@ -463,9 +645,14 @@ pub fn run(directory: &Path) -> io::Result<()> {
 }
 
 pub(super) fn serve(directory: &Path) -> io::Result<()> {
+    serve_with(directory, HANDOFF_DEADLINE)
+}
+
+pub(super) fn serve_with(directory: &Path, handoff_limit: Duration) -> io::Result<()> {
     let token = std::fs::read_to_string(directory.join("token"))?;
     let listener = bind_endpoint(&endpoint_for(directory))?;
-    let (connected, connections) = mpsc::channel();
+    let (connected, inputs) = mpsc::channel();
+    let input = connected.clone();
     std::thread::Builder::new()
         .name("terminal_host_accept".into())
         .spawn(move || {
@@ -475,39 +662,81 @@ pub(super) fn serve(directory: &Path) -> io::Result<()> {
                 // A connection that never says hello must not block the next one.
                 std::thread::spawn(move || {
                     if let Some((hello, stream)) = read_hello(stream, &token) {
-                        let _ = connected.send((hello, stream));
+                        let _ = connected.send(Input::Connection(hello, stream));
                     }
                 });
             }
         })?;
-    let (commands, events) = wait_for_engine(&connections)?;
+    let mut pairs = HashMap::new();
+    let (commands, events) = wait_for_engine(&inputs, &mut pairs)?;
     let shared = Arc::new(Shared {
-        state: Mutex::new(State::default()),
+        state: Mutex::new(State {
+            generation: 1,
+            ..State::default()
+        }),
         changed: Condvar::new(),
         backend: PtyBackendImpl::new()?,
         runtime: tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .enable_all()
             .build()?,
+        input,
+        handoff_limit,
     });
-    let mut events = events;
-    write_frame(
-        &mut events,
-        &control(&Event::Welcome {
-            protocol: PROTOCOL,
-            host_pid: std::process::id(),
-        })?,
-    )?;
-    let writer = std::thread::Builder::new()
-        .name("terminal_host_events".into())
-        .spawn({
-            let shared = shared.clone();
-            move || shared.write_events(events)
-        })?;
-    shared.read_commands(commands);
-    shared.stop_terminals();
-    let _ = writer.join();
-    Ok(())
+    shared.start_connection(commands, events, 1)?;
+    let mut current = 1;
+    loop {
+        let deadline = shared
+            .state
+            .lock()
+            .unwrap()
+            .handoff
+            .as_ref()
+            .map(|handoff| handoff.deadline);
+        let next = match deadline {
+            Some(deadline) => {
+                inputs.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            },
+            None => inputs
+                .recv()
+                .map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+        };
+        match next {
+            Ok(Input::Connection(hello, stream)) => {
+                let Some((commands, events)) = pair_up(&mut pairs, hello, stream) else {
+                    continue;
+                };
+                // Outside a handoff there is already an engine, so this one
+                // is refused by closing its connections.
+                if shared.in_handoff() {
+                    current = shared.adopt_connection();
+                    if let Err(error) = shared.start_connection(commands, events, current) {
+                        log::error!("Terminal host could not welcome an engine: {error}");
+                    }
+                }
+            },
+            Ok(Input::Closed(generation)) => {
+                if generation == current && !shared.in_handoff() {
+                    shared.stop_terminals();
+                    return Ok(());
+                }
+            },
+            Ok(Input::Wake) => {},
+            Ok(Input::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                shared.stop_terminals();
+                return Ok(());
+            },
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if shared.in_handoff() {
+                    shared.stop_terminals();
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "no engine finished the handoff",
+                    ));
+                }
+            },
+        }
+    }
 }
 
 fn read_hello(mut stream: Stream, token: &str) -> Option<(Hello, Stream)> {
@@ -518,24 +747,37 @@ fn read_hello(mut stream: Stream, token: &str) -> Option<(Hello, Stream)> {
     (hello.token == token && hello.protocol == PROTOCOL).then_some((hello, stream))
 }
 
+type Pairs = HashMap<String, (Option<Stream>, Option<Stream>)>;
+
 /// Pair an engine's command and event connections. Windows pipes cannot read
 /// and write concurrently through one synchronous handle.
-fn wait_for_engine(connections: &mpsc::Receiver<(Hello, Stream)>) -> io::Result<(Stream, Stream)> {
+fn pair_up(pairs: &mut Pairs, hello: Hello, stream: Stream) -> Option<(Stream, Stream)> {
+    let pair = pairs.entry(hello.pair.clone()).or_default();
+    match hello.channel {
+        Channel::Commands => pair.0 = Some(stream),
+        Channel::Events => pair.1 = Some(stream),
+    }
+    if let (Some(_), Some(_)) = pair {
+        let (commands, events) = pairs.remove(&hello.pair)?;
+        return Some((commands?, events?));
+    }
+    None
+}
+
+fn wait_for_engine(
+    inputs: &mpsc::Receiver<Input>,
+    pairs: &mut Pairs,
+) -> io::Result<(Stream, Stream)> {
     let deadline = Instant::now() + ENGINE_CONNECT_TIMEOUT;
-    let mut waiting: HashMap<String, (Option<Stream>, Option<Stream>)> = HashMap::new();
     loop {
         let timeout = deadline.saturating_duration_since(Instant::now());
-        let (hello, stream) = connections
+        let input = inputs
             .recv_timeout(timeout)
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "no engine connected"))?;
-        let pair = waiting.entry(hello.pair.clone()).or_default();
-        match hello.channel {
-            Channel::Commands => pair.0 = Some(stream),
-            Channel::Events => pair.1 = Some(stream),
-        }
-        if let (Some(_), Some(_)) = pair {
-            let (commands, events) = waiting.remove(&hello.pair).unwrap();
-            return Ok((commands.unwrap(), events.unwrap()));
+        if let Input::Connection(hello, stream) = input {
+            if let Some(connection) = pair_up(pairs, hello, stream) {
+                return Ok(connection);
+            }
         }
     }
 }

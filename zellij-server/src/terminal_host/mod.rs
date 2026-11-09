@@ -3,6 +3,8 @@
 mod boundary;
 mod buffer;
 mod client;
+#[cfg(test)]
+mod handoff_tests;
 pub mod host;
 mod protocol;
 
