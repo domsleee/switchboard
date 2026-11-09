@@ -25,6 +25,44 @@ test('broken or expired snapshots do not prevent loading',()=>{
   }
 });
 
+test('refresh keeps the settings gear in place before the deferred app loads',
+  {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
+  const {chromium}=require(process.env.PLAYWRIGHT_MODULE),browser=await chromium.launch({headless:true});
+  try{
+    const page=await browser.newPage({viewport:{width:1100,height:760}}),errors=[];
+    page.setDefaultTimeout(5000);page.on('pageerror',error=>errors.push(error.message));
+    await page.addInitScript(()=>{localStorage.setItem('switchboard-sidebar-width','260');window.setInterval=()=>0;});
+    let holdApp=false,releaseApp;
+    await page.route('**/*',async route=>{
+      const url=new URL(route.request().url()),pathname=url.pathname;
+      const json=value=>route.fulfill({json:value});
+      if(pathname==='/api/attention'&&url.searchParams.has('after'))return;
+      if(pathname==='/api/hosts')return json([]);
+      if(pathname==='/api/attention')return json({tabs:[],panes:[],errors:[]});
+      if(pathname.startsWith('/api/'))return json({});
+      const file=pathname==='/'?'index.html':pathname.slice(1);
+      if(!/^[\w.-]+$/.test(file)||!fs.existsSync(__dirname+'/static/'+file))return route.fulfill({status:404,body:''});
+      if(file==='app.js'&&holdApp)await new Promise(resolve=>releaseApp=resolve);
+      return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file)});
+    });
+    await page.goto('https://switchboard.test/');
+    const gear=page.locator('#settings'),settled=await gear.boundingBox();
+    holdApp=true;
+    await page.reload({waitUntil:'commit'});
+    await gear.waitFor();
+    // Observe the painted shell while the app is still downloading.
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    const initial=await gear.boundingBox();
+    if(process.env.SWITCHBOARD_STARTUP_SCREENSHOTS)await page.screenshot({path:process.env.SWITCHBOARD_STARTUP_SCREENSHOTS+'/refresh-initial.png',clip:{x:0,y:600,width:280,height:160}});
+    releaseApp();await page.waitForLoadState('load');
+    assert.deepEqual(initial,settled,'Saved sidebar width must apply before the first paint');
+    assert.deepEqual(await gear.boundingBox(),settled,'Loading the app must not move the gear');
+    await gear.click();assert.equal(await page.locator('#panel').evaluate(node=>node.open),true);
+    await page.keyboard.press('Escape');assert.equal(await page.locator('#panel').evaluate(node=>node.open),false);
+    assert.deepEqual(errors,[]);
+  }finally{await browser.close();}
+});
+
 test('reload shows cached rows before discovery, survives empty snapshots, and drops a closed session after five seconds',
   {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE for the isolated browser check'},async()=>{
   const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
