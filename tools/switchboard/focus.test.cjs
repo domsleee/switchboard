@@ -576,6 +576,10 @@ for(const hasTouch of [false,true])test(`conversation composer keeps focus throu
       setHidden(allTabs().find(item=>item.tab.id===42),true);
       paneAttention.get(attentionKey('mac','main',7)).state='working';render();
     });
+    if(!hasTouch){
+      const hovered=async selector=>{await page.locator(selector).hover();return page.locator(selector).evaluate(node=>{const style=getComputedStyle(node);return [style.backgroundColor,style.color];});};
+      assert.deepEqual(await hovered('#hidden-toggle'),await hovered('#snoozed-toggle'),'Hidden and Working look the same on hover');
+    }
     for(const selector of ['#hidden-toggle .chevron','#hidden-toggle','#snoozed-toggle','#snoozed-toggle',
       '#filters [data-filter="work"]','#filters [data-filter="all"]','#tab-count','.sidebar-brand strong',
       '#status-message','#dismiss-status','#sidebar-toggle','#sidebar-toggle']){
@@ -586,6 +590,20 @@ for(const hasTouch of [false,true])test(`conversation composer keeps focus throu
       assert.equal(await draft.evaluate(node=>node===document.activeElement),true,selector);
       assert.deepEqual(await draft.evaluate(node=>[node.selectionStart,node.selectionEnd]),[0,4],selector+' preserves the draft selection');
     }
+    // The group menu returns to the composer without losing the draft selection.
+    await page.evaluate(()=>{localStorage.setItem('switchboard-focus-group','work');setFilter('work');});
+    const tapOrClick=locator=>hasTouch?locator.tap():locator.click();
+    await tapOrClick(page.locator('#filter-more'));
+    assert.equal(await page.locator('#filter-menu').isVisible(),true);
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#filter-menu').isVisible(),false);
+    assert.equal(await draft.evaluate(node=>node===document.activeElement),true,'Escape returns to the composer');
+    await tapOrClick(page.locator('#filter-more'));
+    await tapOrClick(page.locator('#filter-menu').getByRole('menuitemradio',{name:/^All/}));
+    assert.equal(await page.locator('#filter-more').textContent(),'All');
+    assert.equal(await draft.evaluate(node=>node===document.activeElement),true,'Choosing a group returns to the composer');
+    assert.deepEqual(await draft.evaluate(node=>[node.selectionStart,node.selectionEnd]),[0,4]);
+    await page.evaluate(()=>{localStorage.removeItem('switchboard-focus-group');setFilter('all');});
     await page.keyboard.type('continue');assert.equal(await draft.inputValue(),'continue typing');
     await page.evaluate(()=>{setHidden(allTabs().find(item=>item.tab.id===42),false);render();});
     if(hasTouch)await button(42).tap();else await button(42).click();
@@ -662,12 +680,13 @@ test('passive mouse clicks keep terminal typing and selection without switching 
     await page.locator('#tab-search').fill('');
     // Native selects and editable areas must retain their normal mouse focus.
     await page.evaluate(()=>{
-      const select=document.querySelector('#filter-more');select.hidden=false;select.add(new Option('All','all'));
+      const select=document.createElement('select');select.id='fixture-select';select.add(new Option('All','all'));
+      document.querySelector('#sidebar-tools').append(select);
       const editor=document.createElement('div');editor.id='fixture-editor';editor.contentEditable='true';editor.textContent='Edit me';
       document.querySelector('#sidebar-tools').append(editor);
     });
-    await input.focus();await page.locator('#filter-more').click();await page.keyboard.press('Escape');
-    assert.equal(await page.evaluate(()=>document.activeElement.id),'filter-more');
+    await input.focus();await page.locator('#fixture-select').click();await page.keyboard.press('Escape');
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'fixture-select');
     await input.focus();await page.locator('#fixture-editor').click();
     assert.equal(await page.evaluate(()=>document.activeElement.id),'fixture-editor');
     await input.focus();await page.locator('#settings').click();

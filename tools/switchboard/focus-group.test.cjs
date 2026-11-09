@@ -23,7 +23,7 @@ test('a browser focused on Work shows only Work, keeps the other groups behind S
       return route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(__dirname+'/static/'+file,'utf8')});
     });
     const names=()=>page.locator('#tabs .tab-name').allTextContents();
-    const buttons=()=>page.locator('#filters button:visible').allTextContents();
+    const buttons=()=>page.locator('#filters [data-filter]:visible').allTextContents();
     await page.goto('https://switchboard.test/');
     await page.waitForFunction(()=>document.querySelectorAll('#tabs .tab-select').length===2);
     assert.deepEqual(await buttons(),['All','Work','Home']);
@@ -34,8 +34,26 @@ test('a browser focused on Work shows only Work, keeps the other groups behind S
     await page.locator('#close-panel').click();
     assert.deepEqual(await buttons(),['Work']);
     assert.deepEqual(await names(),['Job']);
-    assert.deepEqual(await page.locator('#filter-more option:not([hidden])').allTextContents(),['All','Home']);
-    await page.locator('#filter-more').selectOption('home');
+    const more=page.locator('#filter-more'),menu=page.locator('#filter-menu');
+    assert.equal(await more.textContent(),'Show more');
+    await more.click();
+    assert.deepEqual(await menu.getByRole('menuitemradio').evaluateAll(items=>items.map(item=>item.getAttribute('aria-label'))),['All, 2 tabs','Home, 1 tab']);
+    await page.keyboard.press('ArrowDown');
+    assert.equal(await page.evaluate(()=>document.activeElement.getAttribute('aria-label')),'Home, 1 tab');
+    await page.keyboard.press('Escape');
+    assert.equal(await menu.isVisible(),false,'Escape closes the menu');
+    assert.equal(await more.getAttribute('aria-expanded'),'false');
+    await more.click();await page.locator('#tab-search').click();
+    assert.equal(await menu.isVisible(),false,'Clicking elsewhere closes the menu');
+    await more.click();await page.keyboard.press('ControlOrMeta+KeyK');
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'tab-search');
+    assert.equal(await menu.isVisible(),false,'A shortcut that moves focus closes the menu');
+    await more.click();await menu.getByRole('menuitemradio',{name:'Home, 1 tab'}).click();
+    assert.equal(await menu.isVisible(),false);
+    assert.equal(await more.textContent(),'Home','The button names the chosen group');
+    await more.click();
+    assert.equal(await menu.getByRole('menuitemradio',{name:'Home, 1 tab'}).getAttribute('aria-checked'),'true');
+    await page.keyboard.press('Escape');
     assert.deepEqual(await names(),['Personal']);
     assert.equal(new URL(page.url()).searchParams.get('group'),'home');
 

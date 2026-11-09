@@ -171,6 +171,7 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.deepEqual(await order(),names.slice(1));
     assert.equal(await snoozed.getAttribute('aria-expanded'),'false');
     assert.equal(await snoozed.locator('.count').textContent(),'1');
+    assert.equal(await snoozed.getAttribute('title'),null,'the Working header has no tooltip');
     async function pinProof(name,target,label){
       if(!process.env.SWITCHBOARD_PIN_SCREENSHOTS)return;
       await target.evaluate(el=>el.style.outline='2px solid #ef4444');
@@ -374,6 +375,16 @@ test('sidebar actions, selection tools, stable status updates, resizing and mobi
     assert.equal(await page.evaluate(()=>localStorage.getItem('switchboard-hidden-open:all')),'true');
     if(process.env.SWITCHBOARD_UX_SCREENSHOTS)await page.locator('#sidebar').screenshot({path:process.env.SWITCHBOARD_UX_SCREENSHOTS+'/hidden.png'});
     const hiddenRow=page.locator('.tab-row.hidden-tab');
+    assert.equal(await toggle.getAttribute('title'),null,'the Hidden header has no tooltip');
+    assert.equal(await hiddenRow.locator('.tab-select').evaluate(el=>getComputedStyle(el).opacity),'1','hidden rows are not dimmed, like Working rows');
+    // Like Working, collapsing keeps the selected tab listed.
+    await hiddenRow.locator('.tab-select').click();
+    await toggle.click();
+    assert.equal(await toggle.getAttribute('aria-expanded'),'false');
+    assert.deepEqual(await order(),['switchboard','ssb orchestrator','Online shopping'],'the selected hidden tab stays listed');
+    await page.locator('#tabs .tab-select').filter({has:page.locator('.tab-name',{hasText:'switchboard'})}).click();
+    assert.deepEqual(await order(),['switchboard','ssb orchestrator'],'it folds away once another tab is selected');
+    await toggle.click();
     await hiddenRow.locator('.tab-select').click({button:'right'});
     assert.match(await page.locator('#hide-tab').textContent(),/^Show in list/);
     await page.locator('#hide-tab').click();

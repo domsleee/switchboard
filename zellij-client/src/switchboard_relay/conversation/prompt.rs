@@ -24,6 +24,9 @@ pub(super) struct Menu {
     choices: Vec<Choice>,
     #[serde(skip)]
     cursor: usize,
+    /// Claude's side-by-side preview layout, where a digit only moves the highlight.
+    #[serde(skip)]
+    preview: bool,
     /// Identifies what the browser showed, so an answer never lands on a changed menu.
     token: String,
 }
@@ -51,30 +54,55 @@ fn rows(screen: &str) -> Vec<Row<'_>> {
         }
         let mut last = 0;
         for rule in RULE.find_iter(line) {
-            let before = &line[last..rule.start()];
-            if !before.trim().is_empty() {
-                rows.push(Row::Text(before));
+            // A preview's box and its contents are not section rules.
+            if line[..rule.start()].contains(['┌', '│', '└', '├']) {
+                continue;
             }
+            push_text(&mut rows, &line[last..rule.start()]);
             rows.push(Row::Rule {
                 solid: !rule.as_str().starts_with('╌'),
             });
             last = rule.end();
         }
-        if !line[last..].trim().is_empty() {
-            rows.push(Row::Text(&line[last..]));
-        }
+        push_text(&mut rows, &line[last..]);
     }
     rows
+}
+
+/// The preview layout prints its question and first option as one `dump-screen` row.
+fn push_text<'a>(rows: &mut Vec<Row<'a>>, text: &'a str) {
+    static RUN_ON: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"^([^\s❯].*?)((?:❯\s*|\s{2,})1\.\s+\S.*\s{2,}┌.*)$").unwrap()
+    });
+    if text.trim().is_empty() {
+        return;
+    }
+    match RUN_ON.captures(text) {
+        Some(run_on) => {
+            rows.push(Row::Text(run_on.get(1).unwrap().as_str()));
+            rows.push(Row::Text(run_on.get(2).unwrap().as_str()));
+        },
+        None => rows.push(Row::Text(text)),
+    }
 }
 
 static OPTION: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"^\s*(❯)?\s*(\d{1,2})\.\s+(\S.*?)\s*$").unwrap());
 static SUBMIT: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"^\s*(❯)?\s*Submit$").unwrap());
+    LazyLock::new(|| regex::Regex::new(r"^\s*(❯)?\s*(Submit)$").unwrap());
+static CHAT: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"^\s*(❯)?\s*(Chat about this)$").unwrap());
+static PREVIEW: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"\s{2,}([┌│└])").unwrap());
 static CHECKBOX: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"^\[([ ✔✓])\]\s+(.*)$").unwrap());
 static FOOTER: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"[Ee]sc to cancel|[Ee]nter to (?:select|confirm)").unwrap()
+});
+/// A narrow pane wraps the key hints onto further rows.
+static FOOTER_WRAP: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"^\s*[^❯\s].*(?:·.*|cancel|notes|navigate|select|confirm|amend)\s*$")
+        .unwrap()
 });
 
 /// The menu that ends the screen, starting at `rows[start]` (its option 1).
@@ -83,6 +111,7 @@ static FOOTER: LazyLock<regex::Regex> = LazyLock::new(|| {
 fn menu_from(rows: &[Row], start: usize) -> Option<Menu> {
     let (mut choices, mut cursor, mut label_column) = (Vec::<Choice>::new(), None, 0);
     let (mut after_rule, mut footer) = (false, false);
+    let mut preview_column: Option<usize> = None;
     for row in &rows[start..] {
         let text = match row {
             Row::Blank => continue,
@@ -93,7 +122,14 @@ fn menu_from(rows: &[Row], start: usize) -> Option<Menu> {
             Row::Text(text) => *text,
         };
         if footer {
+            if FOOTER_WRAP.is_match(text) {
+                continue;
+            }
             return None;
+        }
+        let indent = text.chars().take_while(|c| c.is_whitespace()).count();
+        if preview_column.is_some_and(|column| indent >= column) {
+            continue;
         }
         let numbered = choices.iter().filter(|c| c.number.is_some()).count() as u32;
         if let Some(option) = OPTION.captures(text) {
@@ -102,9 +138,15 @@ fn menu_from(rows: &[Row], start: usize) -> Option<Menu> {
             }
             let label = option.get(3).unwrap();
             label_column = text[..label.start()].chars().count();
-            let (checked, label) = match CHECKBOX.captures(label.as_str()) {
+            let mut name = label.as_str();
+            if let Some(tail) = PREVIEW.captures(name) {
+                let start = label.start() + tail.get(1).unwrap().start();
+                preview_column.get_or_insert(text[..start].chars().count());
+                name = &name[..tail.get(0).unwrap().start()];
+            }
+            let (checked, label) = match CHECKBOX.captures(name) {
                 Some(checkbox) => (Some(&checkbox[1] != " "), checkbox[2].to_string()),
-                None => (None, label.as_str().to_string()),
+                None => (None, name.to_string()),
             };
             if option.get(1).is_some() {
                 cursor = cursor.xor(Some(choices.len()));
@@ -118,16 +160,17 @@ fn menu_from(rows: &[Row], start: usize) -> Option<Menu> {
                 checked,
             });
             after_rule = false;
-        } else if let Some(submit) = SUBMIT
+        } else if let Some(row) = SUBMIT
             .captures(text)
             .filter(|_| choices.iter().any(|c| c.checked.is_some()))
+            .or_else(|| CHAT.captures(text).filter(|_| preview_column.is_some()))
         {
-            if submit.get(1).is_some() {
+            if row.get(1).is_some() {
                 cursor = cursor.xor(Some(choices.len()));
                 cursor?;
             }
             choices.push(Choice {
-                label: "Submit".into(),
+                label: row[2].to_string(),
                 description: String::new(),
                 number: None,
                 checked: None,
@@ -141,6 +184,9 @@ fn menu_from(rows: &[Row], start: usize) -> Option<Menu> {
             && text.chars().take_while(|c| c.is_whitespace()).count() >= label_column
         {
             // A description, or a label wrapped in a narrow pane.
+            let text = PREVIEW
+                .find(text)
+                .map_or(text, |tail| &text[..tail.start()]);
             let last = choices.last_mut()?;
             if !last.description.is_empty() {
                 last.description.push(' ');
@@ -191,6 +237,7 @@ fn menu_from(rows: &[Row], start: usize) -> Option<Menu> {
         question,
         choices,
         cursor,
+        preview: preview_column.is_some(),
         token,
     })
 }
@@ -306,14 +353,14 @@ fn keys(menu: &Menu, choice: usize, text: Option<&str>) -> Option<Vec<Key>> {
     let selected = menu.choices.get(choice)?;
     let digit = |n: u32| (n <= 9).then(|| Key::Bytes(vec![(48 + n).to_string()]));
     match (text, selected.number) {
-        (Some(text), Some(n)) if selected.text => Some(vec![
+        (Some(text), Some(n)) if selected.text && !menu.preview => Some(vec![
             digit(n)?,
             Key::Paste(text.into()),
             Key::Bytes(vec!["13".into()]),
         ]),
         (Some(_), _) => None,
         _ if selected.text => None,
-        (None, Some(n)) if n <= 9 => Some(vec![digit(n)?]),
+        (None, Some(n)) if n <= 9 && !menu.preview => Some(vec![digit(n)?]),
         (None, _) => {
             let arrow: &[&str] = if choice > menu.cursor {
                 &["27", "91", "66"]
@@ -551,6 +598,12 @@ mod tests {
             "✻ Baked for 5s · done 12:06❯ Use AskUserQuestion once.\n{RULE}←  ☒ Size  ☒ Toppings  ✔ Submit  →\n\nReview your answers\n\n ● Which size?\n   → Large\n ● Which toppings?\n   → Cheese, Olives\n\nReady to submit your answers?\n\n❯ 1. Submit answers\n  2. Cancel\n\n\n\n"
         )
     }
+    // Claude Code 2.1.319 AskUserQuestion with previews, captured in a 50-column pane.
+    fn previewed() -> String {
+        format!(
+            "❯ Ask which layout.\n\n{RULE} ☐ Layout\nWhich layout should we use?❯ 1. Compact                ┌──────────────┐\n  2. Wide                   │ +------+     │\n                            │ | Tab  |     │\n                            └──────────────┘\n\n                            Notes: press n to add\n                                   notes\n\n{RULE}\n  Chat about this\n\nEnter to select · ↑/↓ to navigate · n to add notes\n· Esc to cancel\n\n\n"
+        )
+    }
     fn labels(menu: &Menu) -> Vec<&str> {
         menu.choices.iter().map(|c| c.label.as_str()).collect()
     }
@@ -683,6 +736,56 @@ mod tests {
             ]
         );
         assert_eq!(labels(&menu), ["Submit answers", "Cancel"]);
+    }
+
+    #[test]
+    fn switchboard_conversation_reads_claude_questions_with_previews() {
+        let menu = claude_menu(&previewed()).unwrap();
+        assert_eq!(menu.question, "Which layout should we use?");
+        assert_eq!(labels(&menu), ["Compact", "Wide", "Chat about this"]);
+        assert!(menu.preview);
+        assert_eq!(menu.choices[2].number, None);
+        // A digit only moves the highlight here, so every answer is arrows and Enter.
+        let down = |rows: usize| {
+            Some(vec![Key::Bytes(
+                ["27", "91", "66"]
+                    .repeat(rows)
+                    .into_iter()
+                    .chain(["13"])
+                    .map(String::from)
+                    .collect(),
+            )])
+        };
+        assert_eq!(keys(&menu, 0, None), down(0));
+        assert_eq!(keys(&menu, 1, None), down(1));
+        assert_eq!(keys(&menu, 2, None), down(2));
+
+        // With the highlight moved, the first option's row has no `❯`.
+        let moved = previewed()
+            .replace("use?❯ 1.", "use?  1.")
+            .replace("  2. Wide", "❯ 2. Wide");
+        let menu = claude_menu(&moved).unwrap();
+        assert_eq!(menu.question, "Which layout should we use?");
+        assert_eq!(menu.cursor, 1);
+        assert_eq!(menu.token, claude_menu(&previewed()).unwrap().token);
+        assert_eq!(
+            keys(&menu, 0, None),
+            Some(vec![Key::Bytes(
+                ["27", "91", "65", "13"].map(String::from).to_vec()
+            )])
+        );
+
+        // A numbered list inside the question is not its first option.
+        let numbered = "Compare 1. Compact and 2. Wide?";
+        for screen in [previewed(), moved] {
+            let screen = screen.replace("Which layout should we use?", numbered);
+            let menu = claude_menu(&screen).unwrap();
+            assert_eq!(menu.question, numbered);
+            assert_eq!(labels(&menu), ["Compact", "Wide", "Chat about this"]);
+        }
+
+        // A shell prompt below the wrapped hints means the question has gone.
+        assert_eq!(claude_menu(&format!("{}PS C:\\repo>", previewed())), None);
     }
 
     #[test]

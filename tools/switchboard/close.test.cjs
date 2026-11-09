@@ -50,7 +50,7 @@ test('Close (menu or Ctrl+D) closes the clicked tab immediately and restores it 
   };
   const entry={host:'win',name:'main',state:{panes:[{tab_position:2,pane_id:17,is_plugin:false}]}};
   const item={entry,tab:{id:42,position:2,name:'Clicked tab'},key:'clicked'};
-  const context={$,contextItem:item,hosts:new Map([['win',{name:'Windows'}]]),statuses:[],parkedTabs:{clicked:{state:'settled'}},saveParkedTabs(){},
+  const context={$,contextItem:item,hosts:new Map([['win',{name:'Windows'}]]),statuses:[],parkedTabs:{clicked:{state:'snoozed'}},saveParkedTabs(){},
     tabTitle:item=>item.tab.name,closeTabMenu(){context.contextItem=null;},
     setStatus(message){context.statuses.push(message);},ready:{clicked:1},hidden:{clicked:1},isHidden:key=>key in context.hidden,canonKey:key=>key,saveHidden(){},saveReady(){},localStorage:{setItem(){}},render(){},activate(next){context.selected=next.key;},
     fetch:async(url,options)=>{calls.push([url,JSON.parse(options.body)]);return {ok:true};}};

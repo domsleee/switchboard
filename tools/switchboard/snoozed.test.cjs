@@ -70,8 +70,8 @@ test('snoozing an existing question holds it, and a new question wakes it',()=>{
   assert.equal(context.sidebarTabs()[0].shelf,undefined);
 });
 
-test('both shelves wake for successive prompts with constant or missing relay tokens',()=>{
-  for(const shelf of ['snoozed','settled'])for(const [state,token] of [['approval','approval'],['input','question'],['approval',undefined]]){
+test('a snooze wakes for successive prompts with constant or missing relay tokens',()=>{
+  for(const shelf of ['snoozed'])for(const [state,token] of [['approval','approval'],['input','question'],['approval',undefined]]){
     const {context,tab}=fixture(),prompt={key:'pane-1',state,token,since:100};
     context.statesForTab=()=>[prompt];
     vm.runInContext(source.slice(source.indexOf('function urgentTokens('),source.indexOf('function parkTab(')),context);
@@ -85,11 +85,11 @@ test('both shelves wake for successive prompts with constant or missing relay to
 
 test('manual shelves obey collapse, search and selection without changing tab order',()=>{
   const {context,tab}=fixture();tab.working=false;
-  context.parkedTabs.a={state:'settled'};
+  context.parkedTabs.a={state:'snoozed',until:60000};
   context.selected='other';assert.equal(context.listedTabs().length,0);
-  context.selected='a';assert.equal(context.listedTabs()[0].shelf,'settled');
+  context.selected='a';assert.equal(context.listedTabs()[0].shelf,'snoozed');
   context.selected='other';context.$=()=>({value:'find me'});
-  assert.equal(context.listedTabs()[0].shelf,'settled');
+  assert.equal(context.listedTabs()[0].shelf,'snoozed');
   context.$=()=>({value:''});context.sectionExpanded=()=>true;
   assert.equal(context.listedTabs()[0].key,'a');
   tab.hidden=true;assert.equal(context.sidebarTabs()[0].shelf,false,'Hidden takes precedence');
