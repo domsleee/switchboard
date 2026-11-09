@@ -33,8 +33,12 @@ impl Tails {
     }
 
     fn stale(&self, key: &Key, token: &Token) -> bool {
+        self.stale_at(key, token, std::time::Instant::now())
+    }
+
+    fn stale_at(&self, key: &Key, token: &Token, now: std::time::Instant) -> bool {
         self.entries.get(key).is_none_or(|entry| {
-            entry.token.as_ref() != Some(token) || entry.at.elapsed() >= REFRESH_AGE
+            entry.token.as_ref() != Some(token) || now.duration_since(entry.at) >= REFRESH_AGE
         })
     }
 
@@ -276,9 +280,10 @@ mod tests {
         let mut tails = Tails::default();
         let ready = ("ready".to_owned(), 10);
         tails.store(key_for("a"), page("old"), Some(ready.clone()));
-        tails.entries.get_mut(&key_for("a")).unwrap().at -= REFRESH_AGE * 3;
+        let later = std::time::Instant::now() + REFRESH_AGE * 3;
+        assert!(!tails.stale(&key_for("a"), &ready));
+        assert!(tails.stale_at(&key_for("a"), &ready, later));
         assert_eq!(tails.page(&key_for("a")).unwrap(), page("old"));
-        assert!(tails.stale(&key_for("a"), &ready));
     }
 
     #[test]
