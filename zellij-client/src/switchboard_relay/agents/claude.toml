@@ -29,6 +29,10 @@ background = ['·\s*[1-9]\d*\s+[a-z]']
 # box; a later turn puts its prompt between them (2.1.319).
 interrupted = ['⎿\s+interrupted\s+·\s+what should claude do instead\?\s*─{3,}']
 
+# The footer offers this only while a turn can be interrupted (2.1.319). Esc before any
+# output erases the prompt and draws no marker, so its absence is the only sign.
+busy_footer = ['esc to interrupt']
+
 # A finished turn, e.g. "✻ Baked for 4m 5s" or "✻ Sautéed for 26s".
 completion = ['(?:worked for|[✻✽✶✳] \S+ for)\s+(?:\d+\s*[hms]\s*)+(?:[•·]\s*(?:done\s+)?\d{1,2}:\d{2}\s*(?:am|pm)?)?']
 

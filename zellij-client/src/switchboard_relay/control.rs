@@ -684,8 +684,7 @@ pub(super) fn settle_interrupt(
             let Ok(screen) = run_local(&host, &session, &args, Duration::from_secs(2)).await else {
                 continue;
             };
-            let row = attention::classify(&json!({"pane_command":"claude"}), &screen);
-            if row["interrupted"] == true {
+            if attention::stopped_after_escape(&screen) {
                 poll.lock().await.settle_interrupted(&session, pane.into());
                 return;
             }
