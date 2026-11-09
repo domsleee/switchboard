@@ -1919,7 +1919,8 @@ let newTabCompletions=null;
 function attachNewTabCompletions(){newTabCompletions??=globalThis.SwitchboardConversation?.attachCompletions?.({draft:$('new-tab-prompt'),parent:$('new-tab-form').querySelector('.new-tab-composer'),id:'new-tab-completions',changed:fitNewTabPrompt,surface(){const host=newTabModelHost();return host&&!newTabHandover&&$('new-tab-dialog').open?{agent:newTabAgent(),host,cwd:$('new-tab-project').value.trim(),owner:host}:null;}})||null;}
 $('new-tab').onclick=()=>openNewTabDialog(false);
 $('new-admin-tab').onclick=()=>openNewTabDialog(true);
-function openNewTabDialog(elevated){
+// place names a machine and folder to start from instead of the machine's remembered folder.
+function openNewTabDialog(elevated,place={}){
   clearNewTabHandover();
   newTabElevated=elevated;
   $('new-tab-title').textContent=elevated?'New administrator tab':'New tab';
@@ -1947,8 +1948,11 @@ function openNewTabDialog(elevated){
   // A computer without a terminal session is shown but cannot be chosen.
   for(const option of select.options){const problem=newTabTargetProblem(option.value);if(problem?.[1]==='target'){option.disabled=true;option.textContent+=' · no session';}}
   if(select.selectedOptions[0]?.disabled){const usable=[...select.options].find(option=>!option.disabled);if(usable)select.value=usable.value;}
+  // The folder only applies on its own machine; an unavailable machine falls back like the + button.
+  const placed=place.host&&[...select.options].find(option=>!option.disabled&&JSON.parse(option.value)[0]===place.host);
+  if(placed)select.value=placed.value;
   newTabRetrying=false;newTabSubmitText();paintNewTabMachine();closeNewTabProjectPicker(false);
-  newTabProjectEdited=false;clearNewTabFieldProblem();$('new-tab-project').value=newTabSavedProject(JSON.parse(select.value)[0]);updateNewTabProject();
+  newTabProjectEdited=false;clearNewTabFieldProblem();$('new-tab-project').value=placed&&place.project||newTabSavedProject(JSON.parse(select.value)[0]);updateNewTabProject();
   loadNewTabProjects();loadNewTabModels();
   if(!history.state?.switchboardNewTab)history.pushState({...history.state,switchboardNewTab:true},'');
   attachNewTabCompletions();$('new-tab-dialog').showModal();fitNewTabPrompt();fitNewTabDialog();
@@ -2989,6 +2993,7 @@ const browserDiagnostics=window.SwitchboardBrowserDiagnostics?.(diagnostic=>{
 let conversationSince=null;
 window.SwitchboardConversation?.install({
   viewed:acknowledgeConversation,
+  newTabHere:place=>openNewTabDialog(false,place),
   notSent(key){if(submittedTurns.delete(key))refreshAttention();},
   sending(view,command){
     if(!command)submittedTurn(view.host,view.session,view.pane);
