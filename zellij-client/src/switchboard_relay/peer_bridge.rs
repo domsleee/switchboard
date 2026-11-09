@@ -109,7 +109,15 @@ pub(super) fn relay_router(mesh: Arc<mesh::Mesh>, secret: String) -> Router {
                 if request.headers().get(HEADER).and_then(|v| v.to_str().ok())
                     != Some(secret.as_str())
                 {
-                    return StatusCode::FORBIDDEN.into_response();
+                    // An in-flight forward can carry the previous relay's
+                    // registration while its replacement starts on the same
+                    // port. No peer route has run: let terminal bootstrap wait
+                    // for the web server to read the new registration.
+                    return (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "Switchboard pairing service is restarting",
+                    )
+                        .into_response();
                 }
                 next.run(request).await
             }

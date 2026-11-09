@@ -159,12 +159,24 @@ export async function fetchSession(sessionFromPath, options = {}) {
 
     const deadline = Date.now() + 60000;
     for (;;) {
-        const response = await authorizedFetch(`${baseUrl}/session${query}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-        });
-        if (response.ok) return await response.json();
-        if (response.status !== 503 || Date.now() >= deadline) {
+        let response;
+        try {
+            response = await authorizedFetch(`${baseUrl}/session${query}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+            }, { quiet: true, timeoutMs: Math.min(5000, Math.max(1, deadline - Date.now())) });
+        } catch (error) {
+            // A relay update can reset the request or time out before the peer's
+            // replacement gateway is ready. Only retry a named session: a lost
+            // welcome response may already have created a new session.
+            if (!sessionFromPath || !['TypeError', 'AbortError', 'TimeoutError'].includes(error.name)) throw error;
+        }
+        if (response?.ok) return await response.json();
+        if (response?.status === 401 && window.__switchboardManagedFocus) {
+            throw new Error("Switchboard could not authenticate this terminal. Reload after the connection recovers.");
+        }
+        const retryable = response?.status === 503 || (sessionFromPath && [502, 504].includes(response?.status));
+        if ((response && !retryable) || Date.now() >= deadline) {
             throw new Error("Terminal attachment is unavailable. Reload after the update finishes.");
         }
         showConnectionStatus("Waiting for terminal attachment…");

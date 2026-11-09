@@ -48,7 +48,7 @@ function fixture() {
     activePane: { pane_id: 1, is_plugin: false },
     fetch: async (url, options) => {
       requests.push({ url, options });
-      if (ctx.offline) throw Error('offline');
+      if (ctx.offline) throw new TypeError('offline');
       if (url.endsWith('/command/login')) { ctx.authExpired = false; return { ok: true, status: 200 }; }
       if (ctx.authExpired && (!ctx.expiredPath || url.includes(ctx.expiredPath))) return { ok: false, status: 401 };
       if (ctx.httpError) return { ok: false, status: ctx.httpError };
@@ -181,25 +181,47 @@ test('temporary HTTP errors retry quietly without asking for credentials', async
   assert.deepEqual(f.sockets[2].sent, ['recovered']);
 });
 
-test('initial loading reports a gateway error without opening a token dialog', async () => {
-  const f = fixture(); f.ctx.httpError = 502;
+for (const status of [502,503,504]) test(`initial loading waits through gateway ${status} without a dialog`, async () => {
+  const f = fixture(); f.ctx.httpError = status;
   f.ctx.getSecurityToken = async () => { f.ctx.prompts++; throw Error('Unexpected token dialog'); };
-  const result = f.ctx.fetchSession('main').then(() => null, error => error);
-  await f.flush();
-  assert.equal(f.ctx.prompts, 0);
-  assert.equal(f.ctx.disconnected, undefined, 'the caller owns error presentation');
-  assert.match((await result).message, /502/);
-});
-
-test('initial loading waits for an updating attachment without opening a token dialog', async () => {
-  const f = fixture(); f.ctx.httpError = 503;
-  f.ctx.getSecurityToken = async () => { f.ctx.prompts++; throw Error('Unexpected token dialog'); };
-  const result = f.ctx.fetchSession('main').then(value => value, error => error);
+  const result = f.ctx.fetchSession('main');
   await f.flush();
   assert.equal(f.ctx.prompts, 0);
   assert.equal(f.ctx.disconnected, undefined);
+  assert.ok(f.requests.at(-1).options.signal, 'each request has a deadline');
   f.ctx.httpError = null; await f.advance(1000);
   assert.equal((await result).session_name, 'main');
+});
+
+test('initial loading recovers a connection reset to an existing session', async () => {
+  const f = fixture(); f.ctx.offline = true;
+  const result = f.ctx.fetchSession('main');
+  await f.flush();
+  assert.equal(f.ctx.prompts, 0);
+  assert.equal(f.ctx.disconnected, undefined);
+  f.ctx.offline = false; await f.advance(1000);
+  assert.equal((await result).session_name, 'main');
+});
+
+test('initial loading stops after a minute of gateway failure', async () => {
+  const f = fixture(); await f.attach(); f.ctx.httpError = 502;
+  const rejected = assert.rejects(f.ctx.fetchSession('main'), /Terminal attachment is unavailable/);
+  await f.flush(); await f.advance(60000); await rejected;
+  const count = f.requests.length; await f.advance(10000);
+  assert.equal(f.requests.length, count);
+  assert.equal(f.ctx.disconnected, undefined);
+});
+
+test('initial loading does not retry a forbidden session or an uncertain welcome creation', async () => {
+  const f = fixture(); f.ctx.httpError = 403;
+  await assert.rejects(f.ctx.fetchSession('main'), /Terminal attachment is unavailable/);
+  assert.equal(f.requests.length, 1);
+  const g = fixture(); g.ctx.offline = true;
+  await assert.rejects(g.ctx.fetchSession(''), /offline/);
+  assert.equal(g.requests.length, 1);
+  const h = fixture(); h.ctx.httpError = 502;
+  await assert.rejects(h.ctx.fetchSession(''), /Terminal attachment is unavailable/);
+  assert.equal(h.requests.length, 1);
 });
 
 test('a managed terminal retries rejected authentication through its relay without a token dialog', async () => {
