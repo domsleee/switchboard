@@ -463,7 +463,8 @@
 .conversation-outgoing:is(.sending,.queued,.sent){opacity:.6}
 .conversation-outgoing:not(.failed,.uncertain) .conversation-outgoing-status{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .conversation-outgoing:not(.failed,.uncertain) p:has(+.conversation-outgoing-status:last-child){margin-bottom:0}
-.conversation-outgoing-status{display:flex;align-items:center;justify-content:flex-end;gap:12px;margin-top:6px;color:var(--muted);font-size:11.5px}
+.conversation-outgoing-status{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:12px;margin-top:6px;color:var(--muted);font-size:11.5px}
+.conversation-outgoing-status>span{flex-basis:100%}
 .conversation-outgoing-file{margin-top:8px;padding:7px 10px;background:#ffffff08;border:1px solid var(--line-2);border-radius:8px;color:var(--text-2);font-size:12px;text-decoration:none}
 .conversation-outgoing.failed,.conversation-outgoing.uncertain{border-color:#d8735f66}
 .conversation-outgoing.failed .conversation-outgoing-status,.conversation-outgoing.uncertain .conversation-outgoing-status{color:#f0a897}

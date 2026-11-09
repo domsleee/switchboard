@@ -260,12 +260,18 @@ impl ReceiptQuery {
         .valid()
     }
 }
-async fn receipt_status(query: ReceiptQuery) -> Response {
+async fn receipt_status(query: ReceiptQuery, discard: bool) -> Response {
     if !query.valid() {
         return StatusCode::BAD_REQUEST.into_response();
     }
     let result = tokio::task::spawn_blocking(move || {
         let home = std::env::home_dir()?;
+        if discard {
+            if outbox::discard(&home, &query.thread, &query.send_key).is_err() {
+                return None;
+            }
+            return Some(outbox::status(&home, &query.thread, &query.send_key).unwrap_or_else(|| json!({"status":"unknown"})));
+        }
         if let Some(status) = outbox::status(&home, &query.thread, &query.send_key) {
             return Some(status);
         }
@@ -277,6 +283,7 @@ async fn receipt_status(query: ReceiptQuery) -> Response {
 pub(super) async fn receipt_handler(
     State(state): State<RelayState>,
     RoutePath(id): RoutePath<String>,
+    method: Method,
     axum::extract::Query(query): axum::extract::Query<ReceiptQuery>,
 ) -> Response {
     if !query.valid() {
@@ -296,11 +303,17 @@ pub(super) async fn receipt_handler(
     };
     if host.config.escape_transport.as_deref() == Some("gateway") {
         let path = format!(
-            "/switchboard/codex/receipt?thread={}&send_key={}",
-            query.thread, query.send_key
+            "/switchboard/codex/{}?thread={}&send_key={}",
+            if method == Method::DELETE {
+                "reply"
+            } else {
+                "receipt"
+            },
+            query.thread,
+            query.send_key
         );
         return match host
-            .request(Method::GET, &path, Bytes::new(), "application/json")
+            .request(method, &path, Bytes::new(), "application/json")
             .await
         {
             Ok(response) => (
@@ -315,7 +328,10 @@ pub(super) async fn receipt_handler(
     if !host.is_local_engine() {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    receipt_status(query).await
+    if method == Method::DELETE && !outbox::writable_host(&host).await {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    receipt_status(query, method == Method::DELETE).await
 }
 pub(super) async fn gateway_receipt(request: Request) -> Response {
     let Ok(axum::extract::Query(query)) =
@@ -323,7 +339,7 @@ pub(super) async fn gateway_receipt(request: Request) -> Response {
     else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    receipt_status(query).await
+    receipt_status(query, request.method() == Method::DELETE).await
 }
 
 async fn parse(request: Request) -> Result<Queue, Response> {

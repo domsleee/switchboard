@@ -1533,7 +1533,7 @@ fn app(state: RelayState) -> Router {
         )
         .route(
             "/api/hosts/{host}/codex/reply",
-            post(native_messages::reply_handler),
+            post(native_messages::reply_handler).delete(native_messages::receipt_handler),
         )
         .route("/api/hosts/{host}/attachments", post(attachments::handler))
         .route("/api/hosts/{host}/escape", post(control::escape))

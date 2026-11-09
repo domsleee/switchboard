@@ -185,6 +185,13 @@ Legacy terminal submissions are never pasted again. Complete question answers ca
 be reconciled by the entire native question-ID/answer set even when display prose
 lost punctuation; ambiguous ordinary input remains saved for review. Receipt status
 and Conversation expose this distinction instead of claiming it is actively retrying.
+Conversation keeps checking these receipts after showing a warning. **Discard saved
+reply** names the exact earlier reply for confirmation, removes only that saved
+submission, and lets later replies continue. It does not resend the discarded text
+or alter terminal drafts. Cancelled send keys cannot recreate the reply. Completed
+receipts remain readable for their original thread until they expire. Receipt checks
+do not require a writable terminal login; new submissions refresh an expired login
+and still reject view-only access.
 Delivered payloads are removed immediately and their receipts expire after seven days;
 undelivered messages remain saved until accepted. These browser
 replies retain user text; the separate agent-to-agent `/codex/queue` route keeps its
