@@ -58,6 +58,7 @@ function fixture() {
     sessions: [{ name: 'main', web_clients_allowed: true }],
   };
   vm.createContext(ctx);
+  ctx.hasRoom = size => size.cols > 2 && size.rows > 1;
   vm.runInContext(source('connection.js') + '\n' + source('auth.js') + '\n' + source('websockets.js') + '\nObject.assign(globalThis, {initWebSockets,initConnectionHandlers,getReconnectionDelay});', ctx);
   ctx.initConnectionHandlers();
   const client = ctx.initWebSockets({ web_client_id: 'initial', session_name: 'main' }, term, fit);

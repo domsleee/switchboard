@@ -130,6 +130,13 @@ export function initTerminal(config) {
 export const MIN_FONT_SIZE_PX = 6;
 export const MAX_FONT_SIZE_PX = 96;
 
+// A frame that loads display:none measures xterm's floor of 2x1. Attachment workers
+// outlive updates, so the browser must not rely on the server's matching has_room:
+// an agent that redraws at 2 columns leaves that text in the scrollback for good.
+export function hasRoom(size) {
+    return !!size && size.cols > 2 && size.rows > 1;
+}
+
 export function applyFontSize(term, fitAddon, requestedPx) {
     const requested =
         typeof requestedPx === "number" && requestedPx > 0
@@ -140,7 +147,7 @@ export function applyFontSize(term, fitAddon, requestedPx) {
         term.options.fontSize = effective;
     }
     try {
-        fitAddon.fit();
+        if (hasRoom(fitAddon.proposeDimensions())) fitAddon.fit();
     } catch (e) {
     }
 }
