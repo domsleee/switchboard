@@ -194,6 +194,14 @@ only when Claude's prompt box is empty, so Conversation stays on screen. Relays
 without that route answer 404 and the browser falls back to pasting through Terminal.
 When Claude shows no input box, nothing is typed and the message stays on its way:
 the browser retries with backoff until the box returns.
+
+Private Windows acceptance with Codex 0.167.0 and a fake loopback Responses server:
+the previous terminal sender stayed blocked for the 30-second observation while an
+unsent terminal draft was present. The native route saved messages in 6–7 ms and
+the same embedded TUI consumed them in 8.2–10.0 seconds, including after relay restart,
+with exact Unicode and the draft intact. This measures saving separately from
+Codex's idle queue pickup; the acknowledgement does not imply immediate consumption.
+
 Codex approvals and synchronous terminal prompts still require Terminal. In
 Conversation, Codex's exact startup **Hooks need review** menu is
 completed automatically by choosing **Trust all and continue**. Codex records its
