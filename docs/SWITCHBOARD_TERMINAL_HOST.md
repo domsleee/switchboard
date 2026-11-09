@@ -1,6 +1,6 @@
 # Terminal host: replacing a session engine without losing its shells
 
-Status: steps 1 and 2 of Delivery are implemented and off by default. `zellij pipe --name switchboard-handoff -- <id>` makes an engine hand over, and an engine started with `SWITCHBOARD_HANDOFF_MANIFEST` takes over. Until step 4 adds verification, the new engine commits as soon as it has adopted every terminal.
+Status: steps 1 to 3 of Delivery are implemented and off by default, along with the part of step 4 that moves one session: the hidden `zellij switchboard swap-engine <session>` hands a session over, verifies the new engine and rolls back if it fails. The updater does not call it yet.
 
 ## Goal
 
@@ -137,11 +137,14 @@ committing it or rolling it back, before it may discard the updater journal.
     deferred exit events. On failure it stops the candidate, starts the previous executable
     with the same handoff ID and a new connection generation, and verifies again.
 
-Verification requires the host PID and start time to be unchanged. Each baseline child must
-either be running with the same PID and start time, or have an exit recorded by the host, so
-a build finishing during the swap is not a failure. Tabs and pane IDs must match the frozen
-baseline and the session must answer pane queries. Acceptance tests also check that a marker
-command's output reaches a viewer; production never types into user panes.
+Verification requires tabs and pane IDs to match the frozen baseline and the session to
+answer pane queries. The children need no separate check: the new engine can only attach to
+the host that holds them, using its token, and an exit during the swap is not a failure.
+Acceptance tests also check that a marker command's output reaches a viewer; production never
+types into user panes.
+
+A journal in the host directory, written before the session is touched, lets the next run
+hand a session back to its previous executable if the updater dies with it between engines.
 
 ## Manifest
 
@@ -199,10 +202,10 @@ the session's active tab, and keys typed while they wait are lost.
 
 ## Update policy
 
-Each bundle records a fingerprint of the engine's build inputs: the `zellij-server`,
-`zellij-utils` and `src` trees, root `Cargo.toml` and `Cargo.lock`. The updater swaps a
-session only when the engine's recorded fingerprint differs, so a sidebar-only merge causes
-no reconnect at all.
+Each engine records a fingerprint of its build inputs: the `zellij-server` and `zellij-utils`
+source trees, root `Cargo.toml` and `Cargo.lock`. `zellij switchboard engine-fingerprint`
+prints a build's own. The updater swaps a session only when the engine's recorded fingerprint
+differs, so a sidebar-only merge causes no reconnect at all.
 
 `Settings → Health` lists sessions without a host, explaining that moving them stops their
 processes, with a confirm button. They are never restarted automatically.

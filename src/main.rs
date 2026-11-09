@@ -88,6 +88,13 @@ fn main() {
     }
 
     if let Some(Command::Switchboard(command)) = &opts.command {
+        if matches!(
+            command,
+            zellij_utils::cli::SwitchboardCommand::EngineFingerprint
+        ) {
+            println!("{}", zellij_server::ENGINE_FINGERPRINT);
+            return;
+        }
         #[cfg(feature = "web_server_capability")]
         if let Err(error) = zellij_client::switchboard_update::run(command) {
             eprintln!("{error:#}");

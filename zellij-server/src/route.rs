@@ -243,6 +243,17 @@ pub(crate) fn route_action(
             let result = wait_for_action_completion(completion_rx, "handoff", false);
             return Ok((false, Some(result)));
         }
+        if name == crate::handoff::COMMIT_PIPE_NAME {
+            if let Some(os_input) = &os_input {
+                if let Err(error) = crate::handoff::commit(&**os_input, &senders) {
+                    log::error!("Cannot commit the takeover: {error}");
+                }
+            }
+            let (completion_tx, completion_rx) = oneshot::channel();
+            drop(NotificationEnd::new(completion_tx));
+            let result = wait_for_action_completion(completion_rx, "handoff commit", false);
+            return Ok((false, Some(result)));
+        }
     }
     if matches!(
         &action,
@@ -2331,7 +2342,9 @@ pub(crate) fn route_thread_main(
                 err_ctx.update_thread_ctx();
                 if crate::handoff::is_frozen() {
                     match &instruction {
-                        ClientToServerMsg::Action { .. } => {
+                        ClientToServerMsg::Action { action, .. }
+                            if !crate::handoff::allowed_while_frozen(action) =>
+                        {
                             // The sender may be waiting for this action to finish.
                             let _ = os_input
                                 .send_to_client(client_id, ServerToClientMsg::UnblockInputThread);

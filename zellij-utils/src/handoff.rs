@@ -1,6 +1,7 @@
 //! Marks a session as moving between engines. While its old engine exits and
 //! its new one starts, the session socket does not exist, so without this a
 //! reconnecting viewer would create a new session in its place.
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::path::PathBuf;
@@ -46,6 +47,45 @@ pub fn in_progress(session: &str) -> bool {
         .and_then(|metadata| metadata.modified().ok())
         .and_then(|modified| modified.elapsed().ok())
         .is_some_and(|age| age < STALE_AFTER)
+}
+
+/// Whether a move has not finished, however long ago it started. Only a commit
+/// or a failed handover clears the marker.
+pub fn marked(session: &str) -> bool {
+    marker(session).is_some_and(|path| path.exists())
+}
+
+/// What the updater needs to know to move a session to a new engine.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionRecord {
+    pub host_directory: PathBuf,
+    /// The fingerprint of the running engine's build inputs.
+    pub engine: String,
+    /// The executable to go back to if a new engine fails.
+    pub executable: PathBuf,
+}
+
+fn record_path(session: &str) -> Option<PathBuf> {
+    Some(
+        hosts_root()?
+            .join("sessions")
+            .join(format!("{session}.json")),
+    )
+}
+
+pub fn write_session_record(session: &str, record: &SessionRecord) -> io::Result<()> {
+    let path = record_path(session)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no home directory"))?;
+    if let Some(folder) = path.parent() {
+        fs::create_dir_all(folder)?;
+    }
+    let partial = path.with_extension("partial");
+    fs::write(&partial, serde_json::to_vec(record)?)?;
+    fs::rename(partial, path)
+}
+
+pub fn read_session_record(session: &str) -> Option<SessionRecord> {
+    serde_json::from_slice(&fs::read(record_path(session)?).ok()?).ok()
 }
 
 /// Waits for the new engine to open the session. Attaching before then would

@@ -370,6 +370,7 @@ impl PtyBackend {
     /// Takes over the host of the engine this one replaces.
     fn attach_host(&self, directory: &Path) -> io::Result<()> {
         let hosted = HostedPtyBackend::attach(directory)?;
+        crate::handoff::record_session(directory);
         self.hosted
             .set(Some(hosted.clone()))
             .map_err(|_| io::Error::new(io::ErrorKind::AlreadyExists, "already has a host"))?;
@@ -394,6 +395,11 @@ impl PtyBackend {
                 HostedPtyBackend::start()
                     .map_err(|error| {
                         log::error!("Running terminals without a host: {error}");
+                    })
+                    .inspect(|hosted| {
+                        if let Some(directory) = hosted.directory() {
+                            crate::handoff::record_session(directory);
+                        }
                     })
                     .ok()
             })

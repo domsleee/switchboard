@@ -118,6 +118,8 @@ fn timing_line(phases: &[Phase], total: Duration) -> String {
     format!("{line}total {:.1}s", total.as_secs_f64())
 }
 
+#[path = "switchboard_engine_swap.rs"]
+mod engine_swap;
 #[path = "switchboard_install.rs"]
 mod install;
 
@@ -128,6 +130,20 @@ pub fn run(command: &SwitchboardCommand) -> Result<()> {
             None => install::install(&std::env::current_exe()?),
         },
         SwitchboardCommand::Update(cli) => Updater::from_cli(cli)?.run(),
+        SwitchboardCommand::EngineFingerprint => {
+            bail!("The engine fingerprint is printed by the zellij executable")
+        },
+        SwitchboardCommand::SwapEngine {
+            session,
+            binary,
+            config,
+            reject_first_verification,
+        } => engine_swap::run_cli(
+            session,
+            binary.as_deref(),
+            config.as_deref(),
+            *reject_first_verification,
+        ),
         SwitchboardCommand::Artifact {
             files,
             id,

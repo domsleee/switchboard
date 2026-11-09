@@ -977,6 +977,9 @@ impl Pty {
             .and_then(|os_input| os_input.terminal_host())
             .context("the session has no terminal host")?;
         hosted.resume_output()?;
+        if crate::handoff::hold_for_verification(&adoption.handoff_id) {
+            return Ok(());
+        }
         hosted.commit_adoption(&adoption.handoff_id)?;
         hosted.release_exits();
         self.bus
