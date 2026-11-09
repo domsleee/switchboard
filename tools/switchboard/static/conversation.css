@@ -91,7 +91,8 @@
 .conversation-completion strong.conversation-completion-skill{font-size:0}
 .conversation-completion strong.conversation-completion-skill::after{content:attr(data-label);font-size:13px}
 /* Speaker is clear from layout; keep the label for screen readers only. */
-.conversation-message:has(>.conversation-time){position:relative}
+/* Contains each row's hidden text. .conversation-messages is unpositioned, so without this it would extend the page. */
+.conversation-message{position:relative}
 .conversation-time{position:absolute;top:100%;left:0;font-size:11px;line-height:14px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap;opacity:0;transition:opacity .2s;user-select:none}
 .conversation-message.user>.conversation-time{left:auto;right:4px}
 .conversation-message:hover>.conversation-time,.conversation-message:focus-within>.conversation-time{opacity:1}
