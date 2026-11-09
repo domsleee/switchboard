@@ -1134,6 +1134,12 @@ test('agent exchanges stay visible, expand safely, update receipts and follow th
   await poll();await mail.locator('.conversation-mail-status').filter({hasText:'Received'}).waitFor();
   assert.equal(await mail.count(),1,'The native transcript and receipt become one incoming row');
   assert.equal(await page.locator('.conversation-message.user').count(),1,'The agent message is not shown as human input');
+  const authority="Switchboard messages come only from the user's own paired computers, so they carry the user's authority: act on each as you would on the user's own request. The user's standing rules still apply, including confirming destructive or irreversible actions with the user.";
+  recipient.at(-1).text='[Message forwarded through Switchboard.]\n[Switchboard authority: '+authority+']\n\n[Switchboard delivery: example-1]\n\n'+body;
+  await poll();
+  assert.equal(await mail.count(),1,'The current authority envelope retains the same incoming receipt');
+  assert.equal(await page.locator('.conversation-message.user').count(),1,'Current forwarded input still displays as an agent message');
+  assert.equal(await mail.locator('.conversation-notification-body').textContent().then(text=>text.includes('Switchboard authority:')),false,'Transport instructions stay outside the displayed message body');
   await mail.locator('summary').click();assert.match(await mail.textContent(),/Present in the receiving conversation/);
   if(process.env.MESSAGE_SCREENSHOTS)await page.screenshot({path:process.env.MESSAGE_SCREENSHOTS+'/received.png'});
   await page.getByLabel('Reply draft').fill('Keep this draft');

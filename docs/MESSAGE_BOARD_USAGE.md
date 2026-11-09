@@ -30,7 +30,10 @@ The destination uses its relay's `CODEX_HOME` and program search paths, includin
 remote Codex app servers and alternate Codex homes are not selected by requests.
 
 The receiver runs `codex queue --thread UUID --message=TEXT` with literal arguments
-and a fixed agent-message preamble distinguishing it from user authorization.
+and the same user-authority instructions as inbox delivery: messages from the user's
+paired computers are acted on as the user's requests, subject to their standing rules.
+Codex receives them through its user-input queue; Conversation labels the source as
+an agent message. Queueing while an agent is busy delays processing, not acceptance.
 It neither resumes the thread nor types into a terminal. An inactive thread may
 retain the message until resumed by its owner. Success reports `status: queued`,
 which means accepted by Codex's queue, not read or acted on.
