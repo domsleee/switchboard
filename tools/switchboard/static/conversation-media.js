@@ -194,7 +194,7 @@
     const caption=node('span',label);caption.className='conversation-media-caption';
     const open=node('a','Open original');open.href=url;open.target='_blank';open.rel='noopener noreferrer';
     if(kind==='video'){
-      const video=node('video');video.src=url;video.controls=true;video.playsInline=true;video.preload='metadata';video.setAttribute('aria-label',label);video.onerror=()=>{wrapper.classList.add('failed');caption.textContent=label+' · Video unavailable';};wrapper.append(video);
+      const video=node('video');video.src=url;video.controls=true;video.playsInline=true;video.preload='metadata';video.setAttribute('aria-label',label);video.onerror=()=>{wrapper.classList.add('failed');video.remove();full.remove();caption.remove();};wrapper.append(video);
       const full=node('button','Expand video');full.type='button';full.dataset.conversationMediaUrl=url;full.onclick=()=>{video.pause();expand(gallery,position,full);};wrapper.append(full);
     }else{
       const button=node('button');button.type='button';button.className='conversation-image-button';button.dataset.conversationMediaUrl=url;button.setAttribute('aria-label','Preview '+label);const img=node('img');img.src=url;img.alt=label;img.loading='lazy';img.decoding='async';img.referrerPolicy='no-referrer';img.onerror=()=>{wrapper.classList.add('failed');img.hidden=true;button.textContent='Image unavailable';};button.append(img);button.onclick=()=>expand(gallery,position,button);wrapper.append(button);

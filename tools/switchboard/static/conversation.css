@@ -344,12 +344,10 @@
 .conversation-media .conversation-image-button{padding:0;overflow:hidden;border:1px solid var(--line-2);border-radius:10px;cursor:zoom-in;max-width:100%}
 .conversation-media video{width:460px}
 .conversation-media-caption,.conversation-media>a{font-size:11.5px;color:var(--muted)}
-.conversation-media:has(.conversation-image-button):not(.failed)>:is(.conversation-media-caption,a){display:none}
+.conversation-media:not(.failed)>:is(.conversation-media-caption,a){display:none}
 .conversation-message.user .conversation-media{display:flex;max-width:min(100%,24rem);margin:0;gap:0}
 .conversation-message.user .conversation-media+.conversation-media{margin-top:8px}
-.conversation-message.user .conversation-media-caption,.conversation-message.user .conversation-media>a{display:none}
 .conversation-message.user .conversation-media.failed{gap:6px}
-.conversation-message.user .conversation-media.failed .conversation-media-caption,.conversation-message.user .conversation-media.failed>a{display:block}
 .conversation-message.user .conversation-media img{max-height:320px}
 .conversation-message.user .conversation-media .conversation-image-button{display:block;width:fit-content;max-width:24rem;background:#0a0a0c}
 .conversation-message.user a.conversation-outgoing-file{display:block}
