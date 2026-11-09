@@ -85,7 +85,9 @@
     const nativeRows=mobile?0:nativeBottomRows;
     const chrome=mobile?parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--zj-chrome-top'))||0:0;
     const footer=mobile?parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--zj-chrome-bottom'))||0:0;
-    return {cols:Math.max(2,Math.floor(width/cell.width)),rows:Math.max(1,Math.floor((height-chrome-footer+top)/cell.height)+nativeRows)};
+    // A frame with no room has nothing true to report; see hasRoom in the web client.
+    if(Math.floor(width/cell.width)<=2)return;
+    return {cols:Math.floor(width/cell.width),rows:Math.max(1,Math.floor((height-chrome-footer+top)/cell.height)+nativeRows)};
   }
   window.__zjViewport={
     dimensions:physicalViewport,

@@ -10,6 +10,7 @@ import {
 import { setSoftKeyboard } from "./input.js";
 import {
     applyTerminalBackground,
+    hasRoom,
     terminalConfigOptions,
 } from "./terminal.js";
 
@@ -164,7 +165,8 @@ export function initWebSockets(boot, term, fitAddon) {
                 ? `${wsBaseUrl}/ws/terminal`
                 : `${wsBaseUrl}/ws/terminal/${encodeURIComponent(sessionName)}`;
 
-        const fitDimensions = fitAddon.proposeDimensions() || {
+        const proposed = fitAddon.proposeDimensions();
+        const fitDimensions = hasRoom(proposed) ? proposed : {
             rows: term.rows,
             cols: term.cols,
         };
@@ -404,11 +406,13 @@ function startWsControl(wsControl, term, fitAddon, ownWebClientId, userConfig, o
                 );
             } else {
                 const fitDimensions = window.__zjViewport?.dimensions() || fitAddon.proposeDimensions();
-                const { rows, cols } = fitDimensions;
-                if (rows !== term.rows || cols !== term.cols) {
-                    term.resize(cols, rows);
+                if (hasRoom(fitDimensions)) {
+                    const { rows, cols } = fitDimensions;
+                    if (rows !== term.rows || cols !== term.cols) {
+                        term.resize(cols, rows);
+                    }
+                    sendSizeUpdate(wsControl, ownWebClientId, term, rows, cols, true);
                 }
-                sendSizeUpdate(wsControl, ownWebClientId, term, rows, cols, true);
             }
         } else if (msg.type === "Log") {
             const { lines } = msg;
@@ -494,6 +498,7 @@ export function setupResizeHandler(
             console.warn("failed to get new fit dimensions");
             return;
         }
+        if (!hasRoom(fitDimensions)) return;
 
         const { rows, cols } = fitDimensions;
         if (rows === term.rows && cols === term.cols) {

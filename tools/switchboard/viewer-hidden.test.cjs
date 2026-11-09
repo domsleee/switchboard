@@ -102,3 +102,28 @@ for(const late of [false,true])test(late?'a viewer reported hidden just after it
     assert.deepEqual(errors,[]);
   }finally{await browser.close();}
 });
+
+test('a terminal that loads behind Conversation attaches at a real size',
+  {skip:!process.env.PLAYWRIGHT_MODULE&&'Set PLAYWRIGHT_MODULE to run the hidden viewer check'},async()=>{
+  const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
+  const browser=await chromium.launch({headless:true});
+  try{
+    const page=await browser.newPage({viewport:{width:1280,height:900}});
+    await page.addInitScript(()=>{window.WebSocket=class{static OPEN=1;constructor(url){(window.socketUrls??=[]).push(url);this.readyState=0;}send(){}close(){}};});
+    const assets=__dirname+'/../../zellij-client/assets/';
+    await page.route('**/*',route=>{
+      const pathname=new URL(route.request().url()).pathname;
+      if(pathname==='/')return route.fulfill({contentType:'text/html',body:'<iframe src="/main" style="display:none"></iframe>'});
+      if(pathname==='/main')return route.fulfill({contentType:'text/html',body:fs.readFileSync(assets+'index.html')});
+      if(pathname==='/session')return route.fulfill({contentType:'application/json',body:JSON.stringify({web_client_id:'viewer',session_name:'main',config:{}})});
+      const file=assets+pathname.replace('/assets/','');
+      if(!fs.existsSync(file))return route.fulfill({status:404,body:''});
+      route.fulfill({contentType:file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'application/octet-stream',body:fs.readFileSync(file)});
+    });
+    await page.goto('https://switchboard.test/');
+    const frame=page.frames().find(f=>f.url().endsWith('/main'));
+    await frame.waitForFunction(()=>window.socketUrls?.length);
+    const url=new URL(await frame.evaluate(()=>window.socketUrls[0]));
+    assert.deepEqual([url.searchParams.get('cols'),url.searchParams.get('rows')],['80','24']);
+  }finally{await browser.close();}
+});
