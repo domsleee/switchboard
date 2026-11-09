@@ -257,6 +257,19 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
       await input.evaluate(()=>window.confirmCreation());created=number;
       await page.waitForFunction(n=>document.querySelector('#tabs .selected .tab-name')?.textContent==='New shell '+n,number);
       assert.equal(await page.locator('#tabs .tab-select.selected').getAttribute('data-agent-state'),'Working','Working survives the native pane appearing');
+      if(number===2){
+        const report=(state,age)=>page.evaluate(([state,age])=>{
+          const item=allTabs().find(item=>item.key===selected),pane=item.tab.panes.find(p=>!p.is_plugin),key=attentionKey(item.entry.host,item.entry.name,pane.pane_id);
+          const launch=launchFor(item);if(age!==null){launch.reported=false;launch.worked=false;launch.at=Date.now()-age;}
+          paneAttention.set(key,{key,agent:'claude',chat_id:'claude-new',...state});render();
+          return document.querySelector('#tabs .tab-select.selected').dataset.agentState;
+        },[state,age??null]);
+        assert.equal(await report({state:'working'},0),'Working','A starting screen can read as working');
+        assert.equal(await report({state:'ready',token:'idle:0',seen:true}),'Working','SessionStart reports a conversation before the launch text is submitted');
+        assert.equal(await report({state:'ready',token:'idle:0',seen:true},61000),'Ready','A conversation that never received the launch text stops spinning');
+        assert.equal(await report({state:'ready',token:'a1b2:1',seen:false},0),'Ready to review','A launched turn that finished between scans shows its result');
+        await page.evaluate(()=>{const item=allTabs().find(item=>item.key===selected),pane=item.tab.panes.find(p=>!p.is_plugin);paneAttention.delete(attentionKey(item.entry.host,item.entry.name,pane.pane_id));const launch=launchFor(item);launch.reported=false;launch.worked=false;launch.at=Date.now();render();});
+      }
       assert.equal(new URL(page.url()).searchParams.get('pane'),String(8+number));
       assert.equal(await page.evaluate(()=>document.activeElement===document.querySelector('#terminals>iframe.active')),true,'New terminal receives keyboard focus after shortcut and Enter');
       assert.equal(await input.evaluate(i=>document.activeElement===i&&!window.term.options.disableStdin),true);

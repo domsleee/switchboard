@@ -260,7 +260,8 @@ Smaller plain terminals and older browsers still constrain the layout because th
 The relay automatically checks Codex/Claude/Copilot panes on each host, including
 background tabs, using native `list-panes` and `dump-screen`. It recognizes live
 input and approval prompts and running status. Ready results get an attention badge until you view the tab; pending
-approvals/questions retain their badge until resolved. A new observed working-to-ready transition raises a new notification. Notification
+approvals/questions retain their badge until resolved. A new observed working-to-ready transition raises a new notification, except a
+Claude pane starting up: its `SessionStart` hook and a brief early screen flicker are not finished turns. Notification
 identities are saved beside the relay configuration as `.attention.json`, so a
 relay restart preserves viewed results.
 Hiding a tab preserves processes and does not erase attention state.
