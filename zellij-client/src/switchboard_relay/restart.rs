@@ -41,12 +41,13 @@ fn owns(p: &sysinfo::Process, session: &str, pane: u64) -> bool {
         && p.environ().iter().any(|v| v == pane.as_str())
 }
 
-/// Called on a reported turn without a recorded process. Ambiguous processes
-/// (including nested agents inheriting the pane's environment) cannot be restarted.
+/// Record the reporting agent's process independently of whether its launch
+/// flags allow a safe restart. Ambiguous processes are not bound.
 pub(super) fn capture(agent: &str, event: &Value, session: &str, pane: u64) -> Option<Identity> {
     let agent = match agent {
         "codex" => AgentKind::Codex,
         "claude" => AgentKind::Claude,
+        "copilot" => AgentKind::Copilot,
         _ => return None,
     };
     let id = event["session_id"].as_str()?;
@@ -61,7 +62,6 @@ pub(super) fn capture(agent: &str, event: &Value, session: &str, pane: u64) -> O
         if !owns(p, session, pane) || invocation(&command).is_none_or(|(kind, _)| kind != agent) {
             return None;
         }
-        resume_command(&command, agent, id, cwd.clone()).ok()?;
         Some(Identity {
             agent,
             session_id: id.into(),
@@ -79,19 +79,14 @@ pub(super) fn capture(agent: &str, event: &Value, session: &str, pane: u64) -> O
     Some(identity)
 }
 impl Identity {
-    /// A tool can become the foreground command while its agent stays alive.
-    /// Inspect only the recorded PID; attention polling must not scan every process.
-    pub(super) fn running(&self) -> bool {
-        let mut system = System::new();
-        let pid = Pid::from_u32(self.pid);
-        system.refresh_processes_specifics(
-            ProcessesToUpdate::Some(&[pid]),
-            true,
-            ProcessRefreshKind::nothing().with_exe(UpdateKind::Always),
-        );
-        system.process(pid).is_some_and(|p| {
-            p.start_time() == self.started && p.exe() == Some(self.executable.as_path())
-        })
+    pub(super) fn resumable(&self) -> bool {
+        resume_command(
+            &self.command,
+            self.agent,
+            &self.session_id,
+            self.cwd.clone(),
+        )
+        .is_ok()
     }
 
     fn live(&self, session: &str, pane: u32) -> bool {
@@ -109,6 +104,29 @@ impl Identity {
             .process(Pid::from_u32(self.pid))
             .is_none_or(|p| p.start_time() != self.started)
     }
+}
+
+/// One process-table enumeration for the whole attention snapshot. The caller
+/// runs this on the blocking pool without holding the attention mutex.
+pub(super) fn running(identities: &[Identity]) -> Vec<bool> {
+    let mut system = System::new();
+    let pids: Vec<_> = identities.iter().map(|i| Pid::from_u32(i.pid)).collect();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&pids),
+        true,
+        ProcessRefreshKind::nothing().with_exe(UpdateKind::Always),
+    );
+    identities
+        .iter()
+        .map(|identity| {
+            system
+                .process(Pid::from_u32(identity.pid))
+                .is_some_and(|p| {
+                    p.start_time() == identity.started
+                        && p.exe() == Some(identity.executable.as_path())
+                })
+        })
+        .collect()
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -416,6 +434,40 @@ pub(super) async fn local(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn switchboard_agent_process_checks_exit_executable_and_resume_safety() {
+        let system = processes();
+        let pid = Pid::from_u32(std::process::id());
+        let process = system.process(pid).unwrap();
+        let identity = Identity {
+            agent: AgentKind::Claude,
+            session_id: "11111111-2222-4333-8444-555555555555".into(),
+            cwd: std::env::current_dir().unwrap(),
+            pid: std::process::id(),
+            started: process.start_time(),
+            command: vec!["claude".into(), "--debug".into()],
+            executable: process.exe().unwrap().into(),
+        };
+        assert_eq!(running(&[identity.clone()]), [true]);
+        assert!(
+            !identity.resumable(),
+            "Liveness must not enable an unsafe restart"
+        );
+        let mut wrong_exe = identity.clone();
+        wrong_exe.executable = identity.cwd.join("different-program");
+        assert_eq!(running(&[wrong_exe]), [false]);
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--list")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let dead_pid = child.id();
+        child.wait().unwrap();
+        let mut dead = identity;
+        dead.pid = dead_pid;
+        assert_eq!(running(&[dead]), [false]);
+    }
+
     #[test]
     fn switchboard_restart_rejects_unbound_and_noninteractive_sessions() {
         for event in [
