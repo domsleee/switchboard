@@ -1246,9 +1246,9 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       if(/[\x00-\x08\x0b-\x1f\x7f]/.test(payload)){sendStatus('The draft contains terminal control characters. Remove them first.');return;}
       const command=/^\/[a-z][\w:.-]*(?:\s|$)/i.test(text),native=!command&&current.agent==='codex'&&/^[0-9a-f-]{36}$/.test(chat?.thread||'');
       if(command&&selected.length){sendStatus('Send commands without attachments. Your draft is kept.');return;}
-      // Claude queues a command typed while it works; Codex refuses most of them.
-      if(!waiting&&command&&current.agent!=='claude'&&!['ready','waiting'].includes(current.state)){sendStatus('Wait for the agent to finish before sending a command. Your draft is kept.');return;}
-      if(!waiting&&current.state==='working'&&!native&&current.agent!=='claude'){sendStatus('Still connecting to this conversation. Try sending again in a moment.');return;}
+      // Codex commands need its prompt. Keep them queued through startup or a turn.
+      const waitForPrompt=command&&current.agent!=='claude'&&current.state==='working';
+      if(!waiting&&!waitForPrompt&&current.state==='working'&&!native&&current.agent!=='claude'){sendStatus('Still connecting to this conversation. Try sending again in a moment.');return;}
       const byteLimit=native||waiting&&(current.agent||current.launch?.agent)==='codex'?8192:16000;
       if(tooLong(payload,byteLimit)){sendStatus(TOO_LONG);return;}
       const retry=native&&!uploading&&(outgoing.get(identity(target))||[]).find(item=>['failed','uncertain'].includes(item.state)&&item.native&&sameMessage(item.payload,payload));
@@ -1257,7 +1257,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       const items=outgoing.get(key)||[],failedBridge=!native&&!uploading&&items.find(item=>item.state==='failed'&&!item.native&&sameMessage(item.payload,payload));
       const sent={id,key,pane:target.key,unbound:!chat,frame:target.frame,text,payload,uploading,byteLimit,files:[...selected],native,command,route:command?commandRoute(current.agent,text):null,skill:command&&commandRoute(current.agent,text)==='turn',host:target.host,thread:chat?.thread,draftRevision:draftVersions.get(key)||0,baseline:failedBridge?failedBridge.baseline:startCursor+messages.length-1,at:failedBridge?failedBridge.at:Date.now(),earlier:failedBridge?failedBridge.earlier:new Set(messages.filter(item=>item.role==='user'&&item.timestamp).map(item=>item.timestamp)),sendKey:id,state:'sending'};
       if(failedBridge)items[items.indexOf(failedBridge)]=sent;else items.push(sent);
-      if(waiting){
+      if(waiting||waitForPrompt){
         sent.waitingForAgent=true;sent.detachedFiles=true;sent.state='queued';outgoing.set(key,items);takeDraft(sent);
         attachments.delete(key);paintFiles();sendStatus('');paint();flushStartup();return;
       }
