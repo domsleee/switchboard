@@ -384,9 +384,13 @@ function launchFor(item){
 }
 function launchingTab(item){
   const launch=launchFor(item);if(!launch||launch.reported)return null;
-  // The empty prompt can report Ready before receiving the launch text. Once the
-  // task reports real activity or a conversation, its own status takes over.
-  if(statesForTab(item).some(state=>state.agent&&(state.chat_id||['working','waiting','approval','input'].includes(state.state)))){launch.reported=true;return null;}
+  // A starting agent can flicker Working and report Ready at its empty prompt ("idle:0") before
+  // the launch text is submitted. A question, a wait or a finished turn hands over to the task's
+  // own status; an agent still idle after a minute never received the launch text.
+  const states=statesForTab(item).filter(state=>state.agent);
+  launch.worked||=states.some(state=>state.state==='working');
+  const stale=Date.now()-launch.at>60000;
+  if(states.some(state=>['waiting','approval','input'].includes(state.state)||state.state==='ready'&&(stale||state.token!=='idle:0'&&(state.chat_id||launch.worked)))){launch.reported=true;return null;}
   return launch;
 }
 function displayTitle(item){

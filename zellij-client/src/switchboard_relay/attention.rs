@@ -902,14 +902,25 @@ impl PollState {
             // The newest completion line seen so far. A screen that no longer
             // shows one (scrolled, resized by another viewer) is not a new result.
             let last = previous["token"].as_str().unwrap_or("idle").to_owned();
+            // Not a finished turn: SessionStart reports ready with no token, and a new
+            // Claude's screen can flicker to an empty prompt before its first hook.
+            let started = row["state"] == "ready"
+                && (row["token"].is_null()
+                    || row["agent"] == "claude"
+                        && row["token"] == "idle"
+                        && matches!(hook, "none" | "unknown")
+                        && just_appeared_working(&previous));
             if row["token"] == "idle" {
                 row["token"] = json!(last);
             }
             // A quick task can finish between scans; its completion line still counts.
-            let new_line = !previous.is_null() && row["token"] != "idle" && row["token"] != last;
+            let new_line =
+                !started && !previous.is_null() && row["token"] != "idle" && row["token"] != last;
             // Codex ends every turn with a timed "Worked for" line and briefly looks
             // ready mid-task, so only that line ends a Codex turn.
-            let finished = previous["state"] == "working" && (row["agent"] != "codex" || new_line);
+            let finished = !started
+                && previous["state"] == "working"
+                && (row["agent"] != "codex" || new_line);
             let generation = previous["generation"].as_u64().unwrap_or(0)
                 + u64::from(row["state"] == "ready" && (new_line || finished));
             if row["state"] != "unknown" {
@@ -927,15 +938,15 @@ impl PollState {
                 } else if let Some(created) = previous.get("created") {
                     observed["created"] = created.clone();
                 }
-                if let Some(seen) = previous.get("seen") {
-                    observed["seen"] = seen.clone();
-                } else if previous.is_null() && row["state"] == "ready" {
+                if started || previous.is_null() && row["state"] == "ready" {
                     // Only a finish seen happening asks for review. A pane first seen
                     // already ready (a resumed agent, a new machine) is not news.
                     observed["seen"] = json!(format!(
                         "{}:{generation}",
                         row["token"].as_str().unwrap_or("idle")
                     ));
+                } else if let Some(seen) = previous.get("seen") {
+                    observed["seen"] = seen.clone();
                 }
                 // When the pane last changed state or finished a turn: the sidebar shows its age.
                 observed["since"] = match previous["since"].as_u64() {
@@ -1523,6 +1534,19 @@ struct Hooked {
 
 /// How long Claude's footer must show no running task before a shell wait ends.
 const SHELL_WAIT_GRACE: Duration = Duration::from_secs(30);
+
+/// How long, in seconds, a pane first seen working may still be starting up.
+const AGENT_START_GRACE: u64 = 15;
+
+/// A pane that has only ever been seen working, and only for a moment.
+fn just_appeared_working(previous: &Value) -> bool {
+    previous["state"] == "working"
+        && previous["generation"] == 0
+        && previous.get("token").is_none()
+        && previous["since"]
+            .as_u64()
+            .is_some_and(|since| unix_seconds().saturating_sub(since) < AGENT_START_GRACE)
+}
 
 /// IDs of the background shells a Stop event lists as still running.
 fn running_shells(event: &Value) -> Vec<String> {
@@ -3177,6 +3201,70 @@ esac
             assert_eq!(snapshot["panes"][0]["state"], "ready");
             assert_eq!(snapshot["panes"][0]["chat_id"], id);
         }
+    }
+
+    fn claude_row(state: &str, token: Option<&str>) -> Value {
+        let mut snapshot = json!({"panes":[{"session":"main","pane_id":5,"state":state,"agent":"claude",
+            "command":"claude.exe --dangerously-skip-permissions"}],"tabs":[],"errors":[]});
+        if let Some(token) = token {
+            snapshot["panes"][0]["token"] = json!(token);
+        }
+        snapshot
+    }
+
+    #[test]
+    fn claude_session_start_after_a_working_screen_is_not_a_finished_turn() {
+        let mut poll = PollState::default();
+        let hook = |poll: &mut PollState, event: Value| {
+            let hooked = hook_status("claude", &event).unwrap();
+            poll.hooks.insert(("main".into(), 5), hooked);
+        };
+        poll.update("windows", &mut claude_row("working", None));
+        hook(
+            &mut poll,
+            json!({"hook_event_name":"SessionStart","source":"startup"}),
+        );
+        let mut started = claude_row("ready", Some("idle"));
+        poll.update("windows", &mut started);
+        assert_eq!(started["panes"][0]["state"], "ready");
+        assert_eq!(started["panes"][0]["token"], "idle:0");
+        assert_eq!(started["panes"][0]["seen"], true);
+
+        hook(&mut poll, json!({"hook_event_name":"UserPromptSubmit"}));
+        let mut working = claude_row("ready", Some("idle"));
+        poll.update("windows", &mut working);
+        assert_eq!(working["panes"][0]["state"], "working");
+
+        hook(
+            &mut poll,
+            json!({"hook_event_name":"Stop","prompt_id":"first-turn"}),
+        );
+        let mut finished = claude_row("ready", Some("idle"));
+        poll.update("windows", &mut finished);
+        let token = finished["panes"][0]["token"].as_str().unwrap();
+        assert!(token.ends_with(":1"), "the real finish counts: {token}");
+        assert_eq!(finished["panes"][0]["seen"], false);
+    }
+
+    #[test]
+    fn claude_screen_flicker_at_startup_is_not_a_finished_turn() {
+        let mut poll = PollState::default();
+        poll.update("windows", &mut claude_row("working", None));
+        let mut flicker = claude_row("ready", Some("idle"));
+        poll.update("windows", &mut flicker);
+        assert_eq!(flicker["panes"][0]["token"], "idle:0");
+        assert_eq!(flicker["panes"][0]["seen"], true);
+
+        // Without hooks, the same change later on is how a turn's end is noticed.
+        let mut poll = PollState::default();
+        poll.update("windows", &mut claude_row("working", None));
+        let key = json!(["windows", "main", 5]).to_string();
+        poll.observed.get_mut(&key).unwrap()["since"] =
+            json!(unix_seconds() - AGENT_START_GRACE - 1);
+        let mut finished = claude_row("ready", Some("idle"));
+        poll.update("windows", &mut finished);
+        assert_eq!(finished["panes"][0]["token"], "idle:1");
+        assert_eq!(finished["panes"][0]["seen"], false);
     }
 
     #[test]
