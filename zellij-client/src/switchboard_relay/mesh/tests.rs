@@ -870,6 +870,7 @@ fn credentials_reject_public_artifact_storage_and_invalid_endpoints() {
 
 #[tokio::test]
 async fn recovered_gateway_health_keeps_signed_authority_without_locking_gateway() {
+    use tower::ServiceExt;
     let route = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
     route.connect("192.0.2.1:9").unwrap();
     let ip = route.local_addr().unwrap().ip();
@@ -898,6 +899,22 @@ async fn recovered_gateway_health_keeps_signed_authority_without_locking_gateway
     let storage = storage::Storage::open(&temp.path().join("bridge")).unwrap();
     storage.write("registration.json", &registration).unwrap();
     let router = peer_bridge::relay_router(mesh.clone(), registration.id.clone());
+    // A forward read before the restart can arrive at the replacement relay
+    // with the previous bridge secret. This is a retryable startup failure,
+    // distinct from the forbidden Host checked below.
+    let stale = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/__switchboard_peer/mesh/health")
+                .header(header::HOST, format!("192.0.2.254:{public_port}"))
+                .header("x-switchboard-bridge", "previous-relay")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stale.status(), StatusCode::SERVICE_UNAVAILABLE);
     let internal_task = tokio::spawn(async move {
         axum::serve(internal_listener, router).await.unwrap();
     });
