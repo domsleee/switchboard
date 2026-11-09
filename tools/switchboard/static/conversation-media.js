@@ -84,9 +84,9 @@
     pause(stage);stage.replaceChildren();view={scale:1,x:0,y:0};gesture=null;scrim.style.opacity='';clearTimeout(tapTimer);dialog.classList.remove('chrome-hidden');
     const item=items[index],media=node(item.kind==='video'?'video':'img');
     title.textContent=item.label;count.textContent=`${index+1} / ${items.length}`;
-    original.href=download.href=item.url;download.download=item.label.split(/[\\/]/).pop()||'media';
+    original.href=download.href=item.url;download.download=item.file||item.label.split(/[\\/]/).pop()||'media';original.hidden=!!item.aspect;
     zoomButton.hidden=item.kind==='video';
-    media.className='conversation-viewer-media'+(direction?' from-'+direction:'');
+    media.className='conversation-viewer-media'+(direction?' from-'+direction:'')+(item.aspect?' vector':'');if(item.aspect)media.style.setProperty('--aspect',item.aspect);
     dialog.classList.add('loading');const loaded=()=>{if(media.parentNode===stage)dialog.classList.remove('loading');};
     if(item.kind==='video'){media.controls=true;media.playsInline=true;media.preload='metadata';media.setAttribute('aria-label',item.label);media.onloadedmetadata=loaded;}
     else{media.alt=item.label;media.draggable=false;media.decoding='async';media.onload=loaded;}
@@ -263,5 +263,5 @@
     }
   }
   document.addEventListener('visibilitychange',()=>{if(document.hidden)pause(document);});
-  window.SwitchboardConversationMedia={render,resolve,linkify,pause,close};
+  window.SwitchboardConversationMedia={render,resolve,linkify,pause,close,expand};
 })();

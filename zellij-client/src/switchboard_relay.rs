@@ -57,6 +57,7 @@ use tokio_tungstenite::{
 };
 
 static ASSETS: Dir = include_dir!("$CARGO_MANIFEST_DIR/../tools/switchboard/static");
+const MERMAID_LIBRARY: &str = "mermaid-12.2.0.min.js";
 // Above the 20 MB attachment limit, so an accepted file can reach a paired computer.
 const LIMIT: usize = 21 * 1024 * 1024;
 // Leave room inside short control/attention deadlines for a changed DHCP address.
@@ -1260,6 +1261,8 @@ async fn asset(request: Request) -> Response {
         | "notifications.js"
         | "sw.js"
         | "conversation-media.js"
+        | "conversation-mermaid.js"
+        | MERMAID_LIBRARY
         | "conversation.js"
         | "skill-editor.js"
         | "handover.js"
@@ -1279,6 +1282,15 @@ async fn asset(request: Request) -> Response {
             );
             ([(header::CONTENT_TYPE, mime)], html).into_response()
         },
+        // The filename carries the version, so a browser never needs to fetch these 5 MB twice.
+        Some(file) if name == MERMAID_LIBRARY => (
+            [
+                (header::CONTENT_TYPE, mime),
+                (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+            ],
+            file.contents(),
+        )
+            .into_response(),
         Some(file) => ([(header::CONTENT_TYPE, mime)], file.contents()).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }
@@ -2838,6 +2850,8 @@ mod tests {
             ("/handover.js", "application/javascript"),
             ("/model-picker.js", "application/javascript"),
             ("/conversation-media.js", "application/javascript"),
+            ("/conversation-mermaid.js", "application/javascript"),
+            ("/mermaid-12.2.0.min.js", "application/javascript"),
             ("/conversation.css", "text/css; charset=utf-8"),
         ] {
             let response = app

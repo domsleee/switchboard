@@ -504,3 +504,13 @@
   .conversation-actions{position:absolute;bottom:calc(var(--composer-height,64px) + 12px);width:auto;left:50%;right:auto;transform:translateX(-50%);padding:0}
   .conversation-actions button{min-width:40px;min-height:36px}
 }
+
+/* Mermaid: the diagram sits in the code card, and Code shows its source. */
+.conversation-code-actions{display:inline-flex;align-items:center;gap:2px}
+.conversation-panel .conversation-code-bar .conversation-mermaid-toggle::before{display:none}
+.conversation-mermaid-diagram{display:block;width:100%;padding:18px 16px;border:0;border-radius:0;background:none;cursor:zoom-in}
+.conversation-mermaid-diagram:hover{background:none}
+.conversation-mermaid-diagram img{display:block;width:auto;height:auto;max-width:100%;max-height:min(70vh,640px);margin:auto}
+.conversation-mermaid-diagram[hidden],.conversation-code>pre[hidden]{display:none}
+.conversation-mermaid-note{color:#d6c08f;font:500 11.5px/1 var(--sans);margin-left:8px}
+.conversation-media-stage>img.vector{aspect-ratio:var(--aspect);width:min(100vw - 2*var(--side),(100dvh - var(--top) - var(--bottom))*var(--aspect));height:auto;max-width:none;max-height:none;background:#0c0d0f;will-change:auto}

@@ -51,7 +51,7 @@
   // Light highlighting for common languages. Builds text nodes only; transcript text is untrusted.
   const keywords=/^(?:as|async|await|break|case|catch|class|const|continue|def|default|defer|do|elif|else|enum|export|extends|false|fn|for|from|func|function|go|if|impl|import|in|interface|let|loop|match|mod|mut|new|nil|None|null|package|pub|raise|return|self|static|struct|super|switch|this|throw|trait|true|True|False|try|type|typeof|undefined|use|var|where|while|with|yield)$/;
   const hashComments=/^(?:sh|bash|zsh|shell|console|py|python|rb|ruby|toml|yaml|yml|ps1|powershell|dockerfile|make|makefile)$/i;
-  const plainLanguages=/^(?:text|txt|plain|log|output|diff|patch|md|markdown)$/i;
+  const plainLanguages=/^(?:text|txt|plain|log|output|diff|patch|md|markdown|mermaid)$/i;
   function highlight(code,lang){
     if(!lang||plainLanguages.test(lang)||code.length>20000)return false;
     const hash=hashComments.test(lang),rust=/^(?:rs|rust)$/i.test(lang);
@@ -95,6 +95,7 @@
       copy.type='button';copy.setAttribute('aria-label','Copy code');let reset;
       copy.onclick=()=>copyText(text).then(()=>{copy.textContent='Copied';clearTimeout(reset);reset=setTimeout(()=>{copy.textContent='Copy';},1500);},()=>{copy.textContent='Copy failed';});
       bar.append(el('span',lang||'code'),copy);pre.replaceWith(card);card.append(bar,pre);
+      if(/^mermaid$/i.test(lang))window.SwitchboardConversationMermaid?.attach(card,pre,text);
       requestAnimationFrame(()=>pre.classList.toggle('fits',pre.scrollWidth<=pre.clientWidth+1));
     }
   }
