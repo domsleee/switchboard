@@ -195,26 +195,59 @@ fn quiet_shell(pane: &Value) -> bool {
     ) && PATH_TITLE.is_match(pane["title"].as_str().unwrap_or(""))
 }
 
-/// False when the pane's program is some other program, judged by the program rather
-/// than its arguments. A shell or no command says nothing, because Claude started from
-/// a shell is reported that way; a script runner counts only if it runs Claude.
+/// The program and its arguments. `pane_command` joins argv with spaces, so a Windows
+/// path may hold spaces and ends at its extension.
+fn split_program(command: &str) -> (&str, &str) {
+    static WINDOWS: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"^[a-z]:\\.*?\.(?:exe|cmd|bat|com|js|mjs)(?:\s|$)").unwrap()
+    });
+    match WINDOWS.find(command) {
+        Some(path) => (command[..path.end()].trim_end(), &command[path.end()..]),
+        None => command
+            .split_once(char::is_whitespace)
+            .unwrap_or((command, "")),
+    }
+}
+
+/// False when the pane is running some other program, judged by the program and not its
+/// arguments. A shell or no command says nothing, because Claude started from a shell is
+/// reported that way; a script runner counts only if the script it runs is Claude.
 pub(super) fn may_be_claude(pane: &Value) -> bool {
+    static CLAUDE: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?:^|[\\/])claude(?:\.exe|\.cmd|\.ps1)?$|[\\/]claude[\\/]versions[\\/][^\\/]+$",
+        )
+        .unwrap()
+    });
+    static SCRIPT: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"[\\/]@anthropic-ai[\\/]claude-code[\\/]").unwrap());
     static RUNNER: LazyLock<regex::Regex> =
         LazyLock::new(|| regex::Regex::new(r"(?:^|[\\/])(?:node|bun|cmd)(?:\.exe)?$").unwrap());
     let command = pane["pane_command"]
         .as_str()
         .unwrap_or("")
         .to_ascii_lowercase();
-    let program = command.split_whitespace().next().unwrap_or("");
-    let names_claude = |text: &str| {
-        AGENTS
-            .iter()
-            .any(|agent| agent.name == "claude" && any(&agent.command, text))
-    };
-    command.is_empty()
-        || SHELL.is_match(program)
-        || names_claude(program)
-        || RUNNER.is_match(program) && names_claude(&command)
+    let (program, mut arguments) = split_program(&command);
+    if command.is_empty() || SHELL.is_match(program) || CLAUDE.is_match(program) {
+        return true;
+    }
+    if !RUNNER.is_match(program) {
+        return false;
+    }
+    // Skip the runner's own switches, such as `cmd /c` or `node --no-warnings`.
+    loop {
+        arguments = arguments.trim_start();
+        match arguments.split_once(char::is_whitespace) {
+            Some((flag, rest))
+                if flag.starts_with('-') || flag.len() == 2 && flag.starts_with('/') =>
+            {
+                arguments = rest;
+            },
+            _ => break,
+        }
+    }
+    let (script, _) = split_program(arguments);
+    CLAUDE.is_match(script) || SCRIPT.is_match(script)
 }
 
 /// The repository holding a folder, named after its main checkout so that every worktree of a
@@ -1728,6 +1761,37 @@ pub(super) async fn acknowledge(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn switchboard_only_claude_or_a_silent_shell_may_be_claude() {
+        use super::*;
+        for command in [
+            "",
+            "claude --resume",
+            r"C:\Users\Fixture User\.local\bin\claude.exe --resume",
+            "/home/fixture/.local/share/claude/versions/2.1.319 --resume",
+            "nu --interactive",
+            r"C:\Program Files\PowerShell\7\pwsh.exe -NoLogo",
+            "node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js",
+            r"node --no-warnings C:\Users\Fixture User\npm\node_modules\@anthropic-ai\claude-code\cli.js",
+            r"cmd.exe /d /c C:\Users\Fixture User\npm\claude.cmd --yolo",
+        ] {
+            assert!(may_be_claude(&json!({"pane_command":command})), "{command}");
+        }
+        for command in [
+            "vim",
+            "tail -f claude-folder-trust.txt",
+            "node replay.js claude-folder-trust.txt",
+            r"C:\tools\claude-kit\viewer.exe",
+            r"C:\bin\tail.exe C:\tmp\claude.exe",
+            "ssh host claude",
+        ] {
+            assert!(
+                !may_be_claude(&json!({"pane_command":command})),
+                "{command}"
+            );
+        }
+    }
+
     #[test]
     fn switchboard_claude_folder_trust_is_approval_before_a_conversation_exists() {
         use super::*;

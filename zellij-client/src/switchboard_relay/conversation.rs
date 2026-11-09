@@ -160,25 +160,25 @@ async fn acting_on(session: &str, pane_id: u32) -> tokio::sync::OwnedMutexGuard<
 // arrive. While an answered dialog is on screen, answering again would send its keys to
 // whatever dialog comes next. So automatic acceptance gets one send per dialog; if those
 // keys were lost, the person answers the card, once the first send has had time to land.
-pub(super) const TRUST_ONCE: Duration = Duration::from_secs(120);
+// Each pane keeps only its latest dialog, and a relay restart clears them.
 pub(super) const TRUST_MANUAL_WAIT: Duration = Duration::from_secs(10);
 static TRUST_SENT: std::sync::LazyLock<
     std::sync::Mutex<HashMap<(String, u32), (String, std::time::Instant)>>,
 > = std::sync::LazyLock::new(Default::default);
 
-/// Call under `acting_on`, before writing. False if this dialog was answered within `within`.
+/// Call under `acting_on`, before writing. False if this dialog was already answered:
+/// within `within` when given, otherwise at any time.
 pub(super) fn claim_trust_answer(
     session: &str,
     pane_id: u32,
     token: &str,
-    within: Duration,
+    within: Option<Duration>,
 ) -> bool {
     let mut sent = TRUST_SENT.lock().unwrap();
-    sent.retain(|_, (_, at)| at.elapsed() < TRUST_ONCE);
     let pane = (session.to_owned(), pane_id);
     if sent
         .get(&pane)
-        .is_some_and(|(seen, at)| seen == token && at.elapsed() < within)
+        .is_some_and(|(seen, at)| seen == token && within.is_none_or(|w| at.elapsed() < w))
     {
         return false;
     }
@@ -199,9 +199,9 @@ pub(super) async fn local(host: &Host, target: Target) -> Result<Json<Value>, Er
     let Some(keys) = keys else {
         return Ok(Json(json!({"trusted":false})));
     };
-    if prompt::folder_trust_token(&screen).is_some_and(|token| {
-        !claim_trust_answer(&target.session, target.pane_id, &token, TRUST_ONCE)
-    }) {
+    if prompt::folder_trust_token(&screen)
+        .is_some_and(|token| !claim_trust_answer(&target.session, target.pane_id, &token, None))
+    {
         return Ok(Json(json!({"trusted":true})));
     }
     let id = target.pane_id.to_string();

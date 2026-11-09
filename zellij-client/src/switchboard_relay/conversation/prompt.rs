@@ -266,7 +266,9 @@ fn folder_trust(rows: &[Row]) -> Option<Menu> {
         return None;
     }
     let question = "Do you trust this folder?".to_string();
-    let token = Sha256::digest(serde_json::to_vec(&json!([detail, question, choices])).unwrap())
+    // Without whitespace, so that a resize rewrapping the text is still the same dialog.
+    let words: String = detail.concat().split_whitespace().collect();
+    let token = Sha256::digest(serde_json::to_vec(&json!([words, question, choices])).unwrap())
         [..12]
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -430,7 +432,12 @@ pub(in crate::switchboard_relay) async fn answer_local(
     let keys = keys(&menu, answer.choice, answer.text.as_deref())
         .ok_or((StatusCode::BAD_REQUEST, "Invalid answer"))?;
     if folder_trust_token(&screen).is_some_and(|token| {
-        !claim_trust_answer(&answer.session, answer.pane_id, &token, TRUST_MANUAL_WAIT)
+        !claim_trust_answer(
+            &answer.session,
+            answer.pane_id,
+            &token,
+            Some(TRUST_MANUAL_WAIT),
+        )
     }) {
         return Err(changed);
     }
@@ -499,6 +506,11 @@ mod tests {
                 .unwrap()
                 .token,
             menu.token
+        );
+        assert_eq!(
+            folder_trust_token(&screen.replace("check: Is this", "check:\n Is this")),
+            Some(menu.token.clone()),
+            "rewrapping after a resize is the same dialog"
         );
         for invalid in [
             format!("{screen}\n❯ \n  bypass permissions on (shift+tab to cycle)"),
