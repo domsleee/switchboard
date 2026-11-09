@@ -141,7 +141,8 @@ pub fn create_first_message(
             is_debug: false,
             max_panes: None,
             force_run_layout_commands: false,
-            cwd: None,
+            // Otherwise the first tab opens in the web service's own folder.
+            cwd: std::env::home_dir(),
             host_terminal_env: Default::default(),
             initial_panes: None,
         };
@@ -196,6 +197,23 @@ pub fn create_ipc_pipe(session_name: &str) -> PathBuf {
 #[cfg(test)]
 mod restart_tests {
     use super::*;
+
+    #[test]
+    fn switchboard_new_web_session_starts_in_the_home_folder() {
+        let message = create_first_message(
+            false,
+            None,
+            ClientAttributes::default(),
+            Options::default(),
+            true,
+            "switchboard-no-saved-layout",
+            None,
+        );
+        let ClientToServerMsg::FirstClientConnected { cli_assets, .. } = message else {
+            panic!("A new session starts with FirstClientConnected");
+        };
+        assert_eq!(cli_assets.cwd, std::env::home_dir());
+    }
 
     #[test]
     fn restart_restores_a_readable_save_and_keeps_an_unreadable_one() {
