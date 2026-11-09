@@ -18,6 +18,7 @@ test('Conversation shows the model, animates real work and keeps delivery receip
    const url=new URL(route.request().url()),p=url.pathname;
    if(p.startsWith('/api/diagnostics/'))return route.fulfill({status:204});
    if(p.endsWith('/codex/reply'))return route.fulfill({json:{status:'queued'}});
+   if(p.endsWith('/codex/receipt'))return route.fulfill({json:{status:'queued'}});
    if(p.startsWith('/api/chats/')&&url.searchParams.get('task')){taskReads.push(Object.fromEntries(url.searchParams));return route.fulfill({json:taskPages[url.searchParams.get('task')]});}
    if(p.startsWith('/api/chats/'))return route.fulfill({json:{model,reasoning_effort:effort,background_agents:background,session_id:'00000000-0000-4000-8000-000000000001',messages:[{role:'assistant',text:'Earlier answer',model:'gpt-6.1-sol',reasoning_effort:'low'},{role:'user',text:'Go on'},{role:'assistant',text:'Newer answer',model:'gpt-6.1-sol',reasoning_effort:'medium'}],start_cursor:0,next_cursor:null}});
    if(p==='/')return route.fulfill({contentType:'text/html',body:`<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/conversation.css"><style>body{margin:0}#terminals{position:relative;height:100dvh}</style><main id="terminals"><iframe id="terminal"></iframe><section id="artifact-preview" hidden></section></main><script src="/conversation.js"></script><script>window.current={key:'pane1',host:'fixture',pane:1,title:'Switchboard',agent:'codex',state:'ready',chatId:'chat-1',frame:document.getElementById('terminal')};SwitchboardConversation.install({selection:()=>current,terminal(){}});</script>`});
@@ -83,7 +84,7 @@ test('Conversation shows the model, animates real work and keeps delivery receip
   await page.evaluate(()=>{current.state='waiting';SwitchboardConversation.update();});
   await agents.first().click();await body.getByText('Ran cargo test',{exact:true}).waitFor();
   assert.equal(await page.locator('.conversation-task h3').textContent(),'Review the diff');
-  assert.match(await page.locator('.conversation-task-status').textContent(),/^Working for 2m \d+s$/);
+  assert.match(await page.locator('.conversation-task-status').textContent(),/^Opus 5\.5 · Working for 2m \d+s$/);
   await body.getByText('Found one bug so far',{exact:true}).waitFor();
   assert.match(await body.locator('.conversation-task-prompt summary').textContent(),/Audit the relay carefully$/);
   assert.equal(await body.getByText('Audit the relay carefully').count(),1,'The prompt shows once');

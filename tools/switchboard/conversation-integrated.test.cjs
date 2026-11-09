@@ -60,6 +60,31 @@ test('integrated Conversation journeys use production markup and preserve delive
   return f;
  }
  try{
+  await t.test('native Codex queued replies keep the reported state until a turn starts',async()=>{
+   const f=await fixture({desktop:true,clock:true,viewport:{width:1280,height:900}}),{page}=f;
+   try{
+    const activity=page.locator('.conversation-activity'),row=page.locator('#tabs .tab-select.selected');
+    await page.getByText('Review response',{exact:true}).waitFor();
+    assert.equal(await activity.textContent(),'Ready');
+    await page.getByLabel('Reply draft').fill('Wait in the native queue');
+    await page.getByRole('button',{name:'Send',exact:true}).click();
+    await page.locator('.conversation-outgoing').getByText('Queued',{exact:true}).waitFor();
+    assert.equal(await activity.textContent(),'Ready','Saving a native input is not a provider turn start');
+    assert.notEqual(await row.getAttribute('data-agent-state'),'Working');
+    assert.equal(await page.locator('.conversation-working').isVisible(),false);
+    await page.clock.fastForward(6000);await f.refresh();
+    assert.equal(await activity.textContent(),'Ready','Crossing the old optimistic timeout cannot produce a status change');
+    await page.getByRole('button',{name:'Terminal',exact:true}).click();
+    assert.notEqual(await row.getAttribute('data-agent-state'),'Working','Terminal mode also retains the actual state while queued');
+    f.state='working';await f.refresh();
+    assert.equal(await row.getAttribute('data-agent-state'),'Working','A real provider update starts Working');
+    await page.getByRole('button',{name:'Conversation',exact:true}).click();
+    assert.equal(await activity.textContent(),'Working…');
+    f.state='ready';await f.refresh();assert.equal(await activity.textContent(),'Ready');
+    assert.equal(f.requests.length,1,'State changes do not resend the input');
+    assert.equal(f.escapes.length,0,'No terminal input is needed for native delivery');
+   }finally{await f.close();}
+  });
   await t.test('Performance dashboard preserves conversation drafts, terminal connections and review state',async()=>{
    const f=await fixture({desktop:true,viewport:{width:1280,height:900}}),{page}=f;
    try{

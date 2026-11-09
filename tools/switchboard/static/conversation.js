@@ -1334,7 +1334,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
     async function deliver(sent,current){
       const {native,key,id,payload,skill}=sent,command=sent.command&&!skill,terminal=sent.route==='terminal';
       sent.target=current;
-      if(!sent.holds)sending(current,command);
+      if(!sent.holds)sending(current,command,native);
       if(native){
         const prior=retryKeys.get(key),sendKey=prior?.payload===payload?prior.id:id;sent.sendKey=sendKey;retryKeys.set(key,{payload,id:sendKey});
         await sendNative(sent);return;
