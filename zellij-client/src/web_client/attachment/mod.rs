@@ -8,7 +8,7 @@ use super::{
     message_handlers::{parse_stdin, StdinSession},
     server_listener::zellij_server_listener,
     types::{AppState, CreateClientIdResponse},
-    websocket_handlers::control_payload_to_server_msg,
+    websocket_handlers::{control_payload_to_server_msg, has_room},
 };
 use anyhow::{ensure, Result};
 use axum::{
@@ -487,7 +487,8 @@ async fn attachment(
         Some(Size {
             rows: rows.unwrap_or(24).max(1) as usize,
             cols: cols.unwrap_or(80).max(1) as usize,
-        }),
+        })
+        .filter(has_room),
         None,
         app.pending_welcome_sessions.clone(),
         app.sharing_recovery.clone(),
