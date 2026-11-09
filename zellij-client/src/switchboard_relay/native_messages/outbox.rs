@@ -26,7 +26,8 @@ fn open(home: &Path) -> anyhow::Result<Connection> {
         CREATE TABLE IF NOT EXISTS user_outbox_chat (send_key TEXT PRIMARY KEY, chat TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS user_outbox_completed (send_key TEXT PRIMARY KEY, completed INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS user_outbox_native (send_key TEXT PRIMARY KEY, after_message INTEGER NOT NULL);
-        CREATE TABLE IF NOT EXISTS user_outbox_review (send_key TEXT PRIMARY KEY, reason TEXT NOT NULL)")?;
+        CREATE TABLE IF NOT EXISTS user_outbox_review (send_key TEXT PRIMARY KEY, reason TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS user_outbox_receipt_thread (send_key TEXT PRIMARY KEY, thread TEXT NOT NULL)")?;
     Ok(db)
 }
 
@@ -52,7 +53,7 @@ fn save(home: &Path, target: &Queue) -> anyhow::Result<bool> {
         if fingerprint != target.fingerprint() {
             return Ok(false);
         }
-        if status == "queued" {
+        if matches!(status.as_str(), "queued" | "cancelled") {
             return Ok(true);
         }
     }
@@ -93,7 +94,9 @@ pub(super) async fn accept(home: &Path, target: Queue) -> Response {
     })
     .await
     {
-        Ok(Ok((true, Some(review)))) if review["status"] == "review" => {
+        Ok(Ok((true, Some(review))))
+            if matches!(review["status"].as_str(), Some("review" | "cancelled")) =>
+        {
             Json(review).into_response()
         },
         Ok(Ok((true, _))) => {
@@ -117,12 +120,29 @@ pub(super) async fn accept(home: &Path, target: Queue) -> Response {
 
 pub(super) fn status(home: &Path, thread: &str, key: &str) -> Option<Value> {
     let db = open(home).ok()?;
-    let detail: Option<String> = db.query_row("SELECT r.reason FROM user_outbox a JOIN user_outbox b ON b.thread=a.thread AND b.rowid<=a.rowid JOIN user_outbox_review r ON r.send_key=b.send_key WHERE a.thread=?1 AND a.send_key=?2 ORDER BY b.rowid LIMIT 1", params![thread,key], |row| row.get(0)).optional().ok()?;
-    if let Some(detail) = detail {
-        return Some(json!({"status":"review","send_key":key,"detail":detail}));
+    let detail: Option<(String, String, String)> = db.query_row("SELECT r.reason,b.send_key,b.message FROM user_outbox a JOIN user_outbox b ON b.thread=a.thread AND b.rowid<=a.rowid JOIN user_outbox_review r ON r.send_key=b.send_key WHERE a.thread=?1 AND a.send_key=?2 ORDER BY b.rowid LIMIT 1", params![thread,key], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional().ok()?;
+    if let Some((detail, blocked_key, message)) = detail {
+        return Some(
+            json!({"status":"review","send_key":key,"detail":detail,"blocked_by":{"send_key":blocked_key,"message":message}}),
+        );
     }
-    let state: String = db.query_row("SELECT r.status FROM receipts r JOIN user_outbox a ON a.send_key=r.send_key WHERE r.send_key=?1 AND a.thread=?2", params![key,thread], |row| row.get(0)).ok()?;
+    let state: String = db.query_row("SELECT r.status FROM receipts r JOIN (SELECT send_key,thread FROM user_outbox UNION ALL SELECT send_key,thread FROM user_outbox_receipt_thread) a USING(send_key) WHERE r.send_key=?1 AND a.thread=?2 LIMIT 1", params![key,thread], |row| row.get(0)).ok()?;
     Some(json!({"status":state,"send_key":key}))
+}
+
+/// Only an explicit discard can release an ambiguous legacy submission. Never
+/// delete a later reply merely because it is blocked by an earlier one.
+pub(super) fn discard(home: &Path, thread: &str, key: &str) -> anyhow::Result<bool> {
+    let mut db = open(home)?;
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let reviewed: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM user_outbox a JOIN user_outbox_review r USING(send_key) WHERE a.thread=?1 AND a.send_key=?2)", params![thread,key], |row| row.get(0))?;
+    if !reviewed {
+        return Ok(false);
+    }
+    complete(&tx, key, "cancelled")?;
+    tx.commit()?;
+    WAKE.notify_one();
+    Ok(true)
 }
 
 async fn review(home: &Path, item: &Pending, legacy: bool) {
@@ -135,7 +155,7 @@ async fn review(home: &Path, item: &Pending, legacy: bool) {
     let _ = tokio::task::spawn_blocking(move || {
         open(&home)?
             .execute(
-                "INSERT OR REPLACE INTO user_outbox_review VALUES (?1,?2)",
+                "INSERT OR REPLACE INTO user_outbox_review SELECT send_key,?2 FROM user_outbox WHERE send_key=?1",
                 params![key, reason],
             )
             .map_err(anyhow::Error::from)
@@ -175,38 +195,17 @@ fn pending_at(home: &Path, timestamp: i64) -> anyhow::Result<Vec<Pending>> {
 fn finish(home: &Path, item: &Pending, delivered: bool) -> anyhow::Result<()> {
     let mut db = open(home)?;
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    // A receipt check may finish after the user discarded this saved reply.
+    let exists: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM user_outbox WHERE send_key=?1)",
+        [&item.key],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        return Ok(());
+    }
     if delivered {
-        tx.execute(
-            "UPDATE receipts SET status='queued' WHERE send_key=?1",
-            [&item.key],
-        )?;
-        tx.execute("DELETE FROM user_outbox WHERE send_key=?1", [&item.key])?;
-        tx.execute(
-            "DELETE FROM user_outbox_chat WHERE send_key=?1",
-            [&item.key],
-        )?;
-        tx.execute(
-            "DELETE FROM user_outbox_input WHERE send_key=?1",
-            [&item.key],
-        )?;
-        tx.execute(
-            "DELETE FROM user_outbox_native WHERE send_key=?1",
-            [&item.key],
-        )?;
-        tx.execute(
-            "DELETE FROM user_outbox_review WHERE send_key=?1",
-            [&item.key],
-        )?;
-        tx.execute(
-            "INSERT OR REPLACE INTO user_outbox_completed VALUES (?1,?2)",
-            params![item.key, now()],
-        )?;
-        // Retain deduplication receipts for a week; delete delivered payloads immediately.
-        tx.execute("DELETE FROM receipts WHERE send_key IN (SELECT send_key FROM user_outbox_completed WHERE completed<?1)", [now()-7*86400])?;
-        tx.execute(
-            "DELETE FROM user_outbox_completed WHERE completed<?1",
-            [now() - 7 * 86400],
-        )?;
+        complete(&tx, &item.key, "queued")?;
     } else {
         let delay = (1_i64 << item.attempts.min(4)).min(15);
         tx.execute(
@@ -215,6 +214,31 @@ fn finish(home: &Path, item: &Pending, delivered: bool) -> anyhow::Result<()> {
         )?;
     }
     tx.commit()?;
+    Ok(())
+}
+
+fn complete(tx: &rusqlite::Transaction<'_>, key: &str, status: &str) -> anyhow::Result<()> {
+    tx.execute("INSERT OR REPLACE INTO user_outbox_receipt_thread SELECT send_key,thread FROM user_outbox WHERE send_key=?1", [key])?;
+    tx.execute(
+        "UPDATE receipts SET status=?2 WHERE send_key=?1",
+        params![key, status],
+    )?;
+    tx.execute("DELETE FROM user_outbox WHERE send_key=?1", [key])?;
+    tx.execute("DELETE FROM user_outbox_chat WHERE send_key=?1", [key])?;
+    tx.execute("DELETE FROM user_outbox_input WHERE send_key=?1", [key])?;
+    tx.execute("DELETE FROM user_outbox_native WHERE send_key=?1", [key])?;
+    tx.execute("DELETE FROM user_outbox_review WHERE send_key=?1", [key])?;
+    tx.execute(
+        "INSERT OR REPLACE INTO user_outbox_completed VALUES (?1,?2)",
+        params![key, now()],
+    )?;
+    // Retain deduplication receipts for a week; delete delivered payloads immediately.
+    tx.execute("DELETE FROM receipts WHERE send_key IN (SELECT send_key FROM user_outbox_completed WHERE completed<?1)", [now()-7*86400])?;
+    tx.execute("DELETE FROM user_outbox_receipt_thread WHERE send_key IN (SELECT send_key FROM user_outbox_completed WHERE completed<?1)", [now()-7*86400])?;
+    tx.execute(
+        "DELETE FROM user_outbox_completed WHERE completed<?1",
+        [now() - 7 * 86400],
+    )?;
     Ok(())
 }
 
@@ -234,38 +258,46 @@ pub(in crate::switchboard_relay) fn start(
             else {
                 return false;
             };
-            if super::super::control::require_writable_host(&host)
-                .await
-                .is_err()
-            {
-                delivery_log(
-                    &item,
-                    "writable-authentication-required; original message remains saved",
-                );
-                return false;
-            }
-            submit_native(&sender, &home, &item).await
+            submit_native_authorized(&sender, &home, &item, || writable_host(&host)).await
         }
     })
 }
 
+pub(in crate::switchboard_relay) async fn writable_host(host: &Host) -> bool {
+    // Native queue delivery has no terminal HTTP request to refresh its login.
+    if super::super::control::require_writable_host(host)
+        .await
+        .is_err()
+    {
+        let stale = host.cookie.lock().await.clone();
+        let _ = host.login(stale.as_deref()).await;
+    }
+    super::super::control::require_writable_host(host)
+        .await
+        .is_ok()
+}
+
+#[cfg(test)]
 async fn submit_native(sender: &super::codex_queue::Sender, home: &Path, item: &Pending) -> bool {
+    submit_native_authorized(sender, home, item, || async { true }).await
+}
+
+async fn submit_native_authorized<F, R>(
+    sender: &super::codex_queue::Sender,
+    home: &Path,
+    item: &Pending,
+    authorize: F,
+) -> bool
+where
+    F: FnOnce() -> R,
+    R: std::future::Future<Output = bool>,
+{
     let (directory, key) = (home.to_owned(), item.key.clone());
     let attempt = tokio::task::spawn_blocking(move || -> anyhow::Result<(Option<usize>, bool)> {
         let db = open(&directory)?;
-        let after = db
-            .query_row(
-                "SELECT after_message FROM user_outbox_native WHERE send_key=?1",
-                [&key],
-                |row| row.get::<_, usize>(0),
-            )
-            .optional()?;
-        let legacy = db.query_row(
-            "SELECT count(*) FROM user_outbox_input WHERE send_key=?1",
-            [&key],
-            |row| row.get::<_, u32>(0),
-        )? != 0;
-        Ok((after, legacy))
+        // Read existence and ownership in one snapshot: a concurrent explicit
+        // discard must never turn an old uncertain send into a fresh native add.
+        db.query_row("SELECT n.after_message,i.send_key IS NOT NULL FROM user_outbox a LEFT JOIN user_outbox_native n USING(send_key) LEFT JOIN user_outbox_input i USING(send_key) WHERE a.send_key=?1", [&key], |row| Ok((row.get(0)?,row.get(1)?))).map_err(Into::into)
     })
     .await;
     let Ok(Ok((after, legacy))) = attempt else {
@@ -316,6 +348,13 @@ async fn submit_native(sender: &super::codex_queue::Sender, home: &Path, item: &
             } else {
                 "native-add-unconfirmed; awaiting queue/transcript receipt"
             },
+        );
+        return false;
+    }
+    if !authorize().await {
+        delivery_log(
+            item,
+            "writable-authentication-required; original message remains saved",
         );
         return false;
     }
@@ -463,6 +502,171 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn switchboard_user_outbox_refreshes_expired_login_and_still_rejects_view_only() {
+        use zellij_utils::web_authentication_tokens::{
+            create_session_token, create_token, revoke_session_token, revoke_token,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let token_path = dir.path().join("token");
+        let logins = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = logins.clone();
+        let upstream = Router::new().route(
+            "/command/login",
+            post(move |Json(body): Json<Value>| {
+                let counter = counter.clone();
+                async move {
+                    counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let session =
+                        create_session_token(body["auth_token"].as_str().unwrap(), false).unwrap();
+                    (
+                        [(header::SET_COOKIE, format!("session_token={session}"))],
+                        "{}",
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+        for read_only in [false, true] {
+            let (token, name) = create_token(
+                Some(format!("outbox-test-{}", uuid::Uuid::new_v4())),
+                read_only,
+            )
+            .unwrap();
+            std::fs::write(&token_path, &token).unwrap();
+            let mut config = super::super::super::tests::config(&url);
+            config.token_file = token_path.to_string_lossy().into();
+            let host = Host::new(config).unwrap();
+            let expired = create_session_token(&token, false).unwrap();
+            revoke_session_token(&expired).unwrap();
+            *host.cookie.lock().await = Some(format!("session_token={expired}"));
+            assert_eq!(writable_host(&host).await, !read_only);
+            revoke_token(&name).unwrap();
+        }
+        assert_eq!(logins.load(std::sync::atomic::Ordering::SeqCst), 2);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn switchboard_user_outbox_discard_legacy_blocker_preserves_followers_and_never_replays()
+    {
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+        let dir = tempfile::tempdir().unwrap();
+        let mut first = super::super::tests::target();
+        first.thread = uuid::Uuid::new_v4().to_string();
+        first.user_message = true;
+        first.message = "Ship the earlier change".into();
+        let sessions = dir.path().join("sessions");
+        std::fs::create_dir(&sessions).unwrap();
+        let transcript = sessions.join(format!("rollout-{}.jsonl", first.thread));
+        std::fs::write(&transcript, "").unwrap();
+        chats::bind_receipt_fixture(dir.path().into(), &transcript);
+        save(dir.path(), &first).unwrap();
+        let db = open(dir.path()).unwrap();
+        db.execute(
+            "INSERT INTO user_outbox_input VALUES (?1,'fixture',7,'historical-chat')",
+            [&first.send_key],
+        )
+        .unwrap();
+        let second = Queue {
+            send_key: "follower".into(),
+            message: "Continue with the next change".into(),
+            ..first.clone()
+        };
+        save(dir.path(), &second).unwrap();
+        let item = pending(dir.path()).unwrap().remove(0);
+        let (sender, provider) = super::super::codex_queue::Sender::fixture();
+        let home = dir.path().to_owned();
+        let active = item.clone();
+        let job = tokio::spawn(async move {
+            // Receipt reconciliation must work even without writable terminal authentication.
+            submit_native_authorized(&sender, &home, &active, || async {
+                panic!("An ambiguous submission must never be submitted again")
+            })
+            .await
+        });
+        let mut provider = BufReader::new(provider);
+        let mut line = String::new();
+        provider.read_line(&mut line).await.unwrap();
+        let request: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(request["method"], "thread/queue/list");
+        let review = status(dir.path(), &second.thread, &second.send_key).unwrap();
+        assert_eq!(review["status"], "review");
+        assert_eq!(review["blocked_by"]["send_key"], first.send_key);
+        assert_eq!(review["blocked_by"]["message"], first.message);
+        assert!(!discard(
+            dir.path(),
+            &uuid::Uuid::new_v4().to_string(),
+            &first.send_key
+        )
+        .unwrap());
+        assert!(
+            !discard(dir.path(), &second.thread, &second.send_key).unwrap(),
+            "A blocked follower is not itself an ambiguous submission"
+        );
+        let started = std::time::Instant::now();
+        assert!(discard(dir.path(), &first.thread, &first.send_key).unwrap());
+        eprintln!("legacy queue recovery: {}us", started.elapsed().as_micros());
+        provider
+            .get_mut()
+            .write_all(
+                format!(
+                    "{}\n",
+                    json!({"id":request["id"],"result":{"data":[],"nextCursor":null}})
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        assert!(!job.await.unwrap());
+        let mut remaining = Vec::new();
+        provider.read_to_end(&mut remaining).await.unwrap();
+        assert!(
+            remaining.is_empty(),
+            "A concurrent discard must not cause a native add"
+        );
+        // Late worker completion and repeated browser requests cannot resurrect it.
+        finish(dir.path(), &item, true).unwrap();
+        assert!(!discard(dir.path(), &first.thread, &first.send_key).unwrap());
+        assert!(save(dir.path(), &first).unwrap());
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM user_outbox_review", [], |row| row
+                .get::<_, u32>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            status(dir.path(), &first.thread, &first.send_key).unwrap()["status"],
+            "cancelled"
+        );
+        assert!(status(
+            dir.path(),
+            &uuid::Uuid::new_v4().to_string(),
+            &first.send_key
+        )
+        .is_none());
+        let follower = pending(dir.path()).unwrap();
+        assert_eq!(follower.len(), 1);
+        assert_eq!(follower[0].key, second.send_key);
+        assert_eq!(follower[0].message, second.message);
+        assert_eq!(
+            status(dir.path(), &second.thread, &second.send_key).unwrap()["status"],
+            "pending"
+        );
+        let (sender, mut provider) = super::super::codex_queue::Sender::fixture();
+        assert!(!submit_native(&sender, dir.path(), &item).await);
+        drop(sender);
+        let mut bytes = Vec::new();
+        provider.read_to_end(&mut bytes).await.unwrap();
+        assert!(
+            bytes.is_empty(),
+            "A discarded job cannot become a new submission"
+        );
+    }
 
     #[tokio::test]
     async fn switchboard_user_outbox_reconciles_accepted_question_under_two_browser_keys() {

@@ -67,8 +67,28 @@ const server=http.createServer((req,res)=>{req.resume();req.on('end',()=>{
   started=Date.now();const c=await send('third','Warm native message');await until(()=>userInputs().includes('Warm native message'),'warm persistent sender');const warm_ms=Date.now()-started;
   await sleep(300);
   const inputs=userInputs();assert.equal(inputs.filter(t=>t===first).length,1);assert.equal(inputs.filter(t=>t===second).length,1);assert.ok(inputs.indexOf(first)<inputs.indexOf(second));
+  // Reproduce a pre-native terminal intent with no receipt checkpoint. It must
+  // hold its follower until explicitly discarded, and never paste into the draft.
+  const {DatabaseSync}=require('node:sqlite'),{createHash}=require('node:crypto');
+  const oldKey='legacy-private',oldMessage='Obsolete private reply',db=new DatabaseSync(path.join(root,'.config','switchboard','native-messages.sqlite3'));
+  db.exec('PRAGMA busy_timeout=2000; BEGIN IMMEDIATE');
+  const fingerprint=createHash('sha256').update(thread+'\0'+oldMessage+'\0user').digest('hex');
+  db.prepare("INSERT INTO receipts VALUES (?,?,'pending')").run(oldKey,fingerprint);
+  db.prepare('INSERT INTO user_outbox (send_key,thread,message) VALUES (?,?,?)').run(oldKey,thread,oldMessage);
+  db.prepare('INSERT INTO user_outbox_input VALUES (?,?,?,?)').run(oldKey,name,pane.id,'historical-private-chat');
+  db.exec('COMMIT');db.close();
+  const follower='Reply after explicit recovery';assert.equal((await send('after-legacy',follower)).code,200);
+  const receiptUrl=key=>origin+'/api/hosts/fixture/codex/receipt?'+new URLSearchParams({thread,send_key:key});
+  await until(async()=>{const status=await(await fetch(receiptUrl('after-legacy'))).json();return status.status==='review'&&status.blocked_by.send_key===oldKey;},'legacy blocker review');
+  assert.ok(!userInputs().includes(follower),'A later message cannot overtake an unresolved legacy reply');
+  started=Date.now();const discarded=await fetch(origin+'/api/hosts/fixture/codex/reply?'+new URLSearchParams({thread,send_key:oldKey}),{method:'DELETE'});
+  assert.equal(discarded.status,200);assert.equal((await discarded.json()).status,'cancelled');
+  await until(()=>userInputs().includes(follower),'follower after explicit discard');const recovery_ms=Date.now()-started;
+  assert.equal((await send(oldKey,oldMessage)).body.status,'cancelled','The original browser retry cannot recreate a discarded reply');
+  assert.ok(!userInputs().includes(oldMessage));assert.equal(userInputs().filter(t=>t===follower).length,1);
+  assert.equal((await(await fetch(receiptUrl('after-legacy'))).json()).status,'queued','Completed receipts remain available after removing delivered payloads');
   assert.ok(screen().includes('Private unsent terminal draft'),'Native queue must preserve the terminal draft');
-  const result={cold_ms,restart_ms,warm_ms,ack_ms:[a.ack_ms,b.ack_ms,c.ack_ms],pass:true};fs.writeFileSync(path.join(root,'result.json'),JSON.stringify(result));console.log('PASS:',JSON.stringify(result));
+  const result={cold_ms,restart_ms,warm_ms,recovery_ms,ack_ms:[a.ack_ms,b.ack_ms,c.ack_ms],pass:true};fs.writeFileSync(path.join(root,'result.json'),JSON.stringify(result));console.log('PASS:',JSON.stringify(result));
 }finally{
   await stop(relay);await stop(native);if(created)cli('kill-session',name);
   server.closeAllConnections();await new Promise(r=>server.close(r));console.log('Private fixture stopped');

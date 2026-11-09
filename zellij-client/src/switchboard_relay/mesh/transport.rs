@@ -824,6 +824,15 @@ async fn terminal_response(
     if path == "/switchboard/codex/reply" && request.method() == Method::POST {
         return Ok(native_messages::gateway_reply(request).await);
     }
+    if request.uri().path() == "/switchboard/codex/reply" && request.method() == Method::DELETE {
+        if !native_messages::outbox::writable_host(&host).await {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "Writable host authentication is required",
+            ));
+        }
+        return Ok(native_messages::gateway_receipt(request).await);
+    }
     if path == "/switchboard/codex/queue" && request.method() == Method::POST {
         return Ok(native_messages::gateway(request).await);
     }

@@ -727,6 +727,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       try{
         const response=await fetch('/api/hosts/'+encodeURIComponent(state.destination.host)+'/codex/reply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({thread:state.destination.thread,message:state.payload,send_key:state.sendKey}),signal:AbortSignal.timeout(30000)});
         const result=await response.json();
+        state.blockedBy=result.status==='review'?result.blocked_by:null;
         if(state.status!=='answered')state.status=response.ok&&result.status==='queued'?'queued':result.status==='failed'?'failed':'uncertain';
         if(!['queued','answered'].includes(state.status))state.error=result.detail||'Delivery is not confirmed. Retry to check its status.';
       }catch{if(state.status!=='answered'){state.status='uncertain';state.error='Delivery is not confirmed. Retry to check its status.';}}
@@ -769,6 +770,13 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       body.append(dismiss);card.append(reopen);
       checkTerminal.type='button';checkTerminal.onclick=()=>show(false);body.append(checkTerminal);
       retry.type='button';retry.onclick=()=>void sendAsyncAnswer(item,state,state.status!=='failed');status.setAttribute('role','status');card.append(status,retry);
+      const discard=el('button','Discard saved reply','conversation-question-choice');discard.type='button';discard.onclick=async()=>{
+        const blocked=state.blockedBy;discard.disabled=true;
+        try{if(await discardSavedReply(state.destination.host,state.destination.thread,blocked)){
+          if(blocked.send_key===state.sendKey&&state.status!=='answered'){state.status='draft';state.sendKey=null;state.payload=null;state.error='';state.blockedBy=null;}
+          state.receiptChecked=0;await checkSavedReplies();syncAsyncQuestions();
+        }}finally{discard.disabled=false;}
+      };card.append(discard);
       card.sync=()=>{
         const locked=!['draft','failed'].includes(state.status);
         if(state.status!==state.shownStatus){if(locked&&state.status!=='uncertain')state.collapsed=true;else if(['failed','uncertain'].includes(state.status))state.collapsed=false;state.shownStatus=state.status;}
@@ -789,6 +797,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
         }
         send.disabled=locked||!state.answers.every(answer=>answer.trim());
         retry.hidden=!['failed','uncertain'].includes(state.status);
+        discard.hidden=state.status!=='uncertain'||!state.blockedBy;
         dismiss.hidden=!['draft','failed'].includes(state.status);reopen.hidden=state.status!=='dismissed';
         checkTerminal.hidden=!['queued','uncertain'].includes(state.status);
         card.classList.toggle('answering',state.status==='sending');
@@ -1026,7 +1035,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       const key=identity(target),sentItems=acknowledge(key,messages,startCursor);
       const visibleOutgoing=sentItems.filter(item=>item.transcriptCursor===undefined);
       const entries=timeline();
-      const snapshot={start:startCursor,messages:entries.map(({key,item})=>JSON.stringify([key,signatureOf(item)])),outgoing:JSON.stringify(visibleOutgoing.map(({id,text,files,state,detail})=>({id,text,files:files.map(file=>[file.name,!!file.path]),state,detail})))};
+      const snapshot={start:startCursor,messages:entries.map(({key,item})=>JSON.stringify([key,signatureOf(item)])),outgoing:JSON.stringify(visibleOutgoing.map(({id,text,files,state,detail,blockedBy})=>({id,text,files:files.map(file=>[file.name,!!file.path]),state,detail,blockedBy})))};
       if(lastPaint&&lastPaint.start===snapshot.start&&lastPaint.outgoing===snapshot.outgoing&&lastPaint.messages.length===snapshot.messages.length&&snapshot.messages.every((signature,i)=>signature===lastPaint.messages[i]))return;
       lastPaint=snapshot;
       // The transcript now has the launched prompt: drop the stand-in and its starting row.
@@ -1075,7 +1084,7 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       }
       for(const [key,summary] of summaries)if(!summaryKeys.has(key)){summary.remove();summaries.delete(key);}
       for(const sent of visibleOutgoing){
-        const signature=JSON.stringify([sent.text,sent.files.map(file=>[file.name,!!file.path]),sent.state,sent.detail]);let entry=renderedOutgoing.get(sent.id);
+        const signature=JSON.stringify([sent.text,sent.files.map(file=>[file.name,!!file.path]),sent.state,sent.detail,sent.blockedBy]);let entry=renderedOutgoing.get(sent.id);
         if(!entry||entry.signature!==signature){
           const article=el('article',undefined,'conversation-message user conversation-outgoing '+sent.state),label=el('div','You','conversation-label');article.append(label);textBlocks(article,sent.text||'');completions.decorate(article);
           article.dataset.conversationEntry='outgoing-'+sent.id;contentResize?.observe(article);
@@ -1085,6 +1094,16 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
           const footer=el('div',undefined,'conversation-outgoing-status');footer.append(el('span',sent.detail||outgoingLabel(sent.state)));
           if(['failed','uncertain'].includes(sent.state)&&sent.native){
             const retry=el('button','Retry');retry.type='button';retry.onclick=()=>retrySend(sent);footer.append(retry);
+            if(sent.blockedBy){
+              const discard=el('button','Discard saved reply');discard.type='button';discard.onclick=async()=>{
+                const blocked=sent.blockedBy;discard.disabled=true;
+                try{if(await discardSavedReply(sent.host,sent.thread,blocked)){
+                  if(blocked.send_key===sent.sendKey)forgetCancelledReply(sent);
+                  for(const item of outgoing.get(sent.key)||[])item.receiptChecked=0;
+                  await checkSavedReplies();paint();
+                }}finally{discard.disabled=false;}
+              };footer.append(discard);
+            }
           }
           article.append(footer);if(entry){contentResize?.unobserve(entry.node);entry.node.remove();}entry={signature,node:article};renderedOutgoing.set(sent.id,entry);
         }
@@ -1121,17 +1140,40 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
     }
     function acknowledgeVisible(){if(open&&!panel.hidden&&!document.hidden&&document.hasFocus()&&nextCursor===null&&nearBottom())viewed(target);}
     const firstPage=15;
+    function forgetCancelledReply(sent){
+      if(pendingFor(sent.key)===sent){pendingSends.delete(sent.key);sendQueued(sent.key,false);notSent(sent.pane);}
+      outgoing.set(sent.key,(outgoing.get(sent.key)||[]).filter(item=>item!==sent));
+      if(retryKeys.get(sent.key)?.id===sent.sendKey)retryKeys.delete(sent.key);
+      paintFiles();
+    }
+    async function discardSavedReply(host,thread,blocked){
+      if(!blocked?.send_key||typeof blocked.message!=='string'||!confirm('Discard this saved reply?\n\n'+blocked.message+'\n\nIt will not be sent again. Later saved replies will continue.'))return false;
+      try{
+        const response=await fetch('/api/hosts/'+encodeURIComponent(host)+'/codex/reply?'+new URLSearchParams({thread,send_key:blocked.send_key}),{method:'DELETE',signal:AbortSignal.timeout(10000)});
+        if(response.ok&&(await response.json()).status==='cancelled')return true;
+      }catch{}
+      sendStatus('Could not discard the saved reply. Check its status and try again.');return false;
+    }
     async function checkSavedReplies(){
       const current=target,key=identity(current),items=outgoing.get(key)||[];
       for(const state of asyncQuestions.values()){
-        if(state.destination.chatKey!==key||state.status!=='queued'||state.receiptPending||Date.now()-(state.receiptChecked||0)<=5000)continue;
-        state.receiptPending=true;state.receiptChecked=Date.now();
-        try{const response=await fetch('/api/hosts/'+encodeURIComponent(state.destination.host)+'/codex/receipt?'+new URLSearchParams({thread:state.destination.thread,send_key:state.sendKey}),{signal:AbortSignal.timeout(5000)});if(!response.ok)continue;const result=await response.json();if(state.status==='queued'&&result.status==='review'){state.status='uncertain';state.error=result.detail||asyncUnconfirmed;if(identity(target)===key)syncAsyncQuestions();}}
+        if(state.destination.chatKey!==key||!['queued','uncertain'].includes(state.status)||state.receiptPending||Date.now()-(state.receiptChecked||0)<=5000)continue;
+        state.receiptPending=true;state.receiptChecked=Date.now();const checkedKey=state.sendKey;
+        try{const response=await fetch('/api/hosts/'+encodeURIComponent(state.destination.host)+'/codex/receipt?'+new URLSearchParams({thread:state.destination.thread,send_key:checkedKey}),{signal:AbortSignal.timeout(5000)});if(!response.ok)continue;const result=await response.json();
+          if(state.status==='answered'||state.sendKey!==checkedKey)continue;
+          if(result.status==='review'){state.status='uncertain';state.error=result.detail||asyncUnconfirmed;state.blockedBy=result.blocked_by;}
+          else if(result.status==='cancelled'){state.status='draft';state.sendKey=null;state.payload=null;state.error='';state.blockedBy=null;}
+          else if(['pending','queued'].includes(result.status)){state.status='queued';state.error='';state.blockedBy=null;}
+          if(identity(target)===key)syncAsyncQuestions();}
         catch{}finally{state.receiptPending=false;}
       }
-      for(const sent of items.filter(item=>item.native&&item.state==='queued'&&!item.receiptPending&&Date.now()-(item.receiptChecked||0)>5000)){
+      for(const sent of items.filter(item=>item.native&&['queued','uncertain'].includes(item.state)&&!item.receiptPending&&Date.now()-(item.receiptChecked||0)>5000)){
         sent.receiptPending=true;sent.receiptChecked=Date.now();
-        try{const response=await fetch('/api/hosts/'+encodeURIComponent(sent.host)+'/codex/receipt?'+new URLSearchParams({thread:sent.thread,send_key:sent.sendKey}),{signal:AbortSignal.timeout(5000)});if(!response.ok)continue;const result=await response.json();if(result.status==='review'){sent.state='uncertain';sent.detail=result.detail||'Saved. Check the conversation before resending.';if(identity(target)===key)paint();}}
+        try{const response=await fetch('/api/hosts/'+encodeURIComponent(sent.host)+'/codex/receipt?'+new URLSearchParams({thread:sent.thread,send_key:sent.sendKey}),{signal:AbortSignal.timeout(5000)});if(!response.ok)continue;const result=await response.json();
+          if(result.status==='review'){sent.state='uncertain';sent.detail=result.detail||'Saved. Check the conversation before resending.';sent.blockedBy=result.blocked_by;}
+          else if(result.status==='cancelled')forgetCancelledReply(sent);
+          else if(['pending','queued'].includes(result.status)&&sent.state==='uncertain'){sent.state='queued';sent.detail='';sent.blockedBy=null;clearSentDraft(sent);}
+          if(identity(target)===key)paint();}
         catch{}finally{sent.receiptPending=false;}
       }
     }
@@ -1252,6 +1294,8 @@ ${tokens(usage.unpriced_tokens)} tokens from models without a known price are no
       try{
         const response=await fetch('/api/hosts/'+encodeURIComponent(sent.host)+'/codex/reply',{method:'POST',keepalive:true,headers:{'Content-Type':'application/json'},body:JSON.stringify({thread:sent.thread,message:sent.payload,send_key:sent.sendKey}),signal:request.signal});
         const result=await response.json(),ok=response.ok&&result.status==='queued';
+        if(response.ok&&result.status==='cancelled'){forgetCancelledReply(sent);paint();return;}
+        sent.blockedBy=result.status==='review'?result.blocked_by:null;
         complete(sent,ok,ok?'':result.detail||'Could not confirm sending. Retry to check its status.',result.status!=='failed');
       }catch{complete(sent,false,request.signal.aborted?'Sending timed out. Delivery is not confirmed. Retry to check its status.':'Could not confirm sending. Retry to check its status.',true);}
       finally{clearTimeout(timeout);if(sent.request===request)sent.request=null;}
