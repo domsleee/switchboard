@@ -24,7 +24,7 @@ test('native child lifecycle hooks cannot report or consume the parent pane inbo
     await new Promise(resolve=>relay.listen(0,'127.0.0.1',resolve));
     const sessions=path.join(root,'sessions');fs.mkdirSync(sessions);
     const transcript=path.join(sessions,'rollout-child.jsonl');
-    const parent='00000000-0000-4000-8000-000000000001',child='00000000-0000-4000-8000-000000000002';
+    const parent='00000001-0000-4000-8000-000000000001',child='00000002-0000-4000-8000-000000000002';
     fs.writeFileSync(transcript,JSON.stringify({type:'session_meta',payload:{id:child,session_id:parent,
       source:{subagent:{thread_spawn:{parent_thread_id:parent}}},thread_source:'subagent'}})+'\n');
     const env={...process.env,CODEX_HOME:root,SWITCHBOARD_RELAY_URL:`http://127.0.0.1:${relay.address().port}`,
@@ -48,10 +48,16 @@ test('native child lifecycle hooks cannot report or consume the parent pane inbo
     assert.deepEqual(requests,[],'Neither attention updates nor inbox requests may escape from a native child');
     assert.equal(fs.existsSync(env.SWITCHBOARD_MESSAGE_STATE_DIR),false,'Child hooks must not alter parent cursor/identity files');
     for(const hook_event_name of ['SessionStart','Stop'])assert.equal(await run({session_id:parent,hook_event_name,transcript_path:transcript,cwd:root},true),'');
-    // Resuming that child as a terminal agent changes the hook's own session ID.
-    await run({session_id:child,hook_event_name:'UserPromptSubmit',transcript_path:transcript,cwd:root});
+    // Actual Codex resume keeps the parent's session ID but starts a direct
+    // user turn. Its attention update and inbox must use the child's ID.
+    const turn='00000000-0000-4000-8000-000000000003';
+    fs.appendFileSync(transcript,JSON.stringify({type:'event_msg',payload:{type:'task_started',turn_id:turn,
+      turn_attribution:{turn_id:turn,root_turn_id:turn,parent_turn_id:null,turn_trigger:'user'}}})+'\n');
+    await run({session_id:parent,agent_id:child,turn_id:turn,hook_event_name:'UserPromptSubmit',transcript_path:transcript,cwd:root});
     assert.equal(JSON.parse(requests.find(r=>r.url==='/api/agent-hook').body).session_id,child);
     assert.ok(requests.some(r=>r.url!=='/api/agent-hook'),'The terminal owner still reaches its own inbox');
+    assert.ok(requests.some(r=>r.url!=='/api/agent-hook'&&r.body.includes('codex-'+child.slice(0,8))),
+      'Registration uses the child identity');
   }finally{
     relay.closeAllConnections();await new Promise(resolve=>relay.close(resolve));
     fs.rmSync(root,{recursive:true,force:true});
@@ -104,10 +110,21 @@ test('Codex discovers and executes its plugin hooks and reloads content trust',
   let child,relay,env;
   try{
     const events=[];
+    let spawned=false,nativeChild;
     relay=http.createServer((request,response)=>{let body='';request.on('data',chunk=>body+=chunk);request.on('end',()=>{
       if(request.url==='/api/agent-hook'){events.push({event:JSON.parse(body),headers:request.headers});response.writeHead(204).end();}
       else if(request.url.startsWith('/v1/responses')){
-        const item={id:'msg_fixture',type:'message',role:'assistant',status:'completed',content:[{type:'output_text',text:'Fixture reply',annotations:[]}]};
+        const input=JSON.parse(body);
+        const spawnResult=input.input.find(item=>item.type==='function_call_output'&&item.call_id==='fixture-spawn');
+        if(spawnResult)nativeChild=JSON.parse(spawnResult.output).agent_id;
+        let item={id:'msg_fixture',type:'message',role:'assistant',status:'completed',content:[{type:'output_text',text:'Fixture reply',annotations:[]}]};
+        if(!spawned){
+          spawned=true;
+          const tools=input.tools.flatMap(tool=>tool.type==='namespace'?tool.tools.map(item=>({...item,namespace:tool.name})):[tool]);
+          const tool=tools.find(tool=>tool.name==='spawn_agent');
+          item={id:'fc_fixture',type:'function_call',call_id:'fixture-spawn',name:tool.name,namespace:tool.namespace,
+            arguments:JSON.stringify({message:'Reply with Fixture child only.'}),status:'completed'};
+        }
         const result={id:'resp_fixture',object:'response',status:'completed',model:'fixture',output:[item],usage:{input_tokens:1,output_tokens:1,total_tokens:2}};
         const stream=[{type:'response.created',response:{...result,status:'in_progress',output:[]}},
           {type:'response.output_item.added',output_index:0,item:{...item,status:'in_progress',content:[]}},
@@ -188,6 +205,35 @@ test('Codex discovers and executes its plugin hooks and reloads content trust',
     assert.equal(started.headers['x-zellij-pane'],'7');
     assert.ok(events.some(item=>item.event.hook_event_name==='UserPromptSubmit'));
     assert.ok(events.some(item=>item.event.hook_event_name==='Stop'),'Codex must complete the local fixture turn');
+    assert.ok(nativeChild,'The fixture must actually spawn a native Codex child');
+    const childPath=file=>file&&file.endsWith('-'+nativeChild+'.jsonl');
+    // Wait for the delegated turn to settle before resuming it as the terminal
+    // conversation. Subagent turns do not emit a Stop hook in Codex 0.167.
+    let settled=false;
+    const childDeadline=Date.now()+10000;
+    while(Date.now()<childDeadline){
+      const result=await call('thread/read',{threadId:nativeChild,includeTurns:true});
+      if(result.thread.turns.some(turn=>turn.status==='completed')){settled=true;break;}
+      await new Promise(resolve=>setTimeout(resolve,25));
+    }
+    assert.ok(settled,'The delegated turn must finish');
+    if(binary)assert.ok(!events.some(item=>childPath(item.event.transcript_path)),
+      'Delegated hooks must not change the parent pane');
+    await call('thread/resume',{threadId:nativeChild});
+    const beforeResume=events.length;
+    const resumed=await call('turn/start',{threadId:nativeChild,input:[{type:'text',text:'Fixture resumed'}]});
+    const resumeDeadline=Date.now()+10000;
+    let ownHook;
+    while(Date.now()<resumeDeadline){
+      ownHook=events.slice(beforeResume).find(item=>item.event.hook_event_name==='UserPromptSubmit'&&item.event.turn_id===resumed.turn.id);
+      if(ownHook)break;
+      await new Promise(resolve=>setTimeout(resolve,25));
+    }
+    assert.ok(ownHook,'A resumed child must reach its own pane');
+    assert.ok(childPath(ownHook.event.transcript_path));
+    assert.equal(ownHook.event.session_id,binary?nativeChild:thread.thread.id,
+      'Switchboard corrects the inherited Codex session ID for direct user turns');
+    await call('thread/archive',{threadId:nativeChild});
     await call('thread/archive',{threadId:thread.thread.id});
     // A changed hook requires fresh trust.
     const cached=path.join(root,'plugins/cache/switchboard/switchboard/local/hooks/codex.json');
