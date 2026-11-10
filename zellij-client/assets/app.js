@@ -3292,6 +3292,7 @@ class ResumableConnection {
         this.pending = []; this.bytes = 0; this.inflight = null; this.socket = null;
         this.nonce = null; this.stopped = false; this.first = true; this.retry = null;
         this.offlineSince = null; this.outputWork = Promise.resolve();
+        this.replacementAck = null;
         this.terminal = new LogicalSocket(this, 'terminal');
         this.control = new LogicalSocket(this, 'control');
     }
@@ -3332,12 +3333,13 @@ class ResumableConnection {
         this.pending[0].sent = true; this.inflight = input.seq;
         this.socket.send(JSON.stringify({ type: 'input', generation: this.generation, input }));
     }
-    acknowledge(sequence) {
+    acknowledge(sequence, replaceable = false) {
         if (!Number.isSafeInteger(sequence) || sequence < this.inputAck || sequence >= this.nextInput || sequence > (this.pending[0]?.seq ?? this.inputAck)) {
             throw new Error('Invalid terminal input acknowledgment');
         }
         while (this.pending[0]?.seq <= sequence) this.bytes -= this.pending.shift().bytes;
-        this.inputAck = sequence; this.inflight = null; this.flush();
+        this.inputAck = sequence; this.replacementAck = replaceable === true ? sequence : null;
+        this.inflight = null; this.flush();
     }
     connect() {
         if (this.stopped || this.retirementPaused) return;
@@ -3356,7 +3358,7 @@ class ResumableConnection {
                 // Do not wait for the TCP close handshake on a blackholed link.
                 socket.onclose(); socket.close();
             }
-            if (this.offlineSince !== null && Date.now() - this.offlineSince >= 120000) this.retiring ? this.pauseRetirement() : this.fail("Terminal attachment could not resume. Pending input is retained.");
+            if (this.retiring && this.offlineSince !== null && Date.now() - this.offlineSince >= 120000) this.pauseRetirement();
         }, 1000);
         socket.onmessage = event => {
             if (this.socket !== socket || this.stopped) return;
@@ -3368,7 +3370,7 @@ class ResumableConnection {
                     if (!Number.isSafeInteger(message.generation) || message.generation < this.generation || message.generation > this.generation + 1) throw new Error('Invalid terminal generation');
                     this.generation = message.generation; this.nonce = null;
                     this.connected = true; this.offlineSince = null;
-                    this.acknowledge(message.input_ack);
+                    this.acknowledge(message.input_ack, message.replaceable);
                     if (this.first) {
                         this.first = false;
                         this.terminal.readyState = this.control.readyState = 1;
@@ -3377,8 +3379,9 @@ class ResumableConnection {
                     markConnectionEstablished(); this.flush();
                     this.checkRetirement?.();
                 } else if (message.type === 'heartbeat') {
+                    this.replacementAck = message.replaceable === true && message.input_ack === this.inputAck ? this.inputAck : null;
                     socket.send(JSON.stringify({type:'ack',generation:this.generation,applied:this.applied}));
-                } else if (message.type === 'ack') this.acknowledge(message.input_ack);
+                } else if (message.type === 'ack') this.acknowledge(message.input_ack, message.replaceable);
                 else if (message.type === 'retirement_rejected') {
                     if (!this.retirement) throw new Error('Unexpected retirement response');
                     const {reject} = this.retirement; this.clearRetirement(); this.retiring = false;
@@ -3387,6 +3390,14 @@ class ResumableConnection {
                     if (!this.retirement) throw new Error('Terminal attachment was retired');
                     const {resolve} = this.retirement; this.clearRetirement();
                     this.connected = false; this.close(); resolve(true);
+                } else if (message.type === 'expired' || (message.type === 'error' && message.failure?.code === 'attachment_expired')) {
+                    // An empty browser queue alone is insufficient: an acknowledged
+                    // paste prefix can still be buffered in the worker's parser.
+                    if (!this.pending.length && (this.nextInput === 1 || this.replacementAck === this.inputAck) && !this.retirement && !this.retiring) {
+                        this.connected = false;
+                        this.close(1006); // the existing bootstrap restores the same pane
+                    } else this.fail(message.message || ('The terminal connection expired before safe recovery could be confirmed.' +
+                        (this.pending.length ? ' Unsent input is kept in this page.' : '')), message.failure, message.failure_saved);
                 } else if (message.type === 'error') this.fail(message.message, message.failure, message.failure_saved);
                 else if (message.type === 'output') {
                     this.outputWork = this.outputWork.then(() => this.apply(message.record)).catch(error => this.fail(error.message));
@@ -3399,13 +3410,15 @@ class ResumableConnection {
             this.offlineSince ??= Date.now();
             const elapsed = Date.now() - this.offlineSince;
             if (elapsed > 1500) showConnectionStatus("Reconnecting… Typing is buffered");
-            if (elapsed >= 120000) {
-                if (this.retiring) this.pauseRetirement();
-                else this.fail('Terminal attachment could not resume. Pending input has not been replayed into a new session.'); return;
+            if (this.retiring && elapsed >= 120000) {
+                this.pauseRetirement(); return;
             }
+            // Time offline, including browser suspension, says nothing about
+            // whether the worker can resume. Keep the same owner and input
+            // journal until it replies; never replace them on a timer.
             this.retry = setTimeout(() => this.connect(), Math.min(1000, 100 + elapsed / 10));
         };
-        socket.onerror = () => {}; // close drives the bounded retry
+        socket.onerror = () => {}; // close drives the retry
     }
     async apply(record) {
         if (this.stopped) return;
@@ -3484,7 +3497,7 @@ class ResumableConnection {
         showConnectionStatus();
         window.dispatchEvent(new CustomEvent('zellij-resume-failed', { detail: String(message) }));
     }
-    close() {
+    close(code = 4001) {
         if (this.stopped) return;
         if (this.connected && !this.retiring) {
             try { this.socket.send(JSON.stringify({ type: 'close', generation: this.generation })); } catch (_) {}
@@ -3492,7 +3505,7 @@ class ResumableConnection {
         this.stopped = true; this.connected = false; clearTimeout(this.retry); clearInterval(this.watchdog);
         this.socket?.close();
         for (const socket of [this.terminal, this.control]) {
-            socket.readyState = 3; socket.fire('close', { code: 4001 });
+            socket.readyState = 3; socket.fire('close', { code });
         }
     }
 }
@@ -3680,9 +3693,9 @@ function initWebSockets(boot, term, fitAddon) {
                 wheel_lines: fineScrolling() ? 1 : 0 });
             wsTerminal = pair.terminal;
             wsControl = pair.control;
-            // The worker retains focus and parser state. Creating a new native
-            // client or replaying focus restoration would target a different view.
-            restorePane = null;
+            // Transport retries stay within this owner and retain its focus.
+            // A fresh bootstrap after expiry must restore the previous pane
+            // before releasing typing, just like a legacy socket replacement.
         } else {
             wsTerminal = new WebSocket(wsTerminalUrl);
             wsControl = new WebSocket(`${wsBaseUrl}/ws/control?web_client_id=${encodeURIComponent(ownWebClientId)}`);

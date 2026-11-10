@@ -197,9 +197,9 @@ export function initWebSockets(boot, term, fitAddon) {
                 wheel_lines: fineScrolling() ? 1 : 0 });
             wsTerminal = pair.terminal;
             wsControl = pair.control;
-            // The worker retains focus and parser state. Creating a new native
-            // client or replaying focus restoration would target a different view.
-            restorePane = null;
+            // Transport retries stay within this owner and retain its focus.
+            // A fresh bootstrap after expiry must restore the previous pane
+            // before releasing typing, just like a legacy socket replacement.
         } else {
             wsTerminal = new WebSocket(wsTerminalUrl);
             wsControl = new WebSocket(`${wsBaseUrl}/ws/control?web_client_id=${encodeURIComponent(ownWebClientId)}`);

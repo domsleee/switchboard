@@ -188,14 +188,15 @@ pub(in crate::web_client) async fn proxy(
     ws: WebSocketUpgrade,
 ) -> Response {
     // This route is protected by the ordinary web authentication middleware.
-    // Never create a new worker on resume: losing the state owner is terminal.
+    // Never create a new worker on resume. The browser alone knows whether it
+    // has unacknowledged input, and must explicitly bootstrap a clean viewer.
     let endpoint = match find(
         &app.config_file_path,
         &query.session,
         &recovery_identity(app.sharing_recovery.as_ref(), &query.session),
     ) {
         Ok(e) => e,
-        Err(_) => return StatusCode::GONE.into_response(),
+        Err(_) => return expired(ws),
     };
     let encoded = match serde_json::to_value(&query) {
         Ok(v) => v,
@@ -234,7 +235,15 @@ pub(in crate::web_client) async fn proxy(
     {
         Ok(Ok((socket, _))) => socket,
         Ok(Err(tokio_tungstenite::tungstenite::Error::Http(response))) => {
-            return (response.status(), "Attachment cannot resume").into_response()
+            if response.status() == StatusCode::GONE {
+                return expired(ws);
+            }
+            return (response.status(), "Attachment cannot resume").into_response();
+        },
+        Ok(Err(tokio_tungstenite::tungstenite::Error::Io(error)))
+            if error.kind() == std::io::ErrorKind::ConnectionRefused =>
+        {
+            return expired(ws);
         },
         _ => return StatusCode::BAD_GATEWAY.into_response(),
     };
@@ -273,6 +282,16 @@ pub(in crate::web_client) async fn proxy(
             };
             tokio::select! {_=outbound=>{},_=inbound=>{}}
         })
+}
+
+fn expired(ws: WebSocketUpgrade) -> Response {
+    // HTTP upgrade errors are opaque to browser WebSockets. Send the loss of
+    // the retained owner explicitly, so it is distinct from a network outage.
+    ws.on_upgrade(|mut socket| async move {
+        let _ = socket
+            .send(Message::Text(json!({"type":"expired"}).to_string().into()))
+            .await;
+    })
 }
 
 pub(in crate::web_client) fn run_worker(

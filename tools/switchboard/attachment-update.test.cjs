@@ -78,6 +78,36 @@ let native, relay, browser, updateController, created=false;
   await page.waitForFunction(()=>document.querySelector('#terminals>iframe.active')?.contentWindow.testPair?.terminal.readyState===1);
   await page.waitForFunction(()=>document.querySelector('#terminals>iframe.active')?.contentWindow.__zjLastMobileState?.active_pane);
   const workers=(await(await fetch(url+'/api/health')).json()).attachment_workers;assert.equal(workers.length,1);
+  if(process.env.SWITCHBOARD_RECONNECT_PROOF==='1') {
+    fs.writeFileSync(path.join(dir,'go'),'');
+    const state=()=>page.evaluate(()=>{const w=document.querySelector('#terminals>iframe.active').contentWindow,o=w.testPair.terminal.owner;return {viewer:o.viewer,connected:o.connected,pending:o.pending.length,checkpoint:o.replacementAck===o.inputAck,pane:w.__zjLastMobileState?.active_pane,failed:w.__zjResumeFailure};});
+    const initial=await state();
+    await page.evaluate(()=>{const w=document.querySelector('#terminals>iframe.active').contentWindow;window.savedTerm=w.term;window.savedDocument=w.document;});
+    // Model a suspended browser's wall-clock jump without advancing the engine.
+    await page.evaluate(()=>{
+      const o=document.querySelector('#terminals>iframe.active').contentWindow.testPair.terminal.owner,s=o.socket;
+      o.offlineSince=Date.now()-5*60*60*1000;s.onclose();s.close();o.terminal.send('after-sleep|');
+    });
+    const resumedAt=Date.now();
+    await waitFor(async()=>{const s=await state();return s.connected&&!s.pending&&!s.failed;},'Viewer did not resume after a long sleep');
+    const resumeMs=Date.now()-resumedAt;
+    await waitFor(()=>fs.readFileSync(path.join(dir,'input.bin'),'utf8')==='after-sleep|','Queued typing was lost or duplicated');
+    assert.equal((await state()).viewer,initial.viewer,'A transport outage preserves its input owner');
+    await waitFor(async()=> (await state()).checkpoint,'Worker did not confirm a clean parser');
+    // This worker belongs only to this private fixture; leave the engine running.
+    process.kill(workers[0].pid,'SIGTERM');
+    const replacedAt=Date.now();
+    await waitFor(async()=>{const s=await state();return s.viewer!==initial.viewer&&s.connected&&!s.pending&&s.pane?.pane_id===initial.pane.pane_id&&!s.failed;},'A lost clean worker did not recover to its pane');
+    const replaceMs=Date.now()-replacedAt;
+    await page.evaluate(()=>document.querySelector('#terminals>iframe.active').contentWindow.term.input('after-expiry|'));
+    await waitFor(()=>fs.readFileSync(path.join(dir,'input.bin'),'utf8')==='after-sleep|after-expiry|','Typing after worker replacement failed');
+    assert.equal(await page.evaluate(()=>{const w=document.querySelector('#terminals>iframe.active').contentWindow;return w.term===window.savedTerm&&w.document===window.savedDocument;}),true);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(dir,'fixture.json'))).pid,fixturePid);
+    assert.deepEqual(identities(),before,'Recovery preserves the engine and panes');
+    assert.equal(await page.frameLocator('#terminals>iframe.active').locator('.security-modal.error').count(),0);
+    console.log(`PASS: five-hour browser suspension recovers on the same owner in ${resumeMs}ms; clean worker loss recovers in ${replaceMs}ms; typing is delivered exactly once and the engine, pane, document and terminal survive`);
+    return;
+  }
   if(process.env.SWITCHBOARD_FAILURE_LOG_PROOF==='1') {
     const browserReports=[];
     page.on('request',request=>{if(new URL(request.url()).pathname==='/api/diagnostics/terminal-failure')browserReports.push(request.postDataJSON());});

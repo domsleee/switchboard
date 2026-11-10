@@ -21,6 +21,12 @@ Opening Switchboard shows existing sessions. Closing the last tab leaves the
 workspace empty until you use **+ New tab**. Reloading an old terminal viewer or
 reconnecting after an update cannot recreate an ended session.
 
+Browser connections keep retrying through network outages and browser suspension.
+If the retained viewer expires, a clean connection reopens the existing session
+and restores its pane before typing resumes. Once input has been sent, replacement
+requires the worker's confirmation that every record was acknowledged and no partial
+escape or paste sequence remained. Unconfirmed input never moves to a new viewer.
+
 ## Running the relay by hand
 
 Run on the Mac:
