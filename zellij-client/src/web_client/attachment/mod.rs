@@ -339,13 +339,9 @@ async fn report_failure<'a>(
 
 async fn transport(socket: WebSocket, viewer: Arc<Viewer>, generation: u64, mut sent: u64) {
     let (mut writer, mut reader) = socket.split();
-    let input_ack = viewer.journal.lock().unwrap().input_ack();
+    let hello = delivery_checkpoint(viewer.as_ref(), "hello", Some(generation));
     if writer
-        .send(Message::Text(
-            json!({"type":"hello","generation":generation,"input_ack":input_ack})
-                .to_string()
-                .into(),
-        ))
+        .send(Message::Text(hello.to_string().into()))
         .await
         .is_err()
     {
@@ -395,7 +391,7 @@ async fn transport(socket: WebSocket, viewer: Arc<Viewer>, generation: u64, mut 
         }
         tokio::select! {
             _=&mut notified=>{},
-            _=heartbeat.tick()=>{if writer.send(Message::Text(json!({"type":"heartbeat"}).to_string().into())).await.is_err(){break;}},
+            _=heartbeat.tick()=>{if writer.send(Message::Text(delivery_checkpoint(&viewer,"heartbeat",None).to_string().into())).await.is_err(){break;}},
             frame=reader.next()=>{
                 let Some(Ok(frame))=frame else {break;};
                 *viewer.touched.lock().unwrap()=Instant::now();
@@ -406,7 +402,12 @@ async fn transport(socket: WebSocket, viewer: Arc<Viewer>, generation: u64, mut 
                             ensure!(g==generation,"Stale transport");
                             let (done,reply)=oneshot::channel();
                             viewer.input.send(Delivery{generation,input,done}).await.map_err(|_|anyhow::anyhow!("Attachment ended"))?;
-                            Ok(Some(json!({"type":"ack","input_ack":reply.await??})))
+                            let input_ack=reply.await??;
+                            let mut checkpoint=delivery_checkpoint(&viewer,"ack",None);
+                            // A newer transport may already have delivered another record.
+                            if checkpoint["input_ack"]!=input_ack {checkpoint["replaceable"]=json!(false);}
+                            checkpoint["input_ack"]=json!(input_ack);
+                            Ok(Some(checkpoint))
                         },
                         Request::Ack{generation:g,applied}=>{
                             let mut journal=viewer.journal.lock().unwrap();
@@ -438,6 +439,22 @@ async fn transport(socket: WebSocket, viewer: Arc<Viewer>, generation: u64, mut 
             }
         }
     }
+}
+
+// A browser may replace an expired viewer only after every input record was
+// acknowledged and the parser had no unfinished escape or paste sequence.
+// Snapshot under the journal lock, which also protects input parsing/dispatch.
+fn delivery_checkpoint(viewer: &Viewer, kind: &str, generation: Option<u64>) -> serde_json::Value {
+    let journal = viewer.journal.lock().unwrap();
+    let mut message = json!({
+        "type": kind,
+        "input_ack": journal.input_ack(),
+        "replaceable": journal.failure.is_none() && !viewer.parser_pending.load(Ordering::Acquire),
+    });
+    if let Some(generation) = generation {
+        message["generation"] = json!(generation);
+    }
+    message
 }
 
 async fn attachment(
@@ -817,10 +834,9 @@ fn focus_marker(lines: &serde_json::Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[tokio::test]
-    async fn switchboard_attachment_intentional_close_and_retirement_do_not_report_failure() {
+    fn viewer() -> Viewer {
         let (input, incoming) = mpsc::channel(1);
-        let viewer = Viewer {
+        Viewer {
             journal: Mutex::new(Journal::default()),
             notify: Notify::new(),
             input,
@@ -835,7 +851,40 @@ mod tests {
             failure_context: Mutex::new(FailureContext::new("attach")),
             failure_report: tokio::sync::OnceCell::new(),
             failure_saved: AtomicBool::new(false),
-        };
+        }
+    }
+    #[test]
+    fn switchboard_attachment_checkpoint_requires_a_clean_parser_and_live_journal() {
+        let viewer = viewer();
+        assert_eq!(
+            delivery_checkpoint(&viewer, "hello", Some(1)),
+            json!({
+                "type":"hello", "generation":1, "input_ack":0, "replaceable":true
+            })
+        );
+        viewer.journal.lock().unwrap().input = Some(Input {
+            seq: 1,
+            channel: "terminal".into(),
+            data: "\u{1b}[200~partial".into(),
+        });
+        viewer.parser_pending.store(true, Ordering::Release);
+        let checkpoint = delivery_checkpoint(&viewer, "ack", None);
+        assert_eq!(checkpoint["input_ack"], 1);
+        assert_eq!(checkpoint["replaceable"], false);
+        viewer.parser_pending.store(false, Ordering::Release);
+        assert_eq!(
+            delivery_checkpoint(&viewer, "heartbeat", None)["replaceable"],
+            true
+        );
+        viewer.journal.lock().unwrap().failure = Some("failed".into());
+        assert_eq!(
+            delivery_checkpoint(&viewer, "heartbeat", None)["replaceable"],
+            false
+        );
+    }
+    #[tokio::test]
+    async fn switchboard_attachment_intentional_close_and_retirement_do_not_report_failure() {
+        let viewer = viewer();
         assert_eq!(
             final_reply(&viewer, "Terminal viewer closed".into()).await["type"],
             "retired"

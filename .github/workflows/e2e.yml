@@ -159,6 +159,10 @@ jobs:
         run: node tools/switchboard/resumable-viewer.test.cjs target/dev-opt/zellij${{ runner.os == 'Windows' && '.exe' || '' }}
       - name: Prove production attachment survives connection service replacement
         run: node tools/switchboard/attachment-update.test.cjs target/dev-opt/zellij${{ runner.os == 'Windows' && '.exe' || '' }} target/dev-opt/zellij${{ runner.os == 'Windows' && '.exe' || '' }}
+      - name: Prove long browser disconnects and clean worker loss recover
+        env:
+          SWITCHBOARD_RECONNECT_PROOF: '1'
+        run: node tools/switchboard/attachment-update.test.cjs target/dev-opt/zellij${{ runner.os == 'Windows' && '.exe' || '' }} target/dev-opt/zellij${{ runner.os == 'Windows' && '.exe' || '' }}
       - name: Prove viewers and native clients survive an engine handoff
         run: node tools/switchboard/engine-handoff-viewer.test.cjs target/dev-opt/zellij${{ runner.os == 'Windows' && '.exe' || '' }}
       - name: Prove Windows updater and rollback preserve production attachments

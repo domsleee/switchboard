@@ -6,11 +6,11 @@ const fs = require('node:fs');
 const read = name => fs.readFileSync(__dirname + '/../../zellij-client/assets/' + name, 'utf8');
 const source = name => read(name).replace(/^import[\s\S]*?from ["'][^"']+["'];\s*/gm, '').replace(/^export /gm, '');
 
-function fixture() {
+function fixture({resumable = false} = {}) {
   let now = 1000, serial = 0, signalSerial = 0;
   const timers = new Map(), sockets = [], nodes = [], requests = [], failures = [];
   const listeners = new Map();
-  const term = { rows: 24, cols: 80, options: {}, writes: [], resize(cols, rows) { this.cols = cols; this.rows = rows; }, write(data) { this.writes.push(data); } };
+  const term = { rows: 24, cols: 80, options: {}, writes: [], resize(cols, rows) { this.cols = cols; this.rows = rows; }, write(data, applied) { this.writes.push(data); applied?.(); } };
   term._core = { coreService: { triggerDataEvent(data, user = false) {
     if (!term.options.disableStdin) client.sendAnsiKey(data);
   } } };
@@ -26,10 +26,12 @@ function fixture() {
   }
   const ctx = {
     Date: { now: () => now }, performance: { now: () => now }, AbortSignal: { timeout: () => ({ id: ++signalSerial }) }, URLSearchParams, console, crypto: require('node:crypto').webcrypto, CustomEvent,
+    EventTarget, Event, MessageEvent, TextEncoder, queueMicrotask,
     setTimeout(fn, ms) { const id = ++serial; timers.set(id, { fn, at: now + ms }); return id; },
     clearTimeout(id) { timers.delete(id); },
+    setInterval() { return 0; }, clearInterval() {},
     WebSocket: Socket, location: { pathname: '/hosts/mac/main' },
-    window: { innerHeight: 800, innerWidth: 1000, addEventListener(name, fn) { listeners.set(name, fn); }, dispatchEvent(event) { if(event.type==='zellij-terminal-failed')failures.push(event.detail); } },
+    window: { innerHeight: 800, innerWidth: 1000, addEventListener(name, fn) { listeners.set(name, fn); }, dispatchEvent(event) { if(event.type==='zellij-terminal-failed')failures.push(event.detail); if(event.type==='zellij-resumable-sockets')ctx.pair=event.detail; } },
     document: {
       documentElement: { style: { setProperty() {} } },
       createElement() { return { style: {}, setAttribute() {}, remove() { nodes.splice(nodes.indexOf(this), 1); } }; },
@@ -53,15 +55,15 @@ function fixture() {
       if (ctx.authExpired && (!ctx.expiredPath || url.includes(ctx.expiredPath))) return { ok: false, status: 401 };
       if (ctx.httpError) return { ok: false, status: ctx.httpError };
       if (url.endsWith('/session-list')) return { ok: true, json: async () => ({ sessions: ctx.sessions }) };
-      return { ok: true, json: async () => ({ web_client_id: 'client-' + requests.length, session_name: decodeURIComponent(ctx.location.pathname.split('/').pop()) }) };
+      return { ok: true, json: async () => ({ web_client_id: 'client-' + requests.length, session_name: decodeURIComponent(ctx.location.pathname.split('/').pop()), ...(resumable ? {resumable:{protocol:1,session:'main'}} : {}) }) };
     },
     sessions: [{ name: 'main', web_clients_allowed: true }],
   };
   vm.createContext(ctx);
   ctx.hasRoom = size => size.cols > 2 && size.rows > 1;
-  vm.runInContext(source('connection.js') + '\n' + source('auth.js') + '\n' + source('websockets.js') + '\nObject.assign(globalThis, {initWebSockets,initConnectionHandlers,getReconnectionDelay});', ctx);
+  vm.runInContext(source('connection.js') + '\n' + source('auth.js') + '\n' + source('resumable.js') + '\n' + source('websockets.js') + '\nObject.assign(globalThis, {initWebSockets,initConnectionHandlers,getReconnectionDelay});', ctx);
   ctx.initConnectionHandlers();
-  const client = ctx.initWebSockets({ web_client_id: 'initial', session_name: 'main' }, term, fit);
+  const client = ctx.initWebSockets({ web_client_id: 'initial', session_name: 'main', ...(resumable ? {resumable:{protocol:1,session:'main'}} : {}) }, term, fit);
   const flush = async () => { for (let n = 0; n < 12; n++) await Promise.resolve(); };
   async function advance(ms) {
     const target = now + ms;
@@ -316,4 +318,33 @@ test('custom input respects sidebar focus suspension while protocol replies cont
   f.client.sendAnsiKey('custom-key');
   f.term._core.coreService.triggerDataEvent('\x1b[1;1R');
   assert.deepEqual(f.sockets[0].sent, ['\x1b[1;1R']);
+});
+
+test('a clean expired resumable viewer bootstraps in place and restores its pane before typing', async () => {
+  const f = fixture({resumable:true}); await f.flush();
+  const first=f.sockets[0];first.open();first.message(JSON.stringify({type:'hello',generation:1,input_ack:0,replaceable:true}));
+  const metadata=(socket,seq,pane)=>socket.message(JSON.stringify({type:'output',record:{seq,channel:'control',data:JSON.stringify({type:'MobileState',payload:{active_pane:pane}})}}));
+  metadata(first,1,f.ctx.activePane);await f.flush();
+  f.client.sendAnsiKey('before');first.message(JSON.stringify({type:'ack',input_ack:1,replaceable:true}));
+  first.message(JSON.stringify({type:'expired'}));await f.advance(250);
+  assert.equal(f.ctx.disconnected,undefined);assert.equal(f.failures.length,0);
+  assert.equal(f.sockets.length,2);assert.ok(f.requests.some(r=>r.url.includes('/session?session=main')));
+  const next=f.sockets[1];next.open();next.message(JSON.stringify({type:'hello',generation:1,input_ack:0,replaceable:true}));
+  f.client.sendAnsiKey('before-metadata');assert.deepEqual(next.sent,[]);
+  metadata(next,1,{pane_id:0,is_plugin:false});await f.flush();
+  const inputs=()=>next.sent.map(JSON.parse).filter(m=>m.type==='input');
+  const focus=inputs().at(-1);assert.equal(focus.input.channel,'control');
+  assert.equal(JSON.parse(focus.input.data).pane_id,1);
+  f.client.sendAnsiKey('wrong-pane');assert.equal(inputs().length,1);
+  next.message(JSON.stringify({type:'ack',input_ack:1,replaceable:true}));
+  metadata(next,2,f.ctx.activePane);await f.flush();
+  f.client.sendAnsiKey('after');assert.equal(JSON.parse(next.sent.at(-1)).input.data,'after');
+  assert.equal(f.nodes.length,0);
+});
+
+test('an expired resumable viewer never recreates an ended session', async () => {
+  const f=fixture({resumable:true});await f.flush();
+  const socket=f.sockets[0];socket.open();socket.message(JSON.stringify({type:'hello',generation:1,input_ack:0,replaceable:true}));
+  f.ctx.sessions=[];socket.message(JSON.stringify({type:'expired'}));await f.advance(2000);
+  assert.equal(f.sockets.length,1);assert.ok(f.requests.every(r=>r.url.endsWith('/session-list')));
 });

@@ -88,11 +88,77 @@ test('unknown viewers and overflow fail explicitly without creating another sess
  const g=fixture();g.client.terminal.send('x'.repeat(1024*1024+1));assert.equal(g.client.stopped,true);
 });
 
-test('blackholed transport reconnects without waiting for a close event and stops within the recovery deadline',()=>{
+test('blackholed transport recovers after browser suspension without losing its input journal',()=>{
  const f=fixture();f.client.terminal.send('retained');f.advance(11000);f.intervals.at(-1)();
  assert.equal(f.client.connected,false);assert.equal(f.timers.length,1);
- f.timers.shift()();f.advance(121000);f.intervals.at(-1)();
- assert.equal(f.client.stopped,true);assert.equal(f.window.__zjPendingTerminalInput[0].data,'retained');
+ f.timers.shift()();const query=new URL(f.sockets[1].url).searchParams;
+ f.advance(5*60*60*1000);f.intervals.at(-1)();
+ assert.equal(f.client.stopped,false);assert.equal(f.timers.length,1);
+ f.timers.shift()();const next=f.sockets[2],resumed=new URL(next.url).searchParams;
+ for(const key of ['web_client_id','session','generation','nonce','applied'])assert.equal(resumed.get(key),query.get(key));
+ next.message({type:'hello',generation:2,input_ack:0});
+ assert.deepEqual(next.sent[0].input,f.sockets[0].sent[0].input);
+ next.message({type:'ack',input_ack:1});
+ f.client.terminal.send('after wake');assert.equal(next.sent.at(-1).input.data,'after wake');
+ next.message({type:'ack',input_ack:2});assert.equal(f.client.pending.length,0);
+ assert.equal(f.window.__zjResumeFailure,undefined);
+});
+test('repeated closed sockets keep retrying beyond two minutes and reconcile a lost input acknowledgment',()=>{
+ const f=fixture();f.client.terminal.send('already delivered');f.sockets[0].drop();
+ f.client.terminal.send('buffered while offline');
+ for(let i=0;i<5;i++){
+  f.timers.shift()();f.advance(61000);f.sockets.at(-1).drop();
+  assert.equal(f.client.stopped,false);assert.equal(f.timers.length,1);
+ }
+ f.timers.shift()();const next=f.sockets.at(-1);
+ next.message({type:'hello',generation:2,input_ack:1});
+ assert.deepEqual(next.sent.map(m=>m.input.data),['buffered while offline']);
+ next.message({type:'ack',input_ack:2});assert.equal(f.client.pending.length,0);
+ assert.equal(f.window.__zjResumeFailure,undefined);
+});
+test('an expired clean viewer reconnects through bootstrap after a server checkpoint',()=>{
+ for(const expired of [{type:'expired'},{type:'error',message:'expired',failure:{code:'attachment_expired'}}]){
+  const f=fixture(),closed=[];f.client.terminal.onclose=e=>closed.push(e.code);
+  f.client.terminal.send('complete input');f.sockets[0].message({type:'ack',input_ack:1,replaceable:true});
+  f.sockets[0].drop();f.advance(5*60*60*1000);f.timers.shift()();f.sockets[1].message(expired);
+  assert.deepEqual(closed,[1006]);assert.equal(f.client.pending.length,0);
+  assert.equal(f.window.__zjResumeFailure,undefined);
+ }
+});
+test('expiry cannot replace a viewer with unacknowledged input or a partial parser sequence',()=>{
+ for(const state of ['pending','partial','old worker','stale checkpoint']){
+  const f=fixture(),closed=[];f.client.terminal.onclose=e=>closed.push(e.code);
+  if(state==='pending'){
+   f.sockets[0].message({type:'heartbeat',input_ack:0,replaceable:true});f.client.terminal.send('unsent');
+  } else if(state==='partial'){
+   f.client.terminal.send('\x1b[200~partial paste');f.sockets[0].message({type:'ack',input_ack:1,replaceable:false});
+  } else if(state==='old worker'){
+   f.client.terminal.send('delivered');f.sockets[0].message({type:'ack',input_ack:1});
+  } else if(state==='stale checkpoint'){
+   f.client.terminal.send('first');f.sockets[0].message({type:'ack',input_ack:1,replaceable:true});
+   f.client.terminal.send('second');f.sockets[0].message({type:'ack',input_ack:2});
+   f.sockets[0].message({type:'heartbeat',input_ack:1,replaceable:true});
+  }
+  f.sockets[0].message({type:'expired'});
+  assert.deepEqual(closed,[4001],state);assert.match(f.window.__zjResumeFailure,/expired/);
+  if(state==='pending')assert.equal(f.window.__zjPendingTerminalInput[0].data,'unsent');
+ }
+});
+test('a viewer that never sent input can recover expiry without a parser checkpoint',()=>{
+ const f=fixture(),closed=[];f.client.terminal.onclose=e=>closed.push(e.code);
+ f.sockets[0].message({type:'expired'});assert.deepEqual(closed,[1006]);
+});
+test('a heartbeat confirms that the parser finished an already acknowledged sequence',()=>{
+ const f=fixture(),closed=[];f.client.terminal.onclose=e=>closed.push(e.code);
+ f.client.terminal.send('\x1b');f.sockets[0].message({type:'ack',input_ack:1,replaceable:false});
+ f.sockets[0].message({type:'heartbeat',input_ack:1,replaceable:true});
+ f.sockets[0].message({type:'expired'});assert.deepEqual(closed,[1006]);
+});
+test('an expired viewer cannot bootstrap while Conversation is retiring it',async()=>{
+ const f=fixture(),closed=[];f.client.terminal.onclose=e=>closed.push(e.code);
+ f.sockets[0].message({type:'heartbeat',input_ack:0,replaceable:true});
+ const retired=f.client.retire(),rejected=assert.rejects(retired,/expired/);
+ f.sockets[0].message({type:'expired'});await rejected;assert.deepEqual(closed,[4001]);
 });
 
 test('Conversation retirement drains input across reconnect and waits for confirmed retirement',async()=>{
