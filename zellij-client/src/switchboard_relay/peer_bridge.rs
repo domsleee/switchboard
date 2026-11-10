@@ -301,6 +301,27 @@ pub(super) async fn prepare_at(
     ip: std::net::IpAddr,
     root: PathBuf,
 ) -> anyhow::Result<(String, String)> {
+    prepare_at_using(
+        registration,
+        listener,
+        certificate,
+        active,
+        ip,
+        root,
+        |address| std::net::TcpListener::bind(address),
+    )
+    .await
+}
+
+async fn prepare_at_using(
+    registration: &Registration,
+    listener: SocketAddr,
+    certificate: Option<&Path>,
+    active: &mut Option<(String, axum_server::Handle<SocketAddr>)>,
+    ip: std::net::IpAddr,
+    root: PathBuf,
+    bind: impl FnOnce(SocketAddr) -> std::io::Result<std::net::TcpListener>,
+) -> anyhow::Result<(String, String)> {
     use base64::Engine;
     let configured = url::Url::parse(&registration.endpoint)?;
     anyhow::ensure!(
@@ -334,7 +355,7 @@ pub(super) async fn prepare_at(
     {
         return Ok((fingerprint, endpoint));
     }
-    let socket = std::net::TcpListener::bind((ip, listener.port()))?;
+    let socket = bind(SocketAddr::new(ip, listener.port()))?;
     socket.set_nonblocking(true)?;
     let key = rustls_pki_types::PrivateKeyDer::from_pem_slice(registration.key.as_bytes())?;
     let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
@@ -452,11 +473,8 @@ mod tests {
         use base64::Engine;
         let temp = tempfile::tempdir().unwrap();
         let ip = local_interface();
-        let port = std::net::TcpListener::bind((ip, 0))
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
+        let occupied = std::net::TcpListener::bind((ip, 0)).unwrap();
+        let port = occupied.local_addr().unwrap().port();
         let cert = rcgen::generate_simple_self_signed(vec!["native.test".into()]).unwrap();
         let registration = Registration {
             id: "isolated".into(),
@@ -483,7 +501,6 @@ mod tests {
         .await
         .is_err());
         assert_eq!(active.as_ref().unwrap().0, "previous-address");
-        let occupied = std::net::TcpListener::bind((ip, port)).unwrap();
         assert!(prepare_at(
             &registration,
             listener,
@@ -495,14 +512,19 @@ mod tests {
         .await
         .is_err());
         assert_eq!(active.as_ref().unwrap().0, "previous-address");
-        drop(occupied);
-        let (fingerprint, endpoint) = prepare_at(
+        // Transfer the reserved socket rather than dropping it and racing
+        // parallel tests or outbound connections for this ephemeral port.
+        let (fingerprint, endpoint) = prepare_at_using(
             &registration,
             listener,
             None,
             &mut active,
             ip,
             temp.path().to_path_buf(),
+            |address| {
+                assert_eq!(address, occupied.local_addr().unwrap());
+                Ok(occupied)
+            },
         )
         .await
         .unwrap();
