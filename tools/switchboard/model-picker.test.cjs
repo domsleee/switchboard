@@ -31,6 +31,7 @@ test('names read as people say them, and each agent offers its own effort levels
   assert.equal(sol.name,'GPT-6.1 Sol');assert.equal(sol.effortName,'Ultra');assert.equal(sol.providerName,'Codex');
   assert.equal(describe('claude:claude-opus-5-5#xhigh').name,'Opus 5.5');
   assert.equal(describe('claude:claude-opus-5-5#xhigh').effortName,'Extra high');
+  assert.equal(sandbox.SwitchboardModelPicker.CLAUDE_MODELS[0][0],'claude-fable-5-2','Without a computer catalog, the newest Fable leads the fallback');
   assert.equal(describe('codex:gpt-6-luna').name,'GPT-6 Luna','An unlisted Codex model still reads as a name');
   assert.equal(efforts(parse('codex:gpt-6.1-sol'),codex).map(([id])=>id).join(),['low','ultra'].join());
   assert.equal(efforts(parse('codex:gpt-6-luna'),codex).map(([id])=>id).join(),['low','medium','high','xhigh'].join(),'An older relay without levels gets the common ones');
