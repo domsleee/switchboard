@@ -541,6 +541,144 @@ pub(crate) fn nested(agent: &str, env: impl Fn(&str) -> Option<String>) -> bool 
             && !(agent == "claude" && env("CLAUDE_CODE_ENTRYPOINT").as_deref() == Some("cli")))
 }
 
+/// Native Codex subagents run their hooks in the parent's terminal context.
+/// Their rollout has its own ID, but hooks can still report the parent's ID.
+/// A resumed child's direct user turn owns the terminal and its own inbox.
+pub(crate) fn prepare_codex_hook(agent: &str, input: &mut Vec<u8>, root: &Path) -> bool {
+    use std::io::{BufRead, BufReader};
+    let mut prepare = || -> Option<bool> {
+        if agent != "codex" {
+            return None;
+        }
+        let mut event: serde_json::Value = serde_json::from_slice(input).ok()?;
+        let session = Uuid::parse_str(event["session_id"].as_str()?).ok()?;
+        let path = Path::new(event["transcript_path"].as_str()?);
+        // Inspect only a regular rollout inside this Codex profile, including
+        // on Windows where the hook may spell the path with different casing.
+        let root = root.canonicalize().ok()?;
+        let path = path.canonicalize().ok()?;
+        let relative = path.strip_prefix(&root).ok()?;
+        if (!relative.starts_with("sessions") && !relative.starts_with("archived_sessions"))
+            || path.extension().is_none_or(|ext| ext != "jsonl")
+        {
+            return None;
+        }
+        let mut file = File::open(path).ok()?;
+        if !file.metadata().ok()?.is_file() {
+            return None;
+        }
+        // Only the first metadata record owns the rollout: a fork can copy its
+        // parent's later metadata. Bound both I/O and allocation independently
+        // of the transcript's length or a malformed record.
+        const LIMIT: u64 = 1 << 20;
+        let mut line = Vec::new();
+        BufReader::new((&mut file).take(LIMIT + 1))
+            .read_until(b'\n', &mut line)
+            .ok()?;
+        if line.len() as u64 > LIMIT {
+            return None;
+        }
+        let meta: serde_json::Value = serde_json::from_slice(&line).ok()?;
+        if meta["type"] != "session_meta" {
+            return None;
+        }
+        let meta = &meta["payload"];
+        let id = Uuid::parse_str(meta["id"].as_str()?).ok()?;
+        let source = meta.get("source")?.get("subagent")?;
+        let matches = |value: &serde_json::Value| {
+            value.as_str().and_then(|s| Uuid::parse_str(s).ok()) == Some(session)
+        };
+        if id == session
+            || !(matches(&source["thread_spawn"]["parent_thread_id"])
+                || matches(&meta["session_id"]))
+        {
+            return None;
+        }
+        if !codex_direct_turn(&mut file, &root, id, &event["turn_id"]) {
+            return Some(false);
+        }
+        // Codex retains the parent session_id even in `codex resume CHILD`.
+        // Both attention and message delivery must use the resumed child.
+        event["session_id"] = id.to_string().into();
+        *input = serde_json::to_vec(&event).ok()?;
+        Some(true)
+    };
+    // Missing or unfamiliar metadata is not proof of inherited ownership.
+    prepare().unwrap_or(true)
+}
+
+/// The current turn, unlike the rollout's original source, distinguishes work
+/// delegated by a parent from a direct user turn in a resumed child. Codex writes
+/// task_started before running UserPromptSubmit. Read a bounded tail so long
+/// conversations do not make each hook scan the whole transcript.
+fn codex_direct_turn(file: &mut File, root: &Path, thread: Uuid, turn: &serde_json::Value) -> bool {
+    use std::io::{Seek, SeekFrom};
+    let Some(turn) = turn.as_str().and_then(|s| Uuid::parse_str(s).ok()) else {
+        return false;
+    };
+    let mut direct = || -> Option<bool> {
+        const LIMIT: u64 = 1 << 20;
+        let start = file.metadata().ok()?.len().saturating_sub(LIMIT);
+        file.seek(SeekFrom::Start(start)).ok()?;
+        let mut tail = Vec::new();
+        file.take(LIMIT).read_to_end(&mut tail).ok()?;
+        let tail = if start > 0 {
+            tail.splitn(2, |byte| *byte == b'\n').nth(1)?
+        } else {
+            &tail
+        };
+        for line in tail.split(|byte| *byte == b'\n').rev() {
+            let Ok(record) = serde_json::from_slice::<serde_json::Value>(line) else {
+                continue;
+            };
+            let event = &record["payload"];
+            if record["type"] != "event_msg"
+                || event["type"] != "task_started"
+                || event["turn_id"]
+                    .as_str()
+                    .and_then(|s| Uuid::parse_str(s).ok())
+                    != Some(turn)
+            {
+                continue;
+            }
+            let attribution = &event["turn_attribution"];
+            return Some(
+                attribution.get("parent_turn_id") == Some(&serde_json::Value::Null)
+                    && attribution["turn_id"]
+                        .as_str()
+                        .and_then(|s| Uuid::parse_str(s).ok())
+                        == Some(turn)
+                    && attribution["root_turn_id"]
+                        .as_str()
+                        .and_then(|s| Uuid::parse_str(s).ok())
+                        == Some(turn),
+            );
+        }
+        None
+    };
+    direct()
+        .or_else(|| {
+            // A long tool result can push task_started out of the bounded tail.
+            // Codex projects that same turn's root into its indexed history DB.
+            // Read only; never wait on the recorder or create a profile DB.
+            let db = rusqlite::Connection::open_with_flags(
+                root.join("thread_history_1.sqlite"),
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .ok()?;
+            db.busy_timeout(Duration::ZERO).ok()?;
+            let root: String = db
+                .query_row(
+                    "SELECT root_turn_id FROM thread_turns WHERE thread_id=?1 AND turn_id=?2",
+                    [thread.to_string(), turn.to_string()],
+                    |row| row.get(0),
+                )
+                .ok()?;
+            Some(Uuid::parse_str(&root).ok()? == turn)
+        })
+        .unwrap_or(false)
+}
+
 /// Native HTTP hooks share the CLI/watcher's delivery cursor and identity, but
 /// return context in the response instead of starting a process to print it.
 pub(crate) fn http(input: &[u8], relay: &str) -> Option<serde_json::Value> {
@@ -701,6 +839,177 @@ pub(crate) fn run(agent: &str, input: &[u8], wait: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switchboard_codex_inherited_hooks_cannot_own_the_parent_pane() {
+        use serde_json::json;
+        let root = tempfile::tempdir().unwrap();
+        let sessions = root.path().join("sessions");
+        std::fs::create_dir(&sessions).unwrap();
+        let path = sessions.join("rollout-child.jsonl");
+        let parent = "00000000-0000-4000-8000-000000000001";
+        let child = "00000000-0000-4000-8000-000000000002";
+        // Sanitized first session_meta from a native Codex subagent. A fork
+        // copies parent metadata later, which must not change the decision.
+        let meta = json!({"type":"session_meta","payload":{
+            "id":child,"session_id":parent,"thread_source":"subagent",
+            "source":{"subagent":{"thread_spawn":{"parent_thread_id":parent}}}
+        }});
+        std::fs::write(&path, format!("{meta}\n{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{parent}\",\"source\":\"cli\"}}}}\n")).unwrap();
+        for event in [
+            "SessionStart",
+            "UserPromptSubmit",
+            "PostToolUse",
+            "PostToolUseFailure",
+            "Stop",
+            "SessionEnd",
+        ] {
+            let mut body =
+                json!({"session_id":parent,"hook_event_name":event,"transcript_path":path});
+            let inherited = |body: &serde_json::Value| {
+                !prepare_codex_hook("codex", &mut body.to_string().into_bytes(), root.path())
+            };
+            assert!(
+                inherited(&body),
+                "{event} may neither report state nor register/retire the parent inbox"
+            );
+            body["session_id"] = child.into();
+            assert!(
+                !inherited(&body),
+                "Already-correct child session IDs remain unchanged"
+            );
+        }
+        let event = json!({"session_id":parent,"transcript_path":path}).to_string();
+        assert!(prepare_codex_hook(
+            "claude",
+            &mut event.as_bytes().to_vec(),
+            root.path()
+        ));
+        // A new root thread may replace the pane's old conversation normally.
+        std::fs::write(
+            &path,
+            json!({"type":"session_meta","payload":{"id":child,"source":"cli"}}).to_string(),
+        )
+        .unwrap();
+        assert!(prepare_codex_hook(
+            "codex",
+            &mut event.as_bytes().to_vec(),
+            root.path()
+        ));
+    }
+
+    #[test]
+    fn switchboard_codex_resumed_child_uses_its_direct_turn_and_own_inbox() {
+        use serde_json::json;
+        let root = tempfile::tempdir().unwrap();
+        let sessions = root.path().join("sessions");
+        std::fs::create_dir(&sessions).unwrap();
+        let path = sessions.join("rollout-child.jsonl");
+        let parent = "00000000-0000-4000-8000-000000000001";
+        let child = "00000000-0000-4000-8000-000000000002";
+        let delegated = "00000000-0000-4000-8000-000000000003";
+        let direct = "00000000-0000-4000-8000-000000000004";
+        let meta = json!({"type":"session_meta","payload":{"id":child,"session_id":parent,
+            "source":{"subagent":{"thread_spawn":{"parent_thread_id":parent}}}}});
+        let started = |turn, root, parent| {
+            json!({"type":"event_msg","payload":{
+            "type":"task_started","turn_id":turn,"root_turn_id":root,
+            "turn_attribution":{"turn_id":turn,"root_turn_id":root,"parent_turn_id":parent}}})
+        };
+        // Captured Codex 0.167 resume behaviour: session_id and original source
+        // stay inherited; only the resumed turn starts its own attribution chain.
+        std::fs::write(
+            &path,
+            format!(
+                "{meta}\n{}\n{}\n{}\n",
+                " ".repeat(1 << 20),
+                started(delegated, delegated, Some(delegated)),
+                started(direct, direct, None)
+            ),
+        )
+        .unwrap();
+        for (turn, allowed) in [(delegated, false), (direct, true), (parent, false)] {
+            for event in ["UserPromptSubmit", "PostToolUse", "Stop"] {
+                let mut body = json!({"session_id":parent,"agent_id":child,"turn_id":turn,
+                    "hook_event_name":event,"transcript_path":path})
+                .to_string()
+                .into_bytes();
+                assert_eq!(prepare_codex_hook("codex", &mut body, root.path()), allowed);
+                let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(body["session_id"], if allowed { child } else { parent });
+            }
+        }
+        // A missing/malformed or different turn must not borrow the last direct
+        // turn's ownership, even after this child was used in a terminal.
+        for turn in [json!(null), json!("malformed")] {
+            let mut body = json!({"session_id":parent,"turn_id":turn,"transcript_path":path})
+                .to_string()
+                .into_bytes();
+            assert!(!prepare_codex_hook("codex", &mut body, root.path()));
+        }
+        // Later hooks in the same long turn use Codex's indexed attribution
+        // rather than rescanning megabytes of tool output on each invocation.
+        let db = rusqlite::Connection::open(root.path().join("thread_history_1.sqlite")).unwrap();
+        db.execute_batch("CREATE TABLE thread_turns (thread_id TEXT, turn_id TEXT, root_turn_id TEXT, PRIMARY KEY(thread_id, turn_id))").unwrap();
+        db.execute(
+            "INSERT INTO thread_turns VALUES (?1, ?2, ?2)",
+            [child, direct],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO thread_turns VALUES (?1, ?2, ?3)",
+            [child, delegated, parent],
+        )
+        .unwrap();
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(&vec![b' '; (1 << 20) + 1])
+            .unwrap();
+        for (turn, allowed) in [(delegated, false), (direct, true), (parent, false)] {
+            let mut body = json!({"session_id":parent,"turn_id":turn,"transcript_path":path})
+                .to_string()
+                .into_bytes();
+            assert_eq!(prepare_codex_hook("codex", &mut body, root.path()), allowed);
+        }
+    }
+
+    #[test]
+    fn switchboard_codex_hook_ownership_requires_bounded_verified_metadata() {
+        use serde_json::json;
+        let root = tempfile::tempdir().unwrap();
+        let sessions = root.path().join("archived_sessions");
+        std::fs::create_dir(&sessions).unwrap();
+        let path = sessions.join("rollout.jsonl");
+        let event =
+            json!({"session_id":"00000000-0000-4000-8000-000000000001","transcript_path":path})
+                .to_string();
+        for bytes in [
+            b"".to_vec(),
+            b"{broken".to_vec(),
+            vec![b' '; (1 << 20) + 1],
+            b"{\"type\":\"event_msg\"}\n".to_vec(),
+        ] {
+            std::fs::write(&path, bytes).unwrap();
+            assert!(prepare_codex_hook(
+                "codex",
+                &mut event.as_bytes().to_vec(),
+                root.path()
+            ));
+        }
+        let outside = tempfile::tempdir().unwrap();
+        assert!(prepare_codex_hook(
+            "codex",
+            &mut event.as_bytes().to_vec(),
+            outside.path()
+        ));
+        assert!(prepare_codex_hook(
+            "codex",
+            &mut b"{}".to_vec(),
+            root.path()
+        ));
+    }
 
     #[test]
     fn switchboard_codex_tool_agents_do_not_own_the_parent_pane() {

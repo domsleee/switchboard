@@ -2118,6 +2118,12 @@ pub fn forward_hook(agent: &str, wait: bool, input: impl std::io::Read) {
         return;
     }
     let env = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+    let codex_home = std::env::var_os("CODEX_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::env::home_dir().unwrap_or_default().join(".codex"));
+    if !crate::message_board::hooks::prepare_codex_hook(agent, &mut body, &codex_home) {
+        return;
+    }
     let relay = crate::message_board::local_relay_url(env("SWITCHBOARD_RELAY_URL").as_deref());
     if !wait {
         if let Some(request) = hook_request(agent, body.as_slice(), env, &relay) {
