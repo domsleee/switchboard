@@ -32,7 +32,8 @@ computer's Codex reports (`codex app-server` `model/list`, served at
 model. A model other than a shortcut starts the agent directly, with the
 shortcuts' bypass flags: `claude --dangerously-skip-permissions --model <model>`
 or `codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust -m <model>`.
-The Claude list is in `app.js` (`NEW_TAB_CLAUDE_MODELS`); add new Claude models there.
+When a computer's Claude Code does not answer, the picker falls back to
+`CLAUDE_MODELS` in `static/model-picker.js`.
 
 The handover carries attributed user and assistant messages, including the
 original request and recent exchanges, within 64 KB. Included messages keep

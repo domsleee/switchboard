@@ -2,8 +2,8 @@
 // effort docked on the right. A choice is `claude:<model>` or `codex:<model>`, plus `#<effort>` when an
 // effort is chosen; no effort leaves the agent's own setting in charge.
 (() => {
-  const CLAUDE_MODELS=[['claude-fable-5-1','Fable 5.1'],['claude-opus-5-5','Opus 5.5'],['claude-sonnet-5-5','Sonnet 5.5'],['claude-haiku-5-5','Haiku 5.5']];
-  const CLAUDE_OLDER=[['claude-fable-5','Fable 5'],['claude-opus-5','Opus 5'],['claude-sonnet-5','Sonnet 5'],['claude-opus-4-8','Opus 4.8'],['claude-opus-4-7','Opus 4.7'],['claude-opus-4-6','Opus 4.6'],['claude-sonnet-4-6','Sonnet 4.6'],['claude-haiku-4-5','Haiku 4.5']];
+  const CLAUDE_MODELS=[['claude-fable-5-2','Fable 5.2'],['claude-opus-5-5','Opus 5.5'],['claude-sonnet-5-5','Sonnet 5.5'],['claude-haiku-5-5','Haiku 5.5']];
+  const CLAUDE_OLDER=[['claude-fable-5-1','Fable 5.1'],['claude-fable-5','Fable 5'],['claude-opus-5','Opus 5'],['claude-sonnet-5','Sonnet 5'],['claude-opus-4-8','Opus 4.8'],['claude-opus-4-7','Opus 4.7'],['claude-opus-4-6','Opus 4.6'],['claude-sonnet-4-6','Sonnet 4.6'],['claude-haiku-4-5','Haiku 4.5']];
   const CLAUDE_EFFORTS=[['low','Quickest replies, light reasoning'],['medium','Balanced speed and depth'],['high','Deeper reasoning for complex work'],['xhigh','More reasoning for hard problems'],['max','Deepest reasoning, slowest replies']];
   // An older relay lists Codex models without their levels; these are the ones every current model takes.
   const CODEX_FALLBACK_EFFORTS=[['low',''],['medium',''],['high',''],['xhigh','']];
