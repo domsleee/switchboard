@@ -10,7 +10,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
     const context=await browser.newContext({viewport:{width:1280,height:900}});
     const page=await context.newPage(),errors=[];
     page.on('pageerror',error=>errors.push(error.message));
-    let created=0,catalog=0,failed=false,closes=0,frameBoots=0,connected=!emptyMachine,catalogReady=!emptyMachine;
+    let created=0,catalog=0,failed=false,closes=0,frameBoots=0,connected=!emptyMachine,catalogReady=!emptyMachine,firstLaunch,releaseFirstCreation;
     const diagnostics=[],uploads=[];let projectError=false,delayProjects=false,releaseProjects,uploadError=false,delayUpload=false,releaseUpload;
     const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=','base64');
     const nativeTabs=()=>Array.from({length:catalog+1},(_,i)=>({host:'windows',session:'main',id:i?89+i:42,position:i,name:i?'New shell '+i:'Original',panes:[{pane_id:i?8+i:7,is_plugin:false,tab_position:i}]}));
@@ -27,6 +27,12 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
       if(path==='/hosts/windows/new-tab'){
         const launch=route.request().postDataJSON(),viewer=page.frames().find(frame=>frame.url().includes('/hosts/windows/'));
         assert.equal(launch.session,'main');
+        if(emptyMachine){
+          firstLaunch=launch;assert.equal(frameBoots,0,'An explicit request creates the session before any viewer attaches');
+          await new Promise(resolve=>releaseFirstCreation=resolve);
+          connected=true;created=1;
+          return json({pane_id:9,tab_id:90});
+        }
         await viewer.evaluate(launch=>{
           window.creationRequested=true;window.creationElevated=launch.elevated;
           window.creationLaunch={project:launch.project,command:launch.command,prompt:launch.prompt,images:launch.images};
@@ -43,7 +49,7 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
       if(path==='/hosts/windows/project-list'){if(delayProjects)await new Promise(resolve=>releaseProjects=resolve);return projectError?route.fulfill({status:503,body:'unavailable'}):json(['dotfiles','switchboard','switchboard-tools','C:\\work\\Org\\Sample.Tools','C:\\work\\Org\\Sample','C:/work/Glow/DotNet','C:/work/Glow2/DotNet']);}
       if(path==='/hosts/other/project-list')return json(['other-project']);
       if(path==='/hosts/windows/model-list')return json({codex:[{id:'gpt-6.1-sol',name:'GPT-6.1-Sol',default:true,efforts:[{id:'low'},{id:'high'}]},{id:'gpt-6-luna',name:'GPT-6-Luna',default:false}]});
-      if(path.startsWith('/hosts/')){connected=true;frameBoots++;return route.fulfill({contentType:'text/html',body:`<div id="terminal"><input id="terminal-input"></div><script>
+      if(path.startsWith('/hosts/')){assert.equal(connected,true,'A named viewer cannot create a missing session');frameBoots++;return route.fulfill({contentType:'text/html',body:`<div id="terminal"><input id="terminal-input"></div><script>
         window.WebSocket=class extends EventTarget {constructor(){super();this.readyState=1;}send(){}};
         const input=document.querySelector('input');let count=${created},active=count;
         window.term={element:document.querySelector('#terminal'),options:{disableStdin:false},focus(){input.focus()},blur(){input.blur()},
@@ -74,12 +80,14 @@ for(const emptyMachine of [false,true])test(`${emptyMachine?'a machine with only
       // The + dialog offers the empty machine and creates its session.
       await page.locator('#new-tab').click();assert.equal(await page.locator('#new-tab-target option').count(),1);
       await page.locator('#new-tab-prompt').fill('Start here');
+      const firstRequest=page.waitForRequest('**/hosts/windows/new-tab');
       await page.locator('#new-tab-form button[type="submit"]').click();
-      await page.waitForFunction(()=>document.querySelector('iframe.active')?.contentWindow.creationRequested);
+      await firstRequest;
+      assert.equal(frameBoots,0);assert.equal(connected,false);
+      assert.deepEqual(firstLaunch,{session:'main',project:'switchboard',command:'codex:gpt-6.1-sol#high',prompt:'Start here',images:[],elevated:false});
+      releaseFirstCreation();
       const input=page.frameLocator('iframe[title="Windows: main"]').locator('#terminal-input');
-      assert.deepEqual(await input.evaluate(()=>window.creationLaunch),{project:'switchboard',command:'codex:gpt-6.1-sol#high',prompt:'Start here',images:[]});
-      await input.evaluate(()=>window.confirmCreation());
-      await page.waitForFunction(()=>document.querySelector('#tabs .selected .tab-name')?.textContent==='New shell 1');
+      await page.waitForFunction(()=>document.querySelector('#tabs .selected .tab-name')?.textContent==='Start here'&&document.querySelector('iframe.active')?.contentWindow.term);
       assert.equal(frameBoots,1);
       assert.equal(await input.evaluate(i=>document.activeElement===i&&!window.term.options.disableStdin),true);
       await page.keyboard.type('first command');assert.equal(await input.inputValue(),'first command');

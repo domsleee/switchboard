@@ -2167,21 +2167,23 @@ for(const dialog of document.querySelectorAll('dialog')){
 }
 // Native creation uses a short CLI request, never a terminal viewer. This keeps
 // Conversation open without letting a phone constrain an existing tab's size.
-async function createConversationTab(key,launch,typed=launch.prompt){
+async function createNativeTab(key,launch,typed=launch.prompt){
   const [hostId,name]=JSON.parse(key),host=hosts.get(hostId);if(!host||host.error)return;
-  const entry=sessions.get(key)||connectSession(host,name,true);
+  // A named terminal URL only attaches. Keep its viewer blank until the
+  // explicit creation request has started the computer's first session.
+  const entry=sessions.get(key)||connectSession(host,name,true,true);
   if(entry.pendingNewTab){setStatus('A tab is already being created on this computer.',true);return;}
   const pending=entry.pendingNewTab=new Set(sessionTabs(entry).map(tab=>tabKey(entry,tab)));
   pending.requestId=entry.newTabRequestId=(entry.newTabRequestId||0)+1;pending.api=true;
   // Only a skill's turn appears in Conversation, so no message waits for other commands.
-  const route=newTabCommand(typed)?globalThis.SwitchboardConversation.commandRoute(newTabAgent(launch.command),typed):null,started=route&&route!=='turn'?null:promptLaunch(launch,typed);
+  const route=newTabCommand(typed)?globalThis.SwitchboardConversation?.commandRoute?.(newTabAgent(launch.command),typed):null,started=route&&route!=='turn'?null:promptLaunch(launch,typed);
   entry.creatingTab={id:'creating',pending:true,name:'Creating tab…',position:Infinity,panes:[],project:launch.project,launch:started,requestedModel:requestedModel(launch)};
   const placeholder=selected=tabKey(entry,entry.creatingTab);pushTabHistory=true;restoringTab=false;entry.followActiveTab=false;
   if(filter!=='all'&&groups[hostId]!==filter)setFilter('all');$('tab-search').value='';
-  sidebarOpen=false;updateSidebar();$('new-tab-dialog').close();render();globalThis.SwitchboardConversation.focus();
+  sidebarOpen=false;updateSidebar();$('new-tab-dialog').close();render();globalThis.SwitchboardConversation?.focus?.();
   try{
     const response=await fetch(`/hosts/${encodeURIComponent(hostId)}/new-tab`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:name,...launch})});
-    if(!response.ok)throw Error(response.status===404?'Update Switchboard on this computer to create tabs from Conversation.':await response.text());
+    if(!response.ok)throw Error(response.status===404?'Update Switchboard on this computer to create tabs.':await response.text());
     const result=await response.json();if(!Number.isInteger(result.pane_id)||result.pane_id<0)throw Error('The new tab did not return its identity. Check the tab list before retrying.');
     if(entry.pendingNewTab!==pending)return;
     entry.apiCreationPane=result.pane_id;
@@ -2190,8 +2192,10 @@ async function createConversationTab(key,launch,typed=launch.prompt){
     const tab={id:result.pane_id,pending:true,name:'New tab',position:Infinity,panes:[{pane_id:result.pane_id,is_plugin:false,tab_position:Infinity}],project:launch.project,launch:started,requestedModel:requestedModel(launch)};
     entry.provisionalTabs??=[];entry.provisionalTabs.push(tab);entry.creatingTab=null;entry.pendingNewTab=null;
     if(selected===placeholder)selected=tabKey(entry,tab);
+    entry.cached=false;syncTerminalConnection(entry);
     render();if(route==='terminal')globalThis.SwitchboardConversation.showTerminal();refreshAttention(true);refresh();
-  }catch(error){failNewTab(entry,pending.requestId,error.message||'Could not confirm tab creation. Check the tab list before retrying.');}
+    if(!globalThis.SwitchboardConversation?.isOpen?.())entry.frame.focus();
+  }catch(error){entry.starting=false;clearTimeout(entry.startTimeout);failNewTab(entry,pending.requestId,error.message||'Could not confirm tab creation. Check the tab list before retrying.');}
 }
 let newTabFiles=[];
 function clearNewTabFiles(){
@@ -2336,7 +2340,7 @@ $('new-tab-form').onsubmit=async event=>{
 };
 async function createNewTab(key,launch,isCurrent=()=>true,typed){
   if(!launch.command&&typeof launch.prompt!=='string')return;
-  if(globalThis.SwitchboardConversation?.wantsConversation?.())return createConversationTab(key,launch,typed??launch.prompt);
+  if(globalThis.SwitchboardConversation?.wantsConversation?.())return createNativeTab(key,launch,typed??launch.prompt);
   let entry=sessions.get(key);
   // A recently resumed Terminal may still be connecting. Keep the dialog
   // usable without mistaking that session for an empty host.
@@ -2350,10 +2354,7 @@ async function createNewTab(key,launch,isCurrent=()=>true,typed){
     const [id,name]=JSON.parse(key),host=hosts.get(id);
     if(firstSessionName(host)!==name){newTabProblem(noSessionMessage(id),'target');return;}
     if(entry&&!entry.starting){entry.inputTiming?.end('left');entry.frame.remove();sessions.delete(key);}
-    const created=connectSession(host,name,true);created.selectOnStart=true;created.launchOnStart=launch;
-    if(filter!=='all'&&groups[id]!==filter)setFilter('all');$('tab-search').value='';
-    // Closing the dialog returns focus to +; restore the current viewing surface.
-    $('new-tab-dialog').close();render();if(globalThis.SwitchboardConversation?.isOpen?.())globalThis.SwitchboardConversation.focus();else created.frame.focus();return;
+    return createNativeTab(key,launch,typed??launch.prompt);
   }
   if(!sessionTabs(entry).length){newTabProblem(noSessionMessage(entry.host),'target');return;}
   if(entry.pendingNewTab||entry.requestedPane||entry.focusPending){newTabProblem('Another tab is still opening on '+(hosts.get(entry.host)?.name||'that computer')+'. Retry in a moment.');return;}
